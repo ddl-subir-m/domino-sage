@@ -103,8 +103,10 @@ def test_the_header_lists_every_app_with_its_build_state_and_its_incoming_change
     said = _said(_build())
     for name in ["Desk dashboard", "P&L report", "Rate curve viewer", "Risk monitor"]:
         assert name in said, name
-    assert "Built" in said
-    assert "Not built yet" in said
+    # Each row's state arrives dated since #217 — the newest stamp that is true of the app, in
+    # place of the bare build state this list used to carry.
+    assert "Published" in said
+    assert "Started" in said
     assert "Building" in said
     assert "Changes to pull" in said
 

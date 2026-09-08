@@ -708,7 +708,10 @@ window.SW = window.SW || {};
     relativeTime(iso) {
       if (!iso) return '';
       const then = new Date(iso);
-      const diffMs = TODAY - then;
+      // `Date.now()` rather than the module's `TODAY`, which is captured once at load. Since #217
+      // an app switcher row is a date and nothing else, so a tab left open overnight kept reading
+      // `just now` about a publish from yesterday — the app list re-polls, and the clock did not.
+      const diffMs = Date.now() - then;
       const minutes = Math.round(diffMs / 60000);
       if (minutes < 1) return 'just now';
       if (minutes < 60) return `${minutes} min ago`;
@@ -742,7 +745,10 @@ window.SW = window.SW || {};
       ];
       threads.forEach((thread) => {
         if (thread.pinned) return buckets[0].items.push(thread);
-        const days = (TODAY - new Date(thread.updatedAt)) / 86400000;
+        // `Date.now()`, for the reason `relativeTime` reads it: the two describe the same
+        // row, and a tab left open past midnight put a thread under `Today` whose own
+        // subtitle had already moved on to `yesterday`.
+        const days = (Date.now() - new Date(thread.updatedAt)) / 86400000;
         if (days < 1) return buckets[1].items.push(thread);
         if (days < 7) return buckets[2].items.push(thread);
         if (days < 30) return buckets[3].items.push(thread);

@@ -856,6 +856,34 @@ class Workspace:
         settings["dominoAppId"] = app_id
         _write_settings_file(self._settings_path, settings)
 
+    def created_at(self) -> str:
+        """When this app was born, or "" for one seeded before the stamp existed.
+
+        The third and oldest of the app's three stamps, and the one that had been missing: an app
+        recorded when it was built and when it was published, so a never-built app carried no time
+        at all, and `Not built yet` said the same thing about one started this morning and one
+        abandoned in March (#217).
+
+        "" rather than the directory's mtime. The volume is copied, re-seeded and pulled into, so a
+        filesystem time is a fact about the disk rather than about the app — and no date is honest
+        where a wrong one is not.
+        """
+        stored = _read_settings_file(self._settings_path).get("createdAt")
+        return stored.strip() if isinstance(stored, str) else ""
+
+    def mark_created(self) -> None:
+        """Stamp the birth, once. Write-if-absent rather than write, unlike `mark_built` and
+        `mark_published`: those two say when a thing last happened and are meant to move, and this
+        one names an event that happens to an app exactly once.
+
+        `ensure` already refuses to call this on anything but an empty directory, so the guard is
+        what keeps the promise for any later caller rather than what keeps it today."""
+        settings = _read_settings_file(self._settings_path)
+        if isinstance(settings.get("createdAt"), str) and settings["createdAt"].strip():
+            return
+        settings["createdAt"] = _now()
+        _write_settings_file(self._settings_path, settings)
+
     def published_at(self) -> str:
         """When this app was last published, or "" if it never was — and "" for an app published
         before the stamp existed, which reads as the honest "no date" rather than a wrong one.
@@ -1464,6 +1492,13 @@ class WorkspaceManager:
         `seed_app=False` is Chat: attach the volume, and leave the app directory uncreated. A
         Project with no app on it is the ordinary state — an app is born when a handoff is
         confirmed — so this must not be the thing that creates one.
+
+        This is also where the birth stamp is written (#217), rather than in `create_app`. Two doors
+        open a new Built App — a confirmed handoff through `create_app`, and opening Build in a
+        Project that has none, which lands straight here — so stamping in the caller would have left
+        every Project's first app undated. `Reset app` is deliberately not a birth: it keeps
+        `.sage/`, so an app that was never published falls back to `Started` once `clear_built`
+        takes the build stamp away.
         """
         self._dir.mkdir(parents=True, exist_ok=True)
         self._ensure_project_ignores()
@@ -1471,6 +1506,18 @@ class WorkspaceManager:
         app = self.app_path
         if seed_app:
             app.mkdir(parents=True, exist_ok=True)
+            # Empty BEFORE the seed runs, which is the only honest signal that this is a birth
+            # rather than a repair. The branch below re-seeds any app missing its `package.json` —
+            # a file the agent can delete — and an app seeded before the birth stamp existed would
+            # otherwise be dated the day it was repaired, which is a wrong date rather than none.
+            #
+            # Stamped BEFORE the seed rather than after it (#217), because "the directory is empty"
+            # is a fact that only holds now: a copy that dies half way through would otherwise
+            # leave an app this method can never call a birth again, and so one that carries no
+            # date for the rest of its life. `_write_settings_file` makes `.sage/` itself, and the
+            # template ships no `.sage/` for the loop below to find already standing.
+            if not any(app.iterdir()):
+                Workspace(project_id, app, self.selected_app_id()).mark_created()
             if not (app / "package.json").exists():
                 # Seed the template INTO the (possibly pre-existing) directory entry by entry, so
                 # anything already there is preserved.
