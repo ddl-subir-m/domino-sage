@@ -6710,26 +6710,33 @@ class Orchestrator:
                 yield from offer
                 return
 
-        if asking:
-            # "Build me an app" is answered by Build, so offer it now rather than after a turn.
-            # sage-chat writes an Artifact under examples/, never an app, so running the turn first
-            # spends a whole turn and ends exactly where this starts — which is how a build request
-            # became 90 seconds of spinner and "ask again with a smaller question".
-            #
-            # Only the regex short-circuits. The model classifier still runs after a turn, because
-            # it judges the assistant's reply as well as the ask, and it cannot do that before one
-            # exists.
-            #
-            # Declining that offer is what brings a turn back here with `already_asked` — so this
-            # is skipped on the way through, or the decline would meet the same offer it declined.
-            early = self._explicit_handoff(store, thread_id, prompt)
-            if early:
-                done = {"type": "done", "ok": True, "decision": "handoff"}
-                store.append_history(thread_id, early)
-                store.append_history(thread_id, done)
-                yield early
-                yield done
-                return
+        # "Build me an app" is answered by Build, so offer it now rather than after a turn.
+        # sage-chat writes an Artifact under examples/, never an app, so running the turn first
+        # spends a whole turn and ends exactly where this starts — which is how a build request
+        # became 90 seconds of spinner and "ask again with a smaller question".
+        #
+        # Only the regex short-circuits. The model classifier still runs after a turn, because
+        # it judges the assistant's reply as well as the ask, and it cannot do that before one
+        # exists.
+        #
+        # NOT under `asking`, which is the guard on echoing the person's sentence back and nothing
+        # more. `asking` is false on exactly the turn the table card replays into
+        # (`skip_table_gate`), so guarding this with it put the spinner back on the one turn the
+        # reorder above exists to buy: measured, the click was answered by a whole sage-chat turn
+        # and the nudge arrived after it, rather than in the three milliseconds the regex costs.
+        #
+        # Declining that offer is what brings a turn back here with `already_asked` — and this is
+        # still skipped then, by `should_classify` inside `_explicit_handoff` reading the Thread's
+        # own handoff rows. That guard belongs there rather than here: it is a fact about what this
+        # Thread has already been offered, not about whether this turn is echoing a sentence.
+        early = self._explicit_handoff(store, thread_id, prompt)
+        if early:
+            done = {"type": "done", "ok": True, "decision": "handoff"}
+            store.append_history(thread_id, early)
+            store.append_history(thread_id, done)
+            yield early
+            yield done
+            return
         # And a Dataset on this Thread with no file pinned from it (#196, ADR-0039), asked last for
         # the reason Build asks it last: a store with no table cannot be read at all, while a
         # Dataset nobody has picked a file from still lets a turn run. `skip_dataset_gate` is the

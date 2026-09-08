@@ -175,6 +175,13 @@ def test_the_nudge_still_arrives_on_the_turn_the_click_buys(tmp_path: Path):
     question with `skipTableGate`, and the nudge lands on that turn — after the table is on the
     Thread's row, which is where `binding_from_context` reads it on the way across. So the app is
     born scoped, which is the half of the damage `confirm_handoff` was writing silently.
+
+    Pinned by POSITION, not by membership. The nudge arriving at all is not the property worth
+    having — the model classifier already offers it after a turn, so "in the events somewhere" was
+    true even when the regex was skipped. What the click buys is the nudge arriving INSTEAD of a
+    turn, in the milliseconds the regex costs. Asserting membership let exactly that regression
+    through once: `skip_table_gate` makes `asking` false, so guarding the explicit detect with it
+    answered the click with a whole sage-chat turn and put the nudge after it.
     """
     orch, _oc = _orch(tmp_path)
     _gong_warehouse(orch)
@@ -184,7 +191,11 @@ def test_the_nudge_still_arrives_on_the_turn_the_click_buys(tmp_path: Path):
     orch.confirm_thread_table_candidate(tid, "ds-dwh", "DWH", "MARTS", "GONG__CALLS")
     answered = list(orch.chat_stream(tid, PROMPT, skip_table_gate=True))
 
-    assert "handoff-suggest" in _types(answered)
+    kinds = _types(answered)
+    assert "handoff-suggest" in kinds
+    # Before the turn, which means instead of one: no assistant text and no `done` ahead of it.
+    assert kinds.index("handoff-suggest") == 0
+    assert "agent" not in kinds
     row = next(i for i in ThreadStore(orch.project(start_preview=False).record.path)
                .read_context(tid)["items"] if i.get("kind") == "data_source")
     assert row["scope"]["table"] == "GONG__CALLS"
