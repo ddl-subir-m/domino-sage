@@ -733,6 +733,34 @@ def name_column(frame: Any) -> list[str]:
 
 _SECRET_SHAPED = re.compile(r"[A-Za-z0-9_\-]{32,}")
 
+# A failure on the way to the store rather than inside it. Arrow Flight and gRPC are Domino's
+# transport between Sage and the datasource proxy; neither word is ever a store's own vocabulary,
+# so a message carrying one never reached Snowflake and says nothing about the dialect or the
+# schema. What it does carry is socket detail — live, a refused read read back as
+# "DominoError: Flight returned unavailable error … UNKNOWN: ipv4:10.0.3.4:8080 … Connection
+# refused", which is a gRPC peer address in front of somebody who asked to see a row.
+_NEVER_REACHED = re.compile(
+    r"flight|grpc|failed to connect to all addresses|connection refused|deadline exceeded|"
+    r"socket closed|transport is closing",
+    re.I,
+)
+# Backstop for a message this did not classify: a store error that happens to quote a host. Kept
+# separate from the secret rule so the two reasons stay legible.
+_ADDRESS_SHAPED = re.compile(
+    r"\b(?:ipv[46]|dns|unix|tcp):[^\s,;]+|\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b"
+)
+
+
+def store_was_reached(exc: Exception) -> bool:
+    """False when the question never got as far as the store.
+
+    The two cases need different sentences. A store that answered badly has told us something the
+    creator needs — an unverified dialect must fail honestly rather than look like an empty schema
+    — so its words are worth showing. A transport that never delivered the question has told us
+    nothing except its own plumbing, and repeating that at somebody is mechanism, not an answer.
+    """
+    return not _NEVER_REACHED.search(str(exc))
+
 
 def readable_error(exc: Exception, limit: int = 300) -> str:
     """A store's own failure, in a form that can be shown.
@@ -746,6 +774,7 @@ def readable_error(exc: Exception, limit: int = 300) -> str:
     message anyone reads.
     """
     text = _SECRET_SHAPED.sub("[redacted]", " ".join(str(exc).split()))
+    text = _ADDRESS_SHAPED.sub("[address]", text)
     return f"{type(exc).__name__}: {text[:limit]}" if text else type(exc).__name__
 
 
@@ -1777,6 +1806,16 @@ class DominoResourceProvider:
             client = DataSourceClient()
             return client.get_datasource(source.name).query(sql).to_pandas()
         except Exception as e:
+            # Nothing reached the store, so there is nothing of the store's to report. Say what
+            # happened and what to do, and keep Domino's plumbing out of it: the raw text here
+            # carries a gRPC peer address, which is mechanism in front of someone who asked to see
+            # a row.
+            if not store_was_reached(e):
+                raise ResourceUnavailable(brand.text(
+                    "{assistantName} could not reach {name} just now. Nothing is wrong with the "
+                    "{dataSource} itself. Try again in a moment.",
+                    name=source.name,
+                )) from e
             # The store's own words, scrubbed. Naming the source matters because the creator is
             # looking at a list of them, and the connector's own error is the only signal that
             # separates "Sage sent the wrong SQL for this connector" from "this schema is empty".
