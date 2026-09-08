@@ -218,7 +218,12 @@ def test_only_the_frame_that_arrived_this_session_carries_buttons():
     blocks = _js("components", "message-blocks.js")
     assert "const fixes = block.live" in blocks
     assert "if (!fixes.length) {" in blocks
-    assert "return h('div', { className: 'sw-status-line is-err' }, block.message);" in blocks
+    # The same status line it always drew, plus the way out in words (#213). The server's sentence
+    # stopped carrying directions when the button learned to build, so this branch — the one that
+    # knows there is nothing to click — is where they are said instead.
+    assert "const hints = SW.store.mentionFixHints(block.entries);" in blocks
+    assert "return h('div', { className: 'sw-status-line is-err' }," in blocks
+    assert "[block.message, ...hints].join(' '));" in blocks
 
 
 def test_a_card_naming_an_app_the_rail_has_moved_off_stands_down():
@@ -230,9 +235,9 @@ def test_a_card_naming_an_app_the_rail_has_moved_off_stands_down():
     store = _js("store.js")
     blocks = _js("components", "message-blocks.js")
 
-    assert "mentionFixes(entries, activeAppId) {" in store
+    assert "mentionFixes(entries, activeAppId, replay) {" in store
     assert "if (!entry.appId || entry.appId !== activeAppId) return null;" in store
-    assert "? SW.store.mentionFixes(block.entries, activeApp && activeApp.id)" in blocks
+    assert "? SW.store.mentionFixes(block.entries, activeApp && activeApp.id," in blocks
 
 
 def test_the_card_offers_one_act_per_kind_and_names_the_app_each_one_lands_in():
@@ -244,11 +249,11 @@ def test_the_card_offers_one_act_per_kind_and_names_the_app_each_one_lands_in():
     # An Alias and a Data Source each bind in one click, under one label — the Data Source joined
     # the Alias when #142 stopped making its Scope a cascade position (#143). The Model API still
     # opens the door its kind needs first.
-    assert "const bind = (e) => ({ label: `Use in ${e.app}`, act: () => store.bindFromMention(e) });" in store
+    assert "const bind = (e) => ({ label: `Use in ${e.app}`, act: () => store.bindFromMention(e)," in store
     assert "llm_alias: bind," in store
     assert "data_source: bind," in store
     assert "act: () => store.openCredentialForMention(e)," in store
-    assert "file: (e) => ({ label: `Attach to ${e.app}`, act: () => store.attachFileForMention(e) })" in store
+    assert "file: (e) => ({ label: `Attach to ${e.app}`, act: () => store.attachFileForMention(e)," in store
     # A Model API's token is stored per model and outlives any one Binding, so that one label names
     # the Resource rather than an app.
     assert "label: 'Add its access token'," in store

@@ -202,7 +202,7 @@ def test_the_file_repair_is_untouched_because_it_navigates_nowhere():
     same act. It acts in place, so it has no destination to re-point — and it must not grow one."""
     ui = (_JS / "store.js").read_text()
     assert (
-        "file: (e) => ({ label: `Attach to ${e.app}`, act: () => store.attachFileForMention(e) })"
+        "file: (e) => ({ label: `Attach to ${e.app}`, act: () => store.attachFileForMention(e),"
         in ui
     )
 

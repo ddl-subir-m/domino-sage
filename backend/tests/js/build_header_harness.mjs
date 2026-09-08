@@ -1381,7 +1381,16 @@ for (const step of steps) {
     // button at all: every act behind one resolves the app on screen NOW (#77, #135).
     const on = SW.store.get().activeApp || {};
     const entry = { ...step.fixMention, app: on.name, appId: on.id };
-    const fixes = SW.store.mentionFixes([entry], on.id);
+    // What the click sends once it has written the record (#213). Stubbed rather than the store's
+    // own send: what is under test is that the record's answer decides whether a turn follows at
+    // all, and a real `sendBuildPrompt` would put the whole build pipeline between the claim and
+    // the assertion. A step without `replay` is the caller that has none — the bind-only button.
+    const replayed = [];
+    const replay = step.replay ? () => { replayed.push(1); return true; } : null;
+    // A route that turns the bind down, so "the record decides" is a claim about what happened
+    // rather than about a path nothing walked.
+    bindRefusal = step.refuse || '';
+    const fixes = SW.store.mentionFixes([entry], on.id, replay);
     if (!fixes.length) throw new Error(`no fix offered for ${JSON.stringify(entry)}`);
     await fixes[0].act();
     const picker = headerPicker(step.thread);
@@ -1411,6 +1420,8 @@ for (const step of steps) {
       doors: headerScopeDoors(step.thread).map((d) => ({ after: d.after, label: d.label })),
       // The cascade's own walk, which no repair reaches any more.
       walkOpen: s.scopePick !== null,
+      // Whether the request the person already made went again behind the record (#213).
+      replayed: replayed.length,
     });
     continue;
   }

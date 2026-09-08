@@ -100,7 +100,7 @@ def test_the_same_resource_mentioned_twice_is_one_row():
 
 def test_the_warning_is_drawn_under_the_box_and_only_when_there_is_one():
     assert "unusable.length > 0 &&" in UI
-    assert "h(MentionGuard, { entries: unusable, activeAppId: activeApp && activeApp.id })" in UI
+    assert "entries: unusable, activeAppId: activeApp && activeApp.id, onSend: send," in UI
     # Below the composer's own border, not inside it: within it, the warning reads as a field that
     # has failed validation, which says the send is blocked.
     assert ".sw-mention-guard {" in CSS
@@ -112,7 +112,7 @@ def test_the_sentence_names_the_app_and_only_what_a_button_below_it_can_close():
     name something no act on it can fix."""
     assert "const offered = new Set(fixes.map((fix) => fix.key));" in UI
     assert ".filter((e) => offered.has(`${e.kind}:${e.id}`))" in UI
-    assert "`Send now and ${named.join(', ')} won't reach ${app}.`" in UI
+    assert "`${app} doesn't use ${named.join(', ')} yet.`" in UI
     # An Alias is not a failed delivery, so it gets the other half of the sentence — the capability
     # a click buys, in the same words the server's refusal uses (#136).
     assert "`${app} can't call ${aliases.join(', ')} yet." in UI
@@ -122,7 +122,7 @@ def test_the_sentence_names_the_app_and_only_what_a_button_below_it_can_close():
 def test_the_acts_are_the_store_s_and_the_chip_writes_no_second_copy():
     """#135 named the four acts rather than inlining them for this exact caller, and put the
     per-kind map beside them for the same reason."""
-    assert "const fixes = SW.store.mentionFixes(entries, activeAppId);" in UI
+    assert "const fixes = SW.store.mentionFixes(entries, activeAppId, onSend);" in UI
     assert "FromMention" not in UI, "the chip reaches the acts through the shared map, never direct"
     # An Alias, a Data Source and a Dataset each finish in one click, through one shared act (#143,
     # #212); a Model API routes into the credential flow. All of them, once, in the store.
