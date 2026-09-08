@@ -1326,6 +1326,13 @@ window.SW = window.SW || {};
     // reads as the app having broken rather than as a question waiting for an answer.
     'table candidates': true,
     'data source candidates': true,
+    // The fifth gate, and the last of them to ship (#196, ADR-0039). Missing here since the day it
+    // landed: the comment above counts five gate decisions and this list held four, so the one card
+    // that asks which file to read was the one card reported as a failure. Three behaviours came
+    // off that, because the two objects below are built from this one — the red line said the app
+    // had broken, `KEEPS_THE_PLAN_CARD` took the Approve button off a plan the turn never touched,
+    // and `ASKED_FOR` bought an ADR-0027 preflight listing to explain a question.
+    'dataset files': true,
   };
 
   // Every ending that was ASKED FOR, which is every ending `endedBadly` above must not treat as a
@@ -4667,7 +4674,8 @@ window.SW = window.SW || {};
     async sendBuildPrompt(text, { skipResetGate = false, skipIncomingGate = false,
                                   skipTableGate = false, skipSourceGate = false,
                                   chosenSource = '', sourceName = '', tableName = '',
-                                  skipDatasetGate = false, datasetDismissed = '' } = {}) {
+                                  skipDatasetGate = false, datasetDismissed = '',
+                                  datasetPick = '' } = {}) {
       if (!text.trim()) return null;
       if (!state.thread) await store.newThread();
       state.buildTurnMode = state.buildMode;
@@ -4680,7 +4688,12 @@ window.SW = window.SW || {};
       // nobody typed in their own voice. Written the same both ends (see _picked_source_text and
       // _picked_table_text): this bubble is the only one drawn live, because the `user` event the
       // server writes to the transcript is never streamed back, so a reload must read the same.
-      const picked = sourceName || tableName;
+      // A Dataset file or folder pick is the third of them, and it answers "which data" one card
+      // further down again (#196). The row it names is passed rather than looked up, for the reason
+      // written at `_picked_dataset_text`: a folder attach writes an entry per file and none of
+      // them is the folder. The way past the card sets none of these three and still says
+      // `Build it.`, which is accurate — it attached nothing to name.
+      const picked = sourceName || tableName || datasetPick;
       const bubble = picked ? `Use ${picked}.`
         : ((skipResetGate || skipIncomingGate || skipTableGate || skipSourceGate
             || skipDatasetGate)
@@ -4721,7 +4734,7 @@ window.SW = window.SW || {};
           body: JSON.stringify({
             prompt: text, conversation: state.thread.id,
             skipResetGate, skipIncomingGate, skipTableGate, skipSourceGate, chosenSource,
-            skipDatasetGate, datasetDismissed,
+            skipDatasetGate, datasetDismissed, datasetPick,
             mentions: refs.mentions, resources: refs.resources,
           }),
         });
@@ -4914,7 +4927,9 @@ window.SW = window.SW || {};
       // card — the server's copy carries no `live` — so the same card cannot be answered twice,
       // months later, into another attach and another build.
       await Promise.all([loadScopeData(), store.loadBuild({ keepPreview: true })]);
-      return store.sendBuildPrompt(prompt, { ...(answered || {}), skipDatasetGate: true });
+      return store.sendBuildPrompt(prompt, {
+        ...(answered || {}), skipDatasetGate: true, datasetPick: path,
+      });
     },
 
     // The folder row's click, which is one act rather than two hundred (ADR-0029). No confirm in
@@ -4923,7 +4938,9 @@ window.SW = window.SW || {};
     async attachFolderAndBuild(prompt, datasetId, folder, answered) {
       await SW.api.attachDatasetFolder(datasetId, folder);
       await Promise.all([loadScopeData(), store.loadBuild({ keepPreview: true })]);
-      return store.sendBuildPrompt(prompt, { ...(answered || {}), skipDatasetGate: true });
+      return store.sendBuildPrompt(prompt, {
+        ...(answered || {}), skipDatasetGate: true, datasetPick: folder,
+      });
     },
 
     // The way past the card: this app holds its own data, or the person does not want the question.

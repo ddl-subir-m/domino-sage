@@ -2214,6 +2214,11 @@ def build_stream(body: dict) -> StreamingResponse:
     # the gate reads the app's state rather than the request's words, so without a name to remember
     # it asks again on the next sentence, whatever the sentence is about.
     dismissed_dataset = str((body or {}).get("datasetDismissed") or "")
+    # And the row that was clicked, which is the only pick on this door that travels on the request.
+    # The Data Source and table picks are read back off the Binding they wrote; an attach writes one
+    # manifest entry per file, so a folder pick writes many and none of them names the folder. See
+    # `_picked_dataset_text`. Empty for the way past, which attached nothing to name.
+    dataset_pick = str((body or {}).get("datasetPick") or "")
 
     def refuse_with(message: str) -> StreamingResponse:
         def refuse():
@@ -2236,7 +2241,7 @@ def build_stream(body: dict) -> StreamingResponse:
         _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,
                                             skip_reset_gate, skip_incoming_gate, skip_table_gate,
                                             skip_source_gate, chosen_source, skip_dataset_gate,
-                                            dismissed_dataset),
+                                            dismissed_dataset, dataset_pick),
                   "build_stream"),
         media_type="text/event-stream")
 
