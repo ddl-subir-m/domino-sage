@@ -7,6 +7,16 @@ app, and for the artefacts Sage produces from them.
 Every term here is a **default label**, not fixed vocabulary. An OEM pack replaces the ones a
 person sees — see [ADR-0014](docs/adr/0014-the-overlay-renames-prose-not-identifiers.md).
 
+**A name is written, never derived from a sentence.** Three writers can name a [[Built App]]: the
+person, the planner through the plan's `# ` heading, and the person again at publish. Nothing else —
+a request typed into an app is a sentence, and a sentence is never promoted to a name.
+
+**A placeholder sits outside this vocabulary.** `Draft app 2` is deliberately not `Built App`, not
+`App` and not `Untitled`: it is not a name, so it does not spend the words reserved for names. The
+lower-case `app` is the point rather than an oversight — a capital `App` is the Domino thing, and a
+placeholder is allowed to say what it is in plain English. See
+[ADR-0042](docs/adr/0042-a-name-is-written-never-derived-from-a-sentence.md).
+
 ## Language
 
 ### Domino things a user can pick

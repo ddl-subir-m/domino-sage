@@ -108,41 +108,71 @@ standing in the way.
 5. `backend/sage/orchestrator/service.py:11198` — publish takes the name from the
    request, not from `_app_display_name(..., project_name)`. Write it through
    `set_display_name` before publishing.
-6. `backend/sage/workspace/manager.py:1081` `first_prompt` — now unused by naming. Check
-   for other callers before removing; if none, remove it and its docstring.
+6. `backend/sage/workspace/manager.py:1081` `first_prompt` — no production caller left
+   once change 1 lands. Three tests assert on it directly
+   (`backend/tests/test_two_apps_nobody_named_do_not_read_alike.py:90, 99, 102`), so
+   removing the method removes those assertions too. Decide that deliberately.
+7. `backend/sage/orchestrator/service.py:6438` — the Chat→Build handoff writes the plan
+   document's stored title into `displayName`. That title was written at
+   `service.py:6218`, as `plan_title(plan_md) or thread.get("title") or "App"`. That is
+   rung 1 written by nobody, and it survives every change above, because a stored name
+   beats the whole ladder. **Two sites, and 6218 is the one that matters** — it holds the
+   value 6438 reads back. Store the plan's `# ` heading only; with no heading, write
+   nothing and leave the app a placeholder. The sheet payload's own `title`
+   (`service.py:6152`) is a different expression that reads the same: it captions the
+   handoff sheet in the browser, is never read back, and does not change.
 
 ### Workbench
 
-7. `backend/sage/workbench/js/modes/builder.js` — the app switcher row renders the
+8. `backend/sage/workbench/js/modes/builder.js` — the app switcher row renders the
    subtitle from `createdAt` / `builtAt` / `publishedAt`.
-8. Publish dialog gains the pre-filled name field.
+9. Publish dialog gains the pre-filled name field.
 
 ### Docs
 
-9. `docs/adr/0042-*.md` — the decision, its cost, and why #211's answer is being
-   reversed.
-10. `CONTEXT.md` — the two rule sentences, beside the `App` and `Untitled` rules.
+10. `docs/adr/0042-*.md` — the decision, its cost, and why #211's answer is being
+    reversed.
+11. `CONTEXT.md` — the two rule sentences, in the preamble that governs the vocabulary as a
+    whole.
 
 ## What does not change
 
-- **`plan_title` (`backend/sage/orchestrator/handoff.py:376`).** It has six callers and
-  five of them are plan cards, plan documents and handoff rows, not apps. A card's first
-  line is a fine caption. Only the app ladder refuses a non-heading title.
+- **`plan_title` (`backend/sage/orchestrator/handoff.py:376`).** The function is unchanged.
+  It has six callers (`service.py:2789, 3623, 6152, 6218, 6321, 10205`); change 1 takes 2789
+  and change 7 takes 6218, and the other four caption plan cards, plan documents and handoff
+  rows, where a first line is a fine caption. Only the app ladder refuses a title nobody
+  wrote.
 - **Conversation titles.** A Conversation still takes the prompt's text through
   `title_from_prompt` (`backend/sage/orchestrator/service.py:4704`). The app and the
   Conversation deliberately diverge: a thread is a thread, an app is a thing.
-- **The brand pack.** The placeholders are plain literals. `{builtApp}` renders
-  `Built App`, which would give `Draft Built App 2`.
-- **Numbering.** Position in `sibling_app_ids`, as today. No stored counter.
+- **The brand pack.** The placeholders become plain literals, because `{builtApp}` renders
+  `Built App` and would give `Draft Built App 2`. This is a **loss, not a no-op**: today both
+  placeholders go through `brand.text` (`service.py:2813-2814`) and a pack really does rename
+  them. `backend/tests/test_the_service_speaks_the_packs_words.py:202` asserts
+  `"Unnamed Creation"` and must change with it.
+- **Numbering.** Position in `sibling_app_ids`, as today. No stored counter. Only the
+  `len(siblings) > 1` half of the guard goes, so a solo app is numbered too. **The membership
+  half stays.** `service.py:2812` reads `len(siblings) > 1 and workspace.app_id in siblings`
+  and the next line calls `siblings.index(...)`; drop the whole condition and any workspace
+  missing from its own sibling list raises `ValueError` — an app mid-delete, or the
+  `_BlankWorkspace` stub in `backend/tests/test_the_service_speaks_the_packs_words.py:182`.
+  `_app_row` runs this per app per render, so one orphan takes the rail down.
 
 ## Migration
 
-Rung 3 was computed, never stored. On deploy, every unnamed app currently showing a
-prompt-derived name becomes `Draft app <n>` or `Unnamed app <n>`.
+The prompt rung was computed, never stored. On deploy, every unnamed app currently showing
+a prompt-derived name becomes `Draft app <n>` or `Unnamed app <n>`.
 
 **Accepted. No backfill.** Writing today's computed names into `displayName` would
 enshrine scraped sentences as real names, permanently, past the rule this spec exists to
 set.
+
+**Apps born from a Chat handoff keep the derived name they already carry.** Change 7 stops
+the write going forward and does not undo what is on disk. `set_display_name` stores a bare
+string with no provenance, so nothing distinguishes a scraped title from a name somebody
+typed, and a migration that cleared the first would clear the second with it. Those names
+sit at rung 1 and win — the rule's one known leak backwards. Publish's pre-filled field is
+where a person corrects one.
 
 Apps created before change 3 have no `createdAt`, so their subtitle starts at `Built` or
 shows nothing until they build.
@@ -161,10 +191,13 @@ shows nothing until they build.
 6. Publish shows a name field pre-filled with the Domino project name for a placeholder,
    and with the app's own name otherwise. Accepting sets `displayName`, and the switcher
    updates.
-7. `_app_display_name` never returns `App`, `Untitled`, or any string containing
-   `Built App`.
+7. `_app_display_name` never *computes* `App`, `Untitled`, or any string containing
+   `Built App`. A `displayName` stored before this change may still be one of those, per
+   Migration.
 8. `plan_title`'s own callers are unchanged: plan cards and plan documents still caption
    from a first line.
+9. A Chat handoff whose plan has no `# ` heading leaves the new app a placeholder, and
+   writes no `displayName`.
 
 ## Out of scope
 
