@@ -134,7 +134,7 @@ def _repo(tmp: Path) -> Path:
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "seed")
     bare = tmp / "remote.git"
-    _git(tmp, "init", "-q", "--bare", str(bare))
+    _git(tmp, "init", "-q", "--bare", "-b", "main", str(bare))
     _git(root, "remote", "add", "origin", str(bare))
     _git(root, "push", "-q", "-u", "origin", "HEAD")
     return root

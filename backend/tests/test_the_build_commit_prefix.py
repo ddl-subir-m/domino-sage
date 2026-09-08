@@ -97,7 +97,7 @@ def test_the_seed_commit_is_named_for_what_it_is(tmp_path: Path):
     template.mkdir()
     (template / "index.html").write_text("<!doctype html>")
     bare = tmp_path / "origin.git"
-    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(bare))
 
     seed_and_push(str(bare), template, settings={"displayName": "Quarterly Revenue"})
 

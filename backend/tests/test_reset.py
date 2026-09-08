@@ -312,7 +312,7 @@ def test_the_reset_offer_beats_the_ask_mode_refusal(tmp_path: Path):
     assert kinds[0] == "reset-offer"
 
 
-def test_the_reset_route_refuses_while_a_turn_is_streaming(tmp_path: Path):
+def test_the_reset_route_refuses_while_a_turn_is_streaming(tmp_path: Path, monkeypatch):
     # A 409, not a 500: the UI says "wait or stop it", which is the same rule a build already follows.
     from fastapi.testclient import TestClient
 
@@ -320,7 +320,10 @@ def test_the_reset_route_refuses_while_a_turn_is_streaming(tmp_path: Path):
 
     orch = _orch(tmp_path)
     orch.project(start_preview=False)
-    app_mod.orchestrator = orch
+    # setattr, not assignment: a bare assignment is never undone, so every later test in this
+    # worker inherits this stand-in — and one that reads the real `orchestrator` fails on whichever
+    # worker xdist happened to put it (#166).
+    monkeypatch.setattr(app_mod, "orchestrator", orch)
     client = TestClient(app_mod.control_app)
     assert orch._turn_lock.acquire(blocking=False)
     try:
@@ -331,7 +334,7 @@ def test_the_reset_route_refuses_while_a_turn_is_streaming(tmp_path: Path):
     assert "stop it" in r.json()["error"]
 
 
-def test_the_build_route_carries_the_answered_offer_through(tmp_path: Path):
+def test_the_build_route_carries_the_answered_offer_through(tmp_path: Path, monkeypatch):
     """The `skipResetGate` field is the whole seam between the offer's buttons and the build, and it
     is the kind that breaks silently: drop it in the route and the button just re-offers, with every
     unit test below still green."""
@@ -342,7 +345,7 @@ def test_the_build_route_carries_the_answered_offer_through(tmp_path: Path):
     orch = _orch(tmp_path)
     orch.project(start_preview=False)
     orch._build_stream = lambda *a, **k: iter([])  # type: ignore[method-assign]
-    app_mod.orchestrator = orch
+    monkeypatch.setattr(app_mod, "orchestrator", orch)
     client = TestClient(app_mod.control_app)
 
     prompt = "clear everything and start again"

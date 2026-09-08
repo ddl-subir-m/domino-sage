@@ -123,7 +123,7 @@ def test_the_seeder_commits_the_settings_file_the_builder_will_read(tmp_path):
     template.mkdir()
     (template / "index.html").write_text("<!doctype html>")
     bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
 
     seed_and_push(str(bare), template, settings={"displayName": "Quarterly Revenue"})
 
@@ -140,7 +140,7 @@ def test_the_seeder_leaves_the_repo_alone_when_there_is_nothing_to_plant(tmp_pat
     template.mkdir()
     (template / "index.html").write_text("<!doctype html>")
     bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
 
     seed_and_push(str(bare), template)
 

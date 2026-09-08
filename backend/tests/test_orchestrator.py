@@ -185,7 +185,7 @@ def test_shutdown_without_a_project_is_a_noop(tmp_path: Path):
 def test_sync_pulls_teammate_changes_and_pushes(tmp_path: Path):
     # A bare remote with a workspace checkout at the bound volume, plus a teammate's clone.
     bare = tmp_path / "remote.git"
-    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(bare))
     ws = tmp_path / "mnt" / "code"
     ws.parent.mkdir(parents=True)
     _git(tmp_path, "clone", "-q", str(bare), str(ws))

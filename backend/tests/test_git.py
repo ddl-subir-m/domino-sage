@@ -22,7 +22,7 @@ def _work_repo(tmp_path: Path, with_remote: bool = True) -> Path:
     _run(work, "commit", "-q", "-m", "seed")
     if with_remote:
         bare = tmp_path / "remote.git"
-        _run(tmp_path, "init", "-q", "--bare", str(bare))
+        _run(tmp_path, "init", "-q", "--bare", "-b", "main", str(bare))
         _run(work, "remote", "add", "origin", str(bare))
         _run(work, "push", "-q", "-u", "origin", "HEAD")
     return work
