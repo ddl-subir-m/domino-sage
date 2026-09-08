@@ -193,7 +193,7 @@ def test_the_transcript_builds_a_card_out_of_the_rows_rather_than_a_status_line(
 
     assert "type: 'mentions_unresolved'," in store
     assert "entries: ev.entries || []," in store
-    assert "live: !!ev.live," in store
+    assert "live: cardIsLive(ev)," in store
     blocks = _js("components", "message-blocks.js")
     assert "case 'mentions_unresolved':" in blocks
     assert "h(MentionsUnresolved, { block })" in blocks
@@ -208,7 +208,12 @@ def test_only_the_frame_that_arrived_this_session_carries_buttons():
     # which keep the rule for the sharpest reason of the five: their buttons write a record — a
     # Binding, or an Attachment — and start a build.
     assert "|| ev.type === 'table-candidates' || ev.type === 'source-candidates'" in store
-    assert "|| ev.type === 'dataset-files') ev.live = true;" in store
+    assert "|| ev.type === 'dataset-files') {" in store
+    assert "ev.live = true;" in store
+    # Stamped on the row AND remembered past it (#209). The row is replaced by the server's copy on
+    # the next transcript read, which carries no flag, so the mark alone survived until the next poll
+    # — and a poll landing before the person clicked took the buttons off a card they watched arrive.
+    assert "rememberLiveCard(ev);" in store
 
     blocks = _js("components", "message-blocks.js")
     assert "const fixes = block.live" in blocks

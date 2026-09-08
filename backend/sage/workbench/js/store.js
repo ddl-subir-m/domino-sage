@@ -1454,6 +1454,75 @@ window.SW = window.SW || {};
     return { mentions: mentions.filter((p) => !nested.has(p)), resources };
   }
 
+  // Which cards THIS TAB watched arrive (#209).
+  //
+  // `live` is not a server fact. It is stamped on an SSE frame as the frame lands (see
+  // `applyBuildEvent`) and it rides on the row `appendBuildRow` keeps — but `applyBuildRead`
+  // replaces `state.buildHistory` wholesale with rows read back from the server, and those never
+  // carry it. So a 2s poll, an app-rail click or a route change landing between a card arriving and
+  // the person clicking took the buttons off a card this tab had watched arrive. The way forward off
+  // one of these cards IS the click, so there was none.
+  //
+  // The distinction being drawn is "this tab watched this arrive" against "this tab is reading it
+  // back", which is NOT "live against history": the rows are identical either way, and the whole of
+  // the difference is what this tab saw happen. So it is held here rather than written onto a row,
+  // and the reload rule survives untouched — clearing an in-memory Set is exactly what a page reload
+  // does, so a replayed card is still a record of a decision rather than a button that writes a
+  // Binding and rebuilds an app for somebody scrolling back through a transcript.
+  //
+  // KEYED ON WHAT THE CARD SAYS, because a card has no row id. `type` + `sourceId` names the two
+  // cards that are about a store, and the four offers that name none have only their own words to be
+  // known by; `ev.order` is no help, because `appendBuildRow` stamps one only when Build is reading
+  // the merged Conversation. Two identical offers in one conversation therefore share a key and go
+  // live together, which costs nothing: they are the same question about the same request, and a
+  // click on either does the same thing.
+  const liveCards = new Set();
+  // Whose cards those are. Watching something arrive is a memory of one conversation and one Built
+  // App, and switching either makes what is on screen something being read back. Compared where the
+  // transcript is drawn rather than cleared at each door, so a way of moving that nobody thought of
+  // here cannot leave the keys behind — `switchScope`, `createApp`, `clearConversation`, the app
+  // rail and every route change move one of these two, and a door missed off a list would leave an
+  // offer answerable from somewhere it does not belong.
+  let liveCardsOwner = '';
+  const liveCardsHere = () => [(state.thread && state.thread.id) || '',
+                               (state.activeApp && state.activeApp.id) || ''].join('\u0000');
+  // Joined on a character no field can hold, so no two cards can be confused by where one
+  // field ends: a message and the prompt under it are both free text, and on any typeable
+  // separator one pair of them could spell out another pair exactly.
+  const liveCardKey = (ev) => [ev.type, ev.sourceId || ev.datasetId || '',
+                               ev.prompt || '', ev.message || ''].join('\u0000');
+
+  // Thrown away and re-owned the moment the conversation or the app underneath them changes. It has
+  // to CLEAR rather than merely stop matching: a reader who steps into another conversation and back
+  // is reading the first one back, the same as after a reload, and keys that only went quiet while
+  // they were away would light the buttons up again on their return.
+  function syncLiveCards() {
+    const here = liveCardsHere();
+    if (here === liveCardsOwner) return;
+    liveCards.clear();
+    liveCardsOwner = here;
+  }
+
+  function rememberLiveCard(ev) {
+    syncLiveCards();
+    liveCards.add(liveCardKey(ev));
+  }
+
+  // What the derivation asks instead of reading `ev.live` off the row. The flag still wins where it
+  // is set, so nothing about the frame itself depends on the memory being right.
+  function cardIsLive(ev) {
+    return !!ev.live || liveCards.has(liveCardKey(ev));
+  }
+
+  // A card is answered by clicking it, and every one of those clicks either starts a build turn or
+  // resets the app — so both of those forget first. Reloading the transcript is what RETIRES an
+  // offer (see `sendBuildPrompt`, `resetApp`, `chooseTableAndBuild`): the server's copy carries no
+  // `live`, so the buttons go with the reload and the same card cannot be answered twice. A memory
+  // that outlived the answer would have taken that rule away without anything saying so.
+  function forgetLiveCards() {
+    liveCards.clear();
+  }
+
   // One table card per Data Source per turn, replaced in place as the search fills it in (#186).
   //
   // The transcript is derived from the whole event list every time a frame lands, so a search that
@@ -1695,7 +1764,7 @@ window.SW = window.SW || {};
           type: 'mentions_unresolved',
           message: ev.message,
           entries: ev.entries || [],
-          live: !!ev.live,
+          live: cardIsLive(ev),
         });
       } else if (ev.type === 'mentions-ambiguous' && ev.message) {
         // A plain line, not the refusal's red one: this turn used everything the name matched, so
@@ -1711,7 +1780,7 @@ window.SW = window.SW || {};
           type: 'reset_offer',
           message: ev.message,
           prompt: ev.prompt || '',
-          live: !!ev.live,
+          live: cardIsLive(ev),
         });
       } else if (ev.type === 'incoming-changes' && ev.message) {
         // Same `live` rule as the reset offer above, and for the same reason: an offer replayed
@@ -1724,7 +1793,7 @@ window.SW = window.SW || {};
           prompt: ev.prompt || '',
           files: ev.files || [],
           count: ev.count || (ev.files || []).length,
-          live: !!ev.live,
+          live: cardIsLive(ev),
         });
       } else if (ev.type === 'table-search' && ev.message) {
         // The same card while the warehouse is still being read (#186). One block that fills in
@@ -1783,7 +1852,7 @@ window.SW = window.SW || {};
           allGroups: ev.allGroups || [],
           total: ev.total || 0,
           matched: ev.matched || 0,
-          live: !!ev.live,
+          live: cardIsLive(ev),
         });
       } else if (ev.type === 'dataset-files' && ev.message) {
         // What a bound Dataset holds, for the click that attaches one (#196). Same `live` rule as
@@ -1809,7 +1878,7 @@ window.SW = window.SW || {};
           matched: ev.matched || 0,
           truncated: !!ev.truncated,
           answered: ev.answered || {},
-          live: !!ev.live,
+          live: cardIsLive(ev),
         });
       } else if (ev.type === 'source-candidates' && ev.message) {
         // The Data Sources a caller can reach, for the click that records one (#185). Same `live`
@@ -1825,7 +1894,7 @@ window.SW = window.SW || {};
           // How many of them the request named. Zero is the card that recommends nothing.
           named: ev.named || 0,
           answered: ev.answered || {},
-          live: !!ev.live,
+          live: cardIsLive(ev),
         });
       } else if (ev.type === 'build-stalled' && ev.message) {
         // A turn that stopped saying anything and was given up on (#39). An offer rather than a
@@ -1838,7 +1907,7 @@ window.SW = window.SW || {};
           type: 'build_stalled',
           message: ev.message,
           prompt: ev.prompt || '',
-          live: !!ev.live,
+          live: cardIsLive(ev),
         });
       } else if (ev.type === 'app-reset') {
         ensureAssistant().blocks.push({
@@ -2153,6 +2222,10 @@ window.SW = window.SW || {};
   // poll, an echoed prompt, each event of a running turn — because a writer that set
   // `buildMessages` alone would leave the transcript on screen pointing at the list before it.
   function applyBuildTranscript() {
+    // Every writer ends here, which is why the cards this tab watched arrive are checked against the
+    // conversation and app they were watched in HERE rather than at each door that can move one
+    // (#209). A read that stays put leaves them alone — that read stripping them was the bug.
+    syncLiveCards();
     state.buildMessages = buildHistoryToMessages(state.buildHistory);
     state.buildTranscript = state.conversationChat.length
       ? state.conversationChat.concat(state.buildMessages).sort((a, b) => a.order - b.order)
@@ -2380,7 +2453,13 @@ window.SW = window.SW || {};
     if (ev.type === 'reset-offer' || ev.type === 'incoming-changes'
         || ev.type === 'build-stalled' || ev.type === 'mentions-unresolved'
         || ev.type === 'table-candidates' || ev.type === 'source-candidates'
-        || ev.type === 'dataset-files') ev.live = true;
+        || ev.type === 'dataset-files') {
+      ev.live = true;
+      // And remembered past this row's own life (#209). The next transcript read replaces the row
+      // with the server's copy of it, which carries no flag — so the mark on the row alone lasted
+      // only until the next poll, and the buttons went with it.
+      rememberLiveCard(ev);
+    }
     appendBuildRow(ev);
   }
 
@@ -4543,6 +4622,10 @@ window.SW = window.SW || {};
       // This tab's own name for the turn, once it is actually running. Held so the `finally` can
       // take back exactly what it put there and nothing else.
       let claim = null;
+      // Whatever card this turn is the answer to has now been answered (#209). Every button on
+      // every one of them ends here, so this is where they stop being clickable — the reload each
+      // of those callers does just above is what used to retire them, and it cannot any more.
+      forgetLiveCards();
       appendBuildRow({ type: 'user', text: bubble });
       liveBuildTurns += 1;
       state.buildRunning = true;
@@ -4619,6 +4702,10 @@ window.SW = window.SW || {};
     async resetApp() {
       if (state.buildRunning) throw new Error('A build is running. Stop it first, then reset.');
       await SW.api.resetApp();
+      // "Just reset" is the one answer to a card that starts no turn, so it is the one that does not
+      // reach `sendBuildPrompt`'s forget (#209). Without this the offer it answered would still be
+      // offering to reset an app that has just been reset.
+      forgetLiveCards();
       await store.loadBuild();
     },
 
