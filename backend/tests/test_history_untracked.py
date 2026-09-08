@@ -140,7 +140,7 @@ def test_two_builders_take_a_turn_each_and_the_archive_never_conflicts(tmp_path:
     separate half of #62 that moves the log under `apps/<appId>/`. This test pins the boundary: the
     log is the only conflict, and the archive is not in the list."""
     bare = tmp_path / "remote.git"
-    _run(tmp_path, "init", "-q", "--bare", "-b", "main", str(bare))
+    _run(tmp_path, "init", "-q", "--bare", str(bare))
 
     builders = []
     for name in ("a", "b"):
