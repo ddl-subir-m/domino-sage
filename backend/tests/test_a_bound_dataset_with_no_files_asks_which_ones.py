@@ -28,6 +28,7 @@ from sage.assets.provider import Asset, AssetProvider, DatasetFile, FakeAssetPro
 from sage.orchestrator import app as appmod
 from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
+from sage.resources import dataset_files
 from sage.resources.bindings import KIND_DATASET
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
@@ -583,6 +584,119 @@ def test_a_complete_listing_says_nothing_about_being_partial(tmp_path: Path, mon
 
     assert card["truncated"] is False
     assert "Only part of" not in card["message"]
+
+
+# ---- a card showing only part of what it listed (#200) -------------------------------------------
+
+
+def _over_the_cap(tmp: Path, extra: int = 50) -> FakeAssetProvider:
+    """A flat Dataset holding more files than a card carries rows.
+
+    Flat on purpose: one folder row is not a choice, so `_dataset_rows` falls back to the files and
+    the cap is the only thing standing between the listing and the card. `extra` keeps the numbers
+    just over the line rather than at the 5,000 the provider allows — the arithmetic is the same and
+    the test does not write five thousand files to prove it.
+    """
+    return _dataset(tmp, "wide", {
+        f"file_{n:04d}.csv": "a\n1\n" for n in range(dataset_files.MAX_ROWS + extra)
+    })
+
+
+def test_the_card_can_tell_what_the_listing_found_from_what_it_kept(tmp_path: Path, monkeypatch):
+    """THE BUG, in two numbers. `total` was read off the already-cut list, so a Dataset of 250 files
+    drew 200 rows and said 200 — the cut was invisible to the card, to the button and to this file.
+
+    `listed` is what the listing produced and `total` is what the card carries, and they are two
+    numbers because the gap between them is the thing worth saying.
+    """
+    orch, _ = _orch(tmp_path, _over_the_cap(tmp_path))
+    orch.bind_dataset("ds_wide")
+    client = _client(orch, monkeypatch)
+
+    card = _card(_build(client))
+
+    assert card["listed"] == dataset_files.MAX_ROWS + 50
+    assert card["total"] == dataset_files.MAX_ROWS
+    assert len(card["allRows"]) == dataset_files.MAX_ROWS
+    assert len(card["rows"]) == dataset_files.SHORTLIST
+
+
+def test_a_card_cut_to_the_row_cap_says_so_and_says_where_the_rest_are(
+        tmp_path: Path, monkeypatch):
+    """The cap itself stays — #196 records why, and story 15 keeps the Data panel's tree as the
+    ordinary way past it. What was missing is only the SAYING: a prefix presented without a sentence
+    is read as the whole answer, which is exactly what #197 closed one layer down."""
+    orch, _ = _orch(tmp_path, _over_the_cap(tmp_path))
+    orch.bind_dataset("ds_wide")
+    client = _client(orch, monkeypatch)
+
+    message = _card(_build(client))["message"]
+
+    assert "first 200 of the 250 rows" in message
+    assert "Data panel" in message
+
+
+def test_the_show_all_count_reports_what_the_card_carries_and_not_the_whole_dataset(
+        tmp_path: Path, monkeypatch):
+    """THE TRAP, pinned. The "show all" button expands `allRows`, so its number is `total` and has
+    to stay the kept one; the found count reaches the person through the sentence instead. A button
+    reading "Show all 250 rows" over 200 of them promises a tail it cannot open."""
+    orch, _ = _orch(tmp_path, _over_the_cap(tmp_path))
+    orch.bind_dataset("ds_wide")
+    client = _client(orch, monkeypatch)
+
+    card = _card(_build(client))
+
+    assert card["total"] == len(card["allRows"])
+    assert card["listed"] > card["total"]
+
+
+def test_a_card_under_the_cap_says_nothing_about_being_short(tmp_path: Path, monkeypatch):
+    """The other half of the same fact, and the reason the note is not a permanent line: a sentence
+    on every card would say nothing about any of them."""
+    orch, _ = _orch(tmp_path, _dataset(tmp_path, "wide", {
+        f"file_{n:02d}.csv": "a\n1\n" for n in range(9)
+    }))
+    orch.bind_dataset("ds_wide")
+    client = _client(orch, monkeypatch)
+
+    card = _card(_build(client))
+
+    assert card["listed"] == card["total"] == 9
+    assert "Data panel" not in card["message"]
+
+
+def test_the_short_card_is_named_in_chat_in_the_same_words(tmp_path: Path, monkeypatch):
+    """One question asked in two places, so one sentence about the gap in it (#193). The mode
+    somebody is standing in must not decide whether they are told rows were dropped — and Chat
+    always asks for file rows, so Chat is the surface that reaches this cap most often."""
+    orch, _ = _orch(tmp_path, _over_the_cap(tmp_path))
+    client = _client(orch, monkeypatch)
+    tid = _thread_with_dataset(orch, "ds_wide", "wide")
+
+    card = _card(_ask(client, tid))
+
+    assert "first 200 of the 250 rows" in card["message"]
+    assert card["listed"] == 250
+    assert card["total"] == 200
+
+
+def test_a_card_both_cut_and_drawn_from_a_partial_listing_says_both_things_once(
+        tmp_path: Path, monkeypatch):
+    """Two states, two sentences, and the ticket's reason for keeping them apart: a file past the
+    provider's cap cannot be reached at all, while a file past this one is sitting in the Data
+    panel. Widening #197's trigger would have told somebody the second was the first."""
+    assets = _over_the_cap(tmp_path)
+    _truncate(monkeypatch, assets)
+    orch, _ = _orch(tmp_path, assets)
+    orch.bind_dataset("ds_wide")
+    client = _client(orch, monkeypatch)
+
+    message = _card(_build(client))["message"]
+
+    assert message.count("Only part of wide could be listed") == 1
+    assert message.count("Data panel") == 1
+    assert "first 200 of the 250 rows" in message
 
 
 # ---- a Dataset with no mount here (#197) ---------------------------------------------------------

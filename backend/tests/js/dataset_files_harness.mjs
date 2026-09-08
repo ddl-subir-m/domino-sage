@@ -96,6 +96,8 @@ async function settle() {
   for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 0));
 }
 
+const blank = () => ({ text: [], rows: [], pickable: [], more: false, moreLabel: '', past: false });
+
 // What the card actually DRAWS, which is a different question from what the block holds. A card can
 // carry every row the listing found and render none of them, and `total` cannot see the difference.
 function walk(node, out) {
@@ -109,11 +111,15 @@ function walk(node, out) {
   if (typeof type === 'function') return walk(type({ ...(node.p || {}), children: node.c }), out);
   const cls = String((node.p && node.p.className) || '');
   if (cls.includes('sw-dataset-pick')) {
-    const label = walk(node.c, { text: [], rows: [], pickable: [], more: false, past: false }).text;
+    const label = walk(node.c, blank()).text;
     out.rows.push(label.join(''));
     if (type === 'Button') out.pickable.push(label.join(''));
   } else if (cls.includes('sw-dataset-more')) {
     out.more = true;
+    // What the button PROMISES, which is a different question from whether it is drawn. It expands
+    // `allRows`, so its number has to be the rows this card carries and never the tail the listing
+    // found — the found count reaches the person through the message instead (#200).
+    out.moreLabel = walk(node.c, blank()).text.join('');
   } else if (type === 'Button' && !cls) {
     // The way past the card, which is the only unclassed button this component draws.
     out.past = true;
@@ -121,8 +127,7 @@ function walk(node, out) {
   return walk(node.c, out);
 }
 
-const draw = (block) => walk(SW.MessageBlock({ block }),
-  { text: [], rows: [], pickable: [], more: false, past: false });
+const draw = (block) => walk(SW.MessageBlock({ block }), blank());
 
 const blocks = () => (chat ? SW.store.get().messages : SW.store.get().buildMessages)
   .flatMap((m) => m.blocks || [])
@@ -148,7 +153,8 @@ const drawn = blocks().map((b) => ({
   threadId: b.threadId || '',
   prompt: b.prompt,
   rows: b.rows,
-  drawn: (({ rows, pickable, more, past }) => ({ rows, pickable, more, past }))(draw(b)),
+  drawn: (({ rows, pickable, more, moreLabel, past }) =>
+    ({ rows, pickable, more, moreLabel, past }))(draw(b)),
 }));
 
 calls.length = 0;
