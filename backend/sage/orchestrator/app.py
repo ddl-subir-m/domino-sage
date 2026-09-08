@@ -1184,7 +1184,11 @@ async def publish(request: Request) -> JSONResponse:
     own — the successful publish replaces it — and it is refused unless that App really is gone.
     It has to be said, and it is only ever said by somebody who read that refusal: a publish that
     took this on itself would deploy a second copy of an app that is still serving whenever Domino
-    was slow to answer."""
+    was slow to answer.
+
+    `{"name": "..."}` is what the person accepted in the confirm's name field, and accepting writes
+    it to the app (#218). A body without one publishes the app under the same default the field was
+    offering and renames nothing, which is what every caller older than that field does."""
     body: object = {}
     if await request.body():
         try:
@@ -1195,8 +1199,12 @@ async def publish(request: Request) -> JSONResponse:
     # Anything that is not an object carries no `new_app`, so it means the ordinary publish rather
     # than an AttributeError on the way to a 500.
     new_app = bool(body.get("new_app")) if isinstance(body, dict) else False
+    # Anything that is not a string carries no name either — the same reading as `new_app` above,
+    # and for the same reason: a malformed body means the ordinary publish, not a 500.
+    asked = body.get("name") if isinstance(body, dict) else None
+    name = asked.strip() if isinstance(asked, str) else ""
     try:
-        result = await run_in_threadpool(orchestrator.publish, new_app=new_app)
+        result = await run_in_threadpool(orchestrator.publish, new_app=new_app, name=name)
     except TurnBusy as e:
         # 409 beside the refusal below, and for the same reason: the request is well formed and the
         # app is fine, and what is in the way is a build holding the working tree this would commit.

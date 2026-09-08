@@ -28,18 +28,28 @@ const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
 // only its birth. Computed from today rather than written flat, because the row's claim is a
 // RELATIVE date inside 7 days and an absolute one beyond it, and a fixed date drifts across that
 // boundary as the calendar moves.
+// `publishName` is what publish's name field opens holding (#218), and the server is the only side
+// that can work it out: it is the app's own name where somebody wrote one, and the Domino project's
+// name where nobody has. Held here for the same reason as the URL — a harness that derived it would
+// let the row ship the wrong default and still pass. Every fixture app is named by somebody, so the
+// two agree; the placeholder case is the `publishName` override on the publish step, because it is
+// the ROW's field that changes there and not the browser's reading of it.
 const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().replace(/\.\d+Z$/, 'Z');
 const APPS = [
-  { id: 'app_a', name: 'Desk dashboard', built: true, building: false, behind: false,
+  { id: 'app_a', name: 'Desk dashboard', publishName: 'Desk dashboard',
+    built: true, building: false, behind: false,
     published: true, url: '/modelproducts/da_a?scope=project',
     createdAt: daysAgo(40), builtAt: daysAgo(6), publishedAt: daysAgo(2) },
-  { id: 'app_b', name: 'P&L report', built: false, building: false, behind: false,
+  { id: 'app_b', name: 'P&L report', publishName: 'P&L report',
+    built: false, building: false, behind: false,
     published: false, url: '',
     createdAt: daysAgo(30), builtAt: '', publishedAt: '' },
-  { id: 'app_c', name: 'Rate curve viewer', built: true, building: true, behind: false,
+  { id: 'app_c', name: 'Rate curve viewer', publishName: 'Rate curve viewer',
+    built: true, building: true, behind: false,
     published: false, url: '',
     createdAt: daysAgo(9), builtAt: daysAgo(1), publishedAt: '' },
-  { id: 'app_d', name: 'Risk monitor', built: true, building: false, behind: true,
+  { id: 'app_d', name: 'Risk monitor', publishName: 'Risk monitor',
+    built: true, building: false, behind: true,
     published: true, url: '/modelproducts/da_d?scope=project',
     createdAt: daysAgo(60), builtAt: daysAgo(50), publishedAt: daysAgo(50) },
 ];
@@ -296,6 +306,9 @@ let appsFail = false;
 // A refused publish, as the sentence the server would send with the 409. Nothing is published on
 // this path, and the confirm has to stay open on it.
 let publishFails = '';
+// Every body `POST /publish` was sent, in order. The route carries no app id and never has, so this
+// exists for the one field it does carry: the name the person accepted (#218).
+const published = [];
 // A refused bind, the same way. The Model API is the kind this really happens to — Sage will not
 // record one it holds no access token for — and the claim is that the door reports the server's own
 // sentence rather than redrawing as though the record had been written.
@@ -377,12 +390,21 @@ function route(path, init) {
   // publish reached the selected app and no other" a claim the fixture can be asked about
   // afterwards rather than a request path a test could match and be satisfied by.
   if (path === '/publish' && init && init.method === 'POST') {
+    // What the request CARRIED, kept whether or not the publish then works: the name is the one
+    // thing on this wire that the browser decides, and a refusal must not be able to swallow the
+    // claim that it was sent (#218).
+    published.push(init.body ? JSON.parse(init.body) : {});
     if (publishFails) return json({ error: publishFails }, 409);
     const row = apps.find((a) => a.id === selected);
     const again = !!(row && row.published);
     if (row) {
       row.published = true;
       row.url = `/modelproducts/da_${row.id.replace('app_', '')}?scope=project`;
+      // The server writes an accepted name before it deploys, so the re-read that follows a publish
+      // is what takes the new name off the row. A fixture that left the old one would let a confirm
+      // quoting the stale name pass.
+      const named = published[published.length - 1].name;
+      if (named) { row.name = named; row.publishName = named; }
     }
     return json({ published: true, app_id: `da_${selected}`, url: row ? row.url : '', republished: again });
   }
@@ -2028,6 +2050,18 @@ for (const step of steps) {
     checkHangs = !!step.checkHangs;
     egressHangs = !!step.egressHangs;
     if (step.buildRunning) SW.store.set({ buildRunning: true });
+    // The row as the SERVER would send it for an app nobody has named (#218): a placeholder in
+    // `name`, and the Domino project's name in `publishName`. An override rather than a fifth
+    // fixture app, on `stamps`' precedent — what changes is one field of one row, and the claim is
+    // that the browser prints it rather than working out which of the two states the app is in.
+    if (step.publishName !== undefined) {
+      const row = apps.find((a) => a.id === step.select);
+      if (!row) throw new Error(`no app ${step.select} in the fixture to re-name`);
+      row.publishName = step.publishName;
+      if (step.rowName !== undefined) row.name = step.rowName;
+      await SW.store.loadApps();
+    }
+    published.length = 0;
     calls.length = 0;
     const menuOf = () => {
       const found = flatten(SW.BuildMode({ conversationId: step.publish, appId: selected }))
@@ -2048,6 +2082,25 @@ for (const step of steps) {
     // this the notice has arrived or has decided not to, and either way the modal is settled.
     await settle();
     await settle();
+    // The name field, by the id its label points at. Read AFTER the notice has landed, because the
+    // one thing an uncontrolled field must survive is the `update` underneath it — and typed
+    // through its own `onChange`, which is the only way in: the field holds no state this harness
+    // can see, and its value lives in the confirm's closure.
+    const field = confirm
+      ? findNode(confirm.content, (n) => (n.p || {}).id === 'sw-publish-name-input')
+      : null;
+    if (field && step.name !== undefined) field.p.onChange({ target: { value: step.name } });
+    // A rename that landed somewhere else while this modal sat open, arriving the way it really
+    // does: the app poll re-reading the list underneath a question nobody has answered yet. The app
+    // has NOT moved, so the store's own guard says nothing about it — the name is the thing that
+    // went stale, and an untouched field that sent what it opened with would write the rename back.
+    if (confirm && step.renamedTo) {
+      const row = apps.find((a) => a.id === step.select);
+      if (!row) throw new Error(`no app ${step.select} in the fixture to rename`);
+      row.name = step.renamedTo;
+      row.publishName = step.renamedTo;
+      await SW.store.loadApps();
+    }
     // A modal can sit open for as long as somebody leaves it there, and the 30-second app poll
     // moves the selection underneath — which the request cannot notice, because it carries no id.
     // Its own key: `switchTo` is the switch step's, one branch above this one.
@@ -2073,8 +2126,20 @@ for (const step of steps) {
         // is a warning and where the data goes is not, and one type standing in for the other is a
         // change nothing else here would catch.
         alerts: flatten(confirm.content).filter((n) => n.el === 'Alert').map((n) => n.type),
+        // The name field: whether it is there at all, and what it opened holding. `defaultValue`
+        // rather than `value`, because an uncontrolled field is the only kind that can survive the
+        // notice arriving underneath it.
+        field: field ? {
+          defaultValue: String(field.p.defaultValue),
+          // A `value` prop would make it controlled, and a controlled field with no state behind it
+          // is a field nobody can type in. Reported rather than assumed, because the two shapes are
+          // one word apart in the source and identical in every other way here.
+          controlled: 'value' in field.p,
+        } : null,
       } : null,
       acted,
+      // What the request carried, which for this route is the name and nothing else.
+      published: published.slice(),
       calls: calls.slice(),
       said: said.slice(),
       // Every app afterwards, because the criterion is about the ones that did NOT move.

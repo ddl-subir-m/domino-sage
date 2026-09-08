@@ -2760,25 +2760,20 @@ def _tool_duration_ms(part: dict) -> int | None:
     return ms if ms >= 0 else None
 
 
-def _app_display_name(workspace: Workspace, fallback: str | None = None) -> str:
-    """What to call one Built App.
+def _app_written_name(workspace: Workspace) -> str:
+    """The name somebody WROTE for this Built App, or "" when nobody has.
 
-    A name is WRITTEN, never derived from a sentence (#216). Two writers can name an app: the person
-    who renames it, and the planner, through the `# ` heading the plan shape asks for. Nothing else,
-    because this string is what publish sends Domino as the deployed App's name — a rung that reads
-    a prompt (#211) or a plan's first line is a rung that can make a sentence somebody typed in a
-    hurry into the public name of a deployment.
+    The upper half of the ladder (#216), split out so the lower half can be asked about (#218). Two
+    writers reach here: the person who renames the app, and the planner, through the `# ` heading the
+    plan shape asks for. Nothing else, because this string is what publish sends Domino as the
+    deployed App's name — a rung that reads a prompt (#211) or a plan's first line is a rung that can
+    make a sentence somebody typed in a hurry into the public name of a deployment.
 
-    `fallback` is the seam, and it is the last thing a person wrote before the placeholders start.
-    Publish passes the Domino project's name, which is both a name somebody chose and the better
-    answer on the deployment side for an app nobody has named. A written name beats it, since it is
-    about THIS app rather than the Project around it; a placeholder never reaches it, since a rail
-    position means nothing to somebody looking at a deployment.
-
-    Below the seam are PLACEHOLDERS, and they sit outside the term vocabulary on purpose: `Draft app
-    2` is not a name, so it does not spend the words reserved for names — not `Built App`, not `App`
-    (the Domino thing), not `Untitled`. They say which state the app is in, because that is the one
-    true thing left to say about an app nobody has named.
+    "" is the answer to "is this app still wearing a placeholder?", and it is the reason this is a
+    function rather than an early `return` inside `_app_display_name`. Publish has to ask that — its
+    name field pre-fills differently on each answer — and the only other way to ask is to match
+    `Draft app 2` against what the ladder rendered, which is the bottom rung leaking into a caller
+    that would then have to be changed every time the placeholders' wording is.
     """
     stored = workspace.display_name()
     if stored:
@@ -2786,11 +2781,20 @@ def _app_display_name(workspace: Workspace, fallback: str | None = None) -> str:
     # Heading-only, through `plan_heading` rather than `plan_title`: the card may caption a plan
     # with its cleaned first line, and an app may not be named after one.
     plan = workspace.read_plan() or workspace.read_archived_plan() or ""
-    heading = chat_handoff.plan_heading(plan)
-    if heading:
-        return heading
-    if fallback is not None:
-        return fallback
+    return chat_handoff.plan_heading(plan)
+
+
+def _app_placeholder_name(workspace: Workspace) -> str:
+    """What the rail says about an app nobody has named yet.
+
+    PLACEHOLDERS sit outside the term vocabulary on purpose: `Draft app 2` is not a name, so it does
+    not spend the words reserved for names — not `Built App`, not `App` (the Domino thing), not
+    `Untitled`. They say which state the app is in, because that is the one true thing left to say
+    about an app nobody has named.
+
+    Its own function beside `_app_written_name` so that a caller holding one of the two halves can
+    ask for the other without walking the whole ladder again (#218).
+    """
     # Always numbered, unlike the rung this replaces: the number is now half of what tells two
     # unnamed rows apart — the subtitle beside it is the other half (#217) — and a row that starts
     # unnumbered and grows a number when a sibling appears reads as a rename nobody asked for. The
@@ -2802,6 +2806,18 @@ def _app_display_name(workspace: Workspace, fallback: str | None = None) -> str:
     # `Draft` is a claim about the app and not about its name: before the first build there is
     # nothing to open, and after it there is.
     return f"Unnamed app {n}" if workspace.has_built() else f"Draft app {n}"
+
+
+def _app_display_name(workspace: Workspace) -> str:
+    """What to call one Built App: the name somebody wrote, else a placeholder saying it has none.
+
+    No caller fallback (#218). Publish used to pass the Domino project's name and take the seam
+    between the written names and the placeholders — a rung nobody could see, decided by whichever
+    caller happened to be asking. The project's name is a fine DEFAULT for the field publish now
+    shows, and that is where it went: a name reaches an app because somebody accepted it, not
+    because a caller supplied one on the way past.
+    """
+    return _app_written_name(workspace) or _app_placeholder_name(workspace)
 
 
 def _plan_doc_captioned(doc: dict | None) -> dict | None:
@@ -4265,13 +4281,43 @@ class Orchestrator:
                 pins[app_id] = mine[0]["id"]
         return pins
 
+    def _publish_name_offered(self, written: str) -> str:
+        """What publish offers as an app's name before anybody types over it (#218).
+
+        The app's own name when somebody wrote one, and the Domino project's name when nobody has.
+        The project's name is a name a person chose, and on the deployment side it is the better of
+        the two things Sage can say about an app nobody has named — a rail position means nothing to
+        somebody looking at a list of Apps.
+
+        This is the whole of what used to be `_app_display_name`'s `fallback`, moved to the one
+        caller that had it and turned into a default a person can see and change.
+
+        Takes the written name rather than the workspace, so a caller that already has one does not
+        walk the ladder twice. `_app_row` is why: it draws a name for every app on every render, and
+        both halves of this row start from the same read.
+        """
+        return written or self._domino_project_name or self._project_id
+
     def _app_row(self, app_id: str, selected: str, plans: dict[str, str], building: str = "") -> dict:
         """One rail row. `plans` is read once by the caller rather than per app: the documents are
         the Project's, so asking for them inside the loop would re-read all of them per app."""
         workspace = self._wm.app_workspace(self._project_id, app_id)
+        # Read ONCE, for the same reason `plans` is: both names below start here, and for an app
+        # nobody has named this is two plan files off the disk — per app, per render, on a list the
+        # rail re-reads every two seconds while a build is running.
+        written = _app_written_name(workspace)
         return {
             "id": app_id,
-            "name": _app_display_name(workspace),
+            "name": written or _app_placeholder_name(workspace),
+            # What publish's name field pre-fills with (#218). Computed here rather than in the
+            # browser for two reasons: the Domino project's name has never crossed to the browser at
+            # all, and "is this app wearing a placeholder" is the ladder's question — a field filled
+            # in the browser would have to answer it by matching `Draft app` against `name`.
+            #
+            # On the row rather than behind a read of its own because the confirm needs it the
+            # instant it opens: a field that fills in a moment later is a field somebody has already
+            # started typing over.
+            "publishName": self._publish_name_offered(written),
             "built": workspace.has_built(),
             # The three stamps travel together, and the row picks the newest one that is true
             # (#217). Which of the three that is changes with every build and every publish, so
@@ -11100,7 +11146,7 @@ class Orchestrator:
         finally:
             self._release_turn()
 
-    def publish(self, *, new_app: bool = False) -> dict:
+    def publish(self, *, new_app: bool = False, name: str = "") -> dict:
         """Publish (or republish) THIS app's project as a live Domino App, deploying the latest
         committed code on the default branch. An existing App gets a new version (stable URL);
         otherwise a new App is created + launched. Best-effort saves the current work first so the
@@ -11112,6 +11158,14 @@ class Orchestrator:
         re-publish decides for itself: a publish that forgot whatever it could not reach would
         deploy a second copy of an app whose first copy is alive and shared, every time Domino had
         a bad minute.
+
+        `name` is what the person accepted in publish's name field, and accepting WRITES it (#218):
+        publishing is the moment the name goes public, so it is the one moment somebody reliably
+        thinks about it, and the switcher stops saying `Draft app 2` the moment the app is published.
+        Written once the deploy has landed, on the same rule as everything else here — a publish
+        that did not happen leaves nothing behind. Empty means the field was cleared rather than
+        accepted: nothing is written, and the deploy falls back to `_publish_name_offered`, which is
+        what the field was offering in the first place.
 
         It is refused unless the App really is gone, which is the same rule read from the other
         side. `record_domino_app` OVERWRITES the one id Sage holds, so publishing beside a live App
@@ -11146,6 +11200,7 @@ class Orchestrator:
             raise TurnBusy(self._turn_wedged, "publish")
         try:
             project = self.project()
+            chosen = name.strip()
             # Which Domino App this Built App deploys to, read from the app itself: a Project holds many
             # and its Domino project holds one App per app, so "the project's App" names none of them
             # in particular (ADR-0008). Settled here rather than after the save because the guard needs
@@ -11240,11 +11295,24 @@ class Orchestrator:
                 # The entry point is the app's own directory, and Domino fixes it when the App is
                 # created — which is why the directory is named for an id that never changes (ADR-0008).
                 # The App is named for the Built App: several of them share this Domino project, and the
-                # project's name would list them as identical rows nobody can tell apart.
-                app = cp.publish_app(pid, name=_app_display_name(project.workspace, project_name),
+                # project's name would list them as identical rows nobody can tell apart. The name the
+                # person accepted, and — for a field they cleared — the same default it was offering,
+                # so a placeholder never reaches Domino as a deployed App's name (#218).
+                offered = self._publish_name_offered(_app_written_name(project.workspace))
+                app = cp.publish_app(pid, name=chosen or offered,
                                      entry_point=project.repo_rel(_ENTRY_POINT))
                 project.workspace.record_domino_app(app.id)
                 out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
+            # The name the person accepted, kept (#218). AFTER the deploy, so a publish that failed
+            # leaves nothing behind — including a rename nobody would connect to it, and a name
+            # Domino itself refused, which would otherwise become the app's name and then be offered
+            # straight back as the next publish's default.
+            #
+            # Through `rename_app` rather than `set_display_name`: the rail's conversation tags name
+            # this app from outside its directory, and a rename that skipped the sweep would leave
+            # every chip saying `Draft app 2` while the header said otherwise.
+            if chosen and chosen != project.workspace.display_name():
+                self.rename_app(project.workspace.app_id, chosen)
             # Both branches, because both moved the code behind the URL. `record_domino_app` above runs
             # on the first publish only, so it cannot be where the time is written (#56).
             project.workspace.mark_published()
@@ -11353,11 +11421,11 @@ class Orchestrator:
             return None
 
     def _missing_app(self, project: Project) -> PublishRefused:
-        # Same fallback chain `publish` uses to NAME an App it creates, for the same reason: on a
-        # builder that never got DOMINO_PROJECT_NAME, an unnamed app would otherwise leave a hole
-        # where the refusal's subject should be.
-        return PublishRefused([missing_app_problem(_app_display_name(
-            project.workspace, self._domino_project_name or self._project_id))])
+        # Named the way publish's field names an App it creates, for the same reason: this sentence
+        # is about a deployment, and a rail position means nothing to somebody reading one. An app
+        # nobody has named is its Domino project's name here, not `Draft app 2`.
+        return PublishRefused([missing_app_problem(
+            self._publish_name_offered(_app_written_name(project.workspace)))])
 
     def _refuse_unsafe_publish(self, project: Project, deployed_app_id: str) -> None:
         """Refuse a publish that would re-export a Data Source (#12). No-op for an app that reads

@@ -4642,7 +4642,11 @@ window.SW = window.SW || {};
     //
     // Failures are thrown on rather than reported here. The caller is a confirm that has to stay
     // open on a refusal, and it is the only thing that knows the app's name to say it with.
-    async publishApp(asked) {
+    //
+    // `name` is the second thing the confirm hands in, and the only one that reaches the request:
+    // what the person accepted in its name field (#218). The server writes it before it deploys, so
+    // the re-read below is also what takes the new name off the row.
+    async publishApp(asked, name = '') {
       // The app this act NAMES, handed in by the confirm that named it. Refuse rather than ship
       // the other one: the title is a promise about which app goes out, and a modal can sit open
       // for as long as somebody leaves it there — long enough for the 30-second app poll to move
@@ -4663,7 +4667,7 @@ window.SW = window.SW || {};
         throw moved;
       }
       try {
-        return await SW.api.publish();
+        return await SW.api.publish(name);
       } finally {
         // In a `finally`, because a publish can fail AFTER it has succeeded: `record_domino_app`
         // and `mark_published` are written before the response is built, so a 502 on the way out

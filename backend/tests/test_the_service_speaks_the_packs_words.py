@@ -25,6 +25,7 @@ from sage.orchestrator import brand
 from sage.orchestrator.service import (
     Orchestrator,
     _app_display_name,
+    _app_written_name,
     _chat_context_line,
     turn_busy_message,
     turn_context_changed_message,
@@ -207,10 +208,11 @@ def test_the_placeholder_for_an_unnamed_app_is_not_in_the_packs_vocabulary(acme)
     assert _app_display_name(_BlankWorkspace()) == "Draft app 1"
 
 
-def test_a_caller_supplied_fallback_is_a_name_somebody_chose(acme):
-    """Publish passes the Domino project's name. That is the user's word rather than ours, so it is
-    used exactly as it arrived even when it says Domino."""
-    assert _app_display_name(_BlankWorkspace(), "domino-quickstart") == "domino-quickstart"
+def test_an_app_nobody_named_reads_as_unwritten_rather_than_as_a_pack_word(acme):
+    """The written half of the ladder, asked on its own (#218). "" is what publish reads to know the
+    field should offer the Domino project's name — and it is a pack-proof answer, because there is
+    no string here for a pack to have renamed."""
+    assert _app_written_name(_BlankWorkspace()) == ""
 
 
 # ---- what a refused publish says ---------------------------------------------------------------
