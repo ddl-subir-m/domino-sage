@@ -116,7 +116,7 @@ def test_the_row_names_the_app_the_rail_names(tmp_path: Path):
     ev = _refusal(orch, resources=[{"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse"}])
 
     assert ev["entries"] == [
-        {"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse", "app": "Unnamed Built App",
+        {"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse", "app": "Draft app 1",
          "appId": orch.project(start_preview=False).app_for_turn().app_id}]
 
 

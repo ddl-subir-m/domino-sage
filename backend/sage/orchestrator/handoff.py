@@ -22,6 +22,7 @@ from ..resources.bindings import (
     scope_label,
 )
 from ..router.models import ModelCatalog
+from ..workspace import plan_doc
 from ..workspace.threads import handoff_unresolved
 from . import brand
 from .scope import _extract, _model_for
@@ -398,6 +399,22 @@ def plan_title(plan_md: str) -> str:
             return text.lstrip("#").strip()[:_TITLE_MAX] or "App"
         return _clip(text)
     return "App"
+
+
+def plan_heading(plan_md: str) -> str:
+    """The name the plan's writer wrote, or "" when nobody wrote one. The Built App's reader (#216).
+
+    Beside `plan_title` rather than inside it, because the two questions differ by what happens to
+    the answer. A plan card captions one plan, so a cleaned first line is the best thing available
+    for a plan drafted before the shape asked for a heading. An app's name is written back to
+    Domino as the deployed App's name at publish, so a sentence somebody typed never becomes one:
+    this rung either finds a heading or leaves the app to its placeholder.
+
+    Heading-only is `plan_doc`'s own rule, and it knows the part a naive read gets wrong: `# Problem
+    & outcome` is a section of the plan shape, so a plan written straight into one has a heading and
+    still has no name. Clipped like a title because that is what it becomes.
+    """
+    return plan_doc.parse_sections(plan_md)["title"][:_TITLE_MAX]
 
 
 def _clip(text: str) -> str:

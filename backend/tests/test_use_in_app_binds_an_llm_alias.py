@@ -175,10 +175,10 @@ def test_an_unnamed_app_is_called_what_the_rail_calls_it(tmp_path: Path):
     proj = orch.project(start_preview=False)
     said, rows = orch._unusable_mentions(
         proj, None, None, [{"kind": KIND_LLM_ALIAS, "id": "a", "name": "s"}])
-    assert "Unnamed Built App can't call @s yet" in said
+    assert "Draft app 1 can't call @s yet" in said
     # And the row the button reads its own label off carries the same answer, so the sentence and
     # the button beside it cannot call one app two names.
-    assert rows[0]["app"] == "Unnamed Built App"
+    assert rows[0]["app"] == "Draft app 1"
 
 
 def test_the_template_never_quotes_a_label_the_panel_cannot_draw():

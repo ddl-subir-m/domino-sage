@@ -343,7 +343,7 @@ def test_a_mention_the_turn_cannot_use_is_reported_rather_than_dropped(tmp_path:
     # (ADR-0021, #144) — the Resources panel offered it until then and does not now. It is the row's
     # button that goes there since #213, so the row is what says which app.
     assert "@Warehouse" in unbound
-    assert [(r["kind"], r["app"]) for r in rows] == [(KIND_DATA_SOURCE, "Unnamed Built App")]
+    assert [(r["kind"], r["app"]) for r in rows] == [(KIND_DATA_SOURCE, "Draft app 1")]
     # And a Resource this app IS bound to is not reported — the report reads the same Binding list the
     # turn honors, so a bound Resource must never come back as one the turn refused.
     proj.workspace.update_bindings(
