@@ -8933,6 +8933,27 @@ class Orchestrator:
             client = self._ensure_opencode()
         # A phase runs in the throwaway session its caller made; everything else reuses the project's.
         owns_turn = brief is None
+        # ADR-0041. A Live read writes its Artifact through the MCP route rather than through this
+        # stream, so nothing here has yielded it and nothing here knows it happened. Chat finds one
+        # by comparing a snapshot taken before its turn; Build now takes the same snapshot, and
+        # persist() hands what turned up to the client on `done`.
+        #
+        # Only a turn that owns its ending takes one: a phase's `done` is swallowed by _run_step, so
+        # a phase that scanned would pay for a list nobody reads and six phases would scan six times
+        # for one turn's worth of files.
+        live_read_before = (snapshot_files(project.record.path)
+                            if owns_turn and project.build_conversation else None)
+        # The token that lets this turn read a bound table (ADR-0041). Unlike the notes below it
+        # rides EVERY send and is never cleared: the nudge/fix follow-ups run in the same session,
+        # and a compaction that dropped the first send would otherwise leave the agent holding a
+        # tool it can no longer name a turn for. Repeating one line is the cheaper mistake.
+        live_read_note = (
+            f"Read token: {self._mint_live_read_token(project.build_conversation)}. Pass it as "
+            "`token` on every live_read_ tool call. Use those tools to look at a bound table or "
+            "{dataSource} rather than telling the person you cannot see their data."
+            if owns_turn and project.build_conversation else ""
+        )
+        live_read_note = brand.text(live_read_note) if live_read_note else ""
         with timing.span("setup.session"):
             sid = session_id or self._ensure_session(project, project.build_conversation)
         project.active_session_id = sid
@@ -9139,6 +9160,19 @@ class Orchestrator:
                 timing.decide(ev.get("ok"), str(ev.get("decision") or ""))
             if ev["type"] == "done" and read_only:
                 ev["readOnly"] = read_only
+            # The Artifacts a Live read wrote during this turn, handed over on the way out (ADR-0041).
+            # They ride the `done` rather than getting an `artifacts` event of their own because the
+            # client already reads them off either — see `_watchBuild` — and `done` is the one event
+            # every ending here passes through, which is the same argument the records above make.
+            if owns_turn and ev["type"] == "done" and live_read_before is not None:
+                found = [
+                    ThreadStore(project.record.path).record_artifact(
+                        project.build_conversation, path=rel)
+                    for rel in new_artifact_paths(
+                        project.record.path, project.build_conversation, live_read_before)
+                ]
+                if found:
+                    ev["artifacts"] = found
             # A phase's `done` is swallowed by _run_step so the UI sees exactly one per build; it
             # must not reach history either, or a reload would replay six "build is clean" dividers.
             # The rail's app tag, recording half. Here rather than at the four yield sites that
@@ -9649,7 +9683,13 @@ class Orchestrator:
             # and leaves a turn exactly as slow as it was with no error anywhere to say why.
             tap = _EventTap(client, sid, directory=str(project.app_for_turn().path))
             client.send_prompt(sid,
-                               "\n\n".join(p for p in (current, chat_note, resource_note,
+                               # `live_read_note` leads rather than trails. Everything after
+                               # `current` is a block ABOUT this request, and the tail is load-
+                               # bearing: the forks below wrap `current` in their own preamble and
+                               # a turn with no notes must still end on the person's own sentence.
+                               # The token is a standing fact about the turn, so it goes in front.
+                               "\n\n".join(p for p in (live_read_note, current, chat_note,
+                                                       resource_note,
                                                        unusable_note, ambiguous_note,
                                                        broken_retry_note) if p),
                                agent=agent, attachments=mention_files)

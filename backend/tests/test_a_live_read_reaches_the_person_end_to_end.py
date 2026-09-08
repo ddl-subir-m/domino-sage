@@ -155,3 +155,68 @@ def test_the_card_a_live_read_wrote_is_on_the_conversation_when_the_turn_ends(tm
     store = ThreadStore(orch.project(start_preview=False).record.path)
     paths = [a["path"] for a in store.read_artifacts(tid)]
     assert f"examples/{tid}/gong-calls.table.json" in paths
+
+
+def _build_orch(tmp: Path, resources):
+    """A Project where a Build turn actually runs, unlike the Chat harness above."""
+    template = tmp / "template"
+    (template / "src").mkdir(parents=True, exist_ok=True)
+    (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
+    (template / "package.json").write_text('{"name": "template"}')
+    (template / "AGENTS.md").write_text("# Building an app\n")
+    oc = FakeOpenCode(tmp / "mnt" / "code", [Turn(text="Here is what that table holds.")])
+    orch = Orchestrator(workspace_dir=oc.workspace, template=template, gateway=ScriptedGateway(),
+                        catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
+                        opencode_client=oc, resources=resources)
+    orch.project(start_preview=False).record.write_settings({"skip_planning": True})
+    return orch, oc
+
+
+def _bind(orch, **over):
+    ws = orch.project(start_preview=False).workspace
+    ws.bindings_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {"kind": "data_source", "id": "ds1", "name": "Snowflake-Data-Warehouse",
+           "display_name": "Snowflake-Data-Warehouse", "database": "DWH",
+           "schema": "MARTS", "table": "GONG__CALLS"}
+    row.update(over)
+    ws.bindings_path.write_text(json.dumps([row]))
+
+
+def test_a_build_turn_mints_a_token_and_the_card_rides_its_done(tmp_path: Path):
+    """The transcript in ADR-0041 was a BUILD turn, so this is the one that had to work.
+
+    Build's stream never emitted an `artifacts` event, so a Live read there wrote its file and the
+    person saw nothing. The card rides the `done` instead — `_watchBuild` reads them off either.
+    """
+    resources = Warehouse()
+    orch, oc = _build_orch(tmp_path, resources)
+    _bind(orch)
+    tid = orch.create_thread()["id"]
+    oc.__class__ = ReadingOpenCode
+    oc.orch = orch
+    oc.args = {"source": "Snowflake-Data-Warehouse", "database": "DWH", "schema": "MARTS",
+               "table": "GONG__CALLS", "limit": 1}
+
+    events = list(orch.build_stream("show me 1 sample conversation", conversation=tid))
+
+    assert "Read token: lrt_" in oc.prompts[-1]["text"], "a Build turn mints one too"
+    done = [e for e in events if e.get("type") == "done"][-1]
+    paths = [a["path"] for a in (done.get("artifacts") or [])]
+    assert f"examples/{tid}/gong-calls.table.json" in paths, f"done carried: {paths}"
+    assert resources.asked, "and the store really was read"
+
+
+def test_a_binding_is_what_puts_the_store_in_range_for_a_build_turn(tmp_path: Path):
+    # Build has no Session context chips of its own; the Binding is the grant (ADR-0041).
+    resources = Warehouse()
+    orch, oc = _build_orch(tmp_path, resources)
+    _bind(orch, name="Some-Other-Warehouse")
+    tid = orch.create_thread()["id"]
+    oc.__class__ = ReadingOpenCode
+    oc.orch = orch
+    oc.args = {"source": "Snowflake-Data-Warehouse", "table": "GONG__CALLS"}
+
+    list(orch.build_stream("show me 1 sample conversation", conversation=tid))
+
+    assert "Use it in this conversation" in oc.said
+    assert resources.asked == []
