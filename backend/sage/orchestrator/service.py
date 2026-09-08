@@ -12584,11 +12584,15 @@ class Orchestrator:
         real on both paths — `stat()` on a mount, the platform's own on an unmounted Dataset since
         #153 — and only a listing that came back sizeless reports a 0 nothing measured.
 
-        This tree still draws those zeros. The Dataset CARD leaves an unmeasured size off rather
-        than asserting "0 bytes" about a file nothing weighed (#197), and the same is owed here;
-        `FileListing.measured` is the flag to read when it is done. Not done in #197 because that
-        ticket is the card, and a size the tree adds into a total is a different act from a size a
-        card puts beside one row.
+        `measured` is `FileListing.measured`: whether this listing WEIGHED the files it named. An
+        unweighed row loses its `size` key rather than reporting a zero indistinguishable from an
+        empty file, the way the Dataset card does (#197). The flag travels WITH the rows because
+        this tree does more than the card does with a size — it ADDS them into a folder total, and
+        a total that quietly leaves out the rows it was never given is a second wrong number in
+        place of the first. So the flag lets the tree say the total is not measured (#201).
+
+        Read off the listing and never off `asset.mount_path`: since #153 the platform weighs an
+        unmounted Dataset too, so keying on the mount would throw away sizes it did give.
 
         `truncated` says the listing stopped at the provider's cap, so what came back is part of
         the Dataset and no subtree in it can be proven whole (ADR-0029).
@@ -12607,7 +12611,11 @@ class Orchestrator:
         out = []
         for f in listing.files:
             dest = _attach_dest(asset.name, f.path)
-            out.append({"path": f.path, "size": f.size, "dest": dest, "attached": dest in attached})
+            # `measured or f.size`, not `measured` alone: a listing that under-reported some of its
+            # rows still reported others, and hiding a size it did give throws away the half it got
+            # right — the same test the card makes (#197).
+            row = {"path": f.path, "dest": dest, "attached": dest in attached}
+            out.append(row | ({"size": f.size} if listing.measured or f.size else {}))
         reason = self._folder_act_reason(asset, listing)
         # The Dataset's CURRENT name, which is what every other door on this page keys on: `dest`
         # above, `attach_file`, `attach_folder`'s `held` check, and `upload_file` all run `_slug`
@@ -12617,7 +12625,7 @@ class Orchestrator:
         # attach would then re-link every file under a second root, twice against the cap and twice
         # on publish. A rename orphaning the old slug is one behaviour across the whole feature, and
         # re-slugging the manifest is the change that fixes it, not a second root here.
-        return {"files": out, "truncated": listing.truncated,
+        return {"files": out, "truncated": listing.truncated, "measured": listing.measured,
                 "attach_root": _attach_root(asset.name),
                 "folder_act": {"available": not reason, "reason": reason}}
 

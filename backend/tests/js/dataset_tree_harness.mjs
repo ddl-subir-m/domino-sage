@@ -9,7 +9,9 @@
 // only says anything after the answer arrives: a no-op setter would leave every run on the spinner.
 //
 // Input on stdin: a list of steps, each one `/files` answer in the shape the route writes it —
-// `{ "files": [...], "truncated": bool, "query": "", "fail": bool }`. A second step is the SAME
+// `{ "files": [...], "truncated": bool, "measured": bool, "query": "", "fail": bool }` —
+// `measured` defaults to true, so a fixture that says nothing about sizes is one that weighed
+// them. A second step is the SAME
 // tree asked about a DIFFERENT Dataset, which is the only way to reach the state a walk carries
 // over: the component instance survives the change of `resource`, its hooks with it.
 //
@@ -122,7 +124,10 @@ const sandbox = {
     return {
       ok: true, status: 200, statusText: 'OK',
       headers: { get: () => 'application/json' },
-      json: async () => ({ files: step.files || [], truncated: !!step.truncated }),
+      // `null` is a listing that carried no answer about sizes at all, which is a different
+      // thing from one saying it weighed nothing.
+      json: async () => ({ files: step.files || [], truncated: !!step.truncated,
+                           ...(step.measured === null ? {} : { measured: step.measured !== false }) }),
     };
   },
 };
