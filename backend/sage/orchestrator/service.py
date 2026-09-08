@@ -5254,7 +5254,8 @@ class Orchestrator:
             # whose warehouse is called a warehouse.
             if not skip_source_gate:
                 with timing.span("gate.source"):
-                    offer = self._source_offer(prompt, resources, answered)
+                    offer = self._source_offer(prompt, resources, answered,
+                                               table_answered=skip_table_gate)
                 if offer is not None:
                     yield from offer
                     return
@@ -7417,7 +7418,8 @@ class Orchestrator:
             if ev["type"] != "user":
                 yield ev
 
-    def _source_offer(self, prompt: str, resources: list[dict] | None, answered: dict):
+    def _source_offer(self, prompt: str, resources: list[dict] | None, answered: dict,
+                      table_answered: bool = False):
         """Events for a request that wants a store when the app records none (#185), or None.
 
         The question before #183's question, and the one that made its answer unreachable: a person
@@ -7469,7 +7471,14 @@ class Orchestrator:
         #
         # Nothing is skipped even so. The click still declares the Binding — it declares the Scope
         # in the same act — so ADR-0010 stands and what goes on the record is identical.
-        if offer.named == 1 and str(offer.sources[0].get("id") or "") in set(mentioned):
+        # `table_answered` is the merged card's own click coming back. The card is drawn from HERE
+        # rather than from the table gate, so the `skipTableGate` its click sets does not reach it,
+        # and without this a click whose record did not land replays into the same card offering
+        # the same tables — the person answering a question they have just answered, forever.
+        # The plain list is the right thing to draw there: it says what is reachable and its click
+        # writes a Binding through the door that only writes one.
+        if (offer.named == 1 and not table_answered
+                and str(offer.sources[0].get("id") or "") in set(mentioned)):
             return self._named_source_offer(prompt, offer, answered, resources)
         return self._source_candidates_events(prompt, offer, answered)
 

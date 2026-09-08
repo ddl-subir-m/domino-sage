@@ -183,3 +183,24 @@ def test_a_store_that_cannot_be_walked_falls_back_to_the_store_list(tmp_path: Pa
 
     assert "table-candidates" not in _kinds(frames)
     assert "source-candidates" in _kinds(frames)
+
+
+def test_a_click_whose_record_never_landed_is_not_asked_the_same_thing_again(
+        tmp_path: Path, monkeypatch):
+    """The merged card must not re-offer itself to its own click.
+
+    The card is drawn from the Data Source gate, one gate above the table gate, so the
+    `skipTableGate` its click sets does not reach it. Without that flag being honoured here, a click
+    whose record did not land replays into the same card offering the same tables, and the person
+    answers a question they have just answered — with no way through, because the way through is the
+    click that is failing.
+
+    The plain store list is what belongs there instead: it says what is reachable, and its own click
+    writes a Binding through the door that writes nothing else.
+    """
+    client = _client(_orch(tmp_path), monkeypatch)
+
+    frames = _build(client, resources=MENTION, skipTableGate=True)
+
+    assert "table-candidates" not in _kinds(frames)
+    assert "source-candidates" in _kinds(frames)
