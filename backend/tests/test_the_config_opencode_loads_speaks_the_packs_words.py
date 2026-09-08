@@ -1,13 +1,15 @@
-"""OpenCode's PROJECT config wins, so it has to be ours, and it has to be the voiced one (#199).
+"""Every config Sage installs has to be the voiced one, because any of them may be the one read.
 
-Measured on opencode-ai@1.18.4 with a marker prompt in each source: project config beat both
-custom (`OPENCODE_CONFIG`) and global. `/opt/sage` is a git checkout, so while the OpenCode server
-ran there, `/opt/sage/opencode.json` — the *unvoiced* template — was project config and won every
-boot. Chat answered "a Snowflake connection is called a **{dataSource}**", and `sage-plan`, sharing
-the session, copied the braces into a plan document in front of the person who asked for it.
+Measured on opencode-ai@1.18.4: project config outranks both custom (`OPENCODE_CONFIG`) and global.
+But project config is resolved off the git root of the SESSION directory, not the server's cwd, and
+every Sage session runs under the workspace volume — so the winning slot is never ours to fill.
+What actually carries the pack's words is the GLOBAL copy, which OpenCode demonstrably loads and
+which `driver/server.py` also points OPENCODE_CONFIG at.
 
-These tests pin the shape that reverses that precedence: the server gets a cwd of its own, holding
-only the voiced copy, and that dir is a git root so the copy counts as project config at all.
+This file used to claim the opposite, and the claim survived long enough to misdirect two
+diagnoses of a leak that was really an unvoiced AGENTS.md on the volume (#202). So the tests below
+pin what is installed, not a precedence order: both copies voiced, both dialling the shim, and the
+checked-in template left tokenised on disk. See the reopened #199 for the measurement.
 """
 import json
 from pathlib import Path
@@ -63,7 +65,7 @@ def test_the_project_config_dials_the_port_the_shim_serves(installed):
     """Voicing the config is worthless if it routes inference away from the shim.
 
     `_opencode_base_port` reads this same dir for /api/diag and the turn summary, so this is also
-    what those two report — and after the cwd moved they report the file OpenCode really loads.
+    what those two report — the file the server sits beside, aligned with the global copy it loads.
     """
     from sage.orchestrator.service import _opencode_base_port
 
@@ -75,11 +77,28 @@ def test_the_project_config_dials_the_port_the_shim_serves(installed):
 
 
 def test_the_project_dir_is_a_git_root_or_it_is_no_project_at_all(installed):
-    """Discovery walks up from the server's cwd for a git root. Without one, OpenCode reports
-    project "global" at "/" and finds no project config — the voiced copy would sit there unread.
+    """Kept as a belt, not as the mechanism. A session started in the server's own cwd — which is
+    not how Sage runs one — resolves its project root here, and without a git root it would report
+    project "global" at "/" instead. Cheap, and it is the case `/opt/sage` used to cover badly.
     """
     _, project_dir = installed
     assert (project_dir / ".git").exists()
+
+
+def test_the_global_config_carries_no_unresolved_pack_tokens(installed):
+    """The copy OpenCode is actually observed to load, so the one the leak would come out of.
+
+    `driver/server.py` points OPENCODE_CONFIG here too, which makes this file both slots Sage can
+    fill. It is asserted on raw text for the same reason as the dir above: a token anywhere in the
+    file is a token a user can be shown.
+    """
+    import os
+
+    text = (Path(os.path.expanduser("~/.config/opencode")) / "opencode.json").read_text()
+
+    assert "{assistantName}" not in text
+    assert "{dataSource}" not in text
+    assert "Acme" in json.loads(text)["agent"]["sage-chat"]["prompt"]
 
 
 def test_the_checked_in_source_is_read_and_never_written(installed):
@@ -91,7 +110,9 @@ def test_the_checked_in_source_is_read_and_never_written(installed):
 
 
 def test_the_opencode_server_is_given_that_dir_as_its_cwd():
-    """The install is inert unless the server actually runs there — that is the whole mechanism."""
+    """Not the mechanism — the point is only that the server does not sit in `/opt/sage`, whose
+    `opencode.json` is the unvoiced template, and that `_opencode_base_port` reads the dir it
+    is actually in."""
     from sage.orchestrator import app
 
     assert app.orchestrator._opencode_cwd == app._opencode_project_dir()

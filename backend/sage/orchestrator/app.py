@@ -143,11 +143,15 @@ _REPO = Path(__file__).resolve().parents[3]
 def _opencode_project_dir() -> Path:
     """The cwd we give the OpenCode server, holding the one config it loads as PROJECT config.
 
-    OpenCode discovers project config off the git root of its own cwd, and project outranks both
-    the custom source (`OPENCODE_CONFIG`) and the global one. `/opt/sage` is a git checkout, so
-    while the server ran there its *unvoiced* `opencode.json` won every boot and Chat read the
-    pack's `{dataSource}` braces out loud (#199). A dir of its own, holding only the voiced copy,
-    turns that precedence from the trap into the mechanism.
+    Project config outranks both the custom source (`OPENCODE_CONFIG`) and the global one, but it
+    is resolved off the git root of the SESSION directory, not off the server's cwd — measured live
+    on 05fded1, see the reopened #199. Every Sage session runs under the workspace volume, so this
+    dir is never read as project config and neither was `/opt/sage`. The voicing reaches OpenCode
+    through the global copy instead.
+
+    The dir is kept because two smaller claims do hold: the unvoiced `/opt/sage/opencode.json` is
+    out of reach of any session that did start there, and a checked-out worktree keeps a clean
+    `git status`.
 
     Resolved per call rather than at import, so `HOME` is read when it is used.
     """
@@ -3006,14 +3010,18 @@ control_app.mount("/brand", _brand_images, name="brand-img")
 def _install_opencode_config(source_dir: Path, control_port: int) -> None:
     """Make OpenCode load Sage's provider/agents/model, in the pack's own words.
 
-    Measured on opencode-ai@1.18.4 with a marker prompt in each source: project config WINS, and
-    both custom (`OPENCODE_CONFIG`) and global lose to it. Project config is discovered off the git
-    root of the *server's* cwd, so `/opt/sage` being a git checkout made its unvoiced opencode.json
-    the winner on every boot — Chat answered "a Snowflake connection is called a {dataSource}" (#199).
+    Measured on opencode-ai@1.18.4: project config outranks both custom (`OPENCODE_CONFIG`) and
+    global. But project config is resolved off the git root of the SESSION directory, not the
+    server's cwd, and every Sage session runs under the workspace volume — so the winning slot is
+    never ours to fill and `/opt/sage` was never in the running. The earlier reading of that
+    experiment (#199) used the server's own cwd as the session directory, the one case where the
+    two coincide, and it cost two misdiagnoses of a leak that turned out to be an AGENTS.md (#202).
 
-    So the voiced blob goes to `_opencode_project_dir()`, which is where the server now runs and is
-    made a git root here, and to the global path as well. Ours is then the project source AND the
-    last-loaded global one, so nothing falls back to OpenCode's free tier (HTTP 429
+    So what does the work here is the GLOBAL copy: it is the last-loaded of the slots we can fill,
+    OpenCode demonstrably reads it, and `driver/server.py` also points OPENCODE_CONFIG at it. The
+    voiced blob still goes to `_opencode_project_dir()` as well — that is where the server runs, it
+    is made a git root here, and it costs nothing to have the file beside it be a voiced one rather
+    than the template. Either way nothing falls back to OpenCode's free tier (HTTP 429
     FreeUsageLimitError). The sage-gateway baseURL is aligned to the port the shim serves first.
 
     The checked-in source is READ and never written: it is the unvoiced template, and rewriting it

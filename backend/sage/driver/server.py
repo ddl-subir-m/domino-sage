@@ -39,16 +39,25 @@ class OpenCodeServer:
         cmd = ["npx", "opencode", "serve", "--port", str(self._port), "--hostname", "127.0.0.1"]
         if self._log_path:
             cmd.append("--print-logs")
-        # OpenCode discovers PROJECT config by walking up from THIS cwd (not the session's dir) to a
-        # git root, and project outranks everything below it — measured, see `_opencode_project_dir`
-        # in the orchestrator (#199). So cwd is a dir of Sage's own holding only the voiced config,
-        # and `opencode.json` beside us is the one that wins. It may not exist yet when the
-        # orchestrator was started without its boot path, and Popen will not create a missing cwd.
+        # OpenCode resolves PROJECT config off the git root of the SESSION directory, NOT off this
+        # cwd — measured live on 05fded1, see the reopened #199. Every Sage session runs under the
+        # workspace volume (`.sage/chat-work` for Chat, `apps/<appId>/` for Build), so the project
+        # root is always that volume and nothing beside us here is ever read as project config.
+        # An earlier probe concluded otherwise because it used the server's own cwd as the session
+        # directory, which is the one case where the two coincide.
+        #
+        # The cwd is still a dir of Sage's own rather than the repo, for two smaller reasons that
+        # do hold: it keeps the unvoiced `/opt/sage/opencode.json` out of reach of any session that
+        # did start there, and it keeps a checked-out worktree free of a spurious diff. What
+        # actually carries the pack's words to OpenCode is the global copy, below. The dir may not
+        # exist yet when the orchestrator was started without its boot path, and Popen will not
+        # create a missing cwd.
         self._cwd.mkdir(parents=True, exist_ok=True)
-        # OPENCODE_CONFIG loads a file as "custom config" — above global, below project. Redundant
-        # with the project copy on a healthy boot, and the belt for a boot where the install could
-        # not write: without any of the three OpenCode never sees the sage-gateway provider and
-        # drops to its built-in free tier (429 FreeUsageLimitError).
+        # OPENCODE_CONFIG loads a file as "custom config" — above global, below project. The
+        # project slot is never ours (above), so these two ARE the mechanism rather than a belt:
+        # without one of them OpenCode never sees the sage-gateway provider and drops to its
+        # built-in free tier (429 FreeUsageLimitError), and without a VOICED one it reads the
+        # pack's braces out loud.
         env = dict(os.environ)
         # Both candidates are voiced copies today; the global one is preferred only because the
         # orchestrator writes it on every boot. Whichever we point at must be a resolved copy — the
