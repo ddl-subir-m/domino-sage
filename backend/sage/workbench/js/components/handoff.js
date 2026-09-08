@@ -212,9 +212,9 @@ window.SW = window.SW || {};
       {
         open: true,
         onCancel: close,
-        title: 'Change what crosses',
+        title: 'Change what was included',
         width: 460,
-        okText: busy ? 'Redoing…' : 'Redo the crossing',
+        okText: busy ? 'Updating…' : 'Update',
         confirmLoading: busy,
         onOk: go,
       },
@@ -223,7 +223,7 @@ window.SW = window.SW || {};
         { className: 'sw-handoff' },
         h(
           Space,
-          { direction: 'vertical', size: 8, role: 'group', 'aria-label': 'What crosses' },
+          { direction: 'vertical', size: 8, role: 'group', 'aria-label': 'What to include' },
           h(
             Checkbox,
             { name: 'resources', checked: answers.resources, onChange: carry('resources') },
@@ -307,7 +307,7 @@ window.SW = window.SW || {};
         h(
           'div',
           null,
-          h('div', { className: 'sw-field-label' }, 'Moving across'),
+          h('div', { className: 'sw-field-label' }, 'What will be saved'),
           h(
             'ul',
             { className: 'sw-plain-list' },

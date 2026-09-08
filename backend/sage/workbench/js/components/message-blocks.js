@@ -401,21 +401,21 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-crossing-line' },
-        'The plan crossed into ',
+        'The plan is in ',
         h('strong', null, `"${named}"`),
         // No article engine: "a new {builtApp}" is safe because the article sits before `new`, but
         // the other branch had the article against the noun, so it takes the plural instead.
         crossed.newApp
           ? SW.brand.text(' — a new {builtApp}.')
           : SW.brand.text(' — one of the {builtAppPlural} you already had.'),
-        ' It carried ',
+        ' It included ',
         carried(crossed),
         '.'
       ),
       h(
         Button,
         { type: 'link', size: 'small', className: 'sw-crossing-toggle', onClick: onToggle },
-        open ? 'Hide what crossed' : 'What crossed'
+        open ? 'Hide details' : 'What was included'
       ),
       open &&
         h(
@@ -603,8 +603,8 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-caption', style: { marginTop: 8 } },
-          `"${crossed.appName || crossed.appId}" stays, along with everything that crossed into `
-          + 'it. The plan is archived, not deleted.'
+          `"${crossed.appName || crossed.appId}" is still here, with everything that was copied `
+          + 'into it. The plan is archived, not deleted.'
         ),
       crossed &&
         h(SW.CrossingSheet, {
@@ -705,7 +705,7 @@ window.SW = window.SW || {};
             h(
               Button,
               { size: 'small', onClick: () => setChanging(true) },
-              'Change what crosses'
+              'Change what was included'
             ),
           h(
             Button,

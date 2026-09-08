@@ -480,7 +480,7 @@ def test_the_detail_expands_to_the_specific_charts_and_context():
     """Criterion 2. Collapsed the card says how much crossed; expanded it says exactly what, by
     the names and paths a person can go and open."""
     collapsed = _card(_proposed(_CROSSED))
-    expanded = _card(_proposed(_CROSSED), press="What crossed")
+    expanded = _card(_proposed(_CROSSED), press="What was included")
 
     assert "By desk" not in collapsed["text"]
     assert "By desk" in expanded["text"]
@@ -496,8 +496,8 @@ def test_a_plan_that_never_came_from_a_handoff_grows_no_receipt():
     Undo to offer — it keeps the Cancel it has always had."""
     card = _card(_proposed(None))
 
-    assert "crossed" not in card["text"].lower()
-    assert "Change what crosses" not in card["buttons"]
+    assert "What was included" not in card["buttons"]
+    assert "Change what was included" not in card["buttons"]
     assert "Cancel" in card["buttons"]
     assert "Undo" not in card["buttons"]
 
@@ -508,7 +508,7 @@ def test_the_handoff_card_offers_change_and_undo_instead_of_a_bare_cancel():
     IS the cancel, so a Cancel beside it would be the same button twice."""
     card = _card(_proposed(_CROSSED))
 
-    assert "Change what crosses" in card["buttons"]
+    assert "Change what was included" in card["buttons"]
     assert "Undo" in card["buttons"]
     assert "Cancel" not in card["buttons"]
 
@@ -523,7 +523,7 @@ def test_undo_goes_through_the_existing_cancel_path_and_says_the_app_stays():
     assert card["posted"] == ["/project/plan/cancel"]
     assert card["cancelled"] == [{"conversation": "conv_first", "planId": "001"}]
     assert "Desk exposure" in card["text"]
-    assert "stays" in card["text"]
+    assert "still here" in card["text"]
     assert "Approve & build" not in card["buttons"]
     assert "Undo" not in card["buttons"]
 
@@ -534,7 +534,7 @@ def test_a_card_undone_in_an_earlier_session_still_says_so():
     Without that, Undo would be a sentence that lived for as long as the tab did."""
     card = _card(_proposed(_CROSSED) + [{"type": "plan-cancelled", "planId": "001"}])
 
-    assert "stays" in card["text"]
+    assert "still here" in card["text"]
     assert "Approve & build" not in card["buttons"]
 
 
@@ -542,7 +542,7 @@ def test_a_card_undone_in_an_earlier_session_still_says_so():
 def test_the_change_sheet_asks_what_crosses_and_never_where_it_lands():
     """Criteria 4, 5 and 6. Three answers and an offer to keep them; no app anywhere in it, and
     nothing offering to remember one — ADR-0008 keeps the target a per-handoff decision."""
-    card = _card(_proposed(_CROSSED), press="Change what crosses")
+    card = _card(_proposed(_CROSSED), press="Change what was included")
 
     assert card["sheet"]["open"] is True
     assert card["sheet"]["fields"] == ["resources", "artifacts", "transcript"]
@@ -559,7 +559,7 @@ def test_an_abandoned_change_does_not_come_back_as_an_answer_nobody_gave():
     """The card stays mounted, so a tick left behind by a closed sheet would still be there next
     time — and this sheet's whole claim is that it shows what actually crossed."""
     card = _card(_proposed(_CROSSED),
-                 press="Change what crosses|transcript|close|Change what crosses")
+                 press="Change what was included|transcript|close|Change what was included")
 
     assert card["sheet"]["values"] == {"resources": True, "artifacts": True, "transcript": False}
     assert card["recrossed"] == []
@@ -569,8 +569,8 @@ def test_an_abandoned_change_does_not_come_back_as_an_answer_nobody_gave():
 def test_the_change_sheet_saves_the_answers_as_a_preference_only_when_asked():
     """Criterion 6. The crossing is redone either way; the preference moves only if the person
     said to keep it, because one handoff's answer is not a standing answer."""
-    kept = _card(_proposed(_CROSSED), press="Change what crosses|remember|Redo the crossing")
-    once = _card(_proposed(_CROSSED), press="Change what crosses|Redo the crossing")
+    kept = _card(_proposed(_CROSSED), press="Change what was included|remember|Update")
+    once = _card(_proposed(_CROSSED), press="Change what was included|Update")
 
     answers = {"resources": True, "artifacts": True, "transcript": False}
     # And the card sends the plan it belongs to, so a Conversation that handed off twice changes
@@ -591,7 +591,7 @@ def test_redoing_the_crossing_leaves_the_app_selected(tmp_path: Path):
     selected the app it wrote into, so a rail that stops highlighting it leaves the next build
     landing somewhere the person is not looking. The card's own press is the only way in — nothing
     else calls `recrossHandoff` — so this is asserted through it rather than against the store."""
-    card = _card(_proposed(_CROSSED), press="Change what crosses|Redo the crossing")
+    card = _card(_proposed(_CROSSED), press="Change what was included|Update")
 
     assert card["recrossed"] == [{"include": {"resources": True, "artifacts": True,
                                               "transcript": False}, "planId": "001"}]
