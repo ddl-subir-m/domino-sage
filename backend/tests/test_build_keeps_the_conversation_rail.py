@@ -228,7 +228,7 @@ def test_the_conversation_you_are_standing_in_survives_the_filter():
     """The failure ADR-0009 exists to stop: picking an app emptied the rail under a transcript that
     was still on screen, so the furniture beside one Conversation stopped listing it. `thr_one`
     never touched P&L report and stays anyway, because it is the one you are reading."""
-    step = _run([{"pick": "app_b", "thread": "thr_one", "select": "app_a"}])[-1]
+    step = _run([{"build": "thr_one", "select": "app_a"}, {"rail": "build", "chip": "P&L report"}])[-1]
     assert step["railFilter"] == "app_b"
     assert "Just the one" in step["rail"]["rows"]
 

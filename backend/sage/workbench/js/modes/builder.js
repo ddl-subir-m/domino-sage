@@ -355,7 +355,29 @@ window.SW = window.SW || {};
       // poll moves it under you, so an effect would let a second tab silently re-filter this tab's
       // rail. Only a person's own click may move the filter.
       SW.store.set({ railAppFilter: app.id });
-      SW.router.go(SW.appRoute(app));
+      // The Conversation comes with the app. `SW.appRoute` keeps whichever one is open and rewrites
+      // only `?app=`, which is right for its other callers and wrong for a pick: it left the
+      // transcript, the lit rail row and the composer describing the app you just walked away from.
+      //
+      // Read off the store rather than taken as props, the way `startConversation` reads the
+      // selected app: this control is handed the app list and nothing else, and passing every
+      // thread through it would make each caller re-state what the store already holds.
+      const { threads, thread } = SW.store.get();
+      const next = SW.util.threadForApp(threads, app.id, thread);
+      const here = thread ? thread.id : null;
+      const there = next ? next.id : null;
+      // On the click, for the reason `openConversation` closes it there (#198): the sheet covers
+      // the preview, so the one surface that would show the switch happening is the one it hides.
+      if (there !== here) SW.store.closePlanViewer();
+      if (!next) {
+        // Nothing has touched this app, so there is no transcript to bring. Leaving the last one on
+        // screen under the new app's name IS the defect, so the clean start is the answer here.
+        SW.store.clearConversation();
+        return SW.router.go(`#/build?app=${app.id}`);
+      }
+      // Written out rather than through `SW.appRoute`, which reads the OPEN thread from the store —
+      // the one we may be leaving. Its other callers keep the conversation on purpose.
+      SW.router.go(`#/build/${next.id}?app=${app.id}`);
     };
 
     return h(
