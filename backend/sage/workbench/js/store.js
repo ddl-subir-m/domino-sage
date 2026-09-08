@@ -1326,6 +1326,13 @@ window.SW = window.SW || {};
     // reads as the app having broken rather than as a question waiting for an answer.
     'table candidates': true,
     'data source candidates': true,
+    // The fifth gate, and the last of them to ship (#196, ADR-0039). Missing here since the day it
+    // landed: the comment above counts five gate decisions and this list held four, so the one card
+    // that asks which file to read was the one card reported as a failure. Three behaviours came
+    // off that, because the two objects below are built from this one — the red line said the app
+    // had broken, `KEEPS_THE_PLAN_CARD` took the Approve button off a plan the turn never touched,
+    // and `ASKED_FOR` bought an ADR-0027 preflight listing to explain a question.
+    'dataset files': true,
   };
 
   // Every ending that was ASKED FOR, which is every ending `endedBadly` above must not treat as a
