@@ -3364,9 +3364,12 @@ window.SW = window.SW || {};
       // repeat, so a Resource bound from outside it — a catalogue row, a Chat handoff — would stay
       // off the list until the next scope load. Asked of the index rather than the row, because
       // the index IS the working set and a row is whatever the door that drew it chose to carry.
-      // Only when it was absent: a Resource already in the rail changed nothing about membership,
-      // and re-reading the whole scope for it is a handful of calls for no news.
-      if (!state.resourceIndex[resource.id]) await refreshWorkingSet();
+      // Unconditionally, for a Resource the rail already holds too. That skip was written when
+      // membership was all this read carried, and it is the reason a bind was as silent as a
+      // delete was: `usedBy` is a Project-wide answer, this act is what changes it, and the rail
+      // is the only place that says so. The same re-read `removeBindingFromApp` takes on the way
+      // out (#161), now on both sides of the same count.
+      await refreshWorkingSet();
       return true;
     },
 
@@ -3489,6 +3492,11 @@ window.SW = window.SW || {};
         // the record itself is drawn with, so the sentence and the screen agree.
         : `The table for ${pick.name} is ${SW.util.NO_SCOPE_YET} in ${where}. `
           + 'Choose one from the same control.');
+      // A Scope is half of what `usedBy` records — each app's name AND the part of the Resource it
+      // reads — and the drawer prints both. The Binding list read above is the APP's answer and
+      // says nothing about the Project's, the same split that left a delete and a bind silent
+      // (#161). After the receipt, because the sentence is the act's and this is bookkeeping.
+      await refreshWorkingSet();
       return true;
     },
 
@@ -4384,7 +4392,10 @@ window.SW = window.SW || {};
       // The conversation rail names this app too — a tag on every conversation that changed it —
       // and the server has just relabelled those. Read the rail back with the app list, or the
       // chips go on saying the old name until something else happens to reload it.
-      await Promise.all([loadAppList(), loadThreadList()]);
+      //
+      // The panel is the third place the name lands: `usedBy` carries it, so the drawer and the
+      // `Remove from {app}` door both print it. Same sentence as the chips, one list further out.
+      await Promise.all([loadAppList(), loadThreadList(), refreshWorkingSet()]);
     },
 
     // Delete a Built App (#76). Nothing here decides anything: the offer was made in the rail and
@@ -4399,6 +4410,12 @@ window.SW = window.SW || {};
     async deleteApp(id, { deleteDominoApp = false } = {}) {
       const out = await SW.api.deleteApp(id, { deleteDominoApp });
       await store.loadBuild();
+      // The app's Bindings went with its directory, and `usedBy` on every Project row is computed
+      // off the apps' own manifests — so without this the rail goes on saying `Used by 1 app`
+      // about an app nobody can open any more. `loadBuild` cannot cover it: it reads the app that
+      // is left, and this act changed the answer to a question about all of them. Same re-read
+      // `removeBindingFromApp` takes after an unbind, for the same reason (#161).
+      await refreshWorkingSet();
       const selected = state.activeApp;
       state.activePlanId = (selected && selected.planId) || null;
       state.activePlan = null;
@@ -4624,7 +4641,13 @@ window.SW = window.SW || {};
     // into one the person has settled.
     async chooseTableAndBuild(prompt, sourceId, scope, answered) {
       await SW.api.confirmTableCandidate(sourceId, scope);
-      await Promise.all([refreshBindings(), store.loadBuild({ keepPreview: true })]);
+      // `refreshWorkingSet` for `saveScope`'s reason: this writes the same Scope the same door
+      // writes, and the Project's row carries a copy of it under `usedBy`.
+      await Promise.all([
+        refreshBindings(),
+        store.loadBuild({ keepPreview: true }),
+        refreshWorkingSet(),
+      ]);
       return store.sendBuildPrompt(prompt, { ...(answered || {}), skipTableGate: true });
     },
 
@@ -4638,7 +4661,16 @@ window.SW = window.SW || {};
     // transcript is what retires the card, so it cannot be answered twice.
     async chooseSourceAndSearch(prompt, sourceId, sourceName, answered) {
       await SW.api.bind('data_source', sourceId);
-      await Promise.all([refreshBindings(), store.loadBuild({ keepPreview: true })]);
+      // Three lists, three reads, none of them the others'. `refreshWorkingSet` is here for the
+      // reason it is in `bindToApp`: this bind joined the Data Source to the Project (ADR-0018)
+      // and put an app's name on its `usedBy`, and the rail draws both. Without it a store named
+      // from a card sat off the panel entirely until the next scope load, while the build that
+      // follows talked about it.
+      await Promise.all([
+        refreshBindings(),
+        store.loadBuild({ keepPreview: true }),
+        refreshWorkingSet(),
+      ]);
       return store.sendBuildPrompt(prompt, {
         ...(answered || {}), chosenSource: sourceId, sourceName,
       });

@@ -210,6 +210,16 @@ const TREE = {
 // whatever door named it. Keyed the way the route is asked — bare kind and bare id.
 const BINDABLE = [...Object.values(RESOURCE_GROUPS).flat(), ...CATALOGUE];
 
+// The same working set, in the shape the membership FILE has — what `/project/resources` answers
+// and what `SW.api.resources()` turns back into the groups above. Derived rather than written out,
+// so the two cannot drift: a row added to the fixture is a row the re-read hands back.
+//
+// Needed because a bind re-reads the working set on the way out (#133): `usedBy` is the Project's
+// answer and a bind changes it, so the act asks for it again. Without a route to answer, the
+// re-read wrote EMPTY groups over the fixture and every door drawn from a Resource — its Scope
+// ladder above all — went blank one press into the walk.
+const MEMBERSHIP = Object.values(RESOURCE_GROUPS).flat();
+
 // Each app's own build log, as `/api/project/history` hands it back with no conversation named:
 // raw rows off the app's directory, in the order they were appended (#88).
 //
@@ -462,6 +472,9 @@ function route(path, init) {
     return json({ items: db[param(path, 'schema')] || [] });
   }
   if (path === '/project') return json({ attached: attached[selected] || [] });
+  // Membership, the local file half of the panel. `usedBy` is left off deliberately: this fixture
+  // holds no app manifests, so the honest answer is the one an unbound Project gives.
+  if (path === '/project/resources') return json({ items: MEMBERSHIP });
   // The two removal routes, answering what the real ones answer. Both report the app source that
   // still uses what just went, and both report it AFTER the act — there is no route here that a
   // pre-warning could have asked, which is the point (ADR-0010).
