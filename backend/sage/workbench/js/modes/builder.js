@@ -194,6 +194,34 @@ window.SW = window.SW || {};
   // middle of this question.
   function publishApp(app) {
     const again = !!app.published;
+    // What the app is called, asked every time and pre-filled (#218). Publishing is the moment the
+    // name goes public, so it is the one moment somebody reliably thinks about it — and asking on
+    // every publish rather than only where the app has no name means the field is never a surprise
+    // on the one publish nobody was ready for it on.
+    //
+    // The server fills it: `publishName` is the app's own name where somebody wrote one, and the
+    // Domino project's name where nobody has. Neither half can be worked out here — the browser has
+    // never been told the Domino project's name, and "is this app wearing a placeholder" is a
+    // question about the naming ladder rather than about the string it rendered.
+    //
+    // Held in a closure rather than in state: `Modal.confirm` renders its config once, outside this
+    // tree's render cycle, so there is no state change here to re-render on. The input is
+    // uncontrolled for the same reason, and `defaultValue` is what an already-mounted one ignores —
+    // so the notice arriving underneath does not take back a half-typed name.
+    //
+    // `typed` stays null until somebody types, and an UNTOUCHED field re-reads the row when the
+    // question is answered rather than sending the value it opened with. A modal sits open for as
+    // long as somebody leaves it there, and the 30-second app poll can bring a rename made in
+    // another tab underneath it — accepting a stale default would then quietly write that rename
+    // back out. The store already refuses when the app itself moved; this is the same window, one
+    // field down.
+    let typed = null;
+    const offered = () => {
+      const row = SW.store.get().activeApp;
+      const fresh = row && row.id === app.id ? row : app;
+      return fresh.publishName || fresh.name || '';
+    };
+    const accepted = () => (typed === null ? offered() : typed).trim();
     const body = (notice) => h(
       Fragment,
       null,
@@ -206,6 +234,18 @@ window.SW = window.SW || {};
             : "This publishes the app to {platformName} with its own URL. Share it there before "
               + 'anyone else can open it.'
         )
+      ),
+      // Label above the field, and no `autoFocus`: the OK button keeps the focus antd gives it, so
+      // Enter still accepts what is already in the box for everybody who has nothing to change.
+      h(
+        'div',
+        { className: 'sw-publish-name', style: { marginTop: 12 } },
+        h('label', { htmlFor: 'sw-publish-name-input' }, 'Name'),
+        h(Input, {
+          id: 'sw-publish-name-input',
+          defaultValue: typed === null ? offered() : typed,
+          onChange: (e) => { typed = e.target.value; },
+        })
       ),
       // Deliberately silent about the attached files. `public/data/` is gitignored, so the push
       // does not carry the bytes and the deployed app rehydrates them from the manifest — which
@@ -231,14 +271,21 @@ window.SW = window.SW || {};
         SW.store
           // The app this confirm NAMED, not whichever one is selected when it is answered. The
           // request carries no app id, so the store refuses if the selection moved underneath.
-          .publishApp(app)
+          // The name beside it is what this question was answered WITH, and the server keeps it.
+          .publishApp(app, accepted())
           .then((out) => {
+            // The name it went out under, which is the accepted one and not the one on the row this
+            // confirm opened from: a field that renamed the app and a sentence still quoting the
+            // placeholder would be two answers to one question, seconds apart. A CLEARED field
+            // renames nothing and the server deploys under the same default it was offering, so
+            // that — and not the app's placeholder — is what the sentence says then.
+            const shipped = accepted() || offered();
             // A deploy is not done when the call answers — Domino is still bringing the container
             // up. Saying so is what stops the first click on `Open app` reading as a broken app.
             antd.message.success(
               out && out.republished
-                ? `Published a new version of "${app.name}". It takes a few minutes to serve the new code.`
-                : `Published "${app.name}". It takes a few minutes to come up — Open app opens it.`
+                ? `Published a new version of "${shipped}". It takes a few minutes to serve the new code.`
+                : `Published "${shipped}". It takes a few minutes to come up — Open app opens it.`
             );
           })
           .catch((err) => {

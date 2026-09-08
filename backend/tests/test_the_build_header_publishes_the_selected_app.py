@@ -61,9 +61,20 @@ def _run(steps: list[dict]) -> list[dict]:
 
 
 def _publish(select: str, *, confirm: bool = True, refuse: str = "", moves_to: str = "",
-             build_running: bool = False) -> dict:
-    return _run([{"publish": "thr_many", "select": select, "confirm": confirm, "refuse": refuse,
-                  "movesTo": moves_to, "buildRunning": build_running}])[-1]
+             build_running: bool = False, name: str | None = None,
+             publish_name: str | None = None, row_name: str | None = None,
+             renamed_to: str = "") -> dict:
+    step = {"publish": "thr_many", "select": select, "confirm": confirm, "refuse": refuse,
+            "movesTo": moves_to, "buildRunning": build_running, "renamedTo": renamed_to}
+    # Left out unless a test is about them, so every step above still runs the shape it always ran:
+    # nothing typed into the name field, and the row as the fixture holds it.
+    if name is not None:
+        step["name"] = name
+    if publish_name is not None:
+        step["publishName"] = publish_name
+    if row_name is not None:
+        step["rowName"] = row_name
+    return _run([step])[-1]
 
 
 def _open(select: str) -> dict:
@@ -353,3 +364,109 @@ def test_the_confirm_this_ticket_opened_is_where_the_pre_publish_notice_landed()
     assert "GET /publish-egress" in step["calls"], step["calls"]
     # The confirm was already on screen with its own two paragraphs before either read answered.
     assert "Only this app is published." in step["confirm"]["openedWith"]
+
+
+# ---- it asks what the app is called (#218) ------------------------------------------------------
+
+
+@needs_node
+def test_the_confirm_asks_what_the_app_is_called():
+    """Publishing is the moment the name goes public, so it is the one moment somebody reliably
+    thinks about it. Asked on EVERY publish, not only where the app has no name: a field that turned
+    up for the first time on some later publish would arrive on the one nobody was ready for it."""
+    field = _publish("app_b", confirm=False)["confirm"]["field"]
+    assert field is not None
+    assert field["defaultValue"] == "P&L report"
+
+
+@needs_node
+def test_the_field_opens_holding_what_the_server_offers():
+    """`publishName` is the server's answer and the browser prints it. It cannot be worked out here:
+    the Domino project's name has never crossed to the browser, and "is this app wearing a
+    placeholder" is a question about the naming ladder rather than about the string it rendered."""
+    step = _publish("app_b", confirm=False,
+                    row_name="Draft app 2", publish_name="Sales dashboard")
+    assert step["confirm"]["field"]["defaultValue"] == "Sales dashboard"
+
+
+@needs_node
+def test_the_field_is_uncontrolled_so_the_notice_cannot_take_back_a_typed_name():
+    """`Modal.confirm` renders its config once and #35's notice arrives by replacing it. A
+    controlled field would be re-rendered holding the value it opened with — the half-typed name
+    would vanish the moment the second read landed."""
+    assert _publish("app_b", confirm=False)["confirm"]["field"]["controlled"] is False
+
+
+@needs_node
+def test_accepting_the_field_sends_the_name():
+    """The only thing this request carries. Which app is still the server's answer (#70), and what
+    it is called is the one question only the person in front of the field can answer."""
+    step = _publish("app_b", name="Desk exposure")
+    assert step["published"] == [{"name": "Desk exposure"}]
+
+
+@needs_node
+def test_an_untouched_field_still_sends_what_it_was_offering():
+    """Not blocking, and the ask buys the write: Enter accepts, and accepting an app's pre-filled
+    default is what stops the switcher saying `Draft app 2` the moment the app is published."""
+    step = _publish("app_b", row_name="Draft app 2", publish_name="Sales dashboard")
+    assert step["published"] == [{"name": "Sales dashboard"}]
+
+
+@needs_node
+def test_a_cleared_field_renames_nothing():
+    """Accepting writes; clearing is not accepting. The publish still goes — the field was never
+    allowed to stand in the way of it — and the server deploys under the same default."""
+    step = _publish("app_b", name="   ")
+    assert step["published"] == [{}]
+    assert _published(step) == ["app_a", "app_b", "app_d"]
+
+
+@needs_node
+def test_the_success_message_quotes_the_name_it_went_out_under():
+    """The accepted name, not the one on the row this confirm opened from: a field that renamed the
+    app and a sentence still quoting the placeholder are two answers to one question, seconds
+    apart."""
+    step = _publish("app_b", row_name="Draft app 2", publish_name="Sales dashboard",
+                    name="Desk exposure")
+    assert any("Desk exposure" in s for s in step["said"]), step["said"]
+    assert not any("Draft app 2" in s for s in step["said"]), step["said"]
+
+
+@needs_node
+def test_a_name_typed_after_the_notice_lands_is_the_name_that_is_sent():
+    """The notice replaces the confirm's whole content while the field is on screen, which is the
+    one moment an input can quietly become a different input."""
+    step = _run([{"publish": "thr_many", "select": "app_b", "confirm": True,
+                  "queries": ["get_datasource('market-data-eod') is not declared"],
+                  "name": "Desk exposure"}])[-1]
+    assert step["confirm"]["alerts"] == ["warning"]
+    assert step["published"] == [{"name": "Desk exposure"}]
+
+
+@needs_node
+def test_an_untouched_field_does_not_write_back_a_rename_it_slept_through():
+    """The window the store's own guard does not cover. It refuses when the APP moved; this is the
+    same modal left open while the app poll brings a rename made somewhere else underneath it, and
+    an untouched field that sent what it opened with would quietly undo that rename."""
+    step = _publish("app_b", renamed_to="Risk monitor")
+    assert step["published"] == [{"name": "Risk monitor"}]
+
+
+@needs_node
+def test_a_typed_name_is_not_taken_back_by_a_rename_underneath_it():
+    """The other half, and the reason the field is not simply re-read: somebody who typed a name has
+    answered this question, and a rename that landed a second later has not."""
+    step = _publish("app_b", name="Desk exposure", renamed_to="Risk monitor")
+    assert step["published"] == [{"name": "Desk exposure"}]
+
+
+@needs_node
+def test_a_cleared_field_says_the_name_it_actually_went_out_under():
+    """A cleared field renames nothing, and the server deploys under the same default it was
+    offering — which for an app nobody has named is the Domino project's name, not the placeholder
+    the row shows."""
+    step = _publish("app_b", row_name="Draft app 2", publish_name="Sales dashboard", name="  ")
+    assert step["published"] == [{}]
+    assert any("Sales dashboard" in s for s in step["said"]), step["said"]
+    assert not any("Draft app 2" in s for s in step["said"]), step["said"]

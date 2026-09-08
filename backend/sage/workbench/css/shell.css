@@ -1050,6 +1050,10 @@ a.sw-topnav-link {
 .sw-publish-warnings { margin: 0; padding-left: 18px; }
 .sw-publish-warnings li + li { margin-top: var(--s1); }
 
+/* The name the app is published under (#218). Label above the field, and the gap under the label is
+   the smaller of the two, so the pair reads as one thing between the sentences around it. */
+.sw-publish-name label { display: block; margin-bottom: var(--s1); font-weight: 500; }
+
 /* Settings drawer -------------------------------------------------------- */
 
 /* Label, explanation and control read as one setting; the gap below the group is twice the gap

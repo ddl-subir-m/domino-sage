@@ -616,7 +616,12 @@ SW.api = {
   // second answer to "which app" — shipping over the wrong one is the failure #70 exists to stop.
   // Answers {published, app_id, url, manage_url, republished}; a 409 carries `refused` problems
   // and every other failure carries a sentence, both of which `request` already surfaces.
-  publish: () => post('/publish', {}),
+  //
+  // `name` is the one thing that DOES travel: it is what the person accepted in the confirm's name
+  // field, and the server writes it to the app before it deploys (#218). Not an answer to "which
+  // app" — that is still the server's — but to "what is this app called", which is a question only
+  // the person in front of the field can answer.
+  publish: (name = '') => post('/publish', name ? { name } : {}),
   // The two reads the pre-publish notice is built from (#35). Separate routes, asked together and
   // neither awaited before the confirm opens: `publishCheck` is local disk and pure Python, and
   // `publishEgress` may reach the gateway for the Alias listing — folded into one, a slow listing

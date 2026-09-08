@@ -14,9 +14,10 @@ not spend the words CONTEXT.md reserves for names.
 """
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
-from sage.orchestrator.service import _app_display_name
+from sage.orchestrator.service import _app_display_name, _app_written_name
 from sage.workspace.manager import WorkspaceManager
 
 # What the live planner wrote before the shape asked for a heading: a sentence, and never a name.
@@ -153,14 +154,25 @@ def test_a_name_somebody_typed_beats_the_plan_that_proposed_one(tmp_path: Path):
     assert _app_display_name(app) == "Finance"
 
 
-def test_a_callers_fallback_sits_below_the_written_names_and_above_the_placeholders(tmp_path: Path):
-    """`fallback` is the seam. Publish passes the Domino project's name, which is a name somebody
-    chose and the better answer on the deployment side than a rail position nobody deploying can
-    see. A written name beats it; a placeholder never reaches it."""
+def test_the_written_half_of_the_ladder_answers_empty_for_an_app_nobody_named(tmp_path: Path):
+    """The seam is a function rather than a caller's argument (#218). `_app_written_name` returns
+    the two written rungs and "" below them, which is how publish asks "is this app still wearing a
+    placeholder" without matching `Draft app 1` against what the ladder rendered."""
     mgr = _mgr(tmp_path)
     app = mgr.ensure("p", seed_app=True)
 
-    assert _app_display_name(app, "domino-quickstart") == "domino-quickstart"
+    assert _app_written_name(app) == ""
+    assert _app_display_name(app) == "Draft app 1"
 
     app.write_plan("# Revenue by region\n\nSteps...")
-    assert _app_display_name(app, "domino-quickstart") == "Revenue by region"
+    assert _app_written_name(app) == "Revenue by region"
+
+    app.set_display_name("Finance")
+    assert _app_written_name(app) == "Finance"
+
+
+def test_no_caller_can_slip_a_name_in_under_the_ladder(tmp_path: Path):
+    """The `fallback` parameter is gone (#218). It was a rung nobody could see, decided by whichever
+    caller happened to be asking — and publish, its one real caller, now shows the person a field
+    holding the Domino project's name instead of sending it in on the way past."""
+    assert "fallback" not in inspect.signature(_app_display_name).parameters
