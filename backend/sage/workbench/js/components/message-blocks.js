@@ -38,11 +38,14 @@ window.SW = window.SW || {};
     );
   }
 
-  // Sub-second calls are the common case for a write, and `(0.042).toFixed(1)` is "0.0s" — the
-  // same misleading zero this is here to stop showing. Milliseconds below a second, seconds above.
+  // Only a wait worth reading. `_tool_duration_ms` times the tool alone — the model's argument
+  // streaming is deliberately not in it — so a read, a write or a glob is a local file operation
+  // and always lands in the tens of milliseconds. That number told nobody anything and put a
+  // precise-looking figure on the step of the card least worth attention. What is left is the wait
+  // a person actually sits through: an install, a typecheck, a sub-task.
   function runDuration(ms) {
-    if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) return '';
-    return ms < 950 ? ` · ${Math.round(ms)}ms` : ` · ${(ms / 1000).toFixed(1)}s`;
+    if (typeof ms !== 'number' || !isFinite(ms) || ms < 950) return '';
+    return ` · ${(ms / 1000).toFixed(1)}s`;
   }
 
   function SandboxRun({ block }) {
