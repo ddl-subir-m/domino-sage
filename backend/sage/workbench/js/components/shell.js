@@ -453,7 +453,7 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-setting' },
-        h('div', { className: 'sw-setting-label' }, 'What to include from Chat'),
+        h('div', { className: 'sw-setting-label' }, SW.brand.text('What to include from {chat}')),
         h(
           Space,
           {
@@ -462,7 +462,7 @@ window.SW = window.SW || {};
             // antd renders Space as a plain div, so without these the three boxes read as loose
             // checkboxes belonging to nothing — the same gap the Radio.Group above has to fill.
             role: 'group',
-            'aria-label': 'What to include from Chat',
+            'aria-label': SW.brand.text('What to include from {chat}'),
           },
           h(
             antd.Checkbox,

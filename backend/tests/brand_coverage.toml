@@ -215,7 +215,9 @@ shows_pack = true
 [[surface]]
 kind = "python-prose"
 module = "sage/resources/gateway_bypass.py"
-shows_pack = true
+# Names the files and models the creator wrote, not our nouns — so a sentinel pack has nothing
+# here to replace. The scan still runs (a bare "Domino" would still fail).
+shows_pack = false
 
 [[surface]]
 kind = "python-prose"

@@ -9805,13 +9805,15 @@ class Orchestrator:
                 # This used to ask for a smaller piece, on the reading that one step had been too
                 # big to write in one go. The capture behind #207 disproves it: 22 characters of
                 # arguments had been emitted when the stream stopped, and splitting the request
-                # would have changed nothing. So the message names what the log now names — a
-                # gateway that stopped mid-answer. It also used to ask for time, on the reading
-                # that the gateway was under load — wrong as well, corrected 2026-09-08. The cut is
+                # would have changed nothing. It also used to ask for time, on the reading that
+                # the gateway was under load — wrong as well, corrected 2026-09-08. The cut is
                 # deterministic and follows the alias, not the hour: 13 of 13, at concurrency 1, 4
                 # and 8 alike (gateway-questions.md bug 3). So waiting changes nothing, and the one
                 # thing that does help is a different model. It still does not promise a shorter ask
                 # will go through, because there is still no evidence that it would.
+                #
+                # The person is told what happened and what to do. The gateway belongs in the log
+                # and in the retry note the agent reads, not on this line.
                 message = (f"This build stopped twice in the same step. The model stopped "
                            "responding. Pick a different model and try again.")
                 if owns_turn and is_approval:

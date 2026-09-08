@@ -288,8 +288,9 @@ def test_a_truncated_tree_says_the_listing_is_incomplete():
     nodes = _tree(_FILES, truncated=True)
 
     (note,) = [n for n in nodes if n.get("className") == "sw-tree-truncated"]
-    # The pack's words, not a literal: this sentence names both the assistant and the noun.
-    assert "Sage" in note["text"] and "Dataset" in note["text"]
+    # The pack's noun, not a literal: this sentence says the listing is incomplete and names
+    # what it is a listing of.
+    assert "Dataset" in note["text"]
     assert "2" in note["text"]  # how many of them it did list
     assert "raw" in _said(nodes)  # and the files it has are still there to use
 

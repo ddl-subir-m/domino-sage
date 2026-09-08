@@ -156,22 +156,22 @@ def test_a_build_cut_off_twice_does_not_report_success(tmp_path: Path):
     # And it names what happened in words the person can act on, rather than leaving the failure
     # to be inferred from an app that did not change.
     message = _of(events, "error")[0]["message"]
-    # Not "the model sent a broken call": the capture behind #207 is a gateway that stopped
-    # sending, so the first sentence must not hand the fault to the model that the second sentence
-    # then takes back off it.
-    assert "part-way through a write step, twice" in message
+    # Not "the model sent a broken call": that named a JSON fault the capture behind #207
+    # disproves. The person is told the build stopped and the model stopped responding.
+    assert "stopped twice in the same step" in message
     assert "The model sent a broken" not in message
-    # And it says what the log says: the gateway stopped mid-answer, twice. What it must NOT say is
-    # that one step was too big — see test_a_cut_stream_is_named_for_what_cut_it.py.
-    assert "the model gateway stopped responding" in message
     # The advice used to be "again in a few minutes", on the reading that the gateway was under
     # load. It is not (2026-09-08): the gateway buffers a tool call's argument deltas instead of
     # streaming them, so the connection goes quiet and a 60s idle limit ends it — 13 reproductions
     # out of 13, at concurrency 1, 4 and 8 alike, following the alias rather than the hour
     # (gateway-questions.md bug 3). Waiting is not a fix and asking for it spends the person's
     # afternoon, so the message asks for the one thing that is.
-    assert "Pick a different model and send the same request again." in message
+    assert "Pick a different model" in message
     assert "few minutes" not in message, "the give-up still tells the person to wait it out"
+    # Size was the first wrong cause. The gateway is named in the log and the retry note, not
+    # here — see test_a_cut_stream_is_named_for_what_cut_it.py.
+    for claim in ("too big", "smaller"):
+        assert claim not in message, f"the give-up still blames size: {claim!r}"
     # Exactly one retry. A model that breaks every time must not spend the whole build proving it.
     assert len(oc.sessions) == 2
 

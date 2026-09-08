@@ -170,6 +170,8 @@ def test_the_give_up_does_not_ask_the_person_for_a_smaller_piece(tmp_path: Path)
     events = list(orch.build_stream("build me a dashboard"))
 
     message = _of(events, "error")[0]["message"]
-    assert "gateway" in message
+    # The person is told to pick a different model, which is the one thing that helps. Size was
+    # the first wrong cause; the gateway is named in the retry note above, not on this line.
+    assert "Pick a different model" in message
     for claim in ("too big", "smaller"):
         assert claim not in message, f"the give-up still blames size: {claim!r}"
