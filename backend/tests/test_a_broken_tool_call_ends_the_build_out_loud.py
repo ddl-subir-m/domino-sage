@@ -110,12 +110,13 @@ def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
     # attachments and the Resource/Chat notes — are cleared after it, and a fresh session heard
     # none of them, so the retry has to carry them again.
     assert oc.prompts[1]["text"].startswith(oc.prompts[0]["text"])
-    # But not byte-identical. Measured live: a break that comes from what the model chose to write
-    # is made again by a second attempt that was told nothing, so the retry names what broke and
-    # names the choice behind it.
+    # But not byte-identical. A fresh session was told nothing about the one it replaces, so the
+    # retry names what broke and that the app on disk is mid-change. What it must NOT name is a
+    # cause the evidence does not support — see
+    # test_a_cut_stream_is_named_for_what_cut_it.py, which pins that half.
     note = oc.prompts[1]["text"][len(oc.prompts[0]["text"]):]
     assert "write call arrived with arguments that did not parse" in note
-    assert "public/data/" in note
+    assert "read it before you change it" in note
 
 
 def test_the_retry_note_rides_the_retry_only(tmp_path: Path):
@@ -156,10 +157,10 @@ def test_a_build_cut_off_twice_does_not_report_success(tmp_path: Path):
     # to be inferred from an app that did not change.
     message = _of(events, "error")[0]["message"]
     assert "broken write call twice" in message
-    # Not "try the same request again": the retry already was that request, and it broke the same
-    # way. The only thing left for the person to change is how much one step asks for.
-    assert "Try the same request again." not in message
-    assert "Ask for a smaller piece of it" in message
+    # And it says what the log says: the gateway stopped mid-answer, twice. What it must NOT say is
+    # that one step was too big — see test_a_cut_stream_is_named_for_what_cut_it.py.
+    assert "the model gateway stopped responding" in message
+    assert "Send the same request again in a few minutes." in message
     # Exactly one retry. A model that breaks every time must not spend the whole build proving it.
     assert len(oc.sessions) == 2
 

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import queue
+import time
 from collections.abc import Iterator
 
 # Wait this long for the first upstream byte (or a fast failure) before committing to the stream. A
@@ -60,15 +61,38 @@ def pump(gen: Iterator[bytes], q: queue.Queue) -> None:
     upstream stream breaks. Note: not cancelled on client disconnect — runs until the gateway
     completes/errors (the same read=None exposure the direct stream already had)."""
     log = logging.getLogger("sage.shim.stream")
+    # Counted on every stream now, not only a debugged one: the count is half of what makes the
+    # unterminated-stream warning below readable (15 chunks in 48s is a degraded gateway).
     seen = 0
+    started = time.monotonic()
+    ended = None  # the first terminal finish_reason any chunk carried, if one ever did
     try:
         for chunk in gen:
-            if _debug_stream and seen < DEBUG_STREAM_MAX_CHUNKS:
-                seen += 1
+            seen += 1
+            if _debug_stream and seen <= DEBUG_STREAM_MAX_CHUNKS:
                 log.info("stream chunk %d: %r", seen, chunk[:DEBUG_STREAM_MAX_BYTES])
+            if ended is None:
+                ended = terminal_finish_reason(chunk)
             q.put(chunk)
         if _debug_stream:
             log.info("stream done after %d chunk(s)", seen)
+        # Measured live (2026-09-07): a gateway under load stops sending part-way through a tool
+        # call's arguments and closes, with no terminal finish_reason anywhere in the stream. The
+        # generator is simply exhausted, so nothing raises, `[DONE]` is not required for a client to
+        # cope, and the fault surfaces four layers away as OpenCode's "Invalid JSON input for
+        # openai-chat tool call write" — a message about JSON, for a fault that has nothing to do
+        # with JSON. This line is what tells the two apart in /api/diag/log: a cap says
+        # finish_reason="length" (and shim/app.py names it), a healthy answer says "stop" or
+        # "tool_calls", and a cut stream says nothing at all.
+        #
+        # Guarded on `seen` because a stream that carried NO chunks is a different fault — a
+        # pre-stream failure wearing a 200 — and the eager first pull in both apps already handles
+        # it. A stream that broke outright never reaches here: it leaves through the except below,
+        # which is reported where it lands.
+        if seen and ended is None:
+            log.warning("gateway ended the stream with no finish_reason after %.1fs and %d chunk(s)"
+                        " — the answer stops wherever it stopped, and a tool call caught by that "
+                        "arrives with arguments that do not parse", time.monotonic() - started, seen)
         q.put(DONE)
     except BaseException as e:  # GatewayUpstreamError, httpx ReadError/RemoteProtocolError, etc.
         q.put(("error", e))
@@ -128,6 +152,50 @@ def upstream_error(chunk: bytes) -> str | None:
 # Finish reasons that mean the answer was cut off rather than finished. The healthy ones — "stop"
 # and "tool_calls" — are deliberately absent: this only ever reports a cut.
 CUT_OFF_FINISH_REASONS = ("length", "max_tokens", "content_filter")
+# Every reason that means the stream reached an end, cut or not. The set whose ABSENCE is the fault
+# `pump` reports: a stream carrying none of these did not finish, it stopped.
+TERMINAL_FINISH_REASONS = CUT_OFF_FINISH_REASONS + ("stop", "tool_calls")
+
+
+def _finish_reason(chunk: bytes, wanted: tuple[str, ...]) -> str | None:
+    """The first finish_reason on a chunk that is one of `wanted`. None otherwise."""
+    # Fast reject before any parsing, for the same reason upstream_error has one: this runs against
+    # every chunk of every stream, and an OpenAI-style content delta carries `"finish_reason": null`
+    # on each one, so keying off the field name would json.loads the whole hot path. Keying off the
+    # values costs a substring scan and rejects every healthy chunk. A false hit — the word
+    # "length" inside prose the model is writing — falls through to the parse below and is rejected
+    # there.
+    if not any(v.encode() in chunk for v in wanted):
+        return None
+    for line in chunk.split(b"\n"):
+        payload = line.strip()
+        if not payload.startswith(b"data:"):
+            continue
+        payload = payload[len(b"data:"):].strip()
+        if not payload.startswith(b"{"):  # skips [DONE] and SSE comments
+            continue
+        try:
+            obj = json.loads(payload)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        for choice in obj.get("choices") or []:
+            reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+            if reason in wanted:
+                return str(reason)
+    return None
+
+
+def terminal_finish_reason(chunk: bytes) -> str | None:
+    """The finish_reason on a chunk when it ends the answer — the cut reasons and the healthy ones.
+
+    `cut_off_finish_reason` below answers "was this answer cut short?". This answers the flatter
+    question "did this stream say it was over at all?", which is what `pump` needs: a gateway that
+    stops sending mid-tool-call emits no terminal reason of any kind, and telling that apart from a
+    cap needs the healthy reasons counted too (see the warning in `pump`).
+    """
+    return _finish_reason(chunk, TERMINAL_FINISH_REASONS)
 
 
 def cut_off_finish_reason(chunk: bytes) -> str | None:
@@ -147,32 +215,7 @@ def cut_off_finish_reason(chunk: bytes) -> str | None:
     Returns None for an ordinary chunk, including one carrying `"finish_reason": null` or a
     healthy "stop".
     """
-    # Fast reject before any parsing, for the same reason upstream_error has one: this runs against
-    # every chunk of every stream, and an OpenAI-style content delta carries `"finish_reason": null`
-    # on each one, so keying off the field name would json.loads the whole hot path. Keying off the
-    # values costs a substring scan and rejects every healthy chunk. A false hit — the word
-    # "length" inside prose the model is writing — falls through to the parse below and is rejected
-    # there.
-    if not any(v.encode() in chunk for v in CUT_OFF_FINISH_REASONS):
-        return None
-    for line in chunk.split(b"\n"):
-        payload = line.strip()
-        if not payload.startswith(b"data:"):
-            continue
-        payload = payload[len(b"data:"):].strip()
-        if not payload.startswith(b"{"):  # skips [DONE] and SSE comments
-            continue
-        try:
-            obj = json.loads(payload)
-        except ValueError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        for choice in obj.get("choices") or []:
-            reason = choice.get("finish_reason") if isinstance(choice, dict) else None
-            if reason in CUT_OFF_FINISH_REASONS:
-                return str(reason)
-    return None
+    return _finish_reason(chunk, CUT_OFF_FINISH_REASONS)
 
 
 # How many assistant tool-call messages the debug listing shows before it stops.
