@@ -6263,6 +6263,16 @@ class Orchestrator:
         uploads = []
         if include_resources:
             for item in context:
+                # A row with no table chosen crosses as an UNSCOPED Data Source Binding, and this
+                # is the moment the new app is born unable to query (#204). It is written anyway,
+                # and deliberately: the alternative — refusing the crossing over a half-answered
+                # question — loses the whole handoff, and an unscoped Binding is still a Data
+                # Source the panel's picker can scope afterwards.
+                #
+                # What makes that acceptable is that the question is now ASKED before anyone gets
+                # here. Chat's table gate runs above the handoff short-circuit, so a request that
+                # names a store meets the candidate card first and this row carries the table the
+                # click recorded. It did not, and that is how an app shipped querying `FROM GONG`.
                 binding = chat_handoff.binding_from_context(item)
                 if binding is not None:
                     self._bind_from_handoff(binding)
@@ -6661,35 +6671,34 @@ class Orchestrator:
         # `skip_table_gate` joins `already_asked` here for the same reason it joins it below: the
         # turn that drew the candidate card wrote this sentence to the Thread before it drew one, so
         # writing it again would print the person's question twice under one card.
-        if not already_asked and not skip_table_gate and not skip_dataset_gate:
+        asking = not already_asked and not skip_table_gate and not skip_dataset_gate
+        if asking:
             store.append_history(thread_id, user_ev)
             yield user_ev
 
-            # "Build me an app" is answered by Build, so offer it now rather than after a turn.
-            # sage-chat writes an Artifact under examples/, never an app, so running the turn first
-            # spends a whole turn and ends exactly where this starts — which is how a build request
-            # became 90 seconds of spinner and "ask again with a smaller question".
-            #
-            # Only the regex short-circuits. The model classifier still runs after a turn, because
-            # it judges the assistant's reply as well as the ask, and it cannot do that before one
-            # exists.
-            #
-            # Declining that offer is what brings a turn back here with `already_asked` — so this
-            # is skipped on the way through, or the decline would meet the same offer it declined.
-            early = self._explicit_handoff(store, thread_id, prompt)
-            if early:
-                done = {"type": "done", "ok": True, "decision": "handoff"}
-                store.append_history(thread_id, early)
-                store.append_history(thread_id, done)
-                yield early
-                yield done
-                return
-
         # A Data Source on this Thread whose table nobody has chosen (#188)? The same search Build
         # runs, from the mode the person happens to be standing in — a question does not deserve a
-        # worse answer than a build request. After the handoff offer above, because a request that
-        # is really "build me an app" belongs in Build and should not spend seconds reading a
-        # warehouse first.
+        # worse answer than a build request.
+        #
+        # BEFORE the handoff offer below, which is the reverse of where this sat (#204). The old
+        # order read well — a request that is really "build me an app" belongs in Build and should
+        # not spend seconds reading a warehouse first — and it assumed Build's gate would ask
+        # instead. Build never gets the chance: a confirmed handoff arrives as `kind: "approve"`,
+        # and `_approve_locked` returns above the whole gate block. So each surface deferred to the
+        # other, nobody asked, `confirm_handoff` minted an app around an unscoped Binding, and the
+        # model wrote `FROM GONG` — a table name it invented, on which every query failed.
+        #
+        # The seconds the old order was protecting are only ever spent on the one request that
+        # needs them. This declines off the Thread's own rows, before any catalog call, unless the
+        # sentence names a Data Source with no table chosen — so a build request that names no
+        # store still crosses in milliseconds, exactly as it did.
+        #
+        # The nudge is deferred, not dropped: the click replays the question with `skip_table_gate`
+        # and the explicit detect below runs on that turn instead. It arrives with the table already
+        # on the Thread's row, which is what `binding_from_context` reads on the way across — so the
+        # app is born able to query. The plan is the quieter half. It is drafted past this point
+        # from the same context rows, so the questions a bound table's schema answers for free
+        # ("which date field?", "which breakdown?") stop being put to the person at all.
         #
         # `skip_table_gate` is the card being ANSWERED, not the gate being bypassed: the click
         # writes the table onto the Thread's own row, so this would not fire again for the Data
@@ -6700,6 +6709,34 @@ class Orchestrator:
             if offer is not None:
                 yield from offer
                 return
+
+        # "Build me an app" is answered by Build, so offer it now rather than after a turn.
+        # sage-chat writes an Artifact under examples/, never an app, so running the turn first
+        # spends a whole turn and ends exactly where this starts — which is how a build request
+        # became 90 seconds of spinner and "ask again with a smaller question".
+        #
+        # Only the regex short-circuits. The model classifier still runs after a turn, because
+        # it judges the assistant's reply as well as the ask, and it cannot do that before one
+        # exists.
+        #
+        # NOT under `asking`, which is the guard on echoing the person's sentence back and nothing
+        # more. `asking` is false on exactly the turn the table card replays into
+        # (`skip_table_gate`), so guarding this with it put the spinner back on the one turn the
+        # reorder above exists to buy: measured, the click was answered by a whole sage-chat turn
+        # and the nudge arrived after it, rather than in the three milliseconds the regex costs.
+        #
+        # Declining that offer is what brings a turn back here with `already_asked` — and this is
+        # still skipped then, by `should_classify` inside `_explicit_handoff` reading the Thread's
+        # own handoff rows. That guard belongs there rather than here: it is a fact about what this
+        # Thread has already been offered, not about whether this turn is echoing a sentence.
+        early = self._explicit_handoff(store, thread_id, prompt)
+        if early:
+            done = {"type": "done", "ok": True, "decision": "handoff"}
+            store.append_history(thread_id, early)
+            store.append_history(thread_id, done)
+            yield early
+            yield done
+            return
         # And a Dataset on this Thread with no file pinned from it (#196, ADR-0039), asked last for
         # the reason Build asks it last: a store with no table cannot be read at all, while a
         # Dataset nobody has picked a file from still lets a turn run. `skip_dataset_gate` is the
@@ -7508,6 +7545,13 @@ class Orchestrator:
                 bindings,
             )
         if binding is None:
+            # Said out loud, because a gate that declines in silence cost #204 six hypotheses to
+            # find: `/api/diag/timing` reports a three-millisecond turn and no model call, which is
+            # the same shape whether this branch was taken or the code was never reached at all.
+            # `/api/diag/log?q=table gate` now tells those two apart. It is one line on the turns
+            # that name no store, which is most of them — the ring holds 400 and a build turn emits
+            # hundreds, so this is the cheapest thing in it.
+            log.info("table gate (build): declined — no unscoped Data Source named")
             return False
         try:
             with timing.span("gate.table", part="databases"):
@@ -7518,6 +7562,8 @@ class Orchestrator:
                 # the database-wide statement exists to avoid. False for a connector with no dialect
                 # at all too, on the same practical ground: there is nothing to walk either way.
                 if not walks_whole_database(source):
+                    log.info("table gate (build): declined — %s cannot be walked in one query",
+                             binding.display_name)
                     return False
                 # Which databases there are, and whether there are too many to search, are both
                 # settled before anything is said — so a store that was never going to be searched
@@ -7833,10 +7879,16 @@ class Orchestrator:
         binding = table_search.named_source(prompt, self._chat_mentioned_sources(prompt, items),
                                             bindings)
         if binding is None:
+            # Named for the reason the Build gate's is (#204), and it matters more here: this gate
+            # now runs before the handoff short-circuit, so this line is the difference between "the
+            # sentence named no store" and "the gate never ran".
+            log.info("table gate (chat): declined — no unscoped Data Source named")
             return None
         try:
             source = self._data_source(binding.id)
             if not walks_whole_database(source):
+                log.info("table gate (chat): declined — %s cannot be walked in one query",
+                         binding.display_name)
                 return None
             # The Build gate streams its walk (#186); this one does not, because a Chat turn
             # has no build to be waited on and the same frames would be a progress bar over
@@ -7853,6 +7905,10 @@ class Orchestrator:
             log.exception("table search: could not walk %s", binding.display_name)
             return None
         if not found:
+            # The fourth way to fall through, kept audible with the other three: the store answered
+            # and holds nothing to offer, which reads on screen exactly like a gate that never ran.
+            log.info("table gate (chat): declined — %s holds nothing to offer",
+                     binding.display_name)
             return None
         # The same ranker Build runs, on the same seam (#193). Chat is where ADR-0038 says finding
         # happens, so it must not be the surface that gets the weaker order — and the ranker already
