@@ -247,7 +247,8 @@ def parse_samples(raw: object) -> list[SharedSample]:
 
 def agents_block(sources: list[BoundSource], problems: list[str] | None,
                  max_rows: int, *, samples=(), names: HelperNames = TEMPLATE,
-                 reaching: bool = False, unasked: list[str] = ()) -> str:
+                 reaching: bool = False, unasked: list[str] = (),
+                 failing: dict[str, str] | None = None) -> str:
     """What the agent is told about the app's data, for the managed AGENTS.md region.
 
     Empty when no Data Source is bound. Describing the machinery for a store that is not there would
@@ -301,6 +302,9 @@ def agents_block(sources: list[BoundSource], problems: list[str] | None,
     lines += _how_to_ask(sources, max_rows, names)
     lines += _samples_section(samples)
     lines += _unasked_section(unasked)
+    # Above the static problems, because a query the store has already refused outranks one that
+    # might be refused: the first is a fact about this app right now, the second is a prediction.
+    lines += _failing_section(failing)
     lines += _problems_section(problems)
     return "\n".join(lines)
 
@@ -678,6 +682,41 @@ def _unasked_section(unasked) -> list[str]:
         brand.text(
             "- If you cannot write it because no {scope} is chosen, say which part of the store you "
             "need. The person sets it; you cannot, from here."),
+        "",
+    ]
+
+
+def _failing_section(failing) -> list[str]:
+    """What the store refused when the preview actually ran these queries (#203).
+
+    Separate from `_problems_section` below because it is a different fault with a different remedy,
+    and folding the two under one heading would blur them. That one is static — a catalog that does
+    not hold together, found by reading the file. This one is what only running the query can find:
+    the statement is well-formed, the app will happily serve it, and the store says the table is not
+    there or not theirs to read.
+
+    The store's own words, unparaphrased, for the same reason that section keeps `serve.py`'s: the
+    difference between a name to fix and a permission to ask a person for is in the sentence, and an
+    agent told only "the query failed" has to guess which it is looking at — which is how the live
+    run that produced this got four invented table names in one turn.
+    """
+    named = {name: reason for name, reason in (failing or {}).items() if name}
+    if not named:
+        return []
+    return [
+        "### Queries this app ran and the store refused", "",
+        brand.text("{assistantName} ran these against the {dataSource} while this app was being "
+                   "built. The store answered with the reason beside each one:"), "",
+        *[f"- `{name}` — {reason}" for name, reason in named.items()], "",
+        ("- **The app is broken until these answer.** Every screen waiting on one of them shows an "
+         "error where the data should be, so a build that leaves them failing is not finished."),
+        ("- **Do not paper over it with rows you wrote yourself.** Invented rows look exactly like "
+         "read ones, which is what makes them worse than an empty screen."),
+        brand.text(
+            "- **If the store says a table is missing or not authorized, that may not be yours to "
+            "fix.** Guessing another table name is a way to fail again in the same turn. Say what "
+            "the app needs and leave the {dataSource} to the person — they can change what it "
+            "reaches, and you cannot, from here."),
         "",
     ]
 

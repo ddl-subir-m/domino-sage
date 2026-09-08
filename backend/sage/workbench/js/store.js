@@ -1353,7 +1353,9 @@ window.SW = window.SW || {};
   // the platform, and the chip is how the person finds out (#125, ADR-0027). Here the planner read
   // the request, found no app in it and said so; nothing was asked of the platform at all, and
   // every stray note or shell command would otherwise buy a listing for a turn that worked (#150).
-  const NO_PLATFORM_FAULT = { 'no app described': true };
+  // `queries failed` is here for the same reason (#203): the turn ran, the model answered, and a
+  // Data Source refused a query — nothing a listing of models can say anything about.
+  const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
   // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
@@ -1673,6 +1675,12 @@ window.SW = window.SW || {};
         // read as a failed turn, and an `{ type: 'error' }` frame would be one: `endedBadly` keys
         // on the frame type alone and would go and fetch a gateway listing over a clean build.
         ensureAssistant().blocks.push({ type: 'status', value: ev.message });
+      } else if (ev.type === 'data-source-failed' && ev.message) {
+        // Red, unlike the grey line above it, and that is the whole difference between the two: an
+        // app nobody queried may be exactly what was wanted, and an app whose queries the store
+        // refused is broken on every screen that waits on one. The `done` under this carries
+        // `ok: false` to match, so the two cannot say different things about one turn.
+        ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
       } else if (ev.type === 'mentions-unresolved' && ev.message) {
         // Sits above the turn it belongs to rather than beside the composer: what the build could not
         // use is part of the record of that build, and a toast would be gone by the time the app it

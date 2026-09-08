@@ -71,6 +71,13 @@ class CachingExecutor:
         self._lock = threading.Lock()
         self.hits = 0
         self.misses = 0
+        # Which of this app's queries the store is refusing right now, by name, in the words it
+        # refused them with (#203). By NAME rather than by cache key, because one screen reloading
+        # over HMR fires the same broken query dozens of times in a turn and the creator needs one
+        # line about it, not forty. It is a live answer rather than a tally: a name is dropped again
+        # the moment that query answers, so a build is never reported broken over SQL the agent has
+        # already fixed.
+        self.failures: dict[str, str] = {}
         # `serve.py`'s own one-line redactor, passed in rather than reimplemented: the SDK's client
         # prints its api_key in `__repr__`, so an exception carrying the client carries the key, and
         # there must be exactly one rule about that. Falls back to the type name alone, which is the
@@ -103,12 +110,17 @@ class CachingExecutor:
             # `__cause__` because serve.py converts the real failure into a sanitised QueryProblem
             # and chains the original to it — the sentence is for the viewer, the cause is the part
             # that says which credential or table is the problem.
-            log.warning("preview queries: %s failed — %s", getattr(query, "name", "?"),
-                        self._redact(exc.__cause__ or exc))
+            reason = self._redact(exc.__cause__ or exc)
+            log.warning("preview queries: %s failed — %s", getattr(query, "name", "?"), reason)
+            # Kept as well as logged, because the log line was the whole of what happened to six
+            # failures in a row while the turn that caused them reported a clean build (#203).
+            with self._lock:
+                self.failures[getattr(query, "name", "?")] = reason
             raise
         with self._lock:
             self._entries[key] = (now, result)
             self.misses += 1
+            self.failures.pop(getattr(query, "name", "?"), None)
         return result
 
     @staticmethod
@@ -141,6 +153,24 @@ class PreviewQueries:
     def port(self) -> int | None:
         """The loopback port `serve.py` is answering on, or None when it is not."""
         return self._server.server_address[1] if self._server is not None else None
+
+    def failures(self) -> dict[str, str] | None:
+        """Which of this app's queries the store refused, in its own words, or None when nobody
+        asked it anything (#203).
+
+        The two answers this must keep apart are `{}` and None, for the reason `catalog_problems`
+        keeps `[]` and None apart: a preview that never came up ran no query, so it saw no failure,
+        and reporting that as a clean data path would be this ticket's bug again in a quieter voice.
+        `{}` is a preview that ran the app's queries and watched them all answer.
+
+        Narrowed to the catalog the server currently holds, so a query the agent has since deleted
+        does not go on being reported. A query it has since FIXED is already gone — the executor
+        drops a name the moment it answers.
+        """
+        if self._server is None or self.executor is None:
+            return None
+        catalog = getattr(self._server, "sage_queries", {}) or {}
+        return {name: reason for name, reason in self.executor.failures.items() if name in catalog}
 
     def start(self) -> None:
         """Bind and serve, or log why not and leave the preview as it was.
@@ -206,10 +236,17 @@ class PreviewQueries:
                  len(getattr(self._server, "sage_queries", {}) or {}))
 
     def _build_executor(self) -> CachingExecutor:
-        """A real executor for this workspace's Bindings, behind the preview's cache."""
+        """A real executor for this workspace's Bindings, behind the preview's cache.
+
+        `preview=True` is the one thing this asks `serve.py` to do differently, and it is not about
+        behaviour: it picks the wording a refusal carries. Every sentence there is addressed to a
+        viewer of a published App and sends them to whoever published it — which, here, is a creator
+        who has published nothing, reading their own preview (#203).
+        """
         return CachingExecutor(
             self._module.FlightExecutor(self._module.load_sources(self._workspace),
-                                        getattr(self._module, "_DEFAULT_MAX_ROWS", 5000)),
+                                        getattr(self._module, "_DEFAULT_MAX_ROWS", 5000),
+                                        preview=True),
             self._ttl,
             getattr(self._module, "_readable", None),
         )
