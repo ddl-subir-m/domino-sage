@@ -173,6 +173,22 @@ def _write_settings_file(path: Path, settings: dict) -> None:
     path.write_text(json.dumps(settings, indent=2))
 
 
+def _app_dir_names(apps_dir: Path) -> list[str]:
+    """Every Built App directory under `apps/`, oldest first.
+
+    Module level because two callers ask it of the same directory from opposite ends —
+    `WorkspaceManager.app_ids` from the Project, `Workspace.sibling_app_ids` from inside one app —
+    and a second copy of the filter would drift. The symlink test is the part that matters: the
+    warm `node_modules` link sits beside the apps and is not one.
+
+    Sorted by name, which sorts by age: `new_id` leads with epoch-ms, so the directory name carries
+    an order no list has to remember.
+    """
+    if not apps_dir.is_dir():
+        return []
+    return sorted(p.name for p in apps_dir.iterdir() if p.is_dir() and not p.is_symlink())
+
+
 @dataclass(frozen=True)
 class ProjectRecord:
     """What the Project owns, as against what one Built App owns (ADR-0008).
@@ -549,6 +565,16 @@ class Workspace:
         only ever been talked to in Chat: an app is born when a handoff is confirmed, and until
         then there is nothing here to read, link or ignore."""
         return self.path.is_dir()
+
+    def sibling_app_ids(self) -> list[str]:
+        """Every Built App in the same Project as this one, oldest first, this one included.
+
+        Asked from inside an app so that naming one can say WHICH of the Project's apps it is
+        without the naming code having to hold a manager (#211). `apps/` is this app's parent by
+        construction — `WorkspaceManager` builds every Workspace as `apps_dir / app_id` —
+        so the scan is the manager's own, reached from the other end.
+        """
+        return _app_dir_names(self.path.parent)
 
     @property
     def app_entry(self) -> Path:
@@ -1052,6 +1078,24 @@ class Workspace:
         adopted = [r if r.get("conversation") else {**r, "conversation": conversation} for r in rows]
         self.history_path.write_text("".join(json.dumps(r) + "\n" for r in adopted))
 
+    def first_prompt(self) -> str:
+        """The first thing a person typed into this app, or "" if nobody has yet.
+
+        Read so that an app can be named before it has a plan (#211). `+ New App` makes an app with
+        neither a name nor a plan, and pressed twice it makes two rows wearing the same placeholder
+        — so the first request is the earliest thing on disk that tells them apart.
+
+        Stops at the first match rather than reading the log: `_iter_history` is lazy and this file
+        reaches megabytes, and the answer is on line one of a log whose whole point is that it is
+        append-only. The pre-filter is built with json.dumps for the same reason `_tag_text` is —
+        so the raw substring and the row it is looking for cannot drift apart.
+        """
+        only = json.dumps({"type": "user"})[1:-1]
+        for _, row in self._iter_history(only=only):
+            if row.get("type") == "user":
+                return str(row.get("text") or "")
+        return ""
+
     def history_len(self) -> int:
         """Counts the lines truncate_history() would keep. Deliberately does not parse them: this
         runs twice a turn, only to take the stop-button baseline, and the baseline is a position."""
@@ -1300,14 +1344,8 @@ class WorkspaceManager:
         return self._dir / _APPS
 
     def app_ids(self) -> list[str]:
-        """Every Built App on this volume, by directory scan, oldest first.
-
-        Sorted by name, which sorts by age: `new_id` leads with epoch-ms, so the directory name
-        carries the order a list would otherwise have to remember.
-        """
-        if not self.apps_dir.is_dir():
-            return []
-        return sorted(p.name for p in self.apps_dir.iterdir() if p.is_dir() and not p.is_symlink())
+        """Every Built App on this volume, by directory scan, oldest first."""
+        return _app_dir_names(self.apps_dir)
 
     def selected_app_id(self) -> str:
         """The Built App this manager is pointed at: the selection, else the newest on disk, else

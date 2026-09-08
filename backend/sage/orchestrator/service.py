@@ -2764,6 +2764,13 @@ def _app_display_name(workspace: Workspace, fallback: str | None = None) -> str:
 
     Publish passes the Domino project's name as `fallback`, because that is what it used to name
     every App and is the better answer on the deployment side for an app nobody has named.
+
+    The ladder is in two halves, and `fallback` is the seam. Above it are names DERIVED FROM THE
+    APP — what somebody called it, its plan, its first request — and each of those beats a caller's
+    fallback, because each of them is about this app rather than about the Project around it. Below
+    it are PLACEHOLDERS, reached only where no fallback was offered. Adding a rung means deciding
+    which half it is in: a rung that says something about the app goes above, a rung that only
+    stops the row being blank goes below.
     """
     stored = workspace.display_name()
     if stored:
@@ -2775,10 +2782,31 @@ def _app_display_name(workspace: Workspace, fallback: str | None = None) -> str:
     plan = workspace.read_plan() or workspace.read_archived_plan() or ""
     if plan.strip():
         return chat_handoff.plan_title(plan)
+    # An app that has been asked for something but has not been planned yet: the request is the
+    # only thing on disk that says what it is for, and it says it in the person's own words (#211).
+    # Guarded rather than passed straight through, because `title_from_prompt` answers "Untitled"
+    # for an empty prompt and that word is kept away from app names — the rungs below are what an
+    # app with nothing typed into it gets.
+    prompt = workspace.first_prompt().strip()
+    if prompt:
+        return title_from_prompt(prompt)
     # Resolved here rather than in the signature: a default evaluated at import would freeze the
     # pack the process booted with, and a caller's own fallback is the Domino project's name — a
     # name somebody chose, which is never rewritten.
-    return fallback if fallback is not None else brand.text("Unnamed {builtApp}")
+    if fallback is not None:
+        return fallback
+    # Nothing has been typed into this app, so nothing distinguishes it except when it was made.
+    # Numbered only where there is something to tell it apart FROM: a Project with one app has no
+    # ambiguity to fix, and "Unnamed Built App" reads better than "Built App 1" in the sentences
+    # that quote this name back ("Use in ...", "... can't call @s yet"). The number is a position
+    # in birth order, which `sibling_app_ids` gets free from the id (ADR-0008: the id never
+    # changes) — so it is stable while apps are made, and does shift if an older one is deleted.
+    # That is accepted: this rung only ever names an app nobody has typed into, and the first
+    # thing typed replaces it.
+    siblings = workspace.sibling_app_ids()
+    if len(siblings) > 1 and workspace.app_id in siblings:
+        return brand.text("{builtApp} {n}", n=siblings.index(workspace.app_id) + 1)
+    return brand.text("Unnamed {builtApp}")
 
 
 def _app_change_event(workspace: Workspace) -> dict:
@@ -4991,8 +5019,8 @@ class Orchestrator:
         # Named, because a Project holds many apps (ADR-0008) and "this app" is the one word that
         # cannot say which of them is missing the Binding. Through `_app_display_name` and not
         # `display_name`, which is "" until somebody renames an app: this sentence quotes a menu
-        # label back at the reader, so it has to call the app what the rail calls it — plan title, or
-        # "Unnamed Built App" — or it sends them looking for a row of that name.
+        # label back at the reader, so it has to call the app what the rail calls it — whichever
+        # rung of that ladder answers — or it sends them looking for a row of that name.
         where = _app_display_name(project.app_for_turn())
         whose = project.app_for_turn().app_id
         # Chat's uploads, named apart from the rest: "not attached" is true of both, but only this one

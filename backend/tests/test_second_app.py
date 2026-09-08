@@ -589,8 +589,10 @@ def test_an_app_started_from_build_sits_in_the_rail_beside_the_ones_from_a_hando
     rows = orch.list_apps()
     assert [r["id"] for r in rows] == [first, second, born]
     assert [r["id"] for r in rows if r["selected"]] == [born]
-    # Named for what it is, because there is no plan to borrow a title from yet.
-    assert {r["id"]: r["name"] for r in rows}[born] == "Unnamed Built App"
+    # Numbered rather than named, because there is no plan to borrow a title from yet and nothing
+    # has been typed into it — and because two rows reading the same placeholder tell nobody which
+    # is which (#211). Third of three, in birth order.
+    assert {r["id"]: r["name"] for r in rows}[born] == "Built App 3"
     # And it survives a restart, because the app is a directory rather than a row in an index.
     restarted, _oc2, _root2 = _orch(tmp_path)
     assert [r["id"] for r in restarted.list_apps()] == [first, second, born]

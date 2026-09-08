@@ -179,8 +179,8 @@ def test_a_resource_named_after_a_brand_token_is_never_resolved(acme):
 
 
 class _BlankWorkspace:
-    """Just enough Workspace for `_app_display_name`: no stored name and no plan to borrow one
-    from, which is the only path that reaches the fallback."""
+    """Just enough Workspace for `_app_display_name`: no stored name, no plan to borrow one from
+    and nothing typed into it, which is the only path that reaches the fallback."""
 
     def display_name(self) -> str:
         return ""
@@ -190,6 +190,12 @@ class _BlankWorkspace:
 
     def read_archived_plan(self) -> str:
         return ""
+
+    def first_prompt(self) -> str:
+        return ""
+
+    def sibling_app_ids(self) -> list[str]:
+        return []
 
 
 def test_an_unnamed_app_is_named_for_what_it_is_in_the_packs_words(acme):
