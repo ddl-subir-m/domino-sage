@@ -5274,6 +5274,16 @@ class Orchestrator:
                     prompt, resources, answered, chosen_source, picked)
                 if offered:
                     return
+            # And the bubble a TABLE pick writes, which is the same click one level down (#208).
+            # Here rather than beside `picked` above, because the table is not on the Binding until
+            # the click that answered the card has written it — and `picked` is passed INTO the gate
+            # above as the text the card records for the turn that drew it.
+            #
+            # It wins over a Data Source pick on the turns that could carry both, for the reason
+            # that one wins over the skip flags: the later, narrower choice is the one this click
+            # was about. Where no record answers it leaves whatever the turn already had.
+            if skip_table_gate:
+                picked = self._picked_table_text() or picked
             # And last of all, the question a Dataset asks (#196, ADR-0039). After the two Data
             # Source gates rather than beside them, for two reasons that point the same way: a Data
             # Source with no table is a store Sage cannot read at all while a Dataset with no
@@ -7493,6 +7503,38 @@ class Orchestrator:
         binding = next((b for b in parse_bindings(self.project().workspace.read_bindings())
                         if b.kind == KIND_DATA_SOURCE and b.id == source_id), None)
         return f"Use {binding.display_name}." if binding else ""
+
+    def _picked_table_text(self) -> str:
+        """The bubble a table pick writes, so the click reads as the table it chose (#208).
+
+        What stood here was `Build it.`, and it was wrong twice over. The table — the whole point of
+        the card, and the fact that decides the app — appeared nowhere in the record; and a sentence
+        nobody typed stood in the transcript in the person's own voice, which is worse than saying
+        nothing on the one surface that exists to keep their choice on the record.
+
+        Read off the manifest for `_picked_source_text`'s reason. The click records the Binding and
+        the browser waits for that write before it sends this turn, so the record the click just
+        made is a better source than the request — and the same read answers "did the pick actually
+        take?". Nothing about the choice rides on the request, which is why nothing was added to it.
+
+        SCHEMA-QUALIFIED, and not the whole dotted position. `MARTS` against `STAGING` is the
+        distinction the card exists to settle — the failure this came from shipped against an
+        invented `GONG` — while the database above them is a level the card never asked about. A
+        store with no schema at all says the table alone rather than leaving a leading dot.
+
+        The first Data Source carrying a table, which on this turn is the one the click just scoped:
+        this runs only where a table card is being answered, and `_data_source_binding` reads the
+        app's store the same way.
+
+        Empty where no record answers, exactly as the pick one level up is: a write that did not
+        land must not leave a sentence on screen claiming it did. The turn then says what it would
+        have said for any other card being answered.
+        """
+        binding = next((b for b in parse_bindings(self.project().workspace.read_bindings())
+                        if b.kind == KIND_DATA_SOURCE and b.table), None)
+        if binding is None:
+            return ""
+        return f"Use {'.'.join(p for p in (binding.schema, binding.table) if p)}."
 
     def _table_offer(self, prompt: str, resources: list[dict] | None, answered: dict,
                      chosen: str = "", user_text: str = ""):

@@ -171,6 +171,10 @@ console.log(JSON.stringify({
     .flatMap((m) => m.blocks || [])
     .filter((b) => b.type === 'table_candidates')
     .map((b) => ({ live: !!b.live })),
+  // What the transcript says the person did. Drawn by the store the moment the click lands and
+  // never streamed back, so it is the only sentence they see while the turn runs (#208).
+  bubbles: SW.store.get().buildMessages.filter((m) => m.role === 'user')
+    .map((m) => (m.blocks || []).map((b) => b.value || '').join('')),
   click: click ? JSON.parse(click.body) : null,
   replay: replay ? JSON.parse(replay.body) : null,
 }));

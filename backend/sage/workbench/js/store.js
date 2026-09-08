@@ -4502,7 +4502,7 @@ window.SW = window.SW || {};
     // the wait plus the turn — and a tab can have several of them at once.
     async sendBuildPrompt(text, { skipResetGate = false, skipIncomingGate = false,
                                   skipTableGate = false, skipSourceGate = false,
-                                  chosenSource = '', sourceName = '',
+                                  chosenSource = '', sourceName = '', tableName = '',
                                   skipDatasetGate = false, datasetDismissed = '' } = {}) {
       if (!text.trim()) return null;
       if (!state.thread) await store.newThread();
@@ -4511,8 +4511,13 @@ window.SW = window.SW || {};
       // click that is the click, not the request — the request is already a bubble above the offer,
       // and repeating it would say the user asked twice (see build_stream's `user_text`).
       // A Data Source pick is a click too, but not that one: what it answered was which store,
-      // so the bubble says which store. Written the same both ends (see _picked_source_text).
-      const bubble = sourceName ? `Use ${sourceName}.`
+      // so the bubble says which store. A table pick answers the same question one level down and
+      // says which table (#208) — `Build it.` there both threw the choice away and put a sentence
+      // nobody typed in their own voice. Written the same both ends (see _picked_source_text and
+      // _picked_table_text): this bubble is the only one drawn live, because the `user` event the
+      // server writes to the transcript is never streamed back, so a reload must read the same.
+      const picked = sourceName || tableName;
+      const bubble = picked ? `Use ${picked}.`
         : ((skipResetGate || skipIncomingGate || skipTableGate || skipSourceGate
             || skipDatasetGate)
           ? 'Build it.' : text);
@@ -4656,7 +4661,13 @@ window.SW = window.SW || {};
         store.loadBuild({ keepPreview: true }),
         refreshWorkingSet(),
       ]);
-      return store.sendBuildPrompt(prompt, { ...(answered || {}), skipTableGate: true });
+      // The Scope the click just recorded, schema-qualified, for the bubble the send draws: the
+      // server composes the same sentence off the Binding, and this one is what the person sees
+      // while the turn runs. The database is left off it for the reason the card's own heading
+      // carries it and its buttons do not — `MARTS` against `STAGING` is what they were picking
+      // between.
+      const tableName = [scope.schema, scope.table].filter(Boolean).join('.');
+      return store.sendBuildPrompt(prompt, { ...(answered || {}), skipTableGate: true, tableName });
     },
 
     // The answer to a Data Source card (#185): the click records the Binding, then the request the
