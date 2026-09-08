@@ -255,7 +255,10 @@ _Avoid_: attachment, scratch file, temp file, dropped file, data file
 An app Sage produces for a user, as distinct from Sage itself. It owns its code, its Bindings,
 its plan and its build history. It exists from the moment a handoff is confirmed, so an app that
 has never been published is still a Built App — publishing gives it a URL, not its existence. A
-Project has many. See [ADR-0008](docs/adr/0008-a-project-holds-many-built-apps.md).
+Project has many, and one of them is current at a time — a second browser tab is another
+view of that one rather than a second workspace. See
+[ADR-0008](docs/adr/0008-a-project-holds-many-built-apps.md) and
+[ADR-0040](docs/adr/0040-a-project-has-one-current-built-app-at-a-time.md).
 _Kind_: name
 _Avoid_: child app, generated app, output, App (unqualified — that is the Domino thing)
 
