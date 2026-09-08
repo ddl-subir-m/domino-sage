@@ -2451,6 +2451,25 @@ window.SW = window.SW || {};
     if (ev.type === 'plan-proposed' || ev.type === 'done') {
       refreshProjectPlan().then(notify, () => {});
     }
+    // The server named this Conversation off the first thing typed into it, at the top of the turn,
+    // and says so here. Applied rather than fetched: nothing on this path re-reads the Thread index
+    // — `sendBuildPrompt` re-reads the preview and the Bindings and never the list — so before this
+    // the rail kept the words "New conversation" for the whole build and for every build after it.
+    //
+    // Both halves, because they answer the same question in two places and a rail disagreeing with
+    // its own header is worse than a rail that is merely behind. Guarded on the id: a turn streams
+    // on after you open another Conversation (#77), and its name belongs to the row it named, not
+    // to whichever row you have since moved to.
+    //
+    // Returns, like the other events that are pure state: there is no block to add to a transcript
+    // for a rename, and a reload reads the name off the Thread row where it has always been.
+    if (ev.type === 'conversation_named') {
+      const rename = (row) => (row && row.id === ev.conversation ? { ...row, title: ev.title } : row);
+      state.thread = rename(state.thread);
+      state.threads = state.threads.map(rename);
+      notify();
+      return;
+    }
     if (ev.type === 'stopped') return;
     if (ev.type === 'active' || ev.type === 'phase' || ev.type === 'typecheck-start' || ev.type === 'iterate') return;
     // The buttons on a reset offer belong to the offer the user is looking at, not to every copy of

@@ -4701,7 +4701,7 @@ class Orchestrator:
         self._adopt_legacy_build_history(project.workspace, project.record)
 
     @staticmethod
-    def _name_conversation(project: Project, conversation: str | None, prompt: str) -> None:
+    def _name_conversation(project: Project, conversation: str | None, prompt: str) -> str:
         """Give a Build Conversation the title Chat would have given it (see _chat_stream).
 
         One naming rule for both modes: `title_from_prompt`, the same 60 characters, the same
@@ -4710,14 +4710,22 @@ class Orchestrator:
 
         Silent when the id names no row. A build driven from outside the rail — the CLI, a test —
         passes a conversation this store has no record of (see ThreadStore.is_deleted), and naming
-        something that does not exist is not what a turn is for."""
+        something that does not exist is not what a turn is for.
+
+        Returns the title it WROTE, and "" for every path above that writes nothing. The caller
+        yields it, so the rail hears about the name from the turn that made it rather than from a
+        read it has no reason to make (see the yield site). The distinction the return value carries
+        is exactly the guard's: a second prompt and a gate card's replay both reach here and both
+        change nothing, and neither should tell the rail that anything moved."""
         if not conversation:
-            return
+            return ""
         store = ThreadStore(project.record.path)
         row = store.get(conversation)
         if row is None or row.get("title") not in ("", "New conversation"):
-            return
-        store.touch(conversation, title=title_from_prompt(prompt))
+            return ""
+        title = title_from_prompt(prompt)
+        store.touch(conversation, title=title)
+        return title
 
     @staticmethod
     def _adopt_legacy_build_history(workspace: Workspace, record: ProjectRecord) -> None:
@@ -5231,7 +5239,21 @@ class Orchestrator:
             # three things at once: a rename from the rail menu survives every later turn, the second
             # prompt does not overwrite the first, and a gate card's replay — which resends the same
             # prompt with a skip flag — is a no-op instead of a second write.
-            self._name_conversation(project, conversation, prompt)
+            named = self._name_conversation(project, conversation, prompt)
+            # Told, not asked. The rail drew "New conversation" for the whole of a build and every
+            # build after it, because the name was written here and nothing on the client ever went
+            # back for it: `sendBuildPrompt` re-reads the preview and the Bindings when a turn ends
+            # and has never re-read the Thread index at all. `approveBuild` does, which is why this
+            # looked fixed from the plan card and broken from the composer.
+            #
+            # Carried on the stream rather than fixed by adding that read, so the row is right
+            # within a frame instead of within a build — a build is minutes, and a name nobody can
+            # see for minutes is the bug people actually reported.
+            #
+            # Not persisted: the transcript is a record of what was said and done, and a rename is
+            # neither. A reload reads the name off the Thread row, where it has always been.
+            if named:
+                yield {"type": "conversation_named", "conversation": conversation, "title": named}
             self._pin_turn_app(project)
             # The model gate's listing, kicked off here so the gate below reads a local answer
             # instead of paying 2.5-2.9s for one (#125). A no-op when it is already warm, which the

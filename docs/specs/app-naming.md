@@ -168,14 +168,26 @@ shows nothing until they build.
 
 ## Out of scope
 
-**The rail-lag bug.** The server names a Conversation at the start of a turn
-(`backend/sage/orchestrator/service.py:5234`), but the Workbench only re-reads the list
-in the `finally` after the turn ends (`backend/sage/workbench/js/store.js:5081`). So the
-rail shows `New conversation` for the whole build, and the app switcher shows a stale
-name with it.
+**The rail bug — fixed, September 8, 2026.** Diagnosed and corrected before this spec's
+tickets, because none of the naming work is observable until the screen moves when a name
+changes.
 
-That is a separate defect and it ships **first** — none of this spec is observable until
-the screen refreshes when the name changes.
+It was not the lag it looked like. The server names a Conversation at the top of the turn,
+and `sendBuildPrompt` **never re-read the Thread index at all** — it re-reads the preview
+and the Bindings when a turn ends, and nothing else. `approveBuild` does have that read,
+which is why the bug looked fixed from the plan card and broken from the composer. So the
+rail kept the words `New conversation` for the whole build and for every build after it,
+until something unrelated reloaded the list.
+
+Fixed by telling rather than asking: the turn yields a `conversation_named` event carrying
+the title it just wrote, and the rail applies it. No read, so the row is right within a
+frame. Covered by
+`backend/tests/test_the_rail_learns_the_name_while_the_turn_is_still_running.py`.
+
+**Still open: the app switcher's own staleness.** The name of the selected app is refreshed
+on the same schedule and has no equivalent event. `_app_change_event` already carries a
+name and is the obvious carrier. Left out deliberately — ticket 216 changes what an app
+name *is*, and wiring a stale name faster is worth less than wiring the right one.
 
 ## Decision trace
 
