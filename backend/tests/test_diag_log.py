@@ -1,6 +1,8 @@
 """/api/diag/log — the log ring as plain text, for a workspace with no shell."""
 from __future__ import annotations
 
+import logging
+
 from fastapi.testclient import TestClient
 
 from sage.orchestrator import app as app_module
@@ -59,3 +61,52 @@ def test_diag_reports_the_import_error_when_the_data_library_is_missing(monkeypa
     body = TestClient(app_module.control_app).get("/api/diag").json()
     assert body["data_library"] == {
         "ok": False, "detail": "ImportError: No module named 'domino_data'"}
+
+
+# ---- the warnings-only ring (#205) -------------------------------------------------------------
+# Twice, an investigation into a cut model stream spent a whole live reproduction and came back with
+# nothing, because the 400-line ring had rolled past the failure before anyone could read it. A ring
+# that rolls cannot answer "did this warn?" — absence in it means nothing. These pin the second ring
+# that can.
+
+
+def test_a_warning_lands_in_both_rings():
+    app_module._LOG_RING.clear()
+    app_module._WARN_RING.clear()
+    logging.getLogger("sage.test").warning("gateway ended the stream with no finish_reason")
+    assert any("no finish_reason" in ln for ln in app_module._LOG_RING)
+    assert any("no finish_reason" in ln for ln in app_module._WARN_RING)
+
+
+def test_an_info_line_stays_out_of_the_warning_ring():
+    # The whole value of the second ring is that a loud turn cannot fill it.
+    app_module._WARN_RING.clear()
+    logging.getLogger("sage.test").info("routed request -> streaming (first byte 0.4s)")
+    assert not list(app_module._WARN_RING)
+
+
+def test_the_warning_survives_the_turn_that_buries_it_in_the_rolling_ring():
+    app_module._LOG_RING.clear()
+    app_module._WARN_RING.clear()
+    log = logging.getLogger("sage.test")
+    log.warning("gateway ended the stream with no finish_reason")
+    for i in range(app_module._LOG_RING.maxlen + 10):   # one ordinary build turn's worth of noise
+        log.info("tool ran %d", i)
+    assert not any("no finish_reason" in ln for ln in app_module._LOG_RING)   # rolled, as before
+    body = TestClient(app_module.control_app).get("/api/diag/log", params={"warn": 1}).text
+    assert "no finish_reason" in body
+
+
+def test_a_quiet_ring_says_nothing_warned_rather_than_no_lines_match():
+    # An empty answer here is a real answer — nothing warned — so it must not read like a filter
+    # that missed, which is what "(no lines match '')" looks like.
+    app_module._WARN_RING.clear()
+    body = TestClient(app_module.control_app).get("/api/diag/log", params={"warn": 1}).text
+    assert body == "(no warnings yet)"
+
+
+def test_diag_carries_the_warning_tail_without_anyone_knowing_the_parameter():
+    app_module._WARN_RING.clear()
+    logging.getLogger("sage.test").warning("gateway ended the stream with no finish_reason")
+    body = TestClient(app_module.control_app).get("/api/diag").json()
+    assert any("no finish_reason" in ln for ln in body["warn_tail"])

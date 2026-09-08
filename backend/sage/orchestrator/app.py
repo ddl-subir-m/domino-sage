@@ -106,11 +106,21 @@ logging.basicConfig(level=logging.INFO)
 # shell access in the deployed builder. Bounded; captures INFO+ from the whole sage.* hierarchy.
 _LOG_RING: collections.deque[str] = collections.deque(maxlen=400)
 
+# WARNING and above, kept a second time. The ring above holds 400 lines and a single build turn emits
+# hundreds, so twice now the one line naming a failure had already scrolled out of it before anyone
+# could read it — and absence from a ring that rolls proves nothing, which is how an investigation
+# spends a whole reproduction learning nothing. A healthy turn warns rarely, so these 200 slots span
+# many turns rather than part of one. Read it with /api/diag/log?warn=1.
+_WARN_RING: collections.deque[str] = collections.deque(maxlen=200)
+
 
 class _RingHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            _LOG_RING.append(self.format(record))
+            line = self.format(record)
+            _LOG_RING.append(line)
+            if record.levelno >= logging.WARNING:
+                _WARN_RING.append(line)
         except Exception:  # never let logging crash a request
             pass
 
@@ -944,12 +954,15 @@ def diag() -> JSONResponse:
         "git_credential_list": _git_credential_list_diag(),
         "debug_stream": ka.debug_stream_enabled(),
         "log_tail": list(_LOG_RING)[-60:],
+        # Next to the tail rather than behind a query parameter nobody knows to type: this is the
+        # half of the ring that survives a loud turn, and /api/diag is where someone looks first.
+        "warn_tail": list(_WARN_RING)[-20:],
         "opencode_log_tail": orchestrator._opencode_log_tail(30),
     })
 
 
 @control_app.get("/api/diag/log")
-def diag_log(q: str = "", n: int = 400) -> PlainTextResponse:
+def diag_log(q: str = "", n: int = 400, warn: bool = False) -> PlainTextResponse:
     """The log ring as plain text, one line each — for reading in a browser.
 
     /api/diag is JSON, so a browser with no JSON viewer renders log_tail as one unreadable line, and
@@ -959,9 +972,19 @@ def diag_log(q: str = "", n: int = 400) -> PlainTextResponse:
 
     `q` is a plain case-insensitive substring, not a regex — there is no shell in the workspace to
     pipe through, and a regex typo in a URL bar is a worse failure than a literal match.
+
+    `?warn=1` reads the warnings-only ring instead. Filtering this one by `q` is the wrong reflex
+    when a build has just failed: the point of that ring is that it still holds the failure after a
+    loud turn, so read it whole and let it tell you which line you should have been looking for.
+    An empty answer there is itself an answer — nothing warned — which the rolling ring can never
+    give you.
     """
-    lines = [ln for ln in _LOG_RING if not q or q.lower() in ln.lower()]
-    return PlainTextResponse("\n".join(lines[-max(1, n):]) or f"(no lines match {q!r})")
+    ring = _WARN_RING if warn else _LOG_RING
+    lines = [ln for ln in ring if not q or q.lower() in ln.lower()]
+    if not lines:
+        which = "warnings" if warn else "lines"
+        return PlainTextResponse(f"(no {which} match {q!r})" if q else f"(no {which} yet)")
+    return PlainTextResponse("\n".join(lines[-max(1, n):]))
 
 
 @control_app.get("/api/diag/timing")
