@@ -110,9 +110,13 @@ window.SW = window.SW || {};
   // The sentence is built from the rows that HAVE an act, not from every row, so it can never name
   // something no button below it can close — the invariant the refusal keeps by building both
   // halves in one pass.
-  function MentionGuard({ entries, activeAppId }) {
+  function MentionGuard({ entries, activeAppId, onSend }) {
     const [busy, run] = SW.util.useBusyAct();
-    const fixes = SW.store.mentionFixes(entries, activeAppId);
+    // The third argument is what the click does after it has written the record (#213): send what
+    // is in the box. Decided rather than assumed — binding and leaving the person to press Send
+    // costs the second click this warning was reported for — and it is the composer's own send, so
+    // the box clears and the turn starts exactly as it would have without the warning.
+    const fixes = SW.store.mentionFixes(entries, activeAppId, onSend);
     if (!fixes.length) return null;
     const offered = new Set(fixes.map((fix) => fix.key));
     // The token the picker INSERTED, not the row's name. `mentionToken` collapses whitespace, so a
@@ -131,13 +135,15 @@ window.SW = window.SW || {};
     // call in the prompt (`resources/pinned_model.bound_aliases`), so what one click buys here is a
     // capability the app keeps — in this build and in the published app — and a sentence about a
     // message not arriving would describe the smaller half of what is on offer.
-    const them = aliases.length === 1 ? 'it' : 'them';
+    //
+    // Both lines say the state now, not what a send would cost (#213). They used to spell out what
+    // the click was for, and the button below IS that — it binds and sends in one — so directions
+    // beside it describe the road it goes round. The Alias half is the refusal's own sentence word
+    // for word, which is the point of the pair (#136); the other half says the same thing about the
+    // same two lists, in the shape a warning takes rather than a report of a turn that ran.
     const guardLines = [
-      aliases.length && `${app} can't call ${aliases.join(', ')} yet. Use ${them} in the app and `
-        + `the app can call ${them} — in this feature and after you publish.`,
-      // Future tense and the consequence rather than a rule: for these kinds sending now really
-      // does cost the mention, so that is what is worth knowing.
-      named.length && `Send now and ${named.join(', ')} won't reach ${app}.`,
+      aliases.length && `${app} can't call ${aliases.join(', ')} yet.`,
+      named.length && `${app} doesn't use ${named.join(', ')} yet.`,
     ].filter(Boolean);
     return h(
       'div',
@@ -248,7 +254,9 @@ window.SW = window.SW || {};
       // Sending disables the button under the pointer, so nothing ever fires
       // the mouseleave that would dismiss its hint.
       setSendHint(false);
-      onSend(value);
+      // Returned, not dropped: the mention warning's button sends through this one, and the spinner
+      // it puts on itself lasts exactly as long as what it is waiting for.
+      return onSend(value);
     };
 
     const changeText = (value, caret, inputType) => {
@@ -956,7 +964,9 @@ window.SW = window.SW || {};
       // to it, and a warning drawn within the border reads as a field that has failed validation —
       // which would say the send is blocked, the one thing this must never say.
       unusable.length > 0 &&
-        h(MentionGuard, { entries: unusable, activeAppId: activeApp && activeApp.id })
+        h(MentionGuard, {
+          entries: unusable, activeAppId: activeApp && activeApp.id, onSend: send,
+        })
     );
   };
 })();

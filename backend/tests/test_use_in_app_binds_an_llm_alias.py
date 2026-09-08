@@ -140,18 +140,25 @@ def _orch(tmp: Path) -> Orchestrator:
 def test_the_refusal_names_the_app_and_the_act_and_stops_once_the_binding_exists(tmp_path: Path):
     """The reported bug, both halves. The old sentence sent people to a control that did not exist
     and said "connect", which the glossary bans outright; the new one names the app the Binding
-    would belong to and the label that makes it. And once the Binding is there the turn stops
-    refusing at all, which is the half that proves the door leads somewhere."""
+    would belong to. And once the Binding is there the turn stops refusing at all, which is the
+    half that proves the door leads somewhere.
+
+    The label that makes it used to be quoted here too, and is not any more (#213). It is on the
+    button beside the sentence now, and the button binds AND builds — so a sentence naming the
+    label would name the long way round past it. The words survive where they are still the only
+    way out: the client draws them under a card nobody can click (`mentionFixHints`)."""
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
     proj.workspace.set_display_name("Gong sentiment")
     ref = {"kind": KIND_LLM_ALIAS, "id": "al_1", "name": "sonnet"}
 
-    said, _ = orch._unusable_mentions(proj, None, None, [ref])
+    said, rows = orch._unusable_mentions(proj, None, None, [ref])
     assert "@sonnet" in said
-    assert "Gong sentiment can't call @sonnet yet" in said
-    assert "Use in Gong sentiment" in said
+    assert said == "Gong sentiment can't call @sonnet yet."
     assert "connect" not in said.lower()
+    # The act is a row now, not a clause: the app it lands in, for the button to name.
+    assert [(r["kind"], r["id"], r["app"]) for r in rows] == [
+        (KIND_LLM_ALIAS, "al_1", "Gong sentiment")]
 
     proj.workspace.update_bindings(
         lambda entries: [*entries, Binding(KIND_LLM_ALIAS, "al_1", "sonnet", "sonnet").to_dict()])
@@ -166,10 +173,12 @@ def test_an_unnamed_app_is_called_what_the_rail_calls_it(tmp_path: Path):
     through it rather than reading the stored name directly."""
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
-    said, _ = orch._unusable_mentions(
+    said, rows = orch._unusable_mentions(
         proj, None, None, [{"kind": KIND_LLM_ALIAS, "id": "a", "name": "s"}])
     assert "Unnamed Built App can't call @s yet" in said
-    assert "Use in Unnamed Built App" in said
+    # And the row the button reads its own label off carries the same answer, so the sentence and
+    # the button beside it cannot call one app two names.
+    assert rows[0]["app"] == "Unnamed Built App"
 
 
 def test_the_template_never_quotes_a_label_the_panel_cannot_draw():

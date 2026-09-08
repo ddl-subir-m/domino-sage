@@ -4992,6 +4992,14 @@ class Orchestrator:
         Dataset attaches it to the app — and so can an unbound Resource. A workspace path that
         resolves to nothing cannot: there is no act to offer it, and a button that cannot complete is
         the dead end this sentence exists to remove. That drop keeps the prose and gets no row.
+
+        Which is also why a line with a row carries no instruction any more (#213). It used to end
+        "Choose Use in {app} in the list of what it ships, then ask again" — the five-step path the
+        button replaces, and after the button learned to build as well as bind, a description of a
+        longer way round. So a line here says only what happened, which is true whether or not
+        anything can be clicked, and the way to fix it is drawn: a button while the card is live, and
+        a sentence in the client's own no-button branch once it is a record (`mentionFixHints`). A
+        line with NO row keeps its instruction, because nothing is ever drawn behind it.
         """
         # `asked` is on a folder mention the roll-up widened (ADR-0030): the turn carried a row
         # above the one named, so the path in the answer is not the path in the request. Read as
@@ -5044,8 +5052,7 @@ class Orchestrator:
         lines: list[str] = []
         entries: list[dict] = []
         if chat_files:
-            lines.append(f"Couldn't use {named(chat_files)} — a Chat file lives outside this app. "
-                         "Attach it to the app in the Data panel, then ask again.")
+            lines.append(f"Couldn't use {named(chat_files)} — a Chat file lives outside this app.")
             entries += [{"kind": "file", "id": m, "name": PurePosix(m).name,
                          "app": where, "appId": whose} for m in chat_files]
         if gone:
@@ -5058,28 +5065,16 @@ class Orchestrator:
             def shown(rows: list[dict]) -> str:
                 return ", ".join("@" + str(r.get("name") or r.get("id") or "") for r in rows)
 
-            # The act, spelled the way the door spells it. The sentence this replaces sent people to
-            # the Resources panel for a control that was not there (#127) and called it "connecting",
-            # a word `CONTEXT.md` bans for exactly the confusion it caused here. The panel then grew
-            # the control and lost it again: the act is on the Built App's own surface now (ADR-0021,
-            # #144), so naming that panel would re-make the original bug word for word.
-            #
-            # The destination is named by the heading the reader will actually see over it — "{app}
-            # ships", in the Build header — which is the shape every other pointer in this product
-            # takes (`modes/builder.js`, and the receipt in `store.bindToApp`). A direction on the
-            # screen would be a second thing to keep in step with a layout.
-            #
             # An Alias is split off because its refusal is not a failed delivery: a bound Alias is
             # chosen per call in the prompt (`resources.pinned_model.bound_aliases`), so the gap is
-            # a capability the app does not have yet. Same destination, same act — the first clause
-            # matches the composer's warning word for word, which is the point of the pair (#136).
+            # a capability the app does not have yet. The first clause matches the composer's
+            # warning word for word, which is the point of the pair (#136).
             aliases = [r for r in unbound if str(r.get("kind") or "") == KIND_LLM_ALIAS]
             rest = [r for r in unbound if str(r.get("kind") or "") != KIND_LLM_ALIAS]
-            act = f"Choose Use in {where} in the list of what it ships, then ask again."
             if aliases:
-                lines.append(f"{where} can't call {shown(aliases)} yet. {act}")
+                lines.append(f"{where} can't call {shown(aliases)} yet.")
             if rest:
-                lines.append(f"Couldn't use {shown(rest)} — {where} doesn't use it yet. {act}")
+                lines.append(f"Couldn't use {shown(rest)} — {where} doesn't use it yet.")
             # One row per Resource, not per mention. "@Warehouse and @FCT_USAGE_DAILY" names one
             # Data Source at one table, and two identical buttons would offer the same bind twice.
             seen: set[tuple[str, str]] = set()
@@ -9124,8 +9119,19 @@ class Orchestrator:
             # and renders as the sentence — which is also what a replayed row must render as, so the
             # client needs one branch rather than two (#135).
             if unusable:
+                # `prompt` is what the card's button sends again once it has written the record
+                # (#213). Their own words, the same ones the bubble above carries — not `prompt`
+                # when a typed approval expanded it, because the replay is their request being made
+                # a second time and has to read as theirs. `reset-offer` already carried a prompt
+                # beside its message, so this is one more field on an event that exists rather than
+                # a new event type, and a row written before it reads as it always did.
+                #
+                # The mentions do not ride along: `sendBuildPrompt` hands the text back and the
+                # server resolves the @tokens in it against the records as they stand THEN — which
+                # is the whole point, because the click has just changed them.
                 yield persist({"type": "mentions-unresolved", "message": unusable,
-                               "entries": unusable_rows})
+                               "entries": unusable_rows,
+                               "prompt": user_text if user_text is not None else prompt})
             # Its own event, and not a second sentence on the one above, because the two are not the
             # same news. A drop is a failure and draws red; this describes a turn that WORKED —
             # every file the name matched is attached, nothing is missing — and the person is being

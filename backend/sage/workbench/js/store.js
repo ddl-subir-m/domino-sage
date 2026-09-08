@@ -1764,6 +1764,9 @@ window.SW = window.SW || {};
           type: 'mentions_unresolved',
           message: ev.message,
           entries: ev.entries || [],
+          // What the buttons send once they have written the record (#213). A row written before
+          // that shipped carries none, and its card draws the bind-only buttons it always drew.
+          prompt: ev.prompt || '',
           live: cardIsLive(ev),
         });
       } else if (ev.type === 'mentions-ambiguous' && ev.message) {
@@ -3792,7 +3795,7 @@ window.SW = window.SW || {};
     // behind it resolves whatever is selected NOW. Once the two disagree the card goes back to
     // being a record. The composer's warning is read off the selected app every render, so its
     // rows can never disagree; it passes the same id rather than keeping a second entry point.
-    mentionFixes(entries, activeAppId) {
+    mentionFixes(entries, activeAppId, replay) {
       // The kinds whose bind takes a single argument, so a click on any of them finishes. A
       // Data Source joined the Alias here when #142 stopped deriving its Scope from a cascade
       // position: the bind records the dependency and nothing else now, and the Scope is a second
@@ -3805,7 +3808,14 @@ window.SW = window.SW || {};
       // button — it read as a refusal with no fix at all, which is the exact five-step dead end
       // #135 exists to close. Adding a kind to the route means adding it here or taking that
       // dead end back.
-      const bind = (e) => ({ label: `Use in ${e.app}`, act: () => store.bindFromMention(e) });
+      //
+      // `sends` is which of them buys the whole request rather than half of it (#213). The three
+      // binds and the attach write the record the mention was missing, so the turn the person
+      // already asked for can follow the click. The Model API does not carry it: that act opens a
+      // door and returns, the gap is still open afterwards, and a build behind it would walk into
+      // the same refusal wearing a longer label.
+      const bind = (e) => ({ label: `Use in ${e.app}`, act: () => store.bindFromMention(e),
+                             sends: true });
       const MENTION_FIX = {
         llm_alias: bind,
         data_source: bind,
@@ -3814,14 +3824,68 @@ window.SW = window.SW || {};
           label: 'Add its access token',
           act: () => store.openCredentialForMention(e),
         }),
-        file: (e) => ({ label: `Attach to ${e.app}`, act: () => store.attachFileForMention(e) }),
+        file: (e) => ({ label: `Attach to ${e.app}`, act: () => store.attachFileForMention(e),
+                        sends: true }),
       };
+      // One click, two acts (#213). The record the mention needed, and then the request the person
+      // already made, sent again against it — because closing the gap and then retyping the prompt
+      // is one job, and the second half is what they were paying for. #183 and #185 settled this
+      // shape for the candidate cards, and the difference worth naming is the plumbing: neither
+      // surface here is answering a gate. The refusal's turn RAN — the agent was told the mention
+      // was dropped (`_DROPPED_MENTION_NOTE`) and declined — so `replay` starts a fresh turn rather
+      // than resuming a paused one, and carries no skip flags for gates this turn never reached.
+      //
+      // A caller with no `replay` gets the bind-only button it always had: the harness that pins
+      // these acts, and a live card whose event predates the `prompt` field. A label promising a
+      // build that nothing would start is the dead end #135 exists to close, one word longer.
+      //
+      // The record's own answer decides whether the build follows. `bindToApp` returns false when
+      // the route refused the Binding, and the attach returns null the same way — a turn sent on
+      // top of either would meet the refusal it was supposed to have cleared.
+      const withReplay = (fix) => (!replay || !fix.sends ? fix : {
+        ...fix,
+        label: `${fix.label} and build`,
+        act: () => Promise.resolve(fix.act()).then((ok) => (ok ? replay() : ok)),
+      });
       return (entries || []).map((entry) => {
         const make = entry && MENTION_FIX[entry.kind];
         if (!make || !entry.id || !entry.app) return null;
         if (!entry.appId || entry.appId !== activeAppId) return null;
-        return { ...make(entry), key: `${entry.kind}:${entry.id}` };
+        return { ...withReplay(make(entry)), key: `${entry.kind}:${entry.id}` };
       }).filter(Boolean);
+    },
+
+    // What a card with no buttons says instead (#213). Read off the same kinds by the same rule, so
+    // the sentence can never send somebody somewhere the button would not have gone.
+    //
+    // The server's lines say only what happened, because a live refusal draws the way out and an
+    // instruction beside a button describes the long way round past it. A replayed refusal draws no
+    // buttons on purpose — an old card must not bind anything for somebody scrolling back (#135,
+    // #209) — so the instruction it used to carry in the prose lives here, in the one branch that
+    // knows there is nothing to click.
+    //
+    // No `activeAppId` check: this IS the record, and it names the app the record named. Named at
+    // all because a Project holds many Built Apps (ADR-0008), so "the app" is the one word that
+    // cannot say which of them the act would land in.
+    mentionFixHints(entries) {
+      const ships = (e) => `Choose Use in ${e.app} in the list of what it ships, then ask again.`;
+      const HINT = {
+        llm_alias: ships,
+        data_source: ships,
+        dataset: ships,
+        model_api: ships,
+        file: (e) => `Attach it to ${e.app} in the Data panel, then ask again.`,
+      };
+      const said = [];
+      (entries || []).forEach((entry) => {
+        const make = entry && HINT[entry.kind];
+        if (!make || !entry.id || !entry.app) return;
+        // One sentence per distinct instruction rather than per row: three unbound Resources on one
+        // app are one thing to go and do, and saying it three times reads as three.
+        const line = make(entry);
+        if (said.indexOf(line) === -1) said.push(line);
+      });
+      return said;
     },
 
     // An LLM Alias or a Data Source, the two kinds whose bind takes a single argument, so a click

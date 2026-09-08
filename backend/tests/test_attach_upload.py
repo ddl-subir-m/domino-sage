@@ -328,17 +328,22 @@ def test_a_mention_the_turn_cannot_use_is_reported_rather_than_dropped(tmp_path:
     # It WAS used: nothing to say, and nothing to offer a button for either.
     assert orch._unusable_mentions(proj, used, [res["path"]], None) == ("", [])
 
-    chat, _ = orch._unusable_mentions(proj, None, [".sage/scratch/events.csv"], None)
-    assert "@events.csv" in chat and "Chat file" in chat and "Data panel" in chat
+    # Named and explained, and no longer sent anywhere: the button beside it attaches the file and
+    # sends the request again, so the directions moved onto the card that has none (#213).
+    chat, rows = orch._unusable_mentions(proj, None, [".sage/scratch/events.csv"], None)
+    assert "@events.csv" in chat and "Chat file" in chat
+    assert [r["kind"] for r in rows] == ["file"]
 
     plain, _ = orch._unusable_mentions(proj, None, ["public/data/gone.csv"], None)
     assert "@gone.csv" in plain and "not attached to this app" in plain
 
     ref = {"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse"}
-    unbound, _ = orch._unusable_mentions(proj, None, None, [ref])
+    unbound, rows = orch._unusable_mentions(proj, None, None, [ref])
     # The destination is the Built App's own surface, which is the only place the bind lives
-    # (ADR-0021, #144) — the Resources panel offered it until then and does not now.
-    assert "@Warehouse" in unbound and "in the list of what" in unbound
+    # (ADR-0021, #144) — the Resources panel offered it until then and does not now. It is the row's
+    # button that goes there since #213, so the row is what says which app.
+    assert "@Warehouse" in unbound
+    assert [(r["kind"], r["app"]) for r in rows] == [(KIND_DATA_SOURCE, "Unnamed Built App")]
     # And a Resource this app IS bound to is not reported — the report reads the same Binding list the
     # turn honors, so a bound Resource must never come back as one the turn refused.
     proj.workspace.update_bindings(

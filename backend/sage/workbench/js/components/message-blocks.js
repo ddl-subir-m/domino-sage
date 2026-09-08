@@ -794,11 +794,23 @@ window.SW = window.SW || {};
   function MentionsUnresolved({ block }) {
     const { activeApp } = SW.store.get();
     const [busy, run] = SW.util.useBusyAct();
+    // The third argument is what the click sends once it has written the record (#213): the request
+    // that was refused, made again against the Binding or the Attachment that had been missing. Not
+    // a gate being answered — this turn RAN and the agent declined it — so it is an ordinary send
+    // with no skips, which is why it reaches `sendBuildPrompt` straight rather than through one of
+    // the named answers beside it.
     const fixes = block.live
-      ? SW.store.mentionFixes(block.entries, activeApp && activeApp.id)
+      ? SW.store.mentionFixes(block.entries, activeApp && activeApp.id,
+                              block.prompt ? () => SW.store.sendBuildPrompt(block.prompt) : null)
       : [];
     if (!fixes.length) {
-      return h('div', { className: 'sw-status-line is-err' }, block.message);
+      // Nothing to click, so the way out is said instead (#213). The server's sentence stops at
+      // what happened, because the live card draws the fix — this branch is the one that knows
+      // there is none, and the only place the old instruction still belongs. A drop with no act
+      // behind it kept its own directions in the prose and adds nothing here.
+      const hints = SW.store.mentionFixHints(block.entries);
+      return h('div', { className: 'sw-status-line is-err' },
+               [block.message, ...hints].join(' '));
     }
     return h(
       'div',
