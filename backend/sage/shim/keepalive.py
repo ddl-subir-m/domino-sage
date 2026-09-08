@@ -62,7 +62,7 @@ def pump(gen: Iterator[bytes], q: queue.Queue) -> None:
     completes/errors (the same read=None exposure the direct stream already had)."""
     log = logging.getLogger("sage.shim.stream")
     # Counted on every stream now, not only a debugged one: the count is half of what makes the
-    # unterminated-stream warning below readable (15 chunks in 48s is a degraded gateway).
+    # unterminated-stream warning below readable (the tool-call cut is 5 chunks, then a 60s gap).
     seen = 0
     started = time.monotonic()
     ended = None  # the first terminal finish_reason any chunk carried, if one ever did
@@ -76,14 +76,20 @@ def pump(gen: Iterator[bytes], q: queue.Queue) -> None:
             q.put(chunk)
         if _debug_stream:
             log.info("stream done after %d chunk(s)", seen)
-        # Measured live (2026-09-07): a gateway under load stops sending part-way through a tool
-        # call's arguments and closes, with no terminal finish_reason anywhere in the stream. The
-        # generator is simply exhausted, so nothing raises, `[DONE]` is not required for a client to
-        # cope, and the fault surfaces four layers away as OpenCode's "Invalid JSON input for
-        # openai-chat tool call write" — a message about JSON, for a fault that has nothing to do
-        # with JSON. This line is what tells the two apart in /api/diag/log: a cap says
-        # finish_reason="length" (and shim/app.py names it), a healthy answer says "stop" or
-        # "tool_calls", and a cut stream says nothing at all.
+        # Measured live (2026-09-07; mechanism pinned 2026-09-08, gateway-questions.md bug 3).
+        # The gateway does not stream a tool call's argument deltas: it sends the preamble (role,
+        # id, function name) and then buffers the whole argument, during which the connection
+        # carries no bytes. At 60.0s of silence the connection is torn down, and since `200` and
+        # several chunks are already on the wire no error can be reported — the stream just stops,
+        # with no terminal finish_reason anywhere in it. This is NOT the load effect the first note
+        # here claimed: reproduced 13/13 at concurrency 1, 4 and 8 alike, and the tools-off control
+        # streams 316 chunks over a LONGER 65.7s and finishes clean, so the timer is idle-based
+        # rather than a duration cap. The generator is simply exhausted, so nothing raises, `[DONE]`
+        # is not required for a client to cope, and the fault surfaces four layers away as
+        # OpenCode's "Invalid JSON input for openai-chat tool call write" — a message about JSON,
+        # for a fault that has nothing to do with JSON. This line is what tells the two apart in
+        # /api/diag/log: a cap says finish_reason="length" (and shim/app.py names it), a healthy
+        # answer says "stop" or "tool_calls", and a cut stream says nothing at all.
         #
         # Guarded on `seen` because a stream that carried NO chunks is a different fault — a
         # pre-stream failure wearing a 200 — and the eager first pull in both apps already handles
