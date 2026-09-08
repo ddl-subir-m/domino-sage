@@ -41,16 +41,18 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-def _plan(title: str, step: str) -> str:
-    return (f"{title}\n\n"
+def _plan(name: str, step: str) -> str:
+    """Opening on a `# ` heading, which is the only thing that names the app it is built into
+    (#216) and what the plan shape asks the planner for."""
+    return (f"# {name}\n\n"
             "## Plan\n"
             f"1. **{step}** — Show it.\n\n"
             "## Open questions\n"
             "None — ready to build.\n")
 
 
-_DESK = _plan("A desk exposure dashboard.", "Desk table")
-_PNL = _plan("A daily P&L report.", "P&L table")
+_DESK = _plan("Desk exposure", "Desk table")
+_PNL = _plan("Daily P&L", "P&L table")
 
 
 @pytest.fixture(autouse=True)
@@ -119,10 +121,10 @@ def test_a_second_confirmed_handoff_leaves_two_built_apps_side_by_side(tmp_path:
     assert first != second
     assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second])
     # Each is a whole app, seeded from the template, holding its own plan.
-    for app_id, title in ((first, "A desk exposure dashboard."), (second, "A daily P&L report.")):
+    for app_id, title in ((first, "Desk exposure"), (second, "Daily P&L")):
         app = root / "apps" / app_id
         assert (app / "package.json").read_text() == '{"name": "template"}'
-        assert (app / ".sage" / "plan.md").read_text().startswith(title)
+        assert (app / ".sage" / "plan.md").read_text().startswith(f"# {title}")
 
 
 def test_one_conversation_that_hands_off_twice_leaves_two_built_apps(tmp_path: Path):
@@ -147,9 +149,9 @@ def test_one_conversation_that_hands_off_twice_leaves_two_built_apps(tmp_path: P
     assert first != second
     assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second])
     assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith(
-        "A desk exposure dashboard.")
+        "# Desk exposure")
     assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith(
-        "A daily P&L report.")
+        "# Daily P&L")
     # And each entry says which app it built, so neither handoff is anonymous afterwards.
     store = ThreadStore(orch.project(start_preview=False).record.path)
     assert [e["appId"] for e in store.read_handoffs(tid)] == [first, second]
@@ -312,8 +314,8 @@ def test_an_app_display_name_is_editable_and_its_id_is_not(tmp_path: Path):
     orch, _oc, root, first, second = _two_apps(tmp_path)
 
     by_id = {row["id"]: row for row in orch.list_apps()}
-    assert by_id[first]["name"] == "A desk exposure dashboard."
-    assert by_id[second]["name"] == "A daily P&L report."
+    assert by_id[first]["name"] == "Desk exposure"
+    assert by_id[second]["name"] == "Daily P&L"
 
     renamed = orch.rename_app(first, "Desk exposure")
 
@@ -393,8 +395,8 @@ def test_the_sheet_lists_the_projects_apps_and_preselects_none_of_them(tmp_path:
     _tid, sheet = _draft(orch, "and one more dashboard")
 
     assert [row["id"] for row in sheet["apps"]] == [first, second]
-    assert [row["name"] for row in sheet["apps"]] == ["A desk exposure dashboard.",
-                                                      "A daily P&L report."]
+    assert [row["name"] for row in sheet["apps"]] == ["Desk exposure",
+                                                      "Daily P&L"]
     # Not one field naming a target. `selected` is the Build rail's, and in the sheet it would be
     # exactly the preselect this row exists to prevent.
     for row in sheet["apps"]:
@@ -447,8 +449,8 @@ def test_confirming_with_no_target_builds_a_new_app(tmp_path: Path):
     assert len({first, second, third, fourth}) == 4
     assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second, third, fourth])
     # The apps that were already there are untouched.
-    assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith("A desk exposure dashboard.")
-    assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith("A daily P&L report.")
+    assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith("# Desk exposure")
+    assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith("# Daily P&L")
 
 
 def test_confirming_with_an_existing_app_builds_into_that_app(tmp_path: Path):
@@ -464,10 +466,10 @@ def test_confirming_with_an_existing_app_builds_into_that_app(tmp_path: Path):
     assert landed == first
     assert (root / "apps" / first / "src" / "App.tsx").read_text() == "// the desk one\n"
     assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second])
-    assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith("A daily P&L report.")
+    assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith("# Daily P&L")
     # The app it did not name keeps its plan, and the one it did keeps the name a person gave it.
-    assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith("A daily P&L report.")
-    assert {row["id"]: row["name"] for row in orch.list_apps()}[first] == "A desk exposure dashboard."
+    assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith("# Daily P&L")
+    assert {row["id"]: row["name"] for row in orch.list_apps()}[first] == "Desk exposure"
     assert orch.project(start_preview=False).workspace.app_id == first  # Build lands on it
 
 
@@ -523,7 +525,7 @@ def test_confirming_leaves_the_projects_own_name_alone(tmp_path: Path):
 
     assert record.is_untitled() is True
     assert record.display_name() == "Default"
-    assert {row["id"]: row["name"] for row in orch.list_apps()}[born] == "A desk exposure dashboard."
+    assert {row["id"]: row["name"] for row in orch.list_apps()}[born] == "Desk exposure"
 
 
 def test_the_confirm_route_carries_the_target_the_sheet_picked(tmp_path: Path, monkeypatch):
@@ -559,7 +561,7 @@ def test_the_confirm_route_carries_the_target_the_sheet_picked(tmp_path: Path, m
 # built, so a fresh app lands on the same review a handoff earns, reached from the other side.
 
 
-_CHART = _plan("A burndown chart.", "Burndown chart")
+_CHART = _plan("Burndown chart", "Burndown table")
 
 
 def test_new_app_in_the_build_rail_creates_and_selects_one_with_no_thread_behind_it(tmp_path: Path):
@@ -611,7 +613,7 @@ def test_the_first_turn_on_an_app_started_from_build_gates_on_a_plan(tmp_path: P
     assert "Burndown chart" in next(e for e in events if e["type"] == "plan-proposed")["plan"]
     # Read-only, as a gated turn is: the plan is written, the app is not.
     app = root / "apps" / born
-    assert (app / ".sage" / "plan.md").read_text().startswith("A burndown chart.")
+    assert (app / ".sage" / "plan.md").read_text().startswith("# Burndown chart")
     assert "burndown" not in (app / "src" / "App.tsx").read_text()
     # The gate stamped the app it stood in, so the document belongs to this app and no other.
     assert orch.read_plan_doc("003")["appId"] == born

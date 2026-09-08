@@ -54,10 +54,10 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-_DESK = ("A desk exposure dashboard.\n\n"
+_DESK = ("# Desk exposure\n\n"
          "## Plan\n1. **Desk table** — Show it.\n\n"
          "## Open questions\n- None, ready to build.\n")
-_REPORT = ("A daily P&L report.\n\n"
+_REPORT = ("# Daily P&L\n\n"
            "## Plan\n1. **P&L table** — Show it.\n\n"
            "## Open questions\n- None, ready to build.\n")
 
@@ -184,7 +184,7 @@ def test_the_receipt_names_the_built_app_and_says_it_is_a_new_one(tmp_path: Path
     app_id = orch.project(start_preview=False).workspace.app_id
     crossed = _receipt(orch, tid)
     assert crossed["appId"] == app_id
-    assert crossed["appName"] == "A desk exposure dashboard."
+    assert crossed["appName"] == "Desk exposure"
     assert crossed["newApp"] is True
 
 
@@ -278,7 +278,7 @@ def test_change_does_not_disturb_the_plan_awaiting_approval(tmp_path: Path):
 
     orch.recross_handoff(tid, ALL_ON)
 
-    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith("A desk exposure")
+    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith("# Desk exposure")
     assert not (root / "apps" / app_id / ".sage" / "plans").exists()
     assert orch.read_plan_doc("001")["status"] == "draft"
 
@@ -341,7 +341,7 @@ def test_undo_leaves_the_plan_document_the_digest_and_the_artifacts_alone(tmp_pa
     orch.cancel_plan(conversation=tid, plan_id="001")
 
     assert orch.read_plan_doc("001") is not None
-    assert orch.read_plan_doc("001")["markdown"].startswith("A desk exposure")
+    assert orch.read_plan_doc("001")["markdown"].startswith("# Desk exposure")
     assert (app / ".sage" / "handoff.md").read_text()
     assert (app / ".sage" / "handoff-transcript.md").exists()
     assert json.loads((app / ".sage" / "bindings.json").read_text())

@@ -889,7 +889,7 @@ def test_not_now_suppresses_and_classifier_does_not_run_again(tmp_path: Path):
 
 
 _PLAN = (
-    "A desk exposure dashboard.\n\n"
+    "# Desk exposure\n\n"
     "## Plan\n"
     "1. **Desk table** — Show notional by desk.\n"
     "2. **Chart** — Use the example PNG.\n\n"
@@ -910,11 +910,11 @@ def test_write_a_plan_runs_sage_plan_and_opens_sheet_payload(tmp_path: Path):
     assert oc.prompts[-1]["agent"] == "sage-plan"
     assert result["ok"] is True
     assert result["handoff"]["status"] == "planned"
-    assert result["plan"].startswith("A desk exposure dashboard.")
+    assert result["plan"].startswith("# Desk exposure")
     # The plan lives in the document, which is the Project's. `.sage/plan.md` and `.sage/handoff.md`
     # are the BUILDER's copies and the builder has no app yet — the confirm writes them (ADR-0008).
     project = orch.project(start_preview=False)
-    assert project.record.read_plan_doc("001")["markdown"].startswith("A desk exposure dashboard.")
+    assert project.record.read_plan_doc("001")["markdown"].startswith("# Desk exposure")
     assert project.workspace.read_plan() is None
     assert not (project.workspace.path / ".sage" / "handoff.md").exists()
     assert project.workspace.read_history() == []
@@ -924,7 +924,7 @@ def test_write_a_plan_runs_sage_plan_and_opens_sheet_payload(tmp_path: Path):
 
     again = orch.draft_handoff_plan(tid)
     assert again["handoff"]["status"] == "planned"
-    assert again["plan"].startswith("A desk exposure dashboard.")   # re-read from the document
+    assert again["plan"].startswith("# Desk exposure")   # re-read from the document
     assert sum(1 for p in oc.prompts if p["agent"] == "sage-plan") == 1
 
 
@@ -982,10 +982,10 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     # The plan title names the APP, and the Project keeps the name it had. Confirming used to
     # rename the Project to the plan title, which was a Project-per-app rule: a Project holds many
     # apps now, and two of them cannot share one name (ADR-0008, #73).
-    assert result["title"] == "A desk exposure dashboard."
+    assert result["title"] == "Desk exposure"
     assert project.record.is_untitled() is True
     assert project.record.display_name() == "Default"
-    assert ws.display_name() == "A desk exposure dashboard."
+    assert ws.display_name() == "Desk exposure"
 
     orch.confirm_handoff(tid, {"transcript": True})
     assert (ws.path / ".sage" / "handoff-transcript.md").exists()

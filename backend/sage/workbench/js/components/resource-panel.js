@@ -535,7 +535,7 @@ window.SW = window.SW || {};
       const live = !plan.archived && livePlanId && String(plan.id) === livePlanId;
       return {
         id: plan.id,
-        name: plan.title || 'Untitled plan',
+        name: plan.caption || plan.title || 'Untitled plan',
         // What the document is really called, kept beside the label the rail draws. The two differ
         // for a plan with no name, and the rename box wants the real one.
         title: plan.title || '',
