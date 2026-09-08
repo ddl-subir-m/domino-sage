@@ -5,11 +5,8 @@ import "./App.css";
 function App() {
   return (
     <main className="sage-placeholder">
-      <div className="sage-card">
-        <h1>Your app will appear here</h1>
-        <p>Describe what you want to build in the chat, and it will take shape live in this preview.</p>
-        <code>src/App.tsx</code>
-      </div>
+      <h1>Your app will appear here</h1>
+      <p>Describe what you want to build in the chat, and it will take shape live in this preview.</p>
     </main>
   );
 }
