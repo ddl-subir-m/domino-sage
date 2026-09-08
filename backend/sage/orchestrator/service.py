@@ -2680,11 +2680,12 @@ def _unparsed_tool_evidence(part: dict) -> str:
     """What the broken arguments looked like, for the log ring behind /api/diag.
 
     `_unparsed_tool_input` says a call broke; the tool name is all the give-up message can say, and
-    it does not separate the only two causes worth different fixes. Arguments cut off mid-string are
-    an output cap: the tail is an unclosed string and the length sits near a round number, and
-    `cut_off_finish_reason` in shim/keepalive.py should have logged the reason a moment earlier.
-    Arguments that run all the way to a closing brace are a bad escape somewhere in the middle —
-    no cap involved, and raising one would fix nothing.
+    it does not separate the causes worth different fixes. Arguments that run all the way to a
+    closing brace are a bad escape somewhere in the middle — no cap involved, and raising one would
+    fix nothing. Arguments cut off mid-string stopped in flight, and the length says which way:
+    near a model's output cap it is a cap, and `cut_off_finish_reason` in shim/keepalive.py should
+    have logged the reason a moment earlier. Far below one — `len=22`, measured live on 2026-09-07 —
+    it is the gateway dropping the stream, which `pump` logs as an ending with no finish_reason.
 
     Head and tail only. The whole string is the file the model was writing, and the log ring is
     read by people.
@@ -9188,25 +9189,29 @@ class Orchestrator:
             "preview is blank. Fix the code so it renders without throwing. Do not just guard the "
             "symptom — find and fix the root cause.\n\nError: {message}\n\nStack:\n{stack}"
         )
-        # What the retry below adds to the turn it re-sends. The retry used to be the same request,
-        # byte for byte, on the reasoning that the fault was in one response rather than in the
-        # request. That holds when the break is random. It does not hold when the break comes from
-        # what the model chose to write: measured live (2026-09-07), a request to sample 100 rows of
-        # an attached CSV into a dashboard broke a `write` twice, in two separate sessions, at the
-        # same step. An identical second attempt makes the same choice and breaks the same way.
+        # What the retry below adds to the turn it re-sends. It is orientation, not instruction: the
+        # retry runs in a FRESH session that heard none of the broken one, so the note says what
+        # happened to the session it is replacing and that the app on disk is mid-change.
         #
-        # So the retry says what happened and names the choice that most often causes it. No size
-        # limit here on purpose — nothing has measured where the ceiling is, and an invented number
-        # would push the agent into re-editing one file, which AGENTS.md forbids for its own reasons.
+        # It used to name a cause as well — one very large write, data pasted into a source file —
+        # and that cause is wrong. The capture behind #207: the arguments that failed to parse were
+        # the whole 22 characters of `{"path": "src/App.tsx"`, on a stream that ran 48s over 15
+        # chunks and ended carrying no finish_reason at all (keepalive's `pump` now says so in the
+        # log). The gateway stopped sending. Nothing about the step was too big, and sending the
+        # agent to restructure it is work spent on a problem it does not have — that assumption
+        # already produced the escape-heavy repro in #205, which streamed perfectly.
+        #
+        # So the note names the gateway and asks for the same change again, which is what the retry
+        # is for. No size advice here at all: the evidence for it would be `_unparsed_tool_evidence`
+        # reporting a `len=` near a model's output cap, and nothing has measured where that ceiling
+        # is — the `len=` is in the log for a person to read.
         BROKEN_CALL_RETRY_NOTE = (
             "Your last {tool} call arrived with arguments that did not parse, and that session was "
             "dropped part-way through it. This is a fresh session. The app on disk is what the "
             "broken turn left behind, so read it before you change it.\n\n"
-            "One very large write is the usual cause, and data copied into a source file is the "
-            "usual reason for one. Any file the user attached is already served from `public/data/` "
-            "— fetch it and sample it at runtime instead of pasting rows into the code. Where a file "
-            "is long for some other reason, put the next part in its own component file rather than "
-            "sending one enormous call."
+            "The cause was upstream of you: the model gateway stopped sending part-way through that "
+            "call, which usually means it is under load. The step itself was fine — make the same "
+            "change again."
         )
         # One automatic retry for a tool call whose arguments never parsed (_unparsed_tool_input).
         # Bounded to one so a model that emits broken JSON systematically still ends, rather than
@@ -9624,10 +9629,12 @@ class Orchestrator:
                 # both. Same directory as `_ensure_session` uses — the Built App, not the
                 # workspace root (ADR-0008).
                 broken_retries += 1
-                # The evidence, not just the tool name. A tail that is an unclosed string means the
-                # answer was cut at the output cap, and shim/keepalive.py's `cut_off_finish_reason`
-                # will have named it a moment earlier in this same log; a tail that closes cleanly
-                # means a bad escape, which no cap change would fix.
+                # The evidence, not just the tool name. A tail that closes cleanly means a bad escape,
+                # which no cap change would fix. A tail that is an unclosed string means the answer
+                # stopped mid-arguments, and the line shim/keepalive.py logged a moment earlier in
+                # this same log says which kind: `finish_reason="length"` is the output cap, and no
+                # finish_reason at all is the gateway dropping the stream (#207) — which is the one
+                # the `len=` here is usually far too small for a cap to explain.
                 log.warning("turn: a %s call arrived unparsed (%s) — re-sending the turn in a "
                             "new session", broken_call, broken_evidence or "no arguments captured")
                 sid = client.create_session(directory=str(project.app_for_turn().path))
@@ -9653,14 +9660,17 @@ class Orchestrator:
                 restore_mode()
                 log.warning("turn: a %s call arrived unparsed again (%s) — giving up",
                             broken_call, broken_evidence or "no arguments captured")
-                # Not "try the same request again": the retry above already was that request, and it
-                # broke at the same step. What is left to change is the size of what the model is
-                # asked to write in one go, so the message asks for that instead.
-                message = (f"The model sent a broken {broken_call} call twice, so this build "
-                           "stopped part-way through. Anything already written to your app is "
-                           "still there.\n\nThis usually means one step was too big to write in "
-                           "one go. Ask for a smaller piece of it — the table on its own, then the "
-                           "charts — and it will go through.")
+                # This used to ask for a smaller piece, on the reading that one step had been too
+                # big to write in one go. The capture behind #207 disproves it: 22 characters of
+                # arguments had been emitted when the stream stopped, and splitting the request
+                # would have changed nothing. So the message names what the log now names — a
+                # gateway that stopped mid-answer — and asks for the one thing that does help,
+                # which is time. It does not promise a smaller ask will go through, because there
+                # is no evidence that it would.
+                message = (f"This build stopped part-way through a {broken_call} step, twice. "
+                           "Anything already written to your app is still there.\n\nBoth times, "
+                           "the model gateway stopped responding part-way through it — usually a "
+                           "sign it's under load. Send the same request again in a few minutes.")
                 if owns_turn and is_approval:
                     message += brand.text(
                         '\n\nThe plan you approved is still here — say "try again" and '
