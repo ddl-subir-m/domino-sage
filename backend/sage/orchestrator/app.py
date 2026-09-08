@@ -2421,6 +2421,37 @@ def thread_context(thread_id: str) -> JSONResponse:
     return JSONResponse(orchestrator.thread_context(thread_id))
 
 
+@control_app.post("/mcp/live-read")
+async def live_read_mcp(request: Request) -> Response:
+    """The Live read tools, as an MCP server OpenCode connects to (ADR-0041).
+
+    Loopback only, and it carries no auth of its own: what gates a read is the per-turn token
+    inside the call, not who knocked. A caller with no token can reach this and read nothing.
+
+    Answers JSON rather than an event stream. The Streamable HTTP transport allows either for a
+    single response, and there is nothing here that streams — a Live read returns once.
+
+    Verified against the pinned OpenCode 1.18.4: after initialising it also opens a `GET` here with
+    `Accept: text/event-stream`, the optional server-to-client channel. There is no route for that,
+    so it gets a 405 and the connection stands anyway. Do not "fix" that into a stream nothing sends
+    anything down.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+            status_code=400,
+        )
+    batch = isinstance(body, list)
+    out = [r for r in (orchestrator.live_read_call(m) for m in (body if batch else [body]))
+           if r is not None]
+    if not out:
+        # Every message was a notification. 202 with no body is what the transport expects.
+        return Response(status_code=202)
+    return JSONResponse(out if batch else out[0])
+
+
 @control_app.post("/api/threads/{thread_id}/context")
 def add_thread_context(thread_id: str, body: dict) -> JSONResponse:
     try:

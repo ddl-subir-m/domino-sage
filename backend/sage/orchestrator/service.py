@@ -17,8 +17,10 @@ import logging
 import os
 import queue
 import re
+import secrets
 import tempfile
 import threading
+import time
 import weakref
 from collections import deque
 from collections.abc import Sequence
@@ -38,6 +40,8 @@ from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
+from ..liveread import mcp as live_mcp
+from ..liveread import run as live_read
 from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
@@ -1017,6 +1021,10 @@ def _dataset_is_attached(attached: list[dict], binding: Binding) -> bool:
 # Subfolders Sage writes uploaded bytes into. `uploads/` is current; `sensitive/` is kept so a
 # file written by an older Sage can still be deleted as a Sage-managed upload. Both are
 # Sage-created, so both are safe to delete; a genuine pre-existing dataset file is neither.
+# How long a Live read token stays good (ADR-0041). Long enough to outlast a slow turn, short
+# enough that a token left in an abandoned session's prompt is worthless by the time anyone finds it.
+_LIVE_READ_TTL_S = 30 * 60
+
 _SAGE_UPLOAD_PREFIXES = ("uploads/", "sensitive/")
 
 
@@ -3377,6 +3385,9 @@ class Orchestrator:
         self._catalog = catalog
         self._assets = assets or FakeAssetProvider()
         self._resources = resources or FakeResourceProvider()
+        # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
+        self._live_read: dict[str, tuple[str, float]] = {}
+        self._live_read_lock = threading.Lock()
         # Which authority a model id resolves against, so the turn-time slot check (#125) knows
         # whether an Alias listing is evidence about this turn at all. Only `domino` puts the models
         # and the listing behind one gateway: in `openai` each model routes to its own vendor and in
@@ -6676,6 +6687,135 @@ class Orchestrator:
         store.append_history(thread_id, ev)
         return ev
 
+    # ---- Live read (ADR-0041) ----------------------------------------------------------------
+    # One OpenCode server hosts many Conversations, so a tool call cannot say which turn it belongs
+    # to by its URL or by a header. It says so with a token minted here per turn and written into
+    # that turn's prompt: an assistant relays the one it was handed, and has no way to name another
+    # Conversation's. Asking it to name its own Conversation instead would put scope in the hands of
+    # the thing scope is protecting against, which is ADR-0038's argument.
+    #
+    # Keyed by Thread, because a Conversation runs one turn at a time (ADR-0013): a new turn
+    # replaces its predecessor's token rather than adding to a pile that would have to be swept.
+
+    def _mint_live_read_token(self, thread_id: str) -> str:
+        token = "lrt_" + secrets.token_urlsafe(15)
+        with self._live_read_lock:
+            self._live_read[thread_id] = (token, time.monotonic())
+        return token
+
+    def _live_read_thread(self, token: str) -> str | None:
+        """The Conversation a token was minted for, if it is still current."""
+        if not token:
+            return None
+        now, found = time.monotonic(), None
+        with self._live_read_lock:
+            for thread_id, (tok, at) in list(self._live_read.items()):
+                if now - at > _LIVE_READ_TTL_S:
+                    self._live_read.pop(thread_id, None)
+                elif tok == token:
+                    found = thread_id
+        return found
+
+    def _live_read_turn(self, token: str) -> live_read.Turn | None:
+        """What a Live read may see, read from the records as they stand now.
+
+        Fresh rather than captured at mint time: a person can put a Resource in front of the
+        Conversation while its turn runs, and "may this be read" deserves the current answer.
+        """
+        thread_id = self._live_read_thread(token)
+        if not thread_id:
+            return None
+        project = self._chat_project()
+        store = ThreadStore(project.record.path)
+
+        # Session context. A table chip carries the TABLE in `name` and the store in `sourceName`,
+        # and it is the store that has to be named here (see `_chat_context_line`).
+        chips: dict[str, tuple[str, ...]] = {}
+        for item in (store.read_context(thread_id).get("items") or []):
+            kind = str(item.get("kind") or "")
+            if kind in ("data_source", "table"):
+                name = str(item.get("sourceName") or item.get("subtitle") or item.get("name") or "")
+                key = "datasource"
+            elif kind == "dataset":
+                name, key = str(item.get("name") or ""), "dataset"
+            else:
+                continue
+            if name:
+                chips[key] = chips.get(key, ()) + (name,)
+
+        # What the current Built App holds a Binding for. `workspace` IS that app (ADR-0008), so
+        # this is per app and not per Project, which is what "what this app reads" has to mean.
+        bound: dict[str, tuple[str, ...]] = {}
+        binding_for: dict[str, str] = {}
+        for row in project.workspace.read_bindings():
+            name = str(row.get("name") or "")
+            kind = "dataset" if str(row.get("kind") or "") == "dataset" else "datasource"
+            if not name:
+                continue
+            bound[kind] = bound.get(kind, ()) + (name,)
+            if kind == "datasource" and row.get("id"):
+                binding_for[name] = str(row["id"])
+
+        sources = {}
+        try:
+            sources = {d.name: d for d in self._resources.list_data_sources()}
+        except Exception:
+            # A store the platform will not list is a store this read cannot open, and the sentence
+            # for that is already written. It must not take the whole turn down.
+            pass
+
+        datasets: dict[str, Asset] = {}
+        try:
+            datasets = {a.name: a for a in self._assets.list_datasets(self._domino_project_id)}
+        except Exception:
+            pass
+
+        def dataset_root(name: str) -> Path | None:
+            asset = datasets.get(name)
+            mount = getattr(asset, "mount_path", None) if asset else None
+            return Path(mount) if mount else None
+
+        def list_files(name: str):
+            asset = datasets.get(name)
+            return self._assets.list_files(asset) if asset else None
+
+        return live_read.Turn(
+            thread_id=thread_id,
+            examples_dir=store.examples_dir(thread_id),
+            bound=bound,
+            chips=chips,
+            shared=self._shared_samples(project),
+            binding_for=binding_for,
+            source_for=sources.get,
+            sample_rows=self._resources.sample_rows,
+            list_files=list_files,
+            dataset_root=dataset_root,
+        )
+
+    def _shared_samples(self, project: Project) -> tuple[tuple[str, str], ...]:
+        """The (Binding, table) pairs the creator put in front of the agent, from their own record.
+
+        Fails closed on anything unreadable, exactly as `parse_samples` does: no shared tables means
+        the assistant is shown nothing it was not certainly given.
+        """
+        try:
+            raw = json.loads((project.workspace.path / SAMPLES_PATH).read_text())
+        except (OSError, json.JSONDecodeError):
+            return ()
+        return tuple((s.binding, s.rows.table) for s in parse_samples(raw))
+
+    def live_read_call(self, message: dict) -> dict | None:
+        """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`."""
+        def run(name: str, args: dict) -> str:
+            turn = self._live_read_turn(str(args.get("token") or ""))
+            if turn is None:
+                # Not a refusal the person is owed — it means the turn moved on. Told to the
+                # assistant plainly so it asks again rather than inventing an answer.
+                return "That read token is not current. Ask again on this turn."
+            return live_read.perform(name, args, turn)
+
+        return live_mcp.handle(message, run=run)
+
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
                      urls: list[str] | None = None, workspace: Path | None = None,
                      artifacts: list[dict] | None = None,
@@ -6685,6 +6825,11 @@ class Orchestrator:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
+            # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
+            # minted per turn and is worthless on any other.
+            f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
+            "live_read_ tool call. Use those tools to look at a bound table or Dataset rather than "
+            "telling the person you cannot see their data.",
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]

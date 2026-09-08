@@ -212,11 +212,34 @@ _Avoid_: filter (that is one kind of Control), widget, interactivity, knob, face
 
 **Sample rows**:
 A few real rows from a bound table, shown to the agent because the creator asked for them. Never a
-default and never inferred: the creator picks the tables and chooses whether the rows are treated as
-sensitive, which is what decides if the session is [[Sovereign]]. Declining leaves the agent working
-from column names and types, which is fully supported.
+default and never inferred: the creator picks the tables one at a time, and the record is kept per
+[[Binding]] and table name, so sharing one table shares nothing beside it. Declining leaves the
+agent working from column names and types, which is fully supported. It is also what a [[Live read]]
+reads to decide whether the assistant may see a result's values and not only its shape — the share
+is the one record that says so, and no second one is kept.
 _Kind_: name
-_Avoid_: preview, sample data, examples, peek
+_Avoid_: preview, sample data, examples, peek, sensitive (the flag that word named is gone from the
+record; the share itself is the fact)
+
+**Live read**:
+One read Sage makes of a store or a file to answer a person, in the turn they asked. It reaches only
+what the [[Conversation]] or the current [[Built App]] already names — a [[Binding]] or a [[Session
+context]] chip — never the [[Working set]], which is orientation
+([ADR-0020](docs/adr/0020-the-working-set-is-orientation-never-context.md)). It reads a [[Data
+Source]], a [[Dataset]], an [[Attachment]], an [[Upload]] or an [[Artifact]], and never a [[Model
+API]] or an [[LLM Alias]], because those are called rather than read. Its rows reach the person and
+not the model: the read writes an [[Artifact]] and hands the assistant the columns, the row count and
+the path, so what the creator called sensitive does not travel to a [[Vendor-backed Alias]] on its
+way to an answer. An assistant that must read the values is given them only where the
+creator already shared that table, which the [[Sample rows]] record says and nothing else does. It answers what a thing is and holds; a question that needs
+the numbers computed belongs to [[Chat]], and Sage offers the switch rather than stopping. A result
+that hit its cap says so rather than reading as the whole
+([ADR-0029](docs/adr/0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md)).
+Distinct from a [[Named query]], which the Built App runs, and from [[Sample rows]], which are a
+fixed few given to the assistant once.
+_Kind_: name
+_Avoid_: query, Named query (that is the app's), sample, Sample rows (those are the agent's),
+preview, peek, fetch, lookup
 
 **Attachment**:
 A file bound into the Built App, reachable by the app's code. A file never becomes a Binding, so
@@ -312,8 +335,8 @@ word must not stand in for Chat), assistant, sandbox, Jupyter, notebook
 
 **Build**:
 The Workbench mode that edits a Built App, as against Chat, which does not. It runs in one of
-four modes a person picks: Auto, which plans and then builds; Ask, which answers and writes
-nothing; Plan, which proposes; and Implement, which builds.
+four modes a person picks: Auto, which plans and then builds; Ask, which answers and does not change
+the app; Plan, which proposes; and Implement, which builds.
 _Kind_: name
 _Avoid_: agent mode, code mode, editor, IDE
 
@@ -396,7 +419,7 @@ _Kind_: name
 _Avoid_: Untitled, sandbox, ephemeral, temporary project, scratch
 
 **Artifact**:
-A file the chat agent wrote under `examples/<threadId>/` and indexed in that Conversation's
+A file an assistant turn or a [[Live read]] wrote under `examples/<threadId>/` and indexed in that Conversation's
 manifest — a PNG chart, a table JSON, a query, a note. The directory is named for the role
 these files play at handoff, not for the term. Handoff names Artifacts by path; it does not
 copy them, and it does not replay a chart object from memory.
