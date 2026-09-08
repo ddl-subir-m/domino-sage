@@ -25,6 +25,13 @@ from typing import Any
 # requirements are not implemented here.
 PROTOCOL_VERSION = "2025-06-18"
 
+# OpenCode NAMESPACES an MCP tool by its `opencode.json` key when it offers it to the model, and
+# strips that prefix again before calling the server. Verified live on 1.18.4: the model is offered
+# `sage-live-read_live_read_table`, and what arrives here is `live_read_table`. So this file keys on
+# the BARE name and is right to — do not "fix" it to expect the prefix. What must carry the prefix
+# is every instruction that names a tool to the agent, and the two are pinned to each other by
+# test_the_live_read_tools_reach_opencode_as_an_mcp_server.
+
 _TOKEN = {
     "type": "string",
     "description": "The read token from this turn's prompt. Pass it back exactly as given.",

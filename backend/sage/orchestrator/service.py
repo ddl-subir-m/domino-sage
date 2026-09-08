@@ -6828,8 +6828,8 @@ class Orchestrator:
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.
             f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
-            "live_read_ tool call. Use those tools to look at a bound table or Dataset rather than "
-            "telling the person you cannot see their data.",
+            "sage-live-read_ tool call. Use those tools to look at a bound table or Dataset rather "
+            "than telling the person you cannot see their data.",
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]
@@ -8949,8 +8949,8 @@ class Orchestrator:
         # tool it can no longer name a turn for. Repeating one line is the cheaper mistake.
         live_read_note = (
             f"Read token: {self._mint_live_read_token(project.build_conversation)}. Pass it as "
-            "`token` on every live_read_ tool call. Use those tools to look at a bound table or "
-            "{dataSource} rather than telling the person you cannot see their data."
+            "`token` on every sage-live-read_ tool call. Use those tools to look at a bound table "
+            "or {dataSource} rather than telling the person you cannot see their data."
             if owns_turn and project.build_conversation else ""
         )
         live_read_note = brand.text(live_read_note) if live_read_note else ""

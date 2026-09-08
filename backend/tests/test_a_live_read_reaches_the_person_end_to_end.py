@@ -66,7 +66,8 @@ def test_the_turn_mints_a_token_into_its_own_prompt(tmp_path: Path):
     list(orch.chat_stream(tid, "show me 1 sample conversation"))
 
     assert _token(oc).startswith("lrt_")
-    assert "live_read_" in oc.prompts[-1]["text"], "and tells the agent what it is for"
+    # The prefixed name, which is what OpenCode offers the model — see the MCP transport test.
+    assert "sage-live-read_" in oc.prompts[-1]["text"], "and tells the agent what it is for"
 
 
 def test_a_chip_in_this_conversation_is_what_the_read_goes_through(tmp_path: Path):

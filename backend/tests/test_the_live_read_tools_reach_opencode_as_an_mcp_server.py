@@ -11,6 +11,9 @@ and has no way to name another Conversation's.
 
 from __future__ import annotations
 
+import json
+import pathlib
+
 import pytest
 
 from sage.liveread import mcp
@@ -94,3 +97,35 @@ def test_the_lists_opencode_probes_for_answer_empty_rather_than_erroring(method)
     # A client that probes these and gets -32601 logs a fault on every connect. There is nothing
     # here to serve, so say that plainly instead.
     assert call(method)["result"] == {method.split("/")[0]: []}
+
+
+def test_the_name_an_instruction_gives_is_the_name_opencode_offers():
+    """OpenCode namespaces an MCP tool by its `opencode.json` key, then strips it again to call.
+
+    Verified live against the pinned 1.18.4 with a stub provider in front of it: the model was
+    offered `sage-live-read_live_read_table`, and the `tools/call` that reached the server named
+    `live_read_table`. Both halves matter and they point opposite ways — the handler keys on the
+    bare name, and every sentence that tells an agent which tool to call must use the prefixed one.
+
+    They drift the instant somebody renames the key, and the failure is quiet: the agent calls a
+    tool that does not exist, and falls back on telling the person it cannot see their data, which
+    is the transcript this whole feature exists to stop. So they are pinned to each other here.
+    """
+    root = pathlib.Path(__file__).resolve().parents[2]
+    servers = json.loads((root / "opencode.json").read_text())["mcp"]
+    assert len(servers) == 1, "the prefix below assumes one server; name the new one here too"
+    key = next(iter(servers))
+
+    told = "\n".join(p.read_text() for p in (
+        root / "template" / "react-vite" / "AGENTS.md",
+        root / "template" / "chat" / "AGENTS.md",
+        root / "backend" / "sage" / "orchestrator" / "service.py",
+    ))
+    for tool in mcp.TOOLS:
+        assert f"{key}_{tool['name']}" in told, f"nothing tells an agent to call {tool['name']}"
+        # And the bare name is what the server answers to, which is the other half of the pair.
+        assert mcp.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": tool["name"], "arguments": {}}},
+            run=lambda n, a: "ok",
+        )["result"]["content"][0]["text"] == "ok"

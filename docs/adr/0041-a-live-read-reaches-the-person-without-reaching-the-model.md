@@ -127,6 +127,18 @@ this handler: it reports `sage-live-read connected`, and the exchange is `initia
 both tools. It also opens a `GET` for the optional server-to-client stream and takes a 405 for it
 without complaint.
 
+Driven further, with a stub provider in front of it, it gave up the fact that mattered: OpenCode
+**namespaces an MCP tool by its `opencode.json` key** when offering it to the model —
+`sage-live-read_live_read_table` — and **strips that prefix again** before calling the server,
+which receives `live_read_table`. The two halves point opposite ways. The handler keys on the bare
+name; every sentence telling an agent which tool to call must use the prefixed one.
+
+That was a real defect, found only by running it: the first draft of both templates named the bare
+tool, so the agent would have called something that does not exist and fallen back on telling the
+person it could not see their data — the exact transcript at the top of this document. The two are
+now pinned to each other by a test, because renaming the key in `opencode.json` breaks them
+silently.
+
 ## What lands, and where
 
 The same directory as every other Artifact, `examples/<conversationId>/`, and **committed**, like
