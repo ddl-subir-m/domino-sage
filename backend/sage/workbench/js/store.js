@@ -3855,8 +3855,15 @@ window.SW = window.SW || {};
       }).filter(Boolean);
     },
 
-    // What a card with no buttons says instead (#213). Read off the same kinds by the same rule, so
-    // the sentence can never send somebody somewhere the button would not have gone.
+    // What a card with no buttons says instead (#213). One entry per kind the route can refuse, so
+    // the sentence can never leave a named Resource with no way out at all.
+    //
+    // What it says is the prose the SERVER used to carry, moved rather than rewritten — so a
+    // replayed card reads today exactly as it read before the buttons learned to build. That is why
+    // `model_api` is sent to "Use in {app}" here while its live button offers the access token: the
+    // token is the first half of that fix and the bind is the second (see `openCredentialForMention`
+    // and #128), and a record is the wrong place to close a gap the live card has never closed. The
+    // rule these follow is the server's sentence, not `MENTION_FIX`.
     //
     // The server's lines say only what happened, because a live refusal draws the way out and an
     // instruction beside a button describes the long way round past it. A replayed refusal draws no
