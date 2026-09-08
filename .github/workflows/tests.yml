@@ -1,0 +1,53 @@
+# The suite is 4000-odd tests and it is green; until this file, nothing ran it (#166). A pull
+# request could merge against a red suite and the PR page would still look clean, because the only
+# check was secret scanning.
+#
+# Node is not optional here. Most backend test files skip themselves when `node` is not on PATH,
+# because the `.mjs` harnesses under `backend/tests/js/` are the only test of the workbench
+# JavaScript. A Python-only runner would pass green while testing none of the front end.
+# `backend/tests/test_ci_does_not_report_success_on_a_skipped_suite.py` fails loudly if that ever
+# regresses, so this file and that one have to stay in step.
+#
+# The steps are `make test` and `make lint` rather than the commands they wrap, so CI and a laptop
+# cannot drift apart. Both already carry `--extra dev`, without which pytest does not run a smaller
+# suite — it fails to spawn, and a swallowed exit code reads that failure as a pass.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # `requires-python = ">=3.11"`, and the checked-in venv is built on 3.11. Pinning the floor
+      # keeps uv from silently picking a newer interpreter than anyone develops against.
+      UV_PYTHON: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20" # `engines.node = ">=20"` in the root package.json.
+
+      # The harnesses import `node:fs` and `node:vm` only, so no `npm ci` is needed here, and the
+      # Vite template's node_modules are for the preview server that no test starts.
+
+      - name: Install ripgrep
+        # Present on the runner image today, installed anyway so the suite does not depend on that
+        # staying true. The canary test above turns its absence into a failure, not a silent skip.
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Tests
+        run: make test
+
+      - name: Lint
+        # `always()` so a red suite does not hide a lint failure. Both answers on one run.
+        if: always()
+        run: make lint
