@@ -285,7 +285,7 @@ _PERSISTED_EVENTS = frozenset({
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
     "mentions-ambiguous",
     "app_change", "build-stalled", "gateway-call", "gateway-alias-unbound",
-    "data-source-unasked",
+    "data-source-unasked", "data-source-failed",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -9899,7 +9899,28 @@ class Orchestrator:
                     notice = self._unasked_notice(project.app_for_turn())
                     if notice:
                         yield persist({"type": "data-source-unasked", "message": notice})
-                yield persist({"type": "done", "ok": report.ok, "decision": decision.reason})
+                # The mirror of that, one step further in: this app DID ask, the preview ran the
+                # question against the real store, and the store refused it (#203). Live, six of
+                # six failed with `Object 'GONG' does not exist or not authorized`, every failure
+                # went to a `log.warning` no caller read, and the turn ended "build is clean" over
+                # an app whose entire data path was broken.
+                #
+                # Only on a turn that SUCCEEDED, for the same reason the notice above is: a turn
+                # that already failed has its own sentence, and a second one below it reads as part
+                # of the fault. A switch mid-build (#77) needs nothing here — the preview is
+                # rebuilt for the app that was switched TO, so its answer is empty rather than the
+                # other app's.
+                failed = self._query_failures(project) if report.ok and owns_turn else {}
+                if failed:
+                    yield persist({"type": "data-source-failed",
+                                   "message": self._failed_notice(failed)})
+                # A build that cannot read its data has not finished cleanly, so it does not say it
+                # has. What does NOT change is anything below this line: the code was written and it
+                # typechecks, and a store that was down for ten seconds must not cost the creator
+                # the turn's work — which is also what keeps this a report rather than the gate
+                # ADR-0010 rules out.
+                yield persist({"type": "done", "ok": report.ok and not failed,
+                               "decision": "queries failed" if failed else decision.reason})
                 if report.ok and owns_turn:
                     # A clean code-writing build succeeded (a no-edit plan/answer turn returned earlier),
                     # so this project is now "built" — future turns gate on plan, not on this being done.
@@ -13537,6 +13558,50 @@ class Orchestrator:
             named=", ".join(labels[:-1]) + f" and {labels[-1]}",
         )
 
+    def _query_failures(self, project: Project) -> dict[str, str]:
+        """Which of this app's queries the preview ran and the store refused, by name (#203).
+
+        Empty for both of the answers that are not failures — nothing failed, and nobody asked. The
+        two are worth telling apart at the source, and `PreviewQueries.failures` does, but not here:
+        this decides whether there is a sentence to say, and there is none for either.
+
+        Best-effort like everything else that runs at the end of a turn. A preview that has gone
+        strange is not grounds to fail a build that worked.
+        """
+        try:
+            return project.queries.failures() or {}
+        except Exception:
+            log.exception("preview queries: could not read what failed; saying nothing")
+            return {}
+
+    @staticmethod
+    def _failed_notice(failed: dict[str, str]) -> str:
+        """One sentence for the person about the queries that did not answer.
+
+        Carries what the store said, not a paraphrase of it. `Object 'GONG' does not exist or not
+        authorized` is the difference between a name to fix and a permission to ask for, and a
+        creator reading "a query failed" cannot tell which they are looking at.
+
+        Composed here rather than in the browser for the reason `_unasked_notice`'s is: the remedy
+        names an act, and which act it is depends on what Sage knows and the page does not.
+        """
+        named = ", ".join(f"`{name}` ({reason})" for name, reason in failed.items())
+        if len(failed) == 1:
+            return brand.text(
+                "This {builtApp} could not read its data while it was being built: the query "
+                "{named} failed. Every screen waiting on it shows an error where the data should "
+                "be. Ask {assistantName} to fix the query, or check that this app may still read "
+                "the {dataSource} it names.",
+                named=named,
+            )
+        return brand.text(
+            "This {builtApp} could not read its data while it was being built: {count} queries "
+            "failed — {named}. Every screen waiting on them shows an error where the data should "
+            "be. Ask {assistantName} to fix them, or check that this app may still read the "
+            "{dataSourcePlural} they name.",
+            count=len(failed), named=named,
+        )
+
     def _data_sources_never_asked(self, workspace: Workspace) -> list[Binding]:
         """Data Source Bindings this app writes no query against, in Binding order.
 
@@ -13972,6 +14037,10 @@ class Orchestrator:
              for b in bindings],
             catalog_problems(template, project.workspace.path),
             getattr(module, "_DEFAULT_MAX_ROWS", 5000),
+            # The same failures the person was just told about, put in front of the agent on its
+            # next turn (#203). `catalog_problems` above is the static half — a catalog that does
+            # not hold together — and this is the half only running the query can find.
+            failing=self._query_failures(project),
             samples=self._shared_samples(project),
             names=project.workspace.helpers,
             # Only asked when nothing is bound, which is the only case it changes.

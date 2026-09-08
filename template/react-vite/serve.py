@@ -735,6 +735,22 @@ _CANNOT_OPEN = ("This app could not open the Data Source it reads. Whoever publi
 _NO_ANSWER = ("The Data Source did not answer this question. Try again — if it keeps failing, "
               "whoever published this app can see the reason in the App's log.")
 
+# The same three failures, said to the person who is BUILDING the app rather than to a viewer of a
+# published one. Sage runs this same file over loopback to answer queries during a build (#24), so
+# every sentence above was reaching a creator who had published nothing and was being sent to read
+# the log of an App that does not exist — seen live in the preview, twice (2026-08-24, #203).
+#
+# The reader here is the one person who can fix it, and they are looking at it from inside Sage, so
+# these name the act instead of an audience. They do not send anyone to a log at all: Sage now says
+# what failed and why at the end of the turn that ran it, which is the surface this reader is
+# already on.
+_PREVIEW_NO_LIBRARY = ("This preview cannot reach the Data Source: the workspace has no data source "
+                       "client installed.")
+_PREVIEW_CANNOT_OPEN = ("This preview could not open the Data Source this app reads. Check that it "
+                        "still exists and that you can use it.")
+_PREVIEW_NO_ANSWER = ("The Data Source did not answer this question. Sage says why at the end of "
+                      "the build turn that ran it.")
+
 # Anything long enough to be a token. `DataSourceClient.__repr__` prints its api_key in plaintext, so
 # an exception carrying the client carries the key with it — and the App log is readable by everyone
 # who can see the deployment.
@@ -807,13 +823,22 @@ class FlightExecutor:
     The client under it is built once and shared. It holds a gRPC channel, and the SDK's auth
     middleware fetches a fresh token from the sidecar at the start of every call — so a long-running
     App does not go stale, and rebuilding the client per query would only pay for a new connection.
+
+    `preview` is which of the two contexts is serving: a published App read by a viewer, or the build
+    preview Sage answers a creator's own queries from (#24). It changes nothing this class DOES —
+    only which wording a refusal carries, because the remedy differs by reader and only one of the
+    two readers has an App log to be sent to.
     """
 
-    def __init__(self, sources: dict, max_rows: int = _DEFAULT_MAX_ROWS) -> None:
+    def __init__(self, sources: dict, max_rows: int = _DEFAULT_MAX_ROWS, *,
+                 preview: bool = False) -> None:
         self._sources = sources
         self._max_rows = max_rows
         self._client = None
         self._lock = threading.Lock()
+        self._no_library = _PREVIEW_NO_LIBRARY if preview else _NO_LIBRARY
+        self._cannot_open = _PREVIEW_CANNOT_OPEN if preview else _CANNOT_OPEN
+        self._no_answer = _PREVIEW_NO_ANSWER if preview else _NO_ANSWER
 
     def __call__(self, query: Query, params: dict) -> dict:
         source = self._sources.get(query.binding)
@@ -828,13 +853,13 @@ class FlightExecutor:
             datasource = client.get_datasource(source.name)
         except Exception as exc:
             print(f"[sage] query {query.name}: cannot open {source.name}: {_readable(exc)}", flush=True)
-            raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE, _CANNOT_OPEN) from exc
+            raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE, self._cannot_open) from exc
         try:
             datasource.update(_ScopeConfig(config))
             columns, rows, truncated = _drain(datasource.query(sql).reader, self._max_rows)
         except Exception as exc:
             print(f"[sage] query {query.name} failed: {_readable(exc)}", flush=True)
-            raise QueryProblem(HTTPStatus.BAD_GATEWAY, _NO_ANSWER) from exc
+            raise QueryProblem(HTTPStatus.BAD_GATEWAY, self._no_answer) from exc
         # The only place this is measurable. A creator reading the App log is the one person who can
         # act on a query that takes 40s, and the number is in the same place as the cold start.
         print(f"[sage] query {query.name}: {len(rows)} rows in {time.monotonic() - started:.1f}s"
@@ -857,7 +882,7 @@ class FlightExecutor:
                 except Exception as exc:
                     print(f"[sage] no data source client under {sys.executable}: {_readable(exc)}",
                           flush=True)
-                    raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE, _NO_LIBRARY) from exc
+                    raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE, self._no_library) from exc
             return self._client
 
 
