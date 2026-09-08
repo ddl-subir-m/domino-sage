@@ -203,8 +203,8 @@ window.SW = window.SW || {};
       body = h(Empty, {
         image: Empty.PRESENTED_IMAGE_SIMPLE,
         description: h('span', { className: 'sw-secondary' }, SW.brand.text(
-          '{assistantName} is not running against {platformName}, so it cannot see who else works '
-          + 'here.'
+          "{assistantName} isn't connected to {platformName}, so it can't show who's on this "
+          + '{project}.'
         )),
       });
     } else {
@@ -234,8 +234,8 @@ window.SW = window.SW || {};
           // No role picker. The roles differ in ways a creator cannot judge from the Workbench,
           // and one of them silently cannot open the App they are being added to see.
           h('div', { className: 'sw-caption' }, SW.brand.text(
-            'Everyone is added as a contributor, and can open this {project} and any {builtApp} '
-            + 'published from it right away.'
+            "They're added as a contributor and can open this {project} and its published apps "
+            + 'right away.'
           ))
         ),
         h(

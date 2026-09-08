@@ -126,9 +126,9 @@ def test_a_line_with_a_button_behind_it_stops_giving_directions(tmp_path: Path):
         [{"kind": KIND_LLM_ALIAS, "id": "al_1", "name": "gpt-5-4"},
          {"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse"}])
 
-    assert "Couldn't use @events.csv — a Chat file lives outside this app." in said
+    assert "Couldn't use @events.csv — it's in Chat, not in this app." in said
     assert "Sales dashboard can't call @gpt-5-4 yet." in said
-    assert "Couldn't use @Warehouse — Sales dashboard doesn't use it yet." in said
+    assert "Couldn't use @Warehouse. Sales dashboard doesn't use it yet." in said
     assert "then ask again" not in said
     assert "in the list of what it ships" not in said
     # Three drops, three rows: every shortened line has a button standing behind it.
@@ -144,8 +144,7 @@ def test_a_line_with_no_button_behind_it_keeps_every_word(tmp_path: Path):
 
     said, rows = orch._unusable_mentions(proj, None, ["public/data/gone.csv"], None)
 
-    assert said == ("Couldn't use @gone.csv — not attached to this app. "
-                    "Attach it in the Data panel, then ask again.")
+    assert said == ("Couldn't use @gone.csv. Attach it to this app, then ask again.")
     assert rows == []
 
 
@@ -274,8 +273,7 @@ def test_the_replayed_card_says_where_to_go_since_it_cannot_take_you():
     blocks = _js("components", "message-blocks.js")
 
     assert "mentionFixHints(entries) {" in store
-    assert ("const ships = (e) => `Choose Use in ${e.app} in the list of what it ships, "
-            "then ask again.`;") in store
-    assert "file: (e) => `Attach it to ${e.app} in the Data panel, then ask again.`," in store
+    assert "const ships = (e) => `Add it to ${e.app}, then ask again.`;" in store
+    assert "file: (e) => `Attach it to ${e.app}, then ask again.`," in store
     assert "const hints = SW.store.mentionFixHints(block.entries);" in blocks
     assert "[block.message, ...hints].join(' '));" in blocks

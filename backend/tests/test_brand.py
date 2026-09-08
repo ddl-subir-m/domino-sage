@@ -711,5 +711,5 @@ def test_choosing_a_peer_names_it_in_the_packs_words():
         click="vision",
     )
     assert drawn["said"] == [
-        "Acme Vision is another Acme Cloud product. Only Acme is built out here."
+        "Acme Vision isn't available here."
     ]

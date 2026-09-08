@@ -184,8 +184,7 @@ def test_the_card_names_every_database_it_could_not_read(tmp_path: Path, monkeyp
     card = _card(client.post("/api/project/build/stream", json={"prompt": PROMPT}).text)
 
     assert card["message"].endswith(
-        "Sage could not read hive_metastore and sandbox, so any Tables they hold are not on "
-        "this list.")
+        "Couldn't read hive_metastore and sandbox, so their Tables aren't listed.")
 
 
 def test_a_walk_that_read_everything_says_nothing_about_databases_it_skipped(
@@ -277,5 +276,4 @@ def test_chat_keeps_the_partial_walk_and_names_the_gap_in_the_same_words(
     assert card["threadId"] == tid
     assert "GONG__CALLS" in {t for g in card["allGroups"] for t in g["tables"]}
     assert card["message"].endswith(
-        "Sage could not read hive_metastore and sandbox, so any Tables they hold are not on "
-        "this list.")
+        "Couldn't read hive_metastore and sandbox, so their Tables aren't listed.")

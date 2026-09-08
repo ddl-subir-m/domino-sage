@@ -31,7 +31,7 @@ PROMPT = "build me a dashboard of daily gong calls from Snowflake"
 HISTORY = [
     {"type": "user", "text": PROMPT},
     {"type": "source-candidates", "prompt": PROMPT,
-     "message": "Which Data Source holds this?",
+     "message": "Which Data Source should this Built App read?",
      "answered": {"skipResetGate": False, "skipIncomingGate": False, "skipSourceGate": False},
      "named": 1,
      "sources": [{"id": "ds-dwh", "name": "Snowflake-Data-Warehouse", "connector": "Snowflake"},

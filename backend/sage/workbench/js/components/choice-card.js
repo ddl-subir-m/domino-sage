@@ -47,8 +47,7 @@ window.SW = window.SW || {};
           chosen.opensPanel
             // The catalogue is the platform's page, so the word is the platform's name; the label
             // beside it is whatever the option was called, dropped in rather than resolved.
-            ? SW.brand.text('Opened the {platformName} catalogue — add one there and I\'ll pick '
-              + 'the thread back up.')
+            ? SW.brand.text("Opened the {platformName} catalog. Add one there and we can continue.")
             : `You chose "${chosen.label}".`
         )
     );

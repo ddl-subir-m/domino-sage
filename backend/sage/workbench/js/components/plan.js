@@ -392,26 +392,15 @@ window.SW = window.SW || {};
     // instead, because "you can't" without "here's where you can" is a dead end.
     const buildAgainWhy = {
       'moved on':
-        'A later plan already owns this {builtApp}, so this one no longer describes it. ' +
-        'Open the {builtApp} and work from its current plan.',
+        'A newer plan is current for this {builtApp}. Open the {builtApp} and use that plan.',
       superseded:
-        'Another conversation replaced this plan before it was built again. ' +
-        'Open the {builtApp} and work from its current plan.',
-      // The one reason whose remedy is on this page rather than somewhere else, so it points at
-      // the control beside it instead of at another plan (#167).
+        'Another conversation replaced this plan. Open the {builtApp} and use its current plan.',
       archived:
-        'This plan is archived, so it is no longer the current plan for this {builtApp}. ' +
-        'Unarchive it to build from it again.',
-      // The same shape the "Build this" button beside it refuses in, and for the same reason: a
-      // build is a turn, and a turn needs a conversation to belong to.
+        'This plan is archived. Unarchive it to build from it again.',
       'no conversation':
-        'This plan has no conversation on record, so there is nowhere to run the build. ' +
-        'Open the {builtApp} and ask for the change there.',
-      // The same absence arrived at a different way (#167), and it earns its own sentence: a
-      // conversation that was deleted is a door somebody closed, not one that was never there.
+        'This plan has no conversation, so it can\'t be built from here. Open the {builtApp} and ask there.',
       'conversation deleted':
-        'The conversation this plan came from was deleted, so there is nowhere to run the ' +
-        'build. Open the {builtApp} and ask for the change there.',
+        'The conversation for this plan was deleted. Open the {builtApp} and ask there.',
     }[buildAgain.reason];
 
     return h(

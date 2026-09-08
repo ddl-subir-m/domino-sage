@@ -281,7 +281,7 @@ window.SW = window.SW || {};
               Tooltip,
               {
                 title: SW.brand.text(
-                  'Keeps this at the top of the @ menu. It does not send it to {assistantName}.'
+                  'Pins this in the @ menu. It does not send it yet.'
                 ),
               },
               h(Button, { size: 'small', type: 'link', onClick: onPin }, 'Pin')
@@ -405,8 +405,7 @@ window.SW = window.SW || {};
       // No claim about WHICH files these are. The mounted walk is sorted, so its cap cuts the
       // tail; the data library answers in its own order, and neither promise would hold for both.
       SW.brand.text(
-        'This {dataset} holds more files than {assistantName} can list. The listing stopped at '
-        + '{count}, so what is here is part of it, not all of it.',
+        'Showing the first {count} files — not the whole {dataset}.',
         { count: SW.util.number((files || []).length) }
       )
     );

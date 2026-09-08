@@ -254,7 +254,7 @@ def test_a_stop_that_does_not_return_keeps_the_lock(tmp_path: Path):
     events = list(orch.build_stream("add a chart"))
 
     assert _of(events, "done")[0]["decision"] == "wedged"
-    assert "would not stop" in _of(events, "build-stalled")[0]["message"]
+    assert "wouldn't stop" in _of(events, "build-stalled")[0]["message"]
     assert orch._turn_lock.locked() is True
 
 
@@ -291,7 +291,7 @@ def test_a_workspace_stuck_on_a_wedged_turn_says_what_it_is(tmp_path: Path):
 
     assert _of(events, "done")[0]["decision"] == "wedged"
     refusal = _of(events, "error")[0]
-    assert "Restart the workspace" in refusal["message"]
+    assert "stuck on a build" in refusal["message"]
     assert "busy" not in refusal
 
 
@@ -344,7 +344,7 @@ def test_files_the_turn_wrote_before_it_wedged_are_kept(tmp_path: Path):
     assert (app / "src" / "chart.tsx").read_text() == "chart\n"
     offer = _of(events, "build-stalled")[0]
     assert offer["kept"] is True
-    assert "is kept" in offer["message"]
+    assert "still in the app" in offer["message"]
     # The app really changed, so it owes the same receipt any other turn that changes it leaves —
     # without one, "you can see how far it got" points at nothing.
     assert _of(events, "app_change")
@@ -356,12 +356,7 @@ def test_a_turn_that_wrote_nothing_does_not_claim_it_kept_anything(tmp_path: Pat
     offer = _of(list(orch.build_stream("add a chart")), "build-stalled")[0]
 
     assert offer["kept"] is False
-    assert "This turn hadn't written anything" in offer["message"]
-    # Reported from a real session: the same fact used to be worded about the APP ("It hadn't
-    # written anything to your app yet"), and the person reading it had watched eight files land in
-    # earlier turns. Turn-scoped fact, app-scoped sentence — so it read as the app being emptied,
-    # which is the opposite of what a stalled turn does. The wording names both halves now.
-    assert "your app is exactly as it was" in offer["message"]
+    assert "This turn didn't change the app" in offer["message"]
 
 
 class SilentStepsOpenCode(FakeOpenCode):
@@ -477,7 +472,7 @@ def test_a_call_that_never_comes_back_is_still_given_up_on(tmp_path: Path):
     offer = _of(list(orch.build_stream("add a chart")), "build-stalled")[0]
 
     assert offer["quietForS"] >= 20         # waited the tool window, not the idle one
-    assert "step Sage was running" in offer["message"]
+    assert "A step didn't finish" in offer["message"]
 
 
 def test_a_turn_with_nothing_open_is_given_up_on_inside_the_shorter_window(tmp_path: Path):
@@ -594,7 +589,7 @@ def test_after_a_wedge_every_non_streaming_entry_point_names_the_restart(tmp_pat
                          "recross_handoff", "reset_app", "build"}
     for name, message in said.items():
         assert message == streamed, name
-        assert "Restart the workspace" in message
+        assert "stuck on a build" in message
 
 
 def test_a_turn_that_is_genuinely_running_still_says_wait_or_stop_it_first(tmp_path: Path):
@@ -667,7 +662,7 @@ def test_the_routes_hand_the_wedged_sentence_to_the_person(tmp_path: Path, monke
     with TestClient(appmod.control_app) as client:
         for response in (client.post("/api/apps"), client.post("/api/project/reset")):
             assert response.status_code == 409
-            assert "Restart the workspace" in response.json()["error"]
+            assert "stuck on a build" in response.json()["error"]
 
 
 def test_a_stop_pressed_while_sage_was_stopping_does_not_answer_the_next_turn(tmp_path: Path):
@@ -742,5 +737,5 @@ def test_a_stuck_call_that_will_not_stop_names_the_step_too(tmp_path: Path):
     card = _of(list(orch.build_stream("add a chart")), "build-stalled")[0]
 
     assert card["stuck"] is True
-    assert "step Sage was running" in card["message"]
-    assert "would not stop" in card["message"]
+    assert "A step wouldn't stop" in card["message"]
+    assert "Restart the workspace" in card["message"]

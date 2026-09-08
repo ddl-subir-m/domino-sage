@@ -158,8 +158,7 @@ window.SW = window.SW || {};
             // Three roles in one sentence: the platform's catalogue and our own name both resolve
             // through the pack, while the Project's name is the user's word and only fills a slot.
             description: SW.brand.text(
-              'Using it in this conversation adds it to {scope}, so {assistantName} can reach it '
-                + 'everywhere in the project. You can remove it later.',
+              'Using it here also adds it to {scope}. You can remove it later.',
               { scope: scope.name },
             ),
           })

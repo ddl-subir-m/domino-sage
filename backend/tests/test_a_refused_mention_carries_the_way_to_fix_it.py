@@ -128,7 +128,7 @@ def test_a_path_that_resolves_to_nothing_keeps_the_sentence_and_gets_no_button(t
 
     ev = _refusal(orch, mentions=["public/data/gone.csv"])
 
-    assert "@gone.csv" in ev["message"] and "not attached to this app" in ev["message"]
+    assert "@gone.csv" in ev["message"] and "Attach it to this app" in ev["message"]
     assert ev["entries"] == []
 
 

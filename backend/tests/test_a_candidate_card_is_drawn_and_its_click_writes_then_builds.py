@@ -53,9 +53,9 @@ HISTORY = [
 STREAMED = [
     HISTORY[0],
     {"type": "table-search", "sourceId": "ds-dwh", "sourceName": "Snowflake-Data-Warehouse",
-     "message": "Sage is reading what Snowflake-Data-Warehouse holds…", "groups": [], "total": 0},
+     "message": "Reading Snowflake-Data-Warehouse…", "groups": [], "total": 0},
     {"type": "table-search", "sourceId": "ds-dwh", "sourceName": "Snowflake-Data-Warehouse",
-     "message": "Sage is reading what Snowflake-Data-Warehouse holds…",
+     "message": "Reading Snowflake-Data-Warehouse…",
      "groups": [{"database": "DWH", "schema": "MARTS", "tables": ["GONG__CALLS"]}], "total": 2},
 ]
 

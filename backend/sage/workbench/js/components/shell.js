@@ -101,7 +101,7 @@ window.SW = window.SW || {};
         // rather than through the token table — the same rule as a Resource the user named.
         if (peer) {
           antd.message.info(
-            `${peer.label} ${SW.brand.text('is another {platformName} product. Only {productName} is built out here.')}`
+            `${peer.label} ${SW.brand.text("isn't available here.")}`
           );
         }
       },
@@ -120,7 +120,7 @@ window.SW = window.SW || {};
         // two entries are still Domino's own screens, so this says where to go for them.
         if (key === 'account') SW.store.set({ settingsOpen: true });
         else antd.message.info(SW.brand.text(
-          'Organization and Sign out are {platformName} screens. Open {platformName} to use them.'));
+          'Open {platformName} for Organization and Sign out.'));
       },
     };
 

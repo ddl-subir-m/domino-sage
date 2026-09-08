@@ -78,8 +78,8 @@ def test_a_plan_the_app_has_moved_past_says_why_it_cannot_be_used():
 
     assert page["offered"] is True
     assert page["disabled"] is True
-    assert "later plan" in page["tooltip"]
-    assert "current plan" in page["tooltip"]
+    assert "newer plan" in page["tooltip"]
+    assert "use that plan" in page["tooltip"]
 
 
 @needs_node
@@ -112,7 +112,8 @@ def test_a_plan_with_no_conversation_on_record_says_there_is_nowhere_to_run_it()
     page = _page(build_again={"offered": True, "eligible": False, "reason": "no conversation"})
 
     assert page["disabled"] is True
-    assert "no conversation on record" in page["tooltip"]
+    assert "no conversation" in page["tooltip"]
+    assert "can't be built from here" in page["tooltip"]
 
 
 @needs_node

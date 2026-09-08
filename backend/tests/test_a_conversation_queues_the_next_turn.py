@@ -260,7 +260,7 @@ def test_a_pending_turn_whose_chips_moved_does_not_run_and_hands_the_text_back(t
     assert finished.wait(20) is True
     assert oc.prompts == []                                      # the turn never ran
     refusal = _of(events, "error")[0]
-    assert "context changed" in refusal["message"]
+    assert "attachments changed" in refusal["message"]
     assert refusal["prompt"] == "how many rows in @clickstream?"  # back to the composer
     assert _of(events, "done")[0]["decision"] == "context changed"
     # Nothing of it reaches the transcript: a turn that did not run leaves no receipt.
@@ -336,7 +336,7 @@ def test_a_wedged_workspace_refuses_a_new_turn_instead_of_queueing_it(tmp_path: 
 
     assert _of(events, "pending") == []
     assert _of(events, "done")[0]["decision"] == "wedged"
-    assert "Restart the workspace" in _of(events, "error")[0]["message"]
+    assert "stuck on a build" in _of(events, "error")[0]["message"]
     assert orch._turns.depth() == 0
 
 
@@ -366,7 +366,7 @@ def test_a_wedge_fails_every_turn_waiting_behind_it(tmp_path: Path, monkeypatch)
     assert orch._turn_lock.locked() is True                       # held for good, on purpose
     assert queued["finished"].wait(20) is True
     assert _of(queued["events"], "done")[0]["decision"] == "wedged"
-    assert "Restart the workspace" in _of(queued["events"], "error")[0]["message"]
+    assert "stuck on a build" in _of(queued["events"], "error")[0]["message"]
 
 
 def test_the_turn_state_route_reports_a_wedge_and_the_queue_depth(tmp_path: Path, monkeypatch):

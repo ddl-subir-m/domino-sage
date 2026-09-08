@@ -71,9 +71,8 @@ window.SW = window.SW || {};
         // "its record of what it needs to run" rather than "its Bindings" (ADR-0025), and a
         // *record* rather than the things themselves: deleting the app takes the grants, never the
         // Resources — those stay in the Project and can be picked again (ADR-0011).
-        h('div', null, SW.brand.text("This app's code, its plan and its record of what it needs "
-          + "to run are removed and can't be recovered. Your other {builtAppPlural} and this "
-          + 'conversation stay.')),
+        h('div', null, SW.brand.text("This deletes the app's code and plan. That can't be undone. "
+          + 'Your other {builtAppPlural} and this conversation stay.')),
         app.published &&
           h(
             'div',
@@ -90,9 +89,7 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-caption', style: { marginTop: 4, marginLeft: 24 } },
-              SW.brand.text('Leave this and its URL goes on serving the version you last '
-                + "published — but {assistantName} can't update or delete it after this, so you'd "
-                + 'do that in {platformName}.')
+              SW.brand.text('Leave this unchecked to keep the published URL live.')
             )
           )
       ),
@@ -201,11 +198,9 @@ window.SW = window.SW || {};
         null,
         SW.brand.text(
           again
-            ? "The {platformName} App you published before starts serving this app's latest code. "
-              + "The URL doesn't change, so anybody already holding it sees the new version."
-            : "This app's code is saved and deployed on {platformName} as an App with a URL of its "
-              + 'own. Who can open it is set in {platformName}, so nobody sees it until you '
-              + 'share it.'
+            ? 'This updates the published app. The URL stays the same.'
+            : "This publishes the app to {platformName} with its own URL. Share it there before "
+              + 'anyone else can open it.'
         )
       ),
       // Deliberately silent about the attached files. `public/data/` is gitignored, so the push
@@ -216,7 +211,7 @@ window.SW = window.SW || {};
       h(
         'div',
         { style: { marginTop: 12 } },
-        SW.brand.text('Only this app goes out. Your other {builtAppPlural} and this conversation stay.')
+        SW.brand.text('Only this app is published.')
       ),
       // LAST, so nothing above it moves when it arrives. The confirm's own explanation is what a
       // creator starts reading, and a notice inserted over it would shift the paragraph under their
@@ -468,8 +463,7 @@ window.SW = window.SW || {};
         h(
           'span',
           { className: 'sw-caption' },
-          SW.brand.text('No {builtAppPlural} yet. Start one with New app, or approve a plan '
-            + 'in {chat}.')
+          SW.brand.text('No {builtAppPlural} yet. Start one, or approve a plan in {chat}.')
         ),
         h(
           Button,
@@ -1199,9 +1193,8 @@ window.SW = window.SW || {};
             'div',
             { className: 'sw-preview-overlay is-stalled' },
             h('div', { className: 'sw-preview-overlay-text' },
-              SW.brand.text('Nothing answered on the preview port for 90 seconds, so '
-                + '{assistantName} stopped checking. A first build installs dependencies and can '
-                + 'take longer than that.')),
+              SW.brand.text("Preview didn't start in 90 seconds. A first build can take longer — "
+                + 'check again.')),
             h(
               Button,
               {

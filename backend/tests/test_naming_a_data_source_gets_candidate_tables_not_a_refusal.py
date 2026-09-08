@@ -192,8 +192,8 @@ def test_a_request_no_table_name_matches_says_so_and_still_shows_the_list(
     assert card["matched"] == 0
     # Plain text, no Markdown: the card renders its sentence as a text node, as the four nudges
     # beside it do, so asterisks here would reach the person as asterisks.
-    assert "No Table name in Snowflake-Data-Warehouse matches" in card["message"]
-    assert "will not guess one" in card["message"]
+    assert "Nothing in Snowflake-Data-Warehouse matched" in card["message"]
+    assert "Pick a Table" in card["message"]
     assert card["total"] == 7
     assert sum(len(g["tables"]) for g in card["allGroups"]) == 7
 

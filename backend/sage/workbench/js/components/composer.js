@@ -390,11 +390,8 @@ window.SW = window.SW || {};
     // Why the mode is not running its own slot's model. Without this the person who assigned
     // gpt-5.4 to Plan sees Gemini and has nothing to read — the guarantee they cannot see is the
     // one they file as a bug.
-    const SLOT_NAME = { plan: 'Plan', implement: 'Implement', ask: 'Ask' };
     const pinWhy = signingSlot
-      ? `${pinnedModel} signs its tool calls, so one session cannot mix it with another model. `
-        + `Every Build turn runs on it while ${SLOT_NAME[signingSlot] || signingSlot} is assigned `
-        + 'to it.'
+      ? `${pinnedModel} is required for this session, so every Build turn uses it.`
       : '';
     const overridable = activeBuildMode.id === 'plan' || activeBuildMode.id === 'implement';
     // The four configured slots reduced to the models behind them: two slots pointing at one model

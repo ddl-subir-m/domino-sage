@@ -28,7 +28,7 @@ const ALIASES = [
   {
     name: 'local-llm', display_name: 'Mistral (Domino-hosted)', capabilities: ['chat'],
     serving: false,
-    problem: 'Its Hosted GenAI Endpoint mistral-ep is Stopped, so turns using it will fail. Start that endpoint, or pick a different model.',
+    problem: 'This model is Stopped, so turns using it will fail. Start that endpoint, or pick a different model.',
   },
   // Never offered: an embeddings-only Alias cannot hold a conversation, and the panel reuses the
   // same rule the Chat picker applies rather than growing a second copy of it.
@@ -61,7 +61,7 @@ const panel = () => ({
     // Preflight's verdict, which the server recomputes on every read — so a slot assigned to a
     // model that will not answer reports it the moment the panel re-reads after the save.
     problem: (ALIASES.find((a) => a.name === model(slot)) || {}).serving === false
-      ? `Sage's ${slot} model is set to the LLM Alias ${model(slot)}, whose Hosted GenAI Endpoint mistral-ep is Stopped. Turns that route to ${slot} will fail. Start that endpoint, or pick a different model for that slot.`
+      ? `The ${slot} model (${model(slot)}) is Stopped. Turns that use it will fail. Start that endpoint, or pick a different model.`
       : null,
   })),
   aliases: listing === 'up' || listing === 'unchecked' ? ALIASES : [],

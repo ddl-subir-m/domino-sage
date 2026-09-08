@@ -531,8 +531,7 @@ def test_the_act_says_what_it_did_and_that_the_same_control_moves_it():
         "scopeIn": "Market data EOD", "walk": ["DWH", "MARTS"], "then": ["use"], **AT_APP_A,
     }])[-1]
     said = " ".join(step["said"])
-    assert f"In Market data EOD, {APP} reads any in DWH.MARTS" in said
-    assert "Choose again from the same control" in said
+    assert f"{APP} now reads any in DWH.MARTS from Market data EOD." in said
 
 
 @needs_node

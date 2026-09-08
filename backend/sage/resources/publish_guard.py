@@ -154,9 +154,8 @@ def publish_problems(
         return out
     if visibility is None:
         out.append(PublishProblem(UNCHECKED_APP, brand.text(
-            "{assistantName} couldn't reach {platformName} to check who this app is shared with, "
-            "and it won't publish an app that reads a store without knowing that. Try publishing "
-            "again in a moment."
+            "{assistantName} couldn't check who this app is shared with. Try publishing again "
+            "in a moment."
         )))
     elif open_visibility(visibility):
         out.append(PublishProblem(OPEN_APP, _open_message(bindings, visibility)))
@@ -176,9 +175,8 @@ def missing_app_problem(display_name: str) -> PublishProblem:
     served it is gone.
     """
     return PublishProblem(MISSING_APP, brand.text(
-        "The {platformName} App that {name} publishes to has been deleted, so there is no App to "
-        "publish a new version of. Publish it as a new App to put it back — that gives it a new "
-        "URL, and the old link stays dead whatever you do.",
+        "The published app for {name} was deleted. Publish it as a new app — that gets a new "
+        "URL. The old link will stay broken.",
         name=display_name,
     ))
 
@@ -187,9 +185,8 @@ def _credential_problem(b: Binding, sources: list[DataSource] | None) -> Publish
     """What is wrong with publishing on one Data Source Binding, or None when nothing is."""
     if sources is None:
         return PublishProblem(UNCHECKED_SOURCE, brand.text(
-            "{assistantName} couldn't reach {platformName} to check whether the {dataSource} {name} "
-            "uses a shared credential, and it won't publish an app that reads a store it couldn't "
-            "check. Try publishing again in a moment.",
+            "{assistantName} couldn't check the credential for {name}. Try publishing again in a "
+            "moment.",
             name=b.display_name,
         ), b.kind, b.id)
     source = _match(b, sources)
@@ -199,19 +196,14 @@ def _credential_problem(b: Binding, sources: list[DataSource] | None) -> Publish
         # publish. The guard stays because preflight is a warning and this is a refusal, and because
         # a listing that failed at session open leaves nothing for the creator to have seen.
         return PublishProblem(UNLISTED_SOURCE, brand.text(
-            "This app is recorded as reading the {dataSource} {name}, which isn't in the "
-            "{dataSourcePlural} you have permission on, so {assistantName} can't tell whether its "
-            "credential is shared. Check the {dataSource} in {platformName}, or remove it from "
-            "this app's {resourcePlural}, and publish again.",
+            "You don't have access to {name}, so {assistantName} can't check its credential. "
+            "Fix access in {platformName}, or remove it from this app, then publish again.",
             name=b.display_name,
         ), b.kind, b.id)
     if source.credential_type != SHARED:
         return PublishProblem(INDIVIDUAL_CREDENTIAL, brand.text(
-            "This app is recorded as reading the {dataSource} {name}, whose credential "
-            "belongs to one person rather than to a service account. A published app reaches the "
-            "store as its publisher, so publishing this would hand every viewer that person's "
-            "access. Remove it from this app's {resourcePlural}, or bind a {dataSource} whose "
-            "credential is shared, and publish again.",
+            "{name} uses a personal credential. Publishing would share that person's access with "
+            "everyone who opens the app. Use a shared credential, or remove it from this app.",
             name=b.display_name,
         ), b.kind, b.id)
     return None
@@ -233,10 +225,8 @@ def _open_message(bindings: list[Binding], visibility: str) -> str:
     # gets the report of a wrongly-refused publish sees the spelling to add to ALLOWED_VISIBILITY,
     # which is the whole cost of failing closed on a value this list has not met.
     return brand.text(
-        "This app can be opened by people who are not signed in to {platformName} (its visibility "
-        "is {visibility}), and it reads {sources}. A published app queries the store as its "
-        "publisher, so anyone who reached the app would be reading it. Share the app with "
-        "{platformName} users instead, on its settings page in {platformName}, then publish again.",
+        "This app is open to people who aren't signed in, and it reads {sources}. Anyone who "
+        "opened it would see that data. Restrict sharing in {platformName}, then publish again.",
         visibility=visibility,
         sources=_names(bindings),
     )

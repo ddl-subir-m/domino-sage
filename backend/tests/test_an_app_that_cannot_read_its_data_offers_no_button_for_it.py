@@ -170,7 +170,7 @@ def test_a_walk_that_dies_before_its_first_query_says_so_instead_of_going_quiet(
 
     ended = [f for f in frames if f.get("type") == "table-search-ended"]
     assert ended, f"the walk failed in silence; frames were {[f.get('type') for f in frames]}"
-    assert "could not read what" in ended[0]["message"]
+    assert "couldn't read" in ended[0]["message"]
     assert built == [1], "the turn must still fall through to the build it would have run"
 
 

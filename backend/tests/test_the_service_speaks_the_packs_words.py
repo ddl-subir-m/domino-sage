@@ -72,9 +72,9 @@ def acme(tmp_path, monkeypatch):
 
 
 def test_the_turn_sentences_name_the_packs_agent(acme):
-    assert "Ada cannot start another one here" in turn_busy_message(wedged=True)
-    assert "Ada runs one turn at a time" in turn_pending_message(1)
-    assert "so Ada did not run it" in turn_context_changed_message()
+    assert "stuck on a build" in turn_busy_message(wedged=True)
+    assert "Waiting on the turn that is running" in turn_pending_message(1)
+    assert "attachments changed" in turn_context_changed_message()
 
 
 def test_an_ordinary_refusal_names_nobody_and_is_left_alone(acme):
@@ -87,7 +87,7 @@ def test_an_ordinary_refusal_names_nobody_and_is_left_alone(acme):
 
 def test_the_queue_position_still_counts_turns(acme):
     """The count rides in as a value, so re-branding the sentence did not cost it its subject."""
-    assert "Queued behind 3 turns." in turn_pending_message(3)
+    assert "Waiting on 3 turns." in turn_pending_message(3)
 
 
 # ---- the Session-context rows sage-chat reads --------------------------------------------------

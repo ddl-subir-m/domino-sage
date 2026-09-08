@@ -543,7 +543,7 @@ def test_a_truncated_listing_says_the_list_is_partial_rather_than_reading_as_the
     orch.bind_dataset("ds_calls_raw")
     client = _client(orch, monkeypatch)
 
-    assert "Only part of calls_raw could be listed" in _card(_build(client))["message"]
+    assert "This is only part of calls_raw." in _card(_build(client))["message"]
 
 
 def test_no_folder_row_on_a_truncated_listing_offers_the_folder_act(
@@ -571,7 +571,7 @@ def test_the_partial_listing_is_named_in_chat_in_the_same_words(tmp_path: Path, 
     client = _client(orch, monkeypatch)
     tid = _thread_with_dataset(orch, "ds_calls_raw", "calls_raw")
 
-    assert "Only part of calls_raw could be listed" in _card(_ask(client, tid))["message"]
+    assert "This is only part of calls_raw." in _card(_ask(client, tid))["message"]
 
 
 def test_a_complete_listing_says_nothing_about_being_partial(tmp_path: Path, monkeypatch):
@@ -632,7 +632,7 @@ def test_a_card_cut_to_the_row_cap_says_so_and_says_where_the_rest_are(
 
     message = _card(_build(client))["message"]
 
-    assert "first 200 of the 250 rows" in message
+    assert "Showing 200 of 250 rows" in message
     assert "Data panel" in message
 
 
@@ -676,7 +676,7 @@ def test_the_short_card_is_named_in_chat_in_the_same_words(tmp_path: Path, monke
 
     card = _card(_ask(client, tid))
 
-    assert "first 200 of the 250 rows" in card["message"]
+    assert "Showing 200 of 250 rows" in card["message"]
     assert card["listed"] == 250
     assert card["total"] == 200
 
@@ -694,9 +694,9 @@ def test_a_card_both_cut_and_drawn_from_a_partial_listing_says_both_things_once(
 
     message = _card(_build(client))["message"]
 
-    assert message.count("Only part of wide could be listed") == 1
+    assert message.count("This is only part of wide.") == 1
     assert message.count("Data panel") == 1
-    assert "first 200 of the 250 rows" in message
+    assert "Showing 200 of 250 rows" in message
 
 
 # ---- a Dataset with no mount here (#197) ---------------------------------------------------------

@@ -106,9 +106,9 @@ def gateway_problem(slots: dict) -> Problem | None:
     return Problem(
         id="gateway",
         message=brand.text(
-            "{assistantName} cannot reach the {llmGateway}. Every model it runs is called through "
-            "there, so nothing will build until it answers."),
-        fix=brand.text("Ask your administrator to check the {llmGateway}."),
+            "{assistantName} can't reach the {llmGateway}, so nothing will run until that's "
+            "fixed."),
+        fix=brand.text("Ask an administrator to check the {llmGateway}."),
         owner=OWNER_ADMIN,
         body=slots.get("error") or None,
     )
@@ -145,8 +145,8 @@ def port_problem(ports: dict) -> Problem | None:
     return Problem(
         id="ports",
         message=brand.text(
-            "{assistantName} is listening on port {control}, but the agent that builds is "
-            "configured to call port {configured}. Every model call it makes will fail.",
+            "{assistantName} is on port {control}, but the build agent calls {configured}, so "
+            "model calls will fail.",
             control=control, configured=configured),
         fix=brand.text("Ask your administrator to check this deployment's port configuration."),
         owner=OWNER_ADMIN,
@@ -175,9 +175,7 @@ def agent_problem(agents: list[dict] | None) -> Problem | None:
     return Problem(
         id="agents",
         message=brand.text(
-            "{assistantName}'s own agent definitions did not load, so every mode is running a "
-            "general-purpose agent instead. A question can change files, and a build can skip the "
-            "rules it was meant to follow without saying so."),
+            "{assistantName}'s agent rules didn't load, so modes may not behave as expected."),
         fix=brand.text("Ask your administrator to check this deployment's agent configuration."),
         owner=OWNER_ADMIN,
     )
@@ -194,11 +192,9 @@ def data_library_problem(detail: str) -> Problem | None:
     return Problem(
         id="data-library",
         message=brand.text(
-            "{assistantName} cannot read inside a {dataSource} from this deployment, so an app "
-            "built to read one will fail when it runs."),
+            "This workspace can't query {dataSourcePlural}, so apps that need one will fail."),
         fix=brand.text(
-            "Ask your administrator to check the {platformName} data library in this deployment's "
-            "image."),
+            "Ask an administrator to check this workspace's data library."),
         owner=OWNER_ADMIN,
         body=detail,
     )

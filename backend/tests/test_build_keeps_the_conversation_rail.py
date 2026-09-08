@@ -397,7 +397,7 @@ def test_the_no_apps_yet_guidance_is_readable_without_opening_the_app_control():
     one is not reachable by the person it is written for. It goes where the app name would be."""
     step = _build("thr_none", noapps=True)
     said = _said(step)
-    assert "No Built Apps yet. Start one with New app, or approve a plan in Chat." in said
+    assert "No Built Apps yet. Start one, or approve a plan in Chat." in said
     assert "New app" in step["words"]
 
 

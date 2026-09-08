@@ -568,7 +568,7 @@ def test_not_connected_says_sage_cannot_see_rather_than_that_there_is_nobody():
     """The state the fake provider produces off Domino. "No people found" here would be a claim
     about the creator's colleagues, made from a failure to look at them."""
     said = " ".join(modal(connected=False)["said"])
-    assert "cannot see who else works here" in said
+    assert "can't show who's on this" in said
     # No picker, because there is nothing to pick from and offering one would imply there is.
     assert modal(connected=False)["offers"] == []
 
@@ -591,7 +591,7 @@ def test_our_own_server_not_answering_reads_as_a_failure_and_not_as_being_off_th
     out = modal(connected=False, error="502 Bad Gateway")
     said = " ".join(out["said"])
     assert "Try again" in said
-    assert "cannot see who else works here" not in said
+    assert "can't show who's on this" not in said
 
 
 @needs_node

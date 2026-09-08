@@ -103,9 +103,9 @@ def test_a_second_problem_arriving_toasts_for_itself_alone():
     and the new one must not be swallowed by it."""
     first, second = _run([{"problems": [MINE]}, {"problems": BOTH}])
     assert first["toasts"] == [
-        "1 problem needs your attention. Open the problem chip in the top bar to read it."]
+        "1 problem needs attention. Open Problems in the top bar."]
     assert second["toasts"] == [
-        "1 problem needs your attention. Open the problem chip in the top bar to read it."]
+        "1 problem needs attention. Open Problems in the top bar."]
     # Two on the chip, one in the toast: the chip holds the standing count, the toast the new one.
     assert second["chip"]["ariaLabel"] == "2 problems need your attention"
 
@@ -121,7 +121,7 @@ def test_the_toast_carries_a_count_and_never_the_problems_words():
         assert problem["fix"] not in toast
     assert THEIRS["body"] not in toast
     # And it says where the content is, so an attention pull has somewhere to go.
-    assert "chip" in toast
+    assert "Problems" in toast
 
 
 def test_the_chip_carries_a_count_and_never_the_problems_words_either():

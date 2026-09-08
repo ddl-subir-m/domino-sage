@@ -49,8 +49,7 @@ class SlotProblem:
         creator-facing Problem a `fix` field of its own; `message` still joins the two, so the log
         line and the builder banner read exactly as they always did."""
         return brand.text(
-            "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, which this "
-            "{llmGateway} does not offer. {turnPlural} that route to {slot} will fail.",
+            "The {slot} model ({alias}) isn't available. {turnPlural} that use it will fail.",
             slot=self.slot,
             alias=self.alias,
         )
@@ -61,7 +60,7 @@ class SlotProblem:
         model, an administrator registers the Alias. ADR-0027 sorts it under the creator and keeps
         the administrator's half in the sentence."""
         return brand.text(
-            "Pick a different model for that slot, or register {alias} in the {llmGateway}.",
+            "Pick a different model, or ask an administrator to add {alias}.",
             alias=self.alias,
         )
 
@@ -217,12 +216,9 @@ class EndpointProblem:
     def fault(self) -> str:
         """See `SlotProblem.fault` — split for the same reason, and joined back the same way."""
         return brand.text(
-            "{assistantName}'s {slot} model is set to the {llmAlias} {alias}, whose "
-            "{hostedGenaiEndpoint} {endpoint} is {status}. {turnPlural} that route to {slot} "
-            "will fail.",
+            "The {slot} model ({alias}) is {status}. {turnPlural} that use it will fail.",
             slot=self.slot,
             alias=self.alias,
-            endpoint=self.endpoint,
             status=self.status,
         )
 
@@ -230,7 +226,7 @@ class EndpointProblem:
     def fix(self) -> str:
         return brand.text(
             "{remedy}.",
-            remedy=endpoint_remedy(self.status, "pick a different model for that slot"),
+            remedy=endpoint_remedy(self.status, "pick a different model"),
         )
 
     def to_dict(self) -> dict:
@@ -254,10 +250,9 @@ def alias_problem(alias_name: str, aliases: list[LlmAlias],
     found = endpoint_status(alias_name, aliases, endpoints)
     if found is None:
         return None
-    endpoint, status = found
+    _, status = found
     return brand.text(
-        "Its {hostedGenaiEndpoint} {endpoint} is {status}, so turns using it will fail. {remedy}.",
-        endpoint=endpoint,
+        "This model is {status}, so turns using it will fail. {remedy}.",
         status=status,
         remedy=endpoint_remedy(status, "pick a different model"),
     )
@@ -353,37 +348,21 @@ def turn_refusal(slot: str, alias: str, aliases: list[LlmAlias],
     slot's own model, so sending that reader to Model assignments would have them change a setting
     this turn is not going to use.
     """
-    where = ("pick a different model from the model menu beside the composer" if picked else
-             "open Model assignments from the model menu beside the composer and pick a "
-             f"different model for {slot}")
+    where = "pick a different model and try again"
     # Resolved here rather than in `turn_slots`, which has no listing to resolve against.
     alias = slot_alias(alias, aliases)
     if alias not in {a.name for a in aliases}:
-        fault, remedy = "which this LLM Gateway does not offer", where
+        fault, remedy = "isn't available", "Pick a different model and try again"
     else:
         found = endpoint_status(alias, aliases, endpoints)
         if found is None:
             return None
-        endpoint, status = found
-        fault = brand.text("whose {hostedGenaiEndpoint} {endpoint} is {status}",
-                           endpoint=endpoint, status=status)
-        # Lower-cased because it lands mid-sentence here, where `EndpointProblem` starts a new one.
+        _, status = found
+        fault = brand.text("is {status}", status=status)
         remedy = endpoint_remedy(status, where)
-        remedy = remedy[0].lower() + remedy[1:]
-    # One sentence with the subject swapped, rather than two written out: the fault and the
-    # consequence are the same either way, and only WHICH model the turn runs on differs. The pick
-    # is set off in dashes rather than commas so `fault` still reads against the Alias — with commas
-    # its "which…" clause lands on the slot's own model, which is the one that is NOT broken.
-    subject = brand.text(
-        "the {llmAlias} {alias} — picked in the composer over {assistantName}'s {slot} model —"
-        if picked else "{assistantName}'s {slot} model, the {llmAlias} {alias},",
-        alias=alias, slot=slot)
-    # "This turn", not "the build": the same gate runs on an Ask turn, which was never going to
-    # build anything and should not be told that a build has stopped.
     return brand.text(
-        "This turn would run on {subject} {fault}. It would fail partway through, so nothing has "
-        "been started — {remedy}.",
-        subject=subject, fault=fault, remedy=remedy)
+        "This would use {alias}, which {fault}. {remedy}.",
+        alias=alias, fault=fault, remedy=remedy)
 
 
 def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],
@@ -408,12 +387,10 @@ def bindings_on_dead_endpoints(bindings: list[Binding], aliases: list[LlmAlias],
         found = endpoint_status(b.name, aliases, endpoints)
         if not found:
             continue
-        endpoint, status = found
+        _, status = found
         fault = brand.text(
-            "This app is recorded using the {llmAlias} {name}, whose {hostedGenaiEndpoint} "
-            "{endpoint} is {status}. Its calls will fail.",
+            "This app uses {name}, which is {status}. Calls to it will fail.",
             name=b.display_name,
-            endpoint=endpoint,
             status=status,
         )
         out.append((b, fault, status))
@@ -493,22 +470,19 @@ def stale_fault(b: Binding) -> str:
     """
     if b.kind == KIND_MODEL_API:
         return brand.text(
-            "This app is recorded as using the {modelApi} {name}, which is no longer deployed in "
-            "this project. Its prediction calls will fail.",
+            "{name} is no longer deployed in this project, so this app can't call it.",
             name=b.display_name,
         )
     if b.kind == KIND_DATA_SOURCE:
         # Says publishing too, because that refusal (#12) is the one a creator would otherwise meet
         # first, at the point where the app is already built.
         return brand.text(
-            "This app is recorded as reading the {dataSource} {name}, which is no longer among the "
-            "{dataSourcePlural} you have permission on. {assistantName} will not publish an app "
-            "that reads a store it cannot check.",
+            "You no longer have access to {name}, so this app can't read it. {assistantName} "
+            "also won't publish until that's fixed.",
             name=b.display_name,
         )
     return brand.text(
-        "This app is recorded as using the {llmAlias} {name}, which the {llmGateway} no longer "
-        "offers.",
+        "{name} is no longer available, so this app can't use it.",
         name=b.display_name,
     )
 
@@ -527,12 +501,11 @@ def credential_fault(b: Binding) -> str:
     """What a creator reads about a Model API Binding whose access token has gone. Split from
     `credential_fix` for the reason `stale_fault` is."""
     return brand.text(
-        "This app is recorded as using the {modelApi} {name}, but {assistantName} no longer holds "
-        "an access token for it, so the app cannot call it.",
+        "{assistantName} no longer has an access token for {name}, so this app can't call it.",
         name=b.display_name,
     )
 
 
 def credential_fix() -> str:
     return brand.text(
-        "Use it again in the {resourcePlural} panel to paste a new token, or remove it.")
+        "Add it to the app again to paste a new token, or remove it.")

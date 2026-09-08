@@ -293,7 +293,7 @@ def test_the_canvas_stops_saying_it_too():
     step = _build(select="app_a", preview="starting", giveUp=True)
     said = _texts(step, "sw-preview-overlay")
     assert not any("Starting preview" in t for t in said)
-    assert any("stopped checking" in t for t in said)
+    assert any("didn't start in 90 seconds" in t for t in said)
 
 
 @needs_node

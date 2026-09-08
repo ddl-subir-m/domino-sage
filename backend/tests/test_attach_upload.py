@@ -331,11 +331,11 @@ def test_a_mention_the_turn_cannot_use_is_reported_rather_than_dropped(tmp_path:
     # Named and explained, and no longer sent anywhere: the button beside it attaches the file and
     # sends the request again, so the directions moved onto the card that has none (#213).
     chat, rows = orch._unusable_mentions(proj, None, [".sage/scratch/events.csv"], None)
-    assert "@events.csv" in chat and "Chat file" in chat
+    assert "@events.csv" in chat and "in Chat" in chat
     assert [r["kind"] for r in rows] == ["file"]
 
     plain, _ = orch._unusable_mentions(proj, None, ["public/data/gone.csv"], None)
-    assert "@gone.csv" in plain and "not attached to this app" in plain
+    assert "@gone.csv" in plain and "Attach it to this app" in plain
 
     ref = {"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse"}
     unbound, rows = orch._unusable_mentions(proj, None, None, [ref])

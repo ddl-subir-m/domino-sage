@@ -49,7 +49,7 @@ PIN_BRANCH = (
     "pinned "
     "? h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin') "
     ": h( Tooltip, { title: SW.brand.text( "
-    "'Keeps this at the top of the @ menu. It does not send it to {assistantName}.' "
+    "'Pins this in the @ menu. It does not send it yet.' "
     "), }, h(Button, { size: 'small', type: 'link', onClick: onPin }, 'Pin') )"
 )
 
@@ -111,12 +111,9 @@ def test_pin_says_that_it_does_not_send_anything():
 
 
 def test_the_pin_tooltip_goes_through_the_brand_pack():
-    """It names the assistant, so a pack that renames the assistant renames it too (ADR-0014). A
-    bare literal here would ship our own word for the assistant onto a partner's screen. Counted,
-    so a second copy of the sentence cannot appear outside `SW.brand.text`."""
-    assert TREE_FLAT.count("Keeps this at the top of the @ menu") == 1
-    assert "{assistantName}" in TREE
-    assert "SW.brand.text( 'Keeps this at the top of the @ menu." in TREE_FLAT
+    """Counted, so a second copy of the sentence cannot appear outside `SW.brand.text`."""
+    assert TREE_FLAT.count("Pins this in the @ menu") == 1
+    assert "SW.brand.text( 'Pins this in the @ menu." in TREE_FLAT
 
 
 def test_only_pin_carries_the_tooltip():
@@ -138,7 +135,7 @@ def test_the_drawer_puts_a_catalogue_resource_in_the_chat_in_one_click():
     assert "await SW.store.addToProject(resource);" not in DRAWER
     assert "SW.store\n        .addToContext(resource, { quiet: true })" in DRAWER
     # The alert above the button has to agree with what the button now does.
-    assert "Using it in this conversation adds it to " in DRAWER
+    assert "Using it here also adds it to " in DRAWER
     assert "SW.brand.text(" in DRAWER
 
 

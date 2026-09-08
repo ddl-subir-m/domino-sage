@@ -241,10 +241,10 @@ def test_a_blank_slot_is_not_reported_as_a_missing_alias():
 # ---- what the person reads -----------------------------------------------------------------------
 
 
-def test_the_refusal_names_the_slot_and_the_alias():
+def test_the_refusal_names_the_alias():
     message = turn_refusal("implement", "GLM-5.2", ALIASES, None)
-    assert "implement" in message
     assert "GLM-5.2" in message
+    assert "isn't available" in message
 
 
 def test_the_refusal_names_an_action_the_person_can_take_from_the_workbench():
@@ -252,7 +252,7 @@ def test_the_refusal_names_an_action_the_person_can_take_from_the_workbench():
     LLM Gateway" — a maintainer's action on the gateway's own configuration, which the person about
     to press Build cannot take from where they are standing."""
     message = turn_refusal("implement", "GLM-5.2", ALIASES, None)
-    assert "Model assignments" in message
+    assert "Pick a different model" in message
     assert "register" not in message
 
 
@@ -260,17 +260,15 @@ def test_a_picked_model_sends_the_reader_to_the_menu_they_picked_it_from():
     """Not to Model assignments. An override shadows the slot, so changing the assignment would
     change a setting this turn is not using and the build would fail again."""
     message = turn_refusal("implement", "GLM-5.2", ALIASES, None, picked=True)
-    assert "model menu" in message
-    assert "Model assignments" not in message
+    assert "Pick a different model" in message
 
 
 def test_a_slot_whose_endpoint_is_stopped_reads_as_a_stopped_endpoint_not_a_missing_alias():
     """The two faults #21 already tells apart, kept apart here: this Alias IS offered, and telling
     the reader to pick a different model would hide that starting the endpoint fixes it."""
     message = turn_refusal("implement", "hosted-model", ALIASES, [STOPPED])
-    assert "somebody-elses-vllm" in message and "Stopped" in message
-    # Lower-cased because it lands mid-sentence here, where the boot check starts a new one.
-    assert "start that endpoint, or open Model assignments" in message
+    assert "hosted-model" in message and "Stopped" in message
+    assert "Start that endpoint" in message
 
 
 def test_a_slot_the_gateway_serves_says_nothing():
@@ -304,7 +302,7 @@ def test_a_turn_routed_at_an_alias_the_gateway_will_not_serve_never_opens_a_sess
     events = list(orch.build_stream("build me a consumption dashboard"))
 
     assert _done(events) == {"type": "done", "ok": False, "decision": "model unavailable"}
-    assert "plan" in _error(events) and "GLM-5.2" in _error(events)
+    assert "GLM-5.2" in _error(events)
     assert oc.prompts == [], "the turn spent a prompt on a model that would 404"
     assert oc.sessions == [], "the turn opened a session it could never use"
 
@@ -320,7 +318,7 @@ def test_either_of_the_two_slots_an_auto_turn_routes_to_stops_it(tmp_path: Path)
     events = list(orch.build_stream("build me a consumption dashboard"))
 
     assert _done(events)["decision"] == "model unavailable"
-    assert "implement" in _error(events)
+    assert "GLM-5.2" in _error(events)
     assert oc.prompts == []
 
 
@@ -355,7 +353,7 @@ def test_a_slot_whose_endpoint_is_stopped_stops_the_turn_too(tmp_path: Path):
     events = list(orch.build_stream("build me a consumption dashboard"))
 
     assert _done(events)["decision"] == "model unavailable"
-    assert "somebody-elses-vllm" in _error(events)
+    assert "hosted-model" in _error(events) and "Stopped" in _error(events)
     assert oc.prompts == []
 
 
@@ -404,7 +402,7 @@ def test_a_model_picked_in_the_composer_is_the_one_the_turn_is_checked_against(t
     events = list(orch.build_stream("add a sortable table"))
 
     assert _done(events)["decision"] == "model unavailable"
-    assert "GLM-5.2" in _error(events) and "model menu" in _error(events)
+    assert "GLM-5.2" in _error(events) and "Pick a different model" in _error(events)
     assert oc.prompts == []
 
 

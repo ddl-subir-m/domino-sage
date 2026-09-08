@@ -337,9 +337,8 @@ def turn_busy_message(wedged: bool, action: str = "resend") -> str:
     never going to finish (#97).
     """
     if wedged:
-        return brand.text("This workspace is stuck on a build that would not stop, so {assistantName} "
-                          "cannot start another one here. Restart the workspace to clear it. "
-                          "Everything already written to your apps is safe.")
+        return brand.text("This workspace is stuck on a build. Restart it to continue. "
+                          "Your apps are unchanged.")
     return f"A build is already running. Wait for it to finish or stop it first, then {action}."
 
 
@@ -391,8 +390,7 @@ def turn_pending_message(ahead: int) -> str:
     not a commitment. "Nothing has run yet" is that promise in the only terms that matter: no file
     written, no model called, nothing to undo if they change their mind."""
     turns = "the turn that is running" if ahead <= 1 else f"{ahead} turns"
-    return brand.text("Queued behind {turns}. {assistantName} runs one turn at a time and will start "
-                      "this when they finish. Nothing has run yet, so you can cancel it.",
+    return brand.text("Waiting on {turns}. Nothing has run yet — you can cancel.",
                       turns=turns)
 
 
@@ -403,9 +401,8 @@ def turn_context_changed_message() -> str:
     Running against the snapshot resurrects a chip the person deliberately removed; running against
     live context makes the transcript bubble a lie about what the turn was given. So the turn does
     not run and the text goes back where they typed it (ADR-0013)."""
-    return brand.text("Your context changed since you asked this, so {assistantName} did not run it. "
-                      "The text is back in the composer — send it again to run it against what is "
-                      "there now.")
+    return brand.text("Your attachments changed, so this didn't run. The text is back in the box — "
+                      "send it again.")
 
 
 class _TurnTicket:
@@ -3345,8 +3342,8 @@ def _ambiguous_mentions(resolved: list[dict] | None, prompt: str) -> str:
         # The count first, because that is the surprise, and then every path — a sentence that said
         # "matched several" without naming them leaves the reader unable to tell which one is the
         # extra. The remedy is the menu, which can now reach either one (ADR-0030).
-        lines.append(f"{token} names {len(paths)} attached files, so this turn carries all of them: "
-                     f"{', '.join(paths)}. Pick one from the @ menu to name just it.")
+        lines.append(f"{token} matches {len(paths)} files, so all of them were included: "
+                     f"{', '.join(paths)}. Pick one from the @ menu to use just that file.")
     return " ".join(lines)
 
 
@@ -5052,15 +5049,14 @@ class Orchestrator:
         lines: list[str] = []
         entries: list[dict] = []
         if chat_files:
-            lines.append(f"Couldn't use {named(chat_files)} — a Chat file lives outside this app.")
+            lines.append(f"Couldn't use {named(chat_files)} — it's in Chat, not in this app.")
             entries += [{"kind": "file", "id": m, "name": PurePosix(m).name,
                          "app": where, "appId": whose} for m in chat_files]
         if gone:
-            lines.append(f"Couldn't use {named(gone)} — this app holds it, but its files aren't in "
-                         "the workspace right now.")
+            lines.append(f"Couldn't use {named(gone)}. It's attached, but the files aren't "
+                         "available right now.")
         if others:
-            lines.append(f"Couldn't use {named(others)} — not attached to this app. "
-                         "Attach it in the Data panel, then ask again.")
+            lines.append(f"Couldn't use {named(others)}. Attach it to this app, then ask again.")
         if unbound:
             def shown(rows: list[dict]) -> str:
                 return ", ".join("@" + str(r.get("name") or r.get("id") or "") for r in rows)
@@ -5074,7 +5070,7 @@ class Orchestrator:
             if aliases:
                 lines.append(f"{where} can't call {shown(aliases)} yet.")
             if rest:
-                lines.append(f"Couldn't use {shown(rest)} — {where} doesn't use it yet.")
+                lines.append(f"Couldn't use {shown(rest)}. {where} doesn't use it yet.")
             # One row per Resource, not per mention. "@Warehouse and @FCT_USAGE_DAILY" names one
             # Data Source at one table, and two identical buttons would offer the same bind twice.
             seen: set[tuple[str, str]] = set()
@@ -6916,8 +6912,8 @@ class Orchestrator:
                     suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
                     if suggestion:
                         message = (
-                            "This turn took too long, so it was stopped. Building an app is Build's "
-                            "job rather than Chat's — open it in Build below."
+                            "This took too long, so it was stopped. Building an app is a job for "
+                            "Build."
                         )
                     elif step_error:
                         # It did not go quiet on its own — it was refused, and then there was
@@ -6925,28 +6921,24 @@ class Orchestrator:
                         # The refusal is the provider's own sentence, so it rides in as a value:
                         # ours is the half around it, and theirs is left as it arrived.
                         message = brand.text(
-                            "{assistantName} could not finish this turn — {reason}", reason=step_error)
+                            "{assistantName} couldn't finish — {reason}", reason=step_error)
                     elif quiet and running_tools:
                         # A step was still open when the window closed. Blaming the turn for
                         # stopping would be wrong twice over: it did not stop, and the person
                         # would go looking for the wrong thing to make smaller.
                         message = brand.text(
-                            "The step {assistantName} was running did not finish, so the turn was "
-                            "stopped. A large {dataset} file or a broad query can take longer than "
-                            "one {chat} turn allows — try a narrower query."
+                            "That step didn't finish in time. Try a smaller file or a narrower "
+                            "query."
                         )
                     elif quiet:
                         # Say which of the two happened. The turn did not run out of time doing
                         # work — it stopped doing any, with nothing of its own left running.
                         message = brand.text(
-                            "{assistantName} stopped making progress, so the turn was stopped. If "
-                            "you were querying a {dataSource}, it may be too slow to answer here — "
-                            "try a narrower query."
+                            "{assistantName} stopped making progress. Try a narrower query."
                         )
                     else:
                         message = (
-                            "This turn worked for too long to finish, so it was stopped. Ask again "
-                            "with a smaller question, or ask for one step at a time."
+                            "This took too long. Ask a smaller question, or one step at a time."
                         )
                     err = {"type": "error", "message": message}
                     done = {"type": "done", "ok": False, "decision": "timeout"}
@@ -7105,7 +7097,7 @@ class Orchestrator:
                 err = {"type": "error",
                        "reason": step_reason,
                        "message": brand.text(
-                           "{assistantName} could not finish this turn — {reason}",
+                           "{assistantName} couldn't finish — {reason}",
                            reason=step_error)}
                 store.append_history(thread_id, err)
                 yield err
@@ -7388,9 +7380,7 @@ class Orchestrator:
         is nothing to learn from running that turn, so don't: name the rule and hand back the
         one-click way to actually run it (the UI turns `prompt` into a Build-in-Auto button)."""
         project = self.project()
-        message = ("Ask mode answers questions and never changes files, so this turn was stopped "
-                   "before it ran — nothing was searched, built, or spent. Build it in Auto, or "
-                   "switch modes and send it again.")
+        message = ("Ask mode doesn't change files, so this didn't run. Switch to Auto to build it.")
         for ev in ({"type": "user", "text": prompt},
                    {"type": "ask-blocked", "prompt": prompt, "message": message},
                    {"type": "done", "ok": False, "decision": "ask mode (read-only)"}):
@@ -7411,10 +7401,8 @@ class Orchestrator:
         build agent builds — asked to remove everything it had built, it wrote a landing page saying
         "Ready to rebuild from scratch", which is the most literal thing those words describe."""
         project = self.project()
-        message = ("Starting over is its own action, not a build — a build agent asked to remove "
-                   "everything writes you a page about removing everything. Resetting puts this "
-                   "app's code back to the starter template. Your attached files, Resources, this "
-                   "conversation and your other apps all stay.")
+        message = ("Resetting puts this app back to a blank starter. Attached files, this "
+                   "conversation, and your other apps stay.")
         for ev in ({"type": "user", "text": prompt},
                    # The whole turn rides along, not just the prompt: "clear everything and build X
                    # from @clickstream" is one request, and the button that answers this offer has to
@@ -7437,10 +7425,8 @@ class Orchestrator:
         Built App will conflict, and a conflict is what the merge is for."""
         project = self.project()
         shown = files[:_INCOMING_FILES_SHOWN]
-        message = ("Somebody else has pushed changes to this app. Building now works from your copy "
-                   "of the code, so their changes and yours have to be merged before either can be "
-                   "published. Pull first to build on top of their work, or keep building and merge "
-                   "when this app saves.")
+        message = ("Someone else has new changes. Pull first to build on theirs, or keep going and "
+                   "merge later.")
         for ev in ({"type": "user", "text": prompt},
                    # The prompt rides along so a button can replay the request rather than making
                    # the person retype it. `count` is the whole truth and `files` the readable part
@@ -7551,30 +7537,24 @@ class Orchestrator:
             # card still has to be answered, and the sentence now says why rather than leaving it to
             # be inferred from a highlight.
             message = brand.text(
-                "You named {name}. {assistantName} records a {dataSource} on a {builtApp} by a "
-                "click and never by a guess, so confirm it here — then it looks inside for the "
-                "{scope} this request needs.",
+                "You named {name}. Confirm it, then pick a {scope}.",
                 name=str(offer.sources[0].get("name") or ""))
         elif offer.sources and offer.named:
             # More than one named, so there is no single store to name back — but the ones the
             # request named are still first, and saying that is what stops the order reading as
             # Sage's own guess.
             message = brand.text(
-                "Your request names more than one of these, so those are first. The click records "
-                "which one this {builtApp} reads, and then {assistantName} looks inside it for the "
-                "{scope} this request needs.")
+                "Your request named more than one. Pick which to use, then pick a {scope}.")
         elif offer.sources:
             message = brand.text(
-                "Which {dataSource} holds this? The click records it on this {builtApp}, and then "
-                "{assistantName} looks inside it for the {scope} this request needs.")
+                "Which {dataSource} should this {builtApp} read?")
         else:
             # Said rather than discovered halfway through a build. The failure this replaces is the
             # assistant meeting a request about a warehouse, finding no store, and building a
             # dashboard on rows it invented — which looks finished and is worthless.
             message = brand.text(
-                "{platformName} offers you no {dataSourcePlural}, so {assistantName} has nothing "
-                "to read this from. Add one in {platformName} and it will be here to pick, or "
-                "build without one and this {builtApp} holds its own data.")
+                "You don't have any {dataSourcePlural} yet. Add one in {platformName}, or "
+                "continue without data.")
         events = ({"type": "user", "text": prompt},
                   # The prompt rides along so the click replays the request rather than asking the
                   # person to type it again, and `answered` carries the gates this turn was already
@@ -7749,8 +7729,8 @@ class Orchestrator:
         skipped: list[str] = []
         gave_up = ""
         cannot_finish = brand.text(
-            "{assistantName} could not finish reading {name}, so it has no {scopePlural} to offer "
-            "for this request.", name=binding.display_name)
+            "{assistantName} couldn't finish reading {name}, so there's no {scope} list.",
+            name=binding.display_name)
         try:
             for database in databases:
                 if project.stop_requested:
@@ -7797,7 +7777,7 @@ class Orchestrator:
         if not found:
             yield {"type": "table-search-ended", "sourceId": binding.id,
                    "message": gave_up or (cannot_finish if skipped else brand.text(
-                       "{name} holds no {scopePlural} {assistantName} can offer for this request.",
+                       "{name} has no {scopePlural} to pick from.",
                        name=binding.display_name))}
             return False
         # The model rank runs AFTER the last streamed frame and before the settled card, which is why
@@ -7871,7 +7851,7 @@ class Orchestrator:
         """
         return {"type": "table-search", "sourceId": binding.id,
                 "sourceName": binding.display_name,
-                "message": brand.text("{assistantName} is reading what {name} holds…",
+                "message": brand.text("Reading {name}…",
                                       name=binding.display_name),
                 "groups": table_search.grouped(candidates[:table_search.SHORTLIST]),
                 "total": len(candidates)}
@@ -7899,8 +7879,8 @@ class Orchestrator:
         yield self._table_search_frame(binding, ())
         yield {"type": "table-search-ended", "sourceId": binding.id,
                "message": brand.text(
-                   "{assistantName} could not read what {name} holds, so it has no {scopePlural} "
-                   "to offer for this request.", name=binding.display_name)}
+                   "{assistantName} couldn't read {name}, so there's no {scope} list.",
+                   name=binding.display_name)}
 
     def _shortlist_columns(self, source: DataSource, shortlist: Sequence[Candidate],
                            budget: float) -> dict[Candidate, list[str]]:
@@ -7972,17 +7952,14 @@ class Orchestrator:
         name = binding.display_name
         if ranking.matched:
             message = brand.text(
-                "{assistantName} read what {name} holds. Pick the {scope} this request should "
-                "read — the click records it on this {builtApp} and then builds what you asked "
-                "for.", name=name)
+                "Pick the {scope} to use. {assistantName} will then build what you asked for.")
         else:
             # Never an invented name, and never the alphabetical top five presented as answers. The
             # list is still shown, because "no name matched" is a fact about the names and not about
             # the warehouse — the person often knows the table by sight.
             message = brand.text(
-                "No {scope} name in {name} matches this request, so {assistantName} will not "
-                "guess one. Pick the {scope} this {builtApp} should read, or say more about the "
-                "data you mean.", name=name)
+                "Nothing in {name} matched. Pick a {scope}, or say more about the data you mean.",
+                name=name)
         # A database the walk could not read is named here rather than left out (#191). It rides on
         # both messages, matched or not: "no name matched" over a half-read warehouse is exactly
         # the sentence that would be a lie without it.
@@ -8108,16 +8085,13 @@ class Orchestrator:
         name = binding.display_name
         if ranking.matched:
             message = brand.text(
-                "{assistantName} read what {name} holds. Pick the {scope} this question should "
-                "read — the click records it for this {chat} and then answers what you asked.",
-                name=name)
+                "Pick the {scope} to use. {assistantName} will then answer your question.")
         else:
             # Never an invented name, and never the alphabetical top five presented as answers. The
             # list is still shown, because "no name matched" is a fact about the names and not about
             # the warehouse — the person often knows the table by sight.
             message = brand.text(
-                "No {scope} name in {name} matches this question, so {assistantName} will not "
-                "guess one. Pick the {scope} to read, or say more about the data you mean.",
+                "Nothing in {name} matched. Pick a {scope}, or say more about the data you mean.",
                 name=name)
         # Same sentence the Build card adds, from the same helper (#191): the mode somebody happens
         # to be standing in must not decide whether they are told a database went unread.
@@ -8244,15 +8218,14 @@ class Orchestrator:
         name = binding.display_name
         if card["matched"]:
             message = brand.text(
-                "{assistantName} listed what {name} holds. Pick what this {builtApp} should read — "
-                "the click attaches it and then builds what you asked for.", name=name)
+                "Pick what this {builtApp} should read. {assistantName} will then build what "
+                "you asked for.")
         else:
             # The list is still shown where nothing matched, for the reason the table card shows
             # its own: "no name matched" is a fact about the names and not about the Dataset, and
             # the person very often knows the file by sight.
             message = brand.text(
-                "No file name in {name} matches this request, so {assistantName} will not guess "
-                "one. Pick what this {builtApp} should read, or build without attaching anything.",
+                "Nothing in {name} matched. Pick a file, or continue without attaching one.",
                 name=name)
         message += self._partial_note(card["truncated"], name)
         message += self._capped_note(card["listed"], card["total"])
@@ -8317,13 +8290,11 @@ class Orchestrator:
         """The card itself, written to the Thread rather than to a Built App's transcript."""
         if card["matched"]:
             message = brand.text(
-                "{assistantName} listed what {name} holds. Pick the file this {chat} should read — "
-                "the click adds it to this conversation and then answers what you asked.",
-                name=asset.name)
+                "Pick the file to read. {assistantName} will then answer your question.")
         else:
             message = brand.text(
-                "No file name in {name} matches this question, so {assistantName} will not guess "
-                "one. Pick the file to read, or say more about the data you mean.", name=asset.name)
+                "Nothing in {name} matched. Pick a file, or say more about the data you mean.",
+                name=asset.name)
         message += self._partial_note(card["truncated"], asset.name)
         message += self._capped_note(card["listed"], card["total"])
         events = ({"type": "dataset-files", "prompt": prompt, "message": message,
@@ -8467,11 +8438,11 @@ class Orchestrator:
             return ""
         if len(skipped) == 1:
             return " " + brand.text(
-                "{assistantName} could not read {database}, so any {scopePlural} it holds are not "
-                "on this list.", database=skipped[0])
+                "Couldn't read {database}, so its {scopePlural} aren't listed.",
+                database=skipped[0])
         return " " + brand.text(
-            "{assistantName} could not read {databases}, so any {scopePlural} they hold are not "
-            "on this list.", databases=", ".join(skipped[:-1]) + " and " + skipped[-1])
+            "Couldn't read {databases}, so their {scopePlural} aren't listed.",
+            databases=", ".join(skipped[:-1]) + " and " + skipped[-1])
 
     @staticmethod
     def _partial_note(truncated: bool, name: str) -> str:
@@ -8492,7 +8463,7 @@ class Orchestrator:
         if not truncated:
             return ""
         return " " + brand.text(
-            "Only part of {name} could be listed, so this list is its start rather than all of it.",
+            "This is only part of {name}.",
             name=name)
 
     @staticmethod
@@ -8518,8 +8489,8 @@ class Orchestrator:
         if listed <= total:
             return ""
         return " " + brand.text(
-            "This card carries the first {total} of the {listed} rows {assistantName} listed, and "
-            "the rest are in the Data panel.", total=f"{total:,}", listed=f"{listed:,}")
+            "Showing {total} of {listed} rows. The rest are in the Data panel.",
+            total=f"{total:,}", listed=f"{listed:,}")
 
     def _wedged_refusal(self):
         """Events yielded when a streaming turn cannot run because the workspace is wedged (#39).
@@ -9242,8 +9213,7 @@ class Orchestrator:
                 fate = ("It had also edited files, which a planning turn is not allowed to do, so "
                         "those edits were undone.")
             elif kept:
-                fate = ("What this turn had already written to your app is kept, so you can see how "
-                        "far it got.")
+                fate = ("What this turn already wrote is still in the app.")
             else:
                 # Scoped to THIS turn, out loud. `agent_wrote()` only ever knew about this turn, and
                 # the old sentence — "It hadn't written anything to your app yet" — said it about
@@ -9251,8 +9221,7 @@ class Orchestrator:
                 # as the app being emptied, which is the one thing the offer exists to promise
                 # against (nothing is discarded). So it names the turn, and then says what is still
                 # there, rather than leaving the reader to work out which of the two it meant.
-                fate = ("This turn hadn't written anything yet, so your app is exactly as it was "
-                        "before you asked.")
+                fate = ("This turn didn't change the app.")
             # A phase is not a turn, and gets no card. _run_step retries a failed phase in a fresh
             # session, so a build that stalls at phase 3 and finishes on the retry would otherwise
             # carry "the build stopped responding, so Sage stopped it" permanently in the middle of
@@ -9267,11 +9236,11 @@ class Orchestrator:
                     # that never returns is the one case where asking again unchanged may not be
                     # the move. Chat draws the same line for the same reason.
                     "message": (brand.text(
-                        "The step {assistantName} was running didn't finish. It waited {waited} and "
-                        "then stopped the build. {fate}", waited=waited, fate=fate) if in_tool else
+                        "A step didn't finish after {waited}, so {assistantName} stopped. {fate}",
+                        waited=waited, fate=fate) if in_tool else
                         brand.text(
-                        "The build stopped responding. It went quiet for {waited}, so "
-                        "{assistantName} stopped it. {fate}", waited=waited, fate=fate)),
+                        "The build went quiet for {waited}, so {assistantName} stopped it. {fate}",
+                        waited=waited, fate=fate)),
                     "prompt": "" if is_approval else prompt,
                     "quietForS": round(quiet_for),
                     "kept": kept,
@@ -9718,15 +9687,10 @@ class Orchestrator:
                             # step that ran the whole time sends them to look at the model.
                             "message": (
                                 (brand.text(
-                                    "The step {assistantName} was running didn't finish, and the "
-                                    "build would not stop when {assistantName} asked it to, so this "
-                                    "workspace cannot run another build. ") if tool_open else
+                                    "A step wouldn't stop. ") if tool_open else
                                  brand.text(
-                                    "The build stopped responding and would not stop when "
-                                    "{assistantName} asked it to, so this workspace cannot run "
-                                    "another build. "))
-                                + "Restart the workspace to clear it. Everything already written "
-                                  "to your app is still there.")})
+                                    "The build wouldn't stop. "))
+                                + "Restart the workspace to continue. Your app is still there.")})
                         yield persist({"type": "done", "ok": False, "decision": "wedged"})
                         # By hand, unlike the other two exits: this one propagates, and a live
                         # traceback holds the frame — and so the tap — for as long as anything up
@@ -9787,8 +9751,7 @@ class Orchestrator:
                     # this turn started, and what is left on screen is a gateway's 404. Say the one
                     # sentence that gets the person out of here, on the row that stopped them.
                     message += brand.text(
-                        '\n\nThe plan you approved is still here — say "try again" and '
-                        "{assistantName} will build it without planning it again.")
+                        '\n\nThe plan is still here. Say "try again" to build it.')
                 yield persist({"type": "error", "message": message})
                 yield persist({"type": "done", "ok": False, "decision": "gateway error"})
                 return
@@ -9849,15 +9812,11 @@ class Orchestrator:
                 # and 8 alike (gateway-questions.md bug 3). So waiting changes nothing, and the one
                 # thing that does help is a different model. It still does not promise a shorter ask
                 # will go through, because there is still no evidence that it would.
-                message = (f"This build stopped part-way through a {broken_call} step, twice. "
-                           "Anything already written to your app is still there.\n\nBoth times, "
-                           "the model gateway stopped responding part-way through it. It does this "
-                           "on some models and not others, and waiting doesn't change it. Pick a "
-                           "different model and send the same request again.")
+                message = (f"This build stopped twice in the same step. The model stopped "
+                           "responding. Pick a different model and try again.")
                 if owns_turn and is_approval:
                     message += brand.text(
-                        '\n\nThe plan you approved is still here — say "try again" and '
-                        "{assistantName} will build it without planning it again.")
+                        '\n\nThe plan is still here. Say "try again" to build it.')
                 yield persist({"type": "error", "message": message})
                 yield persist({"type": "done", "ok": False, "decision": "broken tool call"})
                 return
@@ -10267,10 +10226,9 @@ class Orchestrator:
                 # work, and the mismatch needs no later build to happen: another tab moving the
                 # selection between the click and this call is enough.
                 yield {"type": "error", "message": brand.text(
-                    "This plan belongs to another {builtApp}. Open that one and build it again "
-                    "from there." if wrong_app else
-                    "A later build already changed this {builtApp}, so this plan no longer "
-                    "describes it. Open its current plan and edit that instead.")}
+                "This plan belongs to another {builtApp}. Open that {builtApp} to build it again."
+                if wrong_app else
+                "A later build already changed this {builtApp}. Open its current plan instead.")}
                 yield {"type": "done", "ok": False, "decision": "plan moved on"}
                 return
         if plan_edits is not None:
@@ -10293,8 +10251,7 @@ class Orchestrator:
         # (it requires a non-empty read_plan before it approves); the Approve button never did.
         if not plan_md.strip():
             yield {"type": "error", "message": brand.text(
-                "That plan was already built. Type the next change you want and {assistantName} "
-                "will plan it.")}
+                "That plan was already built. Describe the next change.")}
             yield {"type": "done", "ok": False, "decision": "no plan to approve"}
             return
         # What was approved reaches the document. Two things were going missing here. The text: an
@@ -12879,7 +12836,7 @@ class Orchestrator:
             # "here" is load-bearing: the {dataset} is mounted somewhere, just not into this
             # workspace.
             return brand.text(
-                "This {dataset} isn't mounted here. Folder reads are slow. Attach files instead."
+                "This {dataset} isn't mounted here. Attach files instead."
             )
         return ""
 
@@ -13817,16 +13774,14 @@ class Orchestrator:
             return ""
         if len(unasked) == 1:
             return brand.text(
-                "This {builtApp} is recorded as reading the {dataSource} {named}, but no query "
-                "names it, so nothing on screen comes from it. Ask {assistantName} to query it, or "
-                "remove it from this app's {resourcePlural}.",
+                "This {builtApp} lists {named} but never queries it, so the screens don't use "
+                "that data. Ask {assistantName} to query it, or remove it from the app.",
                 named=unasked[0].display_name,
             )
         labels = [b.display_name for b in unasked]
         return brand.text(
-            "This {builtApp} is recorded as reading the {dataSourcePlural} {named}, but no query "
-            "names them, so nothing on screen comes from them. Ask {assistantName} to query them, "
-            "or remove them from this app's {resourcePlural}.",
+            "This {builtApp} lists {named} but never queries them, so the screens don't use "
+            "that data. Ask {assistantName} to query them, or remove them from the app.",
             named=", ".join(labels[:-1]) + f" and {labels[-1]}",
         )
 
@@ -13860,17 +13815,13 @@ class Orchestrator:
         named = ", ".join(f"`{name}` ({reason})" for name, reason in failed.items())
         if len(failed) == 1:
             return brand.text(
-                "This {builtApp} could not read its data while it was being built: the query "
-                "{named} failed. Every screen waiting on it shows an error where the data should "
-                "be. Ask {assistantName} to fix the query, or check that this app may still read "
-                "the {dataSource} it names.",
+                "A query failed while building: {named}. Screens that need that data will error. "
+                "Ask {assistantName} to fix it, or check access to the {dataSource}.",
                 named=named,
             )
         return brand.text(
-            "This {builtApp} could not read its data while it was being built: {count} queries "
-            "failed — {named}. Every screen waiting on them shows an error where the data should "
-            "be. Ask {assistantName} to fix them, or check that this app may still read the "
-            "{dataSourcePlural} they name.",
+            "{count} queries failed while building: {named}. Screens that need that data will "
+            "error. Ask {assistantName} to fix them, or check access to the {dataSourcePlural}.",
             count=len(failed), named=named,
         )
 

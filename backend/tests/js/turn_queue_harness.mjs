@@ -21,8 +21,7 @@ const PENDING = {
   type: 'pending',
   ticket: 'turn_abc',
   prompt: 'how many rows?',
-  message: 'Queued behind the turn that is running. Sage runs one turn at a time and will start '
-    + 'this when they finish. Nothing has run yet, so you can cancel it.',
+  message: 'Waiting on the turn that is running. Nothing has run yet — you can cancel.',
 };
 const REST = {
   queued: [
@@ -33,7 +32,7 @@ const REST = {
   cancelled: [{ type: 'done', ok: false, decision: 'cancelled' }],
   'context-changed': [
     { type: 'error', contextChanged: true, prompt: 'how many rows?',
-      message: 'Your context changed since you asked this, so Sage did not run it.' },
+      message: 'Your attachments changed, so this didn\'t run. The text is back in the box — send it again.' },
     { type: 'done', ok: false, decision: 'context changed' },
   ],
   'two-in-flight': [{ type: 'done', ok: true, decision: 'answered' }],

@@ -122,8 +122,7 @@ def test_the_confirm_says_what_publishing_does_not_touch():
     """#76's treatment. The fear on the way to this button is that the whole Project goes out, or
     that shipping one app takes the conversation it was built from with it."""
     said = _publish("app_b", confirm=False)["confirm"]["content"]
-    assert "Only this app goes out" in said, said
-    assert "other Built Apps" in said and "conversation" in said, said
+    assert "Only this app is published." in said, said
 
 
 @needs_node
@@ -139,9 +138,9 @@ def test_the_confirm_makes_no_claim_about_the_attached_files():
 @needs_node
 def test_a_first_publish_says_where_the_app_ends_up():
     said = _publish("app_b", confirm=False)["confirm"]["content"]
-    assert "URL of its own" in said, said
+    assert "with its own URL" in said, said
     # It must not promise a stable URL to somebody who has not got one yet.
-    assert "doesn't change" not in said, said
+    assert "stays the same" not in said, said
 
 
 @needs_node
@@ -150,7 +149,7 @@ def test_a_republish_says_the_url_people_already_have_does_not_change():
     in the world. One control, two sentences — the sentence is what moves."""
     step = _publish("app_a", confirm=False)
     assert step["confirm"]["title"] == 'Publish a new version of "Desk dashboard"?'
-    assert "doesn't change" in step["confirm"]["content"], step["confirm"]["content"]
+    assert "stays the same" in step["confirm"]["content"], step["confirm"]["content"]
 
 
 @needs_node
@@ -353,4 +352,4 @@ def test_the_confirm_this_ticket_opened_is_where_the_pre_publish_notice_landed()
     assert "GET /publish-check" in step["calls"], step["calls"]
     assert "GET /publish-egress" in step["calls"], step["calls"]
     # The confirm was already on screen with its own two paragraphs before either read answered.
-    assert "Only this app goes out." in step["confirm"]["openedWith"]
+    assert "Only this app is published." in step["confirm"]["openedWith"]

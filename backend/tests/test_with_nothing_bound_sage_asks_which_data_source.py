@@ -190,9 +190,7 @@ def test_a_caller_with_no_data_sources_at_all_is_told_so_in_a_plain_sentence(
 
     assert card["sources"] == []
     assert card["message"] == (
-        "Domino offers you no Data Sources, so Sage has nothing to read this from. Add one in "
-        "Domino and it will be here to pick, or build without one and this Built App holds its "
-        "own data."
+        "You don't have any Data Sources yet. Add one in Domino, or continue without data."
     )
     assert asked == []
 
@@ -387,7 +385,7 @@ def test_the_card_names_the_store_the_request_named_back_to_them(tmp_path: Path,
 
     assert card["named"] == 1
     assert "reporting-replica" in card["message"]
-    assert "never by a guess" in card["message"]
+    assert "Confirm it, then pick a Table" in card["message"]
 
 
 def test_a_card_naming_two_stores_says_they_are_first_rather_than_naming_one(
@@ -405,7 +403,7 @@ def test_a_card_naming_two_stores_says_they_are_first_rather_than_naming_one(
         "prompt": "chart reporting-replica against billing-oracle"}).text)
 
     assert card["named"] == 2
-    assert "names more than one" in card["message"]
+    assert "named more than one" in card["message"]
     assert "reporting-replica" not in card["message"]
 
 
@@ -418,4 +416,4 @@ def test_a_card_that_named_nothing_still_asks_the_plain_question(tmp_path: Path,
         "prompt": "chart last quarter's premiums from the warehouse"}).text)
 
     assert card["named"] == 0
-    assert card["message"].startswith("Which Data Source holds this?")
+    assert card["message"].startswith("Which Data Source should this Built App read?")

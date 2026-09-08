@@ -24,7 +24,7 @@ const PENDING = {
   type: 'pending',
   ticket: 'turn_abc',
   prompt: 'build me a dashboard',
-  message: 'Queued behind the turn that is running.',
+  message: 'Waiting on the turn that is running.',
 };
 // The frames each mode streams before the harness pauses. Whatever comes first, it is not the
 // queue, so by then the turn is running and the bar has to be able to say so.

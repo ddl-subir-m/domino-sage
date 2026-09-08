@@ -160,16 +160,12 @@ def test_an_undeclared_alias_is_named_to_the_creator_with_the_act_only_they_can_
     assert calls == [("src/Chat.tsx", ["sonnet"])]
     notice = unbound_alias_notice(calls)
     assert "sonnet" in notice and "src/Chat.tsx" in notice
-    # Binding is a person's act (ADR-0010), so the sentence has to end somewhere they can go — and
-    # that somewhere is the Built App's own surface, which is the only place the act lives (ADR-0021).
-    # Named by the heading over it, because this sentence does not know the app's name and the door's
-    # label is `Use in {app}`.
-    assert "what this app ships" in notice
+    # Binding is a person's act (ADR-0010), so the sentence has to end somewhere they can go.
+    assert "isn't set up to use" in notice
     # Not the Resources panel. It offered the act until #144 and does not now, so a sentence naming
     # it would be the #127 bug word for word: a creator sent to a control that is not there.
     assert "Resources panel" not in notice
-    # And it says what the fix does to this app, which is break it until they go there.
-    assert "askModel" in notice
+    assert "Add it to this app" in notice
 
 
 def test_a_field_that_merely_ends_in_model_is_not_read_as_one():
@@ -199,7 +195,8 @@ def test_two_undeclared_models_are_named_together_rather_than_once_each():
     calls = [("src/Chat.tsx", ["mimo-v2.5"]), ("src/Report.tsx", ["gpt-5.4"])]
     notice = unbound_alias_notice(calls)
     assert "gpt-5.4 and mimo-v2.5" in notice
-    assert "are models" in notice and "Aliases" in notice
+    assert "isn't set up to use" in notice
+    assert "Add them to this app" in notice
 
 
 def test_a_file_flagged_with_no_undeclared_model_is_left_out_of_the_sentence():
@@ -353,7 +350,7 @@ def test_an_undeclared_alias_says_so_to_the_creator_too(tmp_path: Path):
     said = _of(events, "gateway-alias-unbound")
     assert len(said) == 1
     assert "sonnet" in said[0]["message"]
-    assert "what this app ships" in said[0]["message"]
+    assert "isn't set up to use" in said[0]["message"]
 
 
 def test_the_nudge_is_bounded_and_the_turn_finishes_anyway(tmp_path: Path):

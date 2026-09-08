@@ -107,8 +107,8 @@ window.SW = window.SW || {};
           // they pasted is exactly the reader a popover would hide it from.
           Modal.confirm({
             title: 'Delete this conversation?',
-            content: 'Its messages are removed for good. The apps it changed stay exactly as they '
-              + "are, and earlier copies stay in the project's git history.",
+            content: 'Messages are deleted for good. Apps it changed stay, including older copies '
+              + 'in git.',
             okText: 'Delete',
             okButtonProps: { danger: true },
             onOk: async () => {
@@ -122,8 +122,8 @@ window.SW = window.SW || {};
               // may bring it back — say so rather than let the empty row imply it finished.
               if (out && out.saved && out.saved.ok === false) {
                 antd.message.error(
-                  `Deleted here, but the project couldn't be saved — ${out.saved.detail}. `
-                  + 'This conversation may come back when the workspace restarts.'
+                  `Deleted here, but the project didn't save — ${out.saved.detail}. `
+                  + 'This conversation may come back after a restart.'
                 );
               }
             },

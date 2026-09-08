@@ -57,7 +57,7 @@ def test_an_individual_credential_refuses_and_says_which_source():
     assert problem.reason == INDIVIDUAL_CREDENTIAL
     assert problem.id == "ds-test" and problem.kind == KIND_DATA_SOURCE  # the row to take them to
     assert "test" in problem.message
-    assert "publish again" in problem.message  # a refusal without a remedy is a dead end
+    assert "personal credential" in problem.message  # a refusal without a remedy is a dead end
 
 
 def test_a_source_that_is_no_longer_listed_refuses_rather_than_assuming():
@@ -84,7 +84,7 @@ def test_an_app_open_to_people_who_never_signed_in_refuses_even_on_a_shared_cred
     (problem,) = publish_problems([SHARED_BINDING], SOURCES, "PUBLIC")
     assert problem.reason == OPEN_APP
     assert "Snowflake-Data-Warehouse" in problem.message
-    assert "PUBLIC" in problem.message   # quoted, so a wrong refusal is one report to fix
+    assert "aren't signed in" in problem.message
 
 
 @pytest.mark.parametrize("allowed", ["GRANT_BASED", "AUTHENTICATED", "PRIVATE", "grant-based"])

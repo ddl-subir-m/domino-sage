@@ -253,7 +253,7 @@ def test_an_alias_whose_endpoint_is_stopped_is_still_offered_but_marked(tmp_path
     )
     row = next(a for a in orch.model_assignments()["aliases"] if a["name"] == "local-domino-llm")
     assert row["serving"] is False
-    assert "mistral-endpoint" in row["problem"] and "Stopped" in row["problem"]
+    assert "Stopped" in row["problem"]
     # The remedy has to be the one that fits a stopped endpoint, not the generic one.
     assert "Start that endpoint" in row["problem"]
 
@@ -302,7 +302,7 @@ def test_a_slot_whose_model_the_gateway_will_not_serve_reports_it_on_the_slot(tm
     )
     orch.set_catalog(implement="local-domino-llm")
     row = next(r for r in orch.model_assignments()["slots"] if r["slot"] == "implement")
-    assert "mistral-endpoint" in row["problem"] and "Start that endpoint" in row["problem"]
+    assert "Stopped" in row["problem"] and "Start that endpoint" in row["problem"]
     # A slot nobody broke says nothing at all. `ask` is the clean one here: this fixture's gateway
     # offers `sonnet` but not the `gpt-5.4`/`bedrock-qwen3-coder` the other two slots default to, so
     # asserting on those would be reading the OTHER preflight question's answer.
@@ -316,4 +316,4 @@ def test_a_slot_naming_an_alias_the_gateway_does_not_offer_reports_it_too(tmp_pa
     orch = _orch(tmp_path)
     orch.set_catalog(ask="gone-model")
     row = next(r for r in orch.model_assignments()["slots"] if r["slot"] == "ask")
-    assert "does not offer" in row["problem"]
+    assert "isn't available" in row["problem"]

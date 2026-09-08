@@ -135,7 +135,7 @@ def test_a_plan_with_neither_end_recorded_says_why_it_offers_no_way_back():
 
     assert page["offers"] == ["build"]
     assert page["buildDisabled"] is True
-    assert any("no conversation on record" in t for t in page["tooltips"])
+    assert any("no conversation" in t for t in page["tooltips"])
 
 
 @needs_node
@@ -197,7 +197,7 @@ def test_a_plan_that_never_had_a_conversation_still_says_that_instead():
     page = _page()
 
     assert page["buildDisabled"] is True
-    assert any("no conversation on record" in t for t in page["tooltips"])
+    assert any("no conversation" in t for t in page["tooltips"])
     assert not any("deleted" in t for t in page["tooltips"])
 
 

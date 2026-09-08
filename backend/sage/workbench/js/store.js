@@ -2828,8 +2828,8 @@ window.SW = window.SW || {};
         // could rename, and routing it through the payload would mean the server composing copy
         // about the client's own furniture.
         antd.message.warning(fresh.length === 1
-          ? '1 problem needs your attention. Open the problem chip in the top bar to read it.'
-          : `${fresh.length} problems need your attention. Open the problem chip in the top bar `
+          ? '1 problem needs attention. Open Problems in the top bar.'
+          : `${fresh.length} problems need attention. Open Problems in the top bar `
             + 'to read them.');
       }
       notify();
@@ -3257,7 +3257,7 @@ window.SW = window.SW || {};
       // would land the reader on a preview with no list in sight. ADR-0011's rule is that a
       // pointer is a promise the destination can act; this is that promise kept.
       state.appDependenciesOpen = true;
-      antd.message.info(`Take it out of ${appScopeName()} in the list of what this app uses.`);
+      antd.message.info(`Remove it from ${appScopeName()}.`);
       notify();
       return true;
     },
@@ -3582,7 +3582,7 @@ window.SW = window.SW || {};
       // same act — which is the difference between this and a Binding, whose undo is a Remove
       // somewhere else entirely.
       antd.message.success(shown
-        ? `In ${pick.name}, ${where} reads ${shown}. Choose again from the same control to move it.`
+        ? `${where} now reads ${shown} from ${pick.name}.`
         // The Scope cleared rather than moved. Named as the state it leaves behind, in the words
         // the record itself is drawn with, so the sentence and the screen agree.
         : `The table for ${pick.name} is ${SW.util.NO_SCOPE_YET} in ${where}. `
@@ -3620,8 +3620,8 @@ window.SW = window.SW || {};
             + ` (${SW.util.bytes(bytes)}) to ${where}?`,
           // What the act commits to, in one sentence. Not "there is no undo" — there is one, and
           // naming it is what keeps this confirm from reading as a warning about a cheap act.
-          content: `${where} carries every file below ${label} from then on, and ships them when `
-            + "you publish it. Take one back out from the app's own list.",
+          content: `${where} will include every file in ${label} when you publish. You can remove `
+            + 'files later.',
           okText: `Attach folder to ${where}`,
           onOk: async () => {
             let result;
@@ -3875,13 +3875,13 @@ window.SW = window.SW || {};
     // all because a Project holds many Built Apps (ADR-0008), so "the app" is the one word that
     // cannot say which of them the act would land in.
     mentionFixHints(entries) {
-      const ships = (e) => `Choose Use in ${e.app} in the list of what it ships, then ask again.`;
+        const ships = (e) => `Add it to ${e.app}, then ask again.`;
       const HINT = {
         llm_alias: ships,
         data_source: ships,
         dataset: ships,
         model_api: ships,
-        file: (e) => `Attach it to ${e.app} in the Data panel, then ask again.`,
+        file: (e) => `Attach it to ${e.app}, then ask again.`,
       };
       const said = [];
       (entries || []).forEach((entry) => {
@@ -3937,7 +3937,7 @@ window.SW = window.SW || {};
       // one would be the dead end this card removes, rebuilt. When it lands it hangs off this act,
       // which is the whole reason the act is named rather than inlined into the card.
       antd.message.info(SW.brand.text(
-        "{assistantName} needs {name}'s access token before an app can call it. Copy the sample "
+        '{assistantName} needs an access token for {name}. Copy the sample '
         + 'request from its Overview page in {platformName}.',
         { name: entry.name || entry.id }
       ));

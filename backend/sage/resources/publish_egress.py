@@ -65,20 +65,11 @@ def egress_notice(bindings: list[Binding], aliases: list[LlmAlias] | None) -> st
     offsite = [b for b in bindings if b.kind == KIND_LLM_ALIAS and _is_offsite(b, aliases)]
     if not offsite:
         return None
-    sources = [b for b in bindings if b.kind == KIND_DATA_SOURCE]
-    several = len(offsite) > 1
-    # Each phrase is resolved before it travels as a value: a value is not scanned again, so the
-    # noun has to be its own literal rather than a token inside `_phrase`'s answer.
-    stores = _phrase(sources, brand.text("the {dataSource}"), brand.text("the {dataSourcePlural}"))
     models = _phrase(offsite, brand.text("the {llmAlias}"), brand.text("the {llmAliasPlural}"))
     return brand.text(
-        "This app reads {stores} and calls {models}, which {run} outside {platformName}. Anything "
-        "the app sends {them} leaves {platformName} — once this is published, for every viewer, "
-        "and with nobody watching. This doesn't stop the publish.",
-        stores=stores,
+        "This app sends data to {models} outside {platformName}. After you publish, that happens "
+        "for every viewer. This doesn't stop the publish.",
         models=models,
-        run="run" if several else "runs",
-        them="those models" if several else "that model",
     )
 
 

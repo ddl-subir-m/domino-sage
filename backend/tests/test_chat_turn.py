@@ -544,7 +544,7 @@ def test_a_build_request_the_regex_misses_still_offers_build_after_a_timeout(
     suggest = next(e for e in events if e["type"] == "handoff-suggest")
     assert suggest["reason"] == "classifier"
     err = next(e for e in events if e["type"] == "error")
-    assert "open it in Build" in err["message"]
+    assert "job for Build" in err["message"]
     assert "smaller question" not in err["message"]   # wrong advice for a build request
     assert any(e.get("type") == "handoff-suggest" for e in orch.thread_history(tid))
 
@@ -1394,7 +1394,7 @@ def test_a_slow_tool_outlives_the_window_that_ends_a_stalled_model(tmp_path: Pat
     err = next(e for e in out if e["type"] == "error")
     # It did not stop working, so it must not be reported as having stopped.
     assert "stopped making progress" not in err["message"]
-    assert "The step Sage was running did not finish" in err["message"]
+    assert "That step didn't finish" in err["message"]
     assert "narrower query" in err["message"]
 
 
@@ -1498,7 +1498,7 @@ def test_a_turn_that_never_stops_talking_hits_the_ceiling(tmp_path: Path, monkey
 
     assert oc.interrupted == 1
     err = next(e for e in out if e["type"] == "error")
-    assert "worked for too long" in err["message"]
+    assert "took too long" in err["message"]
     assert "stopped making progress" not in err["message"]  # it never stopped; that is the point
     assert next(e for e in out if e["type"] == "done") == {
         "type": "done", "ok": False, "decision": "timeout"}

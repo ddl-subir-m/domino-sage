@@ -116,15 +116,11 @@ def unbound_alias_notice(calls: list[tuple[str, list[str]]]) -> str | None:
     files = sorted({f for f, aliases in calls if aliases})
     several = len(names) > 1
     return brand.text(
-        "{files} asks {platformName}'s {llmGateway} for {models}, which {areModels} this app is not "
-        "set up to use. The call is being rewritten to go through askModel, which refuses a model "
-        "the app does not have — so if this app should have {them}, add the {aliases} to what this "
-        "app ships: choose the Use in action that names this app.",
+        "{files} calls {models}, which this app isn't set up to use. Add {them} to this app if it "
+        "should be able to call {them}.",
         files=_join(files),
         models=_join(names),
-        areModels="are models" if several else "is a model",
         them="them" if several else "it",
-        aliases=brand.text("{llmAliasPlural}" if several else "{llmAlias}"),
     )
 
 

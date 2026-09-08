@@ -384,7 +384,7 @@ def test_a_folder_mention_whose_files_are_gone_is_refused_like_a_file(tmp_path: 
     assert resolved is None
     # NOT "not attached to this app": it is attached, its row is in the panel, and attaching it
     # again is not the way back. No row either, because no one button closes this.
-    assert "this app holds it, but its files aren't in the workspace" in line
+    assert "It's attached, but the files aren't available right now." in line
     assert rows == []
 
 
@@ -405,7 +405,7 @@ def test_a_split_apart_folder_whose_files_are_gone_is_held_not_missing(tmp_path:
     line, rows = orch._unusable_mentions(project, resolved, [month], None)
 
     assert resolved is None
-    assert "this app holds it, but its files aren't in the workspace" in line
+    assert "It's attached, but the files aren't available right now." in line
     assert "not attached" not in line
     assert rows == []
 
@@ -448,7 +448,7 @@ def test_a_path_that_names_neither_a_file_nor_a_folder_is_still_refused(tmp_path
     line, _ = orch._unusable_mentions(project, resolved, [stray], None)
 
     assert resolved is None
-    assert "not attached to this app" in line
+    assert "Attach it to this app" in line
 
 
 def test_a_folder_mention_names_the_set_its_row_and_its_block_line_name(tmp_path: Path):
@@ -516,7 +516,7 @@ def test_a_folder_token_that_now_names_files_says_what_it_matched(tmp_path: Path
 
     assert len(paths) == 8
     assert all(not e["menu_folder"] for e in project.status()["attached"])
-    assert f"@2024 names {len(paths)} attached files" in said
+    assert f"@2024 matches {len(paths)} files" in said
     assert all(p in said for p in paths)
 
 

@@ -335,9 +335,9 @@ def test_the_dialog_says_what_goes_what_stays_and_what_git_keeps(tmp_path: Path)
     dialog = _press_delete({"ok": True, "pushed": True, "detail": "pushed"})
 
     assert dialog["title"] == "Delete this conversation?"
-    assert "removed for good" in dialog["content"]
-    assert "stay exactly as they are" in dialog["content"]
-    assert "git history" in dialog["content"]
+    assert "deleted for good" in dialog["content"]
+    assert "Apps it changed stay" in dialog["content"]
+    assert "git" in dialog["content"]
     assert dialog["okText"] == "Delete" and dialog["danger"] is True
 
 

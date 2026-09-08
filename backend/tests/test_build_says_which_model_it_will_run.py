@@ -190,8 +190,8 @@ def test_a_pinned_session_says_why_it_is_not_running_the_slot_you_assigned():
     """Q4 of ADR-0032: a guarantee the person cannot see is one they file as a bug. Plan and
     Implement carry no tooltip normally, so this is the only place the reason can land."""
     (row,) = _drawn([{"mode": "plan", "signing": "implement"}])
-    assert "signs its tool calls" in row["why"]
-    assert "Implement is assigned to it" in row["why"]
+    assert "required for this session" in row["why"]
+    assert "every Build turn uses it" in row["why"]
 
 
 def test_a_pinned_session_still_offers_the_override_that_beats_the_pin():
@@ -219,7 +219,7 @@ def test_auto_stops_claiming_two_models_when_only_one_can_run():
     (row,) = _drawn([{"mode": "auto", "signing": "implement"}])
     assert row["label"] == f"{SIGNING_MODEL} · planning"
     assert "to plan and" not in row["why"]
-    assert "signs its tool calls" in row["why"]
+    assert "required for this session" in row["why"]
 
 
 def test_ask_under_the_pin_names_the_pinned_model_too():
@@ -227,7 +227,7 @@ def test_ask_under_the_pin_names_the_pinned_model_too():
     # Ask turn signs history like any other.
     (row,) = _drawn([{"mode": "ask", "signing": "implement"}])
     assert row["label"] == SIGNING_MODEL
-    assert "signs its tool calls" in row["why"]
+    assert "required for this session" in row["why"]
 
 
 def test_no_signing_slot_leaves_every_word_of_the_picker_alone():

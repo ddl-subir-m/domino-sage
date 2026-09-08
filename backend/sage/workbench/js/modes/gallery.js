@@ -64,9 +64,8 @@ window.SW = window.SW || {};
           state.provisioning
             // No article engine, so the sentence takes CONTEXT.md's own plural phrasing rather
             // than "a {assistantName} Builder", which a vowel-initial name would have broken.
-            ? 'Apps published from {assistantName} Builder sessions show up here, for everyone ' +
-              'who can open them.'
-            : 'This build runs outside {platformName}, so there are no published Apps to list.'
+            ? 'Published apps show up here.'
+            : "Published apps aren't available outside {platformName}."
         ),
         extra: state.provisioning
           ? h(Button, { type: 'primary', onClick: () => SW.router.go('#/chat') }, 'Go to Chat')

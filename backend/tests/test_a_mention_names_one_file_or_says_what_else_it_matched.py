@@ -240,7 +240,7 @@ def test_the_turn_names_every_file_an_ambiguous_mention_matched():
 
     said = _ambiguous_mentions(resolved, STALE)
 
-    assert "@data.csv names 2 attached files" in said
+    assert "@data.csv matches 2 files" in said
     assert P2025 in said and P2026 in said
     assert "Pick one from the @ menu" in said
 
@@ -269,7 +269,7 @@ def test_a_qualified_token_that_names_two_files_is_reported_too():
 
     said = _ambiguous_mentions(resolved, "compare @a/data.csv")
 
-    assert said.startswith("@a/data.csv names 2 attached files")
+    assert said.startswith("@a/data.csv matches 2 files")
 
 
 def test_a_name_with_a_space_is_read_as_the_token_the_composer_wrote():
@@ -281,7 +281,7 @@ def test_a_name_with_a_space_is_read_as_the_token_the_composer_wrote():
 
     said = _ambiguous_mentions(resolved, "read @q1_notes.md")
 
-    assert said.startswith("@q1_notes.md names 2 attached files")
+    assert said.startswith("@q1_notes.md matches 2 files")
 
 
 def test_the_server_reads_a_token_as_its_own_word():

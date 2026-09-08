@@ -257,7 +257,7 @@ def test_the_stuck_rows_door_says_where_it_took_you():
     """
     report = _act("listed")
     assert report["routes"] == ["#/build/conv_1?app=app_a"]
-    assert "info: Take it out of Sales trends in the list of what this app uses." in report["notices"]
+    assert "info: Remove it from Sales trends." in report["notices"]
 
 
 def test_a_door_onto_an_app_that_is_gone_does_not_open():

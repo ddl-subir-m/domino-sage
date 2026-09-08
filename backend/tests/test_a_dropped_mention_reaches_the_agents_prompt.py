@@ -105,7 +105,7 @@ def test_a_file_that_was_never_attached_is_named_in_the_prompt(tmp_path: Path):
     sent, events = _turn(orch, oc, mentions=["public/data/gone.csv"])
 
     assert _screen(events) in sent
-    assert "@gone.csv" in sent and "not attached to this app" in sent
+    assert "@gone.csv" in sent and "Attach it to this app" in sent
 
 
 def test_a_chat_file_living_outside_the_app_is_named_in_the_prompt(tmp_path: Path):
@@ -114,7 +114,7 @@ def test_a_chat_file_living_outside_the_app_is_named_in_the_prompt(tmp_path: Pat
     sent, events = _turn(orch, oc, mentions=[".sage/scratch/events.csv"])
 
     assert _screen(events) in sent
-    assert "@events.csv" in sent and "Chat file" in sent
+    assert "@events.csv" in sent and "in Chat" in sent
 
 
 # ---- what the note tells the agent to do about it -------------------------------------------

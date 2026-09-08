@@ -223,8 +223,7 @@ def test_a_store_that_answers_none_of_its_databases_takes_the_card_back(
     # can do that silence could not, and the assistant's "which table?" a moment later does not say
     # whether the store failed or held nothing — which are different facts about their warehouse.
     assert ended["message"] == (
-        "Sage could not finish reading Snowflake-Data-Warehouse, so it has no Tables to offer for "
-        "this request.")
+        "Sage couldn't finish reading Snowflake-Data-Warehouse, so there's no Table list.")
     assert built == [1]
 
 
@@ -292,7 +291,7 @@ def test_a_store_that_turns_out_to_hold_nothing_takes_the_card_back_too(
     assert [f["type"] for f in frames if f["type"].startswith("table-")] == [
         "table-search", "table-search", "table-search-ended"]
     assert next(f for f in frames if f["type"] == "table-search-ended")["message"] == (
-        "Snowflake-Data-Warehouse holds no Tables Sage can offer for this request.")
+        "Snowflake-Data-Warehouse has no Tables to pick from.")
     assert built == [1]
 
 

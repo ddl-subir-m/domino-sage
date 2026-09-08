@@ -261,10 +261,10 @@ def test_one_listing_failing_does_not_suppress_another():
 def test_each_kind_gets_the_sentence_that_leads_where_its_fix_is():
     # Three reasons, three screens. One message for all of them would send two thirds of the people
     # who read it to the wrong place.
-    assert "LLM Gateway" in stale_fault(_binding("id", "a"))
+    assert "no longer available" in stale_fault(_binding("id", "a"))
     assert "deployed in this project" in stale_fault(
         Binding(KIND_MODEL_API, "id", "churn", "churn"))
-    assert "permission on" in stale_fault(Binding(KIND_DATA_SOURCE, "id", "dwh", "dwh"))
+    assert "no longer have access" in stale_fault(Binding(KIND_DATA_SOURCE, "id", "dwh", "dwh"))
 
 
 def test_a_model_api_whose_token_has_gone_is_reported_too():
@@ -406,7 +406,7 @@ def test_a_data_source_that_has_gone_is_reported_at_session_open(tmp_path):
     assert result["state"] == "problems"
     (row,) = result["bindings"]
     assert row["kind"] == KIND_DATA_SOURCE
-    assert "permission on" in row["message"]
+    assert "no longer have access" in row["message"]
 
 
 def test_a_model_api_that_is_no_longer_deployed_is_reported_at_session_open(tmp_path):

@@ -265,7 +265,7 @@ def test_a_reset_request_offers_the_control_and_never_resets(tmp_path: Path):
 
     assert built == []                                    # no build turn ran
     assert [e["type"] for e in events] == ["reset-offer", "done"]
-    assert "starter template" in events[0]["message"]      # says what the control it offers does
+    assert "blank starter" in events[0]["message"]      # says what the control it offers does
     assert (project.workspace.path / "src" / "App.tsx").read_text() == "export default () => <b>built</b>;"
 
 

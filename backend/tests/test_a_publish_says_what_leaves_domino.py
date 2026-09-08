@@ -72,9 +72,9 @@ def test_the_join_fires_and_names_the_alias_and_the_store():
     notice = egress_notice([STORE, BOUND_SONNET], [SONNET, QWEN])
 
     assert notice is not None
-    assert "the Data Source Snowflake-Data-Warehouse" in notice
     assert "the LLM Alias Claude Sonnet 4.6" in notice
     assert "outside Domino" in notice
+    assert "Snowflake-Data-Warehouse" not in notice
 
 
 def test_it_names_every_store_and_every_offsite_alias():
@@ -82,9 +82,10 @@ def test_it_names_every_store_and_every_offsite_alias():
     # app reads has been told something true and something incomplete.
     notice = egress_notice([STORE, LEDGER, BOUND_SONNET, BOUND_GPT], [SONNET, GPT])
 
-    assert "the Data Sources Snowflake-Data-Warehouse and billing-postgres" in notice
+    assert "Snowflake-Data-Warehouse" not in notice
+    assert "billing-postgres" not in notice
     assert "the LLM Aliases Claude Sonnet 4.6 and gpt-5.4" in notice
-    assert "which run outside Domino" in notice
+    assert "outside Domino" in notice
 
 
 def test_it_never_names_a_vendor():
@@ -425,10 +426,8 @@ needs_node = pytest.mark.skipif(
 )
 
 # The sentence the server would send, as prose the harness has no way to have built itself.
-NOTICE = ("This app reads the Data Source Snowflake-Data-Warehouse and calls the LLM Alias Claude "
-          "Sonnet 4.6, which runs outside Domino. Anything the app sends that model leaves Domino "
-          "— once this is published, for every viewer, and with nobody watching. This doesn't stop "
-          "the publish.")
+NOTICE = ("This app sends data to the LLM Alias Claude Sonnet 4.6 outside Domino. After you "
+          "publish, that happens for every viewer. This doesn't stop the publish.")
 REFUSED_QUERY = ("The app asks for the query revenue, whose statement uses :since and whose "
                  "declaration does not.")
 
@@ -473,7 +472,7 @@ def test_both_reads_are_asked_and_neither_is_awaited_before_the_confirm_opens():
     step = _confirm(queries=[REFUSED_QUERY], notice=NOTICE)
 
     assert "GET /publish-check" in step["calls"] and "GET /publish-egress" in step["calls"]
-    assert "Only this app goes out." in step["confirm"]["openedWith"]
+    assert "Only this app is published." in step["confirm"]["openedWith"]
     assert REFUSED_QUERY not in step["confirm"]["openedWith"]
     assert "outside Domino" not in step["confirm"]["openedWith"]
     # Both, once they land, and the broken query above the consequence: one is a defect to go and
