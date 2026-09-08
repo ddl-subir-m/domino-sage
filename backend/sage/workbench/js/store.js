@@ -1770,6 +1770,11 @@ window.SW = window.SW || {};
           prompt: ev.prompt || '',
           sourceId: ev.sourceId || '',
           sourceName: ev.sourceName || '',
+          // Whether this card is the merged one (#206), drawn before the store was bound, so its
+          // click has to declare the Binding as well as the Scope. It rides on the card rather
+          // than being worked out here: the browser cannot see whether a Binding exists at the
+          // moment the click lands, and guessing wrong writes the wrong record.
+          bindFirst: !!ev.bindFirst,
           // The gates this turn was already past. Without them the replay walks back into a gate
           // the person has answered — most sharply the reset offer, which is a prompt match with
           // nothing remembered, so it would offer to throw the app away a second time.
@@ -4652,8 +4657,8 @@ window.SW = window.SW || {};
     //
     // `answered` carries the gates this turn was already past, so the replay does not walk back
     // into one the person has settled.
-    async chooseTableAndBuild(prompt, sourceId, scope, answered) {
-      await SW.api.confirmTableCandidate(sourceId, scope);
+    async chooseTableAndBuild(prompt, sourceId, scope, answered, bindFirst = false) {
+      await SW.api.confirmTableCandidate(sourceId, scope, bindFirst);
       // `refreshWorkingSet` for `saveScope`'s reason: this writes the same Scope the same door
       // writes, and the Project's row carries a copy of it under `usedBy`.
       await Promise.all([

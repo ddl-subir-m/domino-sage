@@ -689,8 +689,15 @@ SW.api = {
   // The same record, reached from a candidate card instead of the panel (#183). Its own route
   // because the server proves the table is still there before it writes — this list may have been
   // read minutes ago, while the panel's cascade was walked seconds ago.
-  confirmTableCandidate: (resourceId, scope) =>
-    post(`/bindings/data_source/${encodeURIComponent(resourceId)}/candidate`, scope || {}),
+  // `bindFirst` says the merged card sent this (#206): the store was not bound when the card was
+  // drawn, so this one click declares the Binding and the Scope together and the server writes
+  // through the door that records both. Sent by the card that knows, never inferred server-side —
+  // a click that did not mean to bind must still be refused there.
+  // Absent rather than `false` on the ordinary click: the flag is a claim the merged card makes,
+  // and a request that is not making it should look exactly as it did before this existed.
+  confirmTableCandidate: (resourceId, scope, bindFirst = false) =>
+    post(`/bindings/data_source/${encodeURIComponent(resourceId)}/candidate`,
+         { ...(scope || {}), ...(bindFirst ? { bindFirst: true } : {}) }),
   // The same click, answered in Chat (#188). A different record, not a different act: Chat has no
   // Built App to depend on anything, so the table goes on the Thread's own context row and crosses
   // into a Binding at the handoff.

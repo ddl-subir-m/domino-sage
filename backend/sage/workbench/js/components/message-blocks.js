@@ -1099,7 +1099,7 @@ window.SW = window.SW || {};
                         : SW.store.chooseTableAndBuild(
                           block.prompt, block.sourceId,
                           { database: group.database, schema: group.schema, table },
-                          block.answered,
+                          block.answered, block.bindFirst,
                         ))),
                   }, table)))
               )),

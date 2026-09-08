@@ -143,7 +143,10 @@ const drawn = SW.store.get().buildMessages
 calls.length = 0;
 await SW.store.chooseTableAndBuild(
   prompt, 'ds-dwh', { database: 'DWH', schema: 'MARTS', table: 'GONG__CALLS' },
-  answered,
+  // Off the drawn card rather than passed in, so the flag is followed the whole way the button
+  // follows it (#206): the history row carries it, the store copies it onto the block, and the
+  // click sends it. Reading it here is the only place that proves the middle step.
+  answered, drawn[0] && drawn[0].bindFirst,
 );
 await settle();
 

@@ -365,3 +365,57 @@ def test_building_without_one_answers_the_card_rather_than_meeting_it_again(
     assert "source-candidates" not in body
     assert built == [1]
     assert _bindings(client) == [], "building without a store recorded one anyway"
+
+
+def test_the_card_names_the_store_the_request_named_back_to_them(tmp_path: Path, monkeypatch):
+    """Naming one store gets it named back, because the highlight cannot say it on its own.
+
+    The first row is already the filled button here and only here — the surface draws it that way
+    off `named` — but a filled button is mute about why it is filled. "You named this" and "this
+    ranked first" render identically, so somebody who spent an `@mention` on the answer reads a
+    neutral list and concludes Sage did not hear them (#206, reported verbatim: "it felt repetitive
+    since I already had at-mentioned it in the prompt").
+
+    The card still has to be answered — ADR-0010 is untouched and the sentence says why rather than
+    apologising for it. What changes is that the reason is on screen instead of inferred.
+    """
+    orch = _orch(tmp_path)
+    client = _client(orch, monkeypatch)
+
+    card = _card(client.post("/api/project/build/stream", json={
+        "prompt": "chart the daily calls sitting in reporting-replica"}).text)
+
+    assert card["named"] == 1
+    assert "reporting-replica" in card["message"]
+    assert "never by a guess" in card["message"]
+
+
+def test_a_card_naming_two_stores_says_they_are_first_rather_than_naming_one(
+        tmp_path: Path, monkeypatch):
+    """Two named stores leave no single one to name back, so the card says what the order means.
+
+    Naming one of them would be this code choosing after all, in the one case where the request
+    gave it two answers and no way to rank them. What is still true — and still worth saying — is
+    that the rows in front came out of their own sentence rather than out of Sage's ordering.
+    """
+    orch = _orch(tmp_path)
+    client = _client(orch, monkeypatch)
+
+    card = _card(client.post("/api/project/build/stream", json={
+        "prompt": "chart reporting-replica against billing-oracle"}).text)
+
+    assert card["named"] == 2
+    assert "names more than one" in card["message"]
+    assert "reporting-replica" not in card["message"]
+
+
+def test_a_card_that_named_nothing_still_asks_the_plain_question(tmp_path: Path, monkeypatch):
+    """Unchanged where nothing was named — there is nothing to name back and nothing to explain."""
+    orch = _orch(tmp_path)
+    client = _client(orch, monkeypatch)
+
+    card = _card(client.post("/api/project/build/stream", json={
+        "prompt": "chart last quarter's premiums from the warehouse"}).text)
+
+    assert card["named"] == 0
+    assert card["message"].startswith("Which Data Source holds this?")

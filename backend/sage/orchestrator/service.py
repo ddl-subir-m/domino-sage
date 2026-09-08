@@ -7430,6 +7430,11 @@ class Orchestrator:
         one Data Source. Using the only one silently is the same inference through a side door
         (ADR-0038), and it would change behaviour under them the day a second one appears.
 
+        Owning one and NAMING one are different facts, and only the second folds the cards together
+        (#206, `_named_source_offer`). A caller who owns a single store and named nothing still gets
+        this card, for the reason above; a caller who @mentioned one has answered it already, and
+        gets the table card alone with a click that records both halves.
+
         Returns None — and the turn goes on exactly as it did — where the app already records a
         Data Source, where the request was never about a store, or where the platform will not say
         what this caller can reach. The last one is a fall-through rather than a sentence: a listing
@@ -7445,20 +7450,77 @@ class Orchestrator:
         except Exception:
             log.exception("data source offer: could not list what the caller can reach")
             return None
-        offer = table_search.offer_sources(
-            prompt,
-            [str(r.get("id") or "") for r in (resources or [])
-             if isinstance(r, dict) and r.get("kind") == KIND_DATA_SOURCE],
-            offered,
-        )
+        mentioned = [str(r.get("id") or "") for r in (resources or [])
+                     if isinstance(r, dict) and r.get("kind") == KIND_DATA_SOURCE]
+        offer = table_search.offer_sources(prompt, mentioned, offered)
         if offer is None:
             return None
+        # One store, @MENTIONED, and the two cards this would draw are two halves of one Scope
+        # (#206). The mention has already answered the first half, so asking it as its own card and
+        # then asking the second is four interactions before a build starts, half of them answering
+        # a question the composer's own menu already answered.
+        #
+        # THE MENTION, NOT THE PROSE MATCH, and the difference is the whole safety of this. An id
+        # came out of that menu, so it cannot be the wrong store; `offer.named` also counts stores
+        # matched on their name in prose, and those can be. Merging on a prose match would put a
+        # guessed store behind a click on a table and take away the card the person would have
+        # corrected it on — a worse failure than the repetition this fixes. Two mentioned leaves no
+        # single store to search, and none means the list IS the question.
+        #
+        # Nothing is skipped even so. The click still declares the Binding — it declares the Scope
+        # in the same act — so ADR-0010 stands and what goes on the record is identical.
+        if offer.named == 1 and str(offer.sources[0].get("id") or "") in set(mentioned):
+            return self._named_source_offer(prompt, offer, answered, resources)
         return self._source_candidates_events(prompt, offer, answered)
+
+    def _named_source_offer(self, prompt: str, offer: table_search.Offer, answered: dict,
+                            resources: list[dict] | None):
+        """One card for the store the sentence named and the table inside it (#206).
+
+        Runs the same search the second card would have run, against a Binding built for the length
+        of it — the store is not recorded yet, and recording it is what the click at the end does.
+
+        FALLS BACK TO THE TWO-CARD PATH, and this is the reason the merge is safe to attempt. The
+        search declines for four reasons that all mean "nothing can be offered about this store":
+        the connector cannot be walked in one query, it stopped answering, it holds nothing, or the
+        walk failed. Every one of them leaves the person needing the question the plain card asks —
+        and one of them, a store that cannot be read, is a reason to see the others they can reach.
+        So a decline draws the list rather than the silence a bare `return False` would leave.
+        """
+        source = offer.sources[0]
+        unbound = Binding(kind=KIND_DATA_SOURCE, id=str(source.get("id") or ""),
+                          name=str(source.get("name") or ""),
+                          display_name=str(source.get("name") or ""),
+                          connector_type=str(source.get("connector") or ""))
+        offered = yield from self._table_offer(prompt, resources, answered, unbound=unbound)
+        if not offered:
+            yield from self._source_candidates_events(prompt, offer, answered)
 
     def _source_candidates_events(self, prompt: str, offer: table_search.Offer, answered: dict):
         """The card: which stores there are, or the plain sentence that there are none."""
         project = self.project()
-        if offer.sources:
+        if offer.sources and offer.named == 1:
+            # Said, because the highlight alone cannot say it. The first row is already drawn as the
+            # filled button only where the request named a store (message-blocks.js), but a filled
+            # button is mute about WHY it is filled — "you named this" and "this ranked first" look
+            # identical — so a person who spent an `@mention` on the answer reads a neutral list and
+            # concludes Sage did not hear them (#206). Naming the store back is the whole fix; the
+            # card still has to be answered, and the sentence now says why rather than leaving it to
+            # be inferred from a highlight.
+            message = brand.text(
+                "You named {name}. {assistantName} records a {dataSource} on a {builtApp} by a "
+                "click and never by a guess, so confirm it here — then it looks inside for the "
+                "{scope} this request needs.",
+                name=str(offer.sources[0].get("name") or ""))
+        elif offer.sources and offer.named:
+            # More than one named, so there is no single store to name back — but the ones the
+            # request named are still first, and saying that is what stops the order reading as
+            # Sage's own guess.
+            message = brand.text(
+                "Your request names more than one of these, so those are first. The click records "
+                "which one this {builtApp} reads, and then {assistantName} looks inside it for the "
+                "{scope} this request needs.")
+        elif offer.sources:
             message = brand.text(
                 "Which {dataSource} holds this? The click records it on this {builtApp}, and then "
                 "{assistantName} looks inside it for the {scope} this request needs.")
@@ -7538,7 +7600,7 @@ class Orchestrator:
         return f"Use {'.'.join(p for p in (binding.schema, binding.table) if p)}."
 
     def _table_offer(self, prompt: str, resources: list[dict] | None, answered: dict,
-                     chosen: str = "", user_text: str = ""):
+                     chosen: str = "", user_text: str = "", unbound: Binding | None = None):
         """Events for a request that names a Data Source with no table chosen (#183). True if it
         answered the turn.
 
@@ -7587,6 +7649,15 @@ class Orchestrator:
                  if isinstance(r, dict) and r.get("kind") == KIND_DATA_SOURCE],
                 bindings,
             )
+        # Last, and only where the caller built one: the store the sentence named on a turn that
+        # records no Binding at all (#206). The manifest cannot answer here — that is the whole
+        # situation — so the search runs against a Binding that exists only for the length of it,
+        # and the click at the end is what makes it real. ADR-0038 already splits this apart:
+        # reading a store's catalog is looking, and looking is not choosing. What the caller gets
+        # for it is one card instead of two, because a store and a table are two halves of one
+        # Scope and the sentence has already answered the first half.
+        if binding is None:
+            binding = unbound
         if binding is None:
             # Said out loud, because a gate that declines in silence cost #204 six hypotheses to
             # find: `/api/diag/timing` reports a three-millisecond turn and no model call, which is
@@ -7693,7 +7764,7 @@ class Orchestrator:
         ranking = self._ranked_candidates(project, source, binding, prompt, found,
                                           session=project.session_id)
         yield from self._table_candidates_events(prompt, binding, ranking, answered, user_text,
-                                                 skipped)
+                                                 skipped, bind_first=unbound is not None)
         return True
 
     def _ranked_candidates(self, project: Project, source: DataSource, binding: Binding,
@@ -7851,7 +7922,8 @@ class Orchestrator:
 
     def _table_candidates_events(self, prompt: str, binding: Binding,
                                  ranking: table_search.Ranking, answered: dict,
-                                 user_text: str = "", skipped: list[str] | None = None):
+                                 user_text: str = "", skipped: list[str] | None = None,
+                                 bind_first: bool = False):
         """The card itself: what matched, what else there is, and the request to replay after."""
         project = self.project()
         name = binding.display_name
@@ -7884,6 +7956,11 @@ class Orchestrator:
                   # nothing.
                   {"type": "table-candidates", "prompt": prompt, "message": message,
                    "sourceId": binding.id, "sourceName": name,
+                   # Whether this click has to record the Binding as well as the Scope (#206). The
+                   # merged card is drawn before anything is bound, so its click is one declaration
+                   # covering both halves — and the door it writes through has to be told, because
+                   # the ordinary one refuses a Scope with no Binding under it on purpose.
+                   "bindFirst": bind_first,
                    # The gates this turn had ALREADY been past ride along with it. "Start over and
                    # build a gong dashboard from Snowflake" answers the reset offer, reaches this
                    # card, and the click replays it — into the reset gate, which is a prompt match
@@ -11859,6 +11936,29 @@ class Orchestrator:
         """
         self._verify_table_choice(source_id, database, schema, table)
         return self.scope_data_source(source_id, database, schema, table)
+
+    def confirm_source_and_table_candidate(
+        self, source_id: str, database: str, schema: str, table: str,
+    ) -> list[dict]:
+        """The merged card's click: the Binding and the Scope, declared in one act (#206).
+
+        Its own method rather than a flag inside the one above, because the difference is not a
+        detail of how the record is written — it is which acts the click is claiming to be. The
+        card that sends people here was drawn before anything was bound, and the person answering
+        it chose a store and a table in one move; the record has to say both.
+
+        THIS DOES NOT WEAKEN `scope_data_source`'s REFUSAL. That guard exists so a Scope write can
+        never create a Binding as a SIDE EFFECT of narrowing one — a bind arriving through the door
+        that exists because binding and scoping came apart (ADR-0021). Here the bind is not a side
+        effect: it is half of what was clicked, and it is written by `bind_data_source`, the same
+        writer the panel's own picker uses. One writer, one record, as before.
+
+        The table is still proved to be there first, for the reason the ordinary door proves it: a
+        catalog read minutes old costs one more click when it has drifted, and a dropped table
+        written into the record costs the first viewer of the published app a broken screen.
+        """
+        self._verify_table_choice(source_id, database, schema, table)
+        return self.bind_data_source(source_id, database, schema, table)
 
     def _verify_table_choice(self, source_id: str, database: str, schema: str,
                              table: str) -> DataSource:

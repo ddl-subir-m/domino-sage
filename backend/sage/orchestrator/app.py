@@ -1665,9 +1665,15 @@ async def confirm_table_candidate(resource_id: str, request: Request) -> JSONRes
         return JSONResponse(status_code=400, content={"error": brand_text(
             "Pick one {scope}. {assistantName} does not record a schema from here."
         )})
+    # Which acts this click is claiming to be (#206). The merged card is drawn before anything is
+    # bound and its click answers the store and the table together, so it says so and is written
+    # through the door that records both. Said by the card rather than inferred from the manifest
+    # being empty: a request that did not mean to declare a Binding must still be refused below,
+    # and inferring it here would turn that refusal into a silent bind.
+    write = (orchestrator.confirm_source_and_table_candidate if body.get("bindFirst")
+             else orchestrator.confirm_table_candidate)
     try:
-        return JSONResponse(content={"bindings": orchestrator.confirm_table_candidate(
-            resource_id, database, schema, table)})
+        return JSONResponse(content={"bindings": write(resource_id, database, schema, table)})
     except ResourceNotBound:
         return JSONResponse(status_code=404, content={"error": brand_text(
             "This app doesn't need that {dataSource} to run, so there is no {scope} to record. "

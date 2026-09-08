@@ -272,3 +272,28 @@ def test_the_replay_carries_the_gates_this_turn_had_already_answered():
 
     assert out["replay"]["skipResetGate"] is True
     assert out["replay"]["skipTableGate"] is True
+
+
+def test_the_merged_cards_click_carries_the_flag_that_binds_the_store_too():
+    """The merged card's claim is followed the whole way from the row to the request (#206).
+
+    An `@mention`ed store draws one card instead of two, and its click has to record the Binding as
+    well as the Scope — the server's ordinary door refuses a Scope with no Binding under it, on
+    purpose. Three hops carry that: the history row says so, the store copies it onto the block, and
+    the click sends it. Only the middle hop is invisible from either end, which is why this drives
+    the real store rather than calling the API directly.
+    """
+    merged = [dict(row, bindFirst=True) if row["type"] == "table-candidates" else row
+              for row in HISTORY]
+
+    out = _run(history=merged)
+
+    assert out["click"]["bindFirst"] is True
+    assert out["click"]["table"] == "GONG__CALLS"
+
+
+def test_an_ordinary_cards_click_asks_for_no_binding_at_all():
+    """Absent, not `false`. A click that is not claiming to declare a Binding sends a request
+    shaped exactly as it was before the merged card existed, so the server has nothing to read
+    where there is nothing to claim."""
+    assert "bindFirst" not in _run()["click"]
