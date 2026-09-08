@@ -15,6 +15,7 @@
 // Input on stdin: `{ files, folder_act, app, query, press }`.
 //   `files` / `folder_act` — the `/files` answer, in the shape the route writes it.
 //   `app`                  — the selected Built App's name, or null for none selected.
+//   `measured`             — whether the listing weighed its files. Defaults to true.
 //   `query`                — the tree's filter box.
 //   `press`                — the folder path to press the act on ('' is the Dataset root).
 //
@@ -168,6 +169,7 @@ function serve(url, init) {
   }
   if (/^\/project\/assets\/[^/]+\/files$/.test(path)) {
     return json({ files: listing, truncated: !!input.truncated,
+                  measured: input.measured !== false,
                   attach_root: input.attach_root || 'public/data/revenue/',
                   // `false` in the input is a listing that carried no answer at all, which is a
                   // different thing from one saying the act is unavailable.

@@ -114,17 +114,31 @@ window.SW = window.SW || {};
   // has no mount for; since #153 those rows carry real sizes too, so only a folder of genuinely
   // empty files takes this branch.
   //
+  // `measured` is the listing's own answer about the OTHER way that number goes wrong: a listing
+  // that named files without weighing them (#197). This row ADDS sizes up, so leaving the unweighed
+  // ones out silently under-counts — a second wrong number in place of the first. It says the total
+  // was not measured instead, which is also what tells it apart from the folder of empty files
+  // above, whose "43 files" is a complete answer (#201).
+  //
+  // One answer about the whole listing, not re-derived here from whichever rows kept a size. The
+  // server already decided this question and the tree reads its answer rather than holding a second
+  // opinion about it, the way `folder_act` beside it is composed there and read here. A folder that
+  // happens to sit clear of the gap loses a total it could have had, and that is the direction to
+  // lose it in: the number this row exists to give is one somebody acts on.
+  //
   // The act is a link rather than a menu, for the reason `LeafRow` beside it is: this is the one
   // row in the tree that acts on more than one file, and hiding it behind a second click would
   // make the bulk act cost more than the per-file one it exists to replace.
-  function FolderActs({ path, label, totals, carried, act, remove }) {
+  function FolderActs({ path, label, totals, carried, act, remove, measured }) {
     const stat = totals[path] || noFiles();
     // What the APP carries below this folder, which is what the removal acts on — never
     // `stat.files - stat.pending`, which is what this LISTING happens to mention.
     const held = carried[path] || 0;
     if (!stat.files) return null;
     const shown = `${SW.util.number(stat.files)} ${stat.files === 1 ? 'file' : 'files'}`;
-    const meta = stat.bytes ? `${shown} · ${SW.util.bytes(stat.bytes)}` : shown;
+    const meta = !measured
+      ? `${shown} · size not measured`
+      : stat.bytes ? `${shown} · ${SW.util.bytes(stat.bytes)}` : shown;
     // Nothing left to add is its own unavailable state, with its own reason. Offered anyway it
     // would open a confirmation about zero files and answer with a no-op.
     const reason = act.reason || (stat.pending ? '' : act.carried);
@@ -174,7 +188,7 @@ window.SW = window.SW || {};
   }
 
   function FolderNode({ name, path, children, query, depth, renderFile, totals, carried, act,
-                       remove }) {
+                       remove, measured }) {
     const [open, setOpen] = useState(depth < 1);
     const files = (children.files || []).filter((f) => filterName(f.path.split('/').pop(), query));
     const folders = Object.keys(children.folders || {}).filter((n) => {
@@ -194,7 +208,7 @@ window.SW = window.SW || {};
           h(open ? DownOutlined : RightOutlined, { style: { fontSize: 9 } }),
           h('span', null, name)
         ),
-        h(FolderActs, { path, label: name, totals, carried, act, remove })
+        h(FolderActs, { path, label: name, totals, carried, act, remove, measured })
       ),
       open &&
         h(
@@ -213,6 +227,7 @@ window.SW = window.SW || {};
               carried,
               act,
               remove,
+              measured,
             })
           ),
           files.map((f) => renderFile(f))
@@ -291,6 +306,10 @@ window.SW = window.SW || {};
     // folder among them can be shown to be whole (ADR-0029). Said on screen rather than kept for
     // the act alone: a tree that looks complete is the thing that misleads.
     const [truncated, setTruncated] = useState(false);
+    // Whether the listing WEIGHED the files it named. Folder rows add sizes up, so a listing that
+    // named files without weighing them makes a total that quietly leaves them out — and a row
+    // saying "12 files · 0 B" is a wrong measurement where "not measured" is the fact (#201).
+    const [measured, setMeasured] = useState(true);
     // Whether a folder row here may offer **Attach folder**, and the server's reason when it may
     // not. Composed there rather than worked out here, so the sentence this row draws before the
     // click and the one the refusal carries after it are the same sentence (ADR-0029).
@@ -319,6 +338,7 @@ window.SW = window.SW || {};
       if (!resource) {
         setFiles([]);
         setTruncated(false);
+        setMeasured(true);
         setFolderAct(null);
         setAttachRoot('');
         setError(null);
@@ -346,6 +366,10 @@ window.SW = window.SW || {};
           if (!cancelled) {
             setFiles(body.files || []);
             setTruncated(!!body.truncated);
+            // Fails CLOSED, the way `folder_act` beside it does: a listing that carried no answer
+            // has not told us it weighed anything, and drawing a total off it is the one thing
+            // this flag exists to stop.
+            setMeasured(!!body.measured);
             setFolderAct(body.folder_act || null);
             setAttachRoot(body.attach_root || '');
           }
@@ -354,6 +378,7 @@ window.SW = window.SW || {};
           if (!cancelled) {
             setFiles([]);
             setTruncated(false);
+            setMeasured(true);
             setFolderAct(null);
             setAttachRoot('');
             setError({ body: err.message || '' });
@@ -495,7 +520,7 @@ window.SW = window.SW || {};
         // whole-Dataset chip's words would give one phrase two meanings — that chip reads the
         // mount to answer a question, and this ships the bytes (ADR-0029).
         h('span', { className: 'sw-tree-root-name' }, 'All files'),
-        h(FolderActs, { path: '', label: resource.name, totals, carried, act, remove })
+        h(FolderActs, { path: '', label: resource.name, totals, carried, act, remove, measured })
       ),
       folders.map((n) =>
         h(FolderNode, {
@@ -510,6 +535,7 @@ window.SW = window.SW || {};
           carried,
           act,
           remove,
+          measured,
         })
       ),
       tree.files.map(renderFile)
