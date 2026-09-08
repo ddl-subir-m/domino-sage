@@ -176,6 +176,10 @@ const record = calls.find((c) => c.url.includes('/files/attach') || c.url.includ
 const replay = calls.find((c) => c.url.includes('/build/stream') || c.url.includes('/chat/stream'));
 console.log(JSON.stringify({
   cards: drawn,
+  // What the transcript says the person did. Drawn by the store the moment the click lands and
+  // never streamed back, so it is the only sentence they see while the turn runs (#208).
+  bubbles: SW.store.get().buildMessages.filter((m) => m.role === 'user')
+    .map((m) => (m.blocks || []).map((b) => b.value || '').join('')),
   routes: calls.map((c) => c.url.replace(/^.*\/api\//, 'api/')),
   cardsAfter: blocks().map((b) => ({ live: !!b.live })),
   record: record ? { url: record.url.replace(/^.*\/api\//, 'api/'), body: JSON.parse(record.body) } : null,

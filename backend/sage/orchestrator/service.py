@@ -5162,7 +5162,7 @@ class Orchestrator:
                      skip_reset_gate: bool = False, skip_incoming_gate: bool = False,
                      skip_table_gate: bool = False, skip_source_gate: bool = False,
                      chosen_source: str = "", skip_dataset_gate: bool = False,
-                     dismissed_dataset: str = ""):
+                     dismissed_dataset: str = "", dataset_pick: str = ""):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time still. If a turn is already streaming, this one WAITS in line rather than
@@ -5198,7 +5198,12 @@ class Orchestrator:
         skip flag answers this request; this one answers the app, because the gate reads the app's
         state rather than the request's words and would otherwise ask the same question of "make the
         button blue". An attach sends no name here, and needs none: attaching is what stops the gate
-        firing again on its own."""
+        firing again on its own.
+
+        `dataset_pick` is the row that was clicked, and it is the one choice on this door that rides
+        on the request rather than being read back off a record. See `_picked_dataset_text` for why:
+        an attach writes one manifest entry per file, so a folder click writes many and none of them
+        is the thing that was picked. It names the record; the record still has to confirm it."""
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
         ticket = _TurnTicket(new_id("turn"))
@@ -5381,6 +5386,15 @@ class Orchestrator:
                 if offer is not None:
                     yield from offer
                     return
+            # And the bubble a Dataset pick writes, the same click one level down again from the
+            # table (#196, ADR-0039). Last of the three because it is the last card the turn can
+            # have been answering, which makes it the narrowest choice on a turn carrying several —
+            # the rule the two above already follow.
+            #
+            # Not for the way past: `dismissed_dataset` is the button that attached nothing, and a
+            # sentence naming a file would invert the only thing the person said.
+            if skip_dataset_gate and not dismissed_dataset:
+                picked = self._picked_dataset_text(dataset_pick) or picked
             # A button answering the offer is a click, not a second typing of the request — the
             # prompt is already a bubble in the transcript, put there by _reset_offer. So the turn
             # gets the short line the click deserves, the way an Approve click does, instead of
@@ -7836,6 +7850,34 @@ class Orchestrator:
         if binding is None:
             return ""
         return f"Use {'.'.join(p for p in (binding.schema, binding.table) if p)}."
+
+    def _picked_dataset_text(self, pick: str) -> str:
+        """The bubble a Dataset file or folder pick writes, so the click reads as what it chose.
+
+        Third of three, and the only one that takes its label from the request. The two above read
+        the manifest alone because their click writes a Binding — a keyed record, one per choice,
+        which the server can look up and be certain of. An attach is not that shape: the file is the
+        unit of the RECORD while the folder is the unit of the ACT (ADR-0029), so a folder click of
+        thirty-one files appends thirty-one entries and not one of them is the row that was clicked.
+        Reading "the newest entry" would name whichever file landed last — a record of a choice
+        nobody made, which is the fault this whole line exists to fix, restated one level down.
+
+        So the click says what it picked and the manifest says whether it took. That keeps the
+        property the other two get for free: a write that did not land must not leave a sentence on
+        screen claiming it did. Empty is the answer for both halves failing — no pick, or a pick
+        nothing in the tree came from — and the turn then says what it would have said for any other
+        card being answered.
+
+        A folder is confirmed by anything beneath it rather than by all of it, because `attach_folder
+        `is all-or-nothing: one entry under the folder means the act completed.
+        """
+        if not pick:
+            return ""
+        below = pick.rstrip("/") + "/"
+        landed = any(str(e.get("file") or "") == pick
+                     or str(e.get("file") or "").startswith(below)
+                     for e in self.project().attached)
+        return f"Use {pick}." if landed else ""
 
     def _table_offer(self, prompt: str, resources: list[dict] | None, answered: dict,
                      chosen: str = "", user_text: str = "", unbound: Binding | None = None):
