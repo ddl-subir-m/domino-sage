@@ -851,11 +851,10 @@ def _dataset_rows(dataset_name: str, files: Sequence[DatasetFile], *, folders: b
     a second opinion about it, and the fallback is the files because there is nothing else on this
     Dataset a person could click (ADR-0029).
 
-    Capped, unlike the table card's list. The provider's own cap is 5,000 files, and a listing that
-    reaches it is exactly the one whose folder act is withheld — so the uncapped version of this
-    writes five thousand rows into the transcript, on the shape most likely to produce them. Every
-    row past the cap is reachable through the Data panel's tree, which is the ordinary door and the
-    one story 15 keeps.
+    EVERY row, uncut. The cap lives in `_dataset_candidates` beside the counts it makes true,
+    because a cut applied here is a cut nothing downstream can see: the caller counted the list it
+    was handed and so reported the kept rows as the found ones, and the card, the "show all" button
+    and the tests all inherited that blindness (#200).
 
     `sized` is `FileListing.measured`: whether this listing WEIGHED what it named. A file it did
     not weigh arrives as a zero and reads exactly like an empty one, and a row drawn from it saying
@@ -867,7 +866,7 @@ def _dataset_rows(dataset_name: str, files: Sequence[DatasetFile], *, folders: b
     rows = [{"kind": "file", "path": f.path} | ({"size": f.size} if sized or f.size else {})
             for f in files]
     if not folders or len(files) <= FOLDER_COLLAPSE_THRESHOLD:
-        return rows[:dataset_files.MAX_ROWS]
+        return rows
     # Where the best-ranked file in each group sits, so the folder holding the closest match is the
     # row read first. The grouping answers WHAT the rows are; the ranking still answers their order.
     at: dict[str, int] = {}
@@ -881,7 +880,7 @@ def _dataset_rows(dataset_name: str, files: Sequence[DatasetFile], *, folders: b
         # Dataset, and the question this card asks is which files to read. A Dataset of twelve loose
         # files rolls up to exactly that, so falling back to the files is what keeps the card an
         # answerable question rather than an all-or-nothing button.
-        return rows[:dataset_files.MAX_ROWS]
+        return rows
     return [{"kind": "folder",
              # Dataset-relative, which is what `attach_folder` takes. The roll-up's floor is
              # `public/data/<slug>` itself, and that key is the whole Dataset — `_folder_prefix`
@@ -7926,6 +7925,18 @@ class Orchestrator:
 
         `folders` is the one thing the two surfaces do not share, and it is about the ACT rather
         than the answer — see `_dataset_rows`.
+
+        THE CAP IS APPLIED HERE, where both counts are in scope. The provider's own cap is 5,000
+        files, and a listing that reaches it is exactly the one whose folder act is withheld — so an
+        uncapped card writes five thousand rows into the transcript, on the shape most likely to
+        produce them. Every row past the cap is reachable through the Data panel's tree, which is
+        the ordinary door and the one story 15 keeps.
+
+        So the card carries two counts and they are not the same number. `listed` is what the
+        listing produced and `total` is what the card kept, and the gap between them is the whole
+        thing `_capped_note` exists to say. `total` stays the kept one because it is the number the
+        "show all" button expands to: a button counting the tail would promise rows it cannot open
+        (#200).
         """
         listing = self._assets.list_files(asset)
         ranking = dataset_files.rank(prompt, asset.name, listing.files)
@@ -7937,10 +7948,12 @@ class Orchestrator:
         # (#197). What it cannot always do is MEASURE, and that is read off the listing rather than
         # off `mount_path`: since #153 the API weighs an unmounted Dataset too, so a card keying on
         # the mount would throw away sizes the platform did report.
-        rows = _dataset_rows(asset.name, ranking.candidates, folders=folders and not reason,
-                             sized=listing.measured)
+        found = _dataset_rows(asset.name, ranking.candidates, folders=folders and not reason,
+                              sized=listing.measured)
+        rows = found[:dataset_files.MAX_ROWS]
         return {"rows": rows[:dataset_files.SHORTLIST], "allRows": rows, "total": len(rows),
-                "matched": ranking.matched, "truncated": listing.truncated}
+                "listed": len(found), "matched": ranking.matched,
+                "truncated": listing.truncated}
 
     def _dataset_offer(self, prompt: str, answered: dict, user_text: str = ""):
         """Events for a turn whose app records a Dataset and has attached nothing from it, or None.
@@ -8012,6 +8025,7 @@ class Orchestrator:
                 "one. Pick what this {builtApp} should read, or build without attaching anything.",
                 name=name)
         message += self._partial_note(card["truncated"], name)
+        message += self._capped_note(card["listed"], card["total"])
         events = ({"type": "user", "text": user_text or prompt},
                   # The prompt rides along so the click can replay the request rather than making
                   # the person type it again, and `answered` carries the gates this turn was already
@@ -8021,8 +8035,8 @@ class Orchestrator:
                   {"type": "dataset-files", "prompt": prompt, "message": message,
                    "datasetId": binding.id, "datasetName": name, "answered": answered,
                    "rows": card["rows"], "allRows": card["allRows"],
-                   "total": card["total"], "matched": card["matched"],
-                   "truncated": card["truncated"]},
+                   "total": card["total"], "listed": card["listed"],
+                   "matched": card["matched"], "truncated": card["truncated"]},
                   {"type": "done", "ok": False, "decision": "dataset files"})
         for ev in events:
             project.workspace.append_history(ev, project.build_conversation)
@@ -8081,6 +8095,7 @@ class Orchestrator:
                 "No file name in {name} matches this question, so {assistantName} will not guess "
                 "one. Pick the file to read, or say more about the data you mean.", name=asset.name)
         message += self._partial_note(card["truncated"], asset.name)
+        message += self._capped_note(card["listed"], card["total"])
         events = ({"type": "dataset-files", "prompt": prompt, "message": message,
                    "datasetId": asset.id, "datasetName": asset.name,
                    # What tells the click which door to write through. The Build card carries the
@@ -8088,8 +8103,8 @@ class Orchestrator:
                    # record it writes is this Thread's.
                    "threadId": thread_id,
                    "rows": card["rows"], "allRows": card["allRows"],
-                   "total": card["total"], "matched": card["matched"],
-                   "truncated": card["truncated"]},
+                   "total": card["total"], "listed": card["listed"],
+                   "matched": card["matched"], "truncated": card["truncated"]},
                   {"type": "done", "ok": False, "decision": "dataset files"})
         for ev in events:
             store.append_history(thread_id, ev)
@@ -8249,6 +8264,32 @@ class Orchestrator:
         return " " + brand.text(
             "Only part of {name} could be listed, so this list is its start rather than all of it.",
             name=name)
+
+    @staticmethod
+    def _capped_note(listed: int, total: int) -> str:
+        """The sentence a Dataset card adds when it kept fewer rows than the listing found (#200).
+
+        A SECOND STATE, not a wider trigger on `_partial_note`'s. That one says the LISTING stopped;
+        here the listing was complete and the CARD is short. The way past differs too, which is why
+        one sentence could not honestly cover both: a file past the provider's cap cannot be reached
+        at all, while a file past this cap is sitting in the Data panel's tree.
+
+        It counts ROWS rather than files, which is what the person is looking at and what the "show
+        all" button beside it counts. In practice a cut card is always a card of file rows — a
+        folder card is bounded by `FOLDER_COLLAPSE_THRESHOLD` and never reaches this cap — but the
+        sentence sits beside a button that says "rows", and two words for one list is how a person
+        comes to think there are two lists.
+
+        Shared by both cards, for the reason the listing is shared: the mode somebody is standing in
+        must not decide whether they are told rows were dropped. Chat reaches this most often — it
+        asks for file rows whatever the count — but a Build listing whose folder act is withheld
+        lands in exactly the same place.
+        """
+        if listed <= total:
+            return ""
+        return " " + brand.text(
+            "This card carries the first {total} of the {listed} rows {assistantName} listed, and "
+            "the rest are in the Data panel.", total=f"{total:,}", listed=f"{listed:,}")
 
     def _wedged_refusal(self):
         """Events yielded when a streaming turn cannot run because the workspace is wedged (#39).

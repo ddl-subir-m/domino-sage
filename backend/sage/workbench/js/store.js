@@ -1188,6 +1188,7 @@ window.SW = window.SW || {};
           rows: ev.rows || [],
           allRows: ev.allRows || [],
           total: ev.total || 0,
+          listed: ev.listed || 0,
           matched: ev.matched || 0,
           truncated: !!ev.truncated,
           live: !!ev.live,
@@ -1786,7 +1787,12 @@ window.SW = window.SW || {};
           // otherwise be two hundred (ADR-0029, ADR-0030).
           rows: ev.rows || [],
           allRows: ev.allRows || [],
+          // TWO COUNTS, and the button reads the first of them: `total` is what this card carries
+          // and `listed` is what the listing found, which is more of them whenever the row cap cut
+          // the tail. The gap reaches the person through the message rather than through a button
+          // promising rows it cannot open (#200).
           total: ev.total || 0,
+          listed: ev.listed || 0,
           matched: ev.matched || 0,
           truncated: !!ev.truncated,
           answered: ev.answered || {},

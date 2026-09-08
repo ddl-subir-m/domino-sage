@@ -224,6 +224,24 @@ def test_a_long_listing_opens_short_and_keeps_the_rest_one_click_behind():
 
     assert len(card["drawn"]["pickable"]) == 5
     assert card["drawn"]["more"] is True
+    assert card["drawn"]["moreLabel"] == "Show all 40 rows"
+
+
+@needs_node
+def test_the_show_all_button_counts_the_rows_the_card_carries_and_not_the_tail():
+    """THE TRAP #200 names. A card cut to the row cap holds two counts: `total` is what it carries
+    and `listed` is what the listing found. This button expands `allRows`, so it has to read the
+    first — a button saying "Show all 250 rows" over 200 of them promises a tail no click opens, and
+    the 50 it cannot reach are named in the message instead."""
+    every = [{"kind": "file", "path": f"part_{n:03d}.csv", "size": 10} for n in range(200)]
+    history = [HISTORY[0],
+               {**HISTORY[1], "live": True, "rows": every[:5], "allRows": every,
+                "total": 200, "listed": 250},
+               HISTORY[2]]
+
+    card = _run(history=history)["cards"][0]
+
+    assert card["drawn"]["moreLabel"] == "Show all 200 rows"
 
 
 # ---- the same card, in Chat ---------------------------------------------------------------------
