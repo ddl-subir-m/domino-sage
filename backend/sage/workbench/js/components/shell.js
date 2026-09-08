@@ -110,17 +110,19 @@ window.SW = window.SW || {};
     const userMenu = {
       items: [
         { key: 'account', label: 'Account settings' },
-        { key: 'org', label: 'Organization' },
         { type: 'divider' },
-        { key: 'signout', label: 'Sign out' },
+        { key: 'logout', label: 'Log out' },
       ],
       onClick: ({ key }) => {
         // What is the viewer's rather than the Project's belongs where a person already looks for
-        // their own things, so Account settings is the door onto the preferences (#52). The other
-        // two entries are still Domino's own screens, so this says where to go for them.
+        // their own things, so Account settings is the door onto the preferences (#52).
         if (key === 'account') SW.store.set({ settingsOpen: true });
-        else antd.message.info(SW.brand.text(
-          'Open {platformName} for Organization and Sign out.'));
+        // Log out is the platform's session, not Sage's: the cookie lives on the main host, and
+        // `/logout` is the one door that ends it. From the published App that host is `apps.`
+        // away, so the same resolver Manage already uses is what lands there.
+        else if (key === 'logout') {
+          window.location.assign(SW.util.mainHostUrl('/logout'));
+        }
       },
     };
 
