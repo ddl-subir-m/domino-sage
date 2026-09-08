@@ -5753,7 +5753,8 @@ class Orchestrator:
 
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                     already_asked: bool = False, skip_table_gate: bool = False,
-                    skip_dataset_gate: bool = False, dismissed_dataset: str = ""):
+                    skip_dataset_gate: bool = False, dismissed_dataset: str = "",
+                    declined: bool = False):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
         `already_asked` means this question is on the Thread and was offered Build rather than an
@@ -5768,6 +5769,13 @@ class Orchestrator:
 
         `skip_dataset_gate` says the same of the Dataset card (#196): the file is pinned to the
         Thread by the time this arrives, and the question is already on the record.
+
+        `declined` says WHY the question is being re-run, which `already_asked` does not. The two
+        travel together today and still are not the same fact: `already_asked` means the question is
+        on the record, which the two gates above also mean without being declines. Overloading it
+        would hand the decline note to the next gate that resumes a question. Only this one turn
+        answers a question that was offered Build and turned down, so only this one turn gets told
+        so — see `_declined_offer_note`.
         """
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
@@ -5797,7 +5805,8 @@ class Orchestrator:
                                         already_asked=already_asked,
                                         skip_table_gate=skip_table_gate,
                                         skip_dataset_gate=skip_dataset_gate,
-                                        dismissed_dataset=dismissed_dataset):
+                                        dismissed_dataset=dismissed_dataset,
+                                        declined=declined):
                 if holding and ev.get("type") == "done":
                     # Released before the yield rather than after, so a client that hangs up on
                     # `done` still frees it here. Baseline first: it means "no turn running", and a
@@ -5919,7 +5928,7 @@ class Orchestrator:
             # nothing to run, and running the last question again would answer it twice.
             yield {"type": "done", "ok": True, "decision": "suppressed"}
             return
-        yield from self.chat_stream(thread_id, pending, already_asked=True)
+        yield from self.chat_stream(thread_id, pending, already_asked=True, declined=True)
 
     def _explicit_handoff(self, store: ThreadStore, thread_id: str, prompt: str) -> dict | None:
         """The regex half of handoff detection. No model call, so it is safe to run BEFORE a turn.
@@ -6569,6 +6578,31 @@ class Orchestrator:
                 "has been planned yet — never that a plan is waiting, was drafted, or has been "
                 "handed over.")
 
+    @staticmethod
+    def _declined_offer_note() -> str:
+        """What is true on the one turn that follows `Not now` on an explicit Build offer.
+
+        This replaces `_plan_state_note` rather than joining it, because that note's whole no-plan
+        branch is a deflection — "if the person asks to build, say plainly that nothing has been
+        planned yet". It is the right thing to say on an ordinary turn and the wrong thing to say
+        here: the question underneath this turn IS a build request, so the deflection is the reply
+        the turn is built to give, and the person spends ninety seconds of the lock to buy a
+        sentence about process. Declining Build is a request to answer here, not to be told why the
+        answer is elsewhere.
+
+        It says "what they actually asked" and not "the app they wanted" on purpose. The offer that
+        was declined came from a regex, and a regex can be wrong. On a misfire the question was
+        never about an app, and a note that presumed one would push the turn to invent a dashboard
+        nobody asked for — so the assignment is the question itself, which is true either way.
+
+        The last sentence gives the fact rather than only the prohibition, for the reason
+        `_plan_state_note` records: a bare rule loses to a sentence that reads helpful.
+        """
+        return ("They were offered Build for this and chose to stay here. Answer what they "
+                "actually asked, here, with the charts and tables it needs. Build, a plan and an "
+                "app were offered on this question already and turned down — do not raise any of "
+                "them again.")
+
     def _maybe_offer_recall(self, store: ThreadStore, thread_id: str):
         """The offer a twice-refused Conversation is owed, or nothing (ADR-0022).
 
@@ -6613,11 +6647,12 @@ class Orchestrator:
                      urls: list[str] | None = None, workspace: Path | None = None,
                      artifacts: list[dict] | None = None,
                      handoffs: list[dict] | None = None,
-                     history: list[dict] | None = None) -> str:
+                     history: list[dict] | None = None,
+                     declined: bool = False) -> str:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
-            self._plan_state_note(handoffs),
+            self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]
         # The first turn after a summary-scoped clear keeps the promise the offer made: the model
@@ -6671,7 +6706,8 @@ class Orchestrator:
 
     def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                      already_asked: bool = False, skip_table_gate: bool = False,
-                     skip_dataset_gate: bool = False, dismissed_dataset: str = ""):
+                     skip_dataset_gate: bool = False, dismissed_dataset: str = "",
+                     declined: bool = False):
         import time
 
         project = self._chat_project()
@@ -6831,7 +6867,8 @@ class Orchestrator:
                                        workspace=Path(work),
                                        artifacts=store.read_artifacts(thread_id),
                                        handoffs=store.read_handoffs(thread_id),
-                                       history=store.read_history(thread_id)),
+                                       history=store.read_history(thread_id),
+                                       declined=declined),
                 agent="sage-chat",
                 attachments=mentioned,
                 chat=True)

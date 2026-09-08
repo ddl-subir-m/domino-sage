@@ -128,6 +128,55 @@ def test_declining_an_offer_that_owes_nothing_only_suppresses(tmp_path: Path):
     assert _types(events) == ["done"]
 
 
+# ---- what the declined turn is told ---------------------------------------------------------------
+
+
+def test_the_declined_turn_is_told_the_offer_was_turned_down(tmp_path: Path):
+    """The answer was there all along; the note is what stood in front of it.
+
+    Running the question again is only half the fix. An ordinary Chat turn carries a note telling it
+    to say that nothing has been planned yet if the person asks to build — which is exactly the
+    sentence this turn must not spend ninety seconds of the lock producing, because the question
+    underneath it IS a build request.
+    """
+    orch, oc = _orch(tmp_path, [Turn(text="Here is what the data holds.")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, BUILD_ASK))
+    list(orch.decline_handoff_stream(tid))
+
+    sent = oc.prompts[0]["text"]
+    assert "chose to stay here" in sent
+    assert "do not raise any of them again" in sent
+    assert "nothing has been planned yet" not in sent
+
+
+def test_the_declined_turn_is_not_told_they_wanted_an_app(tmp_path: Path):
+    """The offer came from a regex, and a regex can be wrong.
+
+    A note that presumed an app would push the turn to invent a dashboard on a misfire. The
+    assignment is the question the person actually typed, which is true whether the match was right
+    or wrong.
+    """
+    orch, oc = _orch(tmp_path, [Turn(text="Here is what the data holds.")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, BUILD_ASK))
+    list(orch.decline_handoff_stream(tid))
+
+    assert "Answer what they actually asked" in oc.prompts[0]["text"]
+
+
+def test_an_ordinary_chat_turn_still_gets_the_plan_state_note(tmp_path: Path):
+    """The note is for the declined turn and no other. Without this, the next gate that resumes a
+    question inherits it and starts telling ordinary turns an offer was turned down."""
+    orch, oc = _orch(tmp_path, [Turn(text="19 users across 4 departments.")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what is in this dataset?"))
+
+    sent = oc.prompts[0]["text"]
+    assert "nothing has been planned yet" in sent
+    assert "chose to stay here" not in sent
+
+
 def test_suppression_is_still_permanent(tmp_path: Path):
     """Not now is the person saying stop (handoff.md §2, criterion 10). Declining answers the
     question in hand; it does not buy the offer another go."""
