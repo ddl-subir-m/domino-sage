@@ -18,6 +18,13 @@ import pytest
 
 CONFIG = {
     "model": "sage-gateway/claude",
+    "mcp": {
+        "sage-live-read": {
+            "type": "remote",
+            "url": "http://localhost:8080/mcp/live-read",
+            "enabled": True,
+        }
+    },
     "provider": {
         "sage-gateway": {
             "name": "Sage Enforcement Shim",
@@ -74,6 +81,28 @@ def test_the_project_config_dials_the_port_the_shim_serves(installed):
 
     assert options["baseURL"] == "http://127.0.0.1:9999/v1"
     assert _opencode_base_port(project_dir) == 9999
+
+
+def test_the_installed_config_dials_the_live_read_tools_on_that_same_port(installed):
+    """The Live read MCP server is this same process, so its url moves with the port too.
+
+    It did not, and the failure was silent in both directions: on Domino the shim serves :8888
+    while the checked-in url says :8080, OpenCode drops an unreachable MCP server without a word,
+    and the agent answers "I don't have a live-read tool available" — the very sentence ADR-0041
+    was written to delete. Nothing pointed at it, because the baseURL beside it was rewritten and
+    looked like the whole job. Both copies are checked: the global one is the one OpenCode loads,
+    and the project one is what a session that did start there would read instead.
+    """
+    import os
+
+    src_dir, project_dir = installed
+    for cfg_path in (project_dir / "opencode.json",
+                     Path(os.path.expanduser("~/.config/opencode")) / "opencode.json"):
+        servers = json.loads(cfg_path.read_text())["mcp"]
+        assert servers["sage-live-read"]["url"] == "http://localhost:9999/mcp/live-read", cfg_path
+
+    # And the template on disk keeps its own port, like every other value in it.
+    assert json.loads((src_dir / "opencode.json").read_text())["mcp"] == CONFIG["mcp"]
 
 
 def test_the_project_dir_is_a_git_root_or_it_is_no_project_at_all(installed):

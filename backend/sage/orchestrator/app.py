@@ -3087,7 +3087,8 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
     voiced blob still goes to `_opencode_project_dir()` as well — that is where the server runs, it
     is made a git root here, and it costs nothing to have the file beside it be a voiced one rather
     than the template. Either way nothing falls back to OpenCode's free tier (HTTP 429
-    FreeUsageLimitError). The sage-gateway baseURL is aligned to the port the shim serves first.
+    FreeUsageLimitError). The sage-gateway baseURL and the Live read MCP url are aligned to the
+    port this process serves first, since both dial it.
 
     The checked-in source is READ and never written: it is the unvoiced template, and rewriting it
     left a tracked diff in the image that `app.sh` reads as "someone hand-patched this" and skips
@@ -3105,10 +3106,23 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
     except Exception as e:  # missing/unreadable — flag, don't crash the boot
         log.error("[wiring] cannot read %s: %s — OpenCode will stay on its free tier", src, e)
         return
+
+    def _on_this_port(url: str) -> str:
+        return re.sub(r"(://[^/:]+):\d+", rf"\g<1>:{control_port}", url)
+
     opts = ((cfg.get("provider") or {}).get("sage-gateway") or {}).get("options") or {}
     base = opts.get("baseURL", "")
     if base:
-        opts["baseURL"] = re.sub(r"(://[^/:]+):\d+", rf"\g<1>:{control_port}", base)
+        opts["baseURL"] = _on_this_port(base)
+    # The Live read tools are served by THIS process too (ADR-0041), so their port moves with it.
+    # This is the rewrite above missing its twin: on Domino the shim serves :8888 while the
+    # checked-in URL says :8080, and OpenCode drops an unreachable MCP server SILENTLY — the tools
+    # are absent from the offered list with nothing logged, and the agent falls back on telling the
+    # person it cannot see their data, which is the transcript ADR-0041 exists to end.
+    for server in (cfg.get("mcp") or {}).values():
+        url = (server or {}).get("url", "")
+        if url:
+            server["url"] = _on_this_port(url)
     voiced = json.dumps(apply_agent_voice(deepcopy(cfg)), indent=2) + "\n"
     project_dir = _opencode_project_dir()
     try:
