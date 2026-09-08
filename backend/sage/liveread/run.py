@@ -76,7 +76,9 @@ def _receipt_text(receipt: result.Receipt, what: str) -> str:
             "what the table holds and never quote a value."
         )
     else:
-        lines.append(f"Rows (the creator shared this table): {receipt.values}")
+        shown = len(receipt.values)
+        of = "" if shown == receipt.rows else f" — {shown} of the {receipt.rows} on the card"
+        lines.append(f"Rows (the creator shared this table{of}): {receipt.values}")
     return "\n".join(lines)
 
 

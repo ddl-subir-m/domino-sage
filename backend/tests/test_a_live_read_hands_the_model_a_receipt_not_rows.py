@@ -130,3 +130,37 @@ def test_a_binding_or_a_chip_puts_a_thing_in_range():
     assert grant.reachable("upload", "notes.csv", chips=["notes.csv"]) is None
     # The Working set is orientation and never context (ADR-0020), so it grants nothing here.
     assert grant.reachable("datasource", "DWH", bound=[], chips=[]) is not None
+
+
+def test_the_card_keeps_every_row_but_the_model_only_gets_what_it_can_afford(tmp_path):
+    """Measured against the real `MARTS.GONG__CALLS`: 31 columns, ~890 characters a row.
+
+    Handing the model the card's 500-row cap would have put ~112,000 tokens in one prompt — on the
+    one path allowed to carry real values, arriving silently. The card and the model are different
+    budgets, so they are two numbers.
+    """
+    wide = [[f"value-{i}-{c}" for c in range(31)] for i in range(500)]
+    shared = (("bnd_1", "GONG__CALLS"),)
+
+    r = result.record(tmp_path / "e" / "t", "s", "t", [f"C{c}" for c in range(31)], wide,
+                      binding="bnd_1", table="GONG__CALLS", shared=shared)
+
+    assert r.rows == 500, "the person's card keeps everything that was read"
+    assert 0 < len(r.values) < 500, "the model does not"
+    assert len(str(r.values)) <= result.VALUES_BUDGET_CHARS + len(str(wide[0]))
+
+
+def test_a_narrow_result_reaches_the_model_whole(tmp_path):
+    # The budget must not cost anything on the ordinary case, which is a handful of small rows.
+    r = result.record(tmp_path / "e" / "t", "s", "t", ["ID"], [[i] for i in range(5)],
+                      binding="b", table="T", shared=(("b", "T"),))
+    assert r.values == [[0], [1], [2], [3], [4]]
+
+
+def test_one_row_over_budget_still_reaches_the_model(tmp_path):
+    # An escape hatch that answers nothing on exactly the wide tables somebody would ask about is
+    # not an escape hatch. One row always goes.
+    huge = [["x" * (result.VALUES_BUDGET_CHARS * 2)]]
+    r = result.record(tmp_path / "e" / "t", "s", "t", ["BLOB"], huge,
+                      binding="b", table="T", shared=(("b", "T"),))
+    assert len(r.values) == 1

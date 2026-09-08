@@ -155,6 +155,21 @@ The statement is saved beside the result as `<slug>.sql`. It makes the read repr
 gives a person who liked that read something to hand to Build — the honest road from a Live read to
 a **Named query**.
 
+## Two budgets, because the card and the model are not the same reader
+
+Run against the live warehouse, `MARTS.GONG__CALLS` is 31 columns and about 890 characters a row.
+Handing the model the card's 500-row cap would have put roughly **112,000 tokens** into one prompt
+— on the single path that is allowed to carry real values, arriving with nothing said.
+
+So what reaches the model is budgeted separately from what reaches the card, in **characters** and
+not rows: the row is not the unit that costs anything, and a table three times as wide costs three
+times as much for the same "give me 20 rows". The card keeps all 500 (412KB on disk, which is a
+file and not a prompt); the model got 12 rows and about 2,100 tokens. The receipt says which, so
+the assistant cannot reason about "the data" from a slice it believes is all of it.
+
+One row over budget still goes. An escape hatch that answers nothing on exactly the wide tables
+somebody would ask about is not an escape hatch.
+
 ## Caps, and everywhere
 
 Every result carries a `truncated` flag and the cap it hit, on ADR-0029's pattern, where truncation

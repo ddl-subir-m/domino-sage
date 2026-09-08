@@ -20,6 +20,16 @@ from . import grant
 # much "all of it" is would be a difference nobody could see and everybody would trip on.
 CAP_ROWS = 500
 
+# What may reach the MODEL, which is not the same question as what reaches the card. Measured
+# against a real DWH table (`MARTS.GONG__CALLS`, 31 columns, ~890 characters a row): handing over
+# the card's 500 rows would put roughly 112,000 tokens in one prompt. That is a context blowout,
+# not a sample, and it would arrive silently on the one path that is allowed to carry real values.
+#
+# So the card keeps every row that was read and the model gets as many as fit in this budget.
+# Measured in characters rather than rows because the row is not the unit that costs anything: a
+# table three times as wide costs three times as much for the same "give me 20 rows".
+VALUES_BUDGET_CHARS = 8000
+
 
 @dataclass(frozen=True)
 class Receipt:
@@ -31,6 +41,11 @@ class Receipt:
 
     `truncated` travels with `cap` so the sentence a card writes has both halves — "500 of 12,431
     rows" — on ADR-0029's rule that truncation is a fact the caller reads, not a silence.
+
+    `values` may hold FEWER rows than the card does, because what the model can afford to read and
+    what the person can afford to scroll are different budgets (see `VALUES_BUDGET_CHARS`). The
+    caller has both numbers — `len(values)` and `rows` — so the sentence it writes can say so
+    rather than implying the model saw everything.
     """
 
     path: str
@@ -86,5 +101,23 @@ def record(
         truncated=short,
         cap=cap,
         statement=statement_path,
-        values=kept if grant.values_allowed(binding, table, shared=shared) else None,
+        values=_within_budget(kept) if grant.values_allowed(binding, table, shared=shared) else None,
     )
+
+
+def _within_budget(rows: list[list], budget: int = VALUES_BUDGET_CHARS) -> list[list]:
+    """As many rows as fit the model's budget, and never none: one row is the whole point.
+
+    A single row over budget still goes. The alternative is an escape hatch that answers nothing on
+    exactly the wide tables somebody would ask about, and the store's own reduction has already cut
+    the long values by the time they reach here.
+    """
+    out: list[list] = []
+    spent = 0
+    for row in rows:
+        cost = len(str(row))
+        if out and spent + cost > budget:
+            break
+        out.append(row)
+        spent += cost
+    return out

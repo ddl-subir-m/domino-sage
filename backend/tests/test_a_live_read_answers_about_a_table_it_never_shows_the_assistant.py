@@ -164,3 +164,14 @@ def test_a_dataset_name_does_not_authorise_a_data_source_of_the_same_name(tmp_pa
                     sample_rows=lambda *a: (_ for _ in ()).throw(AssertionError("read")))
     said = run.perform("live_read_table", {"source": "DWH", "table": "T"}, turn)
     assert "Use it in this conversation" in said
+
+
+def test_the_assistant_is_told_when_it_saw_fewer_rows_than_the_person(tmp_path):
+    # Otherwise it reasons about "the data" from a slice it thinks is all of it.
+    wide = [[f"v{i}-{c}" for c in range(31)] for i in range(400)]
+    said = run.perform(
+        "live_read_table", {"source": "DWH", "table": "GONG__CALLS", "limit": 400},
+        turn_for(tmp_path, shared=(("bnd_1", "GONG__CALLS"),),
+                 sample_rows=lambda s, db, sc, t, lim: FakeRows([f"C{c}" for c in range(31)], wide)),
+    )
+    assert "of the 400 on the card" in said
