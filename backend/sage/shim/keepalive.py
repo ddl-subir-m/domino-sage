@@ -162,9 +162,12 @@ def _finish_reason(chunk: bytes, wanted: tuple[str, ...]) -> str | None:
     # Fast reject before any parsing, for the same reason upstream_error has one: this runs against
     # every chunk of every stream, and an OpenAI-style content delta carries `"finish_reason": null`
     # on each one, so keying off the field name would json.loads the whole hot path. Keying off the
-    # values costs a substring scan and rejects every healthy chunk. A false hit — the word
-    # "length" inside prose the model is writing — falls through to the parse below and is rejected
-    # there.
+    # values costs a substring scan and rejects almost every healthy chunk. A false hit — the word
+    # "length", or "stop", inside prose the model is writing — falls through to the parse below and
+    # is rejected there, because that parse reads `choices[].finish_reason` rather than the text.
+    # "stop" is common enough English that `terminal_finish_reason`'s callers pay this on a handful
+    # of chunks per stream; measured against the alternative, which is parsing every chunk, it is
+    # still the cheap side.
     if not any(v.encode() in chunk for v in wanted):
         return None
     for line in chunk.split(b"\n"):

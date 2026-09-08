@@ -156,7 +156,11 @@ def test_a_build_cut_off_twice_does_not_report_success(tmp_path: Path):
     # And it names what happened in words the person can act on, rather than leaving the failure
     # to be inferred from an app that did not change.
     message = _of(events, "error")[0]["message"]
-    assert "broken write call twice" in message
+    # Not "the model sent a broken call": the capture behind #207 is a gateway that stopped
+    # sending, so the first sentence must not hand the fault to the model that the second sentence
+    # then takes back off it.
+    assert "part-way through a write step, twice" in message
+    assert "The model sent a broken" not in message
     # And it says what the log says: the gateway stopped mid-answer, twice. What it must NOT say is
     # that one step was too big — see test_a_cut_stream_is_named_for_what_cut_it.py.
     assert "the model gateway stopped responding" in message

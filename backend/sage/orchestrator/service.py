@@ -9667,11 +9667,10 @@ class Orchestrator:
                 # gateway that stopped mid-answer — and asks for the one thing that does help,
                 # which is time. It does not promise a smaller ask will go through, because there
                 # is no evidence that it would.
-                message = (f"The model sent a broken {broken_call} call twice, so this build "
-                           "stopped part-way through. Anything already written to your app is "
-                           "still there.\n\nBoth times, the model gateway stopped responding "
-                           "part-way through a step — usually a sign it's under load. Send the "
-                           "same request again in a few minutes.")
+                message = (f"This build stopped part-way through a {broken_call} step, twice. "
+                           "Anything already written to your app is still there.\n\nBoth times, "
+                           "the model gateway stopped responding part-way through it — usually a "
+                           "sign it's under load. Send the same request again in a few minutes.")
                 if owns_turn and is_approval:
                     message += brand.text(
                         '\n\nThe plan you approved is still here — say "try again" and '
