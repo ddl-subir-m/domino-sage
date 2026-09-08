@@ -112,6 +112,12 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   `DatasetClient().get_dataset("<unique name from context>")`. `.list_files()` names its files and
   `.download_file("<file>", "/tmp/<file>")` fetches one to read with pandas. The turn prompt gives
   the unique name. Never treat a similarly named folder as that {dataset}.
+- **To show a few real rows, use `live_read_table` — it is faster than writing Python for it.**
+  Pass the read token from this turn's prompt as `token`, name the {dataSource} and the table, and
+  the rows go straight to a table the person sees. `live_read_files` does the same for what a
+  {dataset} holds. You get back the columns and a count rather than the rows, so say what the table
+  holds and never quote a value you were not handed. Use Python below when the answer needs the
+  numbers WORKED OUT — a distribution, a correlation, a ranking — not merely looked at.
 - For a CSV or similar file, read it with pandas (or the stdlib csv module) from the path given
   in context. For a {dataSource}, query it with `domino_data` already in this environment:
   `from domino_data.data_sources import DataSourceClient` then
