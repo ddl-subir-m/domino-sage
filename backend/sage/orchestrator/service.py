@@ -4262,6 +4262,12 @@ class Orchestrator:
             "id": app_id,
             "name": _app_display_name(workspace),
             "built": workspace.has_built(),
+            # The three stamps travel together, and the row picks the newest one that is true
+            # (#217). Which of the three that is changes with every build and every publish, so
+            # the choice belongs to what draws the line rather than to what fills the payload.
+            # `createdAt` is "" for an app seeded before the stamp existed: nothing was backfilled,
+            # and such a row falls back to its bare build state rather than to an invented date.
+            "createdAt": workspace.created_at(),
             "builtAt": workspace.built_at(),
             "planId": plans.get(app_id, ""),
             # Whether there is a deployment behind this app, which is what makes Delete offer to

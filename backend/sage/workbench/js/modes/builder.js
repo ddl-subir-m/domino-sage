@@ -280,6 +280,40 @@ window.SW = window.SW || {};
     SW.api.publishEgress().then((r) => { egress = (r && r.notice) || ''; fill(); }, () => {});
   }
 
+  // The one line that dates a row (#217). A Project holds many Built Apps, two of them under
+  // similar names read identically in a list, and `Not built yet` says the same thing about an app
+  // started this morning and one abandoned in March.
+  //
+  // ONE stamp, and the newest one. Three dates on a row is a history nobody asked a list for, and
+  // the two older ones are the two that have stopped saying whether the app is still alive.
+  //
+  // Nothing here reads the build history: the row draws once per app per render, and
+  // `history.jsonl` is append-only and reaches megabytes.
+  function appStamp(app) {
+    const stamps = [
+      ['Published', app.publishedAt],
+      ['Built', app.builtAt],
+      ['Started', app.createdAt],
+    ].filter(([, at]) => at);
+    // The words the row said before it had any dates, for an app seeded before the stamps existed.
+    // Nothing was backfilled, and this vocabulary is deliberately the SMALLER one: an undated
+    // `Published` beside a sibling reading `Built 2 hours ago` would be two words for one state,
+    // and the app that carries a date is not the one to take it off.
+    if (!stamps.length) return app.built ? 'Built' : 'Not built yet';
+    // Newest by DATE rather than by rung, which is not the same ladder. The three usually happen in
+    // order, and where they do the two agree — but publish an app and then fix it, and the build is
+    // the later of the two. A rung-ordered ladder answers "is this app still alive" with
+    // `Published February 28` for an app rebuilt this morning, which is the older of two true
+    // stamps and the one that says less.
+    //
+    // Compared as strings because every stamp is `_now()`'s `%Y-%m-%dT%H:%M:%SZ` — fixed width, one
+    // zone, so lexical order IS chronological order, and no row pays for parsing three dates to
+    // print one. A tie keeps the word listed first: a publish that stamps the same second as the
+    // build it shipped is the later of the two events.
+    const [word, at] = stamps.reduce((newest, next) => (next[1] > newest[1] ? next : newest));
+    return `${word} ${SW.util.relativeTime(at)}`;
+  }
+
   // A row of the header's app list — the rail's row, unchanged apart from where it lives. It keeps
   // its per-app facts because they are the reason this control is a list rather than a line: a
   // selector naming only the app you already have open would throw away every badge below.
@@ -323,7 +357,7 @@ window.SW = window.SW || {};
             // moment the turn ends.
             app.building
               ? h('span', { className: 'sw-thread-building' }, h(LoadingOutlined, { spin: true }), 'Building…')
-              : app.built ? 'Built' : 'Not built yet',
+              : appStamp(app),
             // Somebody else has pushed to this app (#78). It sits beside the build state rather
             // than replacing it, because the two are about different people and both still hold:
             // your build is running AND their work is waiting.

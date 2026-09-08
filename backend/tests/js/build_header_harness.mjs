@@ -22,15 +22,26 @@ const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
 // published app has one and an unpublished app has "", which is the same answer `published` gives.
 // Held in the fixture rather than derived here, because a harness that computed it would let the
 // row ship no URL at all and still pass.
+//
+// The three date stamps are held here for the same reason as the URL, and each app carries the ones
+// its state makes true (#217): an app that has published has all three, one nobody has built has
+// only its birth. Computed from today rather than written flat, because the row's claim is a
+// RELATIVE date inside 7 days and an absolute one beyond it, and a fixed date drifts across that
+// boundary as the calendar moves.
+const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().replace(/\.\d+Z$/, 'Z');
 const APPS = [
   { id: 'app_a', name: 'Desk dashboard', built: true, building: false, behind: false,
-    published: true, url: '/modelproducts/da_a?scope=project' },
+    published: true, url: '/modelproducts/da_a?scope=project',
+    createdAt: daysAgo(40), builtAt: daysAgo(6), publishedAt: daysAgo(2) },
   { id: 'app_b', name: 'P&L report', built: false, building: false, behind: false,
-    published: false, url: '' },
+    published: false, url: '',
+    createdAt: daysAgo(30), builtAt: '', publishedAt: '' },
   { id: 'app_c', name: 'Rate curve viewer', built: true, building: true, behind: false,
-    published: false, url: '' },
+    published: false, url: '',
+    createdAt: daysAgo(9), builtAt: daysAgo(1), publishedAt: '' },
   { id: 'app_d', name: 'Risk monitor', built: true, building: false, behind: true,
-    published: true, url: '/modelproducts/da_d?scope=project' },
+    published: true, url: '/modelproducts/da_d?scope=project',
+    createdAt: daysAgo(60), builtAt: daysAgo(50), publishedAt: daysAgo(50) },
 ];
 
 const THREADS = {
@@ -1090,6 +1101,17 @@ for (const step of steps) {
     await arrive(step.build, step.select);
     if (step.noapps) {
       apps = [];
+      await SW.store.loadApps();
+    }
+    // Stamps the base fixture cannot hold at once (#217). Two rungs of the row's date ladder are
+    // reachable only by taking a stamp AWAY — an app that has built and not published, and an app
+    // seeded before any of the three stamps existed — and four apps cannot be in six states.
+    if (step.stamps) {
+      for (const [id, stamps] of Object.entries(step.stamps)) {
+        const app = apps.find((a) => a.id === id);
+        if (!app) throw new Error(`no app ${id} in the fixture to re-stamp`);
+        Object.assign(app, stamps);
+      }
       await SW.store.loadApps();
     }
     // Apps in the Project, none of them named — first paint before the reads land, and wherever
