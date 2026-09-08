@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useRef, Fragment } = React;
-  const { Tooltip, Button, Tag, Dropdown, Input, Modal } = antd;
+  const { Tooltip, Button, Tag, Dropdown, Input } = antd;
   const {
     DownOutlined, RightOutlined, PlusOutlined, MoreOutlined, DoubleRightOutlined,
     ArrowRightOutlined, CloseOutlined, CheckCircleFilled, InboxOutlined, EditOutlined,
@@ -650,15 +650,18 @@ window.SW = window.SW || {};
             // so the rail has something to draw, and prefilling that would put a placeholder into
             // the box as though somebody had chosen it.
             let value = row.title;
-            Modal.confirm({
+            SW.util.confirmOnEnter({
               title: 'Rename plan',
-              content: h(Input, {
-                defaultValue: row.title,
-                'aria-label': 'Plan name',
-                onChange: (e) => {
-                  value = e.target.value;
-                },
-              }),
+              content: (submit) =>
+                h(Input, {
+                  defaultValue: row.title,
+                  'aria-label': 'Plan name',
+                  autoFocus: true,
+                  onChange: (e) => {
+                    value = e.target.value;
+                  },
+                  onPressEnter: submit,
+                }),
               okText: 'Rename',
               onOk: async () => {
                 const next = (value || '').trim();

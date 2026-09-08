@@ -19,22 +19,26 @@ window.SW = window.SW || {};
 
   function renameApp(app) {
     let value = app.name;
-    Modal.confirm({
+    SW.util.confirmOnEnter({
       title: SW.brand.text('Rename {builtApp}'),
       // The id is the app's directory and a published App's entry point is fixed at creation, so
       // it is deliberately shown and deliberately not editable.
-      content: h(
-        Fragment,
-        null,
-        h(Input, {
-          defaultValue: app.name,
-          'aria-label': 'Name',
-          onChange: (e) => {
-            value = e.target.value;
-          },
-        }),
-        h('div', { className: 'sw-caption', style: { marginTop: 8 } }, `ID ${app.id} — can't change`)
-      ),
+      content: (submit) =>
+        h(
+          Fragment,
+          null,
+          h(Input, {
+            defaultValue: app.name,
+            'aria-label': 'Name',
+            autoFocus: true,
+            onChange: (e) => {
+              value = e.target.value;
+            },
+            onPressEnter: submit,
+          }),
+          h('div', { className: 'sw-caption', style: { marginTop: 8 } },
+            `ID ${app.id} — can't change`)
+        ),
       okText: 'Rename',
       onOk: () => {
         // Rejecting holds the modal open, which on its own reads as a dead button — antd shows

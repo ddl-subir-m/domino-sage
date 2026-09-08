@@ -131,6 +131,27 @@ window.SW = window.SW || {};
         .replace(/⏎/g, 'Enter');
     },
 
+    // A confirm box whose text field answers ⏎ the way the button answers a click.
+    //
+    // antd binds Escape to close a `Modal.confirm` and leaves ⏎ alone: an Input outside a <form>
+    // does nothing with it, so a name you have just finished typing still needs the mouse. The
+    // three boxes that rename something — a Conversation, a Built App, a plan — are all typing
+    // and one word, and they now all end the same way.
+    //
+    // `content` is a function given the submit handler to hand to the Input's `onPressEnter`,
+    // because the box has to exist before anything can close it. Submitting runs the box's own
+    // `onOk`, so a rejection holds it open on ⏎ exactly as it does on the button — the
+    // empty-name warning two of the three raise is the reason that matters.
+    confirmOnEnter(config) {
+      const submit = () => {
+        Promise.resolve().then(config.onOk).then(() => instance.destroy(), () => {});
+      };
+      const instance = antd.Modal.confirm(
+        Object.assign({}, config, { content: config.content(submit) })
+      );
+      return instance;
+    },
+
     // Resolve a host-relative Domino path against the MAIN Domino host.
     //
     // The server hands these out with no host on purpose: DOMINO_API_HOST is the internal cluster

@@ -85,14 +85,17 @@ window.SW = window.SW || {};
         }
         if (key === 'rename') {
           let value = thread.title;
-          Modal.confirm({
+          SW.util.confirmOnEnter({
             title: 'Rename conversation',
-            content: h(Input, {
-              defaultValue: thread.title,
-              onChange: (e) => {
-                value = e.target.value;
-              },
-            }),
+            content: (submit) =>
+              h(Input, {
+                defaultValue: thread.title,
+                autoFocus: true,
+                onChange: (e) => {
+                  value = e.target.value;
+                },
+                onPressEnter: submit,
+              }),
             okText: 'Rename',
             onOk: async () => {
               await SW.api.patchThread(thread.id, { title: value });
