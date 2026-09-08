@@ -1447,6 +1447,7 @@ class WorkspaceManager:
         """
         self._dir.mkdir(parents=True, exist_ok=True)
         self._ensure_project_ignores()
+        self._voice_legacy_root_agents_md()
         app = self.app_path
         if seed_app:
             app.mkdir(parents=True, exist_ok=True)
@@ -1478,6 +1479,41 @@ class WorkspaceManager:
                 ensure_ignore_line(self._dir / ".gitignore", line)
         except OSError:
             log.warning("workspace: could not write the Project's .gitignore")
+
+    def _voice_legacy_root_agents_md(self) -> None:
+        """Resolve pack tokens in an AGENTS.md a pre-`apps/` seed left at the volume root.
+
+        Until `36c8167` the template seeded straight onto the volume, so a Project made before it
+        still holds the build agent's AGENTS.md at the root — and seeding only began voicing that
+        file at `7d75bd9`, so the copy on disk still reads "Say **{dataSource}**". OpenCode loads
+        AGENTS.md from the session directory AND from every directory up to the project root, so on
+        those volumes it is a standing instruction to both halves: Chat's session is
+        `.sage/chat-work`, Build's is `apps/<appId>/`, and both walk up to this file. Measured live
+        2026-09-07, Chat answered "a Snowflake connection is called a {dataSource}" (#202).
+
+        The stub `_chat_agents_md` writes into the Chat workdir was meant to stop that walk-up. It
+        does not stop it, which is why this repair is at the root rather than beside the stub.
+
+        Voiced, not deleted. The file sits in the person's own repo, `apply_voice` resolves only the
+        tokens nobody wanted to read, and being wrong about who owns a file is far cheaper as a
+        rewrite than as a delete. Nothing written when nothing resolves, so an AGENTS.md a person
+        wrote themselves is never touched and no Project gains a dirty file for nothing — the same
+        rule `_voice_agents_md` follows one directory down.
+        """
+        path = self._dir / "AGENTS.md"
+        try:
+            body = path.read_text()
+        except OSError:
+            return          # absent on every Project seeded since; unreadable is not ours to fix
+        voiced = apply_voice(body)
+        if voiced == body:
+            return
+        try:
+            path.write_text(voiced)
+        except OSError:
+            log.warning("workspace: could not voice the AGENTS.md at the Project root")
+        else:
+            log.warning("workspace: voiced the pack tokens in %s, left by a pre-apps/ seed", path)
 
     def project_record(self, project_id: str) -> ProjectRecord:
         """The Project's own record over the volume, alongside the Built App `ensure` returns.
