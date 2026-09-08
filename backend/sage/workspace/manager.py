@@ -1078,24 +1078,6 @@ class Workspace:
         adopted = [r if r.get("conversation") else {**r, "conversation": conversation} for r in rows]
         self.history_path.write_text("".join(json.dumps(r) + "\n" for r in adopted))
 
-    def first_prompt(self) -> str:
-        """The first thing a person typed into this app, or "" if nobody has yet.
-
-        Read so that an app can be named before it has a plan (#211). `+ New App` makes an app with
-        neither a name nor a plan, and pressed twice it makes two rows wearing the same placeholder
-        — so the first request is the earliest thing on disk that tells them apart.
-
-        Stops at the first match rather than reading the log: `_iter_history` is lazy and this file
-        reaches megabytes, and the answer is on line one of a log whose whole point is that it is
-        append-only. The pre-filter is built with json.dumps for the same reason `_tag_text` is —
-        so the raw substring and the row it is looking for cannot drift apart.
-        """
-        only = json.dumps({"type": "user"})[1:-1]
-        for _, row in self._iter_history(only=only):
-            if row.get("type") == "user":
-                return str(row.get("text") or "")
-        return ""
-
     def history_len(self) -> int:
         """Counts the lines truncate_history() would keep. Deliberately does not parse them: this
         runs twice a turn, only to take the stop-button baseline, and the baseline is a position."""

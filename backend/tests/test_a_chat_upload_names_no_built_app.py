@@ -27,8 +27,9 @@ _HARNESS = Path(__file__).resolve().parent / "js" / "scratch_scope_harness.mjs"
 pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not on PATH (it is in the Sage image)")
 
-# What the rail calls an app nobody has built or renamed — the state this was reported in.
-PLACEHOLDER = "Unnamed Built App"
+# What the rail calls an app nobody has built or renamed — the state this was reported in. It read
+# `Unnamed Built App` then, and the words changed with the ladder that answers it (#216).
+PLACEHOLDER = "Draft app 1"
 
 
 def _panel(mode: str) -> dict:

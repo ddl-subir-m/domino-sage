@@ -179,8 +179,10 @@ def test_a_resource_named_after_a_brand_token_is_never_resolved(acme):
 
 
 class _BlankWorkspace:
-    """Just enough Workspace for `_app_display_name`: no stored name, no plan to borrow one from
-    and nothing typed into it, which is the only path that reaches the fallback."""
+    """Just enough Workspace for `_app_display_name`: no stored name and no plan to take one from,
+    which is the only path that reaches the fallback and the placeholders below it."""
+
+    app_id = "app_1"
 
     def display_name(self) -> str:
         return ""
@@ -191,15 +193,18 @@ class _BlankWorkspace:
     def read_archived_plan(self) -> str:
         return ""
 
-    def first_prompt(self) -> str:
-        return ""
+    def has_built(self) -> bool:
+        return False
 
     def sibling_app_ids(self) -> list[str]:
         return []
 
 
-def test_an_unnamed_app_is_named_for_what_it_is_in_the_packs_words(acme):
-    assert _app_display_name(_BlankWorkspace()) == "Unnamed Creation"
+def test_the_placeholder_for_an_unnamed_app_is_not_in_the_packs_vocabulary(acme):
+    """The one string on this surface the pack does not get to rewrite (#216). A placeholder is not
+    a name, so it does not spend a product word — and a pack that renamed it would be handing the
+    absence of a name the vocabulary reserved for real ones."""
+    assert _app_display_name(_BlankWorkspace()) == "Draft app 1"
 
 
 def test_a_caller_supplied_fallback_is_a_name_somebody_chose(acme):

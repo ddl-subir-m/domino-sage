@@ -16,7 +16,7 @@ it did.
 """
 from __future__ import annotations
 
-from sage.orchestrator.handoff import plan_title
+from sage.orchestrator.handoff import plan_heading, plan_title
 from sage.orchestrator.service import _PLAN_SHAPE
 from sage.workspace import plan_doc
 
@@ -49,6 +49,22 @@ def test_the_example_name_does_not_teach_the_control_rule_the_wrong_key():
 
 def test_a_heading_is_the_name():
     assert plan_title(NAMED) == "Usage Explorer"
+
+
+def test_the_app_ladder_reads_the_heading_and_refuses_the_sentence():
+    """`plan_heading` is the app's reader and `plan_title` is the card's (#216). A card captions
+    one plan, so a cleaned sentence is a fine thing to show; an app's name reaches Domino as the
+    deployed App's name, so a sentence nobody meant as a name never becomes one."""
+    assert plan_heading(NAMED) == "Usage Explorer"
+    assert plan_heading(LIVE) == ""
+    assert plan_heading("") == ""
+
+
+def test_a_plan_that_opens_on_a_section_offers_the_app_no_name():
+    """`# Problem & outcome` is a section of the shape, not a name for what it describes. The
+    naive read — first line, starts with `#` — would have named an app after it."""
+    assert plan_heading("# Problem & outcome\n\nToday there is no app.\n") == ""
+    assert plan_heading("Opening line.\n\n# Later\n\nbody\n") == ""
 
 
 # ---- and when it does not, the sentence is at least presentable -------------------------------------

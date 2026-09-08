@@ -2763,55 +2763,45 @@ def _tool_duration_ms(part: dict) -> int | None:
 def _app_display_name(workspace: Workspace, fallback: str | None = None) -> str:
     """What to call one Built App.
 
-    The name somebody gave it, else the title of the plan it was built from, else `fallback`: a
-    rail row with no words on it is not a row anybody can pick. The plan title is what makes the
-    name start as the plan's (ADR-0008) without a rename having to be written at birth.
+    A name is WRITTEN, never derived from a sentence (#216). Two writers can name an app: the person
+    who renames it, and the planner, through the `# ` heading the plan shape asks for. Nothing else,
+    because this string is what publish sends Domino as the deployed App's name — a rung that reads
+    a prompt (#211) or a plan's first line is a rung that can make a sentence somebody typed in a
+    hurry into the public name of a deployment.
 
-    Publish passes the Domino project's name as `fallback`, because that is what it used to name
-    every App and is the better answer on the deployment side for an app nobody has named.
+    `fallback` is the seam, and it is the last thing a person wrote before the placeholders start.
+    Publish passes the Domino project's name, which is both a name somebody chose and the better
+    answer on the deployment side for an app nobody has named. A written name beats it, since it is
+    about THIS app rather than the Project around it; a placeholder never reaches it, since a rail
+    position means nothing to somebody looking at a deployment.
 
-    The ladder is in two halves, and `fallback` is the seam. Above it are names DERIVED FROM THE
-    APP — what somebody called it, its plan, its first request — and each of those beats a caller's
-    fallback, because each of them is about this app rather than about the Project around it. Below
-    it are PLACEHOLDERS, reached only where no fallback was offered. Adding a rung means deciding
-    which half it is in: a rung that says something about the app goes above, a rung that only
-    stops the row being blank goes below.
+    Below the seam are PLACEHOLDERS, and they sit outside the term vocabulary on purpose: `Draft app
+    2` is not a name, so it does not spend the words reserved for names — not `Built App`, not `App`
+    (the Domino thing), not `Untitled`. They say which state the app is in, because that is the one
+    true thing left to say about an app nobody has named.
     """
     stored = workspace.display_name()
     if stored:
         return stored
-    # `plan_title` answers "App" for a plan it cannot read a title out of, which is a fine default
-    # for a card about one plan and a poor name for a row you pick between several — so an app with
-    # no plan at all is named for what it is instead of borrowing that. "Built App" in full, and
-    # not "Untitled": CONTEXT.md keeps `App` for the Domino thing and `Untitled` away from names.
+    # Heading-only, through `plan_heading` rather than `plan_title`: the card may caption a plan
+    # with its cleaned first line, and an app may not be named after one.
     plan = workspace.read_plan() or workspace.read_archived_plan() or ""
-    if plan.strip():
-        return chat_handoff.plan_title(plan)
-    # An app that has been asked for something but has not been planned yet: the request is the
-    # only thing on disk that says what it is for, and it says it in the person's own words (#211).
-    # Guarded rather than passed straight through, because `title_from_prompt` answers "Untitled"
-    # for an empty prompt and that word is kept away from app names — the rungs below are what an
-    # app with nothing typed into it gets.
-    prompt = workspace.first_prompt().strip()
-    if prompt:
-        return title_from_prompt(prompt)
-    # Resolved here rather than in the signature: a default evaluated at import would freeze the
-    # pack the process booted with, and a caller's own fallback is the Domino project's name — a
-    # name somebody chose, which is never rewritten.
+    heading = chat_handoff.plan_heading(plan)
+    if heading:
+        return heading
     if fallback is not None:
         return fallback
-    # Nothing has been typed into this app, so nothing distinguishes it except when it was made.
-    # Numbered only where there is something to tell it apart FROM: a Project with one app has no
-    # ambiguity to fix, and "Unnamed Built App" reads better than "Built App 1" in the sentences
-    # that quote this name back ("Use in ...", "... can't call @s yet"). The number is a position
-    # in birth order, which `sibling_app_ids` gets free from the id (ADR-0008: the id never
-    # changes) — so it is stable while apps are made, and does shift if an older one is deleted.
-    # That is accepted: this rung only ever names an app nobody has typed into, and the first
-    # thing typed replaces it.
+    # Always numbered, unlike the rung this replaces: the number is now half of what tells two
+    # unnamed rows apart — the subtitle beside it is the other half (#217) — and a row that starts
+    # unnumbered and grows a number when a sibling appears reads as a rename nobody asked for. The
+    # number is a position in birth order, which `sibling_app_ids` gets free from the id (ADR-0008:
+    # the id never changes), so it is stable while apps are made and does shift when an older one is
+    # deleted. Accepted, because it is no longer the only thing telling two rows apart.
     siblings = workspace.sibling_app_ids()
-    if len(siblings) > 1 and workspace.app_id in siblings:
-        return brand.text("{builtApp} {n}", n=siblings.index(workspace.app_id) + 1)
-    return brand.text("Unnamed {builtApp}")
+    n = siblings.index(workspace.app_id) + 1 if workspace.app_id in siblings else 1
+    # `Draft` is a claim about the app and not about its name: before the first build there is
+    # nothing to open, and after it there is.
+    return f"Unnamed app {n}" if workspace.has_built() else f"Draft app {n}"
 
 
 def _app_change_event(workspace: Workspace) -> dict:

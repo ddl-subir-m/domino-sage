@@ -17,8 +17,9 @@ const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { mode } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 // Never built and never renamed, which is the state the bug was reported in: the rail calls this
-// row `Unnamed Built App`, and `/apps` is where that label is settled.
-const APP = { id: 'app_a', name: 'Unnamed Built App', built: false, selected: true };
+// row `Draft app 1` (it said `Unnamed Built App` when the bug was filed, #216), and `/apps` is
+// where that label is settled.
+const APP = { id: 'app_a', name: 'Draft app 1', built: false, selected: true };
 
 // An Upload: Chat's own bytes at the Project root, outside every app (`_SCRATCH_PREFIX`).
 const SCRATCH = [{ path: '.sage/scratch/support_tickets.csv', name: 'support_tickets.csv', size: 11 }];
