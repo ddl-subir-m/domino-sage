@@ -1005,6 +1005,70 @@ def _mcp_probe(url: str) -> dict:
         return {"ok": False, "status": r.status_code, "error": f"unreadable reply: {e}"}
 
 
+def _live_read_verdict(info: dict) -> str:
+    """One sentence saying WHOSE end broke, from the fields `_mcp_diag` already gathers.
+
+    Those fields are the right fields. The problem is that reading them means holding `reachable`,
+    `opencode_says` and `turns_without_tools` against each other and knowing which combination means
+    what — a bad ask at the hour somebody actually needs it, which is the hour this page gets opened.
+    So this says it out loud, and still names what it read so the next question has somewhere to go.
+
+    Three outcomes, because three things can be at fault and they used to look identical:
+    our route, OpenCode's grip on it, and the model's own choice not to call a tool it was offered.
+    """
+    says = info.get("opencode_says") or {}
+    if not says.get("asked"):
+        return ("VERDICT: nobody was asked — "
+                + str(says.get("why") or "the OpenCode server is not up")
+                + "\nOpenCode starts on the first turn, not at boot. Send one chat message, then "
+                  "reload this page.")
+    if not says.get("ok"):
+        return ("VERDICT: could not ask OpenCode — "
+                + str(says.get("error") or f"it answered HTTP {says.get('status')}")
+                + f"\nAsked: {says.get('url')}. That is Sage failing to reach its own OpenCode "
+                  "server, not a finding about Live read.")
+
+    held = says.get("servers")
+    held = held if isinstance(held, dict) else {}
+    rows = [r for r in (info.get("servers") or []) if isinstance(r, dict)]
+    lines: list[str] = []
+    healthy: list[str] = []
+    for row in rows or [{"name": "sage-live-read"}]:
+        name = str(row.get("name") or "")
+        reach = row.get("reachable") or {}
+        if row.get("url") and not reach.get("ok"):
+            why = reach.get("error") or f"HTTP {reach.get('status')}"
+            lines.append(
+                f"{name}: OURS. Our own route did not answer — {why}. OpenCode was never handed a "
+                f"working server. Check the URL ({row.get('url')}) and `on_control_port` on "
+                "/api/diag.")
+        elif name not in held:
+            lines.append(
+                f"{name}: OPENCODE'S END. Our route answers, but OpenCode is not holding this "
+                "server at all, so its tools were never offered to the model. OpenCode does not "
+                "retry a server it dropped — a restart is the blunt fix.")
+        elif str((held.get(name) or {}).get("status") or "") != "connected":
+            lines.append(
+                f"{name}: OPENCODE'S END. OpenCode holds it as "
+                f"{(held.get(name) or {}).get('status')!r}, not connected, so its tools were not "
+                "offered to the model.")
+        else:
+            healthy.append(name)
+            lines.append(
+                f"{name}: NOBODY'S. Our route answers and OpenCode holds it connected, so the tools "
+                "WERE offered. If Chat said it could not see the data, that was the model's choice "
+                "on the turn, not the wiring — read the turn, not this page.")
+
+    without = info.get("turns_without_tools") or 0
+    if without:
+        lines.append(f"{without} chat turn(s) ran before OpenCode dialled. Those turns had no Live "
+                     "read tools whatever this page says now.")
+    elif healthy and len(healthy) == len(rows or [1]) and info.get("opencode_connected") == "never":
+        lines.append("`opencode_connected: never` is NORMAL here — the dial is lazy and happens "
+                     "when a session first needs tools, not at boot.")
+    return "VERDICT\n  " + "\n  ".join(lines)
+
+
 def _opencode_config_diag() -> dict:
     """Every config slot OpenCode resolved, whether it exists, and whether Sage wrote it.
 
@@ -1225,8 +1289,18 @@ def diag_mcp(cmd: str = "list") -> PlainTextResponse:
     work = str(Path(workspace) / ".sage" / "chat-work") if workspace else None
     if work and not Path(work).is_dir():
         work = None
+    # The verdict goes FIRST and in words, because the person reading this opened it knowing only
+    # that Chat said it could not see their data. `opencode mcp list` below is the evidence, and it
+    # is worth keeping — it asks a fresh CLI rather than the running server — but it answers in
+    # OpenCode's vocabulary, and "connected" there has already been mistaken for "the tools arrived".
+    try:
+        verdict = _live_read_verdict(_mcp_diag(int(os.environ.get("SAGE_CONTROL_PORT", "8080"))))
+    except Exception as e:
+        verdict = f"VERDICT unavailable ({type(e).__name__}: {e}). The evidence below still stands."
     body = server.cli(["mcp", "list" if cmd not in ("list", "debug") else cmd], cwd=work)
-    return PlainTextResponse(f"$ opencode mcp {cmd}   (cwd: {work or 'the server default'})\n\n{body}")
+    return PlainTextResponse(
+        f"{verdict}\n\n"
+        f"$ opencode mcp {cmd}   (cwd: {work or 'the server default'})\n\n{body}")
 
 
 @control_app.get("/api/diag/opencode")

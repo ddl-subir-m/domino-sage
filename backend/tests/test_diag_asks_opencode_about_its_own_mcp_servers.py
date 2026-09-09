@@ -189,3 +189,113 @@ def test_an_unreadable_reply_is_reported_as_one(tmp_path, monkeypatch, live_read
 
     assert out["opencode_says"]["ok"] is False
     assert out["opencode_says"]["status"] == 500
+
+
+# ---------------------------------------------------------------------------
+# /api/diag/mcp says whose end broke, in words.
+#
+# The fields above are the right fields, and reading them still means holding three of them against
+# each other and knowing which combination means what. That is the ask this page cannot make of the
+# person opening it, because they opened it knowing only that Chat said it could not see their data.
+
+
+class _Full(_Handle):
+    """`_Handle` plus the CLI half `/api/diag/mcp` shells out to."""
+
+    def cli(self, args, cwd=None, timeout_s=30.0):
+        return "sage-live-read  connected"
+
+
+def _verdict(tmp_path: Path, monkeypatch, route_port: int, oc_server: object) -> str:
+    cfg = tmp_path / ".config" / "opencode"
+    cfg.mkdir(parents=True)
+    (cfg / "opencode.json").write_text(json.dumps({"mcp": {"sage-live-read": {
+        "type": "remote", "enabled": True,
+        "url": f"http://127.0.0.1:{route_port}/mcp/live-read"}}}))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SAGE_CONTROL_PORT", str(route_port))
+    monkeypatch.setattr(app_module.orchestrator, "_oc_server", oc_server, raising=False)
+    r = TestClient(app_module.control_app).get("/api/diag/mcp")
+    assert r.status_code == 200
+    return r.text
+
+
+def test_everything_healthy_says_the_model_chose_not_to_call_it(tmp_path, monkeypatch,
+                                                                live_read_route):
+    """The reading that used to send people hunting the wiring for an evening. Nothing is broken —
+    so the page has to say so, and point at the turn instead."""
+    srv = _opencode({"sage-live-read": {"status": "connected"}})
+    try:
+        out = _verdict(tmp_path, monkeypatch, live_read_route,
+                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "NOBODY'S" in out
+    assert "the model's choice" in out
+    assert out.index("VERDICT") < out.index("$ opencode mcp")   # verdict first, evidence under it
+
+
+def test_a_server_opencode_is_not_holding_names_opencodes_end(tmp_path, monkeypatch,
+                                                              live_read_route):
+    srv = _opencode({})
+    try:
+        out = _verdict(tmp_path, monkeypatch, live_read_route,
+                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "OPENCODE'S END" in out
+    assert "does not retry" in out
+
+
+def test_a_status_that_is_not_connected_is_named_as_opencodes_end(tmp_path, monkeypatch,
+                                                                  live_read_route):
+    srv = _opencode({"sage-live-read": {"status": "failed"}})
+    try:
+        out = _verdict(tmp_path, monkeypatch, live_read_route,
+                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "OPENCODE'S END" in out
+    assert "failed" in out
+
+
+def test_our_own_route_being_down_is_named_as_ours(tmp_path, monkeypatch):
+    """No `live_read_route` fixture: nothing is listening on the port the config names."""
+    srv = _opencode({})
+    try:
+        out = _verdict(tmp_path, monkeypatch, 1, _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "OURS" in out
+    assert "never handed a working server" in out
+
+
+def test_a_lazy_dial_is_not_reported_as_a_fault(tmp_path, monkeypatch, live_read_route):
+    """`opencode_connected: never` with no turn behind it is the normal reading, and the sentence
+    that cost an evening. It is spelled out rather than left for the reader to know."""
+    srv = _opencode({"sage-live-read": {"status": "connected"}})
+    try:
+        out = _verdict(tmp_path, monkeypatch, live_read_route,
+                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "is NORMAL here" in out
+    assert "the dial is lazy" in out
+
+
+def test_no_opencode_yet_still_says_what_to_do(tmp_path, monkeypatch, live_read_route):
+    """Unchanged behaviour, pinned: with no server there is nothing to ask and the page says so."""
+    out = _verdict(tmp_path, monkeypatch, live_read_route, None)
+
+    assert "has not been started yet" in out
+    assert "Send one chat message" in out
