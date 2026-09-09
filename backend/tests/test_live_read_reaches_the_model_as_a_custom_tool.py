@@ -181,3 +181,62 @@ def test_an_unknown_method_is_an_error_not_a_crash():
     out = probe.handle({"jsonrpc": "2.0", "id": 1, "method": "nope"})
 
     assert out["error"]["code"] == -32601
+
+
+# --- what is actually on disk ---------------------------------------------------------------------
+#
+# The wiring log says the file was WRITTEN. It cannot say it is still there, is the right size, or
+# is the only thing in that directory. On 2026-09-09 `live_read.ts` was written at boot and its
+# tools were still absent from every turn, on a build where the identical file registers from this
+# same slot on a bench — and the page had nothing to say about the gap.
+
+
+def _diag(tmp_path, monkeypatch, files: dict[str, str] | None):
+    from sage.orchestrator.app import _custom_tools_diag
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if files is not None:
+        d = tmp_path / ".config" / "opencode" / "tools"
+        d.mkdir(parents=True)
+        for name, body in files.items():
+            (d / name).write_text(body)
+    return _custom_tools_diag()
+
+
+def test_it_names_the_files_and_their_sizes(tmp_path, monkeypatch):
+    """Bytes because "written" is not "landed whole", and a truncated file registers nothing."""
+    body = "export const table = tool({})\n"
+    out = _diag(tmp_path, monkeypatch, {"live_read.ts": body})
+
+    assert out["exists"] is True
+    assert out["files"] == [{"name": "live_read.ts", "bytes": len(body)}]
+
+
+def test_it_works_out_the_names_opencode_will_build(tmp_path, monkeypatch):
+    """`<file>_<export>` is the rule, and nobody remembers it at the hour they need this page."""
+    out = _diag(tmp_path, monkeypatch,
+                {"live_read.ts": "export const table = tool({})\nexport const files = tool({})\n"})
+
+    assert out["tools_it_should_make"] == ["live_read_files", "live_read_table"]
+
+
+def test_a_default_export_is_named_for_its_file(tmp_path, monkeypatch):
+    out = _diag(tmp_path, monkeypatch, {"probe.ts": "export default tool({})\n"})
+
+    assert out["tools_it_should_make"] == ["probe"]
+
+
+def test_a_directory_that_is_not_there_says_so_rather_than_raising(tmp_path, monkeypatch):
+    """The finding, in the case that matters most: the install did not land at all."""
+    out = _diag(tmp_path, monkeypatch, None)
+
+    assert out["exists"] is False
+    assert out["error"]
+    assert "tools" in out["dir"]
+
+
+def test_it_never_puts_the_file_contents_on_the_page(tmp_path, monkeypatch):
+    """A diagnostic, not a listing. Bytes answer "did it land whole" without printing a program."""
+    out = _diag(tmp_path, monkeypatch, {"live_read.ts": "export const table = tool({}) // SECRET\n"})
+
+    assert "SECRET" not in json.dumps(out)

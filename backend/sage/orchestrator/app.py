@@ -1030,6 +1030,45 @@ def _chat_work_dir() -> str | None:
     return str(work) if work.is_dir() else None
 
 
+def _custom_tools_diag() -> dict:
+    """What is actually on disk in the slot OpenCode reads custom tools from.
+
+    The wiring log says the file was WRITTEN. It cannot say the file is still there, is the right
+    size, or is the only thing in the directory — and on 2026-09-09 `live_read.ts` was written at
+    boot and its tools were still absent from every turn, on a build where the identical file
+    registers from this same slot on a bench. That gap is exactly where this page had nothing.
+
+    Names and BYTES, never contents: this is a diagnostic, and the file is code we wrote, so its
+    size answers "did it land whole" without putting a program on a page.
+    """
+    import re
+
+    d = Path(os.path.expanduser("~/.config/opencode")) / "tools"
+    row: dict = {"dir": str(d)}
+    try:
+        entries = sorted(d.iterdir())
+    except OSError as e:
+        row["exists"] = False
+        row["error"] = f"{type(e).__name__}: {e}"
+        return row
+    row["exists"] = True
+    row["files"] = [{"name": p.name, "bytes": p.stat().st_size} for p in entries if p.is_file()]
+    # The names OpenCode will build out of them, so the page can be read against the shim's tool
+    # list without anyone having to remember the `<file>_<export>` rule at the hour they need it.
+    names = []
+    for p in entries:
+        if p.suffix != ".ts":
+            continue
+        try:
+            body = p.read_text()
+        except OSError:
+            continue
+        exported = re.findall(r"^export const (\w+) = tool\(", body, re.MULTILINE)
+        names += [f"{p.stem}_{e}" for e in exported] or ([p.stem] if "export default" in body else [])
+    row["tools_it_should_make"] = sorted(names)
+    return row
+
+
 def _live_read_verdict(info: dict) -> str:
     """One sentence saying WHOSE end broke, from the fields `_mcp_diag` already gathers.
 
@@ -1300,6 +1339,7 @@ def diag() -> JSONResponse:
         "agents": orchestrator.resolved_agents(),
         "mcp": _mcp_diag(control_port),
         "opencode_config": _opencode_config_diag(),
+        "custom_tools": _custom_tools_diag(),
         "project": None if p is None else {
             "model_calls": p.model_calls,
             "tool_call_responses": p.tool_call_responses,
