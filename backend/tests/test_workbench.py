@@ -231,14 +231,16 @@ def test_the_answer_is_rendered_as_it_arrives_and_replaced_by_the_record_of_it()
     # what repairs a live copy that dropped a frame.
     assert "streamed = ev.text || '';" in store
     # And the record replaces what streamed rather than being appended after it.
-    assert "assistant.blocks.filter((b) => !b.streaming)" in store
+    assert "assistant.blocks.filter((b) => !b.fromStream)" in store
 
 
 def test_fragments_repaint_once_a_frame_rather_than_once_each():
     """Deltas arrive faster than the screen refreshes, and each one re-renders the whole Thread —
     including earlier messages' charts, which stringify their options to decide whether to redraw.
     Painting per fragment is the difference between a Thread that scrolls and one that stutters."""
-    assert "requestAnimationFrame(flush)" in _js("store.js")
+    # Wrapped, not passed: rAF hands its callback a timestamp, and `flush` reads its argument as
+    # "this block is closed" — passing the function directly stopped the caret on the first frame.
+    assert "requestAnimationFrame(() => flush(false))" in _js("store.js")
 
 
 def test_a_replayed_thread_has_no_live_text_to_replay():

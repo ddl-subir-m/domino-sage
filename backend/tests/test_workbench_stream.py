@@ -44,7 +44,18 @@ def test_the_answer_is_written_into_the_thread_as_it_arrives():
     assert "~Let me " in steps          # the first fragment is on screen, not buffered
     assert "~Let me look." in steps
     # `final` closes a block, so the next fragment starts a new one rather than overwriting it.
-    assert "~Let me look. | ~Rev" in steps
+    assert "=Let me look. | ~Rev" in steps
+
+
+def test_only_the_fragment_still_being_written_blinks():
+    """The caret says "text is still arriving". `final` closes a block, but the closed block kept
+    the flag that draws it — so a Chat turn that stopped to read three files left three carets
+    blinking under each other for the rest of the turn. One flag was doing two jobs: `fromStream`
+    marks what this stream wrote (and so what the transcript record replaces), `streaming` marks
+    only the block still open."""
+    steps = _turn(_ANSWER)["steps"]
+    assert not any(s.startswith("~Let me look. | ~") for s in steps)
+    assert "=Let me look. | ~Rev" in steps
 
 
 def test_what_streamed_is_replaced_by_the_record_of_it_not_appended_to():
@@ -76,7 +87,7 @@ def test_a_turn_that_dies_mid_sentence_keeps_what_it_managed_to_say():
                  {"type": "error", "message": "This turn took too long, so it was stopped."},
                  {"type": "done", "ok": False, "decision": "timeout"}])
     assert out["final"] == [
-        {"type": "text", "value": "Reading the file", "streaming": True},
+        {"type": "text", "value": "Reading the file", "fromStream": True, "streaming": True},
         {"type": "status", "ok": False,
          "value": "This turn took too long, so it was stopped."},
     ]
@@ -92,7 +103,7 @@ def test_a_stopped_turn_says_so_and_keeps_the_half_answer():
                   "message": "Stopped. Anything Sage had already written is kept."},
                  {"type": "done", "ok": False, "decision": "stopped"}])
     assert out["final"] == [
-        {"type": "text", "value": "Reading the file", "streaming": True},
+        {"type": "text", "value": "Reading the file", "fromStream": True, "streaming": True},
         {"type": "status", "ok": False,
          "value": "Stopped. Anything Sage had already written is kept."},
     ]

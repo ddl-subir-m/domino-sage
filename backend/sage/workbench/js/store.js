@@ -4586,14 +4586,26 @@ window.SW = window.SW || {};
     // The name is the mutable half of an app's identity; its id names the directory and cannot
     // move, because a published App's entry point is fixed when the App is created.
     async renameApp(id, name) {
-      await SW.api.patchApp(id, { name });
+      const out = await SW.api.patchApp(id, { name });
       // The conversation rail names this app too — a tag on every conversation that changed it —
       // and the server has just relabelled those. Read the rail back with the app list, or the
       // chips go on saying the old name until something else happens to reload it.
       //
       // The panel is the third place the name lands: `usedBy` carries it, so the drawer and the
       // `Remove from {app}` door both print it. Same sentence as the chips, one list further out.
-      await Promise.all([loadAppList(), loadThreadList(), refreshWorkingSet()]);
+      // The published App is the fourth place, and the only one that can refuse (#219). Handed
+      // back rather than swallowed: the rename here succeeded, so this cannot be thrown, and a
+      // half-rename nobody is told about is the exact divergence the PATCH exists to close.
+      //
+      // Which is why the reads above cannot take it down with them. The server has already written
+      // the rename; a failed re-read leaves a stale list on screen, and a rejection here would
+      // additionally swallow the one sentence saying the published App kept its old name.
+      try {
+        await Promise.all([loadAppList(), loadThreadList(), refreshWorkingSet()]);
+      } catch (err) {
+        console.warn('[store] renameApp: the rename landed, a reload after it did not', err);
+      }
+      return out;
     },
 
     // Delete a Built App (#76). Nothing here decides anything: the offer was made in the rail and
@@ -5434,18 +5446,26 @@ window.SW = window.SW || {};
       let liveIndex = -1;
       let streamed = '';
       let painting = false;
-      const flush = () => {
+      // `fromStream` marks a block this stream wrote, and is what the transcript record below
+      // replaces. It is NOT `live`, which these blocks used to be filtered on — that key belongs to
+      // the candidate and reset-offer cards, which this filter must leave standing.
+      // `streaming` is narrower — it is the open block, the one still being written — because it
+      // draws the blinking caret. They were one flag, so every fragment the turn closed kept
+      // blinking for the rest of the turn: a Chat answer that read three files showed three carets.
+      const flush = (closed) => {
         painting = false;
         if (liveIndex < 0) return;
         const blocks = [...assistant.blocks];
-        blocks[liveIndex] = { type: 'text', value: streamed, streaming: true };
+        blocks[liveIndex] = { type: 'text', value: streamed, fromStream: true, streaming: !closed };
         assistant.blocks = blocks;
         notify();
       };
       const paint = () => {
         if (painting) return;
         painting = true;
-        requestAnimationFrame(flush);
+        // Wrapped rather than passed: rAF hands its callback a timestamp, which would arrive here
+        // as a truthy `closed` and stop the caret on the first frame of every fragment.
+        requestAnimationFrame(() => flush(false));
       };
 
       try {
@@ -5486,14 +5506,15 @@ window.SW = window.SW || {};
             ensurePushed();
             if (liveIndex < 0) {
               liveIndex = assistant.blocks.length;
-              assistant.blocks = [...assistant.blocks, { type: 'text', value: '', streaming: true }];
+              assistant.blocks = [...assistant.blocks,
+                                  { type: 'text', value: '', fromStream: true, streaming: true }];
               streamed = '';
             }
             if (ev.final) {
               // The whole text rather than the last fragment. The stream cannot be replayed, so
               // this is what repairs a live copy that dropped a frame — and it closes the block.
               streamed = ev.text || '';
-              flush();
+              flush(true);
               liveIndex = -1;
             } else {
               streamed += ev.text || '';
@@ -5508,7 +5529,7 @@ window.SW = window.SW || {};
             // the transcript and so is not in the Thread either way. A queued repaint is harmless
             // once liveIndex is -1.
             liveIndex = -1;
-            assistant.blocks = [...assistant.blocks.filter((b) => !b.streaming),
+            assistant.blocks = [...assistant.blocks.filter((b) => !b.fromStream),
                                 { type: 'text', value: ev.text }];
             notify();
           } else if (ev.type === 'agent' && ev.kind === 'tool') {
