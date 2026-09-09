@@ -240,6 +240,14 @@ def _egress_note(sources: list[Binding]) -> list[str]:
     with a store and no model never leaves the platform, so neither pays for this paragraph — the
     Alias half of the join is `agents_block`'s own early return, which is why only the store half is
     asked here.
+
+    ADR-0043 narrowed the "no combination is refused" above without replacing it, and the third
+    paragraph is where that lands. A Dataset can now carry a declaration that refuses a model, and a
+    Data Source cannot — no classification field exists on one to read. So the note says which
+    surface is gated on the same page as it says where the rows go, because the reader here is an
+    agent building a screen over a Data Source, which is the half nothing covers. A promise that
+    hides its own limit is worse than no promise: the whole reason this paragraph exists is that a
+    reader who believes the wrong thing about it acts on that belief.
     """
     if not sources:
         return []
@@ -257,5 +265,13 @@ def _egress_note(sources: list[Binding]) -> list[str]:
         brand.text(
             "A screen that sends whole rows sends more than one that sends the columns it shows. "
             "Both are allowed, and they are not the same amount of data leaving {platformName}."),
+        "",
+        brand.text(
+            "One of the two data surfaces can be declared sensitive, and it is not this one. A "
+            "{dataset} carries tags, so one tagged sensitive narrows the models this app may use "
+            "and may be published against. A {dataSource} has no classification field at all, so "
+            "nothing here is checked against one. An app that binds both is covered by the "
+            "{dataset}'s declaration, because that check is for the whole app; an app that binds a "
+            "{dataSource} alone is not covered. Write as though these rows are the sensitive ones."),
         "",
     ]

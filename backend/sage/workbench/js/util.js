@@ -66,6 +66,96 @@ window.SW = window.SW || {};
     // tag has to say the same thing in both. It was written out twice and drifted apart once.
     SOVEREIGN_TITLE: 'Runs inside your environment.',
 
+    // The sensitivity declaration, and everything said about it (ADR-0043). Written here for the
+    // reason `SOVEREIGN_TITLE` is written here, and more urgently: five surfaces draw some part of
+    // this one promise — the panel row, the catalogue row, the Binding, the model picker and the
+    // notice — and a promise stated five ways is five promises.
+    //
+    // A DECLARATION and never a detection. The tag is freeform and self-service, so every sentence
+    // below says what somebody declared and none of them claims Sage looked at the rows.
+    DECLARED_MARK: 'declared sensitive',
+    declaredTitle() {
+      return SW.brand.text(
+        'Tagged sensitive in {platformName}. While this {dataset} is in scope, {assistantName} '
+        + 'only uses {llmAliasPlural} an administrator approved for sensitive data.'
+      );
+    },
+
+    // The limit of the promise, said wherever the promise is (ADR-0043). A guarantee that hides its
+    // own edge is worse than none: a creator who reads "sensitive data is protected" and has a
+    // Snowflake source bound has been told something false about the half that matters most.
+    //
+    // The same sentence rides in the app's own AGENTS.md, beside `_egress_note` in
+    // `resources/pinned_model.py`. Two languages, one claim — check both when either changes.
+    lockScope() {
+      return SW.brand.text(
+        "{datasetPlural} can carry this declaration and {dataSourcePlural} can't — {platformName} "
+        + 'has no classification field on one for {assistantName} to read. A {dataSource} bound '
+        + 'beside a declared {dataset} is covered anyway, because the lock is for the whole app; a '
+        + '{dataSource} on its own is not covered at all.'
+      );
+    },
+
+    // Whether this Binding names a declared Dataset. Matched on the row's ID and never on its name:
+    // two Datasets can share a name on one deployment, and the one place that would go wrong is a
+    // badge claiming a colleague's ordinary Dataset is declared.
+    //
+    // Read off the panel's rows rather than from a second server field on the Binding, because the
+    // rail already holds the platform's answer for every Dataset in the Project — and a Binding
+    // whose Dataset has left the listing draws nothing here, which is right: `liveness` is what
+    // says a row is gone, and this must not be a second, quieter way of saying it.
+    bindingIsDeclared(binding) {
+      if (!binding || binding.kind !== 'dataset') return false;
+      const { resourceGroups, catalogueParents } = SW.store.get();
+      const id = SW.util.bindingId(binding);
+      return ((resourceGroups || {}).dataset || [])
+        .concat(catalogueParents || [])
+        .some((row) => row.id === id && row.declared);
+    },
+
+    // Whether the lock is on and holding. Null is not `enabled: false` — it is a read that has not
+    // landed — and both answer "no lock" here, which is what nearly every deployment is. Asked by
+    // every picker, so the null and the off case are decided once.
+    isLocked(sensitivity) {
+      return !!(sensitivity && sensitivity.enabled && sensitivity.locked);
+    },
+
+    // Whether this Alias may run while the lock holds. A WHITELIST: a model nobody classified is
+    // refused, because the deciding case is an Alias registered tomorrow and the default answer for
+    // an unknown model on the most sensitive data in the deployment must be no.
+    isApproved(sensitivity, name) {
+      if (!SW.util.isLocked(sensitivity)) return true;
+      return (sensitivity.approved || []).indexOf(name) !== -1;
+    },
+
+    // The Datasets that armed the lock, as a phrase a sentence can hold. The names the creator sees
+    // on the rows, so the explanation points at something they can go and look at.
+    declaredPhrase(sensitivity) {
+      const names = (sensitivity && sensitivity.datasets) || [];
+      if (!names.length) return SW.brand.text('a declared {dataset}');
+      if (names.length === 1) return SW.brand.text('the {dataset} {name}', { name: names[0] });
+      return SW.brand.text('the {datasetPlural} {names}', {
+        names: `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`,
+      });
+    },
+
+    // Why one Alias is greyed out, on the row that is greyed out. A disabled control that does not
+    // explain itself is the defect this exists to avoid, so the sentence names the model, the group
+    // it is missing from, the Datasets that made the group matter, and both ways out — the one that
+    // keeps the data (ask for the model to be approved) first.
+    lockReason(sensitivity, name) {
+      return SW.brand.text(
+        "{name} isn't in {group}, the {llmAlias} group approved for sensitive data, and this app "
+        + 'reads {datasets}. Ask your {platformName} administrator to add it to the group, or '
+        + 'remove {datasets} from the app.',
+        {
+          name,
+          group: (sensitivity && sensitivity.group) || '',
+          datasets: SW.util.declaredPhrase(sensitivity),
+        }
+      );
+    },
+
     // What the panel row's context mark means. It names the Conversation and the chips, because
     // the mark is a reflection of them and not a second store of the same fact (#137, ADR-0015) —
     // a reader who wants it gone has to be sent to where it can go. The panel offers no verb for

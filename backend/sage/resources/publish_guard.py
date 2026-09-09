@@ -24,8 +24,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..orchestrator import brand
-from .bindings import KIND_DATA_SOURCE, Binding
-from .provider import DataSource
+from .bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, Binding
+from .provider import ApprovedModels, DataSource
 
 # The credential kind a published app may read a store with: one belonging to a service account,
 # so every viewer reaches the store as the same principal the creator already saw named on the row.
@@ -72,6 +72,16 @@ UNCHECKED_APP = "unchecked-visibility"
 # were the same sentence before #80, and they lead opposite ways: the first is waited out, the
 # second is only ever fixed by publishing a new App.
 MISSING_APP = "missing-app"
+
+# The sensitivity refusals (ADR-0043). The first is the violation itself and is lifted unchanged
+# from the implementation deleted in 685ebf3, because it named exactly this and reusing the string
+# keeps the older commit legible to anyone who finds it. The rest are the four ways the approved set
+# can be unusable, kept apart because they are four different things for a creator to do.
+SENSITIVE_TO_VENDOR = "sensitive-rows-to-vendor-model"
+UNCHECKED_ALIAS = "unchecked-alias"
+MISSING_MODEL_GROUP = "missing-model-group"
+EMPTY_MODEL_GROUP = "empty-model-group"
+NO_APPROVED_MODEL_ACCESS = "no-approved-model-access"
 
 
 @dataclass(frozen=True)
@@ -239,3 +249,77 @@ def _names(bindings: list[Binding]) -> str:
         return brand.text("the {dataSource} {name}", name=names[0])
     return brand.text("the {dataSourcePlural} {names}",
                       names=f"{', '.join(names[:-1])} and {names[-1]}")
+
+
+def _dataset_names(bindings: list[Binding]) -> str:
+    """The declared Datasets as one readable phrase. A sibling of `_names`, not a reuse of it: the
+    refusal has to name the noun the creator sees on the row, and these rows are not Data Sources."""
+    names = [b.display_name for b in bindings]
+    if len(names) == 1:
+        return brand.text("the {dataset} {name}", name=names[0])
+    return brand.text("the {datasetPlural} {names}",
+                      names=f"{', '.join(names[:-1])} and {names[-1]}")
+
+
+def sensitive_model_problems(
+    bindings: list[Binding], sensitive: list[Binding], approved: ApprovedModels | None
+) -> list[PublishProblem]:
+    """Every reason not to publish an app that reads a declared Dataset through an unapproved model.
+
+    Answers `[]` for an ordinary app and costs nothing to ask: `sensitive` is empty unless a bound
+    Dataset carries the tag, and an app that binds no model has nothing to send anywhere. So the
+    blast radius is narrow by construction — a gateway wobble cannot block an ordinary publish,
+    because an ordinary publish never reaches the check.
+
+    `approved is None` means the deployment never set SAGE_SENSITIVE_MODEL_GROUP, so the feature is
+    off and this returns nothing even for a tagged Dataset. That is the opt-in from ADR-0043: a
+    freeform tag somebody applied for their own reasons must not brick a deployment that never asked
+    for this.
+
+    Everything else refuses. "Sage could not check where the rows would go" is not a reason to send
+    them, and the four unusable-set cases each say what to do rather than sharing one sentence.
+    """
+    aliases = [b for b in bindings if b.kind == KIND_LLM_ALIAS]
+    if not sensitive or not aliases or approved is None:
+        return []
+    names = _dataset_names(sensitive)
+    if not approved.usable:
+        return [PublishProblem(*_unusable(approved, names))]
+    return [
+        PublishProblem(SENSITIVE_TO_VENDOR, brand.text(
+            "{alias} isn't approved for sensitive data, and this app reads {names}. Use an approved "
+            "{llmAlias}, or remove {alias} from this app, then publish again.",
+            alias=b.display_name, names=names,
+        ), b.kind, b.id)
+        for b in aliases if b.display_name not in approved.names and b.id not in approved.names
+    ]
+
+
+def _unusable(approved: ApprovedModels, names: str) -> tuple[str, str]:
+    """Which of the four this is, and the sentence for it. Ordered most-specific first."""
+    if not approved.reachable:
+        return UNCHECKED_ALIAS, brand.text(
+            "{assistantName} couldn't reach the {llmGateway} to check which models are approved for "
+            "sensitive data, and this app reads {names}. Try publishing again in a moment.",
+            names=names,
+        )
+    if not approved.group_found:
+        return MISSING_MODEL_GROUP, brand.text(
+            "No {llmAlias} group named {group} exists on the {llmGateway}, so {assistantName} can't "
+            "tell which models are approved for sensitive data. This app reads {names}. Ask your "
+            "{platformName} administrator to create the group, then publish again.",
+            group=approved.group_name, names=names,
+        )
+    if not approved.members:
+        return EMPTY_MODEL_GROUP, brand.text(
+            "The {llmAlias} group {group} has no models in it, so nothing is approved for sensitive "
+            "data. This app reads {names}. Ask your {platformName} administrator to add a model to "
+            "the group, then publish again.",
+            group=approved.group_name, names=names,
+        )
+    return NO_APPROVED_MODEL_ACCESS, brand.text(
+        "You don't have access to any of the {count} models in the {llmAlias} group {group}, which "
+        "are the only ones approved for sensitive data. This app reads {names}. Ask your "
+        "{platformName} administrator for access to one of them, then publish again.",
+        count=str(approved.members), group=approved.group_name, names=names,
+    )

@@ -110,6 +110,51 @@ window.SW = window.SW || {};
   // The sentence is built from the rows that HAVE an act, not from every row, so it can never name
   // something no button below it can close — the invariant the refusal keeps by building both
   // halves in one pass.
+  // The session moved onto an approved model, said once (ADR-0043). Decided deliberately over the
+  // two alternatives: switching in silence fails the confidence the whole promise is meant to build
+  // — a picked model changes under somebody with nothing to read — and refusing the turn stops
+  // somebody mid-task to teach them what a sentence can teach.
+  //
+  // It names the model it moved to only when there is exactly one to name. The choice is
+  // `llm_router._nearest_approved`'s, and it depends on mode and phase; a second copy of that rule
+  // here would be a confident sentence that is wrong on the turn where it matters. One approved
+  // model means there is no rule left to copy, and that is the common shape of a curated group.
+  //
+  // Under the box beside the mention guard, and for the same reason: the box is what you are
+  // writing, and this is what will happen to it.
+  function LockNotice({ sensitivity, picked, onDismiss }) {
+    const approved = (sensitivity.approved || []);
+    const moved = approved.length === 1
+      ? SW.brand.text('{assistantName} is using {name} instead.', { name: approved[0] })
+      : SW.brand.text('{assistantName} is using one of the {llmAliasPlural} in {group} instead.',
+                      { group: sensitivity.group });
+    return h(
+      'div',
+      // The mention guard's shape, with its own class over the top. Same place, same layout, and
+      // deliberately not the same ink: that one is a warning about a prompt somebody is mid-way
+      // through writing, and this is a statement of what is already true.
+      { className: 'sw-mention-guard sw-lock-notice' },
+      h(
+        'div',
+        { className: 'sw-mention-guard-text' },
+        // One phrase for one and for several — `declaredPhrase` writes both — so the sentence
+        // around it cannot pick a verb that only agrees with one of them.
+        SW.brand.text(
+          "This app reads {datasets}, declared sensitive in {platformName}, so {picked} can't be "
+          + 'used here. ',
+          { datasets: SW.util.declaredPhrase(sensitivity), picked }
+        ) + moved
+      ),
+      h(Space, { size: 8, wrap: true },
+        h(Button, {
+          size: 'small',
+          type: 'primary',
+          onClick: () => SW.store.openAssignments(true),
+        }, 'See approved models'),
+        h(Button, { size: 'small', onClick: onDismiss }, 'Got it'))
+    );
+  }
+
   function MentionGuard({ entries, activeAppId, onSend }) {
     const [busy, run] = SW.util.useBusyAct();
     // The third argument is what the click does after it has written the record (#213): send what
@@ -176,6 +221,7 @@ window.SW = window.SW || {};
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
       catalog, buildModel, buildPhase, openWeightModels, signingSlot,
       apps, activeApp, composerSeed, queuedTurns, catalogueParents, appAttachments,
+      sensitivity, sensitivityNoticeFor,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -393,6 +439,19 @@ window.SW = window.SW || {};
     const pinWhy = signingSlot
       ? `${pinnedModel} is required for this session, so every Build turn uses it.`
       : '';
+    // The sensitivity lock, read once for both pickers below (ADR-0043). Chat is gated exactly as
+    // Build is — `llm_router` applies the lock OUTSIDE their fork — so both menus have to say so,
+    // and saying it from one place is what keeps them saying the same thing.
+    //
+    // A row is disabled and NOT hidden, the way a stopped endpoint's is: a model that vanishes
+    // teaches nobody why it went, and here the reason is the whole point. Leaving it selectable
+    // would be worse still — the turn refuses it, so the explanation would arrive after the work
+    // rather than before it.
+    const lockedHere = SW.util.isLocked(sensitivity);
+    const lockNote = (name) => (sensitivity && sensitivity.refusal)
+      || SW.util.lockReason(sensitivity, name);
+    const barredModel = (name) => lockedHere && !SW.util.isApproved(sensitivity, name);
+
     const overridable = activeBuildMode.id === 'plan' || activeBuildMode.id === 'implement';
     // The four configured slots reduced to the models behind them: two slots pointing at one model
     // are one row, not two the person has to tell apart.
@@ -420,15 +479,35 @@ window.SW = window.SW || {};
     const buildModelMenu = {
       selectedKeys: [override || PINNED_KEY],
       items: [
+        // The pinned row is never barred, even when the slot behind it holds an unapproved model.
+        // It carries no model id — picking it CLEARS the override — so disabling it would strand
+        // somebody on the override they are trying to leave, and it is the one row here that cannot
+        // make things worse. What the slot actually resolves to under the lock is the router's
+        // answer and not this menu's, and the notice under the box is where that is said.
         ...slotModels.map((id) => ({
           key: id === pinnedModel ? PINNED_KEY : id,
-          label: id === pinnedModel ? `${id} (default)` : id,
+          disabled: id !== pinnedModel && barredModel(id),
+          // `title` and not a wrapped element, so the label stays the plain string every reader of
+          // this menu already expects — the menu is drawn headless in a test that reads it as JSON.
+          title: id !== pinnedModel && barredModel(id) ? lockNote(id) : undefined,
+          label: id === pinnedModel
+            ? `${id} (default)`
+            : barredModel(id)
+            ? `${id} — not approved for sensitive data`
+            : id,
         })),
         ...(extraModels.length
           ? [{
               type: 'group',
               label: 'Open-weight',
-              children: extraModels.map((o) => ({ key: o.id, label: `${o.id} (${o.provider})` })),
+              children: extraModels.map((o) => ({
+                key: o.id,
+                disabled: barredModel(o.id),
+                title: barredModel(o.id) ? lockNote(o.id) : undefined,
+                label: barredModel(o.id)
+                  ? `${o.id} — not approved for sensitive data`
+                  : `${o.id} (${o.provider})`,
+              })),
             }]
           : []),
         { type: 'divider' },
@@ -442,15 +521,24 @@ window.SW = window.SW || {};
 
     const modelMenu = {
       selectedKeys: effectiveModel ? [effectiveModel] : [],
-      items: aliases.map((option) => ({
-        key: option.alias,
-        label: h(
-          'div',
-          { style: { minWidth: 200 } },
-          h('div', { className: 'sw-model-option-name' }, option.name || option.alias),
-          h('div', { className: 'sw-model-option-detail' }, option.alias)
-        ),
-      })),
+      items: aliases.map((option) => {
+        const barred = barredModel(option.alias);
+        return {
+          key: option.alias,
+          disabled: barred,
+          title: barred ? lockNote(option.alias) : undefined,
+          label: h(
+            'div',
+            { style: { minWidth: 200 } },
+            h('div', { className: 'sw-model-option-name' }, option.name || option.alias),
+            h(
+              'div',
+              { className: 'sw-model-option-detail' },
+              barred ? `${option.alias} — not approved for sensitive data` : option.alias
+            )
+          ),
+        };
+      }),
       onClick: ({ key }) => {
         const next = aliases.find((a) => a.alias === key);
         const keep = next && (next.reasoning_efforts || []).includes(reasoningEffort)
@@ -490,6 +578,17 @@ window.SW = window.SW || {};
         setModeOpen(false);
       },
     };
+
+    // What this composer WOULD run if the lock were not on: Build's override or pinned slot (the
+    // pin has already been through the signing rule, so it is the model the router starts from),
+    // Chat's picked Alias. Empty unless the lock really moved it — an approved pick is not a switch
+    // and has nothing to announce.
+    const pickedModel = showMode ? (override || pinnedModel) : effectiveModel;
+    const movedFrom = pickedModel && barredModel(pickedModel) ? pickedModel : '';
+    // What "once" is counted against. The approved SET rather than a bare flag: an administrator
+    // editing the group moves the session again, onto a different model, and the notice already
+    // read was never an answer to that.
+    const noticeKey = String((sensitivity && sensitivity.approved) || []);
 
     return h(
       'div',
@@ -963,6 +1062,19 @@ window.SW = window.SW || {};
       unusable.length > 0 &&
         h(MentionGuard, {
           entries: unusable, activeAppId: activeApp && activeApp.id, onSend: send,
+        }),
+
+      // The switch, said once. `movedFrom` is the model this composer WOULD have run — Build's
+      // pinned slot, Chat's picked Alias — and its being barred is the whole condition: an approved
+      // pick is not a switch and has nothing to announce. Nothing is drawn while the approved set
+      // resolves to nothing either, because that is a refusal rather than a move, and the turn
+      // carries its own sentence for it.
+      lockedHere && movedFrom && (sensitivity.approved || []).length > 0 &&
+        sensitivityNoticeFor !== noticeKey &&
+        h(LockNotice, {
+          sensitivity,
+          picked: movedFrom,
+          onDismiss: () => SW.store.dismissSensitivityNotice(noticeKey),
         })
     );
   };

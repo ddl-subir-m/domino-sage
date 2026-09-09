@@ -260,6 +260,20 @@ window.SW = window.SW || {};
     // chosen cannot express a change.
     assignmentsError: '',
 
+    // The sensitivity lock (ADR-0043): `{ enabled, locked, group, approved, datasets, refusal }`.
+    // Null until the first read lands, and that is not the same as `enabled: false` — a picker that
+    // greyed rows out on a read it never got would refuse models on a lock that may not exist. Every
+    // reader below therefore asks `locked` and treats null as "no lock", which is what the
+    // overwhelming majority of deployments are.
+    //
+    // Read on a scope load and after a Binding changes, and nowhere else. A declaration is a live
+    // fact about the Datasets bound RIGHT NOW, and those are the only two moments that set moves.
+    sensitivity: null,
+    // Which approved SET the switch notice has already been read for. Kept here rather than in
+    // prefs because "once" means once per switch and not once per person: an administrator moving
+    // the group tomorrow moves the session onto a different model, and that is a new thing to say.
+    sensitivityNoticeFor: '',
+
     // Every standing [[Problem]] GET /api/health reported, as it came (ADR-0027): `{ id, message,
     // fix, owner, body }`, the server's own sentences, rendered and never rewritten here. Empty is
     // the normal state and the chip draws nothing on it, which is the whole reason a standing fault
@@ -730,10 +744,36 @@ window.SW = window.SW || {};
       notify();
     }).catch(() => {});
 
+    // Deferred and unawaited beside the listing above, and for the same reason: the panel paints on
+    // the read already done, and a lock that has held all session can arrive a beat later without
+    // anything being wrong. The badge it explains is on Datasets, which the listing above has yet
+    // to deliver either.
+    refreshSensitivity(gen);
+
     const read = await SW.api.members();
     if (gen !== scopeLoad) return;
     applyMembers(read);
     notify();
+  }
+
+  // The sensitivity lock (ADR-0043), read from the two moments it can move: a scope load, and a
+  // Binding change. Never polled — a declaration is a live fact about the Datasets bound RIGHT NOW,
+  // and nothing else in a session changes which those are.
+  //
+  // A failed read leaves the last answer standing rather than clearing it, and the asymmetry is
+  // deliberate in one direction: dropping a lock the UI is drawing would put non-approved models
+  // back in the picker on a network wobble, and the picker is the surface a person acts from.
+  // Nothing is enforced here, so a stale "locked" costs an explanation that is a beat out of date,
+  // while a stale "unlocked" is a model somebody picks and the router then refuses under them.
+  function refreshSensitivity(gen) {
+    return SW.api.sensitivity().then(
+      (read) => {
+        if (gen !== undefined && gen !== scopeLoad) return;
+        state.sensitivity = read;
+        notify();
+      },
+      () => {},
+    );
   }
 
   // Everything a read of `/project` writes. Both refreshes take that read, and two copies of this
@@ -2607,6 +2647,11 @@ window.SW = window.SW || {};
   async function refreshBindings(ticket = appScopeTicket()) {
     const body = await SW.api.bindings().catch(() => ({ bindings: [] }));
     applyAppScope(ticket, { bindings: body.bindings || [] });
+    // Binding a Dataset is what arms the lock, and unbinding the last one is what drops it — so
+    // every caller that changes a Binding has to re-ask, and putting it here is how none of them
+    // has to remember. Unawaited: the Bindings are written above and the lock is drawn beside them
+    // rather than by them.
+    refreshSensitivity();
   }
 
   // The names at whichever level the Scope door is standing on (#142). One request, off the same
@@ -2880,6 +2925,10 @@ window.SW = window.SW || {};
       state.assignmentsOpen = Boolean(open);
       notify();
       if (open) this.loadAssignments();
+      // Beside the panel read, because this drawer is the one surface that draws every closed row
+      // at once (ADR-0043): an administrator who has just added a model to the group is most likely
+      // to be looking here, and a lock read on the last scope load would still be showing it out.
+      if (open) refreshSensitivity();
     },
 
     // Saves immediately and verifies afterwards (ADR-0017): blocking the write on a live gateway
@@ -6136,6 +6185,50 @@ window.SW = window.SW || {};
     // pin without a reload. `refreshProjectPlan` does not notify on its own — its other callers
     // fold it into a bigger read that does — so this one says so itself.
     reloadProjectPlan: () => refreshProjectPlan().then(notify, () => {}),
+
+    // The sensitivity lock (ADR-0043). Re-read by hand after an act that can change a declaration
+    // without changing a Binding — declaring a Dataset sensitive from the promote confirm is the
+    // only one today.
+    reloadSensitivity: () => refreshSensitivity(),
+
+    // The switch notice has been read. `key` is the approved SET rather than a bare flag, so an
+    // administrator editing the group moves the session again and the notice comes back — that is a
+    // new fact about a different model, and the one already dismissed was never an answer to it.
+    dismissSensitivityNotice(key) {
+      state.sensitivityNoticeFor = String(key || '');
+      notify();
+    },
+
+    // Declare a Dataset this Project owns sensitive, from the promote confirm (ADR-0043). The
+    // server refuses one shared in; this reports what it answered and never guesses. The tag write
+    // is best-effort by design — the bytes are already on the mount, and losing an upload to a
+    // governance tag would be the wrong trade — so a `tagged: false` is said plainly rather than
+    // swallowed or raised.
+    async declareDatasetSensitive(datasetId) {
+      let res;
+      try {
+        res = await SW.api.declareDatasetSensitive(datasetId);
+      } catch (err) {
+        antd.message.error(err.message);
+        return null;
+      }
+      if (res.tagged) {
+        antd.message.success(SW.brand.text(
+          '{name} is declared sensitive. {assistantName} will only use approved models while it is '
+          + 'in scope.',
+          { name: res.dataset }
+        ));
+      } else {
+        antd.message.warning(SW.brand.text(
+          "{assistantName} couldn't tag {name} in {platformName}. The file is uploaded. Tag the "
+          + '{dataset} in {platformName} to declare it.',
+          { name: res.dataset }
+        ));
+      }
+      await refreshWorkingSet();
+      await refreshSensitivity();
+      return res;
+    },
 
     async reloadNotifications() {
       state.notifications = await SW.api.notifications();

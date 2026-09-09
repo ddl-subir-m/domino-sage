@@ -491,3 +491,61 @@ def test_the_new_projects_description_names_the_packs_assistant(tmp_path, monkey
         description="Domino demo",
     )
     assert seen["body"]["description"] == "Domino demo"
+
+
+# --- Tagging a Dataset sensitive (ADR-0043) ------------------------------------------------------
+
+def _tagging_plane(dataset=None, fail=False):
+    """A control plane recording (method, path, json) for the tag flow. `dataset` is what the
+    snapshot GET answers; `fail` makes every call 500 so the best-effort path is exercised."""
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content) if request.content else None
+        calls.append((request.method, request.url.path, body))
+        if fail:
+            return httpx.Response(500, json={"error": "nope"})
+        if request.method == "GET":
+            return httpx.Response(200, json={"dataset": dataset or {}})
+        return httpx.Response(200, json={"ok": True})
+
+    return _cp(handler), calls
+
+
+def test_tag_dataset_sensitive_uses_a_supplied_snapshot_without_fetching():
+    """The v2 tag map already carries a snapshot id for an already-tagged Dataset, so the common
+    case costs one POST. Restored from 685ebf3."""
+    cp, calls = _tagging_plane()
+    assert cp.tag_dataset_sensitive("ds1", snapshot_id="snap-7") is True
+    assert [c[0] for c in calls] == ["POST"]
+    assert calls[0][1].endswith("/api/datasetrw/v1/datasets/ds1/tags")
+    assert calls[0][2] == {"tagName": "sensitive", "snapshotId": "snap-7"}
+
+
+def test_tag_dataset_sensitive_fetches_the_snapshot_when_none_is_given():
+    """An untagged Dataset has no snapshot id in the tag map, so one GET precedes the POST. Tags
+    attach to a SNAPSHOT, not to the Dataset — the POST is rejected without one."""
+    cp, calls = _tagging_plane(dataset={"latestSnapshotId": "snap-9"})
+    assert cp.tag_dataset_sensitive("ds1") is True
+    assert [c[0] for c in calls] == ["GET", "POST"]
+    assert calls[1][2]["snapshotId"] == "snap-9"
+
+
+def test_tag_dataset_sensitive_reads_either_snapshot_key():
+    """LIVE-VERIFY carried over from 685ebf3: `latestSnapshotId` OR the tail of `snapshotIds`."""
+    cp, calls = _tagging_plane(dataset={"snapshotIds": ["snap-1", "snap-2"]})
+    assert cp.tag_dataset_sensitive("ds1") is True
+    assert calls[1][2]["snapshotId"] == "snap-2"
+
+
+def test_tag_dataset_sensitive_returns_false_rather_than_failing_an_upload():
+    """The bytes are already written by the time this runs. Losing the upload to protect it would
+    be the worse trade, so a governance tag never raises."""
+    cp, _ = _tagging_plane(fail=True)
+    assert cp.tag_dataset_sensitive("ds1", snapshot_id="s") is False
+
+
+def test_a_dataset_with_no_snapshot_is_reported_not_tagged():
+    cp, calls = _tagging_plane(dataset={})
+    assert cp.tag_dataset_sensitive("ds1") is False
+    assert [c[0] for c in calls] == ["GET"], "nothing is POSTed without a snapshot to tag"

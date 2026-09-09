@@ -104,6 +104,16 @@ class LlmAlias:
     endpoint_url: str | None = None
     # OpenAI-style reasoning_effort values this alias accepts. Empty means the picker hides effort.
     reasoning_efforts: list[str] = field(default_factory=list)
+    # Alias-group NAMES this alias belongs to, from `groups` on the /api/aliases record. The
+    # sensitivity lock reads them (ADR-0043): an administrator's group is what approves a model for
+    # sensitive work, and Sage only ever reads it.
+    #
+    # LIVE-VERIFY: whether a NON-admin caller sees this field. It was probed on cloud-dogfood
+    # (2026-09-09) with a `GovernanceAdmin` identity, and the gateway declares no response schema, so
+    # role-conditional redaction is not ruled out. Two things make the unknown safe to ship on: the
+    # membership is also readable in reverse from /api/alias-groups (`approved_aliases` takes either),
+    # and a redaction resolves to an empty approved set, which refuses. It cannot fail open.
+    groups: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -819,6 +829,11 @@ def frame_rows(frame: Any, limit: int = SAMPLE_CELL_LIMIT) -> tuple[list[str], l
 class ResourceProvider(Protocol):
     def list_llm_aliases(self) -> list[LlmAlias]: ...
 
+    def list_alias_groups(self) -> list[dict]:
+        """The gateway's alias groups (ADR-0043). [] is a valid answer: the approved set still
+        resolves from `groups` on the alias records, so this is a hedge and never a dependency."""
+        return []
+
     # Takes the project explicitly, as the asset provider's list_datasets(project_id) does: the
     # orchestrator owns which project this builder is bound to, and the provider stays a client. The
     # argument is the builder's HOME project since #42, not the only one asked about: the listing
@@ -960,6 +975,79 @@ def alias_reasoning_efforts(name: str, inference_params: Any = None) -> list[str
     return listed or list(name_reasoning_efforts(name))
 
 
+def parse_groups(raw: Any) -> list[str]:
+    """Alias-group names off an /api/aliases record. Guarded against a bare string for the same
+    reason `parse_capabilities` is: iterating one would yield a group per character."""
+    if isinstance(raw, str):
+        return [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(g) for g in raw if g]
+
+
+@dataclass(frozen=True)
+class ApprovedModels:
+    """The outcome of reading the approved-model group (ADR-0043).
+
+    Four ways this can hold nothing, and they are four different sentences to a creator, so the
+    facts that tell them apart travel with the set rather than being re-derived from its emptiness:
+    the gateway did not answer, the configured group is not there, it is there and empty, or it has
+    members and this caller may call none of them.
+    """
+
+    names: frozenset[str] = frozenset()
+    group_name: str = ""
+    reachable: bool = True   # False: the gateway listing failed
+    group_found: bool = True  # False: no group by that name
+    members: int = 0          # members the group declares, before this caller's permissions
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.names)
+
+
+def approved_aliases(group_name: str, aliases: list[LlmAlias], group_records: Any = None) -> set[str]:
+    """The alias NAMES approved for sensitive work, from either direction (ADR-0043).
+
+    Two sources for one fact, because only one of them is verified for a non-admin caller. The
+    forward read is `groups` on each alias; the reverse is /api/alias-groups, whose records carry
+    `{name, aliases: [{id, name}]}`. Either alone is enough, and the union is taken rather than one
+    preferred, so a field redacted on one surface does not silently shrink the approved set.
+
+    Matched case-insensitively on the group name for the same reason the Dataset tag is: a person
+    typed it into a free field twice, once here and once in configuration.
+
+    An empty result is a REFUSAL, not an absence — `missing-model-group`, `empty-model-group` and
+    `no-approved-model-access` are all shaped like this and the caller tells them apart. Never read
+    an empty set as "no lock"; that state is `approved_models=None`.
+    """
+    want = group_name.strip().lower()
+    if not want:
+        return set()
+    # `aliases` is already intersected with /v1/models by `join_aliases`, so holding a row here IS
+    # the proof that this caller may call it. Both sources are filtered through that, which is the
+    # difference between "approved" and "approved and reachable" — see below.
+    by_id = {a.id: a.name for a in aliases}
+    reachable = {a.name for a in aliases}
+    names = {a.name for a in aliases if any(g.lower() == want for g in a.groups)}
+    for rec in (group_records or []):
+        if not isinstance(rec, dict) or str(rec.get("name") or "").lower() != want:
+            continue
+        for member in rec.get("aliases") or []:
+            if not isinstance(member, dict):
+                continue
+            # A group member this caller CANNOT call is deliberately not added. Verified live
+            # (2026-09-09): `sensitive-approved` held `opus` and `haiku`, and only `opus` was on
+            # /v1/models — taking the group's word for `haiku` put a model in the approved set that
+            # the gateway then refused, turning a designed `no-approved-model-access` refusal into a
+            # dead turn. The reverse source is a hedge against a REDACTED field, never a second
+            # opinion on permissions.
+            name = by_id.get(str(member.get("id") or "")) or str(member.get("name") or "")
+            if name in reachable:
+                names.add(name)
+    return {n for n in names if n}
+
+
 def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:
     """Intersect the accessible model ids with the alias metadata records.
 
@@ -990,6 +1078,7 @@ def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:
                 costs=parse_costs(rec.get("effective_costs")),
                 endpoint_url=str(rec["endpoint_url"]) if rec.get("endpoint_url") else None,
                 reasoning_efforts=alias_reasoning_efforts(name or rid, rec.get("inference_params")),
+                groups=parse_groups(rec.get("groups")),
             )
         )
     for extra in sorted(accessible - claimed):
@@ -1211,6 +1300,19 @@ class DominoResourceProvider:
         models = self._get("/v1/models")  # accessible set, already filtered for this caller
         aliases = self._get("/api/aliases")  # display name, capabilities, cost
         return join_aliases(accessible_ids(models), records_of(aliases))
+
+    def list_alias_groups(self) -> list[dict]:
+        """The gateway's alias groups, verbatim (ADR-0043).
+
+        The REVERSE source for the approved-model set: each record is `{name, description, aliases:
+        [{id, name, provider_type}]}`, so it answers the same membership question as `groups` on an
+        alias record, from the other side. Both are read because only one of them is verified for a
+        non-admin caller — see the LIVE-VERIFY on `LlmAlias.groups`.
+
+        Verified live on cloud-dogfood 2026-09-09: 200, a bare array, two groups (`FDE_models`,
+        `rnd_team_models`), no envelope and no paging.
+        """
+        return [r for r in records_of(self._get("/api/alias-groups")) if r]
 
     def list_hosted_endpoints(self) -> list[HostedEndpoint]:
         """Every Hosted GenAI Endpoint this caller can see, deployment-wide.
@@ -2077,6 +2179,16 @@ class FakeResourceProvider:
 
     def list_llm_aliases(self) -> list[LlmAlias]:
         return list(self.aliases)
+
+
+    def list_alias_groups(self) -> list[dict]:
+        """One group holding the Domino-hosted alias, mirroring the shape probed live on
+        cloud-dogfood: `{name, description, aliases: [{id, name, provider_type}]}`."""
+        return [{
+            "name": "sensitive-approved",
+            "description": "Models approved for sensitive data",
+            "aliases": [{"id": "f-qwen25", "name": "qwen-2-5", "provider_type": "domino_platform"}],
+        }]
 
     def list_hosted_endpoints(self) -> list[HostedEndpoint]:
         return list(self.hosted_endpoints)

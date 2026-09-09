@@ -31,6 +31,7 @@ window.SW = window.SW || {};
   SW.ModelAssignmentsDrawer = function ModelAssignmentsDrawer() {
     const {
       assignmentsOpen, assignments, assignmentsLoading, assignmentsError, buildRunning, catalog,
+      sensitivity,
     } = SW.store.get();
 
     const close = () => SW.store.openAssignments(false);
@@ -92,6 +93,16 @@ window.SW = window.SW || {};
     // empty in exactly that case. The single option below therefore cannot collide with one of
     // them. Written down because the two facts sit four lines apart and read as independent: the
     // guard against a duplicate option value is that coupling, not a check.
+    // The sensitivity lock (ADR-0043). A separate flag from `readOnly` and a separate Alert from
+    // `notice`, for the reason those are separate from each other: this closes SOME rows and leaves
+    // the rest working, so folding it into either would put one explanation over two situations.
+    const locked = SW.util.isLocked(sensitivity);
+    // Every model closed and nothing approved — the group is missing, empty, unreachable, or holds
+    // nothing this caller may call. The server has already written the sentence that names which,
+    // and it is the same sentence a turn would be refused with; a second wording here would be a
+    // second account of one state.
+    const lockDead = locked && !(sensitivity.approved || []).length;
+
     const options = (row) => [
       // The way BACK, so it carries no model id of its own: picking it clears the assignment rather
       // than setting one, which is the difference between "the default" and "this model, which
@@ -100,17 +111,30 @@ window.SW = window.SW || {};
       ...(row.default
         ? [{ value: DEFAULT_KEY, label: `Use the default (${row.default})` }]
         : [{ value: row.model, label: row.model }]),
-      ...aliases.map((a) => ({
-        value: a.name,
-        // Offered but not selectable. `/v1/models` filters on permission alone, so a granted Alias
-        // whose Hosted GenAI Endpoint is stopped is listed anyway (#21) — hiding it would answer
-        // "where did that model go" with nothing, and allowing it would fail opaquely mid-build.
-        disabled: !a.serving,
-        title: a.problem || undefined,
-        label: a.serving
-          ? (a.display_name && a.display_name !== a.name ? `${a.name} — ${a.display_name}` : a.name)
-          : `${a.name} — not serving`,
-      })),
+      ...aliases.map((a) => {
+        // The lock outranks "not serving" in BOTH the disable and the reason, mirroring the router,
+        // where it outranks every other rule (`llm_router._lock_sensitivity`). A model that is both
+        // unapproved and stopped is unapproved first: starting the endpoint would not make it
+        // pickable, so an explanation that sent somebody to do that would waste their afternoon.
+        const barred = locked && !SW.util.isApproved(sensitivity, a.name);
+        return {
+          value: a.name,
+          // Offered but not selectable. `/v1/models` filters on permission alone, so a granted Alias
+          // whose Hosted GenAI Endpoint is stopped is listed anyway (#21) — hiding it would answer
+          // "where did that model go" with nothing, and allowing it would fail opaquely mid-build.
+          // The lock keeps that shape on purpose: a model hidden from the list teaches nobody why
+          // it went, and this one has a reason worth reading.
+          disabled: barred || !a.serving,
+          title: barred
+            ? (sensitivity.refusal || SW.util.lockReason(sensitivity, a.name))
+            : (a.problem || undefined),
+          label: barred
+            ? `${a.name} — not approved for sensitive data`
+            : a.serving
+            ? (a.display_name && a.display_name !== a.name ? `${a.name} — ${a.display_name}` : a.name)
+            : `${a.name} — not serving`,
+        };
+      }),
     ];
 
     const row = (spec) => {
@@ -167,6 +191,50 @@ window.SW = window.SW || {};
               action: NOTICE[notice].retry
                 ? h(Button, { size: 'small', onClick: () => SW.store.loadAssignments() }, 'Retry')
                 : undefined,
+            })
+          : null,
+
+        // The lock's own explanation, above the rows it closes (ADR-0043). It is drawn alongside
+        // `notice` rather than as one of its cases because it does not close the panel — the
+        // approved models are still assignable from here, which is the whole point of leaving the
+        // rest visible and disabled instead of hiding them.
+        //
+        // The scope sentence rides with it and is not optional. The lock is the moment a creator
+        // decides how much this promise covers, and one that let them believe a bound Data Source
+        // was gated too would have bought their confidence with something untrue.
+        locked
+          ? h(Alert, {
+              type: lockDead ? 'warning' : 'info',
+              showIcon: true,
+              message: 'Approved models only',
+              description: h(
+                'div',
+                null,
+                h('p', { style: { margin: '0 0 8px' } },
+                  lockDead
+                    // The server's own sentence, which names WHICH of the four ways the approved set
+                    // came back empty and who to ask about it. The fallback exists only so a
+                    // response that somehow carried none still says something true.
+                    ? (sensitivity.refusal || SW.brand.text(
+                        'Nothing is approved for sensitive data yet, and this app reads {datasets}. '
+                        + 'Ask your {platformName} administrator about the {llmAlias} group '
+                        + '{group}.',
+                        {
+                          datasets: SW.util.declaredPhrase(sensitivity),
+                          group: sensitivity.group,
+                        }
+                      ))
+                    : SW.brand.text(
+                        'This app reads {datasets}, so {assistantName} will only use the '
+                        + '{llmAliasPlural} in {group}. That holds in {chat}, in a build and at '
+                        + 'publish.',
+                        {
+                          datasets: SW.util.declaredPhrase(sensitivity),
+                          group: sensitivity.group,
+                        }
+                      )),
+                h('p', { style: { margin: 0 } }, SW.util.lockScope())
+              ),
             })
           : null,
 

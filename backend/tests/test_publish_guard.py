@@ -294,3 +294,79 @@ def test_publish_from_the_workbench_app_is_refused(tmp_path: Path, monkeypatch):
     with pytest.raises(RuntimeError, match="Workbench App"):
         orch.publish()
     assert not cp.published
+
+
+# --- The sensitivity refusal (ADR-0043) ----------------------------------------------------------
+
+from sage.resources.bindings import KIND_DATASET, KIND_LLM_ALIAS
+from sage.resources.provider import ApprovedModels
+from sage.resources.publish_guard import (
+    EMPTY_MODEL_GROUP,
+    MISSING_MODEL_GROUP,
+    NO_APPROVED_MODEL_ACCESS,
+    SENSITIVE_TO_VENDOR,
+    UNCHECKED_ALIAS,
+    sensitive_model_problems,
+)
+
+_SENSITIVE = [Binding(kind=KIND_DATASET, id="d1", name="customer_pii", display_name="customer_pii")]
+_APPROVED = ApprovedModels(names=frozenset({"qwen-2-5"}), group_name="sensitive-approved", members=1)
+
+
+def _alias_binding(name):
+    return Binding(kind=KIND_LLM_ALIAS, id=f"a-{name}", name=name, display_name=name)
+
+
+def test_an_unapproved_alias_beside_a_declared_dataset_refuses():
+    problems = sensitive_model_problems([_alias_binding("gpt-5.4")], _SENSITIVE, _APPROVED)
+    assert [p.reason for p in problems] == [SENSITIVE_TO_VENDOR]
+    assert "gpt-5.4" in problems[0].message and "customer_pii" in problems[0].message
+    assert problems[0].id == "a-gpt-5.4"  # the UI can take the creator to the row
+
+
+def test_an_approved_alias_publishes():
+    assert sensitive_model_problems([_alias_binding("qwen-2-5")], _SENSITIVE, _APPROVED) == []
+
+
+def test_an_ordinary_app_never_reaches_the_check():
+    """No declared Dataset, or no model bound: the guard costs nothing and cannot block a publish."""
+    assert sensitive_model_problems([_alias_binding("gpt-5.4")], [], _APPROVED) == []
+    assert sensitive_model_problems([], _SENSITIVE, _APPROVED) == []
+
+
+def test_the_feature_is_off_when_no_group_is_configured():
+    """approved=None is the opt-out. A tag somebody applied for their own reasons must not brick."""
+    assert sensitive_model_problems([_alias_binding("gpt-5.4")], _SENSITIVE, None) == []
+
+
+@pytest.mark.parametrize(
+    "approved,expected",
+    [
+        (ApprovedModels(group_name="g", reachable=False), UNCHECKED_ALIAS),
+        (ApprovedModels(group_name="g", group_found=False), MISSING_MODEL_GROUP),
+        (ApprovedModels(group_name="g", members=0), EMPTY_MODEL_GROUP),
+        (ApprovedModels(group_name="g", members=3), NO_APPROVED_MODEL_ACCESS),
+    ],
+)
+def test_the_four_unusable_shapes_each_get_their_own_sentence(approved, expected):
+    problems = sensitive_model_problems([_alias_binding("gpt-5.4")], _SENSITIVE, approved)
+    assert [p.reason for p in problems] == [expected]
+    # Every one of them names the Dataset it is about and ends with a next step — "publish again"
+    # for the three a person can fix, "publishing again in a moment" for the transient one.
+    assert "customer_pii" in problems[0].message
+    assert "again" in problems[0].message
+
+
+def test_the_four_sentences_are_all_different():
+    """They fail the same way and are fixed differently, which is the whole reason they are four."""
+    shapes = [
+        ApprovedModels(group_name="g", reachable=False),
+        ApprovedModels(group_name="g", group_found=False),
+        ApprovedModels(group_name="g", members=0),
+        ApprovedModels(group_name="g", members=3),
+    ]
+    messages = {
+        sensitive_model_problems([_alias_binding("gpt-5.4")], _SENSITIVE, a)[0].message
+        for a in shapes
+    }
+    assert len(messages) == 4

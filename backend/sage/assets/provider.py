@@ -1,6 +1,8 @@
 """Asset explorer / dataset provider (SPEC C6, Step 6).
 
-Lists the project's Domino datasets with their tags. Domino dataset tags are freeform.
+Lists the project's Domino datasets with their tags. Domino dataset tags are freeform, so the
+sensitivity declaration this reads is a convention, not a built-in field: a Dataset is declared
+sensitive by carrying the tag `SAGE_SENSITIVE_DATASET_TAG` names (ADR-0043).
 
 Deep module, narrow interface: list_datasets(project_id) -> [Asset]. Two adapters:
   - DominoAssetProvider : real, via /api/datasetrw/v2/datasets
@@ -91,6 +93,27 @@ class FileListing:
     files: list[DatasetFile]
     truncated: bool = False
     measured: bool = True
+
+
+# The tag that declares a Dataset sensitive (ADR-0043). Configurable because Domino tags are
+# freeform and a customer may already have a word for this; ONE name, not a list, because a list
+# invites the belief that Sage understands their taxonomy when all it does is match a string.
+DEFAULT_SENSITIVITY_TAG = "sensitive"
+
+
+def sensitivity_tag(env: dict[str, str] | None = None) -> str:
+    env = env if env is not None else dict(os.environ)
+    return env.get("SAGE_SENSITIVE_DATASET_TAG", "").strip() or DEFAULT_SENSITIVITY_TAG
+
+
+def is_sensitive(asset: Asset, tag: str | None = None) -> bool:
+    """Whether this Dataset carries the sensitivity declaration.
+
+    Case-insensitive: the tag is typed by a person into a freeform field, and `Sensitive` meaning
+    something different from `sensitive` would be a trap with no upside.
+    """
+    want = (tag or sensitivity_tag()).lower()
+    return any(t.lower() == want for t in asset.tags)
 
 
 def walk_files(root: Path) -> FileListing:

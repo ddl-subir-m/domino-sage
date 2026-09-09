@@ -15,6 +15,11 @@
 // composer bar draws; `{ "mode": "plan", "pick": "<id>" }` also clicks that row and reports what
 // it wrote. `{ "health": true }` reports the URL the open-weight list is read from.
 //
+// `{ "mode": "plan", "sensitivity": {...} }` seeds the sensitivity lock (ADR-0043) before drawing,
+// so the menu can be asked which rows it closed and what it said about them. Seeded into the store
+// rather than served over `/project/sensitivity`, because what is under test here is the menu: the
+// read itself is covered in Python, where the approved set is computed.
+//
 // Nothing is mounted. `createElement` is stubbed to a plain object, so calling the component
 // returns the tree it would draw — which is where a menu item and its key are settled.
 import fs from 'node:fs';
@@ -153,6 +158,18 @@ const pickerMenu = (tree) => find(tree, (n) => n.t === 'Dropdown' && n.p.menu
 // first in the tree. Found by what it is wrapped around, so this never reports on that one.
 const pickerTip = (tree) => find(tree, (n) => n.t === 'Tooltip'
   && [...walk(n.c)].some((x) => x.p && x.p['aria-label'] === 'Build model'));
+// A divider carries neither, so both stay undefined rather than false and the JSON drops them —
+// the same reading `label` already gets.
+const itemRow = (i) => ({ key: i.key, label: i.label, disabled: i.disabled, title: i.title });
+// The switch notice under the box (ADR-0043). `createElement` here is a stub, so a component in
+// the tree is an uninvoked function and its words are not in it yet — this calls it the way React
+// would, which is also why it can assert the SENTENCE and not just the element's presence. Found by
+// the component rather than by its class for the same reason: the class is inside the thing that
+// has not run.
+const lockNotice = (tree) => {
+  const node = find(tree, (n) => typeof n.t === 'function' && n.t.name === 'LockNotice');
+  return node ? node.t(node.p) : null;
+};
 
 SW.store.set({
   thread: { id: 'conv_1', title: 'A conversation', artifacts: [] },
@@ -180,6 +197,9 @@ for (const step of steps) {
   }
   await SW.store.setBuildMode(step.mode);
   await settle();
+  // After the mode, because `setBuildMode` goes through a real status write and this does not —
+  // seeding first and settling after would leave the lock in place but the notify already spent.
+  if ('sensitivity' in step) SW.store.set({ sensitivity: step.sensitivity });
   // A build in flight. `pick` is read live out of ModelControl.snapshot — it has no per-turn pin
   // the way the mode does — so what this control offers mid-turn is its own claim.
   SW.store.set({ buildRunning: !!step.running });
@@ -195,9 +215,12 @@ for (const step of steps) {
     offered: !!menu,
     label: button ? strings(button).join(' ') : null,
     disabled: button ? !!button.p.disabled : null,
+    // `disabled` and `title` ride along with every row since ADR-0043: a closed row and the reason
+    // it is closed are one claim, and reporting the label alone would let a menu grey a model out
+    // and say nothing without this file noticing.
     items: menu ? menu.p.menu.items.map((i) => (i.type === 'group'
-      ? { group: i.label, children: i.children.map((c) => ({ key: c.key, label: c.label })) }
-      : { key: i.key, label: i.label })) : null,
+      ? { group: i.label, children: i.children.map(itemRow) }
+      : itemRow(i))) : null,
     selectedKeys: menu ? menu.p.menu.selectedKeys : null,
     // What a mode with no override says instead, so "you cannot change this" is not silence.
     // Reported whether or not a menu is offered: under the signing pin a mode has BOTH, and
@@ -210,6 +233,12 @@ for (const step of steps) {
       const tip = pickerTip(before);
       const child = tip && [...walk(tip.c)].find((n) => n.t);
       return child ? String(child.t) : null;
+    })(),
+    // What the lock says under the box, or null when it says nothing. The whole sentence, because
+    // the claim being tested is that the person is TOLD — a boolean would pass over an empty one.
+    lockNotice: (() => {
+      const notice = lockNotice(before);
+      return notice ? strings(notice).join(' ') : null;
     })(),
   };
 

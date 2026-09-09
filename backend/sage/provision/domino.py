@@ -29,9 +29,14 @@ from urllib.parse import quote
 
 import httpx
 
+from ..assets.provider import sensitivity_tag
 from ..orchestrator import brand
 
 log = logging.getLogger("sage.provision.domino")
+
+# Dataset create/snapshot/TAG. The tag write is v1; the tag READ (assets/provider) is v2.
+# Two versions of one surface, verified separately — do not collapse them.
+_DATASETRW_PATH = "/api/datasetrw/v1"
 
 _PROJECTS_PATH = "/api/projects/beta/projects"
 _APPS_PATH = "/api/apps/beta/apps"
@@ -157,6 +162,7 @@ class ControlPlane(Protocol):
     def git_credentials(self) -> list[CredentialRef]: ...
     def create_project(self, name: str, *, git_url: str, git_credential_id: str, branch: str = "main", description: str = "") -> ProjectRef: ...
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
+    def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool: ...
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
     def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
@@ -348,6 +354,38 @@ class DominoControlPlane:
         if isinstance(data, dict):
             log.info("workspace-create response keys: %s", sorted(data.keys()))
         return data
+
+    def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool:
+        """Tag a Dataset so its rows narrow the models this Project may call (ADR-0043).
+
+        Best-effort: True on success, False on any failure. A governance tag must never block an
+        upload — the bytes are already written by the time this runs, and failing the upload over a
+        tag would lose work to protect it.
+
+        Restored from 685ebf3 unchanged except for the tag NAME, which is now configuration
+        (`sensitivity_tag`) rather than a constant, because a customer may already have a word for
+        this. Tags attach to a SNAPSHOT, not to the Dataset (POST .../tags requires snapshotId), so
+        the caller passes one when it has it and we fetch the current one when it does not.
+
+        LIVE-VERIFY (carried over unchanged): the GET shape that returns an existing Dataset's
+        current snapshot id — we read `snapshotIds`/`latestSnapshotId`, falling back across both.
+        """
+        try:
+            snap_id = str(snapshot_id or "")
+            if not snap_id:
+                data = self._get(f"{_DATASETRW_PATH}/datasets/{dataset_id}")
+                ds = (data.get("dataset") or data) if isinstance(data, dict) else {}
+                snap_ids = ds.get("snapshotIds") or []
+                snap_id = str(ds.get("latestSnapshotId") or (snap_ids[-1] if snap_ids else "") or "")
+            if not snap_id:
+                log.error("tag_dataset_sensitive: dataset %s has no snapshot to tag", dataset_id)
+                return False
+            self._post(f"{_DATASETRW_PATH}/datasets/{dataset_id}/tags",
+                       {"tagName": sensitivity_tag(), "snapshotId": snap_id})
+            return True
+        except Exception:
+            log.exception("tag_dataset_sensitive failed for dataset %s", dataset_id)
+            return False
 
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
         # Stop a running builder so it stops consuming a hardware tier. Path + verb confirmed against
@@ -746,6 +784,8 @@ class FakeControlPlane:
 
     projects: list[ProjectRef] = field(default_factory=list)
     workspaces: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # dataset_id -> the snapshot id the tag was written against (ADR-0043).
+    tagged_sensitive: dict[str, str] = field(default_factory=dict)
     published: dict[str, PublishedApp] = field(default_factory=dict)  # app_id -> app
     app_projects: dict[str, str] = field(default_factory=dict)  # app_id -> project_id
     app_names: dict[str, str] = field(default_factory=dict)  # app_id -> the name publish asked for
@@ -805,6 +845,10 @@ class FakeControlPlane:
         }
         self.workspaces.setdefault(project_id, []).append(ws)
         return ws
+
+    def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool:
+        self.tagged_sensitive[dataset_id] = snapshot_id or "snap"
+        return True
 
     def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
         for ws in self.workspaces.get(project_id, []):

@@ -35,6 +35,7 @@ class Reason(str, Enum):
     CHAT_OVERRIDE = "chat-override"
     SIGNING_PIN = "signing-pin"
     SIGNING_VETO = "signing-veto"
+    SENSITIVITY = "sensitivity"
 
 
 # Which gateway models accept OpenAI image_url content parts. Empirical, not advertised: verified by
@@ -163,10 +164,18 @@ class SessionState:
     chat_model: ModelId | None = None
     # OpenAI-style reasoning_effort for Chat, when the picked alias supports it. None omits the field.
     reasoning_effort: str | None = None
+    # The aliases approved for sensitive work, when this turn is under the lock (ADR-0043).
+    # None means no lock: either the deployment never configured SAGE_SENSITIVE_MODEL_GROUP, or no
+    # Dataset in scope carries the tag. A frozenset means locked, and the router will not leave it.
+    # It is never EMPTY here: an approved set that resolves to nothing is a refusal the orchestrator
+    # makes before the turn starts, because a router that returns a model cannot express "no".
+    approved_models: frozenset[ModelId] | None = None
 
 
 @dataclass(frozen=True)
 class ModelDecision:
     model: ModelId
     reason: Reason
-    locked: bool  # leftover from the old sensitivity lock; always False. The shim still overwrites model.
+    # True when the sensitivity lock chose or approved this model (ADR-0043); the picker shows the
+    # rest disabled. False everywhere else. The shim still overwrites model on every request.
+    locked: bool

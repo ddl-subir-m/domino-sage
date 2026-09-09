@@ -1322,3 +1322,81 @@ def test_a_vendor_alias_has_no_endpoint_url():
 # reads Domino disagrees on, with writes beside them, and they live in
 # `test_a_collaborator_is_added_not_invited.py` — including the contract change ADR-0028 made to
 # what an unreadable project record costs.
+
+
+# --- Alias groups: the approved-model source (ADR-0043) ------------------------------------------
+
+def _alias(name, groups=(), aid=None):
+    from sage.resources.provider import LlmAlias
+    return LlmAlias(id=aid or f"id-{name}", name=name, display_name=name, groups=list(groups))
+
+
+def test_approved_aliases_reads_the_forward_source():
+    """`groups` on the alias record — the field Sage already fetches and used to discard."""
+    from sage.resources.provider import approved_aliases
+
+    aliases = [_alias("qwen-2-5", ["FDE_models"]), _alias("gpt-5.4"), _alias("opus", ["other"])]
+    assert approved_aliases("FDE_models", aliases) == {"qwen-2-5"}
+    assert approved_aliases("fde_models", aliases) == {"qwen-2-5"}  # group name is a typed string too
+
+
+def test_approved_aliases_reads_the_reverse_source_when_the_field_is_absent():
+    """The LIVE-VERIFY hedge: if a non-admin sees no `groups`, /api/alias-groups still answers."""
+    from sage.resources.provider import approved_aliases
+
+    aliases = [_alias("qwen-2-5", aid="a1"), _alias("gpt-5.4", aid="a2")]
+    records = [{"name": "FDE_models", "aliases": [{"id": "a1", "name": "qwen-2-5"}]}]
+    assert approved_aliases("FDE_models", aliases, records) == {"qwen-2-5"}
+
+
+def test_the_two_sources_are_unioned_not_preferred():
+    """A redaction on either surface must not silently shrink the approved set."""
+    from sage.resources.provider import approved_aliases
+
+    aliases = [_alias("qwen-2-5", ["FDE_models"], aid="a1"), _alias("local-domino-llm", aid="a2")]
+    records = [{"name": "FDE_models", "aliases": [{"id": "a2", "name": "local-domino-llm"}]}]
+    assert approved_aliases("FDE_models", aliases, records) == {"qwen-2-5", "local-domino-llm"}
+
+
+def test_an_unknown_or_unnamed_group_is_empty_which_the_caller_reads_as_refusal():
+    from sage.resources.provider import approved_aliases
+
+    aliases = [_alias("qwen-2-5", ["FDE_models"])]
+    assert approved_aliases("no-such-group", aliases) == set()
+    assert approved_aliases("", aliases) == set()
+    assert approved_aliases("   ", aliases, [{"name": "FDE_models", "aliases": []}]) == set()
+
+
+def test_parse_groups_guards_a_bare_string():
+    from sage.resources.provider import parse_groups
+
+    assert parse_groups(["a", "b"]) == ["a", "b"]
+    assert parse_groups("FDE_models") == ["FDE_models"]  # not one group per character
+    assert parse_groups(None) == []
+    assert parse_groups({"a": 1}) == []
+
+
+def test_a_group_member_the_caller_cannot_call_is_not_approved():
+    """FOUND LIVE (2026-09-09). `sensitive-approved` held `opus` and `haiku`; only `opus` was on
+    /v1/models for that caller. Taking the group's word for `haiku` put a model in the approved set
+    that the gateway then refused — a dead turn where the design says `no-approved-model-access`.
+
+    `aliases` is already intersected with /v1/models, so holding a row is the proof of reachability.
+    """
+    from sage.resources.provider import approved_aliases
+
+    aliases = [_alias("opus", aid="id-opus")]          # haiku is registered but NOT callable
+    records = [{"name": "sensitive-approved", "aliases": [
+        {"id": "id-opus", "name": "opus"},
+        {"id": "id-haiku", "name": "haiku"},
+    ]}]
+    assert approved_aliases("sensitive-approved", aliases, records) == {"opus"}
+
+
+def test_an_entirely_unreachable_group_approves_nothing():
+    """Every member registered, none callable — the set is empty, which the caller reads as the
+    refusal `no-approved-model-access` rather than as 'no lock'."""
+    from sage.resources.provider import approved_aliases
+
+    records = [{"name": "g", "aliases": [{"id": "id-a", "name": "a"}, {"id": "id-b", "name": "b"}]}]
+    assert approved_aliases("g", [_alias("opus", aid="id-opus")], records) == set()

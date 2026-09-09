@@ -2,7 +2,57 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useRef, Fragment } = React;
-  const { Tooltip, Button, Tag, Dropdown, Input } = antd;
+  const { Tooltip, Button, Tag, Dropdown, Input, Modal, Checkbox } = antd;
+
+  // Whether this promote target may be declared sensitive on the way in (ADR-0043).
+  //
+  // Four conditions, and the third is the one worth the function. A Domino tag marks a whole
+  // Dataset SNAPSHOT rather than a file, so ticking a box on one upload declares everything in that
+  // Dataset for everybody who reads it. On a Dataset shared in from another Project that would lock
+  // a colleague's work from inside a form that never named them, so the offer is confined to a
+  // Dataset this Project owns. Marking anybody else's stays a deliberate act in Domino's own UI, by
+  // somebody who can see who else uses it.
+  //
+  // Offered only where the creator NAMED the Dataset. Build's "Add to <app>" lands the file on
+  // whichever Dataset the server picks, and a whole-Dataset declaration made through a control that
+  // never showed its target is the same trap by a shorter route.
+  function canDeclare(target) {
+    const { sensitivity } = SW.store.get();
+    return !!(target && target.projectOwned && !target.declared
+      && sensitivity && sensitivity.enabled);
+  }
+
+  // The confirm that carries the tick. A confirm rather than a silent promote because the tick has
+  // a consequence past this file — it is a declaration about the Dataset — and because the sentence
+  // under it is the only place that consequence gets said. Unticked is the default and the ordinary
+  // answer: this asks, it does not push.
+  function confirmPromote(resource, target, run) {
+    let declare = false;
+    Modal.confirm({
+      icon: null,
+      title: SW.brand.text('Add {name} to {dataset}?',
+                           { name: resource.name, dataset: target.name }),
+      content: h(
+        'div',
+        null,
+        h('p', { style: { margin: '0 0 12px' } }, SW.brand.text(
+          'The file is copied onto {dataset}, where this app and anything else that mounts it can '
+          + 'read it.', { dataset: target.name })),
+        h(
+          Checkbox,
+          { onChange: (e) => { declare = e.target.checked; } },
+          'This data is sensitive'
+        ),
+        h('p', { style: { margin: '8px 0 0' }, className: 'sw-caption' }, SW.brand.text(
+          'Ticking this tags the whole {dataset} in {platformName}, not just this file — every '
+          + 'file already on it counts as sensitive too. {assistantName} will then only use '
+          + '{llmAliasPlural} approved for sensitive data while this {dataset} is in scope.',
+          { dataset: target.name }))
+      ),
+      okText: 'Add file',
+      onOk: () => run(declare),
+    });
+  }
   const {
     DownOutlined, RightOutlined, PlusOutlined, MoreOutlined, DoubleRightOutlined,
     ArrowRightOutlined, CloseOutlined, CheckCircleFilled, InboxOutlined, EditOutlined,
@@ -237,7 +287,22 @@ window.SW = window.SW || {};
       if (key === 'to-app') return SW.store.addScratchToDataset(resource, '');
       if (key === 'delete-scratch') return SW.store.deleteScratchFile(resource);
       if (key.startsWith('to-dataset:')) {
-        return SW.store.addScratchToDataset(resource, key.slice('to-dataset:'.length).replace(/^dataset:/, ''));
+        const prefixed = key.slice('to-dataset:'.length);
+        const bare = prefixed.replace(/^dataset:/, '');
+        const target = writableDatasets.find((d) => d.id === prefixed);
+        // The declaration is offered ONLY here, on the one path where the creator picked the
+        // Dataset by name (ADR-0043). Every other target promotes exactly as it did before, so a
+        // deployment that never opted in sees nothing new at all.
+        if (!canDeclare(target)) return SW.store.addScratchToDataset(resource, bare);
+        return confirmPromote(resource, target, async (declare) => {
+          // The bytes first, the tag second, and never the other way round. A tag write can fail —
+          // it is best-effort by design, since losing an upload to a governance tag would be the
+          // wrong trade — and declaring a Dataset whose file never landed would leave a Project
+          // locked over data that is not there.
+          const res = await SW.store.addScratchToDataset(resource, bare);
+          if (res && declare) await SW.store.declareDatasetSensitive(bare);
+          return res;
+        });
       }
       return undefined;
     };
@@ -343,6 +408,21 @@ window.SW = window.SW || {};
             Tooltip,
             { title: SW.util.SOVEREIGN_TITLE },
             h(Tag, { bordered: false, className: 'sw-sens sw-sens-internal' }, 'sovereign')
+          ),
+        // The declaration, in the slot the sovereign tag uses — the two never meet, since one is
+        // worn by an Alias and the other by a Dataset, and sharing the slot is what keeps the chips
+        // on one column down the rail. Drawn HERE, at the moment somebody attaches the Dataset,
+        // because the lock that follows should read as a consequence they already knew about
+        // rather than as a model disappearing later for no stated reason (ADR-0043).
+        resource.declared &&
+          h(
+            Tooltip,
+            { title: SW.util.declaredTitle() },
+            h(
+              Tag,
+              { bordered: false, className: 'sw-sens sw-sens-confidential' },
+              SW.util.DECLARED_MARK
+            )
           )
       ),
 

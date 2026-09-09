@@ -1,8 +1,8 @@
 """Table-driven precedence tests for LLMRouter (DESIGN.md Seam 1).
 
 The highest-value unit in the system: pure inputs, pure outputs, zero mocks, no gateway.
-Covers auto(plan/implement) > ask/plan/implement pick > modal default. Sensitive attachments
-do not change the model.
+Covers auto(plan/implement) > ask/plan/implement pick > modal default, and the sensitivity lock
+(ADR-0043) that sits over all of it.
 """
 from __future__ import annotations
 
@@ -190,3 +190,89 @@ def test_signing_slot_is_the_one_copy_of_the_pins_input():
     assert signing_slot(ModelCatalog(sovereign_plan="s", sovereign_implement="s",
                                      sovereign_ask="s", plan="p", implement="i",
                                      ask="domino/gemini-3.7-flash")) == "ask"
+
+
+# --- The sensitivity lock (ADR-0043) -------------------------------------------------------------
+#
+# `approved_models` is the whole input: None is no lock, a frozenset is the set of aliases an
+# administrator approved for sensitive work. These assert the one property the promise rests on —
+# no branch of the router can leave that set — rather than re-testing precedence under a lock.
+
+APPROVED = frozenset({"sovereign-plan-8b", "sovereign-implement-8b", "sovereign-ask-8b"})
+
+
+@pytest.mark.parametrize(
+    "state,expected_model",
+    [
+        # Auto follows the phase, within the approved set.
+        (SessionState(Mode.AUTO, Phase.PLAN, approved_models=APPROVED), "sovereign-plan-8b"),
+        (SessionState(Mode.AUTO, Phase.IMPLEMENT, approved_models=APPROVED), "sovereign-implement-8b"),
+        # Ask has one sovereign slot, and the user's pick never reached it anyway.
+        (SessionState(Mode.ASK, Phase.PLAN, approved_models=APPROVED), "sovereign-ask-8b"),
+        # An explicit pick loses to the lock — this is the case the promise is made of.
+        (SessionState(Mode.PLAN, Phase.PLAN, picked_model="strong-vendor", approved_models=APPROVED),
+         "sovereign-plan-8b"),
+        (SessionState(Mode.IMPLEMENT, Phase.IMPLEMENT, picked_model="cheap-vendor",
+                      approved_models=APPROVED), "sovereign-implement-8b"),
+        # Chat is not a second door: the lock is applied outside the fork, so it lands here too.
+        (SessionState(Mode.AUTO, Phase.PLAN, chat_thread_id="t1", chat_model="strong-vendor",
+                      approved_models=APPROVED), "sovereign-ask-8b"),
+        (SessionState(Mode.AUTO, Phase.PLAN, chat_thread_id="t1", approved_models=APPROVED),
+         "sovereign-ask-8b"),
+    ],
+)
+def test_the_lock_never_leaves_the_approved_set(state, expected_model):
+    decision = resolve(state, CATALOG)
+    assert decision.model == expected_model
+    assert decision.model in APPROVED
+    assert decision.reason is Reason.SENSITIVITY
+    assert decision.locked is True
+
+
+def test_an_already_approved_model_is_kept_and_marked_locked():
+    """The lock narrows; it does not reshuffle. A turn already on an approved model stays there."""
+    state = SessionState(Mode.PLAN, Phase.PLAN, picked_model="sovereign-ask-8b",
+                         approved_models=APPROVED)
+    decision = resolve(state, CATALOG)
+    assert decision.model == "sovereign-ask-8b"
+    assert decision.reason is Reason.PLAN_OVERRIDE  # the original reason survives
+    assert decision.locked is True
+
+
+def test_no_lock_leaves_every_decision_untouched():
+    """approved_models=None is the default, and must be a no-op for a deployment that never opted in."""
+    for state in (
+        SessionState(Mode.AUTO, Phase.PLAN),
+        SessionState(Mode.IMPLEMENT, Phase.IMPLEMENT, picked_model="cheap-vendor"),
+        SessionState(Mode.AUTO, Phase.PLAN, chat_thread_id="t1", chat_model="strong-vendor"),
+    ):
+        assert resolve(state, CATALOG).locked is False
+
+
+def test_the_lock_outranks_the_signing_pin():
+    """A 400 is an outage; a leak is not recoverable. When they disagree, the lock wins (ADR-0043)."""
+    signing = next(iter(SIGNS_TOOL_CALLS))
+    catalog = ModelCatalog(
+        sovereign_plan="sovereign-plan-8b", sovereign_implement="sovereign-implement-8b",
+        sovereign_ask="sovereign-ask-8b", plan=signing, implement="cheap-vendor", ask="ask-vendor",
+    )
+    assert signing_slot(catalog) == "plan"  # the pin would otherwise take this session
+    decision = resolve(SessionState(Mode.AUTO, Phase.IMPLEMENT, approved_models=APPROVED), catalog)
+    assert decision.model == "sovereign-implement-8b"
+    assert decision.reason is Reason.SENSITIVITY
+
+
+def test_an_unapproved_sovereign_slot_falls_back_deterministically():
+    """No sovereign slot approved: any approved alias beats refusing, and the pick must not wobble."""
+    approved = frozenset({"zeta-approved", "alpha-approved"})
+    state = SessionState(Mode.AUTO, Phase.PLAN, approved_models=approved)
+    assert resolve(state, CATALOG).model == "alpha-approved"
+    assert resolve(state, CATALOG).model == "alpha-approved"
+
+
+def test_an_empty_approved_set_raises_rather_than_failing_open():
+    """The orchestrator refuses this turn before it starts. If one ever arrives, crash — do not
+    hand back the vendor model the lock exists to refuse."""
+    state = SessionState(Mode.AUTO, Phase.PLAN, approved_models=frozenset())
+    with pytest.raises(ValueError, match="empty approved set"):
+        resolve(state, CATALOG)

@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect, useRef, Fragment } = React;
-  const { Button, Tooltip, Input, Dropdown, Modal, Checkbox, Alert } = antd;
+  const { Button, Tooltip, Input, Dropdown, Modal, Checkbox, Alert, Tag } = antd;
   const {
     ExportOutlined, SearchOutlined, MoreOutlined, PlusOutlined, DownOutlined, LoadingOutlined,
   } = icons;
@@ -1056,12 +1056,25 @@ window.SW = window.SW || {};
       data_source: 'datasource', llm_alias: 'model_llm', model_api: 'model_predictive',
     };
 
-    const row = (key, name, { kind, mark, door, menu }) =>
+    const row = (key, name, { kind, mark, declared, door, menu }) =>
       h(
         'div',
         { key, className: 'sw-appdeps-row' },
         h('span', { className: 'sw-appdeps-icon' }, SW.util.iconFor(KIND_ICON[kind] || kind)),
         h('span', { className: 'sw-appdeps-name' }, name),
+        // The declaration, on the Binding as well as on the rail row it came from (ADR-0043). This
+        // list is what an app IS, so it is where somebody asks why a model went missing — and a
+        // chip here answers that without them having to go back to the panel and match names.
+        declared &&
+          h(
+            Tooltip,
+            { title: SW.util.declaredTitle() },
+            h(
+              Tag,
+              { bordered: false, className: 'sw-sens sw-sens-confidential' },
+              SW.util.DECLARED_MARK
+            )
+          ),
         door,
         // Two words beside a name cannot say what looked, when, or that nothing is blocked by the
         // answer — and a creator who reads "not used" as "this will not publish" has been told the
@@ -1152,6 +1165,7 @@ window.SW = window.SW || {};
                   {
                     kind: b.kind,
                     mark: b.used === false,
+                    declared: SW.util.bindingIsDeclared(b),
                     // The Scope door, for the one kind that has a part to choose (#142): an Alias
                     // has no part to name and a Dataset is read whole, so every other kind draws
                     // none.

@@ -421,3 +421,27 @@ def test_a_non_json_listing_body_renames_the_platform_and_the_noun(_oem_pack, mo
         provider.list_datasets(None)
 
     assert str(e.value).startswith("The Acme Cloud API returned a non-JSON body listing Cubes.")
+
+
+# --- The sensitivity declaration (ADR-0043) ------------------------------------------------------
+
+def test_is_sensitive_matches_the_tag_case_insensitively():
+    """A person types the tag into a freeform Domino field. Case must not decide governance."""
+    from sage.assets.provider import Asset, is_sensitive
+
+    assert is_sensitive(Asset("d1", "pii", tags=["sensitive"]))
+    assert is_sensitive(Asset("d1", "pii", tags=["Sensitive"]))
+    assert is_sensitive(Asset("d1", "pii", tags=["SENSITIVE", "revenue"]))
+    assert not is_sensitive(Asset("d1", "logs", tags=["revenue"]))
+    assert not is_sensitive(Asset("d1", "logs"))
+
+
+def test_the_tag_name_is_configurable_and_falls_back_to_sensitive():
+    from sage.assets.provider import DEFAULT_SENSITIVITY_TAG, Asset, is_sensitive, sensitivity_tag
+
+    assert sensitivity_tag({}) == DEFAULT_SENSITIVITY_TAG
+    assert sensitivity_tag({"SAGE_SENSITIVE_DATASET_TAG": "  PII "}) == "PII"
+    assert sensitivity_tag({"SAGE_SENSITIVE_DATASET_TAG": "   "}) == DEFAULT_SENSITIVITY_TAG
+    # An explicit tag beats the environment, and still matches case-insensitively.
+    assert is_sensitive(Asset("d1", "x", tags=["pii"]), "PII")
+    assert not is_sensitive(Asset("d1", "x", tags=["sensitive"]), "PII")

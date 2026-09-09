@@ -2,17 +2,21 @@
 
 resolve(state, catalog) -> ModelDecision
 
-Precedence (highest first), per SPEC.md Component 3 minus the old sensitivity lock:
+Precedence (highest first), per SPEC.md Component 3:
     1. auto mode         -> plan model in plan phase, implement model in implement phase
     2. ask mode          -> catalog.ask (never overridable; read-only is enforced by the shim)
     3. plan mode         -> user's picked model if set, else catalog.plan
     4. implement mode    -> user's picked model if set, else catalog.implement
 
 A Chat turn (chat_thread_id set) is separate: the Chat pick, else catalog.ask.
-Build Auto/Ask/Plan/Implement does not apply. Sensitive attachments do not change the model —
-the caller uses any LLM alias they can reach on the gateway.
+Build Auto/Ask/Plan/Implement does not apply.
 
-Over all of that sits the signing pin (ADR-0032). A model that signs its tool calls cannot be
+Over ALL of that sits the sensitivity lock (ADR-0043). When a Dataset in scope is declared
+sensitive, `state.approved_models` holds the aliases an administrator approved for sensitive work,
+and no branch below may leave that set. It is applied once, outside the Chat/Build fork, so the two
+harnesses cannot disagree and a third one added later inherits it without being asked to.
+
+Under the lock sits the signing pin (ADR-0032). A model that signs its tool calls cannot be
 mixed with one that does not inside a single harness session, so if any assignable slot signs, a
 Build turn resolves to it whatever the phase or mode says. The pin loses to an in-session act (the
 user moving the picker mid-session) and does not apply to Chat, which has no phases to hold still.
@@ -40,8 +44,60 @@ def resolve(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     # Chat is a Workbench mode, not a ModelControl mode. A Chat turn still has to pick a real
     # gateway alias; the standing Build Auto/Ask/Plan/Implement choice must not leak into it.
     if state.chat_thread_id:
-        return _resolve_chat(state, catalog)
-    return _pin_signing(_resolve_build(state, catalog), catalog)
+        return _lock_sensitivity(_resolve_chat(state, catalog), state, catalog)
+    return _lock_sensitivity(_pin_signing(_resolve_build(state, catalog), catalog), state, catalog)
+
+
+def _lock_sensitivity(
+    decision: ModelDecision, state: SessionState, catalog: ModelCatalog
+) -> ModelDecision:
+    """Hold this turn on a model approved for sensitive work (ADR-0043).
+
+    Outranks everything below it, the signing pin included. The pin keeps a session on one model to
+    avoid a hard 400; the lock keeps declared rows away from an unapproved vendor. A 400 is an
+    outage and a leak is not recoverable, so when the two disagree the lock wins and the session may
+    have to be started again on an approved model.
+
+    Raises on an EMPTY approved set rather than returning the model it was asked to refuse. That set
+    is the orchestrator's refusal to make before the turn starts (`no-approved-model-access`), and a
+    router that quietly handed back a vendor model here would fail open at the one point the whole
+    decision exists to fail closed.
+    """
+    approved = state.approved_models
+    if approved is None:
+        return decision
+    if decision.model in approved:
+        return replace(decision, locked=True)
+    return ModelDecision(
+        model=_nearest_approved(state, catalog, approved), reason=Reason.SENSITIVITY, locked=True
+    )
+
+
+def _nearest_approved(
+    state: SessionState, catalog: ModelCatalog, approved: frozenset[str]
+) -> str:
+    """The approved alias closest to what this turn asked for.
+
+    The sovereign slots are the preference, not the authority: they are already assignable and
+    preflighted, so an administrator who set them gets the model they meant, while the approved set
+    from the gateway group is still what decides. When no sovereign slot is approved, any approved
+    alias beats refusing a turn a person is waiting on, and sorting makes that pick the same one
+    every time rather than whatever the gateway happened to list first.
+    """
+    for candidate in _lock_preferences(state, catalog):
+        if candidate in approved:
+            return candidate
+    if not approved:
+        raise ValueError("sensitivity lock reached the router with an empty approved set")
+    return min(approved)
+
+
+def _lock_preferences(state: SessionState, catalog: ModelCatalog) -> tuple[str, ...]:
+    if state.chat_thread_id or state.mode is Mode.ASK:
+        return (catalog.sovereign_ask,)
+    if state.mode is Mode.IMPLEMENT or (state.mode is Mode.AUTO and state.phase is Phase.IMPLEMENT):
+        return (catalog.sovereign_implement, catalog.sovereign_ask)
+    return (catalog.sovereign_plan, catalog.sovereign_ask)
 
 
 def resolve_unsigned(state: SessionState, catalog: ModelCatalog) -> ModelDecision | None:

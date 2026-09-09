@@ -27,6 +27,8 @@ class ModelControl:
         # Same token discipline as read-only: a per-turn arming for internet access, so an
         # overlapping/crashed turn can never drop another turn's guarantee. See arm_web().
         self._web_token: object | None = None
+        self._sensitivity_token: object | None = None
+        self._approved_models: frozenset[str] | None = None
         # Chat turn pin: same token discipline so a Chat turn cannot leak write tools into a later
         # Ask turn, and an overlapping disarm cannot drop the allowlist mid-flight.
         self._chat_token: object | None = None
@@ -100,6 +102,29 @@ class ModelControl:
         if self._web_token is token:
             self._web_token = None
 
+    def arm_sensitivity(self, approved: frozenset[str]) -> object:
+        """Lock THIS turn to the models approved for sensitive work (ADR-0043), mirroring arm_web().
+
+        Armed per turn rather than held as a standing choice for the same reason read-only is: the
+        declaration is a live fact about the Datasets bound right now, and a lock left standing from
+        a previous turn would be a stale one. The orchestrator reads the declaration, arms this, and
+        disarms on exit.
+
+        An EMPTY set is never armed — that is a refusal the orchestrator makes before the turn, and
+        the router raises rather than fall back if one ever reaches it.
+        """
+        token = object()
+        self._approved_models = approved
+        self._sensitivity_token = token
+        return token
+
+    def disarm_sensitivity(self, token: object) -> None:
+        """Drop the lock, but only if `token` is still the live one — an out-of-order exit from a
+        superseded turn must never unlock the turn that replaced it."""
+        if self._sensitivity_token is token:
+            self._sensitivity_token = None
+            self._approved_models = None
+
     def arm_chat(self, thread_id: str) -> object:
         """Pin this turn as Chat for `thread_id` and return a token. The shim reads snapshot()
         per request, so without a pin a later Ask/Build turn would inherit write tools."""
@@ -157,4 +182,7 @@ class ModelControl:
             chat_thread_id=self._chat_thread_id if self._chat_token is not None else None,
             chat_model=self._chat_model,
             reasoning_effort=self._reasoning_effort,
+            approved_models=(
+                self._approved_models if self._sensitivity_token is not None else None
+            ),
         )

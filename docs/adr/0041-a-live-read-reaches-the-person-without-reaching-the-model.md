@@ -202,3 +202,14 @@ With no way to read, it reached for that escape and applied it to data that was 
 So the rule that was actually missing is the opposite one, and it is now in the template: a bound
 Data Source or Dataset is **not** missing, and an agent that can read one must read it rather than
 describe it as absent.
+
+## A Live read is out of the sensitivity lock's scope
+
+ADR-0043 narrows the models Sage will use while a Dataset declared sensitive is in scope. A Live
+read is deliberately not gated by it, and the reason is this ADR: the rows go to the Artifact and
+reach the person, while the assistant is handed columns, a row count and a path. Nothing sensitive
+enters a prompt, so there is nothing here for that lock to hold.
+
+This is written down because the two decisions read as if they must meet. A later reader who sees
+"sensitive" and "reads a Dataset" in one sentence will reach for the gate — and gating a Live read
+would break the one path built to keep rows away from the model in the first place.

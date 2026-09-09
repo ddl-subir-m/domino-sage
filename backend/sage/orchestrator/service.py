@@ -37,7 +37,15 @@ if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
 
 from .. import timing
-from ..assets.provider import Asset, AssetProvider, DatasetFile, FakeAssetProvider, FileListing
+from ..assets.provider import (
+    Asset,
+    AssetProvider,
+    DatasetFile,
+    FakeAssetProvider,
+    FileListing,
+    is_sensitive,
+    sensitivity_tag,
+)
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
@@ -113,6 +121,7 @@ from ..resources.preflight import (
     unresolved_slots,
 )
 from ..resources.provider import (
+    ApprovedModels,
     Column,
     DataSource,
     FakeResourceProvider,
@@ -128,11 +137,14 @@ from ..resources.provider import (
 )
 from ..resources.publish_egress import egress_notice, needs_listing
 from ..resources.publish_guard import (
+    PublishProblem,
     PublishRefused,
     data_source_bindings,
     missing_app_problem,
     publish_problems,
+    sensitive_model_problems,
 )
+from ..resources.sensitivity import SensitivityGate, declared_turn_refusal, group_name
 from ..resources.table_search import Candidate
 from ..router.model_control import ModelControl
 from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, signing_slot
@@ -655,6 +667,19 @@ class AttachWouldClobber(Exception):
 
 class UploadUnavailable(Exception):
     """No writable dataset is mounted to receive an upload."""
+
+
+class NotThisProjectsDataset(Exception):
+    """The sensitivity tick was asked for on a Dataset this Project does not own (ADR-0043).
+
+    Its own exception rather than a ValueError because the caller has a sentence to write and a
+    person to write it for: the declaration is refused for somebody who is not in the room, whose
+    Projects the tag would reach, and "invalid dataset" says none of that.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(name)
 
 
 class ResourceStillBound(Exception):
@@ -3515,6 +3540,8 @@ class Orchestrator:
         self._gateway = gateway
         self._catalog = catalog
         self._assets = assets or FakeAssetProvider()
+        # Built on first use, then held: its caches are per-Project and per-turn (ADR-0043).
+        self._gate: SensitivityGate | None = None
         self._resources = resources or FakeResourceProvider()
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
         self._live_read: dict[str, tuple[str, float]] = {}
@@ -7495,6 +7522,17 @@ class Orchestrator:
             self._chat_turns_before_mcp += 1
         chat_token = project.control.arm_chat(thread_id)
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
+        # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
+        # Chat and Build cannot drift: `llm_router` applies it outside their fork, and this is the
+        # Chat half of putting it there. A refusal ends the turn before OpenCode is even started.
+        chat_approved, chat_refusal = self._sensitivity_for_turn(project)
+        if chat_refusal:
+            project.control.disarm_chat(chat_token)
+            if web_token is not None:
+                project.control.disarm_web(web_token)
+            yield {"type": "error", "message": chat_refusal}
+            return
+        chat_sens_token = project.control.arm_sensitivity(chat_approved) if chat_approved else None
         tap: _EventTap | None = None
         try:
             client = self._ensure_opencode()
@@ -7853,6 +7891,8 @@ class Orchestrator:
             project.control.disarm_chat(chat_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
+            if chat_sens_token is not None:
+                project.control.disarm_sensitivity(chat_sens_token)
             saved = self._after_chat_turn(thread_id, immediate=immediate)
             if saved:
                 yield saved
@@ -9948,6 +9988,10 @@ class Orchestrator:
             uploading data mid-turn is not mistaken for the agent (see Project.turn_tree_baseline)."""
             return made_edits or project.snapshot.working_tree_hash() != project.turn_tree_baseline
 
+        # Declared before `restore_mode` closes over it: the refusal path below calls that function
+        # before anything is armed, and a closure reading an unassigned local would raise there.
+        sens_token: object | None = None
+
         def restore_mode() -> None:
             # Dropping the pin is the whole restore: a mid-turn escalation moved the PINNED mode, so
             # the user's standing choice was never touched and there is nothing to put back. Whatever
@@ -9959,6 +10003,20 @@ class Orchestrator:
                 project.control.disarm_read_only(ro_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
+            if sens_token is not None:
+                project.control.disarm_sensitivity(sens_token)
+
+        # The sensitivity lock (ADR-0043). A declared Dataset in scope narrows this turn to the
+        # models an administrator approved. An approved set that resolves to nothing REFUSES the
+        # turn rather than leaving it unlocked — `arm_sensitivity` is never handed an empty set, and
+        # the router raises rather than fall back if one ever reaches it.
+        approved_for_turn, sensitivity_refusal = self._sensitivity_for_turn(project)
+        if sensitivity_refusal:
+            restore_mode()
+            yield persist({"type": "error", "message": sensitivity_refusal})
+            return
+        if approved_for_turn:
+            sens_token = project.control.arm_sensitivity(approved_for_turn)
 
         def handle_stop() -> dict:
             project.stop_requested = False
@@ -11889,8 +11947,15 @@ class Orchestrator:
         the App is there, so `UNCHECKED_APP` is now only ever the transient it reads as (#80).
         """
         recorded = parse_bindings(project.workspace.read_bindings())
+        # The sensitivity guard is asked FIRST and separately, because it is about a different pair
+        # of Bindings (a declared Dataset and an LLM Alias) and an app that reads no Data Source can
+        # still be refused by it (ADR-0043). Putting it after the early return below would have made
+        # it silently inert for exactly the app it exists to stop.
+        sensitive_problems = self._sensitive_model_problems(recorded)
         bindings = data_source_bindings(recorded)
         if not bindings:
+            if sensitive_problems:
+                raise PublishRefused(sensitive_problems)
             return
         try:
             sources: list[DataSource] | None = self._resources.list_data_sources()
@@ -11904,9 +11969,65 @@ class Orchestrator:
             except Exception:
                 log.exception("publish: couldn't read the app's visibility")
                 visibility = None
-        problems = publish_problems(bindings, sources, visibility)
+        problems = sensitive_problems + publish_problems(bindings, sources, visibility)
         if problems:
             raise PublishRefused(problems)
+
+    def _sensitive_model_problems(self, recorded: list[Binding]) -> list[PublishProblem]:
+        """Refuse an app that reads a declared Dataset through an unapproved model (ADR-0043).
+
+        Costs nothing on an ordinary publish: the gate answers off without a call when the
+        deployment never set SAGE_SENSITIVE_MODEL_GROUP, and answers empty without a gateway read
+        when no Dataset is bound. So a gateway wobble cannot block a publish that this decision has
+        nothing to say about.
+
+        Unlike the two guards beside it, a failure here is NOT caught and turned into "no problem".
+        The gate already answers an unreadable listing as `reachable=False`, which is a refusal —
+        "Sage could not check where the rows would go" is not a reason to send them.
+        """
+        gate = self._sensitivity_gate()
+        declared = gate.declared(recorded)
+        if not declared:
+            return []
+        return sensitive_model_problems(recorded, declared, gate.approved())
+
+    def _sensitivity_for_turn(self, project: Project) -> tuple[frozenset[str] | None, str]:
+        """The approved set to lock this turn to, or the sentence refusing it (ADR-0043).
+
+        (None, "") is the ordinary answer and the ordinary cost: nothing read when the deployment
+        never opted in, and nothing read beyond the Binding manifest when no Dataset is bound.
+
+        A refusal rather than an unlocked turn is the whole point of the second return value. If
+        this handed back (None, "") when the approved set resolved to nothing, the turn would run on
+        a vendor model with a declared Dataset in scope — the exact leak, arrived at by falling
+        through rather than by deciding.
+        """
+        gate = self._sensitivity_gate()
+        if not gate.enabled:
+            return None, ""
+        declared = gate.declared(parse_bindings(project.workspace.read_bindings()))
+        if not declared:
+            return None, ""
+        approved = gate.approved()
+        if approved is None or not approved.usable:
+            return None, declared_turn_refusal(approved or ApprovedModels(), declared)
+        return approved.names, ""
+
+    def _sensitivity_gate(self) -> SensitivityGate:
+        """One gate per Project, held for the life of this service so its caches survive a turn.
+
+        `list_assets` is Project-scoped, which is why the gate cannot be shared across Projects; the
+        service already is one per Project, so holding it here is the same lifetime.
+        """
+        if self._gate is None:
+            self._gate = SensitivityGate(
+                lambda: self._assets.list_datasets(self._domino_project_id),
+                self._resources.list_llm_aliases,
+                # Optional by design: the approved set still resolves from `groups` on the alias
+                # records, so an adapter without this reverse source is a hedge missing, not a break.
+                getattr(self._resources, "list_alias_groups", None),
+            )
+        return self._gate
 
     def stop(self) -> dict:
         """Stop THIS builder's workspace so it stops consuming compute. Saves in-progress work first
@@ -12513,7 +12634,19 @@ class Orchestrator:
 
     def list_assets(self) -> list[dict]:
         """Every Dataset this caller can read. `mount_path` says which are also on this disk —
-        useful for uploads, which need a writable mount, and no longer a condition of reading."""
+        useful for uploads, which need a writable mount, and no longer a condition of reading.
+
+        `declared` is the sensitivity declaration, answered HERE rather than derived from the `tags`
+        list beside it (ADR-0043). The tag name is configuration and the match is case-insensitive,
+        and a second copy of both rules in JavaScript is how a badge and the lock behind it come to
+        disagree about one Dataset. It is False for every row while the deployment has not opted in,
+        because a badge promising that a model will be narrowed says something untrue where nothing
+        narrows.
+
+        `project_owned` is the only Dataset the sensitivity tick may be offered on — see
+        `_is_project_dataset`.
+        """
+        tag = sensitivity_tag() if self._sensitivity_gate().enabled else ""
         return [
             {
                 "id": a.id,
@@ -12522,9 +12655,77 @@ class Orchestrator:
                 "project": a.project,
                 "writable": bool(a.mount_path and os.access(a.mount_path, os.W_OK)),
                 "mount_path": a.mount_path,
+                "declared": bool(tag) and is_sensitive(a, tag),
+                "project_owned": self._is_project_dataset(a),
             }
             for a in self._assets.list_datasets(self._domino_project_id)
         ]
+
+    def _is_project_dataset(self, asset: Asset) -> bool:
+        """Whether this Project owns this Dataset, rather than having had it shared in.
+
+        The narrowest thing Sage can establish from a listing, and the whole condition on offering
+        the sensitivity tick (ADR-0043). A Domino tag marks a whole Dataset snapshot, so ticking a
+        box on one upload tags every Project that reads that Dataset; doing it to a Dataset somebody
+        shared in would lock their work from inside a form that never named them.
+
+        It is not a proof of privacy and does not claim to be — a Dataset this Project owns can
+        still be mounted into another. It is the line between "yours to declare" and "somebody
+        else's", which is the line the creator can actually be asked about.
+        """
+        pname = self._domino_project_name
+        return bool(pname) and asset.project == pname
+
+    def sensitivity_state(self) -> dict:
+        """What the Workbench draws the lock from (ADR-0043): is it on, what does it allow, and why.
+
+        One read for four surfaces — the model panel, the two composer pickers, and the notice that
+        says the session moved — because they are answering one question and four copies of it would
+        drift. It carries no per-Dataset verdict: the badge reads `declared` off `/api/assets`,
+        where the Datasets already are.
+
+        Cheap in the ordinary case, by the same construction the turn gate is: nothing is read when
+        the deployment never opted in, and nothing beyond the Binding manifest when no Dataset is
+        bound. `refusal` is the sentence a turn would be refused with, so the picker can say the
+        approved set resolves to nothing rather than drawing every model disabled with no reason.
+        """
+        gate = self._sensitivity_gate()
+        off = {"enabled": False, "locked": False, "group": "", "approved": [], "datasets": [],
+               "refusal": None}
+        if not gate.enabled:
+            return off
+        project = self.project()
+        declared = gate.declared(parse_bindings(project.workspace.read_bindings()))
+        approved, refusal = self._sensitivity_for_turn(project)
+        return {
+            "enabled": True,
+            "locked": bool(declared),
+            "group": group_name(),
+            "approved": sorted(approved or ()),
+            "datasets": [b.display_name or b.name for b in declared],
+            "refusal": refusal or None,
+        }
+
+    def declare_dataset_sensitive(self, dataset_id: str) -> dict:
+        """Tag one of this Project's own Datasets sensitive (ADR-0043).
+
+        Refused outright for a Dataset shared in from elsewhere — see `_is_project_dataset`. The
+        refusal is here and not only in the UI because the condition is about somebody who is not
+        in the room, and a guard that lives only in the form it is drawn on is one caller away from
+        being gone.
+
+        Best-effort past that point: `tag_dataset_sensitive` never raises and answers False on any
+        failure, and the upload it rode in with has already landed. Losing an upload to protect it
+        would be the wrong trade, so the answer is reported and the bytes stay.
+        """
+        asset = self._find_asset(dataset_id)
+        if not self._is_project_dataset(asset):
+            raise NotThisProjectsDataset(asset.name)
+        if self._control_plane is None:
+            return {"tagged": False, "dataset": asset.name}
+        snapshot = next(iter(asset.tag_snapshots.values()), None)
+        tagged = self._control_plane.tag_dataset_sensitive(asset.id, snapshot_id=snapshot)
+        return {"tagged": bool(tagged), "dataset": asset.name}
 
     def list_llm_aliases(self) -> list[dict]:
         """LLM Aliases this caller can actually call, shaped for the Resource Browser (#5).

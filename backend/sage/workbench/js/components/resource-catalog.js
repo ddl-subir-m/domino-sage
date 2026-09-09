@@ -52,6 +52,19 @@ window.SW = window.SW || {};
                 Tooltip,
                 { title: SW.util.SOVEREIGN_TITLE },
                 h(Tag, { bordered: false, className: 'sw-sens sw-sens-internal' }, 'sovereign')
+              ),
+            // Read before the Add, on the row the Add is on. This is the earliest moment the
+            // declaration can be shown, and the lock it leads to is easiest to accept from here
+            // (ADR-0043).
+            resource.declared &&
+              h(
+                Tooltip,
+                { title: SW.util.declaredTitle() },
+                h(
+                  Tag,
+                  { bordered: false, className: 'sw-sens sw-sens-confidential' },
+                  SW.util.DECLARED_MARK
+                )
               )
           ),
           h('span', { className: 'sw-cat-desc' }, resource.description),

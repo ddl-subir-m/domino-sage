@@ -276,6 +276,11 @@ shows_pack = true
 
 [[surface]]
 kind = "python-prose"
+module = "sage/resources/sensitivity.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
 module = "sage/tools/app_visibility.py"
 shows_pack = true
 

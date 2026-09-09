@@ -228,8 +228,8 @@ agent working from column names and types, which is fully supported. It is also 
 reads to decide whether the assistant may see a result's values and not only its shape — the share
 is the one record that says so, and no second one is kept.
 _Kind_: name
-_Avoid_: preview, sample data, examples, peek, sensitive (the flag that word named is gone from the
-record; the share itself is the fact)
+_Avoid_: preview, sample data, examples, peek, sensitive (a share is not a classification — see
+[[Declared Dataset]], which is where that word now lives; the share itself is the fact)
 
 **Live read**:
 One read Sage makes of a store or a file to answer a person, in the turn they asked. It reaches only
@@ -585,11 +585,29 @@ one from a Domino-hosted Alias, but cannot tell which vendor is behind it, and s
 _Kind_: name
 _Avoid_: external model, third-party model, public model
 
+**Declared Dataset**:
+A [[Dataset]] carrying the sensitivity tag, which is what makes Sage narrow the models it will use
+while that Dataset is in scope ([ADR-0043](docs/adr/0043-a-declared-dataset-narrows-the-models-it-can-reach.md)).
+A declaration, never a detection: the tag is freeform and self-service, so Sage honours it and never
+claims to have found it. A [[Data Source]] cannot be one — no classification field exists to read.
+_Kind_: name
+_Avoid_: sensitive data, classified data, PII (they claim Sage knows what the rows hold)
+
+**Approved model group**:
+The LLM Gateway alias group naming the models an administrator approved for sensitive work. Sage
+reads it and never writes it, and reads it as a whitelist — an alias nobody classified is refused.
+Unset means the deployment never opted in, and no [[Declared Dataset]] narrows anything.
+_Kind_: name
+_Avoid_: allowlist, safe models, sovereign group (a group may hold a [[Vendor-backed Alias]] if its
+administrator put one there — approval is their word, not a property of where the model runs)
+
 **Egress**:
 Rows leaving Domino because a Built App sends them to a Vendor-backed Alias. Distinct from
 re-export, which is a viewer being handed the publisher's own access to a store: egress is about
-where the data goes, re-export about whose permission it moves under. Publish refuses re-export and
-only names egress ([ADR-0012](docs/adr/0012-every-store-and-alias-combination-publishes.md)).
+where the data goes, re-export about whose permission it moves under. Publish names egress for an
+ordinary app, and refuses it for one that reads a [[Declared Dataset]] through a model outside the
+[[Approved model group]] ([ADR-0043](docs/adr/0043-a-declared-dataset-narrows-the-models-it-can-reach.md),
+superseding [ADR-0012](docs/adr/0012-every-store-and-alias-combination-publishes.md)).
 _Kind_: name
 _Avoid_: leak, exfiltration, data sharing
 

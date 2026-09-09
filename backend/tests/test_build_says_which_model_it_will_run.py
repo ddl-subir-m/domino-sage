@@ -234,3 +234,93 @@ def test_no_signing_slot_leaves_every_word_of_the_picker_alone():
     plain, _ = _drawn([{"mode": "auto"}, {"mode": "auto", "signing": None}])
     assert plain["label"] == f"{PLAN_MODEL} · planning"
     assert "to plan and" in plain["why"]
+
+
+# --- The sensitivity lock, in the picker (ADR-0043) -----------------------------------------------
+#
+# A declared Dataset in scope narrows the models the router will use, and the picker's job is to say
+# so BEFORE somebody picks. Two things could go wrong quietly and both are asserted here: a row that
+# is closed without a reason (the house rule a disabled control must explain itself), and a session
+# moved onto another model with nothing said about it.
+
+# `sovereign/plan` is the approved model in this fixture, because `_lock_preferences` prefers the
+# sovereign slots and the harness's catalog already carries them.
+APPROVED = "sovereign/plan"
+
+
+def _locked(**over):
+    lock = {"enabled": True, "locked": True, "group": "FDE_models",
+            "approved": [APPROVED], "datasets": ["claims"], "refusal": None}
+    lock.update(over)
+    return lock
+
+
+def _flat(items):
+    """Every row the menu offers, groups opened out and the divider dropped — it carries no key and
+    no label, so JSON leaves it an empty object."""
+    rows = [c for i in items for c in (i["children"] if "group" in i else [i])]
+    return [r for r in rows if r.get("key")]
+
+
+def test_a_model_outside_the_approved_group_is_closed_and_says_why():
+    """The reason has to travel with the row. A greyed model with no sentence over it is the defect
+    this exists to prevent — the person is left to guess whether it is broken, gone, or refused."""
+    (row,) = _drawn([{"mode": "plan", "sensitivity": _locked()}])
+    barred = next(i for i in _flat(row["items"]) if i["key"] == IMPLEMENT_MODEL)
+
+    assert barred["disabled"] is True
+    assert "not approved for sensitive data" in barred["label"]
+    assert "FDE_models" in barred["title"]
+    # Names the Dataset that closed it, so the explanation points at something to go and look at.
+    assert "claims" in barred["title"]
+
+
+def test_the_way_back_to_the_default_is_never_closed():
+    """The pinned row carries no model id — picking it CLEARS the override — so closing it would
+    strand somebody on the very override they are trying to leave."""
+    (row,) = _drawn([{"mode": "plan", "pick": IMPLEMENT_MODEL},
+                     {"mode": "plan", "sensitivity": _locked()}])[1:]
+    pinned = next(i for i in _flat(row["items"]) if i["key"] == "__pinned__")
+
+    assert not pinned.get("disabled")
+
+
+def test_an_unlocked_project_closes_nothing_and_says_nothing():
+    """The overwhelmingly common case, and the one a governance feature must not tax. Nothing about
+    the picker changes for a Project with no declared Dataset in scope."""
+    (row,) = _drawn([{"mode": "plan"}])
+
+    assert [i for i in _flat(row["items"]) if i.get("disabled")] == []
+    assert row["lockNotice"] is None
+
+
+def test_the_session_moving_onto_an_approved_model_is_said_once():
+    """Switch and tell them. Switching in silence fails the confidence the promise is meant to
+    build, and refusing the turn would stop somebody mid-task to teach what a sentence can teach."""
+    (row,) = _drawn([{"mode": "plan", "sensitivity": _locked()}])
+
+    assert row["lockNotice"], "the lock moved the session and drew no notice"
+    assert "claims" in row["lockNotice"]
+    assert PLAN_MODEL in row["lockNotice"]      # what it moved off
+    assert APPROVED in row["lockNotice"]        # what it moved to
+
+
+def test_a_pick_that_was_already_approved_is_not_announced_as_a_switch():
+    """Nothing moved, so there is nothing to say. A notice on every locked turn would be the
+    "don't show me this again" the house rules warn about, arriving by a different route."""
+    (row,) = _drawn([{"mode": "plan", "sensitivity": _locked(approved=[PLAN_MODEL])}])
+
+    assert row["lockNotice"] is None
+
+
+def test_an_approved_set_that_resolves_to_nothing_refuses_rather_than_announcing_a_move():
+    """The dead end. Every model is closed and the server's own sentence — which names WHICH of the
+    four ways the set came back empty, and who to ask — is what each closed row carries. No switch
+    notice, because nothing was switched to."""
+    refusal = "The LLM Alias group FDE_models has no models in it."
+    (row,) = _drawn([{"mode": "plan", "sensitivity": _locked(approved=[], refusal=refusal)}])
+    offered = [i for i in _flat(row["items"]) if i["key"] not in ("__pinned__", "__assignments__")]
+
+    assert offered and all(i["disabled"] for i in offered)
+    assert all(i["title"] == refusal for i in offered)
+    assert row["lockNotice"] is None

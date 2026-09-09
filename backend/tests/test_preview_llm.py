@@ -288,3 +288,51 @@ def test_the_gateway_errors_name_the_packs_brands(tmp_path, monkeypatch):
     for r in (minting, reaching):
         assert "Domino" not in r.json()["error"]["message"]
         assert "Sage" not in r.json()["error"]["message"]
+
+
+# --- The sensitivity lock reaches the previewed app's own call (ADR-0043) ------------------------
+
+def test_an_unapproved_model_is_refused_with_403_not_a_fall_through():
+    """403, not a fall-through. Falling through hands the call to Vite, which 404s, and appLlm.ts
+    reads a 404 as 'this app has no model' — the wrong sentence, and a silent one."""
+    from sage.preview.proxy import _refuse_model
+
+    body = json.dumps({"model": "gpt-5.4", "messages": []}).encode()
+    assert _refuse_model(body, lambda m: f"{m} is not approved") == "gpt-5.4 is not approved"
+
+
+def test_an_approved_model_passes_straight_through():
+    from sage.preview.proxy import _refuse_model
+
+    body = json.dumps({"model": "qwen-2-5", "messages": []}).encode()
+    assert _refuse_model(body, lambda m: None) is None
+
+
+def test_no_checker_means_no_check():
+    """A deployment that never opted in must not pay a parse, let alone a refusal."""
+    from sage.preview.proxy import _refuse_model
+
+    assert _refuse_model(json.dumps({"model": "gpt-5.4"}).encode(), None) is None
+
+
+@pytest.mark.parametrize("body", [b"", b"not json", b"{}", b'{"messages": []}', b"[]"])
+def test_a_body_naming_no_model_is_allowed_through(body):
+    """This gate refuses a NAMED model that is not approved. Inventing a refusal for a request it
+    cannot parse would break calls that have nothing to do with the lock — the gateway is the
+    authority on a malformed body."""
+    from sage.preview.proxy import _refuse_model
+
+    def boom(_model):
+        raise AssertionError("must not be consulted without a model name")
+
+    assert _refuse_model(body, boom) is None
+
+
+def test_the_refusal_names_the_models_the_creator_can_switch_to():
+    """A dead end with no next step is its own failure — so the sentence lists the way out."""
+    from sage.resources.sensitivity import declared_turn_refusal_for_model
+
+    message = declared_turn_refusal_for_model("gpt-5.4", frozenset({"qwen-2-5", "local-domino-llm"}))
+    assert "gpt-5.4" in message
+    assert "local-domino-llm, qwen-2-5" in message  # sorted, so the sentence is stable
+    assert "reload the preview" in message

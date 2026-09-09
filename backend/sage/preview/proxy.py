@@ -24,6 +24,7 @@ cross-origin and the browser blocks it — an app with a model was untestable un
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 
@@ -96,7 +97,23 @@ async def _answer_query(request: Request, path: str, queries) -> Response | None
                     media_type=answer.headers.get("content-type", "application/json"))
 
 
-async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
+def _refuse_model(body: bytes, approve_model) -> str | None:
+    """The refusal for this call's model, or None to allow it.
+
+    An unreadable or model-less body is allowed through: this gate exists to refuse a NAMED model
+    that is not approved, and inventing a refusal for a request it cannot parse would break calls
+    that have nothing to do with the lock. The gateway is the authority on a malformed body.
+    """
+    if approve_model is None:
+        return None
+    try:
+        model = (json.loads(body or b"{}") or {}).get("model")
+    except (ValueError, AttributeError):
+        return None
+    return approve_model(str(model)) if model else None
+
+
+async def _forward_llm(request: Request, path: str, get_llm, approve_model=None) -> Response | None:
     """One LLM Gateway call from the previewed app, made server-side. None when there is no gateway.
 
     Why it cannot just go to the gateway like the published app's does: `appLlm.ts` is built around
@@ -131,6 +148,14 @@ async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
         return None    # no Domino gateway configured; fall through to Vite, which 404s
     base, token = resolved
 
+    body = await request.body()
+    # The sensitivity lock, applied to the app's OWN model call (ADR-0043). 403 rather than a
+    # fall-through: falling through hands the call to Vite, which 404s, and `appLlm.ts` reads a 404
+    # as "this app has no model" — the wrong sentence, and a silent one. The refusal is the point.
+    refusal = _refuse_model(body, approve_model)
+    if refusal is not None:
+        return JSONResponse(status_code=403, content={"error": {"message": refusal}})
+
     headers = {k: v for k, v in request.headers.items()
                if k.lower() in _LLM_FORWARD or k.lower().startswith("x-llm-tag-")}
     headers["authorization"] = f"Bearer {token}"
@@ -138,7 +163,7 @@ async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
     client = httpx.AsyncClient(timeout=_LLM_TIMEOUT)
     try:
         upstream = await client.send(
-            client.build_request(request.method, url, content=await request.body(), headers=headers),
+            client.build_request(request.method, url, content=body, headers=headers),
             stream=True,
         )
     except (httpx.HTTPError, OSError) as e:
@@ -166,7 +191,8 @@ async def _forward_llm(request: Request, path: str, get_llm) -> Response | None:
 
 def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                      get_queries: Callable[[], object | None] | None = None,
-                     get_llm: Callable[[], tuple[str, str] | None] | None = None) -> FastAPI:
+                     get_llm: Callable[[], tuple[str, str] | None] | None = None,
+                     approve_model: Callable[[str], str | None] | None = None) -> FastAPI:
     """Preview proxy mounted at `/preview` on the control app.
 
     Vite bakes `base = <base_prefix>/preview/` into the HTML/JS it serves, so it only responds at
@@ -174,6 +200,12 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
     middleware strips Domino's proxy prefix, and the `/preview` Mount strips its own segment), so we
     re-add `<base_prefix>/preview` when forwarding upstream to land on Vite's base. `base_prefix` is
     "" for local dev, where `base` is just `/preview/`.
+
+    `approve_model` is the sensitivity lock reaching the app Sage is building (ADR-0043). It is
+    handed the model this call names and answers None to allow it, or the sentence refusing it. This
+    is the ONE interception point Sage has over an app's own model calls: a published app calls the
+    gateway directly from the viewer's browser, with no Sage hop to check anything. Optional, and
+    absent means no check — which is right for a deployment that never opted in.
 
     `get_queries` is optional: without it — and whenever it answers None — `/api/queries/*` goes to
     Vite and 404s exactly as it did before #24, which `appQuery.ts` already reads correctly as
@@ -239,7 +271,7 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
             # Same shape, one line up the stack: the previewed page cannot make this call itself
             # (cross-origin), so the proxy makes it. Falls through to Vite when no gateway is
             # configured, and `appLlm.ts` reads that 404 as "this app has no model", as it should.
-            forwarded = await _forward_llm(request, path, get_llm)
+            forwarded = await _forward_llm(request, path, get_llm, approve_model)
             if forwarded is not None:
                 return forwarded
         try:

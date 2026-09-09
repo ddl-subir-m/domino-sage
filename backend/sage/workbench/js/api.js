@@ -132,6 +132,12 @@ async function fetchDominoListing() {
         project: a.project,
         path: a.mount_path || a.mountPath || undefined,
         writable: !!a.writable,
+        // The sensitivity declaration and who owns the Dataset carrying it (ADR-0043). Both are
+        // the SERVER's answer and neither is re-derived here: the tag name is configuration, the
+        // match is case-insensitive, and the badge disagreeing with the lock about one Dataset is
+        // exactly what a second copy of those rules would produce.
+        declared: !!a.declared,
+        projectOwned: !!a.project_owned,
         // A Dataset is bindable since #141, so its row carries the Binding identity every other
         // bindable kind's does — the BARE Domino id beside its kind. Without it the header's picker
         // would have to rebuild the pair out of the prefixed id, which is the id-space trap that
@@ -743,6 +749,14 @@ SW.api = {
   // reason they are not folded together. `null` clears one, putting the slot back on the
   // deployment default; the backend tells that from a slot nobody mentioned.
   modelAssignments: () => request('/project/model/assignments'),
+  // The sensitivity lock, for every surface that draws it (ADR-0043). Its own read rather than a
+  // field on the status poll, which runs on a timer: a locked Project would pay a gateway listing
+  // per tick to answer a question that only moves when an administrator edits a group.
+  sensitivity: () => request('/project/sensitivity'),
+  // Tag a Dataset this Project owns. Refused server-side for one shared in, because the tag marks
+  // the whole Dataset for everyone who reads it and the form cannot name them.
+  declareDatasetSensitive: (datasetId) =>
+    post(`/project/assets/${encodeURIComponent(datasetId)}/sensitive`, {}),
   setModelAssignment: (slot, model) =>
     post('/project/model', { catalog: { [slot]: model || null } }),
   setChatModel: (chat_model, reasoning_effort) =>

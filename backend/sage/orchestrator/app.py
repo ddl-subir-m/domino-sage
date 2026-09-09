@@ -76,6 +76,7 @@ from ..resources.provider import (
     data_library_ready,
 )
 from ..resources.publish_guard import PublishRefused
+from ..resources.sensitivity import declared_turn_refusal_for_model
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
 from ..workspace.threads import (
@@ -94,6 +95,7 @@ from .service import (
     DataReferenced,
     DetachStopped,
     FolderActUnavailable,
+    NotThisProjectsDataset,
     Orchestrator,
     PlanArchiveRefused,
     ResetBusy,
@@ -1888,6 +1890,48 @@ def list_assets() -> dict:
         return {"assets": [], "default_dataset_id": None, "error": str(e)}
 
 
+@control_app.get("/api/project/sensitivity")
+def sensitivity_state() -> JSONResponse:
+    """The state of the sensitivity lock, for the surfaces that draw it (ADR-0043).
+
+    Its own route rather than a field on `/api/project/status`, for the reason
+    `/api/project/model/assignments` is: the status poll runs on a timer, and a locked Project would
+    pay a gateway listing on every tick to answer a question that changes when an administrator
+    edits a group. It is read on a scope load and after a Binding changes.
+
+    Never 500s. The Workbench draws badges and a picker from this, and a read that threw would take
+    the picker down rather than the lock — which still holds, in the router and at publish, whatever
+    this answers.
+    """
+    try:
+        return JSONResponse(content=orchestrator.sensitivity_state())
+    except Exception:
+        log.exception("sensitivity state read failed")
+        return JSONResponse(content={"enabled": False, "locked": False, "group": "",
+                                     "approved": [], "datasets": [], "refusal": None})
+
+
+@control_app.post("/api/project/assets/{dataset_id}/sensitive")
+def declare_dataset_sensitive(dataset_id: str) -> JSONResponse:
+    """Declare one of this Project's own Datasets sensitive (ADR-0043).
+
+    409 rather than 403 for a Dataset shared in from elsewhere: nothing is wrong with the caller's
+    permissions — they may well be able to tag it in Domino — and the refusal is about who else the
+    tag would reach. That is the state of the world, which is what the other 409s on this app mean.
+    """
+    try:
+        return JSONResponse(content=orchestrator.declare_dataset_sensitive(dataset_id))
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
+    except NotThisProjectsDataset as e:
+        return JSONResponse(status_code=409, content={"error": brand_text(
+            "{name} belongs to another {project}, and the tag would mark it for everyone who reads "
+            "it. Tag it in {platformName} instead, where you can see who else uses it.",
+            name=e.name)})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
 @control_app.get("/api/resources")
 def list_resources() -> JSONResponse:
     """Domino Resources this caller can pick: LLM Aliases (#5), Model APIs (#8), Data Sources (#10).
@@ -3499,8 +3543,35 @@ def _preview_llm() -> tuple[str, str] | None:
     return base.rstrip("/").removesuffix("/v1").rstrip("/") + "/v1", provider()
 
 
+def _preview_approve_model(model: str) -> str | None:
+    """Refuse the previewed app's model call when a declared Dataset is in scope (ADR-0043).
+
+    The app Sage builds is gated here and at publish, and nowhere else: once published it calls the
+    gateway from the viewer's browser with no Sage hop in the path. So this is the only place the
+    app's OWN call can be stopped, and it is stopped while the creator is watching.
+
+    None means allow, which is also what a Project with no declared Dataset and any deployment that
+    never opted in answer — neither reads anything to say so.
+    """
+    project = orchestrator._project
+    if project is None:
+        return None
+    try:
+        approved, refusal = orchestrator._sensitivity_for_turn(project)
+    except Exception:
+        # A preview call is not a turn, and Sage failing to read its own gate must not take the
+        # preview down. The publish guard still refuses, so nothing ships on this path.
+        log.exception("preview llm: couldn't resolve the sensitivity gate")
+        return None
+    if refusal:
+        return refusal
+    if approved is not None and model not in approved:
+        return declared_turn_refusal_for_model(model, approved)
+    return None
+
+
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
-                                               _preview_llm))
+                                               _preview_llm, _preview_approve_model))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no
     Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of
