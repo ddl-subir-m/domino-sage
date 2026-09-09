@@ -1072,6 +1072,9 @@ def diag() -> JSONResponse:
       - opencode_config: every config slot OpenCode resolved and which of them Sage wrote. The
         project slot sits on the Project volume, outranks OPENCODE_CONFIG, and is not ours — a file
         there can take the MCP server away while `agents` and `mcp` both still look right
+      - opencode_log_level: the level OpenCode is running at, when SAGE_OPENCODE_LOG_LEVEL set one.
+        Its MCP servers are invisible at the default level — it connects, or silently does not, and
+        the log reads the same either way. /api/diag/opencode?q=mcp serves the whole log
       - log_tail / opencode_log_tail: recent sage.* and OpenCode server logs
     """
     from .service import _opencode_base_port
@@ -1101,6 +1104,7 @@ def diag() -> JSONResponse:
         "git_credential": _git_credential_diag(),
         "git_credential_list": _git_credential_list_diag(),
         "debug_stream": ka.debug_stream_enabled(),
+        "opencode_log_level": os.environ.get("SAGE_OPENCODE_LOG_LEVEL", "") or "default (quiet)",
         "log_tail": list(_LOG_RING)[-60:],
         # Next to the tail rather than behind a query parameter nobody knows to type: this is the
         # half of the ring that survives a loud turn, and /api/diag is where someone looks first.
@@ -1133,6 +1137,26 @@ def diag_log(q: str = "", n: int = 400, warn: bool = False) -> PlainTextResponse
         which = "warnings" if warn else "lines"
         return PlainTextResponse(f"(no {which} match {q!r})" if q else f"(no {which} yet)")
     return PlainTextResponse("\n".join(lines[-max(1, n):]))
+
+
+@control_app.get("/api/diag/opencode")
+def diag_opencode(q: str = "", n: int = 400) -> PlainTextResponse:
+    """OpenCode's own server log as plain text, filterable — the twin of /api/diag/log.
+
+    `/api/diag` already carries the last 30 lines of this, which is enough to see a boot and useless
+    for anything else: the config-load lines alone are six of them. The line that mattered most this
+    week — whether OpenCode ever dialled the Live read MCP server — is not in it at the default log
+    level at all, and turning that level up (SAGE_OPENCODE_LOG_LEVEL=DEBUG) makes 30 lines cover
+    about a second.
+
+    Same shape as the sage log for the same reason: no shell in the workspace, and `?q=` is a plain
+    case-insensitive substring rather than a regex, because a regex typo in a URL bar is a worse
+    failure than a literal match. Start with ?q=mcp
+    """
+    lines = [ln for ln in orchestrator._opencode_log_tail(max(1, n)) if not q or q.lower() in ln.lower()]
+    if not lines:
+        return PlainTextResponse(f"(no lines match {q!r})" if q else "(no OpenCode log yet)")
+    return PlainTextResponse("\n".join(lines))
 
 
 @control_app.get("/api/diag/timing")

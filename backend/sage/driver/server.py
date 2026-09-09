@@ -39,6 +39,17 @@ class OpenCodeServer:
         cmd = ["npx", "opencode", "serve", "--port", str(self._port), "--hostname", "127.0.0.1"]
         if self._log_path:
             cmd.append("--print-logs")
+        # OpenCode says nothing about its MCP servers at the default level: it connects, or it
+        # silently does not, and the log reads identically either way. That is the whole reason a
+        # missing Live read took an evening to chase — `/api/diag` can now prove the config is right
+        # and the server answers, and still cannot say why OpenCode never dialled it.
+        #
+        # Off by default because DEBUG is loud enough to push the interesting line out of any tail
+        # worth reading. Set SAGE_OPENCODE_LOG_LEVEL=DEBUG in the workspace's environment, restart,
+        # and read it back with /api/diag/opencode?q=mcp.
+        level = os.environ.get("SAGE_OPENCODE_LOG_LEVEL", "").strip()
+        if level:
+            cmd += ["--log-level", level]
         # OpenCode resolves PROJECT config off the git root of the SESSION directory, NOT off this
         # cwd — measured live on 05fded1, see the reopened #199. Every Sage session runs under the
         # workspace volume (`.sage/chat-work` for Chat, `apps/<appId>/` for Build), so the project

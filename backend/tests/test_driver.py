@@ -400,6 +400,44 @@ def _spawn_capturing_env(monkeypatch, cwd):
     return seen["env"]
 
 
+def _spawn_capturing_cmd(monkeypatch, cwd) -> list[str]:
+    """The same fake `opencode serve`, handing back the command line rather than the env."""
+    import io
+
+    from sage.driver import server as drv
+
+    seen = {}
+
+    class _Proc:
+        pid = 1
+        stdout = io.StringIO("opencode server listening on http://127.0.0.1:4096\n")
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(drv.subprocess, "Popen",
+                        lambda cmd, **kw: (seen.setdefault("cmd", cmd), _Proc())[1])
+    drv.OpenCodeServer(cwd=cwd).start(ready_timeout_s=5.0)
+    return seen["cmd"]
+
+
+def test_opencode_runs_quiet_unless_it_is_asked_to_speak(monkeypatch, tmp_path):
+    """OpenCode says nothing about its MCP servers at the default level: it connects, or silently
+    does not, and the log reads identically either way. `/api/diag` can now prove the config
+    declares the server and that the server answers a probe, and still cannot say why OpenCode
+    never dialled it — this is the only source left for that.
+
+    Opt-in, because DEBUG is loud enough to push the interesting line out of any tail worth
+    reading. Reachable without a rebuild, because the workspace has no shell.
+    """
+    monkeypatch.delenv("SAGE_OPENCODE_LOG_LEVEL", raising=False)
+    assert "--log-level" not in _spawn_capturing_cmd(monkeypatch, tmp_path)
+
+    monkeypatch.setenv("SAGE_OPENCODE_LOG_LEVEL", "DEBUG")
+    cmd = _spawn_capturing_cmd(monkeypatch, tmp_path)
+    assert cmd[cmd.index("--log-level") + 1] == "DEBUG"
+
+
 def test_opencode_is_pointed_at_the_voiced_config_not_the_tokenised_source(monkeypatch, tmp_path):
     """The checked-in config says `{assistantName}`; only the installed copy says the pack's word.
 

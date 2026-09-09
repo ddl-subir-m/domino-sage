@@ -110,3 +110,40 @@ def test_diag_carries_the_warning_tail_without_anyone_knowing_the_parameter():
     logging.getLogger("sage.test").warning("gateway ended the stream with no finish_reason")
     body = TestClient(app_module.control_app).get("/api/diag").json()
     assert any("no finish_reason" in ln for ln in body["warn_tail"])
+
+
+# ---- /api/diag/opencode: OpenCode's own log ------------------------------------------------
+# Its MCP servers are invisible at the default log level — it connects, or silently does not, and
+# the log reads the same either way. That cost a week of chasing a missing Live read, so the level
+# is now raisable and the log is servable whole rather than 30 lines at a time.
+
+
+def _oc_client(lines: list[str], monkeypatch) -> TestClient:
+    monkeypatch.setattr(app_module.orchestrator, "_opencode_log_tail",
+                        lambda n=30: lines, raising=False)
+    return TestClient(app_module.control_app)
+
+
+def test_the_opencode_log_is_served_whole_and_filtered(monkeypatch):
+    r = _oc_client(["message=loading path=/x/opencode.json",
+                    "message=mcp server connected name=sage-live-read",
+                    "message=init"], monkeypatch).get("/api/diag/opencode", params={"q": "mcp"})
+    assert r.text == "message=mcp server connected name=sage-live-read"
+
+
+def test_no_match_says_so_rather_than_returning_blank(monkeypatch):
+    """An empty page reads like a broken endpoint. Here the empty answer IS the finding — no MCP
+    line at all is what "OpenCode never dialled it" looks like."""
+    r = _oc_client(["message=init"], monkeypatch).get("/api/diag/opencode", params={"q": "mcp"})
+    assert "no lines match" in r.text and "mcp" in r.text
+
+
+def test_the_log_level_is_reported_so_an_empty_answer_can_be_read(monkeypatch):
+    """"No mcp lines" means nothing without knowing whether anything would have printed one. The
+    level says which of the two an empty answer is."""
+    monkeypatch.delenv("SAGE_OPENCODE_LOG_LEVEL", raising=False)
+    assert TestClient(app_module.control_app).get("/api/diag").json()[
+        "opencode_log_level"] == "default (quiet)"
+    monkeypatch.setenv("SAGE_OPENCODE_LOG_LEVEL", "DEBUG")
+    assert TestClient(app_module.control_app).get("/api/diag").json()[
+        "opencode_log_level"] == "DEBUG"
