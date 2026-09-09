@@ -143,6 +143,9 @@ class EnforcementShim:
         # "<owner>/<project>" (see preview/prefix.py domino_project_label). It's what makes a build
         # findable in the gateway's usage dashboard; without it every Sage install shares one bucket.
         self._project_name = project_name
+        # The last (Conversation, Live read tools offered) pair logged, so the line below says
+        # something on the turn it changes and nothing on the dozen requests inside one turn.
+        self._live_read_offered: tuple[str, tuple[str, ...]] | None = None
 
     @property
     def catalog(self) -> ModelCatalog:
@@ -230,6 +233,22 @@ class EnforcementShim:
                 if (t.get("function") or {}).get("name", "").lower() not in denied
             ]
             request = {**request, "tools": tools}
+        if chat_id and isinstance(request.get("tools"), list):
+            # Whether the model was actually OFFERED Live read, which nothing else can say. Sage has
+            # told people it could not see their data — naming the `sage-live-read_` tools from its
+            # own prompt as "not available in this turn" — while `opencode mcp list` reported the
+            # server connected and /api/diag reached it and listed both tools. Every one of those
+            # can be true at once: the tool list is fixed when the turn starts, and the MCP
+            # handshake for a session has been seen landing half a minute after that. This request
+            # is the only place the list the model actually got is written down.
+            offered = sorted(
+                name for t in request["tools"]
+                if "live_read" in (name := str((t.get("function") or {}).get("name", ""))).lower()
+            )
+            if self._live_read_offered != (chat_id, tuple(offered)):
+                self._live_read_offered = (chat_id, tuple(offered))
+                logging.getLogger("sage.shim").info(
+                    "chat tools: live read %s", ", ".join(offered) or "NOT OFFERED")
         if chat_id and isinstance(request.get("messages"), list):
             request = {**request, "messages": strip_denied_writes(request["messages"], chat_id)}
 
