@@ -3585,6 +3585,17 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
         url = (server or {}).get("url", "")
         if url:
             server["url"] = _on_this_port(url)
+        # A `local` server is a command OpenCode SPAWNS, and it spawns it from the session's
+        # directory, not from here — so a path relative to the checkout resolves against the wrong
+        # place and the server dies silently, which reads exactly like the drop this file already
+        # warns about. Anchored to `source_dir` because that is the checkout the config came out of.
+        argv = (server or {}).get("command")
+        if isinstance(argv, list):
+            server["command"] = [
+                str((source_dir / a).resolve()) if isinstance(a, str) and "/" in a
+                and not a.startswith("/") else a
+                for a in argv
+            ]
     voiced = json.dumps(apply_agent_voice(deepcopy(cfg)), indent=2) + "\n"
     project_dir = _opencode_project_dir()
     try:
@@ -3608,6 +3619,45 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
                     global_dir, cfg.get("model"), control_port)
     except OSError as e:
         log.error("[wiring] could NOT install global opencode config (%s) — OpenCode will use its free tier", e)
+    _install_opencode_tools(source_dir, global_dir)
+
+
+def _install_opencode_tools(source_dir: Path, global_dir: Path) -> None:
+    """Put the Live read CUSTOM tools where OpenCode reads them (ADR-0041).
+
+    `~/.config/opencode/tools/` is the global slot, and global is what Sage can fill: a Chat session
+    runs under the workspace volume, so the project slot is never ours — the same reasoning that
+    makes the global config the one that works. Measured on the pinned 1.18.4: a tool here reaches
+    the model from ANY session directory, with no `.opencode/` in the workspace.
+
+    Copied rather than symlinked, so a checkout that moves or a container that rebuilds cannot leave
+    a dangling link that fails the way MCP already fails — silently, with the tools simply absent.
+
+    THE FILENAME CARRIES THE TOOL NAMES. OpenCode names a multi-export tool `<file>_<export>`, so
+    `live_read.ts` is what makes `live_read_table` and `live_read_files`. Copy it under any other
+    name and the prompts teach tools that do not exist.
+
+    Best effort and loud on failure: without this the agent falls back to Python, which answers but
+    puts every row in the model's context — the thing ADR-0041 exists to avoid.
+    """
+    src_dir = source_dir / "backend" / "sage" / "liveread" / "tools"
+    try:
+        names = sorted(p.name for p in src_dir.glob("*.ts"))
+    except OSError as e:
+        log.error("[wiring] could NOT read %s (%s) — Live read tools will be absent", src_dir, e)
+        return
+    if not names:
+        log.error("[wiring] no Live read tools at %s — they will be absent from every turn", src_dir)
+        return
+    dest = global_dir / "tools"
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (dest / name).write_text((src_dir / name).read_text())
+        log.warning("[wiring] installed Live read tools into %s (%s)", dest, ", ".join(names))
+    except OSError as e:
+        log.error("[wiring] could NOT install Live read tools into %s (%s) — Chat will fall back "
+                  "to Python, which puts rows in the model's context", dest, e)
 
 
 def _release_boot_page(host: str, port: int) -> None:

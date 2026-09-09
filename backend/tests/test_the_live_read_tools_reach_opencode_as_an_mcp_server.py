@@ -11,8 +11,8 @@ and has no way to name another Conversation's.
 
 from __future__ import annotations
 
-import json
 import pathlib
+import re
 
 import pytest
 
@@ -99,22 +99,29 @@ def test_the_lists_opencode_probes_for_answer_empty_rather_than_erroring(method)
     assert call(method)["result"] == {method.split("/")[0]: []}
 
 
-def test_the_name_an_instruction_gives_is_the_name_opencode_offers():
-    """OpenCode namespaces an MCP tool by its `opencode.json` key, then strips it again to call.
+def test_the_live_read_tools_are_named_the_same_either_way():
+    """Three spellings of one name, pinned to each other because they drift silently.
 
-    Verified live against the pinned 1.18.4 with a stub provider in front of it: the model was
-    offered `sage-live-read_live_read_table`, and the `tools/call` that reached the server named
-    `live_read_table`. Both halves matter and they point opposite ways — the handler keys on the
-    bare name, and every sentence that tells an agent which tool to call must use the prefixed one.
+    The tools reach the model as CUSTOM tools now, not MCP ones — OpenCode connects the MCP server
+    and then hands the model ten built-ins and none of ours (opencode #33027, measured live on
+    2026-09-09 with the server confirmed connected for the turn's own instance). Custom tools go
+    down the path that works.
 
-    They drift the instant somebody renames the key, and the failure is quiet: the agent calls a
-    tool that does not exist, and falls back on telling the person it cannot see their data, which
-    is the transcript this whole feature exists to stop. So they are pinned to each other here.
+    OpenCode names a multi-export custom tool `<file>_<export>`, so `live_read.ts` exporting `table`
+    and `files` IS `live_read_table` and `live_read_files` — which is also what `liveread/mcp.py`
+    dispatches on and what the prompts must tell the agent to call. Rename the file, rename an
+    export, or reword a prompt, and the agent calls a tool that does not exist and falls back on
+    telling the person it cannot see their data. That is the transcript this feature exists to end,
+    and it fails quietly, so the three are held together here.
     """
     root = pathlib.Path(__file__).resolve().parents[2]
-    servers = json.loads((root / "opencode.json").read_text())["mcp"]
-    assert len(servers) == 1, "the prefix below assumes one server; name the new one here too"
-    key = next(iter(servers))
+    ts = root / "backend" / "sage" / "liveread" / "tools" / "live_read.ts"
+    exported = re.findall(r"^export const (\w+) = tool\(", ts.read_text(), re.MULTILINE)
+    assert exported, f"no tools exported from {ts}"
+
+    from_the_file = sorted(f"{ts.stem}_{name}" for name in exported)
+    assert from_the_file == sorted(t["name"] for t in mcp.TOOLS), (
+        "the custom tool file and the Python handler disagree about the tool names")
 
     told = "\n".join(p.read_text() for p in (
         root / "template" / "react-vite" / "AGENTS.md",
@@ -122,10 +129,21 @@ def test_the_name_an_instruction_gives_is_the_name_opencode_offers():
         root / "backend" / "sage" / "orchestrator" / "service.py",
     ))
     for tool in mcp.TOOLS:
-        assert f"{key}_{tool['name']}" in told, f"nothing tells an agent to call {tool['name']}"
-        # And the bare name is what the server answers to, which is the other half of the pair.
+        assert tool["name"] in told, f"nothing tells an agent to call {tool['name']}"
+        # And that same bare name is what the server answers to, which is the other half of the pair.
         assert mcp.handle(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
              "params": {"name": tool["name"], "arguments": {}}},
             run=lambda n, a: "ok",
         )["result"]["content"][0]["text"] == "ok"
+
+
+def test_the_custom_tool_calls_the_route_this_process_serves():
+    """The `.ts` is a shim and must stay one: every decision lives in Python behind this route."""
+    root = pathlib.Path(__file__).resolve().parents[2]
+    body = (root / "backend" / "sage" / "liveread" / "tools" / "live_read.ts").read_text()
+
+    assert "/mcp/live-read" in body, "the tool must post to the route liveread serves"
+    assert "SAGE_CONTROL_PORT" in body, "the port moves with the workspace; do not hardcode one"
+    for tool in mcp.TOOLS:
+        assert f'call("{tool["name"]}"' in body, f"{tool['name']} is not wired to the route"
