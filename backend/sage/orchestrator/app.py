@@ -78,7 +78,13 @@ from ..resources.provider import (
 from ..resources.publish_guard import PublishRefused
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
-from ..workspace.threads import safe_id
+from ..workspace.threads import (
+    ARTIFACT_COMMIT_MAX,
+    ThreadStore,
+    artifact_bytes,
+    oversized_artifacts,
+    safe_id,
+)
 from .brand import text as brand_text
 from .describe import human_bytes
 from .service import (
@@ -1056,6 +1062,38 @@ def _opencode_config_diag() -> dict:
     return {"slots": slots, "shadowing_mcp": shadow}
 
 
+def _artifacts_diag() -> dict:
+    """What the Chat Artifacts weigh, and what is over the ceiling (#223).
+
+    `examples/` is committed, and git history never gives a blob back, so the only lever on how big
+    this Project gets is what goes in. That makes the weight worth reporting somewhere before it is
+    a slow clone nobody can explain — and this is where people already look.
+
+    `orphans` is the other half of the same question: folders no Conversation claims, which the
+    attach sweep removes. A number that stays above zero across restarts means that sweep is being
+    refused, and the digest guard is the likely reason."""
+    try:
+        project = orchestrator.project(start_preview=False, seed_app=False)
+    except Exception:
+        return {"ok": False, "detail": "no project attached yet"}
+    try:
+        root = project.record.path
+        total, count, largest, biggest = artifact_bytes(root)
+        heavy = oversized_artifacts(root)
+        return {
+            "ok": True,
+            "bytes": total,
+            "human": f"{total / (1024 * 1024):.1f} MB",
+            "files": count,
+            "largest": {"path": largest, "bytes": biggest} if largest else None,
+            "ceiling_mb": ARTIFACT_COMMIT_MAX // (1024 * 1024),
+            "over_ceiling": heavy,
+            "orphans": ThreadStore(root).orphaned_artifact_ids(),
+        }
+    except Exception as e:
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
 @control_app.get("/api/diag")
 def diag() -> JSONResponse:
     """Browser-openable build diagnostics (no shell needed in the deployed builder). Reads the CURRENT
@@ -1109,6 +1147,7 @@ def diag() -> JSONResponse:
             "last_gateway_error": p.last_gateway_error,
             "session_id": p.session_id,
         },
+        "artifacts": _artifacts_diag(),
         "git_credential": _git_credential_diag(),
         "git_credential_list": _git_credential_list_diag(),
         "debug_stream": ka.debug_stream_enabled(),

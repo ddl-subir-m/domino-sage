@@ -140,11 +140,13 @@ from ..workspace.manager import (ProjectRecord, Workspace, WorkspaceManager,
                                  ensure_ignore_line, remove_ignore_line)
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import (
+    ARTIFACT_COMMIT_MAX,
     ThreadStore,
     _ensure_dir_link,
     ensure_chat_workdir,
     new_artifact_paths,
     new_id,
+    oversized_artifacts,
     revert_denied_writes,
     snapshot_files,
     title_from_prompt,
@@ -11335,7 +11337,7 @@ class Orchestrator:
             return None
         message = f"build: {prompt.splitlines()[0][:72]}" if prompt.strip() else "build: no prompt"
         # Hard backstop: never stage attached-data copies, even if the agent ignored the fix nudge.
-        leaked = self._leaked_copy_paths(project)
+        leaked = self._kept_out_of_the_commit(project)
         try:
             committed = git.commit_all(path, message, exclude=leaked)
             # Integrate any teammate changes before pushing, or the push is rejected as non-ff and
@@ -11442,7 +11444,8 @@ class Orchestrator:
         if not self._turn_lock.acquire(blocking=False):
             raise TurnBusy(self._turn_wedged, "pull the latest changes")
         try:
-            git.commit_all(path, "build: save before pull", exclude=self._leaked_copy_paths(project))
+            git.commit_all(path, "build: save before pull",
+                           exclude=self._kept_out_of_the_commit(project))
             result = self._integrate_remote(project)
             if result is None or result.status in ("conflict-unresolved", "error"):
                 detail = result.detail if result else "no remote to pull from"
@@ -14671,6 +14674,20 @@ class Orchestrator:
             app = self._wm.app_workspace(project.id, app_id)
             out.append((app, live[app_id] if app_id in live else app.read_attachments()))
         return out
+
+    def _kept_out_of_the_commit(self, project: Project) -> list[str]:
+        """Everything this commit must stage over and then unstage: leaked data copies, and Chat
+        Artifacts too heavy for history.
+
+        One list because `commit_all` takes one, and the two halves are the same kind of rule —
+        bytes that may sit on the volume and must not enter the repo. They differ in what happens
+        next: a leaked copy is a mistake the agent should stop making, while an oversized Artifact
+        is someone's file that simply cannot be carried forever (`ARTIFACT_COMMIT_MAX`)."""
+        heavy = oversized_artifacts(project.record.path)
+        if heavy:
+            log.warning("artifacts: keeping %d file(s) out of the commit, over the %d MB ceiling: %s",
+                        len(heavy), ARTIFACT_COMMIT_MAX // (1024 * 1024), ", ".join(heavy))
+        return self._leaked_copy_paths(project) + heavy
 
     def _leaked_copy_paths(self, project: Project) -> list[str]:
         """Flat list of the source files that are copies of attached data — passed to

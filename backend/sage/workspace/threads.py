@@ -789,6 +789,62 @@ def revert_denied_writes(root: Path, thread_id: str, before: dict[str, bytes]) -
     return reverted
 
 
+# What a single Chat Artifact may weigh and still belong in a commit. A matplotlib PNG at the dpi
+# the Chat prompt asks for is 50-500 KB, so no one writing a chart meets this — it is the ceiling on
+# a runaway. It exists because `examples/` is committed now and git never gives a blob back: the
+# only lever on history growth is what is allowed in, so that is where the lever goes.
+#
+# Over it, the file STAYS ON DISK and is kept out of the commit instead (`commit_all(exclude=...)`,
+# the same mechanism that holds back attached-data copies leaked into `src/`). Too big to keep
+# forever is not a reason to destroy someone's file. It does mean that file cannot outlive the
+# container, which is the honest consequence of not committing it.
+ARTIFACT_COMMIT_MAX = 10 * 1024 * 1024
+
+
+def artifact_bytes(root: Path) -> tuple[int, int, str, int]:
+    """What `examples/` holds: total bytes, file count, and the largest file with its size.
+
+    For the size report in /api/diag. A directory walk rather than `git count-objects`, because the
+    question people actually have is what these Artifacts weigh, not what the pack file does.
+    """
+    total = count = biggest = 0
+    largest = ""
+    examples = Path(root) / "examples"
+    if not examples.is_dir():
+        return 0, 0, "", 0
+    for p in examples.rglob("*"):
+        try:
+            if not p.is_file():
+                continue
+            size = p.stat().st_size
+        except OSError:
+            continue
+        total += size
+        count += 1
+        if size > biggest:
+            biggest, largest = size, p.relative_to(root).as_posix()
+    return total, count, largest, biggest
+
+
+def oversized_artifacts(root: Path, limit: int = ARTIFACT_COMMIT_MAX) -> list[str]:
+    """Every file under `examples/` too heavy to put in history, workspace-relative and sorted.
+
+    Read fresh at each commit rather than recorded when the file lands: the limit is a property of
+    the file, one commit is driven by whichever Builder got there first, and a turn that times out
+    leaves Artifacts no end-of-turn bookkeeping saw."""
+    out: list[str] = []
+    examples = Path(root) / "examples"
+    if not examples.is_dir():
+        return out
+    for p in examples.rglob("*"):
+        try:
+            if p.is_file() and p.stat().st_size > limit:
+                out.append(p.relative_to(root).as_posix())
+        except OSError:
+            continue
+    return sorted(out)
+
+
 def new_artifact_paths(root: Path, thread_id: str, before: dict[str, bytes]) -> list[str]:
     prefix = f"examples/{thread_id}/"
     after = snapshot_files(root)
