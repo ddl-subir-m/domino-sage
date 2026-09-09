@@ -1033,6 +1033,18 @@ def _live_read_verdict(info: dict) -> str:
     rows = [r for r in (info.get("servers") or []) if isinstance(r, dict)]
     lines: list[str] = []
     healthy: list[str] = []
+
+    # The per-turn fact, which no amount of asking the server NOW can supply. OpenCode fixes a
+    # turn's tool list when the turn STARTS, and the handshake for a session has been seen landing
+    # after that — so "connected" read from this page says nothing about the turn the person is
+    # actually asking about. Without this, a turn that went out with no tools reads here as a model
+    # that chose not to call them, which is the wrong end and sends the reader to the wrong place.
+    # The shim writes the list the model actually got; this reads it back. The ring ROLLS, so its
+    # silence is not evidence either way and is reported as silence rather than as a pass.
+    turn_line = next((ln for ln in reversed(_LOG_RING) if "chat tools: live read" in ln), "")
+    last_turn = ("unknown" if not turn_line
+                 else "missed" if "NOT OFFERED" in turn_line
+                 else "offered")
     for row in rows or [{"name": "sage-live-read"}]:
         name = str(row.get("name") or "")
         reach = row.get("reachable") or {}
@@ -1052,12 +1064,26 @@ def _live_read_verdict(info: dict) -> str:
                 f"{name}: OPENCODE'S END. OpenCode holds it as "
                 f"{(held.get(name) or {}).get('status')!r}, not connected, so its tools were not "
                 "offered to the model.")
+        elif last_turn == "missed":
+            lines.append(
+                f"{name}: LATE, NOT MISSING. OpenCode holds it connected NOW, but the last chat "
+                "turn went out WITHOUT it — the shim recorded `chat tools: live read NOT OFFERED`. "
+                "A turn's tool list is fixed when the turn starts, and the handshake has been seen "
+                "landing after that. Nothing is misconfigured. Ask the same question again: the "
+                "next turn should have the tools.")
+        elif last_turn == "unknown":
+            lines.append(
+                f"{name}: PROBABLY NOBODY'S. Our route answers and OpenCode holds it connected. But "
+                "no `chat tools: live read` line is left in the log ring, which rolls, so this "
+                "could NOT be checked against the turn you are asking about — and a turn that "
+                "started before the handshake goes out with no tools however healthy this reads. "
+                "Ask again and reload; the fresh line will say which it was.")
         else:
             healthy.append(name)
             lines.append(
-                f"{name}: NOBODY'S. Our route answers and OpenCode holds it connected, so the tools "
-                "WERE offered. If Chat said it could not see the data, that was the model's choice "
-                "on the turn, not the wiring — read the turn, not this page.")
+                f"{name}: NOBODY'S. Our route answers, OpenCode holds it connected, and the last "
+                "turn WAS offered the tools. If Chat said it could not see the data, that was the "
+                "model's choice on the turn, not the wiring — read the turn, not this page.")
 
     without = info.get("turns_without_tools") or 0
     if without:

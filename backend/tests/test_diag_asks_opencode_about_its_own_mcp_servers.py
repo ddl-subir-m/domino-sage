@@ -223,7 +223,10 @@ def _verdict(tmp_path: Path, monkeypatch, route_port: int, oc_server: object) ->
 def test_everything_healthy_says_the_model_chose_not_to_call_it(tmp_path, monkeypatch,
                                                                 live_read_route):
     """The reading that used to send people hunting the wiring for an evening. Nothing is broken —
-    so the page has to say so, and point at the turn instead."""
+    so the page has to say so, and point at the turn instead. The turn line is stated rather than
+    left to chance: without one the honest answer is "could not check", which is its own test."""
+    _with_log(monkeypatch, "INFO sage.shim: chat tools: live read "
+                           "sage-live-read_live_read_files, sage-live-read_live_read_table")
     srv = _opencode({"sage-live-read": {"status": "connected"}})
     try:
         out = _verdict(tmp_path, monkeypatch, live_read_route,
@@ -281,6 +284,8 @@ def test_our_own_route_being_down_is_named_as_ours(tmp_path, monkeypatch):
 def test_a_lazy_dial_is_not_reported_as_a_fault(tmp_path, monkeypatch, live_read_route):
     """`opencode_connected: never` with no turn behind it is the normal reading, and the sentence
     that cost an evening. It is spelled out rather than left for the reader to know."""
+    _with_log(monkeypatch, "INFO sage.shim: chat tools: live read "
+                           "sage-live-read_live_read_files, sage-live-read_live_read_table")
     srv = _opencode({"sage-live-read": {"status": "connected"}})
     try:
         out = _verdict(tmp_path, monkeypatch, live_read_route,
@@ -299,3 +304,87 @@ def test_no_opencode_yet_still_says_what_to_do(tmp_path, monkeypatch, live_read_
 
     assert "has not been started yet" in out
     assert "Send one chat message" in out
+
+
+# ---------------------------------------------------------------------------
+# A connected server says nothing about the turn that already ran.
+#
+# Live, 2026-09-09: Chat said it had no `sage-live-read_` tool, and the verdict under it read
+# NOBODY'S — our route answered, `opencode mcp list` said connected, and the page therefore blamed
+# the model. It was wrong. A turn's tool list is fixed when the turn STARTS and the handshake has
+# been seen landing after that, which the shim has recorded all along and the verdict was not
+# reading. So the verdict now reads the turn, and the server's own state is the tie-breaker.
+
+
+def _with_log(monkeypatch, line: str | None):
+    """The shim's per-turn line, as it sits in the ring `/api/diag/log` serves."""
+    monkeypatch.setattr(app_module, "_LOG_RING",
+                        __import__("collections").deque([] if line is None else [line], maxlen=400))
+
+
+def test_a_turn_that_went_out_without_the_tools_is_not_blamed_on_the_model(tmp_path, monkeypatch,
+                                                                          live_read_route):
+    """The live 2026-09-09 reading, pinned. Everything is healthy NOW and the turn still had none."""
+    _with_log(monkeypatch, "INFO sage.shim: chat tools: live read NOT OFFERED")
+    srv = _opencode({"sage-live-read": {"status": "connected"}})
+    try:
+        out = _verdict(tmp_path, monkeypatch, live_read_route,
+                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "LATE, NOT MISSING" in out
+    assert "Ask the same question again" in out
+    assert "NOBODY'S" not in out          # the wrong answer this case used to get
+    assert "model's choice" not in out
+
+
+def test_a_turn_that_was_offered_the_tools_does_blame_the_model(tmp_path, monkeypatch,
+                                                                live_read_route):
+    _with_log(monkeypatch, "INFO sage.shim: chat tools: live read "
+                           "sage-live-read_live_read_files, sage-live-read_live_read_table")
+    srv = _opencode({"sage-live-read": {"status": "connected"}})
+    try:
+        out = _verdict(tmp_path, monkeypatch, live_read_route,
+                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "NOBODY'S" in out
+    assert "the last turn WAS offered the tools" in out
+
+
+def test_a_rolled_ring_says_it_could_not_check_rather_than_passing(tmp_path, monkeypatch,
+                                                                   live_read_route):
+    """The ring holds 400 lines and one build turn emits hundreds. Silence there is not a pass, and
+    reporting it as one is how the reader gets sent to the wrong end again."""
+    _with_log(monkeypatch, None)
+    srv = _opencode({"sage-live-read": {"status": "connected"}})
+    try:
+        out = _verdict(tmp_path, monkeypatch, live_read_route,
+                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "PROBABLY NOBODY'S" in out
+    assert "could NOT be checked" in out
+
+
+def test_the_turn_line_does_not_override_a_server_that_is_actually_down(tmp_path, monkeypatch,
+                                                                        live_read_route):
+    """`NOT OFFERED` with a server OpenCode is not holding is still OpenCode's end, not a late
+    handshake — the tools are not coming on the next turn either."""
+    _with_log(monkeypatch, "INFO sage.shim: chat tools: live read NOT OFFERED")
+    srv = _opencode({})
+    try:
+        out = _verdict(tmp_path, monkeypatch, live_read_route,
+                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "OPENCODE'S END" in out
+    assert "LATE" not in out
