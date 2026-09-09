@@ -37,9 +37,11 @@ const out = (spec.cases || []).map((c) => ({
   // `c.picked` is the gateway ALIAS and `c.shown` the label a row displays. Two spaces, fed in
   // separately on purpose: feeding one string as both is what let a name-space bug live under
   // this harness — every helper agreed because every helper was asked the same word.
-  // `true` — the chip under test is the Chat composer's, which is where `lockedLabel` is drawn
-  // (`!showMode` in composer.js). Build's chip names its pinned slot directly.
+  // Both chips, because both draw `lockedLabel` and they read DIFFERENT fields: Chat is pinned to
+  // the sovereign Ask slot, Build follows its mode. A test that only drove one would let the other
+  // go on naming a model its composer will not run.
   label: sandbox.SW.util.lockedLabel(c.sensitivity, c.picked, c.shown, true),
+  buildLabel: sandbox.SW.util.lockedLabel(c.sensitivity, c.picked, c.shown, false),
   approved: sandbox.SW.util.isApproved(c.sensitivity, c.picked),
   locked: sandbox.SW.util.isLocked(c.sensitivity),
   // The rail's mark for the same fact the chip and the picker draw, so a test can hold the three

@@ -475,6 +475,16 @@ window.SW = window.SW || {};
     // override would mark nothing selected and drop the "(default)" off a control that is running
     // exactly the default.
     const override = buildModel && buildModel !== pinnedModel ? buildModel : '';
+    // Build's chip under the lock (ADR-0043), the same rule as the Chat chip one bar over: the
+    // label has to name what will RUN. It reads `sensitivity.model`, which is Build's half of the
+    // server's answer — `chat_model` is Chat's, and they differ wherever the sovereign Ask slot and
+    // the sovereign plan/implement slot are different approved models.
+    //
+    // No second name to reconcile here, unlike Chat's chip: the slots come off the catalog and the
+    // menu keys on `option.alias`, so everything Build routes by is already in alias space.
+    const buildPick = override || pinnedModel;
+    const buildBarred = barredModel(buildPick);
+    const buildLabel = SW.util.lockedLabel(sensitivity, buildPick, '', false);
     // Auto has no model of its own — it runs the Plan assignment while it plans and the Implement
     // assignment while it builds — so a bare id here changes under the person with nothing to say
     // why. The phase is the missing half of that sentence.
@@ -948,14 +958,18 @@ window.SW = window.SW || {};
                     // both are read live, so a change here would move the rest of this build onto
                     // another model with the first half's tool calls in context. There is no queue
                     // to put it in either, so the control closes instead.
-                    title: `This turn is running on ${override || pinnedModel}. Wait for it to finish to change the model.`,
+                    // Two facts when the pick is barred, in the order they surprise: why the
+                    // chip does not name what was picked, then why the control will not open.
+                    title: buildBarred
+                      ? `${lockNote(buildPick)} This turn is running on ${buildLabel} — wait for it to finish to change the model.`
+                      : `This turn is running on ${buildLabel}. Wait for it to finish to change the model.`,
                   },
                   // The span is load-bearing: a browser dispatches no mouse events on a disabled
                   // button, so a Tooltip put straight on one never opens and the sentence above
                   // becomes the silence it was written to prevent.
                   h('span', { style: { display: 'inline-block' } },
                     h(Button, { size: 'small', disabled: true, 'aria-label': 'Build model' },
-                      chipLabel(override || pinnedModel)))
+                      chipLabel(buildLabel)))
                 )
               : overridable
                 ? (() => {
@@ -965,7 +979,11 @@ window.SW = window.SW || {};
                       h(
                         Button,
                         { size: 'small', 'aria-label': 'Build model' },
-                        h(Space, { size: 4 }, override || `${pinnedModel} (default)`,
+                        // "(default)" is a claim about what the slot falls back to, and under the
+                        // lock it falls back nowhere near there. So the lock's answer replaces the
+                        // whole construction rather than being appended to it.
+                        h(Space, { size: 4 },
+                          buildBarred ? buildLabel : (override || `${pinnedModel} (default)`),
                           h(DownOutlined, { style: { fontSize: 9 } }))
                       )
                     );
@@ -973,7 +991,11 @@ window.SW = window.SW || {};
                     // carried a tooltip, and the menu still works — an in-session pick outranks the
                     // pin, which is the router's own rule (ADR-0032). So this explains the label
                     // without taking the control away.
-                    return pinWhy ? h(Tooltip, { title: pinWhy }, control) : control;
+                    //
+                    // The lock first: under it the signing pin is not what moved this model, and a
+                    // sentence naming the wrong cause is worse than no sentence.
+                    const why = buildBarred ? lockNote(buildPick) : pinWhy;
+                    return why ? h(Tooltip, { title: why }, control) : control;
                   })()
                 // Ask and Auto honour no override — Ask is pinned to its slot and Auto follows the
                 // phase — so there is no menu to offer. They open the panel instead: a disabled
@@ -982,12 +1004,14 @@ window.SW = window.SW || {};
                 : h(
                     Tooltip,
                     {
-                      // `pinWhy` first: the Auto sentence below names two models, and under the
-                      // pin there is only one. A confident, specific, false sentence is the worst
-                      // thing this control can say.
-                      title: pinWhy || (activeBuildMode.id === 'ask'
-                        ? `Ask runs on ${pinnedModel}, and so does Chat.`
-                        : `Auto runs ${(catalog || {}).plan} to plan and ${(catalog || {}).implement} to build.`),
+                      // The lock first, then `pinWhy`: the Auto sentence below names two models,
+                      // and under either of those there is only one. A confident, specific, false
+                      // sentence is the worst thing this control can say.
+                      title: buildBarred
+                        ? lockNote(buildPick)
+                        : (pinWhy || (activeBuildMode.id === 'ask'
+                          ? `Ask runs on ${pinnedModel}, and so does Chat.`
+                          : `Auto runs ${(catalog || {}).plan} to plan and ${(catalog || {}).implement} to build.`)),
                     },
                     h(
                       Button,
@@ -996,7 +1020,7 @@ window.SW = window.SW || {};
                         'aria-label': 'Build model',
                         onClick: () => SW.store.openAssignments(true),
                       },
-                      h(Space, { size: 4 }, chipLabel(pinnedModel),
+                      h(Space, { size: 4 }, chipLabel(buildLabel),
                         h(DownOutlined, { style: { fontSize: 9 } }))
                     )
                   )),

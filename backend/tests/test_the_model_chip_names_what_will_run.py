@@ -145,3 +145,29 @@ def test_a_barred_alias_is_still_barred_under_a_friendly_display_name():
     assert got["approved"] is False
     assert got["label"] == "opus", "it moved to the one approved model, not to the label"
     assert got["barred"] is True
+
+
+@needs_node
+def test_builds_chip_reads_builds_answer_and_chats_reads_chats():
+    """FOUND IN REVIEW: Build's chip never went through `lockedLabel` at all, so it went on naming
+    the barred pinned slot while the turn ran on an approved model — the same defect this file was
+    opened for, on the other composer.
+
+    Fixing it made the two fields load-bearing rather than merely present. Chat is pinned to the
+    sovereign Ask slot and Build follows its mode, so a deployment with different sovereign slots
+    gets different answers, and reading the wrong one is a confident wrong name.
+    """
+    split = {**MANY, "model": "opus", "chat_model": "haiku"}
+    got = _labels([{"sensitivity": split, "picked": "gpt-5.4"}])[0]
+    assert got["buildLabel"] == "opus"
+    assert got["label"] == "haiku"
+
+
+@needs_node
+def test_neither_chip_relabels_an_approved_pick():
+    """The lock narrows; it does not relabel. Asserted on both because Build's chip has three render
+    branches and the one that draws "(default)" is a claim about the slot, not about the lock."""
+    got = _labels([{"sensitivity": ONE, "picked": "opus"},
+                   {"sensitivity": OFF, "picked": "gpt-5.4"}])
+    assert [g["label"] for g in got] == ["opus", "gpt-5.4"]
+    assert [g["buildLabel"] for g in got] == ["opus", "gpt-5.4"]

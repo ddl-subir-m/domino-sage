@@ -284,8 +284,24 @@ one — and the browser can already see that an approved pick runs as itself.
 
 **Two of them, one per composer.** Chat is pinned to the sovereign Ask slot and Build follows its
 mode, so `model` and `chat_model` are separate fields. One would have made whichever surface it was
-not computed for say the wrong model out loud — and the chip `lockedLabel` draws is the Chat one, so
-a single Build-shaped answer would have been wrong on the surface that reads it most.
+not computed for say the wrong model out loud.
+
+Both composers draw a chip and both now read their own field. Build's had never gone through
+`lockedLabel` at all — it named `override || pinnedModel` directly, so under a lock it went on
+naming the barred pick while the turn ran on an approved model, and the only correction was a
+notice with a "Got it" on it. That is the defect the amendment was written for, found on the other
+composer. Its three render branches carry the label and the reason together, and the two sentences
+that named the catalog outright (`Ask runs on X`, `Auto runs X to plan and Y to build`) give way to
+the lock's own, because under it both are false.
+
+**A label must be judged on the alias, never on the name it draws.** A `model_llm` row carries the
+gateway alias under `alias` and its display name under `name`, and the approved set holds aliases.
+Chat's chip asked `isApproved` with the label, so an Alias shown as "Opus 4.6" read as unapproved
+while `opus` sat in the group — and the chip then replaced a good label with a model that was not
+going to run, with no notice to correct it because nothing had switched. `isBarred` had it too,
+which is the rail marking an approved Alias. The picker beside both has always keyed on
+`option.alias`. Recorded because the mistake is invisible on any deployment where the two names
+happen to match, which is most of them, and the test harness fed one string as both.
 
 What is left after that is a running Auto build, where the shim's per-step classifier moves the
 phase underneath a state nobody re-read. It needs a deployment whose sovereign slots differ AND are
