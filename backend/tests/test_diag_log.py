@@ -147,3 +147,61 @@ def test_the_log_level_is_reported_so_an_empty_answer_can_be_read(monkeypatch):
     monkeypatch.setenv("SAGE_OPENCODE_LOG_LEVEL", "DEBUG")
     assert TestClient(app_module.control_app).get("/api/diag").json()[
         "opencode_log_level"] == "DEBUG"
+
+
+# ---- /api/diag/mcp: asking OpenCode itself ---------------------------------------------------
+# Its MCP client has no logger — the only `mcp` names in the binary are CLI commands — so no log
+# level answers "did it connect". `opencode mcp list` does.
+
+
+def test_it_asks_opencode_from_the_directory_a_chat_turn_runs_in(monkeypatch, tmp_path):
+    """Project config resolves off the git root of wherever OpenCode is RUN, so asking from the
+    server's own cwd would answer about a directory no turn ever uses."""
+    work = tmp_path / "mnt" / "code" / ".sage" / "chat-work"
+    work.mkdir(parents=True)
+    seen = {}
+
+    class _Server:
+        def cli(self, args, cwd=None, timeout_s=30.0):
+            seen.update(args=args, cwd=cwd)
+            return "sage-live-read  connected  2 tools"
+
+    monkeypatch.setattr(app_module.orchestrator, "_oc_server", _Server(), raising=False)
+    monkeypatch.setattr(app_module.orchestrator, "_wm",
+                        type("W", (), {"_dir": tmp_path / "mnt" / "code"})(), raising=False)
+
+    r = TestClient(app_module.control_app).get("/api/diag/mcp")
+
+    assert seen["args"] == ["mcp", "list"]
+    assert seen["cwd"] == str(work)
+    assert "sage-live-read  connected  2 tools" in r.text
+
+
+def test_an_unstarted_opencode_says_so_instead_of_looking_like_no_servers(monkeypatch):
+    """OpenCode starts on the first turn, not at boot. An empty answer here would read exactly like
+    "configured nothing", which is the mistake this whole endpoint exists to stop."""
+    monkeypatch.setattr(app_module.orchestrator, "_oc_server", None, raising=False)
+
+    r = TestClient(app_module.control_app).get("/api/diag/mcp")
+
+    assert "has not been started yet" in r.text
+    assert "Send one chat message" in r.text
+
+
+def test_only_the_two_commands_it_knows_are_ever_run(monkeypatch, tmp_path):
+    """`cmd` reaches a subprocess argument list. It is a fixed choice of two, not a passthrough."""
+    seen = {}
+
+    class _Server:
+        def cli(self, args, cwd=None, timeout_s=30.0):
+            seen["args"] = args
+            return "ok"
+
+    monkeypatch.setattr(app_module.orchestrator, "_oc_server", _Server(), raising=False)
+    monkeypatch.setattr(app_module.orchestrator, "_wm", None, raising=False)
+    client = TestClient(app_module.control_app)
+
+    client.get("/api/diag/mcp", params={"cmd": "debug"})
+    assert seen["args"] == ["mcp", "debug"]
+    client.get("/api/diag/mcp", params={"cmd": "add https://evil.example/x"})
+    assert seen["args"] == ["mcp", "list"]

@@ -1075,7 +1075,8 @@ def diag() -> JSONResponse:
       - opencode_log_level: the level OpenCode is running at, when SAGE_OPENCODE_LOG_LEVEL set one.
         Its MCP servers are invisible at the default level — it connects, or silently does not, and
         the log reads the same either way. /api/diag/opencode?q=mcp serves the whole log
-      - log_tail / opencode_log_tail: recent sage.* and OpenCode server logs
+      - log_tail (see also /api/diag/mcp, which asks OpenCode itself about its MCP servers — its
+        MCP client has no logger, so no amount of log level will answer that one) / opencode_log_tail: recent sage.* and OpenCode server logs
     """
     from .service import _opencode_base_port
 
@@ -1137,6 +1138,36 @@ def diag_log(q: str = "", n: int = 400, warn: bool = False) -> PlainTextResponse
         which = "warnings" if warn else "lines"
         return PlainTextResponse(f"(no {which} match {q!r})" if q else f"(no {which} yet)")
     return PlainTextResponse("\n".join(lines[-max(1, n):]))
+
+
+@control_app.get("/api/diag/mcp")
+def diag_mcp(cmd: str = "list") -> PlainTextResponse:
+    """Ask OpenCode itself what it makes of its MCP servers. `?cmd=list` or `?cmd=debug`.
+
+    The question every other surface has failed to answer. `/api/diag` proves the config declares
+    the server and that the server answers a probe on the right port; `agents` proves OpenCode read
+    that same file; and OpenCode's own log says nothing about MCP at DEBUG or at INFO, because its
+    MCP client has no logger — the only `mcp` names in the binary are CLI commands. So "no mcp
+    lines" has never meant "it did not connect", and the whole hunt has been reading silence.
+
+    `opencode mcp list` is the one thing that will say. Run from the CHAT WORK directory, not the
+    server's cwd: project config resolves off the git root of wherever OpenCode is run, so asking
+    from the wrong place answers about the wrong place.
+
+    Never raises, and does not start the server — a diagnostic must not be the thing that breaks
+    the diagnostics page, and this one runs on a page somebody opened because something is wrong.
+    """
+    server = getattr(orchestrator, "_oc_server", None)
+    if server is None:
+        return PlainTextResponse(
+            "OpenCode has not been started yet — it starts on the first turn, not at boot. "
+            "Send one chat message, then reload this.")
+    workspace = getattr(getattr(orchestrator, "_wm", None), "_dir", None)
+    work = str(Path(workspace) / ".sage" / "chat-work") if workspace else None
+    if work and not Path(work).is_dir():
+        work = None
+    body = server.cli(["mcp", "list" if cmd not in ("list", "debug") else cmd], cwd=work)
+    return PlainTextResponse(f"$ opencode mcp {cmd}   (cwd: {work or 'the server default'})\n\n{body}")
 
 
 @control_app.get("/api/diag/opencode")

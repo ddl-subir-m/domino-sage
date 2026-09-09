@@ -35,6 +35,46 @@ class OpenCodeServer:
         self._url: str | None = None
         self._ready = threading.Event()
 
+    def _env(self) -> dict:
+        """The environment `opencode` runs in. Shared with `cli()` below, which is the point: a
+        diagnostic that asked a differently-configured OpenCode would answer about a different
+        OpenCode.
+
+        Both candidates are voiced copies today; the global one is preferred only because the
+        orchestrator writes it on every boot. Whichever we point at must be a resolved copy — the
+        checked-in source names the assistant and the nouns as `{assistantName}` / `{dataset}`
+        tokens, deliberately left unresolved so a pack never writes its words into a repo file, and
+        handing OpenCode that file makes it read the braces out loud to the user.
+        """
+        env = dict(os.environ)
+        for cfg in (_VOICED_CONFIG, self._cwd / "opencode.json"):
+            if cfg.exists():
+                env["OPENCODE_CONFIG"] = str(cfg)
+                break
+        return env
+
+    def cli(self, args: list[str], cwd: str | None = None, timeout_s: float = 30.0) -> str:
+        """Run `opencode <args>` the way the server runs, and hand back what it said.
+
+        For the question no log can answer. OpenCode's MCP client has no logger of its own — the
+        only `mcp` names in the binary are CLI commands — so a server that never connected and one
+        that connected fine print exactly the same nothing, at DEBUG as at INFO. `opencode mcp list`
+        is the one thing that will say.
+
+        `cwd` matters and defaults to the server's. Project config resolves off the git root of the
+        directory OpenCode is run in, so asking from here answers about here — to ask what a Chat
+        turn sees, ask from the Chat work directory.
+
+        Output only, never raised: this exists to be read on a page when something is already wrong.
+        """
+        try:
+            out = subprocess.run(["npx", "opencode", *args], cwd=cwd or str(self._cwd),
+                                 env=self._env(), capture_output=True, text=True,
+                                 timeout=timeout_s, check=False)
+        except Exception as e:
+            return f"{type(e).__name__}: {e}"
+        return ((out.stdout or "") + (out.stderr or "")).strip() or f"(no output, exit {out.returncode})"
+
     def start(self, ready_timeout_s: float = 30.0) -> str:
         cmd = ["npx", "opencode", "serve", "--port", str(self._port), "--hostname", "127.0.0.1"]
         if self._log_path:
@@ -69,16 +109,7 @@ class OpenCodeServer:
         # without one of them OpenCode never sees the sage-gateway provider and drops to its
         # built-in free tier (429 FreeUsageLimitError), and without a VOICED one it reads the
         # pack's braces out loud.
-        env = dict(os.environ)
-        # Both candidates are voiced copies today; the global one is preferred only because the
-        # orchestrator writes it on every boot. Whichever we point at must be a resolved copy — the
-        # checked-in source names the assistant and the nouns as `{assistantName}` / `{dataset}`
-        # tokens, deliberately left unresolved so a pack never writes its words into a repo file,
-        # and handing OpenCode that file makes it read the braces out loud to the user.
-        for cfg in (_VOICED_CONFIG, self._cwd / "opencode.json"):
-            if cfg.exists():
-                env["OPENCODE_CONFIG"] = str(cfg)
-                break
+        env = self._env()
         self._proc = subprocess.Popen(
             cmd,
             cwd=self._cwd,
