@@ -1039,6 +1039,9 @@ def _is_sage_upload(entry: dict) -> bool:
 
 
 _SCRATCH_PREFIX = ".sage/scratch/"
+# A Thread's Artifact folder as a handoff digest names it. The digest is prose around real paths
+# (`_write_crossing`), so this reads the id back out of one rather than parsing the document.
+_ARTIFACT_DIR_ID = re.compile(r"examples/(thr_[a-zA-Z0-9_-]+)/")
 # Where a Dataset file fetched FOR A QUESTION lands. Not `public/data/`: that tree is the published
 # app's, and attach_file also writes the file into the committed manifest, so asking "what is in
 # this file?" enrolled the bytes in every later publish of an app that may never reference them.
@@ -4235,6 +4238,9 @@ class Orchestrator:
         # And again: every Project seeded before this fix ignores its own Chat Artifacts, so the
         # repair belongs to opening one.
         self._unignore_chat_artifacts(self._project)
+        # Third of the same kind, and the one the other two created work for: `examples/` is
+        # committed now, so a folder no Thread claims is bytes every clone carries.
+        self._sweep_orphaned_artifacts(self._project)
         return self._project
 
     def _chat_project(self) -> Project:
@@ -6267,11 +6273,15 @@ class Orchestrator:
     def _explicit_handoff(self, store: ThreadStore, thread_id: str, prompt: str) -> dict | None:
         """The regex half of handoff detection. No model call, so it is safe to run BEFORE a turn.
 
-        Silent while this Thread's newest handoff is unresolved, and for good once one was
-        declined — someone who chose to stay in Chat keeps asking in Chat.
+        Silent for good once someone declined — the person who chose to stay in Chat keeps asking
+        in Chat — and silent while a plan they already accepted is open. NOT silent under an
+        unanswered `suggested` row, which is `should_classify`'s rule and belongs to the model
+        classifier alone: see `should_offer_explicit`. One card nobody clicked used to silence
+        every later build request in the Thread, and each of those ran as a Chat turn that tried
+        to write a dashboard Chat cannot write.
         """
         try:
-            if not chat_handoff.should_classify(store.read_handoffs(thread_id)):
+            if not chat_handoff.should_offer_explicit(store.read_handoffs(thread_id)):
                 return None
             if not chat_handoff.looks_like_build_request(prompt):
                 return None
@@ -15241,6 +15251,66 @@ class Orchestrator:
         `project.snapshot.commit_before_turn()`. Each half documents what that ordering buys it."""
         self._refresh_history_archive(project)
         self._ensure_examples_link(project)
+
+    def _artifact_ids_named_by_live_apps(self, project: Project) -> set[str]:
+        """Thread ids a live Built App's committed handoff digest still names by path.
+
+        The orphan sweep's `_artifacts_are_spoken_for`. That one cannot serve here: it reads the
+        Thread's own `handoff.json`, and an orphan is precisely a Thread with no record left to
+        read. The digest is the other end of the same link and the only evidence that survives —
+        `_write_crossing` builds it out of `artifacts.json`, so it carries `examples/<threadId>/…`
+        verbatim (ADR-0006).
+
+        Read across every live app, not the selected one: a Project holds many (ADR-0008), and the
+        app whose plan names these files is rarely the one on screen when a Builder starts."""
+        found: set[str] = set()
+        for app_id in self._wm.app_ids():
+            try:
+                text = (self._wm.apps_dir / app_id / ".sage" / "handoff.md").read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            found.update(_ARTIFACT_DIR_ID.findall(text))
+        return found
+
+    def _sweep_orphaned_artifacts(self, project: Project) -> int:
+        """Remove `examples/<id>` folders no Thread record claims. Returns how many went.
+
+        The reverse of the leak `_unignore_chat_artifacts` fixed. Committing the Artifacts is what
+        makes this worth doing: an orphan used to be one stale directory on one volume, and is now
+        in every clone of the Project for good.
+
+        Conservative twice over. `orphaned_artifact_ids` only offers `thr_`-shaped directories that
+        no record names, so a person's own folder under `examples/` is never a candidate; and a live
+        app's digest still naming one keeps it, which is the same answer `_artifacts_are_spoken_for`
+        gives on the tombstone path. Asked fresh on every attach rather than recorded, for the
+        reason that one gives: when the app goes, the answer should change.
+
+        A migration, so it runs where the other two do. Best-effort per orphan and best-effort
+        overall: this is a delete, and no delete of a person's files may 500 the request that
+        opened their Project — `self._project` is already assigned, so the failure would be cached
+        away and never retried."""
+        store = ThreadStore(project.record.path)
+        try:
+            orphans = store.orphaned_artifact_ids()
+            if not orphans:
+                return 0
+            spoken_for = self._artifact_ids_named_by_live_apps(project)
+        except Exception:
+            log.exception("sweep: could not look for orphaned Artifacts")
+            return 0
+        swept = 0
+        for thread_id in orphans:
+            if thread_id in spoken_for:
+                continue
+            try:
+                if store.purge_orphaned_artifacts(thread_id):
+                    swept += 1
+            except Exception:
+                # One bad folder is not the Project. The next attach tries it again.
+                log.exception("sweep: could not remove orphaned Artifacts for %s", thread_id)
+        if swept:
+            log.info("sweep: removed %d orphaned Artifact folder(s)", swept)
+        return swept
 
     def _unignore_chat_artifacts(self, project: Project) -> None:
         """Stop the Project root ignoring `examples/` — the Chat Artifacts (#222).

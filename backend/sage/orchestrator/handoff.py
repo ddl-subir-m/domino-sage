@@ -159,6 +159,30 @@ def should_classify(entries: list[dict] | None) -> bool:
     return not handoff_unresolved(rows[-1] if rows else None)
 
 
+def should_offer_explicit(entries: list[dict] | None) -> bool:
+    """False once someone declined, and while an offer they took is still being planned.
+
+    Deliberately not `should_classify`. That is the CLASSIFIER's policy, and it is right for a
+    guess: the model reads a turn, decides it smelled like an app, and stacking guesses every few
+    messages is worse than missing one — so one unanswered `suggested` row stops the next.
+
+    An explicit "build me a dashboard" is not a guess. The person asked, in words, again. A card
+    they scrolled past is not an answer to that, and counting it as one is what sent every later
+    build request in the Thread into a Chat turn instead. Chat cannot build an app: it writes the
+    whole page in one `write`, and the gateway cuts that stream at about 48 seconds, so the turn
+    ends on a promise with nothing under it.
+
+    `suppressed` still silences for good — the person choosing to stay in Chat (spec §8, criterion
+    10) — and that is also what keeps declining from looping, since a decline re-runs this same
+    sentence. `planned` silences too: the offer was taken and the plan is open, so raising it again
+    would be offering something already underway.
+    """
+    rows = [r for r in (entries or []) if isinstance(r, dict)]
+    if any(r.get("suppressed") or r.get("status") == "suppressed" for r in rows):
+        return False
+    return str((rows[-1] if rows else {}).get("status") or "") != "planned"
+
+
 def _payload(title: str, user: str, assistant: str) -> str:
     parts = [f"Thread title: {(title or '').strip()[:_TITLE_CHARS]}",
              f"User: {(user or '').strip()[:_TURN_CHARS]}"]
