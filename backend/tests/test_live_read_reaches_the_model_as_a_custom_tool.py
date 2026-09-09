@@ -240,3 +240,49 @@ def test_it_never_puts_the_file_contents_on_the_page(tmp_path, monkeypatch):
     out = _diag(tmp_path, monkeypatch, {"live_read.ts": "export const table = tool({}) // SECRET\n"})
 
     assert "SECRET" not in json.dumps(out)
+
+
+# --- and whether the thing it imports is there ----------------------------------------------------
+#
+# `tool()` is the identity function and `tool.schema` is zod, so the import buys nothing but types —
+# and costs everything if it cannot be resolved. On 2026-09-09 the file landed whole in the global
+# slot (5099 bytes, byte for byte) and its tools were still absent. The bench that "proved" this
+# path works had `@opencode-ai/plugin` sitting in `~/.config/opencode/node_modules` since July,
+# installed by OpenCode itself. A fresh workspace has no such luck, and the failure is silent.
+
+IMPORTING = 'import { tool } from "@opencode-ai/plugin"\nexport const table = tool({})\n'
+
+
+def test_it_says_where_an_imported_package_was_found(tmp_path, monkeypatch):
+    (tmp_path / ".config" / "opencode" / "node_modules" / "@opencode-ai" / "plugin").mkdir(
+        parents=True)
+
+    out = _diag(tmp_path, monkeypatch, {"live_read.ts": IMPORTING})
+
+    assert out["imports"] == [{"package": "@opencode-ai/plugin", "found_at": str(
+        tmp_path / ".config" / "opencode" / "node_modules" / "@opencode-ai" / "plugin")}]
+
+
+def test_an_import_that_resolves_nowhere_is_the_finding(tmp_path, monkeypatch):
+    """The whole module fails to load and the tool is dropped in silence, which reads on every
+    other surface exactly like the MCP drop — connected, installed, absent."""
+    out = _diag(tmp_path, monkeypatch, {"live_read.ts": IMPORTING})
+
+    assert out["imports"] == [{"package": "@opencode-ai/plugin", "found_at": None}]
+
+
+def test_it_looks_up_the_chain_the_way_a_js_runtime_does(tmp_path, monkeypatch):
+    """`node_modules` beside the tools directory, above it, or anywhere further up all count."""
+    (tmp_path / "node_modules" / "zod").mkdir(parents=True)
+
+    out = _diag(tmp_path, monkeypatch, {"live_read.ts": 'import { z } from "zod"\n'})
+
+    assert out["imports"][0]["found_at"] == str(tmp_path / "node_modules" / "zod")
+
+
+def test_a_relative_import_is_not_a_package(tmp_path, monkeypatch):
+    """`./helper` is a file beside the tool, not something to install, and listing it as missing
+    would send whoever reads this page after a package that does not exist."""
+    out = _diag(tmp_path, monkeypatch, {"live_read.ts": 'import { x } from "./helper"\n'})
+
+    assert out["imports"] == []

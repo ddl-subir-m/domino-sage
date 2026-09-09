@@ -176,3 +176,16 @@ RUN cd /opt/sage/backend \
 # The workspace user owns the baked tree so app.sh (run as ubuntu) can read/exec + write its venv.
 RUN chown -R ubuntu:ubuntu /opt/sage
 USER ubuntu
+
+# --- OpenCode's own runtime npm install, done here where there IS egress -----------------------
+# OpenCode installs `@opencode-ai/plugin` into ~/.config/opencode the first time it reads that
+# directory's custom tools, and it does so WHETHER OR NOT anything imports the package — measured
+# on the pinned 1.18.4. This image fetches at build time and the workspace has no npm egress when
+# it runs, so that install fails there and OpenCode blocks the first tool list until npm gives up:
+# 132 s on a bench with the registry black-holed. Warming the directory here costs one layer and
+# removes the stall; nothing else depends on it, because `liveread/tools/live_read.ts` deliberately
+# imports nothing (see its header — the import used to be the whole bug).
+RUN mkdir -p /home/ubuntu/.config/opencode \
+    && cd /home/ubuntu/.config/opencode \
+    && npm install --no-fund --no-audit @opencode-ai/plugin@1.18.4 \
+    && test -d node_modules/@opencode-ai/plugin

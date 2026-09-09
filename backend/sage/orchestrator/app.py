@@ -1076,6 +1076,25 @@ def _chat_work_dir() -> str | None:
     return str(work) if work.is_dir() else None
 
 
+def _resolves_from(start: Path, spec: str) -> str | None:
+    """Where a JS runtime would find the package `spec` imported from a file in `start`.
+
+    It walks the `node_modules` chain upward, which is all any of them do for a bare specifier.
+    A specifier that resolves NOWHERE makes the whole tool module fail to load, and OpenCode
+    drops the tool without a word — the same silence as the MCP drop this was meant to escape.
+
+    This is worth a line on the page because a laptop passes it by accident. OpenCode installs
+    `@opencode-ai/plugin` into `~/.config/opencode` the first time something needs it, and it
+    then sits there for months; a bench with a warm one cannot see the failure a fresh
+    workspace has.
+    """
+    for parent in [start, *start.parents]:
+        found = parent / "node_modules" / spec
+        if found.exists():
+            return str(found)
+    return None
+
+
 def _custom_tools_diag() -> dict:
     """What is actually on disk in the slot OpenCode reads custom tools from.
 
@@ -1099,19 +1118,27 @@ def _custom_tools_diag() -> dict:
         return row
     row["exists"] = True
     row["files"] = [{"name": p.name, "bytes": p.stat().st_size} for p in entries if p.is_file()]
-    # The names OpenCode will build out of them, so the page can be read against the shim's tool
-    # list without anyone having to remember the `<file>_<export>` rule at the hour they need it.
-    names = []
+    bodies = {}
     for p in entries:
         if p.suffix != ".ts":
             continue
         try:
-            body = p.read_text()
+            bodies[p] = p.read_text()
         except OSError:
             continue
-        exported = re.findall(r"^export const (\w+) = tool\(", body, re.MULTILINE)
+    # The names OpenCode will build out of them, so the page can be read against the shim's tool
+    # list without anyone having to remember the `<file>_<export>` rule at the hour they need it.
+    names = []
+    for p, body in bodies.items():
+        exported = re.findall(r"^export const (\w+) = (?:tool\()?\{", body, re.MULTILINE)
         names += [f"{p.stem}_{e}" for e in exported] or ([p.stem] if "export default" in body else [])
     row["tools_it_should_make"] = sorted(names)
+    row["imports"] = [
+        {"package": spec, "found_at": _resolves_from(d, spec)}
+        for spec in sorted({m for body in bodies.values()
+                            for m in re.findall(r'^\s*import .*? from "([^".][^"]*)"', body,
+                                                re.MULTILINE)})
+    ]
     return row
 
 

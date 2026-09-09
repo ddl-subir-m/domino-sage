@@ -6,11 +6,25 @@
 // and none of ours. Config clean, port right, no project config, no `tools` filter, agent resolved.
 // That is opencode #33027, and nothing on our side of the boundary can fix it.
 //
-// Custom tools go down a different path, and that path works. Verified end to end on the same
-// 1.18.4: a tool in `~/.config/opencode/tools/` appears in the model's own tool list AND executes,
-// from any session directory, with no `.opencode/` in the workspace. The telling detail is that
-// `/experimental/tool` lists built-ins PLUS custom tools and never MCP tools — and a Chat turn gets
-// exactly that registry. So this lands in the list that arrives.
+// NOTHING IS IMPORTED HERE, AND THAT IS THE POINT. This file used to open with
+// `import { tool } from "@opencode-ai/plugin"`, and that one line cost a day. OpenCode installs
+// that package from the npm registry AT RUNTIME, into `~/.config/opencode`, the first time it
+// loads this directory. A workspace fetches at build time and has no such egress when it runs, so
+// the install failed, the import resolved nowhere, the module never loaded, and the tools were
+// simply absent — the same silence as the MCP drop they were meant to escape. Reproduced on the
+// bench 2026-09-09 by pointing npm at a dead registry: with the import the whole tool list errors,
+// without it the tools register. The bench had passed until then only because OpenCode had left a
+// warm `node_modules` in that directory back in July.
+//
+// The import bought nothing. `tool()` is the identity function and `tool.schema` is a re-export of
+// zod, so a plain object is the same object OpenCode would have received anyway. What it wants is
+// `args` as a record of per-argument JSON Schema, which is exactly `TOOLS[n].inputSchema.properties`
+// in `liveread/mcp.py` — measured: OpenCode wraps that record into the right `parameters`.
+//
+// EVERY ARGUMENT COMES OUT REQUIRED. OpenCode marks every key of `args` required and has no reading
+// for a plain schema that says otherwise (zod's `.optional()` was the only way, and zod is the
+// dependency we just removed). So the optional ones are declared nullable and say so, and `call`
+// drops the nulls before posting — Python then sees the key absent, exactly as it did over MCP.
 //
 // THE FILENAME IS PART OF THE CONTRACT. OpenCode names a multi-export tool `<file>_<export>`, so
 // `live_read.ts` exporting `table` and `files` gives `live_read_table` and `live_read_files` —
@@ -22,18 +36,24 @@
 // reaches the model — stays in Python, behind the route this posts to. Rows never pass through
 // here; the reply is the same summary text the MCP path returned.
 
-import { tool } from "@opencode-ai/plugin"
-
 // The orchestrator serves this, and it moves port with the workspace (:8888 on Domino, :8080
 // locally). OpenCode inherits SAGE_CONTROL_PORT from the process that spawned it — see
 // `driver/server.py`, which hands it the whole environment.
 const PORT = process.env.SAGE_CONTROL_PORT || "8080"
 const ROUTE = `http://127.0.0.1:${PORT}/mcp/live-read`
 
+const OPTIONAL = " Send null if you do not need it."
+
 // Every failure comes back as TEXT the assistant reads, never as a thrown error. A refusal is not a
 // crash, and a turn that cannot make a live read must still be able to answer with Python — which
 // is what the prompt tells it to do. Throwing here would end the turn on a stack trace instead.
 async function call(name, args) {
+  // The schema cannot say "optional", so the model is told to send null. Python is not asked to
+  // learn a second spelling of absent.
+  const sent = {}
+  for (const key of Object.keys(args || {})) {
+    if (args[key] !== null && args[key] !== undefined) sent[key] = args[key]
+  }
   let res
   try {
     res = await fetch(ROUTE, {
@@ -43,7 +63,7 @@ async function call(name, args) {
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
-        params: { name, arguments: args },
+        params: { name, arguments: sent },
       }),
     })
   } catch (e) {
@@ -64,11 +84,12 @@ async function call(name, args) {
   return "The live read returned nothing readable. Query the data with Python instead."
 }
 
-const token = tool.schema
-  .string()
-  .describe("The read token from this turn's prompt. Pass it back exactly as given.")
+const token = {
+  type: "string",
+  description: "The read token from this turn's prompt. Pass it back exactly as given.",
+}
 
-export const table = tool({
+export const table = {
   description:
     "Read a few real rows out of one bound table and show them to the person as a table card. " +
     "Use this whenever they ask what the data looks like, or to see a sample row. You get back the " +
@@ -76,32 +97,32 @@ export const table = tool({
     "person sees. Say what the table holds; do not claim to be quoting values you were not given.",
   args: {
     token,
-    source: tool.schema.string().describe("The Data Source name."),
-    table: tool.schema.string().describe("The table name."),
-    database: tool.schema.string().optional(),
-    schema: tool.schema.string().optional(),
-    limit: tool.schema.number().optional().describe("Rows to read. Default 5, capped."),
-    title: tool.schema.string().optional().describe("A short title for the card."),
+    source: { type: "string", description: "The Data Source name." },
+    table: { type: "string", description: "The table name." },
+    database: { type: ["string", "null"], description: "The database." + OPTIONAL },
+    schema: { type: ["string", "null"], description: "The schema." + OPTIONAL },
+    limit: { type: ["integer", "null"], description: "Rows to read. Default 5, capped." + OPTIONAL },
+    title: { type: ["string", "null"], description: "A short title for the card." + OPTIONAL },
   },
   async execute(args) {
     return call("live_read_table", args)
   },
-})
+}
 
-export const files = tool({
+export const files = {
   description:
     "List the files in a bound Dataset, or read the head of one of them. Use this to say what a " +
     "Dataset holds. A listing that stopped short of the end says so — never report a capped " +
     "listing as all of them.",
   args: {
     token,
-    dataset: tool.schema.string().describe("The Dataset name."),
-    path: tool.schema
-      .string()
-      .optional()
-      .describe("One file below it. Omit to list the Dataset instead."),
+    dataset: { type: "string", description: "The Dataset name." },
+    path: {
+      type: ["string", "null"],
+      description: "One file below it." + OPTIONAL + " Then the Dataset is listed instead.",
+    },
   },
   async execute(args) {
     return call("live_read_files", args)
   },
-})
+}

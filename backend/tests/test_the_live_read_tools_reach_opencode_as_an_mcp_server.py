@@ -116,7 +116,7 @@ def test_the_live_read_tools_are_named_the_same_either_way():
     """
     root = pathlib.Path(__file__).resolve().parents[2]
     ts = root / "backend" / "sage" / "liveread" / "tools" / "live_read.ts"
-    exported = re.findall(r"^export const (\w+) = tool\(", ts.read_text(), re.MULTILINE)
+    exported = re.findall(r"^export const (\w+) = (?:tool\()?\{", ts.read_text(), re.MULTILINE)
     assert exported, f"no tools exported from {ts}"
 
     from_the_file = sorted(f"{ts.stem}_{name}" for name in exported)
