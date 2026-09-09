@@ -7164,7 +7164,9 @@ class Orchestrator:
             # minted per turn and is worthless on any other.
             f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
             "sage-live-read_ tool call. Use those tools to look at a bound table or Dataset rather "
-            "than telling the person you cannot see their data.",
+            "than telling the person you cannot see their data. If they are not in your tool list "
+            "this turn, query the data with Python instead — a missing tool is never a reason to "
+            "tell someone you cannot see their data.",
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]

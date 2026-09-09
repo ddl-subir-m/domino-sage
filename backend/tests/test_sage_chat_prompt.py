@@ -53,3 +53,21 @@ def test_build_attachment_listing_still_warns_not_to_copy_into_src():
           "summary": "2 rows", "detail": ""}],
     )
     assert "built app MUST" in out
+
+
+def test_the_prompt_never_makes_a_missing_tool_a_reason_to_give_up():
+    """Live read is served over MCP, and OpenCode does not reliably connect it — measured live on
+    2e284e7: a workspace idle for seven minutes, then a first Chat turn handed NO Live read tools,
+    and `opencode_connected` still reading "never" two model calls later.
+
+    The turn still answered, with real rows, because the model fell back to Python. But a prompt
+    that names those tools and says nothing about their absence leaves that to chance: the same
+    question one turn earlier produced "the sage-live-read_ tools ... aren't available in this
+    turn" and no answer at all. Same shape, two outcomes, decided by nothing.
+    """
+    prompt = (Path(__file__).resolve().parents[2] / "template" / "chat" / "AGENTS.md").read_text()
+
+    assert "not in your list this turn, query the data with Python instead" in prompt
+    # And the half that matters to the person reading the Thread: a tool name is never the reason
+    # they are given for not getting their own data.
+    assert "never name a tool to them as the reason" in prompt
