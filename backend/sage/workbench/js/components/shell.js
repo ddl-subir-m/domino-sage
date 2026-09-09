@@ -322,8 +322,25 @@ window.SW = window.SW || {};
   // Add button and the one control that hides it. `dockTab` is still the state key and still holds
   // `'resources'` or `null`, because it is a remembered preference already written into people's
   // records (#150) — what is gone is the second value it could hold.
+  //
+  // The open dock's width is a second remembered choice. null means nobody has dragged the left
+  // edge, so `--dock-expanded` (and its laptop media queries) still answers. A click that does
+  // not move the edge does not write — grabbing the handle is not choosing a width.
+  const DOCK_MAIN_MIN = 360;
+
+  function clampDockWidth(px) {
+    const range = SW.prefs.range('dockWidth') || { min: 240, max: 800 };
+    const inner = (typeof window !== 'undefined' && window.innerWidth) || 0;
+    const cap = inner ? Math.min(range.max, Math.max(range.min, inner - DOCK_MAIN_MIN)) : range.max;
+    const n = Math.round(Number(px));
+    if (!Number.isInteger(n)) return range.min;
+    return Math.min(cap, Math.max(range.min, n));
+  }
+
   function Dock() {
-    const { dockTab } = SW.store.get();
+    const { dockTab, dockWidth } = SW.store.get();
+    const [liveWidth, setLiveWidth] = useState(null);
+    const drag = useRef(null);
 
     if (!dockTab) {
       return h(
@@ -345,9 +362,66 @@ window.SW = window.SW || {};
       );
     }
 
+    const stored = liveWidth != null ? liveWidth : dockWidth;
+    const width = stored != null ? clampDockWidth(stored) : null;
+
+    function onPointerDown(e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const handle = e.currentTarget;
+      if (handle.setPointerCapture) handle.setPointerCapture(e.pointerId);
+      const startW = handle.parentElement.getBoundingClientRect().width;
+      drag.current = { pointerId: e.pointerId, startX: e.clientX, startW, width: startW };
+      setLiveWidth(startW);
+    }
+
+    function onPointerMove(e) {
+      if (!drag.current || e.pointerId !== drag.current.pointerId) return;
+      // The handle is the dock's LEFT edge, so moving left grows the pane.
+      const next = clampDockWidth(drag.current.startW + (drag.current.startX - e.clientX));
+      drag.current.width = next;
+      setLiveWidth(next);
+    }
+
+    function onPointerUp(e) {
+      if (!drag.current || (e.pointerId != null && e.pointerId !== drag.current.pointerId)) return;
+      const next = drag.current.width;
+      const moved = next !== drag.current.startW;
+      drag.current = null;
+      setLiveWidth(null);
+      if (moved) SW.store.setDockWidth(next);
+    }
+
+    function onKeyDown(e) {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const current = width || e.currentTarget.parentElement.getBoundingClientRect().width;
+      const step = e.shiftKey ? 40 : 16;
+      SW.store.setDockWidth(clampDockWidth(current + (e.key === 'ArrowLeft' ? step : -step)));
+    }
+
     return h(
       'aside',
-      { className: 'sw-dock is-expanded' },
+      {
+        className: `sw-dock is-expanded${liveWidth != null ? ' is-resizing' : ''}`,
+        style: width != null ? { width: `${width}px` } : undefined,
+      },
+      h('div', {
+        className: 'sw-dock-resize',
+        role: 'separator',
+        'aria-orientation': 'vertical',
+        'aria-label': 'Resize project resources',
+        'aria-valuemin': (SW.prefs.range('dockWidth') || {}).min,
+        'aria-valuemax': (SW.prefs.range('dockWidth') || {}).max,
+        'aria-valuenow': width || undefined,
+        title: 'Drag to resize',
+        tabIndex: 0,
+        onPointerDown,
+        onPointerMove,
+        onPointerUp,
+        onPointerCancel: onPointerUp,
+        onKeyDown,
+      }),
       h(SW.ResourcePanel, null)
     );
   }

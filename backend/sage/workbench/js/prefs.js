@@ -18,9 +18,10 @@ window.SW = window.SW || {};
 (function () {
   const KEY = 'sw.prefs';
 
-  // A preference is its default plus the values it is allowed to take. Anything else read back is
-  // treated as absent: localStorage is editable by hand and outlives the build that wrote it, so
-  // a value with no branch behind it would leave the UI drawing nothing.
+  // A preference is its default plus the values it is allowed to take. A numeric one also names
+  // min and max: any integer in that range is legal, and everything else is treated as absent.
+  // localStorage is editable by hand and outlives the build that wrote it, so a value with no
+  // branch behind it would leave the UI drawing nothing.
   const PREFS = {
     // Two views of one Conversation: split keeps Chat and Build as separate halves, which is what
     // the Workbench does today, and unified shows one transcript in both (#50). Nothing reads this
@@ -63,6 +64,14 @@ window.SW = window.SW || {};
     // below reads it back as `resources`, which is the only panel there is now.
     dockTab: { fallback: null, values: ['resources', 'activity', null], migrate: { activity: 'resources' } },
 
+    // How wide the Project resources dock is, in pixels. null is "never dragged" — the
+    // stylesheet token `--dock-expanded` answers, including the laptop media queries that
+    // shrink the dock before the transcript does. An integer is a choice made by dragging
+    // the dock's edge, and only that gesture writes it. min/max are the clamp the handle
+    // honours; a stored value outside them reads back as never-dragged rather than as a
+    // dock that ate the page or vanished into a sliver.
+    dockWidth: { fallback: null, values: [null], min: 240, max: 800 },
+
     // The first chip's one-time note (#137). A chip is Session context — this Conversation's
     // only — and the note that teaches it can be dismissed for good. True is the viewer's own
     // "don't show this again". There is no "seen" value on purpose: an undismissed note may
@@ -104,6 +113,17 @@ window.SW = window.SW || {};
     }
   }
 
+  // Enumerations answer `values`. A numeric preference answers min/max. null can be in `values`
+  // beside a range — the dock's width uses that to mean "never dragged" without making null a
+  // number.
+  function recognised(spec, value) {
+    if (spec.values && spec.values.includes(value)) return true;
+    if (typeof spec.min === 'number' && typeof spec.max === 'number') {
+      return Number.isInteger(value) && value >= spec.min && value <= spec.max;
+    }
+    return false;
+  }
+
   SW.prefs = {
     get(name) {
       const spec = PREFS[name];
@@ -112,12 +132,18 @@ window.SW = window.SW || {};
       // is the honest answer for a session that does not know who is looking.
       if (!who) return spec.fallback;
       const stored = (asRecord(readAll()[who]) || {})[name];
-      if (!spec.values.includes(stored)) return spec.fallback;
+      if (!recognised(spec, stored)) return spec.fallback;
       // A value the UI has since retired, read back as the one that replaced it. The record on
       // disk is left alone: rewriting it here would make a read a write, and `get` is called on
       // every render.
       const moved = spec.migrate && Object.prototype.hasOwnProperty.call(spec.migrate, stored);
       return moved ? spec.migrate[stored] : stored;
+    },
+
+    range(name) {
+      const spec = PREFS[name];
+      if (!spec || typeof spec.min !== 'number' || typeof spec.max !== 'number') return null;
+      return { min: spec.min, max: spec.max };
     },
 
     // True once the answer is on file. False is worth telling the reader about: they made a
@@ -126,7 +152,7 @@ window.SW = window.SW || {};
     // and the control would sit on a value nothing agrees with.
     set(name, value) {
       const spec = PREFS[name];
-      if (!spec.values.includes(value)) return false;
+      if (!recognised(spec, value)) return false;
       const who = viewer();
       // Same refusal as `get`, and it reads as "this browser would not store the choice" to any
       // caller that reports the result — which is true enough: there is nowhere to put it yet.
