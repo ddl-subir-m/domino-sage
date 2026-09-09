@@ -27,6 +27,8 @@ def test_sage_chat_prompt_names_the_pandas_shape_that_breaks_a_table():
     the card showed "No data" beside a chart that had plotted the same rows. Naming the two idioms
     that produce that file, and the one that does not, is the part that was missing."""
     prompt = (Path(__file__).resolve().parents[2] / "template" / "chat" / "AGENTS.md").read_text()
+    assert 'df.to_json(path)' in prompt
+    assert 'orient="columns"' in prompt
     assert 'df.to_json(orient="records")' in prompt
     assert 'json.dump(df.to_dict("records"), f)' in prompt
     assert "df.values.tolist()" in prompt

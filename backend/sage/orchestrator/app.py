@@ -18,6 +18,7 @@ import os
 import queue
 import threading
 import time
+from mimetypes import guess_type
 from pathlib import Path
 from urllib.parse import quote
 
@@ -1547,6 +1548,27 @@ def _resolve_workspace_file(root: Path, rel_path: str) -> Path:
     return candidate
 
 
+# Pinned the way /fonts/inter-latin-var.woff2 is: mimetypes on a bare Linux image has no answer
+# for several of these, and an <img> of /file/raw with application/octet-stream (or worse,
+# Content-Disposition: attachment) is the broken-image icon over the alt text.
+_RAW_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".json": "application/json",
+}
+
+
+def _raw_media_type(path: Path) -> str:
+    return _RAW_MEDIA_TYPES.get(path.suffix.lower()) or guess_type(str(path))[0] or "application/octet-stream"
+
+
 @control_app.get("/api/project/files")
 def list_files() -> JSONResponse:
     project = orchestrator.project()
@@ -1590,7 +1612,13 @@ def read_file_raw(path: str) -> Response:
             return JSONResponse(status_code=400, content={"error": "invalid path"})
     if not target.is_file():
         return JSONResponse(status_code=404, content={"error": "file not found"})
-    return FileResponse(target, headers={"Cache-Control": "no-store"})
+    return FileResponse(
+        target,
+        media_type=_raw_media_type(target),
+        filename=target.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @control_app.put("/api/project/file")
