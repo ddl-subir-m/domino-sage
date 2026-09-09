@@ -238,6 +238,8 @@ a.sw-topnav-link {
 }
 
 .sw-scope-dot {
+  /* The accent follows the brand pack, which repaints --purple-500 on load. */
+  background: var(--purple-500);
   width: 10px;
   height: 10px;
   border-radius: 50%;

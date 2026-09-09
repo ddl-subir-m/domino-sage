@@ -337,7 +337,6 @@ SW.api = {
     const here = {
       id: p.id,
       name: p.name || p.id,
-      color: '#543FDE',
       untitled: !!p.untitled,
       ownerName: 'you',
       memberCount: 1,
@@ -351,7 +350,7 @@ SW.api = {
     };
     const elsewhere = (listing.items || [])
       .filter((it) => it && it.id && !it.current)
-      .map((it) => ({ id: it.id, name: it.name || it.id, color: '#543FDE', current: false }));
+      .map((it) => ({ id: it.id, name: it.name || it.id, current: false }));
     return [here, ...elsewhere];
   },
   gallery: () => request('/gallery'),

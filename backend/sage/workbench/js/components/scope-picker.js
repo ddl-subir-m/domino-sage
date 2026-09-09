@@ -14,7 +14,7 @@ window.SW = window.SW || {};
         className: `sw-scope-row${project.current ? ' is-active' : ''}`,
         onClick: () => onSelect(project),
       },
-      h('span', { className: 'sw-scope-dot', style: { background: project.color } }),
+      h('span', { className: 'sw-scope-dot' }),
       h(
         'span',
         { className: 'sw-scope-row-main' },
@@ -160,10 +160,7 @@ window.SW = window.SW || {};
           {
             className: `sw-scope-chip${scopeFlash ? ' is-flashing' : ''}`,
           },
-          h('span', {
-            className: 'sw-scope-dot',
-            style: { background: scope.color },
-          }),
+          h('span', { className: 'sw-scope-dot' }),
           h('span', { className: 'sw-scope-name' }, scope.name),
           h(DownOutlined, { style: { fontSize: 10, color: '#8F8FA3' } })
         )

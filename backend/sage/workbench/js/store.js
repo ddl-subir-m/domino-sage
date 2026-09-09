@@ -6,7 +6,6 @@ window.SW = window.SW || {};
   const NO_SCOPE = {
     id: '',
     name: 'Default',
-    color: '#543FDE',
     appCount: 0,
     planCount: 0,
     memberCount: 1,
