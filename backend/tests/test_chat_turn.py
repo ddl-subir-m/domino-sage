@@ -1392,7 +1392,8 @@ def test_a_tool_that_never_comes_back_still_ends_the_turn(tmp_path: Path):
     assert "narrower query" in next(e for e in out if e["type"] == "error")["message"]
 
 
-def test_a_slow_tool_outlives_the_window_that_ends_a_stalled_model(tmp_path: Path, monkeypatch):
+def test_a_slow_tool_outlives_the_window_that_ends_a_stalled_model(tmp_path: Path, monkeypatch,
+                                                                   caplog):
     """`download_file` on a real Dataset file is silent for as long as it takes. One window could
     not tell that from a stalled model, so it killed the one thing the turn was told to do — and
     then told the person their query was too broad."""
@@ -1408,8 +1409,10 @@ def test_a_slow_tool_outlives_the_window_that_ends_a_stalled_model(tmp_path: Pat
     oc.stay_running = True
     tid = orch.create_thread()["id"]
 
+    import logging
     started = time.monotonic()
-    out = list(orch.chat_stream(tid, "whats in @clean_cc_transactions.csv"))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
+        out = list(orch.chat_stream(tid, "whats in @clean_cc_transactions.csv"))
     elapsed = time.monotonic() - started
 
     assert elapsed > 0.5, "the download died on the window it is not subject to"
@@ -1417,8 +1420,18 @@ def test_a_slow_tool_outlives_the_window_that_ends_a_stalled_model(tmp_path: Pat
     err = next(e for e in out if e["type"] == "error")
     # It did not stop working, so it must not be reported as having stopped.
     assert "stopped making progress" not in err["message"]
-    assert "That step didn't finish" in err["message"]
+    # The step is NAMED. "That step" sent somebody after a 12KB file on a turn whose open call was
+    # not necessarily reading one — what was open is the fact this branch has and the person does
+    # not. Only `tool.called` carries the name (a completion comes back with `tool=""`), so it is
+    # remembered at the open or it is gone.
+    assert "didn't finish in time" in err["message"]
+    # Named, and named as itself: the command is quoted as the agent ran it, not case-folded into
+    # something that no longer matches anything you could search the log for.
+    assert 'bash (DatasetClient().get_dataset("dataset-clickstream-ds1")' in err["message"]
     assert "narrower query" in err["message"]
+    # And in the log, which is what a diagnosis reads. Four live stalls said only "quiet for 241s".
+    assert any("still open: bash (DatasetClient()" in r.getMessage()
+               for r in caplog.records), [r.getMessage() for r in caplog.records]
 
 
 def test_a_finished_tool_puts_the_turn_back_on_the_short_window(tmp_path: Path, monkeypatch):

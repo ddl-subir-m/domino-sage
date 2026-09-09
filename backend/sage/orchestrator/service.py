@@ -2076,6 +2076,28 @@ def _chat_error_text(err: object, attachments: list[dict] | None = None) -> str:
     return _guardrail_sentence(text, attachments) or " ".join(text.split())[:_CHAT_ERROR_MAX]
 
 
+def _tool_label(payload: dict) -> str:
+    """What to call an open tool call in a stop message and in the log.
+
+    Only `tool.called` carries the name — a completion comes back with `tool=""` — so this reads the
+    opening event and the caller remembers it. A bash call also carries its command, which is the
+    difference between "bash" and "bash (python analyse.py)": on a turn that stalled, which command
+    was open is the whole question.
+
+    Never the tool's `input`: a write's input is the file's contents, and this ends up in a sentence
+    on screen and in a log ring anyone with the Builder can read.
+    """
+    tool = str(payload.get("tool") or "").strip() or "a step"
+    # `shell.started` carries it at the top level, `tool.called` inside `input`. Only that one key
+    # is read, never the whole input: a write's input is the file's contents, and this ends up in a
+    # sentence on screen and in a log ring anyone with the Builder can read.
+    raw = payload.get("command")
+    if not raw and isinstance(payload.get("input"), dict):
+        raw = payload["input"].get("command")
+    command = " ".join(str(raw or "").split())[:60]
+    return f"{tool} ({command})" if command else tool
+
+
 def _chat_live_event(ev) -> dict | None:
     """One AgentEvent off the live stream -> a Chat SSE event, or None to drop it.
 
@@ -7311,7 +7333,14 @@ class Orchestrator:
             # Calls that started and have not come back, by call id: `called` opens one and
             # success/failed closes it. A caller-supplied timeout_s makes both windows that number,
             # so a test forcing the cap keeps forcing it and this only picks the message.
-            running_tools: set[str] = set()
+            #
+            # The NAME is kept beside the id, which it was not. A tool-quiet stop knew exactly which
+            # call had been open for four minutes and threw it away, so the log said "quiet for
+            # 241s" and the person was told to try a smaller file — about a 12KB one, on a turn
+            # whose open call may not have been reading a file at all. Only `tool.called` carries
+            # the name (the completion comes back with tool=""), so it has to be remembered here or
+            # it is gone.
+            running_tools: dict[str, str] = {}
             while True:
                 if project.stop_requested:
                     # Cleared by the turn that consumes it. Build clears it in its own handle_stop;
@@ -7338,9 +7367,11 @@ class Orchestrator:
                 quiet_limit = tool_quiet if running_tools else idle_quiet
                 quiet = now - last_activity >= quiet_limit
                 if quiet or now - started >= _CHAT_TURN_MAX_S:
-                    log.warning("chat: turn stopped after %.0fs — %s", now - started,
+                    open_now = ", ".join(sorted(set(running_tools.values())))
+                    log.warning("chat: turn stopped after %.0fs — %s%s", now - started,
                                 f"quiet for {now - last_activity:.0f}s" if quiet
-                                else f"hit the {_CHAT_TURN_MAX_S:.0f}s ceiling")
+                                else f"hit the {_CHAT_TURN_MAX_S:.0f}s ceiling",
+                                f"; still open: {open_now}" if open_now else "; nothing open")
                     try:
                         client.interrupt(sid)
                     except Exception:
@@ -7378,7 +7409,14 @@ class Orchestrator:
                         # A step was still open when the window closed. Blaming the turn for
                         # stopping would be wrong twice over: it did not stop, and the person
                         # would go looking for the wrong thing to make smaller.
+                        # Named, because the old sentence sent somebody after the wrong thing: a
+                        # 12KB file, told to make it smaller, on a turn whose open call was not
+                        # necessarily reading a file. What was open is the one fact this branch has
+                        # that the person does not.
                         message = brand.text(
+                            "That step didn't finish in time — {step} was still running. Try a "
+                            "smaller file or a narrower query.", step=open_now,
+                        ) if open_now else brand.text(
                             "That step didn't finish in time. Try a smaller file or a narrower "
                             "query."
                         )
@@ -7432,9 +7470,9 @@ class Orchestrator:
                         # shared key, which a completion with no id then clears.
                         call = str(ev.payload.get("call_id") or "") or "?"
                         if str(ev.payload.get("status") or "") == "called":
-                            running_tools.add(call)
+                            running_tools[call] = _tool_label(ev.payload)
                         else:
-                            running_tools.discard(call)
+                            running_tools.pop(call, None)
                     live = _chat_live_event(ev)
                     if live is not None:
                         answered = answered or bool(live.get("text"))
@@ -7506,11 +7544,11 @@ class Orchestrator:
                     # No stream to open and close calls on, so the transcript answers instead: a
                     # part still pending IS a call in flight. Read fresh every poll, since nothing
                     # here reports the end of one.
-                    running_tools = {"transcript"} if polled_running else set()
+                    running_tools = {"transcript": "a step"} if polled_running else {}
                 else:
                     # The stream took over. Its own call ids run the set from here, and the key the
                     # transcript left behind would otherwise hold the turn on the long window.
-                    running_tools.discard("transcript")
+                    running_tools.pop("transcript", None)
                 # Proof of life when the transcript is the only source. The same text part comes
                 # back on every poll, so it is the change that counts, not the presence.
                 if pending_text and pending_text != last_text:
