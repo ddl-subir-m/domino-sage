@@ -1088,6 +1088,13 @@ window.SW = window.SW || {};
         } catch (err) {
           blocks.push({ type: 'file', name: art.name || path, path });
         }
+      } else if (lower.endsWith('.html') || lower.endsWith('.htm')) {
+        // Chat's contract is a PNG or a `.table.json` (chat/AGENTS.md), and a page is neither. But a
+        // turn that wrote one anyway had already done the work, and handing back a link to a file
+        // nobody can open in place threw that work away — the person asked to see their data and
+        // got a filename. Shown, not run as an app: an app is what Build is for, and the offer to
+        // cross over is already on the Thread.
+        blocks.push({ type: 'page', title: art.title || art.name, path });
       } else if (path) {
         blocks.push({ type: 'file', name: art.name || path, path });
       }
