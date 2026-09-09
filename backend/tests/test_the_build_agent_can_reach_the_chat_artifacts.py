@@ -81,9 +81,10 @@ def _template(tmp: Path) -> Path:
     (t / "src" / "App.tsx").write_text("export default function App() { return null }\n")
     (t / "package.json").write_text('{"name": "template"}')
     (t / "AGENTS.md").write_text("# Building this app\n\nSage's rules go here.\n")
-    # The rule under test. The real template ships it; a fixture without it would let every test
-    # here pass on the runtime repair alone and never notice the template had stopped carrying it.
-    (t / ".gitignore").write_text("node_modules\ndist\n/examples\n")
+    # No `/examples`, matching the real template: it seeds the Project root as well as each app,
+    # and at the root that rule ignores the Chat Artifacts themselves (#222). Every test here that
+    # wants the rule is therefore testing `_ensure_examples_link`, which is the only writer.
+    (t / ".gitignore").write_text("node_modules\ndist\n")
     return t
 
 
@@ -288,13 +289,17 @@ def test_the_link_is_ignored_by_a_rule_that_actually_matches_a_symlink(tmp_path:
     assert not _git(root, "status", "--porcelain", "--", str(app / "examples")).strip()
 
 
-def test_the_template_ships_the_rule(tmp_path: Path):
-    """An app seeded after this change never has to be repaired at runtime."""
+def test_the_template_does_not_ship_the_rule(tmp_path: Path):
+    """The template must NOT carry `/examples`, because it seeds two roots and the rule fits one.
+
+    It shipped the rule once, and the Project root is seeded from the same file — so every Project
+    ignored the Chat Artifacts themselves and committed none of them. `_ensure_examples_link` is
+    the only writer now, into the app's own .gitignore, which cannot reach the tree above it.
+    See `test_a_restarted_builder_still_has_the_charts_its_conversations_made.py` for the loss."""
     template = Path(__file__).resolve().parents[2] / "template" / "react-vite"
     rules = {ln.strip() for ln in (template / ".gitignore").read_text().splitlines()
              if ln.strip() and not ln.startswith("#")}
-    assert "/examples" in rules
-    assert "/examples/" not in rules and "examples" not in rules
+    assert not {"/examples", "/examples/", "examples", "examples/"} & rules
 
 
 # ---- the stop button --------------------------------------------------------------------------
@@ -332,8 +337,8 @@ def test_the_stop_buttons_revert_does_not_see_the_link(tmp_path: Path):
     assert (app / "examples").is_symlink()
     assert original.read_bytes() == ARTIFACT
     # The link is not in what the snapshot captures, so the revert neither restored nor removed it.
-    # This app is template-seeded, so its ignore rule pre-dates the turn and no write happened here
-    # — the legacy app's one-off rule write is the case the ordering test above covers.
+    # The rule write happened above, before `before` was taken — the seam's own ordering, and the
+    # case the ordering test above pins.
     assert snap.working_tree_hash() == before
 
 
@@ -345,7 +350,11 @@ def test_the_symlink_itself_is_invisible_to_git(tmp_path: Path):
     is the half with the ordering constraint, and the test below is what pins it."""
     orch, _root = _orch(tmp_path)
     project = orch.project(start_preview=False)
-    app = project.workspace.path   # template-seeded, so .gitignore already carries /examples
+    app = project.workspace.path
+    # Reach the steady state first: the rule's own write is the OTHER half of the claim, and the
+    # test below owns it. The template cannot ship the rule (#222), so every app writes it once.
+    orch._ensure_examples_link(project)
+    (app / "examples").unlink()
     snap = TurnSnapshot(app)
     before = snap.working_tree_hash()
 

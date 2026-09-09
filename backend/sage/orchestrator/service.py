@@ -136,7 +136,8 @@ from ..router.model_control import ModelControl
 from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, signing_slot
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
-from ..workspace.manager import ProjectRecord, Workspace, WorkspaceManager, ensure_ignore_line
+from ..workspace.manager import (ProjectRecord, Workspace, WorkspaceManager,
+                                 ensure_ignore_line, remove_ignore_line)
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import (
     ThreadStore,
@@ -4231,6 +4232,9 @@ class Orchestrator:
         # Same rule, same place: the deletes that predate ADR-0036 are tombstones with every file
         # still beside them, and finishing them belongs to opening the Project that holds them.
         self._sweep_deleted_conversations(self._project)
+        # And again: every Project seeded before this fix ignores its own Chat Artifacts, so the
+        # repair belongs to opening one.
+        self._unignore_chat_artifacts(self._project)
         return self._project
 
     def _chat_project(self) -> Project:
@@ -15238,6 +15242,31 @@ class Orchestrator:
         self._refresh_history_archive(project)
         self._ensure_examples_link(project)
 
+    def _unignore_chat_artifacts(self, project: Project) -> None:
+        """Stop the Project root ignoring `examples/` — the Chat Artifacts (#222).
+
+        `/examples` is a real rule, but only for a Built App, where `examples` is a symlink up to
+        this directory (`_ensure_examples_link`). It reached the Project root because one template
+        .gitignore seeds both, and there it ignored the charts and tables themselves. Nothing under
+        `examples/` was ever committed, so it lived only on the container's own disk: a Builder that
+        restarted pulled back a transcript whose every Artifact card pointed at a file the clone did
+        not have, and the Conversation came back with all its charts broken.
+
+        A migration, so it runs where the other two do — on the way into the Project, once. Removing
+        the line is the whole repair: the files were ignored, never tracked, so the next `commit_all`
+        stages them with no `untrack` needed. It cannot bring back what a restart already dropped.
+
+        Best-effort, like the sweep beside it. `self._project` is assigned by the time this runs, so
+        an exception here would 500 whichever request triggered the attach and then be cached away.
+        A read-only volume is enough, and a Project that keeps its Artifacts out of git by hand is
+        a person's choice this should not turn into an outage."""
+        try:
+            if remove_ignore_line(project.record.path / ".gitignore", "/examples"):
+                log.info("artifacts: the Project root no longer ignores examples/ (#222)")
+        except OSError:
+            log.warning("artifacts: could not un-ignore examples/; leaving it for the next open",
+                        exc_info=True)
+
     def _ensure_examples_link(self, project: Project) -> None:
         """Link the Project's Chat Artifacts into the app a turn runs in, and keep the link out of
         git while doing it.
@@ -15252,8 +15281,15 @@ class Orchestrator:
         The ignore rule is anchored and carries NO trailing slash. Git does not follow a symlink, so
         it records this one as a symlink and not as a directory — `examples/`, which matches
         directories only, would not cover it. Unignored, `git add -A` commits a link pointing
-        outside the app tree and a fresh clone gets a dangling one. The template ships the rule;
-        this call is what fixes an app seeded before it existed.
+        outside the app tree and a fresh clone gets a dangling one. This call is the only thing
+        that writes the rule. The template cannot ship it: the same file seeds the Project root
+        too, where `examples/` is the Chat Artifacts themselves rather than a link to them, and
+        ignoring them there meant no Conversation's charts were ever committed — a Builder that
+        restarted came back to Artifact cards pointing at files no clone had (#222).
+
+        Nothing to do at all when the app IS the Project root, as a legacy single-app Project's
+        is. There is no link to make — `examples/` is already right there — and adding the rule
+        would put it straight back into the one file `_unignore_chat_artifacts` takes it out of.
 
         No `.ignore` negation, unlike `_refresh_history_archive` above. That one needs it because
         the agent FINDS the archive by grepping, and ripgrep honours `.gitignore`. Nothing here is
@@ -15265,6 +15301,8 @@ class Orchestrator:
         the link and adding that rule are both writes, and after the baseline the read-only gate
         would read them as an Ask/Plan turn that changed the working tree."""
         ws = project.app_for_turn()
+        if ws.path == project.record.path:
+            return
         self._ensure_gitignored(ws.path, "/examples")
         _ensure_dir_link(ws.path / "examples", project.record.path / "examples")
 

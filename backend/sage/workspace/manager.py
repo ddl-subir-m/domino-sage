@@ -55,6 +55,25 @@ def ensure_ignore_line(path: Path, line: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(existing + ("" if existing.endswith("\n") or not existing else "\n") + line + "\n")
 
+
+def remove_ignore_line(path: Path, line: str) -> bool:
+    """Drop one rule from an ignore file, if it is there. True when the file changed.
+
+    The mirror of `ensure_ignore_line`, and it exists for the same reason that one is shared: a
+    rule written for the app's copy of the template .gitignore also lands at the Project root,
+    where it can mean something quite different. `/examples` did — see the note in the template.
+
+    Only the rule line goes. A comment above it explains a decision that is still worth reading
+    even once the rule is gone, and this is a repair that runs over a file people also edit."""
+    if not path.exists():
+        return False
+    existing = path.read_text()
+    kept = [ln for ln in existing.splitlines() if ln.strip() != line]
+    if len(kept) == len(existing.splitlines()):
+        return False
+    path.write_text("".join(ln + "\n" for ln in kept))
+    return True
+
 # Source dirs never copied into a workspace (heavy / regenerated / linked separately). __pycache__
 # appears in a dev checkout of the template as soon as anything imports serve.py, and a workspace
 # that receives it commits it to the user's app repo.
