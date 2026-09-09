@@ -56,9 +56,21 @@ PIN_BRANCH = (
 
 def test_every_surface_that_attaches_a_resource_uses_the_same_words():
     """One act, one name. Three names for it made a person guess whether "Add to chat" and "Add to
-    this conversation" reached the same place — they always did."""
+    this conversation" reached the same place — they always did. The tree row's visible ink is the
+    short "Use here" so the table name can be read; the glossary term stays as its title."""
     for name, src in SURFACES.items():
         assert USE in src, f"{name} no longer offers {USE!r}"
+
+
+def test_the_tree_row_shortens_the_act_so_the_name_can_be_read():
+    """Twenty-four characters of the glossary term ate the table name in a 320px dock. The visible
+    label is the short half of the pair Stop using here already uses; the title keeps the name the
+    menu and the drawer still say out loud."""
+    leaf = _flat(TREE.split("function LeafRow(")[1].split("\n  }")[0])
+    assert "}, 'Use here')" in leaf
+    assert "title: 'Use in this conversation'" in leaf
+    assert "'aria-label': 'Use in this conversation'" in leaf
+    assert "}, 'Use in this conversation')" not in leaf
 
 
 def test_the_three_older_names_for_attaching_are_gone_everywhere():

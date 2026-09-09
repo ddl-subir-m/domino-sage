@@ -81,6 +81,9 @@ window.SW = window.SW || {};
     // `init` rather than here (#150): prefs.js loads after this file and keys its record by
     // `state.me`, so there is nothing to read until the store knows who is looking.
     dockTab: null,        // null = collapsed
+    // null = never dragged; the stylesheet sizes the open dock. An integer is a
+    // choice made on the resize handle, seeded from prefs in `init` with the rest.
+    dockWidth: null,
     panelFilter: null,    // resource kind the assistant asked the user to pick
     railHidden: true,
     railAppFilter: null,  // show only conversations that changed this app
@@ -2949,6 +2952,7 @@ window.SW = window.SW || {};
       // here because the writers need it too — ⌘/ and ⌘\ are live while the boot spinner is up.
       state.railHidden = SW.prefs.get('railHidden');
       state.dockTab = SW.prefs.get('dockTab');
+      state.dockWidth = SW.prefs.get('dockWidth');
       if (brand) {
         state.brand = brand;
         applyBrandChrome(brand);
@@ -3122,6 +3126,19 @@ window.SW = window.SW || {};
     openDock() {
       state.dockTab = 'resources';
       SW.prefs.set('dockTab', 'resources');
+      notify();
+    },
+
+    // The dock's left edge, dragged. A width the stylesheet picked is not written here —
+    // only a number that came off the handle, already clamped to the preference's range.
+    setDockWidth(px) {
+      const range = SW.prefs.range('dockWidth');
+      const width = Math.round(Number(px));
+      if (!range || !Number.isInteger(width)) return;
+      const clamped = Math.min(range.max, Math.max(range.min, width));
+      if (clamped === state.dockWidth) return;
+      state.dockWidth = clamped;
+      SW.prefs.set('dockWidth', clamped);
       notify();
     },
 

@@ -235,6 +235,36 @@ def test_a_viewer_who_is_not_known_yet_reads_nobodys_saved_panels():
     ]) == [True, True, True, None]
 
 
+def test_a_dock_nobody_has_resized_follows_the_stylesheet():
+    """null is 'never dragged', not a width. The CSS token answers, including the laptop media
+    queries that shrink the dock before the transcript does."""
+    assert _run([{"viewer": "u1", "op": "get", "name": "dockWidth"}]) == [None]
+
+
+def test_a_resized_dock_is_still_that_wide_after_a_reload():
+    answers = _run([
+        {"viewer": "u1", "op": "set", "name": "dockWidth", "value": 480},
+        {"op": "reload"},
+        {"op": "get", "name": "dockWidth"},
+    ])
+    assert answers[0] is True
+    assert answers[-1] == 480
+
+
+def test_a_dock_width_outside_the_clamp_is_not_written():
+    """A stored 80px would vanish the panel; a stored 900px would eat the transcript. Both have to
+    be refused the way an unknown conversationView is, so a hand-edited record cannot put the
+    layout into a state the handle itself cannot reach."""
+    answers = _run([
+        {"viewer": "u1", "op": "set", "name": "dockWidth", "value": 80},
+        {"op": "set", "name": "dockWidth", "value": 900},
+        {"op": "set", "name": "dockWidth", "value": 320.5},
+        {"op": "get", "name": "dockWidth"},
+    ])
+    assert answers[:3] == [False, False, False]
+    assert answers[3] is None
+
+
 def test_the_laptop_runs_own_record_is_still_read_and_written():
     """The state this must not be confused with. A container with no identity to report answers
     `me`, and that answer is an id like any other — refusing it would take preferences away from

@@ -271,7 +271,18 @@ window.SW = window.SW || {};
       h(
         'span',
         { className: 'sw-tree-leaf-acts' },
-        h(Button, { size: 'small', type: 'link', onClick: onMention }, 'Use in this conversation'),
+        // The glossary term is the title and the aria-label, not the ink. Twenty-four
+        // characters of "Use in this conversation" ate the table name in a 320px dock
+        // and left `ADMI…` beside a sentence the row already sits inside. The visible
+        // label is the short half of the pair Stop using here already uses; a hover
+        // and a screen reader still say the same thing the menu and the drawer say.
+        h(Button, {
+          size: 'small',
+          type: 'link',
+          title: 'Use in this conversation',
+          'aria-label': 'Use in this conversation',
+          onClick: onMention,
+        }, 'Use here'),
         pinned
           ? h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin')
           // Pin only reorders the @ menu — it sends nothing. Sitting unlabelled beside the control

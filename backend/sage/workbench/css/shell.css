@@ -362,6 +362,7 @@ a.sw-topnav-link {
 /* Resource dock ---------------------------------------------------------- */
 
 .sw-dock {
+  position: relative;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -378,6 +379,34 @@ a.sw-topnav-link {
   background: var(--gray-100);
 }
 .sw-dock.is-expanded { width: var(--dock-expanded); }
+.sw-dock.is-resizing { transition: none; user-select: none; }
+/* The dock's left edge. Eight pixels so it can be grabbed; the visible mark is the 2px
+   rule that lights on hover, or the cursor would be the only sign the pane moves. */
+.sw-dock-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.sw-dock-resize::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+}
+.sw-dock-resize:hover::after,
+.sw-dock-resize:focus-visible::after,
+.sw-dock.is-resizing .sw-dock-resize::after {
+  background: var(--purple-500);
+}
 
 .sw-dock-rail-btn {
   position: relative;
