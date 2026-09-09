@@ -37,5 +37,8 @@ const out = (spec.cases || []).map((c) => ({
   label: sandbox.SW.util.lockedLabel(c.sensitivity, c.picked),
   approved: sandbox.SW.util.isApproved(c.sensitivity, c.picked),
   locked: sandbox.SW.util.isLocked(c.sensitivity),
+  // The rail's mark for the same fact the chip and the picker draw, so a test can hold the three
+  // of them to one answer rather than to three that merely look alike.
+  barred: sandbox.SW.util.isBarred(c.sensitivity, { kind: c.kind || 'model_llm', name: c.picked }),
 }));
 console.log(JSON.stringify(out));

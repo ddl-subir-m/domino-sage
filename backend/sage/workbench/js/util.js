@@ -128,6 +128,22 @@ window.SW = window.SW || {};
       return (sensitivity.approved || []).indexOf(name) !== -1;
     },
 
+    // The mark an Alias row wears when the lock bars it, and the sentence under it. FOUND IN LIVE
+    // QA (2026-09-09): the picker greyed `gpt-5.4` and said why, while the rail listed the same
+    // bound Alias as an ordinary row. Two surfaces describing one Binding differently is the same
+    // class of defect as the chip that named a model it would not run — quieter, because nothing
+    // here is wrong until somebody reads the rail and concludes the model is usable.
+    //
+    // Marked and not hidden or greyed, for the reason the missing mark already is: the creator
+    // bound this Alias deliberately, an administrator can still approve it, and a row that vanished
+    // would leave nobody anything to act on. `lockReason` is the sentence, unchanged from the one
+    // the picker row carries, so the two cannot drift.
+    BARRED_MARK: 'not approved',
+    isBarred(sensitivity, resource) {
+      return !!(resource && resource.kind === 'model_llm'
+        && SW.util.isLocked(sensitivity) && !SW.util.isApproved(sensitivity, resource.name));
+    },
+
     // What the model chip says while the lock holds. FOUND IN LIVE QA (2026-09-09): the chip went
     // on reading `gpt-5.4` after the lock moved the session to `opus`, and the only thing saying so
     // was a notice with a "Got it" on it — so once dismissed, the one control a person reads to

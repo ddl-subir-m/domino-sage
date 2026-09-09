@@ -67,3 +67,23 @@ def test_several_approved_models_are_not_guessed_between():
     assert label != "gpt-5.4", "the chip must never name a model that cannot run"
     assert label not in ("haiku", "opus"), "it cannot know which, so it must not claim one"
     assert label.strip() != "", "and silence is not an option either"
+
+
+@needs_node
+def test_the_rail_marks_a_barred_alias_the_way_the_picker_greys_it():
+    """FOUND IN LIVE QA (2026-09-09) alongside the chip: the picker greyed `gpt-5.4` and said why,
+    while the resources rail listed the same bound Alias as an ordinary row. One Binding must not
+    read as usable in one surface and refused in another."""
+    got = _labels([{"sensitivity": ONE, "picked": "gpt-5.4"},
+                   {"sensitivity": ONE, "picked": "opus"},
+                   {"sensitivity": OFF, "picked": "gpt-5.4"}])
+    assert [g["barred"] for g in got] == [True, False, False]
+
+
+@needs_node
+def test_only_an_alias_is_ever_barred():
+    """The mark belongs to a model. A Dataset carrying the same name as an unapproved Alias must
+    not inherit its refusal — the rail draws both kinds in one column."""
+    got = _labels([{"sensitivity": ONE, "picked": "gpt-5.4", "kind": "dataset"},
+                   {"sensitivity": ONE, "picked": "gpt-5.4", "kind": "datasource"}])
+    assert [g["barred"] for g in got] == [False, False]

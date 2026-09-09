@@ -369,7 +369,16 @@ window.SW = window.SW || {};
           h(
             'span',
             { className: 'sw-res-name-line' },
-            h('span', { className: 'sw-res-name' }, resource.name),
+            // The name ellipsises, and the chips beside it take the width that would have shown
+            // it — a Dataset called `sage-subir-mansukhani-66a821b1-2` truncates to `sage-subir-ma`
+            // once it wears one. The primary identifier is the one thing on a row that should never
+            // be unreadable, so the full name is a tooltip on it. `mouseEnterDelay` matches the
+            // subtitle's, so hovering the row does not fire two tips at different moments.
+            h(
+              Tooltip,
+              { title: resource.name, mouseEnterDelay: 0.4 },
+              h('span', { className: 'sw-res-name' }, resource.name)
+            ),
             // Domino no longer holds it. Marked rather than removed, and marked rather than
             // greyed: the creator picked this row deliberately and an app may still bind it, so a
             // row that vanished overnight would leave nobody anything to act on (ADR-0034). The
@@ -408,6 +417,18 @@ window.SW = window.SW || {};
             Tooltip,
             { title: SW.util.SOVEREIGN_TITLE },
             h(Tag, { bordered: false, className: 'sw-sens sw-sens-internal' }, 'sovereign')
+          ),
+        // An Alias the lock bars, marked here the way the picker greys it — one Binding must not
+        // read as usable on the rail and refused in the menu (ADR-0043). Same slot, same sentence.
+        SW.util.isBarred(SW.store.get().sensitivity, resource) &&
+          h(
+            Tooltip,
+            { title: SW.util.lockReason(SW.store.get().sensitivity, resource.name) },
+            h(
+              Tag,
+              { bordered: false, className: 'sw-sens sw-sens-restricted' },
+              SW.util.BARRED_MARK
+            )
           ),
         // The declaration, in the slot the sovereign tag uses — the two never meet, since one is
         // worn by an Alias and the other by a Dataset, and sharing the slot is what keeps the chips
