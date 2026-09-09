@@ -252,6 +252,29 @@ def test_chat_prompt_routes_an_unmounted_dataset_to_the_data_library(tmp_path: P
     assert "not a React file" in prompt
 
 
+def test_a_failed_read_is_not_permission_to_substitute(tmp_path: Path):
+    """Live: a Dataset read failed on an authentication error and the turn answered anyway with
+    "I'll build the dashboard using realistic synthetic adverse event data", then charted it.
+
+    The pack already said "do not invent rows" and was ignored, so the rule is put on the TURN as
+    well: an existing workspace never re-seeds its template (#40), so a rule that lives only in the
+    pack reaches nobody who is already working. Last in the prompt, which is where it holds.
+
+    It refuses the announcement too. Saying it out loud first is the model asking itself for
+    permission and granting it, and it is the shape this actually arrived in.
+    """
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "chart the adverse events"))
+    prompt = oc.prompts[0]["text"]
+
+    assert "will not authenticate" in prompt
+    assert "Do not substitute sample, example, illustrative or synthetic data" in prompt
+    assert "does not make it allowed" in prompt
+    # The question the person asked is still the last thing the model reads.
+    assert prompt.rstrip().endswith("chart the adverse events")
+
+
 def test_chat_prompt_builds_the_dataset_handle_from_the_resource_id(tmp_path: Path):
     """The client posts the Domino id as `resourceId` and no `id` at all (`api.js`
     `addToConversation`), so `add_context` mints the row a `ctx_` id of its own. Reading `id`

@@ -7093,6 +7093,28 @@ class Orchestrator:
             "do not list directories. "
             "@name in the user's message is the file listed above; read that path."
         )
+        # Put on the turn rather than only in AGENTS.md, and last, because that is where it holds:
+        # an existing workspace never re-seeds its template (#40), so a rule that lives only in the
+        # pack reaches nobody who is already working — and this one was in the pack and was ignored.
+        #
+        # Live: a Dataset read failed on an authentication error, and the turn answered anyway with
+        # "I'll build the dashboard using realistic synthetic adverse event data". It said so out
+        # loud first, which is why the sentence below refuses that too — announcing a substitution
+        # is the model asking itself for permission and granting it.
+        #
+        # The word "synthetic" is deliberately not matched anywhere in code: the file this happened
+        # to was named `synthetic_adverse_events.csv`, so a text rule would refuse the real data by
+        # its own name. This is a rule about where numbers came from, which only the model knows.
+        lines.append("")
+        lines.append(
+            "If you cannot read something this turn names — a file will not open, a library will "
+            "not authenticate, a query is refused — say which one it was and what happened, and "
+            "stop. Do not substitute sample, example, illustrative or synthetic data, do not fall "
+            "back on what a dataset like this usually holds, and do not write a chart or table "
+            "from numbers you supplied yourself. Saying that you are about to do it does not make "
+            "it allowed. Reporting that the data could not be read IS the correct answer to this "
+            "turn; an answer built from invented rows is a wrong one that looks right."
+        )
         lines.append("")
         lines.append(prompt)
         return "\n".join(lines)
