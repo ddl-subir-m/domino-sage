@@ -48,6 +48,9 @@ window.SW = window.SW || {};
       chat: { singular: 'Chat', plural: 'Chats' },
       turn: { singular: 'Turn', plural: 'Turns' },
     },
+    // In step with `brand.DEFAULT_THEME`, and here for the reason the nouns above are: it is read
+    // before /api/brand answers, and the shell paints in whatever it says until then.
+    theme: 'domino',
     colors: {
       primary: '#543FDE',
       primaryDark: '#311EAE',
@@ -535,6 +538,12 @@ window.SW = window.SW || {};
   function applyBrandChrome(brand) {
     if (!brand) return;
     if (brand.pageTitle) document.title = brand.pageTitle;
+    // The shell's half of a theme is one attribute: `[data-theme]` in tokens.css answers it, and
+    // everything a theme changes that the pack does not carry — the top bar's own colours, the two
+    // type faces, what a heading weighs, whether a chip is a pill — is written there.
+    //
+    // Ant Design's half cannot be reached from a stylesheet and is `SW.themeFromBrand` instead.
+    if (brand.theme) document.documentElement.setAttribute('data-theme', brand.theme);
     const colors = brand.colors || {};
     const root = document.documentElement.style;
     if (colors.primaryDark) {
@@ -3282,6 +3291,22 @@ window.SW = window.SW || {};
       state.dockTab = 'resources';
       SW.prefs.set('dockTab', 'resources');
       notify();
+    },
+
+    // Appearance, from Account settings (ADR-0044). One writer for the theme and both names,
+    // because all three land in one file behind one route.
+    //
+    // The server's answer is installed rather than the patch: it resolved the write against a
+    // baked pack that may overrule part of it, and painting what was asked for would leave the
+    // screen disagreeing with the next reload. That is also why nothing here is optimistic — the
+    // round trip is one small file write, and a theme that flickered back would be worse than one
+    // that took a moment to arrive.
+    async saveBrand(patch) {
+      const brand = await SW.api.saveBrand(patch);
+      state.brand = brand;
+      applyBrandChrome(brand);
+      notify();
+      return brand;
     },
 
     // The dock's left edge, dragged. A width the stylesheet picked is not written here —

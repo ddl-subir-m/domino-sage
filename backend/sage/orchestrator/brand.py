@@ -20,6 +20,36 @@ log = logging.getLogger("sage.orchestrator.brand")
 
 _BAKED = Path("/opt/sage/brand.json")
 
+# The one layer a person can write, from Appearance in Account settings (ADR-0044).
+#
+# Under the home directory rather than the workspace, because `.sage/brand.json` would make the
+# look a property of the PROJECT — brand.md rules that out, and it is the wrong scope twice over: a
+# collaborator pulling the repo would inherit someone else's theme, and the same person's two
+# projects would disagree about what the product is called.
+#
+# THIS DEFAULT DOES NOT SURVIVE A RESTART on Domino, and that is not a bug being tolerated — it is
+# the fallback, and `SAGE_BRAND_OVERRIDE` is the deployed configuration. `~/.config` is the
+# container filesystem, which Domino rebuilds from the image every start; only `/mnt` persists, and
+# ADR-0006 records that even there the repo's own sources disagree about what survives without
+# being committed. The neighbouring `~/.config/opencode` write gets away with this because
+# `_install_opencode_config` rewrites it on every boot. This file is meant to be remembered.
+#
+# So a deployment points `SAGE_BRAND_OVERRIDE` at a path on a MOUNTED DATASET, which is Domino's
+# own documented read/write persistent store and the one thing an App is allowed to keep state on.
+# Mount the same Dataset everywhere and one answer serves the whole deployment, which is the
+# original ask; mount a per-user one and it follows the person between projects. Either way no code
+# here changes — the layer is the same file, read from somewhere that lasts.
+#
+# Unset, it lands in the home directory rather than the workspace, because `.sage/brand.json` would
+# make the look a property of the PROJECT: brand.md rules that out, `.sage/settings.json` is
+# committed, and a collaborator pulling the repo would inherit somebody else's theme.
+_OVERRIDE_DEFAULT = Path(os.path.expanduser("~/.config/sage/brand.json"))
+
+# What Appearance may write. The rest of a pack — the logo, the nouns, the peer products — stays
+# the OEM's to bake, because those are the keys ADR-0014 wrote a lint and an image allowlist
+# around, and a text field on a settings panel is not a place to re-litigate either.
+WRITABLE_KEYS = ("productName", "assistantName", "theme")
+
 # Where a partner's own logo and favicon live, and the only directory this process publishes.
 # NEVER `/opt/sage` itself: that holds `opencode.json` and the gateway credentials configured in
 # it, so a static mount one level too high hands them to anyone who can reach the shell. The
@@ -35,6 +65,38 @@ _RELATIVE_IMAGE = re.compile(r"^(?:\./)?[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*$"
 _TOKEN = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
 _WARNED: set[str] = set()   # complaints already made, so each is made once
 _HEX = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+
+# The palettes a theme names. A theme is a WHOLE look — the top bar inverts from dark to light,
+# the type ramp changes weight, the corner radius grows — and almost all of that is CSS, so it
+# lives in `css/tokens.css` under `[data-theme]` and not here. What the server carries is the id
+# and the three colours the pack already had, because those two are the only parts anything
+# outside the stylesheet reads: Ant Design's `colorPrimary` and Highcharts' first accent.
+#
+# Adding one here without the matching block in `tokens.css` gets you a themed antd and an
+# unthemed shell. `test_every_theme_has_a_stylesheet_block` is what says so out loud.
+THEMES: dict[str, dict[str, str]] = {
+    "domino": {"primary": "#543FDE", "primaryDark": "#311EAE", "primaryLight": "#EEEBFC"},
+    "google-cloud": {"primary": "#0C67DF", "primaryDark": "#0842A0", "primaryLight": "#E8F0FE"},
+}
+
+# The mark each theme wears, kept beside the palette because a wordmark is part of a look and not
+# a separate decision: the dark bar carries a white Domino mark and the light one cannot, which is
+# the limit `--nav-logo-filter` was standing in for until there was a second asset to reach for.
+#
+# A second map rather than a richer `THEMES`, because `THEMES[id]` IS the colours block that
+# `load()` copies into the pack — and `test_every_theme_has_a_logo` is what stops the two drifting,
+# the same way `test_every_theme_has_a_stylesheet_block` holds the CSS half in place.
+THEME_LOGOS: dict[str, dict[str, str]] = {
+    "domino": {"logoUrl": "./img/domino-logo.svg", "logoAlt": "Domino"},
+    "google-cloud": {"logoUrl": "./img/google-cloud-logo.svg", "logoAlt": "Google Cloud"},
+}
+
+# Which marks belong to a theme rather than to an OEM. A theme may replace one of its own and must
+# never replace a partner's: a baked `logoUrl` is that partner's identity under every look Sage
+# wears, which is the same boundary ADR-0014 draws around the key in the first place.
+_THEME_LOGO_URLS = {spec["logoUrl"] for spec in THEME_LOGOS.values()}
+
+DEFAULT_THEME = "domino"
 
 DEFAULT: dict[str, Any] = {
     "productName": "AI Workbench",
@@ -84,12 +146,19 @@ DEFAULT: dict[str, Any] = {
         "chat": {"singular": "Chat", "plural": "Chats"},
         "turn": {"singular": "Turn", "plural": "Turns"},
     },
-    "colors": {
-        "primary": "#543FDE",
-        "primaryDark": "#311EAE",
-        "primaryLight": "#EEEBFC",
-    },
+    # Which look the shell wears. A key of the map above, and the palette below is that theme's
+    # own — written out rather than referenced so `GET /api/brand` stays one flat answer and no
+    # client has to resolve a theme to know its primary.
+    "theme": DEFAULT_THEME,
+    "colors": dict(THEMES[DEFAULT_THEME]),
 }
+
+
+def override_path() -> Path:
+    """Where the writable layer lives. Read per call rather than bound at import, so a test can
+    move it with the environment exactly the way `SAGE_BRAND_FILE` is moved."""
+    configured = (os.environ.get("SAGE_BRAND_OVERRIDE") or "").strip()
+    return Path(configured) if configured else _OVERRIDE_DEFAULT
 
 
 def load() -> dict[str, Any]:
@@ -98,7 +167,65 @@ def load() -> dict[str, Any]:
     extra = (os.environ.get("SAGE_BRAND_FILE") or "").strip()
     if extra:
         pack = _merge(pack, _overlay(Path(extra)))
+    # Last, so the choice a person made in Appearance outranks the baked pack. It goes through the
+    # same merge as every other layer and gets the same forgiveness: a file hand-edited into
+    # nonsense warns and falls back, because a brand pack must never be what stops the Workbench
+    # booting — and this is now a file a person can reach.
+    pack = _merge(pack, _overlay(override_path()), derive_assistant=False)
     return pack
+
+
+def save_override(patch: dict[str, Any]) -> dict[str, Any]:
+    """Write the writable keys of the override layer and return the pack that results.
+
+    A read-modify-write of the whole file rather than an append, so what lands on disk is always a
+    pack somebody could have written by hand — and so a field can be given BACK. An empty value
+    drops its key instead of storing `""`, which is what makes "clear this and let the OEM's word
+    answer again" reachable from a text field that can only ever send a string.
+
+    Raises ValueError, where `_overlay` only warns. That difference is the whole point of this
+    door: a pack file nobody is looking at must not stop the boot, and a form somebody just
+    submitted has a person waiting to be told what was wrong with it.
+    """
+    stored = _read(override_path()) or {}
+    out = {key: value for key, value in stored.items() if key in WRITABLE_KEYS}
+    for key in WRITABLE_KEYS:
+        if key not in patch:
+            continue
+        value = patch[key]
+        if key == "theme":
+            theme = _nonempty(value)
+            if theme not in THEMES:
+                raise ValueError(f"unknown theme {theme!r}")
+            out["theme"] = theme
+            continue
+        if not _nonempty(value):
+            out.pop(key, None)
+        else:
+            out[key] = _safe_name(key, value)
+    path = override_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(out, indent=2) + "\n")
+    return load()
+
+
+def _safe_name(key: str, value: object) -> str:
+    """A name a person typed, checked against the one place a pack value is not just read but
+    PARSED: `ui()` substitutes the pack into `index.html` and `door.html` and escapes nothing,
+    because until this file grew a writable layer every value in it was baked into an image by the
+    OEM and trusted for that reason. It is not any more.
+
+    So the markup characters go, and with them both halves of the injection — `<` and `>` cannot
+    open a tag, and the quotes cannot close the `href="…"` that `faviconUrl` already guards for
+    itself. Refused rather than escaped: this is a product name, nobody's is called `<script>`, and
+    an escape would have to be undone again by every other reader of the pack.
+    """
+    name = _nonempty(value)
+    if len(name) > 40:
+        raise ValueError(f"{key} is longer than 40 characters")
+    if any(ch in name for ch in "<>\"'`") or any(ord(ch) < 0x20 for ch in name):
+        raise ValueError(f"{key} cannot contain markup characters")
+    return name
 
 
 def text(template: str, **values: object) -> str:
@@ -241,7 +368,12 @@ def _read(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _merge(base: dict, overlay: dict | None) -> dict:
+def _merge(base: dict, overlay: dict | None, *, derive_assistant: bool = True) -> dict:
+    """`derive_assistant=False` for the Appearance layer, where the two names are two fields on a
+    form and a person who filled in one did not mean to answer the other. A partner renaming the
+    product to Acme AI does mean the assistant too, which is why the derivation is the default —
+    but reading that intent into a text field would rename the speaker behind the person's back,
+    and an assistant name that changes is a re-voice and an OpenCode restart (ADR-0044)."""
     if not overlay:
         return base
     out = deepcopy(base)
@@ -250,7 +382,7 @@ def _merge(base: dict, overlay: dict | None) -> dict:
         out["productName"] = product
     if "assistantName" in overlay:
         out["assistantName"] = _nonempty(overlay.get("assistantName")) or out["productName"]
-    elif product:
+    elif product and derive_assistant:
         out["assistantName"] = product
     for key in ("platformName", "pageTitle", "logoAlt"):
         value = _nonempty(overlay.get(key))
@@ -285,6 +417,25 @@ def _merge(base: dict, overlay: dict | None) -> dict:
                     _warn_unless_title_case(key, form, value)
                     merged_nouns[key][form] = value
         out["nouns"] = merged_nouns
+    # Before the colours below, and that order is the rule: picking a theme picks its palette, and
+    # an explicit `colors` block still wins over it. That is the only reading under which naming
+    # both means anything — an OEM on the light shell with their own primary in it.
+    theme = _nonempty(overlay.get("theme"))
+    if theme and theme in THEMES:
+        out["theme"] = theme
+        out["colors"] = dict(THEMES[theme])
+        # Only while the mark on the bar is still a theme's own. `logoUrl` is applied above, so a
+        # pack naming both has already put its mark in `out` and keeps it here — and a partner who
+        # baked one in an earlier layer keeps it too, which is the point: picking a look is not
+        # giving up a logo.
+        if out["logoUrl"] in _THEME_LOGO_URLS:
+            out.update(THEME_LOGOS[theme])
+    elif theme:
+        seen = f"theme={theme}"
+        if seen not in _WARNED:
+            _WARNED.add(seen)
+            log.warning("brand pack theme is %r — not one of %s. Using the default.",
+                        theme, ", ".join(sorted(THEMES)))
     colors = overlay.get("colors")
     if isinstance(colors, dict):
         merged = dict(out["colors"])

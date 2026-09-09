@@ -4961,6 +4961,41 @@ class Orchestrator:
             self._oc_client = OpenCodeClient(base_url=self._oc_server.start())
         return self._oc_client
 
+    def revoice(self, install) -> None:
+        """Rewrite OpenCode's config in the pack's new words and drop the server still holding the
+        old ones (ADR-0044).
+
+        OpenCode reads `opencode.json` once, at start, so a rename that only rewrote the file would
+        leave the assistant introducing itself by its old name until something else restarted it —
+        which is the one part of a rename a person actually watches for.
+
+        Refused while a turn holds the lock, like every other act that moves the ground under a
+        running build. Stopping the server mid-turn ends the turn, and the words are not worth
+        somebody's build.
+
+        `install` is passed in rather than imported because it lives in `app.py`, which imports this
+        module — the seam is the import direction, not a choice about layering.
+
+        The server is STOPPED and not restarted here: `_ensure_opencode` starts one on first use, so
+        the next turn brings it back already reading the new file, and somebody who renames the
+        product and then goes to lunch pays for no restart at all.
+        """
+        if not self._turn_lock.acquire(blocking=False):
+            raise TurnBusy(self._turn_wedged, "change the name")
+        try:
+            install()
+            if self._oc_server is not None:
+                try:
+                    self._oc_server.stop()
+                except Exception:
+                    # The words are already on disk, and the next turn starts a server that reads
+                    # them. A stop that failed is a stale process, not a failed rename.
+                    log.exception("revoice: failed to stop the opencode server")
+            self._oc_server = None
+            self._oc_client = None
+        finally:
+            self._release_turn()
+
     def resolved_agents(self) -> list[dict] | None:
         """The agents OpenCode resolved, for /api/diag. None when the server isn't up yet or the
         query failed — deliberately does NOT start it, so diag stays safe to hit mid-build."""

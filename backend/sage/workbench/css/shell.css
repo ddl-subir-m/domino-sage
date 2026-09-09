@@ -27,14 +27,17 @@
 .sw-topnav {
   height: var(--nav-h);
   flex: none;
-  background: var(--dark-700);
-  color: var(--white);
+  background: var(--nav-bg);
+  color: var(--nav-fg);
+  /* Transparent under Domino, where the bar being dark is already the edge. A light theme needs
+     a drawn one, and it must not change the bar's height when it appears. */
+  box-shadow: inset 0 -1px 0 var(--nav-border);
   display: flex;
   align-items: center;
   gap: var(--s2);
   padding: 0 var(--s3) 0 var(--s4);
 }
-.sw-logo { height: 16.5px; display: block; flex: none; }
+.sw-logo { height: 16.5px; display: block; flex: none; filter: var(--nav-logo-filter); }
 
 .sw-topnav-product {
   display: inline-flex;
@@ -44,22 +47,25 @@
   padding: 0 10px;
   margin-left: var(--s2);
   border: none;
-  border-radius: var(--radius);
-  background: rgba(255, 255, 255, .08);
-  color: var(--white);
+  border-radius: var(--radius-chip);
+  background: var(--nav-chip);
+  /* An outline drawn inside, so a theme that wants an outlined pill gets one without the chip
+     growing by two pixels when it does. */
+  box-shadow: inset 0 0 0 1px var(--nav-chip-border);
+  color: var(--nav-fg);
   font-size: var(--fs-13);
   font-weight: 500;
   cursor: pointer;
-  font-family: inherit;
+  font-family: var(--font-display);
 }
-.sw-topnav-product:hover { background: rgba(255, 255, 255, .16); }
+.sw-topnav-product:hover { background: var(--nav-chip-hover); }
 
 .sw-topnav-spacer { flex: 1; min-width: 0; }
 
 .sw-topnav-sep {
   width: 1px;
   height: 20px;
-  background: rgba(255, 255, 255, .18);
+  background: var(--nav-sep);
   flex: none;
   margin: 0 var(--s2);
 }
@@ -73,18 +79,18 @@
   border: none;
   border-radius: var(--radius);
   background: transparent;
-  color: rgba(255, 255, 255, .82);
-  font-family: inherit;
+  color: var(--nav-fg-dim);
+  font-family: var(--font-display);
   font-size: var(--fs-13);
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
   transition: background 150ms ease-out, color 150ms ease-out;
 }
-.sw-topnav-link:hover { background: rgba(255, 255, 255, .12); color: var(--white); }
+.sw-topnav-link:hover { background: var(--nav-hover); color: var(--nav-fg); }
 .sw-topnav-link.is-active {
-  background: rgba(255, 255, 255, .16);
-  color: var(--white);
+  background: var(--nav-active);
+  color: var(--nav-fg);
   font-weight: 600;
 }
 /* The bar's one outward link (Manage) sits among buttons, so the anchor has to be given the box
@@ -105,7 +111,7 @@ a.sw-topnav-link {
   align-items: center;
   border-radius: 50%;
 }
-.sw-topnav-user:hover { box-shadow: 0 0 0 2px rgba(255, 255, 255, .25); }
+.sw-topnav-user:hover { box-shadow: 0 0 0 2px var(--nav-ring); }
 
 .sw-avatar {
   border-radius: 50%;

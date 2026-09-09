@@ -1,8 +1,18 @@
 .PHONY: setup test lint shim opencode lock clean
 
 # One-command reproducible setup (lockfile-driven).
+#
+# The template's deps are installed here and not left to the first preview, because without them
+# Vite cannot start and the preview proxy seeds and starts it INSIDE the async handler: every
+# /preview/ poll then blocks the event loop until the whole orchestrator stops answering, `GET /`
+# included. That reads as "the Workbench hung", nowhere near the missing directory that caused it.
+# The image bakes the same deps by its own hand (environment/Dockerfile) and never runs make, so
+# this line is the laptop's copy of that step and changes nothing about a deploy.
+# `--include=optional` for the reason the Dockerfile spells out: rolldown ships its native binding
+# as a platform optionalDependency, and vite dies at startup without it.
 setup:
 	npm ci
+	cd template/react-vite && npm ci --include=optional
 	cd backend && uv sync --extra dev
 
 # Backend tests. -n auto fans them across cores. Drop it to read interleaved output or to run
