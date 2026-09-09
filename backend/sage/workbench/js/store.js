@@ -1000,21 +1000,24 @@ window.SW = window.SW || {};
     notify();
   }
 
-  // The question a Build offer was made INSTEAD of answering, or '' when there is none.
+  // The newest thing the person asked, for the optimistic half of a decline. The decline route
+  // ignores it and reads the question off the Thread, so this is never what decides anything.
   //
-  // The explicit-build path offers Build before running a turn, so its callout sits directly under
-  // the question, with nothing between them. A callout the classifier raised comes after a turn
-  // that did answer, and that answer is in the way — which is what tells the two apart, since both
-  // are the same block. The server applies the same rule to the transcript and has the last word
-  // (`handoff.unanswered_ask`); this is only here to keep a decline with nothing pending from
-  // flashing a spinner on its way to doing nothing.
-  function pendingAsk() {
+  // It used to decide: the same walk stopped dead at the first message that was not the person's,
+  // on the theory that an answer between the question and the offer means nothing is owed. Live,
+  // that read a card as an answer. "Build a dashboard from @<Dataset>" draws the Dataset file
+  // picker, which is an assistant MESSAGE on screen — so the walk gave up, the client suppressed
+  // the offer without ever calling the route, and "Answer it here" did nothing at all.
+  //
+  // The server never agreed: `handoff.unanswered_ask` blocks on the EVENT types that carry an
+  // answer (agent, artifacts, stopped, error), and a `dataset-files` card is none of them. Two
+  // rules for one question, disagreeing exactly where a card sits between the two. There is one
+  // rule now, and it is the server's — which arm the card is decides whether to ask it.
+  function lastUserText() {
     const messages = state.messages || [];
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const message = messages[i];
-      if (message.role === 'system') continue;
-      if (message.role !== 'user') return '';
-      const text = (message.blocks || []).find((b) => b.type === 'text');
+      if (messages[i].role !== 'user') continue;
+      const text = (messages[i].blocks || []).find((b) => b.type === 'text');
       return (text && text.value) || '';
     }
     return '';
@@ -4335,7 +4338,7 @@ window.SW = window.SW || {};
         // A receipt, not a turn. `system` is what draws it: `SW.Message` renders that role as a
         // bare line with no avatar and no "who" row, which is what this is — the model has said
         // nothing yet. As `assistant` it read as something Sage had answered, and it promised the
-        // behaviour of a turn that had not run. It also keeps `pendingAsk` reading past it, which
+        // behaviour of a turn that had not run. It also keeps `lastUserText` reading past it, which
         // is right: this line is not the answer to whatever the reader last asked.
         pushMessage({
           id: `ack_${Date.now()}`,
@@ -5730,10 +5733,13 @@ window.SW = window.SW || {};
       notify();
     },
 
-    dismissPlanSuggestion() {
-      // Read BEFORE the callout is filtered out: what makes a question pending is that the offer
-      // sits directly under it, so removing the offer removes the evidence.
-      const pending = pendingAsk();
+    // `answerHere` is the explicit arm of the card — the offer that was made INSTEAD of running a
+    // turn, so declining it owes the person that answer. The classifier arm sits under a turn that
+    // already answered and owes nothing, and it stays a local suppress so it cannot flash a
+    // spinner on its way to doing nothing. The card already knows which it is (`reason`), so this
+    // no longer re-derives it from where the messages happen to sit.
+    dismissPlanSuggestion({ answerHere = false } = {}) {
+      const pending = lastUserText();
       state.messages = state.messages.filter(
         (m) => !m.blocks.some((b) => b.type === 'plan_suggestion')
       );
@@ -5744,8 +5750,9 @@ window.SW = window.SW || {};
       const id = state.thread.id;
       state.thread = { ...state.thread, handoff: { ...(state.thread.handoff || {}), suppressed: true, status: 'suppressed' } };
       notify();
-      if (!pending) {
-        // Nothing waiting: the turn that raised this offer answered as well. Suppress and stop.
+      if (!answerHere || !pending) {
+        // The classifier arm, or a Thread with nothing of the person's to re-run. Either way no
+        // answer is owed, so this stays local and never touches the route.
         SW.api.patchThread(id, { handoff: 'suppress' }).catch(() => {});
         return;
       }

@@ -291,7 +291,7 @@ window.SW = window.SW || {};
         ),
         h(
           Button,
-          { size: 'small', onClick: () => SW.store.dismissPlanSuggestion() },
+          { size: 'small', onClick: () => SW.store.dismissPlanSuggestion({ answerHere: asked }) },
           // Same handler, two labels, because the two arms do two different things. The classifier
           // card sits under a turn that already answered, so declining it really is `Not now` —
           // nothing runs, and nothing is owed. The explicit card was raised INSTEAD of a turn, so

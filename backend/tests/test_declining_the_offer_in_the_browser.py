@@ -37,6 +37,18 @@ OFFERED_AFTER = [
 ]
 
 
+# The shape that broke it live. A prompt naming a Dataset draws the file picker BEFORE the handoff
+# regex runs, so the offer arrives with a card between it and the question — and a card is an
+# assistant message on screen while being a `dataset-files` event in the transcript. The server's
+# rule blocks only on events that carry an answer, so it still owes this question one.
+OFFERED_AFTER_A_CARD = [
+    {"id": "u1", "role": "user", "blocks": [{"type": "text", "value": ASK}]},
+    {"id": "a1", "role": "assistant",
+     "blocks": [{"type": "dataset_files", "message": "Pick the file to read."}]},
+    {"id": "s1", "role": "system", "blocks": [{"type": "plan_suggestion", "reason": "explicit"}]},
+]
+
+
 def _decline(seed: list[dict]) -> dict:
     out = subprocess.run(["node", str(_HARNESS)], input=json.dumps(seed), check=False,
                          capture_output=True, text=True, timeout=60)
@@ -71,6 +83,19 @@ def test_an_offer_that_owes_nothing_only_suppresses():
     out = _decline(OFFERED_AFTER)
     assert out["routes"] == ["api/threads/t1"]      # the plain suppress PATCH, and nothing else
     assert out["answers"] == ["19 users."]
+
+
+def test_a_card_between_the_question_and_the_offer_is_not_an_answer():
+    """The live failure. "Build a dashboard from @<Dataset>" draws the file picker first, so the
+    offer no longer sits directly under the question — and the client read that card as an answer,
+    suppressed the offer without calling the route, and left the button doing nothing at all.
+
+    The server never agreed: `handoff.unanswered_ask` blocks on the event types that carry an
+    answer, and a `dataset-files` card is none of them. The client no longer holds a second opinion.
+    """
+    out = _decline(OFFERED_AFTER_A_CARD)
+    assert "api/threads/t1/handoff/decline" in out["routes"]
+    assert out["answers"][-1] == "Here is what that data holds."
 
 
 def test_the_thread_reads_as_suppressed_either_way():

@@ -59,7 +59,10 @@ SW.store.set({
   scope: { id: 'p', name: 'P' },
   attachments: [],
 });
-SW.store.dismissPlanSuggestion();
+// What `PlanSuggestion` itself passes: the card's own arm, read off the block it renders. The
+// harness must decide it the same way the component does, or it tests a call nothing makes.
+const card = seed.flatMap((m) => m.blocks || []).find((b) => b.type === 'plan_suggestion') || {};
+SW.store.dismissPlanSuggestion({ answerHere: card.reason === 'explicit' });
 // The decline streams, and `dismissPlanSuggestion` does not await it — the callout has to come off
 // the screen on the click rather than when the turn ends. Drain the microtasks it queued.
 for (let i = 0; i < 50; i += 1) await Promise.resolve();
