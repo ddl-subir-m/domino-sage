@@ -909,6 +909,72 @@ def _git_credential_list_diag() -> dict:
         return {"error": str(e)}
 
 
+def _mcp_diag(control_port: int) -> dict:
+    """Which MCP servers OpenCode was told about, and whether each one answers right now.
+
+    OpenCode drops an MCP server it cannot reach SILENTLY: the tools are absent from the list the
+    model is offered, nothing is logged, and the agent falls back on telling the person it cannot
+    see their data — which is the transcript ADR-0041 exists to end. `agents` above already reports
+    what OpenCode resolved from the same file; this is the half that had nothing, so a Live read
+    that never arrived looked exactly like a model that chose not to call it.
+
+    Two questions, because they fail apart. `configured` is what the file says, read from the GLOBAL
+    copy — the slot `_install_opencode_config` explains is the one that does the work. `reachable`
+    is an HTTP round trip to that URL asking for its tool list, which is what OpenCode itself does
+    on connect: it catches the port the checked-in config names being the wrong one (the bug that
+    made the URL rewrite grow its twin), and it catches the control port not yet serving when the
+    OpenCode server started, which no rewrite can fix because nothing retries.
+
+    Never raises. A diagnostic must never be the thing that breaks the diagnostics page.
+    """
+    import json
+
+    src = Path(os.path.expanduser("~/.config/opencode")) / "opencode.json"
+    try:
+        servers = (json.loads(src.read_text()).get("mcp") or {})
+    except Exception as e:
+        return {"config": str(src), "error": str(e)}
+
+    out = []
+    for name, server in servers.items():
+        server = server if isinstance(server, dict) else {}
+        url = str(server.get("url") or "")
+        row = {"name": name, "type": server.get("type"), "enabled": server.get("enabled"),
+               "url": url}
+        if url:
+            # The check the silent drop actually turns on. `_install_opencode_config` rewrites this
+            # port to the one this process serves, so a mismatch here means the rewrite did not run
+            # — the config in the image was read straight through.
+            row["on_control_port"] = f":{control_port}/" in url
+            row["reachable"] = _mcp_probe(url)
+        out.append(row)
+    return {"config": str(src), "servers": out}
+
+
+def _mcp_probe(url: str) -> dict:
+    """One `tools/list` against a remote MCP url, naming the tools it offers.
+
+    The tool NAMES are the point, not just a status code: OpenCode namespaces them by the config key
+    before offering them to the model, so a server that answers with a renamed tool is a prompt that
+    names one nothing will execute. Short timeout — this runs inside a page somebody opens because
+    something is already wrong.
+    """
+    import httpx
+
+    try:
+        r = httpx.post(url, timeout=3.0, json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    if r.status_code != 200:
+        return {"ok": False, "status": r.status_code}
+    try:
+        tools = ((r.json().get("result") or {}).get("tools") or [])
+        return {"ok": True, "tools": [str(t.get("name") or "") for t in tools]}
+    except Exception as e:
+        return {"ok": False, "status": r.status_code, "error": f"unreadable reply: {e}"}
+
+
 @control_app.get("/api/diag")
 def diag() -> JSONResponse:
     """Browser-openable build diagnostics (no shell needed in the deployed builder). Reads the CURRENT
@@ -926,6 +992,9 @@ def diag() -> JSONResponse:
         default build agent, so its read-only permission and prompt blocks never applied (null =
         OpenCode not started yet, or the query failed). `/api/health` says the same thing to a
         creator; this stays the raw list
+      - mcp: the MCP servers OpenCode was told about and whether each one answers now. OpenCode
+        drops an unreachable one silently, so an absent Live read tool is otherwise indistinguishable
+        from a model that chose not to call it
       - log_tail / opencode_log_tail: recent sage.* and OpenCode server logs
     """
     from .service import _opencode_base_port
@@ -944,6 +1013,7 @@ def diag() -> JSONResponse:
         "ports": {"control_port": control_port, "base_port": base_port,
                   "match": base_port == control_port},
         "agents": orchestrator.resolved_agents(),
+        "mcp": _mcp_diag(control_port),
         "project": None if p is None else {
             "model_calls": p.model_calls,
             "tool_call_responses": p.tool_call_responses,
@@ -2313,10 +2383,16 @@ def delete_app(app_id: str, domino_app: str = "keep") -> JSONResponse:
 @control_app.patch("/api/apps/{app_id}")
 async def patch_app(app_id: str, request: Request) -> JSONResponse:
     """Rename a Built App. Only the display name is writable — the id names the directory, and a
-    published App's entry point is fixed at creation."""
+    published App's entry point is fixed at creation.
+
+    Offloaded to a thread, as Publish is: since #219 a rename carries the name to the deployed App,
+    which is a blocking control-plane call with a 30s timeout on it. Left inline on the event loop,
+    one slow Domino API would stall the whole Workbench server — build streams included — for as
+    long as it took to answer."""
     body = await request.json()
     try:
-        return JSONResponse(orchestrator.rename_app(app_id, str((body or {}).get("name") or "")))
+        return JSONResponse(await run_in_threadpool(
+            orchestrator.rename_app, app_id, str((body or {}).get("name") or "")))
     except KeyError:
         return JSONResponse({"error": "unknown app"}, status_code=404)
     except ValueError as e:
