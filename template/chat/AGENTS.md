@@ -85,6 +85,12 @@ short hyphenated slug as the filename.
 
 Do not write under `src/`, `public/`, or `.sage/`. Do not edit `AGENTS.md` or any config.
 
+Do not READ `.sage/` either. It is {assistantName}'s own bookkeeping — settings, the working set,
+this Thread's record — and it holds nothing about the person's data. A turn has already been lost
+opening `project-resources.json` and a Thread's `context.json` looking for a connection. Everything
+you need about a {dataset} or a {dataSource} is in the context block above: use the name it gives
+you.
+
 Do not delete anything. If a previous Artifact is wrong, write a new file.
 
 ## Visuals
