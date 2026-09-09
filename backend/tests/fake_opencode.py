@@ -76,12 +76,22 @@ class FakeOpenCode:
         self.compact_error: Exception | None = None
         # When True, is_running stays true until interrupt — a hung DataSourceClient.query.
         self.stay_running = False
+        # Which directories the turn dialled MCP for. Recorded rather than ignored: an MCP client
+        # belongs to a directory, nothing on OpenCode's own turn path connects one, and a turn that
+        # stops asking is a turn whose Live read tools silently vanish — which took weeks to find
+        # the first time, because every other surface still reported the server connected.
+        self.mcp_connected: list[str] = []
 
     # --- session ---------------------------------------------------------------------------------
 
     def _session_dir(self, session_id: str) -> Path:
         rec = next((s for s in self.sessions if s["id"] == session_id), None)
         return Path(rec["directory"]) if rec else self.workspace
+
+    def connect_mcp(self, directory: str, timeout_s: float = 10.0) -> list[str]:
+        """The real client connects this DIRECTORY's MCP servers once its instance exists."""
+        self.mcp_connected.append(directory)
+        return ["sage-live-read"]
 
     def create_session(self, directory: str, model: dict | None = None) -> str:
         # The first session keeps the historic id so every pre-existing test is untouched; phases
