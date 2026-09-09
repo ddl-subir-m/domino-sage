@@ -968,7 +968,17 @@ def _mcp_diag(control_port: int) -> dict:
     except Exception:
         # A diagnostic must never be the thing that breaks the diagnostics page.
         pass
-    return {"config": str(src), "servers": out, **reach}
+    says = {}
+    try:
+        # The half that is not us. Everything above reads OUR file and probes OUR route, and all of
+        # it can look right while OpenCode has quietly dropped the server — which is the shape of
+        # the bug this block exists for. `GET /mcp` on the OpenCode server is the only thing that
+        # answers for OpenCode. See Orchestrator.opencode_mcp_status for how to read it beside
+        # `reachable`.
+        says = {"opencode_says": orchestrator.opencode_mcp_status()}
+    except Exception:
+        pass
+    return {"config": str(src), "servers": out, **reach, **says}
 
 
 def _mcp_probe(url: str) -> dict:
@@ -1113,7 +1123,10 @@ def diag() -> JSONResponse:
         creator; this stays the raw list
       - mcp: the MCP servers OpenCode was told about and whether each one answers now. OpenCode
         drops an unreachable one silently, so an absent Live read tool is otherwise indistinguishable
-        from a model that chose not to call it
+        from a model that chose not to call it. Read `opencode_says` (OpenCode's own per-server
+        status) beside `reachable` (our probe of our own route): the pair is what says whose end
+        broke. `opencode_connected: "never"` on its own is NOT a fault — the dial is lazy and
+        happens when a session first needs tools, so it reads that way until the first Chat turn
       - opencode_config: every config slot OpenCode resolved and which of them Sage wrote. The
         project slot sits on the Project volume, outranks OPENCODE_CONFIG, and is not ours — a file
         there can take the MCP server away while `agents` and `mcp` both still look right

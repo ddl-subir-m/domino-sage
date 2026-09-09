@@ -7015,12 +7015,58 @@ class Orchestrator:
         Seconds after boot rather than a clock time, because the two facts only mean anything
         against each other — "at 03:20:52" says nothing without knowing the workspace started at
         03:05:17, and a person reading this page at 3am should not have to do that subtraction.
+
+        READ `never` CAREFULLY. OpenCode dials an MCP server LAZILY — not at boot, but when a
+        session first needs tools. Measured on the pinned 1.18.4: nothing on the wire for the whole
+        gap between `opencode serve` reporting a URL and the first turn, then a full handshake in
+        about 130ms. So `never` before the first Chat turn is the NORMAL reading and says nothing
+        is wrong. It is only a finding once `turns_without_tools` is above zero. This field is
+        still Sage watching its own door; for what OpenCode itself thinks, read `opencode_says`.
         """
         at = self._opencode_mcp_at
         return {
             "opencode_connected": "never" if at is None else round(at - self._boot_at, 1),
             "turns_without_tools": self._chat_turns_before_mcp,
         }
+
+    def opencode_mcp_status(self) -> dict:
+        """What OPENCODE says about its own MCP servers. Asked of OpenCode, not inferred.
+
+        Every other field on the `mcp` block is Sage looking at Sage. `configured` reads the file we
+        wrote. `reachable` is our own probe of our own route. `opencode_connected` reports the first
+        time OpenCode called US. On the evening of 2026-09-08 all three read plausibly while the
+        model's tool list had no Live read in it, and there was no fourth thing to ask — so the
+        conclusion drawn was that OpenCode never dials, which a later bench test disproved.
+
+        `opencode serve` answers `GET /mcp` with a status per server, and that is the only
+        authoritative answer to "did it connect". Verified against the pinned 1.18.4, which replies
+        `{"sage-live-read": {"status": "connected"}}`.
+
+        Read it beside `reachable`, because the pair is what separates the two failures:
+          - reachable ok + status connected  → the tools are there; a missing one is the MODEL's choice
+          - reachable ok + missing or failed → OpenCode's end. Our route is fine and it dropped it
+          - reachable not ok                 → ours. The route or the port, before OpenCode matters
+
+        Never raises. A diagnostic must never be the thing that breaks the diagnostics page.
+        """
+        server = self._oc_server
+        if server is None:
+            return {"asked": False, "why": "the OpenCode server is not running"}
+        try:
+            url = server.url().rstrip("/") + "/mcp"
+        except Exception as e:
+            # `url()` raises until the server has reported one, which is a real answer here.
+            return {"asked": False, "why": f"{type(e).__name__}: {e}"}
+        try:
+            r = httpx.get(url, timeout=3.0, headers={"Accept": "application/json"})
+        except Exception as e:
+            return {"asked": True, "ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
+        if r.status_code != 200:
+            return {"asked": True, "ok": False, "url": url, "status": r.status_code}
+        try:
+            return {"asked": True, "ok": True, "url": url, "servers": r.json()}
+        except Exception as e:
+            return {"asked": True, "ok": False, "url": url, "error": f"unreadable reply: {e}"}
 
     def _mint_live_read_token(self, thread_id: str) -> str:
         token = "lrt_" + secrets.token_urlsafe(15)
