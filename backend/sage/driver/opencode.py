@@ -227,43 +227,6 @@ class OpenCodeClient:
         # /api/* responses wrap the resource in {"data": {...}}.
         return (payload.get("data") or payload)["id"]
 
-    def connect_mcp(self, directory: str, timeout_s: float = 10.0) -> list[str]:
-        """Connect THIS DIRECTORY's MCP servers, and name the ones that answered.
-
-        An MCP client belongs to an instance, and an instance is a directory. OpenCode creates the
-        instance for a Chat turn when the session is made, and its bootstrap does not dial the MCP
-        servers — measured on the pinned 1.18.4 in a live workspace: watcher, config load, LSPs,
-        formatters, `init`, `event connected`, and no handshake. Nothing on the turn path dials one
-        either. So `sage-live-read_*` was absent from every Chat turn's tool list for weeks while
-        `opencode mcp list` and a bare `GET /mcp` both said the server was connected — which was
-        true, of a DIFFERENT instance that no turn uses.
-
-        `GET /mcp?directory=` is the thing that connects it. Measured: the bare call and this one
-        produce two separate handshakes and repeating either produces none, so the client is cached
-        per directory — calling once a turn is cheap, and calling after the session exists is the
-        point. Connecting earlier does nothing, because the instance is not there yet.
-
-        Best effort, never raises. A turn that would have answered without Live read must still
-        answer; the prompt already tells the agent to fall back to Python when the tools are absent.
-        """
-        try:
-            r = httpx.get(f"{self.base_url}/mcp", params={"directory": directory},
-                          headers={"Accept": "application/json"}, timeout=timeout_s)
-        except Exception as e:
-            log.info("mcp: could not connect %s (%s: %s)", directory, type(e).__name__, e)
-            return []
-        if r.status_code != 200:
-            log.info("mcp: connect for %s answered HTTP %s", directory, r.status_code)
-            return []
-        try:
-            body = r.json()
-        except Exception:
-            return []
-        if not isinstance(body, dict):
-            return []
-        return sorted(name for name, row in body.items()
-                      if isinstance(row, dict) and row.get("status") == "connected")
-
     def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
         """This session's messages, OLDEST FIRST. Pass `limit` for only the newest few.
 

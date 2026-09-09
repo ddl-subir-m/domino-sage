@@ -6909,36 +6909,12 @@ class Orchestrator:
         if sid and rec.get("directory") == work:
             try:
                 client.messages(sid)
+                return sid
             except httpx.HTTPStatusError:
                 sid = None
-            else:
-                self._connect_live_read(client, work)
-                return sid
         sid = client.create_session(directory=work)
         store.write_session_id(thread_id, sid, directory=work)
-        self._connect_live_read(client, work)
         return sid
-
-    @staticmethod
-    def _connect_live_read(client: OpenCodeClient, work: str) -> None:
-        """Dial this directory's MCP servers now the instance behind it exists (ADR-0041).
-
-        The turn path never dialled one. OpenCode connects an instance's MCP clients only when
-        something asks `GET /mcp`, and neither creating the instance nor assembling a turn's tools
-        does — so Live read was missing from every Chat turn while every status Sage could read
-        said `connected`, each of them answering for the OpenCode server's own instance rather than
-        the one under `.sage/chat-work`.
-
-        Here rather than earlier because the instance is created WITH the session: connecting before
-        that connects nothing, which is how reading the diagnostics page a minute before a turn
-        failed to help. Here rather than once at boot for the same reason.
-
-        Cheap to repeat — the client is cached per directory, so a second call makes no handshake —
-        and never fatal: `connect_mcp` swallows its own failures and the agent is told to fall back
-        to Python when the tools are absent.
-        """
-        names = client.connect_mcp(work)
-        log.info("mcp: connected for this turn — %s", ", ".join(names) or "nothing answered")
 
     @staticmethod
     def _plan_state_note(entries: list[dict] | None) -> str:
