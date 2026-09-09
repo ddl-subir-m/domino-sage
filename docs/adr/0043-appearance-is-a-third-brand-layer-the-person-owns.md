@@ -67,20 +67,40 @@ type faces, what a heading weighs, whether a chip is a pill — is `[data-theme]
 `css/tokens.css`. Picking a theme picks its palette; an explicit `colors` block still outranks it,
 which is the only reading under which naming both means anything.
 
-## The scope this actually has
+## Where the file goes, and why the default is not good enough
 
-Container-local, and the honest statement of that is two sentences, not one:
+`~/.config/sage/brand.json` is the fallback, not the deployed answer. On Domino it does not survive
+a restart: `~/.config` is the container filesystem, rebuilt from the image every start, and only
+`/mnt` persists — where ADR-0006 records that the repo's own sources still disagree about what
+survives without being committed. The neighbouring `~/.config/opencode` write is safe from this
+only because `_install_opencode_config` rewrites it on every boot. A preference is meant to be
+remembered, so the same path would have made the setting reset itself and look broken.
 
-- On a **Sage Builder**, one container is one person in one project, so this is a per-person
-  answer that does not follow them to their next project.
-- On a **published Workbench App**, one container serves every viewer of it, so there it is shared
-  by all of them — with no admin gate in front of it, because there is no admin to gate on.
+**A deployment therefore sets `SAGE_BRAND_OVERRIDE` to a path on a mounted Dataset.** Datasets are
+Domino's own documented read/write persistent store — *"Datasets provide read/write storage and are
+versioned independently from your project files"* — and the one thing the platform says an App may
+keep state on. Mount the same Dataset into every container and one answer serves the whole
+deployment, which is what was asked for at the top of this file; mount a per-user one and the choice
+follows the person between projects. No code changes for either: it is the same layer, read from
+somewhere that lasts.
 
-That second case is the one to read twice. It is accepted here because the App's viewers are
-already the App's publisher's audience and the blast radius is a name and a stylesheet, not data —
-but it is the reason `SAGE_BRAND_OVERRIDE` exists. A deployment that grows a volume mounted into
-every container points that at it and gets one answer for everyone, with none of this code
-changing. That is the upgrade path to what was originally asked for.
+`.sage/brand.json` in the project was rejected again here, not just inherited from `brand.md`.
+`.sage/settings.json` is committed and travels to every other Builder in the project, so a theme
+put beside it would arrive as somebody else's, in a diff.
+
+## What is left open, knowingly
+
+The published Workbench App serves `door.html`, which has no Appearance UI — so nothing on that
+screen can reach this. But `PUT /api/brand` is still routed in that process and nothing
+authenticates it, so a viewer who knows the route can change the door's name and theme for every
+other viewer.
+
+Left reachable on purpose. Gating it on `proxy_is_app()` is a one-line change and remains the
+obvious fix if this ever matters; it is not taken now because the blast radius is a product name
+and a stylesheet on a door that redirects, there is no admin role to gate on instead (`/api/me`
+returns an id and a name and nothing else), and a refusal there would be the first route in the
+process to care which mode it is in. Recorded rather than fixed so that the next person finds a
+decision instead of an oversight.
 
 ## A writable pack is a new trust boundary
 

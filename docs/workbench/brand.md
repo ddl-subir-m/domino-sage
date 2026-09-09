@@ -25,6 +25,9 @@ Sections carry the marker. Anything still marked unbuilt is unbuilt on purpose, 
 ## Locked
 
 - **Audience:** OEM / partner overlay. Unset pack → Domino. Not per-organization on one process.
+  Since ADR-0043 there is a second, narrower audience: a **person**, who may set the theme and the
+  two names from Account settings and nothing else. That layer reads last and cannot reach a key
+  listed under Images or Nouns.
 - **Precondition:** `platformName` assumes the partner has set Domino's own `/admin/whitelabel`.
   Sage renames the word; it cannot rename the page it links you to. Leave `platformName` as Domino
   if the platform is not rebranded.
@@ -106,8 +109,9 @@ is not rebranded. Sage cannot verify this and does not try.
 `peerProducts` is a **list**, not a name, so a partner with no second product sets `[]` and the
 switcher collapses to a plain product label. A switcher with one item is not a switcher.
 
-**Load order:** `/opt/sage/brand.json` (baked into the Environment) → `SAGE_BRAND_FILE` if set.
-One pack per process. Not `.sage/brand.json` (that would be per project).
+**Load order:** `/opt/sage/brand.json` (baked into the Environment) → `SAGE_BRAND_FILE` if set →
+the Appearance override (below). One pack per process. Not `.sage/brand.json` (that would be per
+project, and `.sage/settings.json` is committed, so it would travel to collaborators in a diff).
 
 **API:** `GET /api/brand` returns the resolved pack.
 
@@ -115,6 +119,44 @@ One pack per process. Not `.sage/brand.json` (that would be per project).
 runs the whole document through `brand.text()`, so the title, the icon and the door's logo are the
 pack's before the browser paints. Not patched from JS on boot: that order shows the unbranded name
 first, and the door is the first page a published App's viewer ever sees.
+
+## Appearance — built
+
+The one layer a **person** writes, from **Account settings › Appearance** in the Workbench.
+[ADR-0043](../adr/0043-appearance-is-a-third-brand-layer-the-person-owns.md) owns the decision; this
+is the operator's half of it.
+
+Three keys only — `brand.WRITABLE_KEYS`: `productName`, `assistantName`, `theme`. The logo, the
+favicon, the nouns and the peer products stay the OEM's to bake; they are what the image allowlist
+and the lint are built around. An empty value **drops** its key rather than storing `""`, so a name
+can be handed back to the baked pack.
+
+**`theme` is a key of `brand.THEMES`** — `domino` or `google-cloud`. The pack carries the id and the
+three colours, because those are the only parts read outside a stylesheet (antd's `colorPrimary`,
+Highcharts' first accent). Everything else a theme changes — the top bar inverting, the two type
+faces, heading weights, pill chips, the logo filter — is a `[data-theme]` block in
+`workbench/css/tokens.css`. **Adding a theme means both halves**;
+`test_every_theme_has_a_stylesheet_block` fails if you add one and not the other.
+
+**Set `SAGE_BRAND_OVERRIDE` on Domino.** It defaults to `~/.config/sage/brand.json`, which is the
+container filesystem and is rebuilt from the image on every start — the choice would not survive a
+restart. Point it at a path on a **mounted Dataset**, which is Domino's own documented read/write
+persistent store. The same Dataset mounted everywhere gives the deployment one answer; a per-user
+Dataset makes it follow the person between projects. No code changes for either.
+
+**Renaming the assistant restarts OpenCode.** `PUT /api/brand` re-runs `_install_opencode_config`
+and drops the server holding the old prompts; the next turn starts one that reads the new ones. It
+takes the turn lock to do it and answers **409** while a build is running — the name still saves,
+and only the agent's voice waits. A theme change never takes the lock.
+
+**A writable pack is a new trust boundary.** The entry pages are templated with no escaping (see
+above), which was safe only while every value was baked by an OEM. Names carrying `< > " ' \``,
+control characters, or more than 40 characters are **refused** at this route — the one place the
+brand code raises instead of warning, because a person is waiting on the answer.
+
+**Known gap:** the published Workbench App serves `door.html`, which has no Appearance UI, but
+`PUT /api/brand` is still routed there and unauthenticated. Recorded and accepted in ADR-0043, with
+the one-line fix named.
 
 ## Nouns — built
 

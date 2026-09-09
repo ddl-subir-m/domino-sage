@@ -27,11 +27,22 @@ _BAKED = Path("/opt/sage/brand.json")
 # collaborator pulling the repo would inherit someone else's theme, and the same person's two
 # projects would disagree about what the product is called.
 #
-# It is CONTAINER-LOCAL, and that is the honest limit of it: a Sage Builder is one user in one
-# project, so on a Builder this is a per-person answer, while a published Workbench App is one
-# container serving many viewers and there it is shared by all of them. `SAGE_BRAND_OVERRIDE`
-# exists so a deployment that grows a volume mounted into every container can point this at it and
-# have one answer for everyone, without any of the code below changing.
+# THIS DEFAULT DOES NOT SURVIVE A RESTART on Domino, and that is not a bug being tolerated — it is
+# the fallback, and `SAGE_BRAND_OVERRIDE` is the deployed configuration. `~/.config` is the
+# container filesystem, which Domino rebuilds from the image every start; only `/mnt` persists, and
+# ADR-0006 records that even there the repo's own sources disagree about what survives without
+# being committed. The neighbouring `~/.config/opencode` write gets away with this because
+# `_install_opencode_config` rewrites it on every boot. This file is meant to be remembered.
+#
+# So a deployment points `SAGE_BRAND_OVERRIDE` at a path on a MOUNTED DATASET, which is Domino's
+# own documented read/write persistent store and the one thing an App is allowed to keep state on.
+# Mount the same Dataset everywhere and one answer serves the whole deployment, which is the
+# original ask; mount a per-user one and it follows the person between projects. Either way no code
+# here changes — the layer is the same file, read from somewhere that lasts.
+#
+# Unset, it lands in the home directory rather than the workspace, because `.sage/brand.json` would
+# make the look a property of the PROJECT: brand.md rules that out, `.sage/settings.json` is
+# committed, and a collaborator pulling the repo would inherit somebody else's theme.
 _OVERRIDE_DEFAULT = Path(os.path.expanduser("~/.config/sage/brand.json"))
 
 # What Appearance may write. The rest of a pack — the logo, the nouns, the peer products — stays
