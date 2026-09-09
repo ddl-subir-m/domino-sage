@@ -36,6 +36,48 @@ def test_empty_prefix_is_noop():
     assert r.json() == {"path": "/ping", "root_path": ""}
 
 
+def test_a_loopback_route_does_not_spend_the_one_prefix_warning(caplog):
+    """The warning fires ONCE per process, and its job is to make a real prefix misconfiguration
+    audible. A route dialled from inside the container over localhost correctly carries no prefix,
+    so letting one of those spend it leaves the misconfiguration silent for the life of the process.
+
+    `/mcp/` is here because it did exactly that: the Live read server (ADR-0041) was added after the
+    allowlist and not to it, so OpenCode connecting burned the warning seconds after boot. Nothing
+    broke — the route matches with or without the warning — which is why it went unnoticed.
+    """
+    import logging
+
+    app = FastAPI()
+
+    @app.post("/mcp/live-read")
+    def live_read() -> dict:
+        return {"ok": True}
+
+    @app.get("/healthz")
+    def healthz() -> dict:
+        return {"ok": True}
+
+    app.add_middleware(_PrefixMiddleware, prefix="/owner/proj/notebookSession/run")
+    client = TestClient(app)
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
+        assert client.post("/mcp/live-read").status_code == 200
+        assert client.get("/healthz").status_code == 200
+
+    assert not [r for r in caplog.records if "not found in request path" in r.getMessage()]
+
+
+def test_a_genuinely_unprefixed_request_still_warns(caplog):
+    """The other half. Widening the allowlist is only safe while it stays a list of the routes we
+    dial ourselves — a proxied route arriving bare is still the fault this exists to report."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
+        r = TestClient(_app_with_prefix("/owner/proj/notebookSession/run")).get("/ping")
+
+    assert r.status_code == 200  # it still serves; the warning is a diagnostic, not a gate
+    assert [x for x in caplog.records if "not found in request path" in x.getMessage()]
+
+
 def test_bare_root_path_matches_index():
     # Domino serves the builder page at "<prefix>/" — it must still match the "/" route.
     app = FastAPI()

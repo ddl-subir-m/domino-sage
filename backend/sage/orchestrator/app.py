@@ -547,10 +547,17 @@ class _PrefixMiddleware:
     """
 
     # Routes served to callers INSIDE the container over localhost, which never cross Domino's proxy
-    # and so correctly carry no prefix: the shim's /v1 (every OpenCode model call) and /healthz.
+    # and so correctly carry no prefix: the shim's /v1 (every OpenCode model call), /healthz, and
+    # the Live read MCP server OpenCode dials (ADR-0041).
     # They must not trip the warning — it fires once per process, so one internal call would
     # otherwise spend it seconds after boot and leave a REAL prefix misconfiguration silent forever.
-    _UNPROXIED = ("/v1/", "/healthz")
+    #
+    # /mcp/ arrived after this list and was not added to it, which is exactly the loss the sentence
+    # above predicted: OpenCode connecting spent the one warning on a correct request, and a real
+    # prefix misconfiguration in that workspace could never be reported again. Nothing broke — the
+    # route matches either way, since no prefix is what a loopback call is supposed to carry — so
+    # the whole cost was a diagnostic that had already been fired.
+    _UNPROXIED = ("/v1/", "/healthz", "/mcp/")
 
     def __init__(self, app, prefix: str) -> None:
         self._app = app
