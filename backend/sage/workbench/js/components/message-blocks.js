@@ -194,6 +194,28 @@ window.SW = window.SW || {};
     );
   }
 
+  function PageBlock({ block }) {
+    const src = `./api/project/file/raw?path=${encodeURIComponent(block.path)}`;
+    // `sandbox` WITHOUT `allow-same-origin`: the page runs on an opaque origin, so a script in a
+    // file the model wrote cannot reach the Builder's cookie, its storage or its DOM. Scripts are
+    // allowed because a dashboard that draws its charts in JS is blank without them, and a blank
+    // box is the failure this replaces.
+    return h(
+      'div',
+      { className: 'sw-block-card' },
+      h(
+        'div',
+        { className: 'sw-block-head' },
+        h('div', { className: 'sw-block-title' }, block.title || block.path),
+        h('a', { className: 'sw-block-sub', href: src, target: '_blank', rel: 'noreferrer' },
+          'Open in a tab')
+      ),
+      h('div', { className: 'sw-block-body' },
+        h('iframe', { className: 'sw-block-page', src, sandbox: 'allow-scripts', loading: 'lazy',
+                      title: block.title || 'Page' }))
+    );
+  }
+
   function TableBlock({ block }) {
     const [showAll, setShowAll] = useState(false);
     // With neither columns nor rows, antd paints a bordered box under the title and nothing
@@ -1436,6 +1458,8 @@ window.SW = window.SW || {};
         return h(ImageBlock, { block });
       case 'file':
         return h(FileCard, { block });
+      case 'page':
+        return h(PageBlock, { block });
       case 'table':
         return h(TableBlock, { block });
       case 'choice':
@@ -1516,6 +1540,7 @@ window.SW = window.SW || {};
         }
         if (b.type === 'image') return `[Image: ${b.title || 'untitled'}]`;
         if (b.type === 'file') return `[File: ${b.name || b.path || 'untitled'}]`;
+        if (b.type === 'page') return `[Page: ${b.title || b.path || 'untitled'}]`;
         return null;
       })
       .filter((v) => v !== null)

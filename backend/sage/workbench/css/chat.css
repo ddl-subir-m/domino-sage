@@ -433,6 +433,10 @@
 .sw-block-title { font-size: var(--fs-14); font-weight: 600; }
 .sw-block-sub { font-size: var(--fs-12); color: var(--gray-500); margin-top: 1px; }
 .sw-block-body { padding: 0 var(--s2) var(--s2); }
+/* Tall enough to read a chart in, short enough that the Thread still scrolls past it. The page
+   itself scrolls inside the frame; "Open in a tab" is there for one that wants the whole window. */
+.sw-block-page { width: 100%; height: 420px; border: 1px solid var(--gray-300); border-radius: var(--radius-lg);
+                 background: #fff; }
 
 /* Choice card and resource result ---------------------------------------- */
 
