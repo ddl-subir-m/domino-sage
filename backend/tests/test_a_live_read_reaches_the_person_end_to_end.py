@@ -121,6 +121,43 @@ def test_the_tools_are_offered_over_the_wire(tmp_path: Path):
     assert {t["name"] for t in listed["result"]["tools"]} == {"live_read_table", "live_read_files"}
 
 
+def test_a_connection_and_a_read_both_say_so_in_the_log(tmp_path: Path, caplog):
+    """The absence of these lines is the finding, which is why they exist.
+
+    This path was silent end to end, so a Thread where no Live read happened could not be told
+    apart from one where OpenCode never connected to the server that offers the tools — and
+    `/api/diag` cannot settle it either, because the probe it runs is ours rather than OpenCode's.
+    Two hypotheses, one piece of evidence: nothing.
+    """
+    import logging
+
+    orch, _ = _orch(tmp_path, Warehouse())
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator"):
+        orch.live_read_call({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        _call(orch, "live_read_table", {"token": "lrt_invented", "source": "x", "table": "y"})
+
+    said = [r.getMessage() for r in caplog.records]
+    assert "live read: OpenCode connected — initialize" in said
+    # The refused call is named too. A turn that moved on and a store nobody granted read the same
+    # from the Thread — silence — and only the first is nothing to worry about.
+    assert any("live read: live_read_table" in m and "not this turn's" in m for m in said)
+
+
+def test_the_log_never_carries_the_token_or_a_row(tmp_path: Path, caplog):
+    """A token is a turn's authority and the rows are the person's data. The log ring is served by
+    `/api/diag/log` to anyone who can open the Builder, so neither belongs in it — the tool name
+    and whether the token resolved are the whole diagnosis."""
+    import logging
+
+    orch, _ = _orch(tmp_path, Warehouse())
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator"):
+        _call(orch, "live_read_table", {"token": "lrt_secret_value", "source": "x", "table": "y"})
+
+    said = " | ".join(r.getMessage() for r in caplog.records)
+    assert "lrt_secret_value" not in said
+    assert "Acme <> Domino" not in said
+
+
 class ReadingOpenCode(FakeOpenCode):
     """An agent that does what the turn prompt tells it to: relays the token and reads.
 

@@ -6996,15 +6996,34 @@ class Orchestrator:
         return tuple((s.binding, s.rows.table) for s in parse_samples(raw))
 
     def live_read_call(self, message: dict) -> dict | None:
-        """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`."""
+        """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`.
+
+        Said out loud, for the reason the table gate's declines are (#204). This path was silent
+        end to end, so "the assistant never called a Live read" and "OpenCode never connected to
+        the server that offers one" produced the same evidence: nothing. `/api/diag` reports the
+        server answers a probe, but the probe is ours — it cannot show whether OpenCode connected
+        at ITS start, which is the one failure a correct URL does not rule out.
+
+        `initialize` and `tools/list` arrive once, when OpenCode connects; a call arrives per read.
+        So this is a handful of lines in a ring of 400, and their ABSENCE is the finding.
+
+        Never the token and never a row: the token is a turn's authority and the rows are the
+        person's data. The tool name and whether the token resolved are the whole diagnosis.
+        """
+        method = str((message or {}).get("method") or "")
+
         def run(name: str, args: dict) -> str:
             turn = self._live_read_turn(str(args.get("token") or ""))
             if turn is None:
                 # Not a refusal the person is owed — it means the turn moved on. Told to the
                 # assistant plainly so it asks again rather than inventing an answer.
+                log.info("live read: %s — the token is not this turn's, asking again", name)
                 return "That read token is not current. Ask again on this turn."
+            log.info("live read: %s", name)
             return live_read.perform(name, args, turn)
 
+        if method in ("initialize", "tools/list"):
+            log.info("live read: OpenCode connected — %s", method)
         return live_mcp.handle(message, run=run)
 
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
