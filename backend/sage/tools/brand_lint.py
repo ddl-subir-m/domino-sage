@@ -127,7 +127,12 @@ def forbidden_phrases(pack: dict | None = None) -> dict[str, str]:
         # A URL is an identifier, not prose (ADR-0014's third arm) — it is not a name a
         # partner reads, and `./img/domino-logo.svg` is not a word anybody writes in a
         # sentence.
-        if key.endswith("Url") or not isinstance(value, str) or not value:
+        # `theme` is the same kind of value for the same reason: it is a key of `brand.THEMES`,
+        # picked to name a stylesheet block, and no screen ever prints it — the picker labels the
+        # Domino theme with `{platformName}`. Left in, every marked string that says `domino`
+        # about the GATEWAY MODE becomes a bare-name finding, and the lint would be reporting on
+        # an identifier it was written not to touch.
+        if key.endswith("Url") or key == "theme" or not isinstance(value, str) or not value:
             continue
         out.setdefault(value, f"write {{{key}}}")
     for peer in pack.get("peerProducts") or []:

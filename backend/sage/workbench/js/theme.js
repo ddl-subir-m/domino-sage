@@ -43,6 +43,25 @@ SW.theme = {
   },
 };
 
+// Ant Design's half of a theme, for the tokens no stylesheet can reach — antd renders these from
+// JS. The shell's half is `[data-theme]` in css/tokens.css, and the two are keyed by the same id
+// from `brand.THEMES`. A theme with no entry here is not broken: it gets the Domino tokens with
+// its own primary over them, which is what the pack alone used to buy.
+SW.themeTokens = {
+  'google-cloud': {
+    fontFamily: "Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif",
+    colorText: '#202124',
+    colorTextSecondary: '#3C4043',
+    colorTextTertiary: '#5F6368',
+    colorBorder: '#DADCE0',
+    colorBgLayout: '#F8F9FA',
+    colorSuccess: '#1E8E3E',
+    colorWarning: '#F9AB00',
+    colorError: '#D93025',
+    colorInfo: '#1A73E8',
+  },
+};
+
 SW.themeFromBrand = function themeFromBrand(brand) {
   const colors = (brand && brand.colors) || {};
   const primary = colors.primary || '#543FDE';
@@ -51,6 +70,9 @@ SW.themeFromBrand = function themeFromBrand(brand) {
     ...SW.theme,
     token: {
       ...SW.theme.token,
+      ...(SW.themeTokens[brand && brand.theme] || {}),
+      // After the theme's own tokens, because these three are the pack's and the pack outranks it:
+      // an OEM who names a primary gets that primary on whichever shell they chose.
       colorPrimary: primary,
       colorPrimaryHover: primaryDark,
       colorPrimaryActive: primaryDark,

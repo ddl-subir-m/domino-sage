@@ -458,6 +458,124 @@ window.SW = window.SW || {};
   // defaults on every build, so the same person answered the same questions every time. Where a
   // handoff LANDS does not and never will, because preselecting an app nobody chose is how a build
   // silently overwrites an existing one (#73, ADR-0008) — the sheet still asks that, every time.
+  // Appearance (ADR-0043): the theme, and the two names the pack lets a person write.
+  //
+  // In the drawer that already exists rather than behind a second gear beside the avatar. There is
+  // one door to "how this is set up for me" and this is the same kind of answer as the two below
+  // it — a preference, asked once, kept. A second settings surface would have made the reader
+  // choose between two doors before knowing which one holds what they came for.
+  //
+  // Unlike the preferences below, these are NOT the browser's: they go to the pack behind
+  // `/api/brand`, which is read by the entry pages and by the agent's own prompts, and on a
+  // published App one container answers for every viewer of it. See ADR-0043 for that boundary.
+  function Appearance() {
+    const { brand } = SW.store.get();
+    const [names, setNames] = useState({ productName: '', assistantName: '' });
+    const [saving, setSaving] = useState(false);
+
+    // Re-read whenever the resolved pack changes, not once at mount: a save installs the server's
+    // answer, and a field a baked pack overruled has to show what was actually settled on rather
+    // than what was typed over it.
+    useEffect(() => {
+      setNames({
+        productName: brand.productName || '',
+        assistantName: brand.assistantName || '',
+      });
+    }, [brand.productName, brand.assistantName]);
+
+    const save = async (patch) => {
+      setSaving(true);
+      try {
+        await SW.store.saveBrand(patch);
+      } catch (err) {
+        // 409 is the turn lock, and it is not a failure: the name IS saved and the sentence the
+        // route sent says exactly what is still to come. Anything else did not land at all.
+        antd.message[err.status === 409 ? 'warning' : 'error'](err.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    // Renaming the ASSISTANT rewrites OpenCode's config and stops the server that read the old one,
+    // so it is asked first. Renaming the product is not, and neither is the theme: one is a string
+    // the shell draws and the other is CSS, and nothing behind the browser reads either.
+    const saveNames = () => {
+      if (names.assistantName === brand.assistantName) return save(names);
+      antd.Modal.confirm({
+        title: 'Rename the assistant?',
+        content: SW.brand.text(
+          '{assistantName} restarts so that it answers to the new name, which makes your next '
+          + 'message take a moment longer to start. A build that is already running is never '
+          + 'interrupted — the new name reaches it once that build finishes.'
+        ),
+        okText: 'Rename and restart',
+        onOk: () => save(names),
+      });
+    };
+
+    const edit = (key) => (e) => setNames({ ...names, [key]: e.target.value });
+
+    return h(
+      'div',
+      { className: 'sw-setting' },
+      h('div', { className: 'sw-setting-label' }, 'Appearance'),
+      h(
+        Space,
+        { direction: 'vertical', size: 12, style: { display: 'flex' } },
+        h(antd.Radio.Group, {
+          // antd draws the group as a plain div, so without the role the label is not announced
+          // and the buttons read as loose radios belonging to nothing — the same gap the
+          // Conversation view group below has to fill.
+          role: 'radiogroup',
+          'aria-label': 'Theme',
+          value: brand.theme,
+          disabled: saving,
+          onChange: (e) => save({ theme: e.target.value }),
+          optionType: 'button',
+          options: [
+            // The platform's own look, named by the pack's word for the platform — so a partner
+            // who rebranded Domino does not find it listed here under ours.
+            { label: SW.brand.platform(), value: 'domino' },
+            // A literal, and it stays one. This is a third party's product, not our word for
+            // ourselves, and renaming it would misname somebody else's design.
+            { label: 'Google Cloud', value: 'google-cloud' },
+          ],
+        }),
+        h(antd.Input, {
+          'aria-label': 'App name',
+          addonBefore: 'App',
+          value: names.productName,
+          disabled: saving,
+          maxLength: 40,
+          onChange: edit('productName'),
+          onPressEnter: saveNames,
+        }),
+        h(antd.Input, {
+          'aria-label': 'Assistant name',
+          addonBefore: 'Assistant',
+          value: names.assistantName,
+          disabled: saving,
+          maxLength: 40,
+          onChange: edit('assistantName'),
+          onPressEnter: saveNames,
+        }),
+        // The theme saves on click and the names save on this button, because the two cost
+        // different things: a theme is a repaint, and a name can restart the agent. A rename that
+        // fired per keystroke would restart it once per letter typed.
+        h(
+          antd.Button,
+          {
+            onClick: saveNames,
+            loading: saving,
+            disabled: names.productName === brand.productName
+              && names.assistantName === brand.assistantName,
+          },
+          'Save names'
+        )
+      )
+    );
+  }
+
   SW.SettingsDrawer = function SettingsDrawer() {
     const { settingsOpen } = SW.store.get();
     const [conversationView, setConversationView] = useState('split');
@@ -506,6 +624,7 @@ window.SW = window.SW || {};
         title: 'Account settings',
         width: 360,
       },
+      h(Appearance, null),
       h(
         'div',
         { className: 'sw-setting' },

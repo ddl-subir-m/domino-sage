@@ -49,6 +49,42 @@
   /* Syntax: .sw-tok-* draws the rest from the palette, strings had nothing. */
   --code-str: #067D62;
 
+  /* The top bar, as tokens rather than as literals in shell.css.
+     A theme INVERTS this bar — Domino's is dark with white on it, Google Cloud's is light with
+     navy — so every rule that used to write --dark-700 or a bare rgba(255,255,255,…) reads these
+     instead. That is what makes a second theme a block of values further down this file rather
+     than a second copy of the bar in shell.css. */
+  --nav-bg: var(--dark-700);
+  --nav-fg: var(--white);
+  --nav-fg-dim: rgba(255, 255, 255, .82);
+  --nav-hover: rgba(255, 255, 255, .12);
+  --nav-active: rgba(255, 255, 255, .16);
+  --nav-chip: rgba(255, 255, 255, .08);
+  --nav-chip-hover: rgba(255, 255, 255, .16);
+  --nav-chip-border: transparent;
+  --nav-sep: rgba(255, 255, 255, .18);
+  --nav-ring: rgba(255, 255, 255, .25);
+  /* Nothing under Domino: the bar is dark and the page below it is not, so the colour change is
+     already the edge. A light bar has to draw one. */
+  --nav-border: transparent;
+
+  /* The pack carries ONE logo and the bar it sits on can now invert under it, so a light theme
+     has to say what happens to the asset it was given. `domino-logo.svg` is `fill="white"` on
+     every path — drawn for the dark bar, and invisible on a light one — and it arrives through an
+     <img>, where a filter is the only reach CSS has into it.
+     Right for a monochrome mark and wrong for a colourful one, which is the honest limit of one
+     logo for two bars: an OEM whose mark is not monochrome needs a second asset, and the pack has
+     no key for one (ADR-0043). */
+  --nav-logo-filter: none;
+
+  /* Typography, as two faces. --font-ui is running text; --font-display is headings and controls.
+     They are the same face here and differ under Google Cloud, which sets its own product face on
+     the second and leaves body copy in Roboto. --heading-weight goes with them because the two
+     ramps disagree about what a heading weighs: 600 here, 400 there. */
+  --font-ui: Inter, Lato, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-display: var(--font-ui);
+  --heading-weight: 600;
+
   /* Layout */
   --nav-h: 44px;  --subnav-h: 48px;  --planbar-h: 40px;
   --rail-w: 260px;  --rail-collapsed: 44px;  --builder-chat-w: 380px;
@@ -59,6 +95,9 @@
   --s5: 24px; --s6: 32px; --s7: 48px;
 
   --radius: 4px;  --radius-lg: 8px;
+  /* A chip's corner, apart from --radius because Google Cloud makes it a pill and Domino does
+     not. Only the bar's own chips read it — a pill-shaped table cell would be a different idea. */
+  --radius-chip: var(--radius);
   --shadow-card:  0 1px 2px rgba(46, 46, 56, .06);
   --shadow-pop:   0 4px 16px rgba(46, 46, 56, .12);
 
@@ -90,6 +129,61 @@
   :root { --builder-chat-w: 288px; --rail-w: 208px; --dock-expanded: 280px; }
 }
 
+/* Themes ----------------------------------------------------------------- */
+
+/* `data-theme` on <html>, written by store.js from the pack's `theme` key. One block per theme
+   listed in `brand.THEMES`, and adding one there without one here gets you a themed Ant Design on
+   an unthemed shell — `test_every_theme_has_a_stylesheet_block` is what says so.
+   `[data-theme]` and `:root` have the same specificity, so this wins by being further down.
+
+   The three PACK colours are deliberately absent from these blocks. `applyBrandChrome` writes
+   them onto the element's inline style from `GET /api/brand`, which outranks any rule here, and
+   the pack resolves them from this same theme id — so listing them would be a second copy of the
+   server's answer, kept in step by hand. Everything a pack does NOT carry is what lives here. */
+
+/* Measured off console.cloud.google.com, not guessed. The bar goes light, headings lose their
+   weight, and chips become pills; the primary blue arrives from the pack. Google Sans is named
+   first and is not shipped: index.html loads Inter from our own origin and #19 says not to
+   <link> Google fonts, which is an air-gap rule (ADR-0014) and not a style one. So the face
+   resolves for anyone who already has it and falls to Roboto or the system sans for everyone
+   else, and the theme is right about everything except the letterforms. */
+[data-theme="google-cloud"] {
+  --nav-bg: #F0F5FE;
+  --nav-fg: #1B2E5D;
+  --nav-fg-dim: #3C4043;
+  --nav-hover: rgba(11, 87, 208, .08);
+  --nav-active: rgba(11, 87, 208, .12);
+  --nav-chip: transparent;
+  --nav-chip-hover: rgba(11, 87, 208, .08);
+  --nav-chip-border: #8496C1;
+  --nav-sep: #C4CDE0;
+  --nav-ring: rgba(11, 87, 208, .35);
+  --nav-border: #C4CDE0;
+  --nav-logo-filter: invert(1);
+
+  --font-ui: Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-display: 'Google Sans', 'Google Sans Text', Roboto, Arial, sans-serif;
+  --heading-weight: 400;
+
+  --dark-700: #202124;
+  --gray-600: #3C4043;
+  --gray-500: #5F6368;
+  --gray-400: #9AA0A6;
+  --gray-300: #DADCE0;
+  --gray-200: #E8EAED;
+  --gray-100: #F8F9FA;
+
+  --success: #1E8E3E;
+  --warning: #F9AB00;
+  --error:   #D93025;
+  --info:    #1A73E8;
+
+  --purple-200: #C2DDFF;
+  --btn-secondary-bg: #C2DDFF;
+
+  --radius-chip: 9999px;
+}
+
 /* antd's <App> renders a wrapper div between #root and the shell, so it has
    to carry the full height too or the layout collapses to content size. */
 html, body, #root, #root > .ant-app {
@@ -98,7 +192,7 @@ html, body, #root, #root > .ant-app {
 }
 
 body {
-  font-family: Inter, Lato, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui);
   color: var(--dark-700);
   background: var(--gray-100);
   overflow: hidden;
@@ -106,9 +200,21 @@ body {
 
 /* Shared type helpers ---------------------------------------------------- */
 
-.sw-page-title { font-size: var(--fs-20); font-weight: 600; line-height: 1.3; margin: 0; }
+.sw-page-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-20);
+  font-weight: var(--heading-weight);
+  line-height: 1.3;
+  margin: 0;
+}
 .sw-page-sub { font-size: var(--fs-13); color: var(--gray-600); margin: 4px 0 0; line-height: 1.5; }
-.sw-section-title { font-size: var(--fs-16); font-weight: 600; line-height: 1.3; margin: 0; }
+.sw-section-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-16);
+  font-weight: var(--heading-weight);
+  line-height: 1.3;
+  margin: 0;
+}
 .sw-section-sub { font-size: var(--fs-13); color: var(--gray-600); margin: 4px 0 var(--s3); line-height: 1.5; }
 .sw-secondary { font-size: var(--fs-13); color: var(--gray-600); }
 .sw-caption { font-size: var(--fs-12); color: var(--gray-500); }
@@ -223,7 +329,7 @@ body {
   padding: 0;
   transition: background 150ms ease-out, color 150ms ease-out;
 }
-.sw-icon-btn:hover { background: rgba(255, 255, 255, .14); }
+.sw-icon-btn:hover { background: var(--nav-hover); }
 .sw-icon-btn.is-dark-text { color: var(--gray-600); }
 .sw-icon-btn.is-dark-text:hover { background: var(--gray-200); color: var(--dark-700); }
 .sw-icon-btn .anticon { display: block; }

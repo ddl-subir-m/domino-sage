@@ -878,6 +878,52 @@ def brand() -> dict:
     return load_brand()
 
 
+@control_app.put("/api/brand")
+async def save_brand(request: Request) -> JSONResponse:
+    """Appearance, from Account settings (ADR-0043): the theme and the two names.
+
+    Only the keys `brand.WRITABLE_KEYS` names. The logo, the nouns and the peer products stay the
+    OEM's to bake — they are what ADR-0014 built a lint and an image allowlist around, and a text
+    field on a settings panel is not where that gets re-litigated.
+
+    A name change re-voices OpenCode, which means restarting it, which is why this can be refused
+    while a build runs. A theme change never is: it is CSS, and nothing behind the browser reads it.
+    """
+    from .brand import WRITABLE_KEYS, save_override
+    from .brand import load as load_brand
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"error": "expected an object"})
+    patch = {key: body[key] for key in WRITABLE_KEYS if key in body}
+    if not patch:
+        return JSONResponse(status_code=400, content={"error": "nothing to change"})
+    # Read BEFORE the write, so "did the voice change" is asked of what the pack resolved to and
+    # not of what the form happened to send. A field submitted unchanged is not a rename, and
+    # restarting OpenCode for one would make saving a theme cost somebody their warm agent.
+    was = load_brand()["assistantName"]
+    try:
+        pack = save_override(patch)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    if pack["assistantName"] != was:
+        source = Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO))
+        port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
+        try:
+            await run_in_threadpool(
+                orchestrator.revoice, lambda: _install_opencode_config(source, port))
+        except TurnBusy:
+            # 409, as everywhere else the turn lock refuses — but the sentence is not the service's
+            # here, because the service's would read as a rename that failed. It did not: the name
+            # is on disk and the screen is already wearing it, and what waits for the build is the
+            # agent's own voice.
+            return JSONResponse(status_code=409, content={"error": brand_text(
+                "The new name is saved. A build is running, so {assistantName} keeps its old voice "
+                "until that build finishes."
+            )})
+    return JSONResponse(content=pack)
+
+
 @control_app.get("/api/me")
 def me() -> dict:
     """Who the Workbench greets. Viewer JWT when extended identity forwarded one; else the

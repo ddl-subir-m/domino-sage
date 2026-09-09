@@ -11,7 +11,17 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from sage.orchestrator.brand import DEFAULT, apply_agent_voice, apply_voice, load, text
+from sage.orchestrator.brand import (
+    DEFAULT,
+    DEFAULT_THEME,
+    THEMES,
+    apply_agent_voice,
+    apply_voice,
+    load,
+    override_path,
+    save_override,
+    text,
+)
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
@@ -713,3 +723,196 @@ def test_choosing_a_peer_names_it_in_the_packs_words():
     assert drawn["said"] == [
         "Acme Vision isn't available here."
     ]
+
+
+# --- themes and the writable layer (ADR-0043) -------------------------------------------------
+#
+# A theme is mostly CSS: the pack carries the id and the three colours, and `css/tokens.css`
+# carries the rest. The writable layer is the first part of a pack a person rather than an OEM can
+# set, which is why the checks below are refusals where every other layer's are warnings.
+
+
+def test_theme_defaults_to_domino():
+    assert load()["theme"] == DEFAULT_THEME
+    assert load()["colors"] == THEMES[DEFAULT_THEME]
+
+
+def test_a_theme_brings_its_own_palette(tmp_path, monkeypatch):
+    """Picking a theme picks its colours. Without this the shell would go light and every button
+    on it would stay Domino purple."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"theme": "google-cloud"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    pack = load()
+    assert pack["theme"] == "google-cloud"
+    assert pack["colors"] == THEMES["google-cloud"]
+
+
+def test_explicit_colors_win_over_the_theme(tmp_path, monkeypatch):
+    """An OEM on the light shell with their own primary in it — the only reading under which
+    naming both a theme and a palette means anything."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"theme": "google-cloud", "colors": {"primary": "#112233"}}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    pack = load()
+    assert pack["colors"]["primary"] == "#112233"
+    # Only the key they named. The rest of the palette is still the theme's.
+    assert pack["colors"]["primaryDark"] == THEMES["google-cloud"]["primaryDark"]
+
+
+def test_an_unknown_theme_warns_and_keeps_the_default(tmp_path, monkeypatch, caplog):
+    """A brand pack must never be able to stop the product booting — a theme is no exception."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"theme": "midnight"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator.brand"):
+        pack = load()
+    assert "midnight" in caplog.text
+    assert pack["theme"] == DEFAULT_THEME
+
+
+def test_every_theme_has_a_stylesheet_block():
+    """The two halves of a theme are `brand.THEMES` and `[data-theme]` in `css/tokens.css`, and
+    only the second one carries the top bar, the type faces and the corner radii. A theme added to
+    the map without a block here gets a themed Ant Design on an unthemed shell, which reads as a
+    half-broken product rather than as a missing block."""
+    tokens = (Path(__file__).resolve().parents[1]
+              / "sage" / "workbench" / "css" / "tokens.css").read_text()
+    for theme in THEMES:
+        if theme == DEFAULT_THEME:
+            continue        # the default IS `:root`; a block would be the same values twice
+        assert f'[data-theme="{theme}"]' in tokens, f"{theme} has no stylesheet block"
+
+
+def test_the_override_outranks_the_baked_pack(tmp_path, monkeypatch):
+    """The OEM bakes the pack and the person chooses within it, so the person's layer reads last."""
+    baked = tmp_path / "baked.json"
+    baked.write_text(json.dumps({"productName": "Baked", "assistantName": "Baked"}))
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", baked)
+    save_override({"productName": "Chosen"})
+    assert load()["productName"] == "Chosen"
+
+
+def test_saving_a_name_and_a_theme_reads_back():
+    pack = save_override({"productName": "Acme", "assistantName": "Ada", "theme": "google-cloud"})
+    assert (pack["productName"], pack["assistantName"]) == ("Acme", "Ada")
+    assert pack["theme"] == "google-cloud"
+    assert load()["assistantName"] == "Ada"        # it is on disk, not just in the answer
+
+
+def test_saving_one_key_leaves_the_others_alone():
+    save_override({"productName": "Acme", "assistantName": "Ada"})
+    save_override({"theme": "google-cloud"})
+    pack = load()
+    assert pack["assistantName"] == "Ada"
+    assert pack["theme"] == "google-cloud"
+
+
+def test_clearing_a_name_gives_the_baked_word_back(tmp_path, monkeypatch):
+    """An empty field drops the key rather than storing `""`. Without that, a text box could take a
+    name away from the OEM and never give it back."""
+    baked = tmp_path / "baked.json"
+    baked.write_text(json.dumps({"productName": "Baked", "assistantName": "Baked"}))
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", baked)
+    save_override({"productName": "Acme"})
+    assert load()["productName"] == "Acme"
+    save_override({"productName": "  "})
+    assert load()["productName"] == "Baked"
+    assert "productName" not in json.loads(override_path().read_text())
+
+
+@pytest.mark.parametrize("bad", ["<script>x</script>", 'a" onload=x', "it's", "a`b"])
+def test_a_name_carrying_markup_is_refused(bad):
+    """`ui()` substitutes the pack into `index.html` and `door.html` and escapes nothing, because
+    until this layer existed every value in a pack was baked by an OEM. It is not any more."""
+    with pytest.raises(ValueError):
+        save_override({"productName": bad})
+
+
+def test_a_name_longer_than_the_bar_can_hold_is_refused():
+    with pytest.raises(ValueError):
+        save_override({"assistantName": "A" * 41})
+
+
+def test_an_unknown_theme_is_refused_at_the_door():
+    """The pack reader warns and carries on; this raises. A file nobody is looking at must not stop
+    the boot, and a form somebody just submitted has a person waiting to be told what was wrong."""
+    with pytest.raises(ValueError):
+        save_override({"theme": "midnight"})
+
+
+def test_a_refused_write_leaves_the_file_alone():
+    save_override({"productName": "Acme"})
+    with pytest.raises(ValueError):
+        save_override({"productName": "<b>", "theme": "google-cloud"})
+    pack = load()
+    assert pack["productName"] == "Acme"
+    assert pack["theme"] == DEFAULT_THEME
+
+
+def test_put_api_brand_saves_the_theme_and_answers_the_resolved_pack():
+    """A theme change never restarts anything: it is CSS, and nothing behind the browser reads it."""
+    import sage.orchestrator.app as appmod
+
+    r = TestClient(appmod.control_app).put("/api/brand", json={"theme": "google-cloud"})
+    assert r.status_code == 200
+    assert r.json()["theme"] == "google-cloud"
+    assert r.json()["colors"] == THEMES["google-cloud"]
+    assert load()["theme"] == "google-cloud"
+
+
+def test_put_api_brand_ignores_a_key_the_panel_does_not_own():
+    """The logo, the nouns and the peer products stay the OEM's to bake. A request naming one is
+    not an error — the panel cannot send it, so anything that does is not a person to explain
+    this to — but it must not land."""
+    import sage.orchestrator.app as appmod
+
+    r = TestClient(appmod.control_app).put(
+        "/api/brand", json={"theme": "google-cloud", "logoUrl": "./brand/evil.svg"})
+    assert r.status_code == 200
+    assert r.json()["logoUrl"] == DEFAULT["logoUrl"]
+    assert "logoUrl" not in json.loads(override_path().read_text())
+
+
+def test_put_api_brand_refuses_a_name_carrying_markup():
+    import sage.orchestrator.app as appmod
+
+    r = TestClient(appmod.control_app).put("/api/brand", json={"productName": "<script>x"})
+    assert r.status_code == 400
+    assert load()["productName"] == DEFAULT["productName"]
+
+
+def test_put_api_brand_refuses_a_body_naming_nothing_writable():
+    import sage.orchestrator.app as appmod
+
+    assert TestClient(appmod.control_app).put("/api/brand", json={}).status_code == 400
+
+
+def test_renaming_the_assistant_revoices_opencode(tmp_path, monkeypatch):
+    """The half of a rename a person actually watches for. OpenCode reads its config once, at
+    start, so a rename that only rewrote the file would leave the agent answering to the old name
+    until something else restarted it."""
+    import sage.orchestrator.app as appmod
+
+    src_dir = tmp_path / "repo"
+    src_dir.mkdir()
+    (src_dir / "opencode.json").write_text(json.dumps(
+        {"agent": {"sage-chat": {"prompt": "You are Sage's chat agent."}}}
+    ))
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SAGE_OPENCODE_CWD", str(src_dir))
+
+    r = TestClient(appmod.control_app).put("/api/brand", json={"assistantName": "Ada"})
+    assert r.status_code == 200
+    assert r.json()["assistantName"] == "Ada"
+    voiced = json.loads((home / ".config" / "opencode" / "opencode.json").read_text())
+    assert voiced["agent"]["sage-chat"]["prompt"] == "You are Ada's chat agent."
+
+
+def test_the_workbench_default_pack_names_the_same_theme():
+    """`BRAND_DEFAULT` in store.js is what the shell paints with before /api/brand answers, so a
+    theme it disagreed with would show as a repaint on every load (ADR-0026 keeps the two in step)."""
+    store = (Path(__file__).resolve().parents[1]
+             / "sage" / "workbench" / "js" / "store.js").read_text()
+    assert f"theme: '{DEFAULT_THEME}'" in store
