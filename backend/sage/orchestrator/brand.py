@@ -79,6 +79,23 @@ THEMES: dict[str, dict[str, str]] = {
     "google-cloud": {"primary": "#0C67DF", "primaryDark": "#0842A0", "primaryLight": "#E8F0FE"},
 }
 
+# The mark each theme wears, kept beside the palette because a wordmark is part of a look and not
+# a separate decision: the dark bar carries a white Domino mark and the light one cannot, which is
+# the limit `--nav-logo-filter` was standing in for until there was a second asset to reach for.
+#
+# A second map rather than a richer `THEMES`, because `THEMES[id]` IS the colours block that
+# `load()` copies into the pack — and `test_every_theme_has_a_logo` is what stops the two drifting,
+# the same way `test_every_theme_has_a_stylesheet_block` holds the CSS half in place.
+THEME_LOGOS: dict[str, dict[str, str]] = {
+    "domino": {"logoUrl": "./img/domino-logo.svg", "logoAlt": "Domino"},
+    "google-cloud": {"logoUrl": "./img/google-cloud-logo.svg", "logoAlt": "Google Cloud"},
+}
+
+# Which marks belong to a theme rather than to an OEM. A theme may replace one of its own and must
+# never replace a partner's: a baked `logoUrl` is that partner's identity under every look Sage
+# wears, which is the same boundary ADR-0014 draws around the key in the first place.
+_THEME_LOGO_URLS = {spec["logoUrl"] for spec in THEME_LOGOS.values()}
+
 DEFAULT_THEME = "domino"
 
 DEFAULT: dict[str, Any] = {
@@ -154,7 +171,7 @@ def load() -> dict[str, Any]:
     # same merge as every other layer and gets the same forgiveness: a file hand-edited into
     # nonsense warns and falls back, because a brand pack must never be what stops the Workbench
     # booting — and this is now a file a person can reach.
-    pack = _merge(pack, _overlay(override_path()))
+    pack = _merge(pack, _overlay(override_path()), derive_assistant=False)
     return pack
 
 
@@ -351,7 +368,12 @@ def _read(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _merge(base: dict, overlay: dict | None) -> dict:
+def _merge(base: dict, overlay: dict | None, *, derive_assistant: bool = True) -> dict:
+    """`derive_assistant=False` for the Appearance layer, where the two names are two fields on a
+    form and a person who filled in one did not mean to answer the other. A partner renaming the
+    product to Acme AI does mean the assistant too, which is why the derivation is the default —
+    but reading that intent into a text field would rename the speaker behind the person's back,
+    and an assistant name that changes is a re-voice and an OpenCode restart (ADR-0043)."""
     if not overlay:
         return base
     out = deepcopy(base)
@@ -360,7 +382,7 @@ def _merge(base: dict, overlay: dict | None) -> dict:
         out["productName"] = product
     if "assistantName" in overlay:
         out["assistantName"] = _nonempty(overlay.get("assistantName")) or out["productName"]
-    elif product:
+    elif product and derive_assistant:
         out["assistantName"] = product
     for key in ("platformName", "pageTitle", "logoAlt"):
         value = _nonempty(overlay.get(key))
@@ -402,6 +424,12 @@ def _merge(base: dict, overlay: dict | None) -> dict:
     if theme and theme in THEMES:
         out["theme"] = theme
         out["colors"] = dict(THEMES[theme])
+        # Only while the mark on the bar is still a theme's own. `logoUrl` is applied above, so a
+        # pack naming both has already put its mark in `out` and keeps it here — and a partner who
+        # baked one in an earlier layer keeps it too, which is the point: picking a look is not
+        # giving up a logo.
+        if out["logoUrl"] in _THEME_LOGO_URLS:
+            out.update(THEME_LOGOS[theme])
     elif theme:
         seen = f"theme={theme}"
         if seen not in _WARNED:

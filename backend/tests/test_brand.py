@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from sage.orchestrator.brand import (
     DEFAULT,
     DEFAULT_THEME,
+    THEME_LOGOS,
     THEMES,
     apply_agent_voice,
     apply_voice,
@@ -784,6 +785,39 @@ def test_every_theme_has_a_stylesheet_block():
         assert f'[data-theme="{theme}"]' in tokens, f"{theme} has no stylesheet block"
 
 
+def test_every_theme_has_a_logo_and_the_file_is_there():
+    """The other half of `test_every_theme_has_a_stylesheet_block`. A theme in the map with no mark
+    beside it would put a KeyError on the bar; a mark naming a file nobody shipped would put a
+    broken image there, which the shell cannot tell from a logo and nobody notices until a
+    screenshot. Both are cheaper to fail here."""
+    img = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "img"
+    for theme in THEMES:
+        assert theme in THEME_LOGOS, f"{theme} has no logo"
+        name = THEME_LOGOS[theme]["logoUrl"].removeprefix("./img/")
+        assert (img / name).is_file(), f"{theme} names {name}, which is not in img/"
+
+
+def test_a_theme_brings_its_own_mark_and_gives_it_back():
+    """A white wordmark drawn for the dark bar is invisible on the light one, so the mark travels
+    with the look. Switching back has to restore it — a theme that could take the Domino logo away
+    but not return it would make Appearance a one-way door."""
+    assert save_override({"theme": "google-cloud"})["logoUrl"] == "./img/google-cloud-logo.svg"
+    assert save_override({"theme": "domino"})["logoUrl"] == "./img/domino-logo.svg"
+
+
+def test_a_baked_mark_survives_a_theme_switch(tmp_path, monkeypatch):
+    """Picking a look is not giving up a logo. A partner's mark is their identity under every theme
+    Sage wears, which is the boundary ADR-0014 draws around the key — so the theme's own mark is
+    reached for only while the one on the bar is still a theme's."""
+    baked = tmp_path / "baked.json"
+    baked.write_text(json.dumps({"logoUrl": "./brand/acme.svg", "logoAlt": "Acme"}))
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", baked)
+    pack = save_override({"theme": "google-cloud"})
+    assert pack["logoUrl"] == "./brand/acme.svg"
+    assert pack["logoAlt"] == "Acme"
+    assert pack["theme"] == "google-cloud"      # the rest of the look still applied
+
+
 def test_the_override_outranks_the_baked_pack(tmp_path, monkeypatch):
     """The OEM bakes the pack and the person chooses within it, so the person's layer reads last."""
     baked = tmp_path / "baked.json"
@@ -806,6 +840,19 @@ def test_saving_one_key_leaves_the_others_alone():
     pack = load()
     assert pack["assistantName"] == "Ada"
     assert pack["theme"] == "google-cloud"
+
+
+def test_renaming_the_product_in_appearance_leaves_the_assistant_named(tmp_path, monkeypatch):
+    """The inverse of `..._omitted_assistant_follows_product`, and deliberately so. A pack file
+    saying only `productName` is an OEM renaming the whole thing; the same key from Appearance is
+    one of two text fields, and reading the second one out of the first would rename the speaker
+    nobody asked to rename — a re-voice and an OpenCode restart for a change to the title bar."""
+    baked = tmp_path / "baked.json"
+    baked.write_text(json.dumps({"productName": "Baked", "assistantName": "Ada"}))
+    monkeypatch.setattr("sage.orchestrator.brand._BAKED", baked)
+    pack = save_override({"productName": "AI Workbench"})
+    assert pack["productName"] == "AI Workbench"
+    assert pack["assistantName"] == "Ada"
 
 
 def test_clearing_a_name_gives_the_baked_word_back(tmp_path, monkeypatch):
@@ -870,7 +917,10 @@ def test_put_api_brand_ignores_a_key_the_panel_does_not_own():
     r = TestClient(appmod.control_app).put(
         "/api/brand", json={"theme": "google-cloud", "logoUrl": "./brand/evil.svg"})
     assert r.status_code == 200
-    assert r.json()["logoUrl"] == DEFAULT["logoUrl"]
+    # The mark that answers is the THEME's, not the caller's. Asserting the Domino logo here would
+    # pass for the wrong reason the day a theme stops carrying one, and fail for the wrong reason
+    # now that one does — what this test is about is that `./brand/evil.svg` never lands.
+    assert r.json()["logoUrl"] == THEME_LOGOS["google-cloud"]["logoUrl"]
     assert "logoUrl" not in json.loads(override_path().read_text())
 
 

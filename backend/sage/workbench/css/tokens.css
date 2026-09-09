@@ -68,13 +68,12 @@
      already the edge. A light bar has to draw one. */
   --nav-border: transparent;
 
-  /* The pack carries ONE logo and the bar it sits on can now invert under it, so a light theme
-     has to say what happens to the asset it was given. `domino-logo.svg` is `fill="white"` on
-     every path — drawn for the dark bar, and invisible on a light one — and it arrives through an
-     <img>, where a filter is the only reach CSS has into it.
-     Right for a monochrome mark and wrong for a colourful one, which is the honest limit of one
-     logo for two bars: an OEM whose mark is not monochrome needs a second asset, and the pack has
-     no key for one (ADR-0043). */
+  /* A theme now brings its own mark (`brand.THEME_LOGOS`), so neither shipped look needs its logo
+     bent by CSS and this stays `none` on both. The token remains because a PACK still carries one
+     logo across two bars: an OEM who bakes a `fill="white"` mark keeps it under the light theme —
+     a theme may not replace a partner's identity — and inverting it is the only reach CSS has into
+     an <img>. Set it per theme if that partner ever appears; it is wrong for a colourful mark, so
+     it is not set for them by default (ADR-0043). */
   --nav-logo-filter: none;
 
   /* Typography, as two faces. --font-ui is running text; --font-display is headings and controls.
@@ -159,7 +158,8 @@
   --nav-sep: #C4CDE0;
   --nav-ring: rgba(11, 87, 208, .35);
   --nav-border: #C4CDE0;
-  --nav-logo-filter: invert(1);
+  /* No filter: this theme ships its own mark, in its own colours. */
+  --nav-logo-filter: none;
 
   --font-ui: Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;
   --font-display: 'Google Sans', 'Google Sans Text', Roboto, Arial, sans-serif;

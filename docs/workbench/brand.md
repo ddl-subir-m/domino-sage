@@ -131,12 +131,19 @@ favicon, the nouns and the peer products stay the OEM's to bake; they are what t
 and the lint are built around. An empty value **drops** its key rather than storing `""`, so a name
 can be handed back to the baked pack.
 
-**`theme` is a key of `brand.THEMES`** — `domino` or `google-cloud`. The pack carries the id and the
-three colours, because those are the only parts read outside a stylesheet (antd's `colorPrimary`,
-Highcharts' first accent). Everything else a theme changes — the top bar inverting, the two type
-faces, heading weights, pill chips, the logo filter — is a `[data-theme]` block in
-`workbench/css/tokens.css`. **Adding a theme means both halves**;
-`test_every_theme_has_a_stylesheet_block` fails if you add one and not the other.
+**`theme` is a key of `brand.THEMES`** — `domino` or `google-cloud`. The pack carries the id, the
+three colours and the theme's own wordmark (`brand.THEME_LOGOS`), because those are the parts read
+outside a stylesheet (antd's `colorPrimary`, Highcharts' first accent, the `<img>` on the bar).
+Everything else a theme changes — the top bar inverting, the two type faces, heading weights, pill
+chips — is a `[data-theme]` block in `workbench/css/tokens.css`. **Adding a theme means all three
+halves**; `test_every_theme_has_a_stylesheet_block` and `test_every_theme_has_a_logo_and_the_file_is_there`
+fail if you add one and not the others.
+
+A theme swaps the mark **only while the mark is still a theme's own**. A baked `logoUrl` is a
+partner's identity under every look Sage wears, so it survives a theme switch — the same boundary
+ADR-0014 draws around the key. That is also why `--nav-logo-filter` still exists while both shipped
+themes leave it `none`: an OEM who bakes a `fill="white"` mark needs it inverted on the light bar,
+and a filter is the only reach CSS has into an `<img>`.
 
 **Set `SAGE_BRAND_OVERRIDE` on Domino.** It defaults to `~/.config/sage/brand.json`, which is the
 container filesystem and is rebuilt from the image on every start — the choice would not survive a
