@@ -458,7 +458,7 @@ window.SW = window.SW || {};
   // defaults on every build, so the same person answered the same questions every time. Where a
   // handoff LANDS does not and never will, because preselecting an app nobody chose is how a build
   // silently overwrites an existing one (#73, ADR-0008) — the sheet still asks that, every time.
-  // Appearance (ADR-0043): the theme, and the two names the pack lets a person write.
+  // Appearance (ADR-0044): the theme, and the two names the pack lets a person write.
   //
   // In the drawer that already exists rather than behind a second gear beside the avatar. There is
   // one door to "how this is set up for me" and this is the same kind of answer as the two below
@@ -467,7 +467,7 @@ window.SW = window.SW || {};
   //
   // Unlike the preferences below, these are NOT the browser's: they go to the pack behind
   // `/api/brand`, which is read by the entry pages and by the agent's own prompts, and on a
-  // published App one container answers for every viewer of it. See ADR-0043 for that boundary.
+  // published App one container answers for every viewer of it. See ADR-0044 for that boundary.
   function Appearance() {
     const { brand } = SW.store.get();
     const [names, setNames] = useState({ productName: '', assistantName: '' });

@@ -313,7 +313,7 @@ SW.api = {
 
   me: () => request('/me'),
   brand: () => request('/brand'),
-  // Appearance, from Account settings (ADR-0043). Answers the whole resolved pack rather than an
+  // Appearance, from Account settings (ADR-0044). Answers the whole resolved pack rather than an
   // acknowledgement, so the caller installs what the server settled on and not what it asked for —
   // the two differ whenever a baked pack has a say.
   saveBrand: (patch) => request('/brand', { method: 'PUT', body: patch }),

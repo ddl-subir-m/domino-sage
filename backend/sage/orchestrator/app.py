@@ -880,7 +880,7 @@ def brand() -> dict:
 
 @control_app.put("/api/brand")
 async def save_brand(request: Request) -> JSONResponse:
-    """Appearance, from Account settings (ADR-0043): the theme and the two names.
+    """Appearance, from Account settings (ADR-0044): the theme and the two names.
 
     Only the keys `brand.WRITABLE_KEYS` names. The logo, the nouns and the peer products stay the
     OEM's to bake — they are what ADR-0014 built a lint and an image allowlist around, and a text

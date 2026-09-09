@@ -4926,7 +4926,7 @@ class Orchestrator:
 
     def revoice(self, install) -> None:
         """Rewrite OpenCode's config in the pack's new words and drop the server still holding the
-        old ones (ADR-0043).
+        old ones (ADR-0044).
 
         OpenCode reads `opencode.json` once, at start, so a rename that only rewrote the file would
         leave the assistant introducing itself by its old name until something else restarted it —

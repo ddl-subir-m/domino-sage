@@ -73,7 +73,7 @@
      logo across two bars: an OEM who bakes a `fill="white"` mark keeps it under the light theme —
      a theme may not replace a partner's identity — and inverting it is the only reach CSS has into
      an <img>. Set it per theme if that partner ever appears; it is wrong for a colourful mark, so
-     it is not set for them by default (ADR-0043). */
+     it is not set for them by default (ADR-0044). */
   --nav-logo-filter: none;
 
   /* Typography, as two faces. --font-ui is running text; --font-display is headings and controls.

@@ -20,7 +20,7 @@ log = logging.getLogger("sage.orchestrator.brand")
 
 _BAKED = Path("/opt/sage/brand.json")
 
-# The one layer a person can write, from Appearance in Account settings (ADR-0043).
+# The one layer a person can write, from Appearance in Account settings (ADR-0044).
 #
 # Under the home directory rather than the workspace, because `.sage/brand.json` would make the
 # look a property of the PROJECT — brand.md rules that out, and it is the wrong scope twice over: a
@@ -373,7 +373,7 @@ def _merge(base: dict, overlay: dict | None, *, derive_assistant: bool = True) -
     form and a person who filled in one did not mean to answer the other. A partner renaming the
     product to Acme AI does mean the assistant too, which is why the derivation is the default —
     but reading that intent into a text field would rename the speaker behind the person's back,
-    and an assistant name that changes is a re-voice and an OpenCode restart (ADR-0043)."""
+    and an assistant name that changes is a re-voice and an OpenCode restart (ADR-0044)."""
     if not overlay:
         return base
     out = deepcopy(base)

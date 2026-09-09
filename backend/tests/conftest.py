@@ -3,7 +3,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_brand_override(monkeypatch, tmp_path):
-    """Keep every test off the developer's own Appearance choice (ADR-0043).
+    """Keep every test off the developer's own Appearance choice (ADR-0044).
 
     `brand.load()` reads a writable override, and its default path is under `~/.config`. Running
     the Workbench once on this machine writes that file — so without this, a theme somebody picked

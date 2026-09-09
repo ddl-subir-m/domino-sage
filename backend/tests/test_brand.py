@@ -726,7 +726,7 @@ def test_choosing_a_peer_names_it_in_the_packs_words():
     ]
 
 
-# --- themes and the writable layer (ADR-0043) -------------------------------------------------
+# --- themes and the writable layer (ADR-0044) -------------------------------------------------
 #
 # A theme is mostly CSS: the pack carries the id and the three colours, and `css/tokens.css`
 # carries the rest. The writable layer is the first part of a pack a person rather than an OEM can

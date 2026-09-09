@@ -25,7 +25,7 @@ Sections carry the marker. Anything still marked unbuilt is unbuilt on purpose, 
 ## Locked
 
 - **Audience:** OEM / partner overlay. Unset pack → Domino. Not per-organization on one process.
-  Since ADR-0043 there is a second, narrower audience: a **person**, who may set the theme and the
+  Since ADR-0044 there is a second, narrower audience: a **person**, who may set the theme and the
   two names from Account settings and nothing else. That layer reads last and cannot reach a key
   listed under Images or Nouns.
 - **Precondition:** `platformName` assumes the partner has set Domino's own `/admin/whitelabel`.
@@ -123,7 +123,7 @@ first, and the door is the first page a published App's viewer ever sees.
 ## Appearance — built
 
 The one layer a **person** writes, from **Account settings › Appearance** in the Workbench.
-[ADR-0043](../adr/0043-appearance-is-a-third-brand-layer-the-person-owns.md) owns the decision; this
+[ADR-0044](../adr/0043-appearance-is-a-third-brand-layer-the-person-owns.md) owns the decision; this
 is the operator's half of it.
 
 Three keys only — `brand.WRITABLE_KEYS`: `productName`, `assistantName`, `theme`. The logo, the
@@ -162,7 +162,7 @@ control characters, or more than 40 characters are **refused** at this route —
 brand code raises instead of warning, because a person is waiting on the answer.
 
 **Known gap:** the published Workbench App serves `door.html`, which has no Appearance UI, but
-`PUT /api/brand` is still routed there and unauthenticated. Recorded and accepted in ADR-0043, with
+`PUT /api/brand` is still routed there and unauthenticated. Recorded and accepted in ADR-0044, with
 the one-line fix named.
 
 ## Nouns — built

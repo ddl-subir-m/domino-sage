@@ -3244,7 +3244,7 @@ window.SW = window.SW || {};
       notify();
     },
 
-    // Appearance, from Account settings (ADR-0043). One writer for the theme and both names,
+    // Appearance, from Account settings (ADR-0044). One writer for the theme and both names,
     // because all three land in one file behind one route.
     //
     // The server's answer is installed rather than the patch: it resolved the write against a
