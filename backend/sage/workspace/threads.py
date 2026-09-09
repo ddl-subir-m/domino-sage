@@ -29,6 +29,14 @@ _KIND_SUFFIX = {
 }
 
 
+# What `new_id("thr")` mints, matched loosely enough to cover every id this store has ever
+# written. Deliberately the same shape as `shim.chat_paths._THREAD_ID`, which gates the other
+# direction (what a Chat turn may write). `examples/` is an ordinary directory at the Project root
+# and a person may keep their own folders in it, so this prefix is the only thing that tells this
+# store's directories from theirs — which matters most where something is about to be removed.
+_MINTED_ID = re.compile(r"^thr_[a-zA-Z0-9_-]+$")
+
+
 def safe_id(value: str, what: str) -> str:
     """`value` if it can only ever name one path segment, else ValueError.
 
@@ -437,6 +445,42 @@ class ThreadStore:
             if (row or {}).get("deleted"):
                 ids.append(d.name)
         return ids
+
+    def orphaned_artifact_ids(self) -> list[str]:
+        """Every `examples/<id>` this store holds no record for at all — not live, not tombstoned.
+
+        Not what `tombstoned_ids` returns, and not reachable from it. `delete` always leaves
+        `meta.json` behind (ADR-0036), so a Thread this store deleted is never one of these. These
+        are what the delete that PREDATES that ADR left when it removed the record whole, and what
+        a half-restored `.sage/threads/` leaves when the tree beside it survives. Nothing has ever
+        swept them, because every sweep starts from a record and these have none.
+
+        They cost a directory each while `examples/` was ignored. It is committed now, so an orphan
+        is bytes that every clone of this Project carries, forever and with nothing pointing at it.
+
+        Adopts the legacy index first, like every other read here, and here it is load-bearing
+        rather than tidy: a Project still on `threads.json` has no `meta.json` to find, so without
+        this every LIVE Thread's Artifacts would read as orphaned and the caller would delete the
+        lot."""
+        self._adopt_legacy_index()
+        root = self._root / "examples"
+        if not root.is_dir():
+            return []
+        return sorted(
+            d.name for d in root.iterdir()
+            if d.is_dir() and _MINTED_ID.match(d.name) and not self.thread_dir(d.name).is_dir()
+        )
+
+    def purge_orphaned_artifacts(self, thread_id: str) -> bool:
+        """Remove one orphan's `examples/<id>`. True only if there was something to remove.
+
+        Separate from `purge`, which is about a tombstone and starts by walking a thread directory
+        an orphan does not have."""
+        d = self.examples_dir(thread_id)
+        if not d.is_dir():
+            return False
+        shutil.rmtree(d, ignore_errors=True)
+        return True
 
     def read_artifacts(self, thread_id: str) -> list[dict]:
         p = self.thread_dir(thread_id) / "artifacts.json"
