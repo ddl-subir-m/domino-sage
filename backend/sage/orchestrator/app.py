@@ -982,6 +982,73 @@ def _mcp_probe(url: str) -> dict:
         return {"ok": False, "status": r.status_code, "error": f"unreadable reply: {e}"}
 
 
+def _opencode_config_diag() -> dict:
+    """Every config slot OpenCode resolved, whether it exists, and whether Sage wrote it.
+
+    `agents` says what OpenCode ended up with; `mcp` says what the file WE wrote asks for. Neither
+    says which files OpenCode actually read, and that is the gap a whole evening went into: the
+    global copy can be perfect, the probe green, the agents all present, and a file Sage never wrote
+    can still be loaded LAST and take the MCP server away — leaving the assistant to tell somebody
+    it cannot see their data.
+
+    The project slot is the one that does it. It is resolved off the git root of the SESSION
+    directory (`driver/server.py`), which is the Project volume — so it outranks `OPENCODE_CONFIG`,
+    it is not ours to fill, and deleting the workspace does not clear it. `.opencode/` on that
+    volume survives everything.
+
+    Read from OpenCode's own log, which has been printing `loading path=...` for every slot the
+    whole time, plus the project slot named directly in case it fell out of the log window. Top
+    level KEYS only, never values: a config carries the gateway's credentials.
+    """
+    import json
+    import re
+
+    ours = {str(Path(os.path.expanduser("~/.config/opencode")) / name)
+            for name in ("opencode.json", "opencode.jsonc")}
+    ours.add(str(_opencode_project_dir() / "opencode.json"))
+
+    paths: list[str] = []
+    for line in orchestrator._opencode_log_tail(400):
+        m = re.search(r"loading path=(\S+)", line)
+        if m and m.group(1) not in paths:
+            paths.append(m.group(1))
+    # Named outright, not only where the log window happens to reach: this is the slot that wins,
+    # so "not in the log" must never read as "not there".
+    workspace = getattr(getattr(orchestrator, "_wm", None), "_dir", None)
+    for name in ("opencode.json", "opencode.jsonc"):
+        slot = str(Path(workspace) / ".opencode" / name) if workspace else ""
+        if slot and slot not in paths:
+            paths.append(slot)
+
+    slots = []
+    for path in paths:
+        row: dict = {"path": path, "ours": path in ours}
+        try:
+            stat = Path(path).stat()
+        except OSError:
+            # OpenCode logs a line for every slot it TRIES, existing or not — `config.json` is one
+            # we never write and it is logged too. So absence is the common case, and reporting it
+            # is what stops a probed path being read as a found one.
+            row["exists"] = False
+            slots.append(row)
+            continue
+        row["exists"] = True
+        row["bytes"] = stat.st_size
+        try:
+            cfg = json.loads(Path(path).read_text())
+            row["keys"] = sorted(cfg)[:20] if isinstance(cfg, dict) else type(cfg).__name__
+            row["declares_mcp"] = isinstance(cfg, dict) and "mcp" in cfg
+        except Exception as e:
+            row["error"] = f"{type(e).__name__}: {e}"
+        slots.append(row)
+
+    # The finding, said rather than left to be spotted in a list: a file we did not write, that
+    # exists, that speaks about MCP, and that OpenCode loads after ours.
+    shadow = [r["path"] for r in slots
+              if r.get("exists") and not r["ours"] and r.get("declares_mcp")]
+    return {"slots": slots, "shadowing_mcp": shadow}
+
+
 @control_app.get("/api/diag")
 def diag() -> JSONResponse:
     """Browser-openable build diagnostics (no shell needed in the deployed builder). Reads the CURRENT
@@ -1002,6 +1069,9 @@ def diag() -> JSONResponse:
       - mcp: the MCP servers OpenCode was told about and whether each one answers now. OpenCode
         drops an unreachable one silently, so an absent Live read tool is otherwise indistinguishable
         from a model that chose not to call it
+      - opencode_config: every config slot OpenCode resolved and which of them Sage wrote. The
+        project slot sits on the Project volume, outranks OPENCODE_CONFIG, and is not ours — a file
+        there can take the MCP server away while `agents` and `mcp` both still look right
       - log_tail / opencode_log_tail: recent sage.* and OpenCode server logs
     """
     from .service import _opencode_base_port
@@ -1021,6 +1091,7 @@ def diag() -> JSONResponse:
                   "match": base_port == control_port},
         "agents": orchestrator.resolved_agents(),
         "mcp": _mcp_diag(control_port),
+        "opencode_config": _opencode_config_diag(),
         "project": None if p is None else {
             "model_calls": p.model_calls,
             "tool_call_responses": p.tool_call_responses,

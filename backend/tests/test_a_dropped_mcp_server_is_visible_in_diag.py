@@ -101,6 +101,68 @@ def test_a_url_on_the_wrong_port_is_flagged_even_when_something_answers(tmp_path
     assert out["servers"][0]["on_control_port"] is False
 
 
+def test_a_project_config_that_shadows_the_mcp_block_is_named(tmp_path, monkeypatch):
+    """The slot that actually did it. OpenCode resolves project config off the git root of the
+    SESSION directory, which is the Project volume — so it outranks OPENCODE_CONFIG, it is not ours
+    to fill, and deleting the workspace does not clear it.
+
+    Everything else can look right while this is wrong: `agents` still lists all five, because they
+    come from the global copy loaded earlier, and `mcp` still reports a healthy server, because it
+    reads the file WE wrote. Only this says which files OpenCode read.
+    """
+    workspace = tmp_path / "mnt" / "code"
+    (workspace / ".opencode").mkdir(parents=True)
+    (workspace / ".opencode" / "opencode.json").write_text(json.dumps({"mcp": {}}))
+    monkeypatch.setattr(app_module.orchestrator, "_wm",
+                        type("W", (), {"_dir": workspace})(), raising=False)
+    monkeypatch.setattr(app_module.orchestrator, "_opencode_log_tail", lambda n=30: [], raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".config" / "opencode").mkdir(parents=True)
+
+    out = TestClient(app_module.control_app).get("/api/diag").json()["opencode_config"]
+
+    assert out["shadowing_mcp"] == [str(workspace / ".opencode" / "opencode.json")]
+    row = next(r for r in out["slots"] if r["path"].endswith(".opencode/opencode.json"))
+    assert row["exists"] is True and row["ours"] is False and row["declares_mcp"] is True
+
+
+def test_a_slot_opencode_only_probed_is_not_read_as_a_file_it_found(tmp_path, monkeypatch):
+    """OpenCode logs `loading path=...` for every slot it TRIES, existing or not — it logs one for
+    `config.json`, which Sage never writes. Absence is the common case, so reporting it is what
+    stops a probed path being read as a found one."""
+    monkeypatch.setattr(app_module.orchestrator, "_opencode_log_tail",
+                        lambda n=30: ["message=loading path=/nowhere/opencode.json"], raising=False)
+    monkeypatch.setattr(app_module.orchestrator, "_wm", None, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".config" / "opencode").mkdir(parents=True)
+
+    out = TestClient(app_module.control_app).get("/api/diag").json()["opencode_config"]
+
+    row = next(r for r in out["slots"] if r["path"] == "/nowhere/opencode.json")
+    assert row["exists"] is False
+    assert out["shadowing_mcp"] == []
+
+
+def test_the_config_report_never_carries_a_value(tmp_path, monkeypatch):
+    """A config holds the gateway's credentials. Keys say which slot spoke about what; values are
+    never the question being asked here."""
+    workspace = tmp_path / "mnt" / "code"
+    (workspace / ".opencode").mkdir(parents=True)
+    (workspace / ".opencode" / "opencode.json").write_text(
+        json.dumps({"provider": {"sage-gateway": {"options": {"apiKey": "sk-do-not-leak"}}}}))
+    monkeypatch.setattr(app_module.orchestrator, "_wm",
+                        type("W", (), {"_dir": workspace})(), raising=False)
+    monkeypatch.setattr(app_module.orchestrator, "_opencode_log_tail", lambda n=30: [], raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".config" / "opencode").mkdir(parents=True)
+
+    out = TestClient(app_module.control_app).get("/api/diag").json()["opencode_config"]
+
+    assert "sk-do-not-leak" not in json.dumps(out)
+    row = next(r for r in out["slots"] if r["path"].endswith(".opencode/opencode.json"))
+    assert row["keys"] == ["provider"]
+
+
 def test_a_config_that_cannot_be_read_does_not_break_the_page(tmp_path, monkeypatch):
     """A diagnostic must never be the thing that breaks the diagnostics page — and a missing global
     config is itself a finding, since it is what OpenCode reads."""
