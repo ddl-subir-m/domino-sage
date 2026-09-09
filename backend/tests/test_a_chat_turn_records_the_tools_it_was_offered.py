@@ -45,13 +45,14 @@ def test_a_turn_that_was_offered_live_read_names_both_tools(caplog):
     said = _run(caplog, _LIVE_READ)
 
     assert said == [("chat tools: live read sage-live-read_live_read_files, "
-                     "sage-live-read_live_read_table")]
+                     "sage-live-read_live_read_table — all 3: read, "
+                     "sage-live-read_live_read_files, sage-live-read_live_read_table")]
 
 
 def test_a_turn_that_was_offered_none_says_so_rather_than_nothing(caplog):
     """The finding, and the one an absent log line cannot carry: silence here would read the same
     whether the tools were missing or the turn never ran."""
-    assert _run(caplog, ()) == ["chat tools: live read NOT OFFERED"]
+    assert _run(caplog, ()) == ["chat tools: live read NOT OFFERED — all 1: read"]
 
 
 def test_a_build_turn_is_not_asked_the_question(caplog):
@@ -63,3 +64,34 @@ def test_a_build_turn_is_not_asked_the_question(caplog):
         list(shim.handle(_req(*_LIVE_READ), {}))
 
     assert not [r for r in caplog.records if "chat tools" in r.getMessage()]
+
+
+def test_the_whole_list_is_recorded_beside_the_verdict(caplog):
+    """`NOT OFFERED` alone cannot separate two very different turns.
+
+    Live on 2026-09-09, three turns read NOT OFFERED while the MCP server was connected, the config
+    was clean and the port was right. The next question — did OpenCode send no MCP tools at all, or
+    send them under names nothing here recognises — had nothing on any surface to answer it. The
+    list is the answer, and it costs one line a turn.
+    """
+    said = _run(caplog, ("glob", "sage-live-read_live_read_table"))
+
+    assert said == [("chat tools: live read sage-live-read_live_read_table — all 3: "
+                     "glob, read, sage-live-read_live_read_table")]
+
+
+def test_the_list_is_what_the_model_GOT_not_what_opencode_proposed(caplog):
+    """Read after the denial filter, so a tool this shim strips is absent here too. Logging the
+    request as it arrived would describe a turn that never happened, and the whole point of this
+    line is that it is the one record of what the model actually held."""
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    shim = EnforcementShim(control, CATALOG, FakeGatewayClient())
+    control.arm_chat("thr_web")
+    with caplog.at_level(logging.INFO, logger="sage.shim"):
+        # webfetch is denied on every turn the orchestrator did not arm for the web.
+        list(shim.handle(_req("webfetch", "sage-live-read_live_read_table"), {}))
+    said = [r.getMessage() for r in caplog.records if "chat tools" in r.getMessage()]
+
+    assert said == [("chat tools: live read sage-live-read_live_read_table — all 2: "
+                     "read, sage-live-read_live_read_table")]
+    assert "webfetch" not in said[0]

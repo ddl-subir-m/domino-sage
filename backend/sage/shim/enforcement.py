@@ -241,14 +241,25 @@ class EnforcementShim:
             # can be true at once: the tool list is fixed when the turn starts, and the MCP
             # handshake for a session has been seen landing half a minute after that. This request
             # is the only place the list the model actually got is written down.
-            offered = sorted(
-                name for t in request["tools"]
-                if "live_read" in (name := str((t.get("function") or {}).get("name", ""))).lower()
-            )
-            if self._live_read_offered != (chat_id, tuple(offered)):
-                self._live_read_offered = (chat_id, tuple(offered))
+            names = sorted(str((t.get("function") or {}).get("name", ""))
+                            for t in request["tools"])
+            offered = [n for n in names if "live_read" in n.lower()]
+            # The WHOLE list beside the verdict, because "NOT OFFERED" alone cannot say which of two
+            # very different things happened. Live on 2026-09-09 three turns read NOT OFFERED while
+            # the server was connected and the config was clean, and the next question — did
+            # OpenCode send NO MCP tools, or send them under names nothing here recognises — had
+            # nothing on any surface to answer it. This is the list the model actually got: it is
+            # read AFTER the denial filter above, so it is what went to the gateway, not what
+            # OpenCode proposed. Names only. An argument would be the file being written.
+            #
+            # Deduped on the whole list rather than the Live read part of it: a turn whose tools
+            # changed in some other way is a different fact, and must not be silenced by the first
+            # turn that happened to be missing the same two.
+            if self._live_read_offered != (chat_id, tuple(names)):
+                self._live_read_offered = (chat_id, tuple(names))
                 logging.getLogger("sage.shim").info(
-                    "chat tools: live read %s", ", ".join(offered) or "NOT OFFERED")
+                    "chat tools: live read %s — all %d: %s",
+                    ", ".join(offered) or "NOT OFFERED", len(names), ", ".join(names))
         if chat_id and isinstance(request.get("messages"), list):
             request = {**request, "messages": strip_denied_writes(request["messages"], chat_id)}
 
