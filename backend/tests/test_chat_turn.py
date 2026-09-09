@@ -252,6 +252,56 @@ def test_chat_prompt_routes_an_unmounted_dataset_to_the_data_library(tmp_path: P
     assert "not a React file" in prompt
 
 
+def test_a_stalled_read_names_the_file_it_was_blocked_on(tmp_path: Path, monkeypatch, caplog):
+    """Live: `still open: read`, and nothing else. Which file `read` had been blocked on for four
+    minutes is the entire question, and it was one key away — `bash` carried its command and every
+    other tool carried nothing.
+
+    Still a named subset of `input`, never the whole thing: a write's input is the file's contents,
+    and this reaches a sentence on screen and a log ring anyone with the Builder can read.
+    """
+    import logging
+
+    from sage.orchestrator import service
+    monkeypatch.setattr(service, "_CHAT_QUIET_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(service, "_CHAT_TOOL_QUIET_TIMEOUT_S", 1.0)
+    stalled = [_live("tool_run", tool="read", call_id="c1", status="called",
+                     input={"filePath": "public/data/adverse/synthetic_adverse_events.csv"})]
+    orch, oc = _streamed(tmp_path, stalled, gap=0.05)
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
+        out = list(orch.chat_stream(tid, "chart the adverse events"))
+
+    err = next(e for e in out if e["type"] == "error")
+    assert "read (public/data/adverse/synthetic_adverse_events.csv)" in err["message"]
+    assert any("still open: read (public/data/adverse/" in r.getMessage() for r in caplog.records)
+
+
+def test_a_stalled_write_never_puts_the_file_contents_on_screen(tmp_path: Path, monkeypatch,
+                                                                caplog):
+    """The reason this reads a named subset rather than `input`. A write's input IS the document."""
+    import logging
+
+    from sage.orchestrator import service
+    monkeypatch.setattr(service, "_CHAT_QUIET_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(service, "_CHAT_TOOL_QUIET_TIMEOUT_S", 1.0)
+    stalled = [_live("tool_run", tool="write", call_id="c1", status="called",
+                     input={"filePath": "examples/t/chart.py", "content": "SECRET_ROWS = [1,2,3]"})]
+    orch, oc = _streamed(tmp_path, stalled, gap=0.05)
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
+        out = list(orch.chat_stream(tid, "chart it"))
+
+    err = next(e for e in out if e["type"] == "error")
+    assert "examples/t/chart.py" in err["message"]
+    assert "SECRET_ROWS" not in err["message"]
+    assert not any("SECRET_ROWS" in r.getMessage() for r in caplog.records)
+
+
 def test_a_failed_read_is_not_permission_to_substitute(tmp_path: Path):
     """Live: a Dataset read failed on an authentication error and the turn answered anyway with
     "I'll build the dashboard using realistic synthetic adverse event data", then charted it.

@@ -2088,14 +2088,20 @@ def _tool_label(payload: dict) -> str:
     on screen and in a log ring anyone with the Builder can read.
     """
     tool = str(payload.get("tool") or "").strip() or "a step"
-    # `shell.started` carries it at the top level, `tool.called` inside `input`. Only that one key
-    # is read, never the whole input: a write's input is the file's contents, and this ends up in a
-    # sentence on screen and in a log ring anyone with the Builder can read.
-    raw = payload.get("command")
-    if not raw and isinstance(payload.get("input"), dict):
-        raw = payload["input"].get("command")
-    command = " ".join(str(raw or "").split())[:60]
-    return f"{tool} ({command})" if command else tool
+    # `shell.started` carries the command at the top level, `tool.called` inside `input`. A named
+    # subset of keys is read, never the whole input: a write's input is the FILE'S CONTENTS, and
+    # this ends up in a sentence on screen and in a log ring anyone with the Builder can read.
+    #
+    # `filePath` is here because leaving it out cost a whole run. A stall reported `still open:
+    # read` and stopped exactly where it started being useful — which file `read` had been blocked
+    # on for four minutes is the entire question, and it was one key away.
+    detail = payload.get("command")
+    source = payload.get("input")
+    if not detail and isinstance(source, dict):
+        detail = next((source[k] for k in ("command", "filePath", "file_path", "path", "pattern")
+                       if isinstance(source.get(k), str) and source[k]), "")
+    detail = " ".join(str(detail or "").split())[:60]
+    return f"{tool} ({detail})" if detail else tool
 
 
 def _chat_live_event(ev) -> dict | None:
