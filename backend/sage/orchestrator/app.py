@@ -955,7 +955,13 @@ def _mcp_diag(control_port: int) -> dict:
             row["on_control_port"] = f":{control_port}/" in url
             row["reachable"] = _mcp_probe(url)
         out.append(row)
-    return {"config": str(src), "servers": out}
+    reach = {}
+    try:
+        reach = orchestrator.live_read_reach()
+    except Exception:
+        # A diagnostic must never be the thing that breaks the diagnostics page.
+        pass
+    return {"config": str(src), "servers": out, **reach}
 
 
 def _mcp_probe(url: str) -> dict:

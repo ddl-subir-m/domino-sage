@@ -3506,6 +3506,16 @@ class Orchestrator:
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
         self._live_read: dict[str, tuple[str, float]] = {}
         self._live_read_lock = threading.Lock()
+        # When OpenCode first dialled the Live read server, and how many Chat turns ran before it
+        # did. Measured live: OpenCode connected FIFTEEN MINUTES after boot, with no turn running,
+        # and every Chat turn before that was handed no Live read tools at all — the model was told
+        # to call `sage-live-read_` tools that were not in its list, so it correctly said it could
+        # not see the person's data, and every surface that could have contradicted it agreed with
+        # the wrong half: `opencode mcp list` said connected, /api/diag reached the server and
+        # listed both tools. All true, and all about the SERVER. Nothing was about the moment.
+        self._boot_at = time.monotonic()
+        self._opencode_mcp_at: float | None = None
+        self._chat_turns_before_mcp = 0
         # Which authority a model id resolves against, so the turn-time slot check (#125) knows
         # whether an Alias listing is evidence about this turn at all. Only `domino` puts the models
         # and the listing behind one gateway: in `openai` each model routes to its own vendor and in
@@ -6979,6 +6989,23 @@ class Orchestrator:
     # Keyed by Thread, because a Conversation runs one turn at a time (ADR-0013): a new turn
     # replaces its predecessor's token rather than adding to a pile that would have to be swept.
 
+    def live_read_reach(self) -> dict:
+        """When OpenCode dialled Live read, and what ran before it did.
+
+        The question `/api/diag` could not answer and had to be reconstructed from timestamps at
+        3am: the `mcp` block says the server is configured and answers a probe, and both stay true
+        while OpenCode has not connected and every turn goes out without the tools.
+
+        Seconds after boot rather than a clock time, because the two facts only mean anything
+        against each other — "at 03:20:52" says nothing without knowing the workspace started at
+        03:05:17, and a person reading this page at 3am should not have to do that subtraction.
+        """
+        at = self._opencode_mcp_at
+        return {
+            "opencode_connected": "never" if at is None else round(at - self._boot_at, 1),
+            "turns_without_tools": self._chat_turns_before_mcp,
+        }
+
     def _mint_live_read_token(self, thread_id: str) -> str:
         token = "lrt_" + secrets.token_urlsafe(15)
         with self._live_read_lock:
@@ -7118,6 +7145,8 @@ class Orchestrator:
             # connect. Left unnamed, opening the diagnostics page would WRITE the evidence the page
             # exists to go looking for — read the log after loading it and OpenCode looks connected
             # whether or not it ever was. The probe says who it is; this says so.
+            if not probe and self._opencode_mcp_at is None:
+                self._opencode_mcp_at = time.monotonic()
             log.info("live read: %s — %s",
                      "a /api/diag probe, not OpenCode" if probe else "OpenCode connected", method)
         return live_mcp.handle(message, run=run)
@@ -7342,6 +7371,10 @@ class Orchestrator:
         artifacts: list[dict] = []
         history = store.read_history(thread_id)
         urls = _urls_in_chat(prompt, history)
+        if self._opencode_mcp_at is None:
+            # Counted at the point the turn is pinned as Chat, which is where its tool list is about
+            # to be assembled. A turn counted here was handed no Live read, whatever it then said.
+            self._chat_turns_before_mcp += 1
         chat_token = project.control.arm_chat(thread_id)
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         tap: _EventTap | None = None
