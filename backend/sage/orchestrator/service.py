@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures
+import contextlib
 import filecmp
 import json
 import logging
@@ -3521,6 +3522,9 @@ class Orchestrator:
         # listed both tools. All true, and all about the SERVER. Nothing was about the moment.
         self._boot_at = time.monotonic()
         self._opencode_mcp_at: float | None = None
+        # How many diagnostics are mid-flight. A dial that lands inside one is the page's
+        # own doing, not a turn's — see `diagnostic_window`.
+        self._diag_depth = 0
         self._chat_turns_before_mcp = 0
         # Which authority a model id resolves against, so the turn-time slot check (#125) knows
         # whether an Alias listing is evidence about this turn at all. Only `domino` puts the models
@@ -7029,6 +7033,31 @@ class Orchestrator:
             "turns_without_tools": self._chat_turns_before_mcp,
         }
 
+    @contextlib.contextmanager
+    def diagnostic_window(self):
+        """Mark a stretch as "Sage asking about itself", so a dial inside it is not read as a turn's.
+
+        The observer was changing the observation, and then reporting the change as the finding.
+        Both halves of `/api/diag/mcp` reach the MCP server themselves: `GET /mcp` makes OpenCode
+        connect LAZILY if it has not, and `opencode mcp list` is a whole second OpenCode process
+        that dials on startup. Neither can carry the `x-sage-diag-probe` header the httpx probe
+        uses — one is OpenCode's own client, the other is a subprocess — so both arrived here
+        indistinguishable from a real one.
+
+        What that produced, live on 2026-09-09: every "OpenCode connected" line in the log sat two
+        seconds after a diag probe, `opencode_connected` read 10.0s (the first page load, not a
+        turn), and `opencode_says` read connected BECAUSE asking had just connected it. Three chat
+        turns went out with no tools in between and the page called the wiring healthy.
+
+        Depth, not a boolean: two diagnostics can overlap, and the inner one finishing must not
+        unmark the outer.
+        """
+        self._diag_depth += 1
+        try:
+            yield
+        finally:
+            self._diag_depth = max(0, self._diag_depth - 1)
+
     def opencode_mcp_status(self) -> dict:
         """What OPENCODE says about its own MCP servers. Asked of OpenCode, not inferred.
 
@@ -7058,7 +7087,8 @@ class Orchestrator:
             # `url()` raises until the server has reported one, which is a real answer here.
             return {"asked": False, "why": f"{type(e).__name__}: {e}"}
         try:
-            r = httpx.get(url, timeout=3.0, headers={"Accept": "application/json"})
+            with self.diagnostic_window():
+                r = httpx.get(url, timeout=3.0, headers={"Accept": "application/json"})
         except Exception as e:
             return {"asked": True, "ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
         if r.status_code != 200:
@@ -7207,6 +7237,10 @@ class Orchestrator:
             # connect. Left unnamed, opening the diagnostics page would WRITE the evidence the page
             # exists to go looking for — read the log after loading it and OpenCode looks connected
             # whether or not it ever was. The probe says who it is; this says so.
+            if probe or self._diag_depth:
+                # Asked by us, one way or another. Recording it would restart the clock this field
+                # exists to read, and has already been mistaken for a turn's handshake.
+                probe = True
             if not probe and self._opencode_mcp_at is None:
                 self._opencode_mcp_at = time.monotonic()
             log.info("live read: %s — %s",

@@ -1064,6 +1064,13 @@ def _live_read_verdict(info: dict) -> str:
                 f"{name}: OPENCODE'S END. OpenCode holds it as "
                 f"{(held.get(name) or {}).get('status')!r}, not connected, so its tools were not "
                 "offered to the model.")
+        elif last_turn == "missed" and info.get("opencode_connected") == "never":
+            lines.append(
+                f"{name}: OPENCODE'S END. The tools have never reached a turn. `opencode serve` has "
+                "not dialled this server once on its own — every connection on record was caused by "
+                "opening this page, because `GET /mcp` connects OpenCode lazily and `opencode mcp "
+                "list` is a second OpenCode process that dials on startup. So 'connected' above "
+                "means 'connected because you asked', and the turns went out with nothing.")
         elif last_turn == "missed":
             lines.append(
                 f"{name}: LATE, NOT MISSING. OpenCode holds it connected NOW, but the last chat "
@@ -1344,7 +1351,11 @@ def diag_mcp(cmd: str = "list") -> PlainTextResponse:
         verdict = _live_read_verdict(_mcp_diag(int(os.environ.get("SAGE_CONTROL_PORT", "8080"))))
     except Exception as e:
         verdict = f"VERDICT unavailable ({type(e).__name__}: {e}). The evidence below still stands."
-    body = server.cli(["mcp", "list" if cmd not in ("list", "debug") else cmd], cwd=work)
+    # `opencode mcp list` is a whole second OpenCode process and it dials the MCP server on startup.
+    # Outside this window that dial was recorded as OpenCode connecting for a turn, which is how a
+    # page that connects the thing it is measuring came to report the connection as the finding.
+    with orchestrator.diagnostic_window():
+        body = server.cli(["mcp", "list" if cmd not in ("list", "debug") else cmd], cwd=work)
     return PlainTextResponse(
         f"{verdict}\n\n"
         f"$ opencode mcp {cmd}   (cwd: {work or 'the server default'})\n\n{body}")

@@ -9,6 +9,7 @@ nothing was about the moment. This is the moment.
 """
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -80,3 +81,54 @@ def test_the_two_fields_reach_the_page(tmp_path: Path, monkeypatch):
 
     assert out["opencode_connected"] == "never"
     assert out["turns_without_tools"] == 0
+
+
+# ---------------------------------------------------------------------------
+# The page was connecting the thing it measured, then reporting the connection as the finding.
+#
+# Live, 2026-09-09: every "OpenCode connected" line sat two seconds after a diag probe,
+# `opencode_connected` read 10.0s (the first page load, not a turn), `opencode_says` read connected
+# because asking had just connected it — and three chat turns went out with no tools in between
+# while the page called the wiring healthy. Both halves of /api/diag/mcp reach the server
+# themselves: `GET /mcp` connects OpenCode lazily, and `opencode mcp list` is a second OpenCode
+# process that dials on startup. Neither can carry the probe header.
+
+
+def test_a_dial_inside_a_diagnostic_is_not_recorded_as_opencodes(tmp_path: Path):
+    orch, _ = _orch(tmp_path, [Turn(text="ok")])
+
+    with orch.diagnostic_window():
+        orch.live_read_call({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+
+    assert orch.live_read_reach()["opencode_connected"] == "never"
+
+
+def test_a_real_dial_outside_one_still_counts(tmp_path: Path):
+    """The guard must not swallow the signal it exists to protect."""
+    orch, _ = _orch(tmp_path, [Turn(text="ok")])
+
+    orch.live_read_call({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+
+    assert isinstance(orch.live_read_reach()["opencode_connected"], float)
+
+
+def test_overlapping_diagnostics_do_not_unmark_each_other(tmp_path: Path):
+    """Depth, not a boolean: the inner one finishing must not clear the outer one's window."""
+    orch, _ = _orch(tmp_path, [Turn(text="ok")])
+
+    with orch.diagnostic_window():
+        with orch.diagnostic_window():
+            pass
+        orch.live_read_call({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+
+    assert orch.live_read_reach()["opencode_connected"] == "never"
+
+
+def test_the_window_closes_even_when_the_body_raises(tmp_path: Path):
+    orch, _ = _orch(tmp_path, [Turn(text="ok")])
+
+    with contextlib.suppress(RuntimeError), orch.diagnostic_window():
+        raise RuntimeError("boom")
+    orch.live_read_call({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+
+    assert isinstance(orch.live_read_reach()["opencode_connected"], float)

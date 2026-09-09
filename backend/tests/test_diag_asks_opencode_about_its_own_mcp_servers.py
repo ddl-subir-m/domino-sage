@@ -206,7 +206,16 @@ class _Full(_Handle):
         return "sage-live-read  connected"
 
 
-def _verdict(tmp_path: Path, monkeypatch, route_port: int, oc_server: object) -> str:
+def _verdict(tmp_path: Path, monkeypatch, route_port: int, oc_server: object,
+             *, dialled: bool = False) -> str:
+    """`dialled` says whether OPENCODE itself ever connected, which is what separates a late
+    handshake from a server it has never dialled. Set here rather than by making a real call:
+    `app_module.orchestrator` is a module-level singleton, so one test's dial leaks into every
+    later one — which is exactly how the two cases below first passed alone and failed together.
+    """
+    monkeypatch.setattr(app_module.orchestrator, "_opencode_mcp_at",
+                        (app_module.orchestrator._boot_at + 5.0) if dialled else None,
+                        raising=False)
     cfg = tmp_path / ".config" / "opencode"
     cfg.mkdir(parents=True)
     (cfg / "opencode.json").write_text(json.dumps({"mcp": {"sage-live-read": {
@@ -324,12 +333,16 @@ def _with_log(monkeypatch, line: str | None):
 
 def test_a_turn_that_went_out_without_the_tools_is_not_blamed_on_the_model(tmp_path, monkeypatch,
                                                                           live_read_route):
-    """The live 2026-09-09 reading, pinned. Everything is healthy NOW and the turn still had none."""
+    """A genuine late handshake: OpenCode DID dial on its own, and a turn still went out before it.
+
+    The dial is what separates this from the case below. Without one, "connected" only means the
+    diagnostic connected it, and telling somebody to ask again is telling them to repeat a failure.
+    """
     _with_log(monkeypatch, "INFO sage.shim: chat tools: live read NOT OFFERED")
     srv = _opencode({"sage-live-read": {"status": "connected"}})
     try:
         out = _verdict(tmp_path, monkeypatch, live_read_route,
-                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+                       _Full(f"http://127.0.0.1:{srv.server_port}"), dialled=True)
     finally:
         srv.shutdown()
         srv.server_close()
@@ -387,4 +400,24 @@ def test_the_turn_line_does_not_override_a_server_that_is_actually_down(tmp_path
         srv.server_close()
 
     assert "OPENCODE'S END" in out
+    assert "LATE" not in out
+
+
+def test_a_turn_that_missed_while_serve_never_dialled_is_not_called_late(tmp_path, monkeypatch,
+                                                                        live_read_route):
+    """Their 2026-09-09 reading, pinned. `opencode serve` had not dialled once on its own — every
+    connection on record came from opening this page — and three turns went out with nothing. The
+    page called that LATE and told them to ask again, which was advice to repeat the failure."""
+    _with_log(monkeypatch, "INFO sage.shim: chat tools: live read NOT OFFERED")
+    srv = _opencode({"sage-live-read": {"status": "connected"}})
+    try:
+        out = _verdict(tmp_path, monkeypatch, live_read_route,
+                       _Full(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert "OPENCODE'S END" in out
+    assert "never reached a turn" in out
+    assert "connected because you asked" in out
     assert "LATE" not in out
