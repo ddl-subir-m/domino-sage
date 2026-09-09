@@ -170,3 +170,93 @@ def test_a_config_that_cannot_be_read_does_not_break_the_page(tmp_path, monkeypa
 
     assert out["error"]
     assert "opencode.json" in out["config"]
+
+
+# ---------------------------------------------------------------------------
+# The two slots that were not being looked at, and the lever that leaves everything green.
+
+
+def test_a_bare_opencode_json_at_the_workspace_root_is_probed(tmp_path, monkeypatch):
+    """`.opencode/opencode.json` was named; a BARE `opencode.json` beside the git root was not.
+
+    That is not an exotic shape — it is how Sage installs its own project copy
+    (`_install_opencode_config` writes one and `git init`s next to it precisely so it outranks the
+    rest), and a legacy file left at the workspace root has been seen surviving every rebuild. While
+    this slot went unprobed the page reported no project config at all and read as healthy.
+    """
+    workspace = tmp_path / "mnt" / "code"
+    workspace.mkdir(parents=True)
+    (workspace / "opencode.json").write_text(json.dumps({"mcp": {}}))
+    monkeypatch.setattr(app_module.orchestrator, "_wm",
+                        type("W", (), {"_dir": workspace})(), raising=False)
+    monkeypatch.setattr(app_module.orchestrator, "_opencode_log_tail", lambda n=30: [],
+                        raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".config" / "opencode").mkdir(parents=True)
+
+    out = TestClient(app_module.control_app).get("/api/diag").json()["opencode_config"]
+
+    row = next(r for r in out["slots"] if r["path"] == str(workspace / "opencode.json"))
+    assert row["exists"] is True and row["ours"] is False
+    assert out["shadowing_mcp"] == [str(workspace / "opencode.json")]
+
+
+def test_a_tools_filter_is_reported_although_every_status_stays_green(tmp_path, monkeypatch):
+    """The quiet half. A `tools` map never touches the `mcp` block, so the server connects, the CLI
+    prints a green tick and `opencode_says` reads connected — while `"sage-live-read*": false` takes
+    the tools off the agent anyway. Nothing else on this page can tell that apart from healthy."""
+    workspace = tmp_path / "mnt" / "code"
+    (workspace / ".opencode").mkdir(parents=True)
+    (workspace / ".opencode" / "opencode.json").write_text(
+        json.dumps({"tools": {"sage-live-read*": False}}))
+    monkeypatch.setattr(app_module.orchestrator, "_wm",
+                        type("W", (), {"_dir": workspace})(), raising=False)
+    monkeypatch.setattr(app_module.orchestrator, "_opencode_log_tail", lambda n=30: [],
+                        raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".config" / "opencode").mkdir(parents=True)
+
+    out = TestClient(app_module.control_app).get("/api/diag").json()["opencode_config"]
+
+    assert out["shadowing_tools"] == [str(workspace / ".opencode" / "opencode.json")]
+    assert out["shadowing_mcp"] == []          # it never spoke about the mcp block
+    row = next(r for r in out["slots"] if r["path"].endswith(".opencode/opencode.json"))
+    assert row["declares_tools"] is True and row["declares_mcp"] is False
+
+
+def test_an_agent_level_tools_filter_counts_too(tmp_path, monkeypatch):
+    """Per-agent is the documented way to scope an MCP server, so it is the likelier shape."""
+    workspace = tmp_path / "mnt" / "code"
+    (workspace / ".opencode").mkdir(parents=True)
+    (workspace / ".opencode" / "opencode.json").write_text(
+        json.dumps({"agent": {"sage-chat": {"tools": {"sage-live-read*": False}}}}))
+    monkeypatch.setattr(app_module.orchestrator, "_wm",
+                        type("W", (), {"_dir": workspace})(), raising=False)
+    monkeypatch.setattr(app_module.orchestrator, "_opencode_log_tail", lambda n=30: [],
+                        raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".config" / "opencode").mkdir(parents=True)
+
+    out = TestClient(app_module.control_app).get("/api/diag").json()["opencode_config"]
+
+    assert out["shadowing_tools"] == [str(workspace / ".opencode" / "opencode.json")]
+
+
+def test_our_own_project_copy_is_not_reported_as_shadowing(tmp_path, monkeypatch):
+    """Sage's own bare project copy sits in exactly this slot. Naming it as a finding would make the
+    field cry wolf on every healthy workspace."""
+    monkeypatch.setattr(app_module.orchestrator, "_opencode_log_tail", lambda n=30: [],
+                        raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".config" / "opencode").mkdir(parents=True)
+    ours = app_module._opencode_project_dir()
+    ours.mkdir(parents=True, exist_ok=True)
+    (ours / "opencode.json").write_text(json.dumps({"mcp": {"sage-live-read": {}},
+                                                    "tools": {"x*": False}}))
+    monkeypatch.setattr(app_module.orchestrator, "_wm",
+                        type("W", (), {"_dir": tmp_path / "nowhere"})(), raising=False)
+
+    out = TestClient(app_module.control_app).get("/api/diag").json()["opencode_config"]
+
+    assert str(ours / "opencode.json") not in out["shadowing_mcp"]
+    assert str(ours / "opencode.json") not in out["shadowing_tools"]

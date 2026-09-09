@@ -1127,11 +1127,19 @@ def _opencode_config_diag() -> dict:
             paths.append(m.group(1))
     # Named outright, not only where the log window happens to reach: this is the slot that wins,
     # so "not in the log" must never read as "not there".
+    # BOTH project shapes. `.opencode/<name>` is the obvious one; a BARE `opencode.json` beside the
+    # git root is the other, and it is not a curiosity — it is exactly how Sage's own project copy
+    # works (`_install_opencode_config` writes one and `git init`s next to it so it outranks the
+    # rest). A legacy file left at the workspace root has been seen surviving every rebuild, and
+    # until this loop named it the page reported the project slot as absent while OpenCode was
+    # reading one.
     workspace = getattr(getattr(orchestrator, "_wm", None), "_dir", None)
-    for name in ("opencode.json", "opencode.jsonc"):
-        slot = str(Path(workspace) / ".opencode" / name) if workspace else ""
-        if slot and slot not in paths:
-            paths.append(slot)
+    for parent in (".opencode", ""):
+        for name in ("opencode.json", "opencode.jsonc"):
+            slot = str((Path(workspace) / parent / name) if parent else (Path(workspace) / name)) \
+                if workspace else ""
+            if slot and slot not in paths:
+                paths.append(slot)
 
     slots = []
     for path in paths:
@@ -1151,6 +1159,14 @@ def _opencode_config_diag() -> dict:
             cfg = json.loads(Path(path).read_text())
             row["keys"] = sorted(cfg)[:20] if isinstance(cfg, dict) else type(cfg).__name__
             row["declares_mcp"] = isinstance(cfg, dict) and "mcp" in cfg
+            # A `tools` map is the quiet half. It never touches the `mcp` block, so the server still
+            # connects, `opencode mcp list` still prints a green tick and `opencode_says` still reads
+            # connected — while `"sage-live-read*": false` takes the tools off the agent anyway. That
+            # combination is indistinguishable from a healthy Sage everywhere else on this page.
+            row["declares_tools"] = isinstance(cfg, dict) and (
+                "tools" in cfg
+                or any(isinstance(a, dict) and "tools" in a
+                       for a in (cfg.get("agent") or {}).values()))
         except Exception as e:
             row["error"] = f"{type(e).__name__}: {e}"
         slots.append(row)
@@ -1159,7 +1175,12 @@ def _opencode_config_diag() -> dict:
     # exists, that speaks about MCP, and that OpenCode loads after ours.
     shadow = [r["path"] for r in slots
               if r.get("exists") and not r["ours"] and r.get("declares_mcp")]
-    return {"slots": slots, "shadowing_mcp": shadow}
+    # The same finding for the quieter lever. Kept apart from `shadowing_mcp` because the symptom
+    # differs: a file that takes the MCP BLOCK away shows up as a server nobody holds, and one that
+    # only filters `tools` leaves every status green and the agent empty-handed.
+    shadow_tools = [r["path"] for r in slots
+                    if r.get("exists") and not r["ours"] and r.get("declares_tools")]
+    return {"slots": slots, "shadowing_mcp": shadow, "shadowing_tools": shadow_tools}
 
 
 def _artifacts_diag() -> dict:
