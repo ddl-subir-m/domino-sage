@@ -119,3 +119,29 @@ def test_only_an_alias_is_ever_barred():
     got = _labels([{"sensitivity": ONE, "picked": "gpt-5.4", "kind": "dataset"},
                    {"sensitivity": ONE, "picked": "gpt-5.4", "kind": "datasource"}])
     assert [g["barred"] for g in got] == [False, False]
+
+
+@needs_node
+def test_a_display_name_never_decides_whether_a_model_is_approved():
+    """FOUND IN REVIEW. A `model_llm` row carries the gateway alias under `alias` and its DISPLAY
+    name under `name`, and the approved set holds aliases. The chip used to judge on the label it
+    was about to draw, so an alias shown as "Opus 4.6" read as unapproved while `opus` was in the
+    group — and the chip then replaced a perfectly good label with a model that was not going to
+    run, with no notice to correct it because nothing had actually switched.
+
+    The picker beside it has always keyed on `option.alias`. This holds the chip and the rail to it.
+    """
+    got = _labels([{"sensitivity": ONE, "picked": "opus", "shown": "Opus 4.6"}])[0]
+    assert got["approved"] is True
+    assert got["label"] == "Opus 4.6", "an approved Alias keeps the name its row shows"
+    assert got["barred"] is False, "and the rail must not mark it either"
+
+
+@needs_node
+def test_a_barred_alias_is_still_barred_under_a_friendly_display_name():
+    """The other direction of the same mismatch, which is the one that would leak: a display name
+    must not be able to sneak a model past the whitelist."""
+    got = _labels([{"sensitivity": ONE, "picked": "gpt-5.4", "shown": "opus"}])[0]
+    assert got["approved"] is False
+    assert got["label"] == "opus", "it moved to the one approved model, not to the label"
+    assert got["barred"] is True

@@ -248,9 +248,12 @@ window.SW = window.SW || {};
     // The chip names what will RUN, not what was picked (ADR-0043). The pick is kept underneath and
     // comes back when the declaration goes, the way the per-turn mode pin leaves the standing mode
     // alone — but while the lock holds, the label a person reads has to be true.
-    // `true`: this chip is drawn under `!showMode`, so the turn behind it is a Chat turn, which
-    // the router pins to the sovereign Ask slot rather than routing by the build mode.
-    const modelLabel = SW.util.lockedLabel(sensitivity, pickedLabel, true);
+    // Judged on `effectiveModel` — the gateway alias, which is the space `approved` is in — and
+    // DISPLAYED as `pickedLabel`, which is the row's `display_name or name` and can differ. The menu
+    // below has always keyed on `option.alias`; this used to key on the label and so could mark an
+    // approved Alias barred. `true`: this chip is drawn under `!showMode`, so the turn behind it is
+    // a Chat turn, which the router pins to the sovereign Ask slot rather than the build mode.
+    const modelLabel = SW.util.lockedLabel(sensitivity, effectiveModel, pickedLabel, true);
     const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
@@ -881,9 +884,9 @@ window.SW = window.SW || {};
                 // so it carries the reason on hover as well as the name (ADR-0043).
                 {
                   size: 'small',
-                  title: lockedHere && pickedLabel !== modelLabel
-                    ? SW.util.lockReason(sensitivity, pickedLabel)
-                    : undefined,
+                  // Same alias the menu rows are judged and explained by, so the chip's hover and
+                  // the row's hover cannot say different things about one Alias.
+                  title: barredModel(effectiveModel) ? lockNote(effectiveModel) : undefined,
                 },
                 h(Space, { size: 4 }, modelLabel, h(DownOutlined, { style: { fontSize: 9 } }))
               )

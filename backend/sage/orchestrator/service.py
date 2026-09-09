@@ -12867,10 +12867,10 @@ class Orchestrator:
         """
         if approved is None:
             return None
-        state = replace(project.control.snapshot(),
-                        chat_thread_id="unarmed" if chat else None,
-                        approved_models=approved.names, approved_order=approved.order)
         try:
+            state = replace(project.control.snapshot(),
+                            chat_thread_id="unarmed" if chat else None,
+                            approved_models=approved.names, approved_order=approved.order)
             return llm_router.nearest_approved(state, project.shim.catalog)
         except Exception:
             log.exception("sensitivity: couldn't work out where the lock moves a barred turn to")

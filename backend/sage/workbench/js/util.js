@@ -138,10 +138,14 @@ window.SW = window.SW || {};
     // bound this Alias deliberately, an administrator can still approve it, and a row that vanished
     // would leave nobody anything to act on. `lockReason` is the sentence, unchanged from the one
     // the picker row carries, so the two cannot drift.
+    // `alias` before `name`: a `model_llm` row carries the gateway alias under `alias` and its
+    // DISPLAY name under `name`, and `approved` holds aliases. Asking with the display name marks an
+    // approved Alias barred wherever the two differ — the exact inverse of the defect this was added
+    // to fix, and the rail and the picker disagreeing about one Binding all over again.
     BARRED_MARK: 'not approved',
     isBarred(sensitivity, resource) {
-      return !!(resource && resource.kind === 'model_llm'
-        && SW.util.isLocked(sensitivity) && !SW.util.isApproved(sensitivity, resource.name));
+      return !!(resource && resource.kind === 'model_llm' && SW.util.isLocked(sensitivity)
+        && !SW.util.isApproved(sensitivity, resource.alias || resource.name));
     },
 
     // What the model chip says while the lock holds. FOUND IN LIVE QA (2026-09-09): the chip went
@@ -170,8 +174,16 @@ window.SW = window.SW || {};
 
     // Silence is not an option here: a wrong name and a dismissible correction is the worst of the
     // three, and a blank chip is the second worst.
-    lockedLabel(sensitivity, name, chat) {
-      if (SW.util.isApproved(sensitivity, name)) return name;
+    //
+    // TWO names, and they are in different spaces. `alias` is what the gateway is called — the space
+    // `approved` and every routing decision live in — and `shown` is what the row displays, which
+    // for a `model_llm` Resource is `display_name or name` and can differ. Judging on the displayed
+    // one marks an approved Alias barred, which is worse here than anywhere else: the chip then
+    // replaces a perfectly good label with a model that is NOT going to run, and no notice is drawn
+    // to correct it because nothing was actually switched. The menu beside it has always keyed on
+    // `option.alias`; this is the same rule, said in the one place that had drifted from it.
+    lockedLabel(sensitivity, alias, shown, chat) {
+      if (SW.util.isApproved(sensitivity, alias)) return shown || alias;
       return SW.util.lockedRunsOn(sensitivity, chat) || SW.brand.text('Approved model');
     },
 

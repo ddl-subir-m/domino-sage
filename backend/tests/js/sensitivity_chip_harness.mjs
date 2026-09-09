@@ -34,13 +34,19 @@ vm.runInContext(fs.readFileSync(ROOT + 'store.js', 'utf8'), sandbox, { filename:
 vm.runInContext(fs.readFileSync(ROOT + 'util.js', 'utf8'), sandbox, { filename: 'util.js' });
 
 const out = (spec.cases || []).map((c) => ({
+  // `c.picked` is the gateway ALIAS and `c.shown` the label a row displays. Two spaces, fed in
+  // separately on purpose: feeding one string as both is what let a name-space bug live under
+  // this harness — every helper agreed because every helper was asked the same word.
   // `true` — the chip under test is the Chat composer's, which is where `lockedLabel` is drawn
   // (`!showMode` in composer.js). Build's chip names its pinned slot directly.
-  label: sandbox.SW.util.lockedLabel(c.sensitivity, c.picked, true),
+  label: sandbox.SW.util.lockedLabel(c.sensitivity, c.picked, c.shown, true),
   approved: sandbox.SW.util.isApproved(c.sensitivity, c.picked),
   locked: sandbox.SW.util.isLocked(c.sensitivity),
   // The rail's mark for the same fact the chip and the picker draw, so a test can hold the three
-  // of them to one answer rather than to three that merely look alike.
-  barred: sandbox.SW.util.isBarred(c.sensitivity, { kind: c.kind || 'model_llm', name: c.picked }),
+  // of them to one answer rather than to three that merely look alike. Carries both names, the way
+  // a real `model_llm` row does.
+  barred: sandbox.SW.util.isBarred(c.sensitivity, {
+    kind: c.kind || 'model_llm', alias: c.picked, name: c.shown || c.picked,
+  }),
 }));
 console.log(JSON.stringify(out));
