@@ -742,7 +742,7 @@ _SECRET_SHAPED = re.compile(r"[A-Za-z0-9_\-]{32,}")
 _NEVER_REACHED = re.compile(
     r"flight|grpc|failed to connect to all addresses|connection refused|deadline exceeded|"
     r"socket closed|transport is closing",
-    re.I,
+    re.IGNORECASE,
 )
 # Backstop for a message this did not classify: a store error that happens to quote a host. Kept
 # separate from the secret rule so the two reasons stay legible.

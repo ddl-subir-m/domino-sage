@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import ClassVar
 
 from sage.orchestrator.service import Orchestrator
 from sage.resources.provider import DataSource, FakeResourceProvider, SampleRows
-from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
 from .fake_opencode import FakeOpenCode, Turn
@@ -184,7 +184,7 @@ class ReadingOpenCode(FakeOpenCode):
     """
 
     orch = None
-    args: dict = {}
+    args: ClassVar[dict] = {}
 
     def send_prompt(self, session_id, text, model=None, agent=None, attachments=None, chat=False):
         m = re.search(r"Read token: (lrt_[A-Za-z0-9_-]+)", text)

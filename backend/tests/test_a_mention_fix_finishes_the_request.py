@@ -169,7 +169,7 @@ def _fix(entry: dict, **step) -> dict:
     out = subprocess.run(
         ["node", str(_HARNESS)],
         input=json.dumps([{"fixMention": entry, **ON, **step}]),
-        capture_output=True, text=True, timeout=60)
+        capture_output=True, text=True, timeout=60, check=False)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])[-1]
 

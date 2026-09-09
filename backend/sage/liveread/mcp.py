@@ -138,7 +138,8 @@ def handle(message: dict, *, run: Callable[[str, dict], str]) -> dict | None:
 
     try:
         text = run(str(name), args)
-    except Exception as e:  # noqa: BLE001 — the assistant reads this, so nothing may escape as a 500.
+    # Broad on purpose: the assistant reads this, so nothing may escape as a 500.
+    except Exception as e:
         return _result(mid, {
             "content": [{"type": "text", "text": str(e)}],
             "isError": True,

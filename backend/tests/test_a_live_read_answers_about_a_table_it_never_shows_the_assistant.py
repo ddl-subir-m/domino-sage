@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
-from sage.liveread import result, run
+from sage.liveread import run
 
 
 @dataclass
@@ -23,15 +22,16 @@ class FakeRows:
 
 def turn_for(tmp_path, **kw):
     seen = object()
-    base = dict(
-        thread_id="thr_a",
-        examples_dir=tmp_path / "examples" / "thr_a",
-        bound={"datasource": ("DWH",)},
-        chips={"dataset": ("gong-exports",)},
-        source_for=lambda n: seen if n == "DWH" else None,
-        sample_rows=lambda s, db, sc, t, lim: FakeRows(["ID", "TITLE"], [[i, f"call {i}"] for i in range(lim)]),
-        binding_for={"DWH": "bnd_1"},
-    )
+    base = {
+        "thread_id": "thr_a",
+        "examples_dir": tmp_path / "examples" / "thr_a",
+        "bound": {"datasource": ("DWH",)},
+        "chips": {"dataset": ("gong-exports",)},
+        "source_for": lambda n: seen if n == "DWH" else None,
+        "sample_rows": lambda s, db, sc, t, lim: FakeRows(
+            ["ID", "TITLE"], [[i, f"call {i}"] for i in range(lim)]),
+        "binding_for": {"DWH": "bnd_1"},
+    }
     base.update(kw)
     return run.Turn(**base)
 

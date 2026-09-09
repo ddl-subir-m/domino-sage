@@ -44,8 +44,8 @@ def _run(caplog, tools: tuple[str, ...], thread: str = "thr_1") -> list[str]:
 def test_a_turn_that_was_offered_live_read_names_both_tools(caplog):
     said = _run(caplog, _LIVE_READ)
 
-    assert said == ["chat tools: live read sage-live-read_live_read_files, "
-                    "sage-live-read_live_read_table"]
+    assert said == [("chat tools: live read sage-live-read_live_read_files, "
+                     "sage-live-read_live_read_table")]
 
 
 def test_a_turn_that_was_offered_none_says_so_rather_than_nothing(caplog):

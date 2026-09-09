@@ -41,9 +41,9 @@ from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
+from ..gateway.client import GatewayClient
 from ..liveread import mcp as live_mcp
 from ..liveread import run as live_read
-from ..gateway.client import GatewayClient
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
 from ..preview.supervisor import ViteSupervisor
@@ -137,8 +137,13 @@ from ..router.model_control import ModelControl
 from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, signing_slot
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
-from ..workspace.manager import (ProjectRecord, Workspace, WorkspaceManager,
-                                 ensure_ignore_line, remove_ignore_line)
+from ..workspace.manager import (
+    ProjectRecord,
+    Workspace,
+    WorkspaceManager,
+    ensure_ignore_line,
+    remove_ignore_line,
+)
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
@@ -7258,11 +7263,11 @@ class Orchestrator:
             f"Write Artifacts under examples/{thread_id}/.",
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.
-            f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
-            "sage-live-read_ tool call. Use those tools to look at a bound table or Dataset rather "
-            "than telling the person you cannot see their data. If they are not in your tool list "
-            "this turn, query the data with Python instead — a missing tool is never a reason to "
-            "tell someone you cannot see their data.",
+            (f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
+             "sage-live-read_ tool call. Use those tools to look at a bound table or Dataset rather "
+             "than telling the person you cannot see their data. If they are not in your tool list "
+             "this turn, query the data with Python instead — a missing tool is never a reason to "
+             "tell someone you cannot see their data."),
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]
@@ -10595,7 +10600,7 @@ class Orchestrator:
                 #
                 # The person is told what happened and what to do. The gateway belongs in the log
                 # and in the retry note the agent reads, not on this line.
-                message = (f"This build stopped twice in the same step. The model stopped "
+                message = ("This build stopped twice in the same step. The model stopped "
                            "responding. Pick a different model and try again.")
                 if owns_turn and is_approval:
                     message += brand.text(

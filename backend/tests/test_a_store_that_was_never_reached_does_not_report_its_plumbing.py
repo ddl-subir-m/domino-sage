@@ -18,6 +18,9 @@ message carrying one never reached the store.
 
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 
 from sage.resources.provider import (
@@ -40,8 +43,12 @@ def _source() -> DataSource:
 
 
 def _read_raising(monkeypatch, exc: Exception) -> str:
-    """Fail where the real one fails: inside `.query()`, which is the Flight hop."""
-    import domino_data.data_sources as ds
+    """Fail where the real one fails: inside `.query()`, which is the Flight hop.
+
+    The module is faked rather than imported. `domino_data` is the `domino` extra, which no test
+    installs (see backend/pyproject.toml), so importing it for real passes on a laptop that once
+    synced that extra and fails in CI.
+    """
 
     class Boom:
         def get_datasource(self, name):
@@ -50,7 +57,10 @@ def _read_raising(monkeypatch, exc: Exception) -> str:
         def query(self, sql):
             raise exc
 
-    monkeypatch.setattr(ds, "DataSourceClient", Boom)
+    ds = types.ModuleType("domino_data.data_sources")
+    ds.DataSourceClient = Boom
+    monkeypatch.setitem(sys.modules, "domino_data", types.ModuleType("domino_data"))
+    monkeypatch.setitem(sys.modules, "domino_data.data_sources", ds)
     p = DominoResourceProvider.__new__(DominoResourceProvider)
     with pytest.raises(ResourceUnavailable) as caught:
         DominoResourceProvider._query(p, _source(), 'SELECT * FROM "DWH"."MARTS"."GONG__CALLS"')

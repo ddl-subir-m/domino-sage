@@ -131,7 +131,7 @@ def test_the_opencode_log_is_served_whole_and_filtered(monkeypatch):
     assert r.text == "message=mcp server connected name=sage-live-read"
 
 
-def test_no_match_says_so_rather_than_returning_blank(monkeypatch):
+def test_no_opencode_log_match_says_so_rather_than_returning_blank(monkeypatch):
     """An empty page reads like a broken endpoint. Here the empty answer IS the finding — no MCP
     line at all is what "OpenCode never dialled it" looks like."""
     r = _oc_client(["message=init"], monkeypatch).get("/api/diag/opencode", params={"q": "mcp"})

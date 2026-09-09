@@ -23,7 +23,7 @@ from sage.orchestrator import app as app_module
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def do_POST(self):  # noqa: N802 — BaseHTTPRequestHandler's own spelling
+    def do_POST(self):  # BaseHTTPRequestHandler's own spelling
         self.rfile.read(int(self.headers.get("content-length") or 0))
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"tools": [
             {"name": "live_read_table"}, {"name": "live_read_files"}]}}).encode()
