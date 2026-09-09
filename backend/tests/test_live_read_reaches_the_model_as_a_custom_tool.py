@@ -448,3 +448,73 @@ def test_no_log_is_an_empty_list_not_a_crash(monkeypatch):
     monkeypatch.setattr(app_module.orchestrator, "_oc_log_path", None, raising=False)
 
     assert app_module.orchestrator.opencode_log_about_tools() == []
+
+
+# --- which OpenCode is actually running -----------------------------------------------------------
+#
+# A tool list is a version fingerprint. Production hands the model `edit`, `write`, `question` AND
+# `apply_patch` together and no `task`; on a bench, 1.18.4 and 1.18.30 both swap `apply_patch` IN
+# PLACE OF `edit`/`write` and both include `task` — with the real 24 KB config, the real agent, a
+# nested git session directory and the real request path, where the custom tools DO arrive. The
+# driver spawns `npx opencode serve`, so the pin in the image says what was installed, not what npx
+# resolved. That had gone unasked for a day.
+
+
+class _Cli:
+    def __init__(self, said="opencode 1.18.4"):
+        self.said = said
+        self.asked = None
+
+    def url(self):
+        return "http://127.0.0.1:1"
+
+    def cli(self, args, cwd=None, timeout_s=30.0):
+        self.asked = args
+        return self.said
+
+
+def test_it_asks_the_binary_rather_than_trusting_the_pin(monkeypatch):
+    cli = _Cli()
+    monkeypatch.setattr(app_module.orchestrator, "_oc_server", cli, raising=False)
+
+    out = app_module.orchestrator.opencode_version()
+
+    assert cli.asked == ["--version"]
+    assert out["says"] == "opencode 1.18.4"
+    assert out["matches_pin"] is True
+
+
+def test_a_version_that_is_not_the_pin_says_so_plainly(monkeypatch):
+    """The whole point. `matches_pin: false` is the finding, and it must not need arithmetic."""
+    monkeypatch.setattr(app_module.orchestrator, "_oc_server", _Cli("opencode 1.19.7"),
+                        raising=False)
+
+    out = app_module.orchestrator.opencode_version()
+
+    assert out["matches_pin"] is False
+    assert out["pinned"] == "1.18.4"
+
+
+def test_it_names_the_binary_npx_resolved(monkeypatch):
+    """`npx opencode` prefers a local `node_modules/.bin` over the globally installed pin, so the
+    path is half the answer whenever the version is a surprise."""
+    monkeypatch.setattr(app_module.orchestrator, "_oc_server", _Cli(), raising=False)
+    monkeypatch.setattr("sage.orchestrator.service.shutil.which", lambda _n: "/usr/local/bin/opencode")
+
+    assert app_module.orchestrator.opencode_version()["binary"] == "/usr/local/bin/opencode"
+
+
+def test_a_binary_that_will_not_answer_is_not_an_error_page(monkeypatch):
+    class _Boom(_Cli):
+        def cli(self, *a, **k):
+            raise RuntimeError("no such file")
+
+    monkeypatch.setattr(app_module.orchestrator, "_oc_server", _Boom(), raising=False)
+
+    assert app_module.orchestrator.opencode_version()["ok"] is False
+
+
+def test_no_server_is_not_an_error_page_either(monkeypatch):
+    monkeypatch.setattr(app_module.orchestrator, "_oc_server", None, raising=False)
+
+    assert app_module.orchestrator.opencode_version()["asked"] is False

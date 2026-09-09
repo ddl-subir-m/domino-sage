@@ -1417,6 +1417,7 @@ def diag() -> JSONResponse:
         # gateway. With any one missing, "never installed", "installed but never loaded" and
         # "loaded but never offered" are the same blank.
         "custom_tools": {**_custom_tools_diag(),
+                         "opencode_version": orchestrator.opencode_version(),
                          "opencode_holds": orchestrator.opencode_tool_registry(_chat_work_dir()),
                          "opencode_log": orchestrator.opencode_log_about_tools()},
         "project": None if p is None else {

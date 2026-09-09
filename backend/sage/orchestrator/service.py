@@ -19,6 +19,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import tempfile
 import threading
 import time
@@ -7196,6 +7197,31 @@ class Orchestrator:
             return {"asked": True, "ok": True, "url": url, "servers": r.json()}
         except Exception as e:
             return {"asked": True, "ok": False, "url": url, "error": f"unreadable reply: {e}"}
+
+    def opencode_version(self) -> dict:
+        """Which OpenCode is actually running, asked of the binary rather than assumed.
+
+        The driver spawns `npx opencode serve`, and `opencode-ai@1.18.4` being pinned in the image
+        is a statement about what was INSTALLED, not about what npx resolved at boot. That has been
+        taken on trust for a day while the evidence quietly disagreed: production hands the model
+        `edit`, `write`, `question` and `apply_patch` together and no `task`, and no configuration
+        of 1.18.4 or 1.18.30 on a bench produces that set — they swap `apply_patch` IN PLACE OF
+        `edit`/`write`, and they include `task`. A tool list is a version fingerprint, and this one
+        does not match the version we believe we are running.
+
+        Never raises. A diagnostic must never be the thing that breaks the diagnostics page.
+        """
+        server = self._oc_server
+        if server is None:
+            return {"asked": False, "why": "the OpenCode server is not running"}
+        try:
+            said = server.cli(["--version"], timeout_s=20.0).strip()
+        except Exception as e:
+            return {"asked": True, "ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"asked": True, "ok": True, "says": said[:200],
+                "binary": shutil.which("opencode") or "",
+                "pinned": "1.18.4",
+                "matches_pin": "1.18.4" in said}
 
     def opencode_tool_registry(self, directory: str | None = None) -> dict:
         """The tool list OPENCODE holds for an instance, asked of OpenCode.
