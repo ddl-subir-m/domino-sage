@@ -1077,16 +1077,65 @@ window.SW = window.SW || {};
     return null;
   }
 
+  function tableIndexKeys(keys) {
+    return keys.length > 0 && keys.every((k) => /^-?\d+$/.test(String(k)));
+  }
+
+  function tableSeriesOfScalars(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value)
+      && Object.keys(value).length > 0
+      && Object.values(value).every((x) => x === null || typeof x !== 'object');
+  }
+
+  // pandas `df.to_json()` with no orient (columns) or `orient="index"`. Neither keeps an array,
+  // so the recoveries that look for `rows` / `data` / `records` / a bare list all fall through and
+  // the card says "This table came through with no rows" under the filename title. The two
+  // orients are transposes of each other: columns names the frame's columns at the top level
+  // with the row index inside; index names the row index at the top level with column names
+  // inside. Numeric-looking keys pick which is which; a date index is columns-orient too.
+  function pandasOrientedTable(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+    const entries = Object.entries(obj).filter(([, v]) => tableSeriesOfScalars(v));
+    if (!entries.length) return null;
+    const objects = Object.values(obj).filter((v) => v && typeof v === 'object' && !Array.isArray(v));
+    if (objects.length !== entries.length) return null;
+    const keys = entries.map(([k]) => k);
+    const values = entries.map(([, v]) => v);
+    const inner0 = Object.keys(values[0]);
+    if (tableIndexKeys(keys) && !tableIndexKeys(inner0)) {
+      return {
+        columns: inner0,
+        rows: values.map((v) => inner0.map((c) => (Object.prototype.hasOwnProperty.call(v, c) ? v[c] : null))),
+      };
+    }
+    const indexKeys = [];
+    const seen = new Set();
+    for (const v of values) {
+      for (const k of Object.keys(v)) {
+        if (!seen.has(k)) {
+          seen.add(k);
+          indexKeys.push(k);
+        }
+      }
+    }
+    return {
+      columns: keys,
+      rows: indexKeys.map((i) => values.map((v) => (Object.prototype.hasOwnProperty.call(v, i) ? v[i] : null))),
+    };
+  }
+
   async function blocksForArtifacts(items) {
     const blocks = [];
     for (const art of items || []) {
       const path = art.path || '';
       const lower = path.toLowerCase();
       if (art.kind === 'chart' || lower.endsWith('.png')) {
-        blocks.push({ type: 'image', title: art.title || art.name, src: fileUrl(path) });
+        blocks.push({ type: 'image', title: art.title || art.name, src: fileUrl(path), path });
       } else if (art.kind === 'table' || lower.endsWith('.table.json')) {
         try {
-          const body = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`).then((r) => r.json());
+          const res = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`);
+          const body = await res.json();
+          if (!res.ok) throw new Error((body && body.error) || res.statusText);
           const data = JSON.parse(body.content || '{}');
           // The contract is `{title, columns, rows}` with a positional array per row. sage-chat
           // misses it two ways, and both showed a chart that plotted fine next to a table that
@@ -1104,7 +1153,7 @@ window.SW = window.SW || {};
           // a wrapper puts its rows under `data`; a turn half-remembering the contract writes
           // `records`. Reading only `rows` left a correct title over an antd table with no
           // columns and no rows — a captioned blank box.
-          const source = bare || ['rows', 'data', 'records'].map((k) => wrapper[k]).find(Array.isArray) || [];
+          let source = bare || ['rows', 'data', 'records'].map((k) => wrapper[k]).find(Array.isArray) || [];
           const head = source[0];
           // `orient="table"` names its columns in a JSON Table Schema `fields` list and nowhere
           // else. Its `index` field is one pandas synthesised, not one of the frame's own.
@@ -1114,10 +1163,17 @@ window.SW = window.SW || {};
           // Only a record row names its columns. Reading them off a positional row would header
           // the table "0", "1", … — worse than the empty header that shape renders today.
           const named = tableColumnList(wrapper.columns);
-          const columns =
+          let columns =
             (named.some(Boolean) ? named : null) ||
             (fields.length ? fields : null) ||
             (head && !Array.isArray(head) ? Object.keys(head) : []);
+          if (!source.length) {
+            const dump = pandasOrientedTable(wrapper);
+            if (dump) {
+              columns = dump.columns;
+              source = dump.rows;
+            }
+          }
           blocks.push({
             type: 'table',
             title: data.title || art.title,

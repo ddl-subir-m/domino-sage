@@ -1439,6 +1439,28 @@ window.SW = window.SW || {};
   }
 
   function ImageBlock({ block }) {
+    const [failed, setFailed] = useState(false);
+    const href = block.src || (block.path
+      ? `./api/project/file/raw?path=${encodeURIComponent(block.path)}` : '');
+    // Same floor as TableBlock: a missing or unreadable file used to be a broken-image icon
+    // sitting on the alt text, which reads as a rendering fault rather than a file that did
+    // not arrive. Offer the file when there is one.
+    if (failed) {
+      return h(
+        'div',
+        { className: 'sw-block-card' },
+        block.title &&
+          h('div', { className: 'sw-block-head' },
+            h('div', { className: 'sw-block-title' }, block.title)),
+        h(
+          'div',
+          { className: 'sw-block-body' },
+          h('div', { className: 'sw-block-sub' }, "This chart didn't load."),
+          href &&
+            h('a', { className: 'sw-block-sub', href }, 'Open the file')
+        )
+      );
+    }
     return h(
       'div',
       { className: 'sw-block-card' },
@@ -1447,7 +1469,9 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-block-body' },
-        h('img', { src: block.src, alt: block.title || '', style: { maxWidth: '100%', display: 'block' } })
+        h('img', { src: block.src, alt: block.title || '',
+                   style: { maxWidth: '100%', display: 'block' },
+                   onError: () => setFailed(true) })
       )
     );
   }

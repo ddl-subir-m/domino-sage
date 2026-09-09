@@ -194,6 +194,41 @@ def test_the_file_api_reads_a_chat_artifact_from_the_root_and_app_code_from_the_
         assert client.get("/api/project/file?path=src/App.tsx").json()["content"] == "// the app\n"
 
 
+# 1×1 transparent PNG. The Thread inlines charts as
+# `<img src="./api/project/file/raw?path=examples/<thread>/….png">`; anything other than these
+# bytes with an image content-type is the broken-image icon over the alt text.
+_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+)
+
+
+def test_the_file_api_serves_a_chat_chart_png_as_an_image(tmp_path: Path, monkeypatch):
+    """A visualisation turn writes a PNG next to the table. The card is an <img> of /file/raw,
+    so a JSON error body, an attachment disposition, or a missing image/* type is a broken
+    icon — which is the other half of the empty-artifact screenshot."""
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as appmod
+
+    orch, _oc, root = _orch(tmp_path)
+    orch.project(start_preview=False)
+    chart = root / "examples" / "thr_a" / "ai_consumption_daily_sample.png"
+    chart.parent.mkdir(parents=True)
+    chart.write_bytes(_PNG)
+
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    with TestClient(appmod.control_app) as client:
+        r = client.get(
+            "/api/project/file/raw?path=examples/thr_a/ai_consumption_daily_sample.png",
+            headers={"Accept-Encoding": "gzip"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.content == _PNG
+        assert r.headers["content-type"].startswith("image/png")
+        assert "attachment" not in (r.headers.get("content-disposition") or "").lower()
+
+
 def test_project_instructions_are_the_projects_and_survive_the_app(tmp_path: Path):
     """Written before there is an app, rendered into every app there turns out to be. The block in
     AGENTS.md is a rendering: the file comes back from the template on Reset, and a second app gets
