@@ -108,11 +108,13 @@ class LlmAlias:
     # sensitivity lock reads them (ADR-0043): an administrator's group is what approves a model for
     # sensitive work, and Sage only ever reads it.
     #
-    # LIVE-VERIFY: whether a NON-admin caller sees this field. It was probed on cloud-dogfood
-    # (2026-09-09) with a `GovernanceAdmin` identity, and the gateway declares no response schema, so
-    # role-conditional redaction is not ruled out. Two things make the unknown safe to ship on: the
-    # membership is also readable in reverse from /api/alias-groups (`approved_aliases` takes either),
-    # and a redaction resolves to an empty approved set, which refuses. It cannot fail open.
+    # VERIFIED present and populated on cloud-dogfood 2026-09-09: `opus` came back carrying
+    # ["FDE_models", "sensitive-approved"]. STILL LIVE-VERIFY for one thing only — whether a
+    # NON-admin caller sees it. That probe used a `GovernanceAdmin` identity and the gateway declares
+    # no response schema, so role-conditional redaction is not ruled out and no non-admin account was
+    # available to settle it. Safe to ship on regardless: membership is also readable in reverse from
+    # /api/alias-groups (`approved_aliases` takes either), and a redaction resolves to an empty
+    # approved set, which refuses. It cannot fail open.
     groups: list[str] = field(default_factory=list)
 
 

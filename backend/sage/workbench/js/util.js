@@ -128,6 +128,22 @@ window.SW = window.SW || {};
       return (sensitivity.approved || []).indexOf(name) !== -1;
     },
 
+    // What the model chip says while the lock holds. FOUND IN LIVE QA (2026-09-09): the chip went
+    // on reading `gpt-5.4` after the lock moved the session to `opus`, and the only thing saying so
+    // was a notice with a "Got it" on it — so once dismissed, the one control a person reads to
+    // know what is running named a model that could not run.
+    //
+    // It does NOT re-implement `llm_router._nearest_approved`. That rule depends on mode and phase,
+    // and a second copy here would be a confident label that is wrong on the turn where it matters.
+    // So it names a model only where there is no rule left to apply — exactly one approved — and
+    // otherwise says that an approved model will run without pretending to know which. Silent about
+    // it is not an option: a wrong name and a dismissible correction is the worst of the three.
+    lockedLabel(sensitivity, name) {
+      if (SW.util.isApproved(sensitivity, name)) return name;
+      const approved = (sensitivity && sensitivity.approved) || [];
+      return approved.length === 1 ? approved[0] : SW.brand.text('Approved model');
+    },
+
     // The Datasets that armed the lock, as a phrase a sentence can hold. The names the creator sees
     // on the rows, so the explanation points at something they can go and look at.
     declaredPhrase(sensitivity) {

@@ -244,7 +244,11 @@ window.SW = window.SW || {};
     const askAlias = catalogAsk || '';
     const effectiveModel = (model && model !== 'auto') ? model : askAlias;
     const activeAlias = aliases.find((a) => a.alias === effectiveModel);
-    const modelLabel = activeAlias ? (activeAlias.name || activeAlias.alias) : (effectiveModel || 'Ask');
+    const pickedLabel = activeAlias ? (activeAlias.name || activeAlias.alias) : (effectiveModel || 'Ask');
+    // The chip names what will RUN, not what was picked (ADR-0043). The pick is kept underneath and
+    // comes back when the declaration goes, the way the per-turn mode pin leaves the standing mode
+    // alone — but while the lock holds, the label a person reads has to be true.
+    const modelLabel = SW.util.lockedLabel(sensitivity, pickedLabel);
     const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
@@ -868,7 +872,14 @@ window.SW = window.SW || {};
               { menu: modelMenu, trigger: ['click'], placement: 'topLeft' },
               h(
                 Button,
-                { size: 'small' },
+                // The chip is now the only place the switch is stated once the notice is dismissed,
+                // so it carries the reason on hover as well as the name (ADR-0043).
+                {
+                  size: 'small',
+                  title: lockedHere && pickedLabel !== modelLabel
+                    ? SW.util.lockReason(sensitivity, pickedLabel)
+                    : undefined,
+                },
                 h(Space, { size: 4 }, modelLabel, h(DownOutlined, { style: { fontSize: 9 } }))
               )
             ),

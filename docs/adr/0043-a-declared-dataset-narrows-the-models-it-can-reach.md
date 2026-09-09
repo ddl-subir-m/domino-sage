@@ -202,3 +202,41 @@ lock, a sensitive-tag upload, a sample-row tick and a vendor-model publish refus
 its pieces are lifted here almost unchanged — the case-insensitive tag match and the publish
 problems — and the rest is not: this gate reads an administrator's group instead of deriving a
 sovereign tier, and it does not touch sample rows at all.
+
+## What running it against a real deployment changed
+
+Verified end to end on cloud-dogfood, 2026-09-09: a Dataset tagged `sensitive`, an alias group
+`sensitive-approved` holding `opus` and `haiku`, and a Project binding `gpt-5.4`. The declaration
+read, the turn locked to `opus`, and the publish refused with `sensitive-rows-to-vendor-model`.
+
+**Approved means approved AND reachable.** The group named two models and only one of them was on
+this caller's `/v1/models`. The first implementation took the group's word for both, which put
+`haiku` in the approved set — and because the router breaks ties by sorting, `haiku` is the one it
+would have chosen, on a model the gateway then refuses. A designed refusal
+(`no-approved-model-access`, which exists precisely for this) would have arrived as a dead turn with
+a permission error instead.
+
+So both sources are filtered through the permission-filtered alias listing, and the reverse source
+contributes only members that listing already holds. The rule is worth stating on its own, because
+it is not obvious from either source alone: `/api/aliases` lists every registration deployment-wide,
+`/api/alias-groups` lists membership, and NEITHER of them knows what this caller may call. Only
+`/v1/models` does, and it is what `join_aliases` has always intersected against.
+
+This is also the answer to why `members` travels beside `names` on `ApprovedModels`. The count is
+the group's declaration and the set is what survives permissions; when they differ and the set is
+empty, that gap IS the `no-approved-model-access` message, and neither number can produce it alone.
+
+**The reverse source is a hedge against a redacted field, never a second opinion on permissions.**
+That distinction was implicit before and is now the reason a test exists.
+
+**The LIVE-VERIFY narrows but does not close.** `groups` is returned and populated on `/api/aliases`
+— `opus` came back as `["FDE_models", "sensitive-approved"]` — so the forward source is real rather
+than theoretical. It is still only proven for a `GovernanceAdmin` identity, because no non-admin
+account was available to test with. The hedge stays for that reason, and the note stays with it.
+
+**A tag write needs a snapshot, and the fallback earns its place.** `tag_dataset_sensitive` ran
+against the Project's default Dataset, which carried `snapshotIds` and no `latestSnapshotId` — so
+the two-key fallback carried over from 685ebf3 is what found the snapshot to tag. Worth recording
+because the Domino UI would not let the same person do this: it asks for a snapshot they had not
+taken, while the API tags the one the Dataset already has. Sage doing it for them is the workflow
+this ADR chose, and the reason it chose it turned out to be more concrete than the argument made.
