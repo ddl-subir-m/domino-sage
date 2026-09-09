@@ -2076,6 +2076,58 @@ def _chat_error_text(err: object, attachments: list[dict] | None = None) -> str:
     return _guardrail_sentence(text, attachments) or " ".join(text.split())[:_CHAT_ERROR_MAX]
 
 
+_TOOL_DETAIL_MAX = 100
+
+
+def _tool_path(payload: dict) -> str:
+    """The file a call is against, untruncated, or "" for a call that names none.
+
+    Kept beside the label rather than parsed back out of it: the label is written to be read by a
+    person and clipped to fit a sentence, and a clipped path cannot be opened.
+    """
+    inp = payload.get("input")
+    if not isinstance(inp, dict):
+        return ""
+    for k in ("filePath", "file_path", "path"):
+        if isinstance(inp.get(k), str) and inp[k].startswith("/"):
+            return inp[k]
+    return ""
+
+
+def _mount_probe(path: str, timeout_s: float = 5.0) -> str:
+    """Can THIS process open that file, and how fast?
+
+    For the one question a stalled turn cannot answer about itself. A `read` left open for four
+    minutes on a 12KB file has two unrelated explanations that look identical from here: the mount
+    it lives on is not answering, or the tool call never reached OpenCode at all because the gateway
+    cut the stream part-way through the arguments — the same cut that arrives as "Invalid JSON input
+    for ... tool call write" when it lands on a write instead. One of those is Domino's to fix and
+    the other is Sage's, and guessing between them cost an evening.
+
+    One byte, because the question is whether the mount answers, not what is in the file.
+
+    The open runs on a daemon thread that is never joined past the timeout: a read blocked in the
+    kernel does not come back for a signal either, so the only way to stop waiting for one is to
+    stop waiting and leave it. A leaked thread per stall is cheaper than a diagnostic that hangs
+    the turn it was meant to explain.
+    """
+    said: list[str] = []
+
+    def _open() -> None:
+        started = time.monotonic()
+        try:
+            with open(path, "rb") as fh:
+                fh.read(1)
+            said.append(f"opened in {time.monotonic() - started:.1f}s")
+        except Exception as e:
+            said.append(f"{type(e).__name__}: {e}")
+
+    th = threading.Thread(target=_open, daemon=True)
+    th.start()
+    th.join(timeout_s)
+    return said[0] if said else f"did not answer in {timeout_s:.0f}s"
+
+
 def _tool_label(payload: dict) -> str:
     """What to call an open tool call in a stop message and in the log.
 
@@ -2095,12 +2147,23 @@ def _tool_label(payload: dict) -> str:
     # `filePath` is here because leaving it out cost a whole run. A stall reported `still open:
     # read` and stopped exactly where it started being useful — which file `read` had been blocked
     # on for four minutes is the entire question, and it was one key away.
-    detail = payload.get("command")
+    detail = str(payload.get("command") or "")
+    is_path = False
     source = payload.get("input")
     if not detail and isinstance(source, dict):
-        detail = next((source[k] for k in ("command", "filePath", "file_path", "path", "pattern")
-                       if isinstance(source.get(k), str) and source[k]), "")
-    detail = " ".join(str(detail or "").split())[:60]
+        for k in ("command", "filePath", "file_path", "path", "pattern"):
+            if isinstance(source.get(k), str) and source[k]:
+                detail, is_path = source[k], k in ("filePath", "file_path", "path")
+                break
+    detail = " ".join(detail.split())
+    if len(detail) > _TOOL_DETAIL_MAX:
+        # A path is clipped from the MIDDLE, a command from the end, because the informative half is
+        # at opposite ends of the two. Clipping everything from the end put a Dataset mount path in
+        # the log as `/mnt/data/sage-subir-mansukhani-66a821b1-2/support_tickets.c` — which reads as
+        # a C file, names the wrong thing, and matches nothing anyone greps for. A command is the
+        # other way round: its verb is the first word, and its tail is arguments.
+        head = _TOOL_DETAIL_MAX // 3 if is_path else _TOOL_DETAIL_MAX - 1
+        detail = detail[:head] + "…" + detail[len(detail) - (_TOOL_DETAIL_MAX - head - 1):]
     return f"{tool} ({detail})" if detail else tool
 
 
@@ -7347,6 +7410,9 @@ class Orchestrator:
             # the name (the completion comes back with tool=""), so it has to be remembered here or
             # it is gone.
             running_tools: dict[str, str] = {}
+            # The FILE each open call is against, when it has one. Only used when a turn dies with
+            # a call still open, and only to ask whether that file opens — see `_mount_probe`.
+            running_paths: dict[str, str] = {}
             while True:
                 if project.stop_requested:
                     # Cleared by the turn that consumes it. Build clears it in its own handle_stop;
@@ -7378,6 +7444,12 @@ class Orchestrator:
                                 f"quiet for {now - last_activity:.0f}s" if quiet
                                 else f"hit the {_CHAT_TURN_MAX_S:.0f}s ceiling",
                                 f"; still open: {open_now}" if open_now else "; nothing open")
+                    # Which of the two it was. A turn that stops with a read open has said nothing
+                    # about WHY, and the two candidates want opposite fixes: a Dataset mount that
+                    # has stopped answering is Domino's, and a tool call the gateway cut in flight
+                    # is Sage's. The file is right here and opening it costs a second, so ask.
+                    for stuck in sorted(set(running_paths.values())):
+                        log.warning("chat: %s — %s", stuck, _mount_probe(stuck))
                     try:
                         client.interrupt(sid)
                     except Exception:
@@ -7464,6 +7536,16 @@ class Orchestrator:
                         said = _chat_error_text(ev.payload.get("error"), mentioned)
                         if said:
                             step_error, step_reason = said, recall.reason_key(raw)
+                            # Words that came BEFORE the failure are not an answer to it. `answered`
+                            # gates the report at the end of the turn, and a model narrates what it
+                            # is about to do — "Now I have everything I need, let me build the
+                            # dashboard" is text, so the turn counted itself answered, the write
+                            # died on a cut stream, and the error was dropped on a `done ok:True`.
+                            # On screen that is a promise with nothing under it and no way to tell
+                            # it from a finished turn. Reset here so the question becomes "did
+                            # anything arrive AFTER this went wrong" — a step that fails and is
+                            # retried still says something afterwards and still stays quiet.
+                            answered = False
                         log.warning("chat: step failed — %s", ev.payload.get("error"))
                         # A turn refused at its first step may never register as running, and
                         # `finished` needs to have seen it run. Without this the loop cannot end on
@@ -7477,8 +7559,11 @@ class Orchestrator:
                         call = str(ev.payload.get("call_id") or "") or "?"
                         if str(ev.payload.get("status") or "") == "called":
                             running_tools[call] = _tool_label(ev.payload)
+                            if path := _tool_path(ev.payload):
+                                running_paths[call] = path
                         else:
                             running_tools.pop(call, None)
+                            running_paths.pop(call, None)
                     live = _chat_live_event(ev)
                     if live is not None:
                         answered = answered or bool(live.get("text"))
@@ -7551,6 +7636,7 @@ class Orchestrator:
                     # part still pending IS a call in flight. Read fresh every poll, since nothing
                     # here reports the end of one.
                     running_tools = {"transcript": "a step"} if polled_running else {}
+                    running_paths.clear()  # the transcript names no call, so it names no file
                 else:
                     # The stream took over. Its own call ids run the set from here, and the key the
                     # transcript left behind would otherwise hold the turn on the long window.

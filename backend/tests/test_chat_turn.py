@@ -1554,6 +1554,30 @@ def test_a_refused_step_says_what_was_refused(tmp_path: Path):
     assert any(e.get("type") == "error" for e in orch.get_thread(tid)["history"])
 
 
+def test_a_step_that_fails_after_the_model_says_what_it_will_do_is_still_reported(tmp_path: Path):
+    """The narration is not the answer. A model says what it is about to do before it does it, and
+    that text was enough to mark the turn answered — so a write that then died on a cut gateway
+    stream was dropped on a `done ok:True`, and the Thread ended on a promise with nothing under it.
+    Indistinguishable, on screen, from a turn that finished."""
+    promised = [
+        _live("message", delta="Now I have everything I need. Let me build the dashboard.",
+              final=False),
+        _live("error", error={"data": {"message": "Invalid JSON input for openai-chat tool call "
+                                                  "write"}}),
+    ]
+
+    def client(ws):
+        return StreamingFake(ws, [Turn(text="")], promised, 0.0)
+
+    orch, _ = _orch(tmp_path, client=client)
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "chart the totals in @transformed_cc_transactions.csv"))
+
+    err = next(e for e in out if e["type"] == "error")
+    assert "Invalid JSON input" in err["message"]
+    assert next(e for e in out if e["type"] == "done")["ok"] is False
+
+
 def test_a_refused_step_the_turn_recovers_from_is_not_reported(tmp_path: Path):
     """One step failing is not the turn failing. If an answer arrives after it, the answer is the
     turn — the frame was a retry, and saying anything about it would be noise."""
