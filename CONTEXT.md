@@ -586,8 +586,8 @@ _Kind_: name
 _Avoid_: external model, third-party model, public model
 
 **Declared Dataset**:
-A [[Dataset]] carrying the sensitivity tag, which is what makes Sage narrow the models it will use
-while that Dataset is in scope ([ADR-0043](docs/adr/0043-a-declared-dataset-narrows-the-models-it-can-reach.md)).
+A [[Dataset]] carrying any of the sensitivity tags, which is what makes Sage narrow the models it
+will use while that Dataset is in scope ([ADR-0043](docs/adr/0043-a-declared-dataset-narrows-the-models-it-can-reach.md)).
 A declaration, never a detection: the tag is freeform and self-service, so Sage honours it and never
 claims to have found it. A [[Data Source]] cannot be one — no classification field exists to read.
 _Kind_: name

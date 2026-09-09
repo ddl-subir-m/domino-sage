@@ -73,6 +73,22 @@ def _lock_sensitivity(
     )
 
 
+def nearest_approved(state: SessionState, catalog: ModelCatalog) -> str:
+    """Where the lock moves a turn whose model is barred (ADR-0043). Public so a label can say it.
+
+    NOT the same question as `resolve`. `resolve` answers "what runs", which for an approved pick is
+    the pick itself — so a caller that wanted the fallback and asked `resolve` gets the pick back and
+    remembers it, and then names that stale model the moment the pick changes to a barred one. This
+    reads no pick at all, which is why it is safe to hold across one.
+
+    The mode and the phase it DOES read: `_lock_preferences` prefers the sovereign slot for them.
+
+    Raises on an empty or absent approved set, for the reason `_lock_sensitivity` does — asking where
+    a lock moves a turn to, when nothing is approved, has no answer that is not a refusal.
+    """
+    return _nearest_approved(state, catalog, state.approved_models or frozenset())
+
+
 def _nearest_approved(
     state: SessionState, catalog: ModelCatalog, approved: frozenset[str]
 ) -> str:
@@ -80,11 +96,24 @@ def _nearest_approved(
 
     The sovereign slots are the preference, not the authority: they are already assignable and
     preflighted, so an administrator who set them gets the model they meant, while the approved set
-    from the gateway group is still what decides. When no sovereign slot is approved, any approved
-    alias beats refusing a turn a person is waiting on, and sorting makes that pick the same one
-    every time rather than whatever the gateway happened to list first.
+    from the gateway group is still what decides.
+
+    When no sovereign slot is approved, the administrator's own ordering of the group decides
+    (`state.approved_order`, straight off /api/alias-groups). It comes second and not first because
+    a sovereign slot is a deployment-level assignment made for this Sage, while the group ordering
+    is a preference expressed about a list of models — and it comes at all because the alternative
+    below is alphabetical order pretending to be a decision.
+
+    `min(approved)` is the last resort, for a deployment whose gateway offers no group listing to
+    order. Any approved alias beats refusing a turn a person is waiting on, and sorting makes that
+    pick the same one every time rather than whatever the gateway happened to list first.
+
+    The empty set still raises: it is the orchestrator's refusal, not a choice to make here.
     """
     for candidate in _lock_preferences(state, catalog):
+        if candidate in approved:
+            return candidate
+    for candidate in state.approved_order:
         if candidate in approved:
             return candidate
     if not approved:

@@ -18,9 +18,9 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 
-from ..assets.provider import Asset, is_sensitive, sensitivity_tag
+from ..assets.provider import Asset, is_sensitive, sensitivity_tags
 from ..orchestrator import brand
 from .bindings import KIND_DATASET, Binding
 from .provider import ApprovedModels, LlmAlias, approved_aliases
@@ -44,14 +44,17 @@ def group_name(env: dict[str, str] | None = None) -> str:
     return env.get("SAGE_SENSITIVE_MODEL_GROUP", "").strip()
 
 
-def declared_keys(assets: list[Asset], tag: str) -> frozenset[str]:
+def declared_keys(assets: list[Asset], tags: Collection[str]) -> frozenset[str]:
     """Ids AND names of the Datasets carrying the declaration — the cacheable half of the question.
 
     Both, because a Binding records what the creator picked and the listing is what carries the
     tags, and the two do not always key the same way. Matching on either is the join surviving a
     disagreement; matching on only one is a declared Dataset silently reading as undeclared.
+
+    `tags` is every tag that declares, not one: a deployment can name several synonyms, and any one
+    of them is a declaration (ADR-0043).
     """
-    declared = [a for a in assets if is_sensitive(a, tag)]
+    declared = [a for a in assets if is_sensitive(a, tags)]
     return frozenset({a.id for a in declared} | {a.name for a in declared})
 
 
@@ -106,7 +109,7 @@ class SensitivityGate:
             except Exception:
                 log.exception("sensitivity: couldn't list Datasets; treating this Project as declared")
                 return dataset_bindings
-            cached = declared_keys(assets, sensitivity_tag(self._env))
+            cached = declared_keys(assets, sensitivity_tags(self._env))
             self._declared = (self._clock(), cached)
         return [b for b in dataset_bindings if b.id in cached or b.name in cached]
 
@@ -130,8 +133,9 @@ class SensitivityGate:
             return ApprovedModels(group_name=name, reachable=False)
         records = self._group_records()
         found, members = self._group_shape(name, records, aliases)
+        approved = approved_aliases(name, aliases, records)
         result = ApprovedModels(
-            names=frozenset(approved_aliases(name, aliases, records)),
+            names=frozenset(approved), order=approved,
             group_name=name, group_found=found, members=members,
         )
         self._approved = (self._clock(), result)

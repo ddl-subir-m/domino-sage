@@ -5,9 +5,15 @@ and `gpt-5.4` picked, the lock moved the session to `opus` and said so in a noti
 carries a "Got it", and the chip went on reading `gpt-5.4`. Dismiss the notice and the one control a
 person reads to know what is running named a model that could not run.
 
-The rule is deliberately narrow: name a model only where there is no routing rule left to apply
-(exactly one approved), because `llm_router._nearest_approved` depends on mode and phase and a
+The rule was deliberately narrow — name a model only where there was no routing rule left to apply
+(exactly one approved) — because `llm_router._nearest_approved` depends on mode and phase and a
 second copy of it here would be a confident label that is wrong on the turn where it matters.
+
+The ADR-0043 amendment moved the answer rather than the rule: the server runs that same router and
+sends where the lock MOVES a barred turn to, so the chip READS the choice instead of guessing at it.
+Two of them, because Build and Chat are pinned to different sovereign slots — this chip is the Chat
+one. The narrow rule stays underneath as the fallback for a state that carries no answer, which is
+what an older server sends and what an unusable approved set leaves behind.
 """
 from __future__ import annotations
 
@@ -27,6 +33,11 @@ OFF = {"enabled": False, "locked": False, "approved": [], "datasets": [], "group
 ONE = {"enabled": True, "locked": True, "approved": ["opus"],
        "datasets": ["sage-subir-mansukhani-66a821b1-2"], "group": "sensitive-approved"}
 MANY = {**ONE, "approved": ["haiku", "opus"]}
+# The same lock with the router's answer on it — what a current server sends. `haiku` is neither
+# first alphabetically nor first in `approved`, so a chip that names it can only have read the
+# state. `model` is Build's answer and deliberately the OTHER one: this chip is Chat's, and reading
+# the wrong field is exactly how it would name a model this composer will not run.
+RESOLVED = {**MANY, "chat_model": "haiku", "model": "opus"}
 
 
 def _labels(cases: list[dict]) -> list[dict]:
@@ -59,10 +70,31 @@ def test_no_lock_never_touches_the_label():
 
 
 @needs_node
-def test_several_approved_models_are_not_guessed_between():
-    """With more than one approved, WHICH one runs depends on mode and phase — a rule that lives in
-    `llm_router._nearest_approved` and must not be reimplemented here. So the chip stops short of a
-    name rather than risk a confident wrong one, and still refuses to show the barred pick."""
+def test_the_resolved_model_is_named_even_when_several_are_approved():
+    """The amendment. The server ran the turn through `llm_router` and said `haiku`; the chip names
+    it rather than falling back to a phrase, because now there is an answer to read."""
+    got = _labels([{"sensitivity": RESOLVED, "picked": "gpt-5.4"}])[0]
+    assert got["label"] == "haiku"
+    assert got["label"] != "opus", "Build's answer must not be read by Chat's chip"
+    assert got["approved"] is False, "the pick is still barred — only the LABEL moved"
+
+
+@needs_node
+def test_a_resolved_model_outside_the_approved_set_is_never_named():
+    """A stale read, or a state assembled wrong. The set is what decides, here as in the router:
+    naming a barred model would be the original defect with a fresher source."""
+    stale = {**RESOLVED, "chat_model": "gpt-5.4"}
+    label = _labels([{"sensitivity": stale, "picked": "gpt-5.4"}])[0]["label"]
+    assert label != "gpt-5.4"
+    assert label.strip() != ""
+
+
+@needs_node
+def test_several_approved_models_are_not_guessed_between_without_an_answer():
+    """No `model` on the state — an older server, or an approved set that resolved to nothing. WHICH
+    one runs then depends on mode and phase, a rule that lives in `llm_router._nearest_approved` and
+    must not be reimplemented here. So the chip stops short of a name rather than risk a confident
+    wrong one, and still refuses to show the barred pick."""
     label = _labels([{"sensitivity": MANY, "picked": "gpt-5.4"}])[0]["label"]
     assert label != "gpt-5.4", "the chip must never name a model that cannot run"
     assert label not in ("haiku", "opus"), "it cannot know which, so it must not claim one"

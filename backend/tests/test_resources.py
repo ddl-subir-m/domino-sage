@@ -1336,8 +1336,8 @@ def test_approved_aliases_reads_the_forward_source():
     from sage.resources.provider import approved_aliases
 
     aliases = [_alias("qwen-2-5", ["FDE_models"]), _alias("gpt-5.4"), _alias("opus", ["other"])]
-    assert approved_aliases("FDE_models", aliases) == {"qwen-2-5"}
-    assert approved_aliases("fde_models", aliases) == {"qwen-2-5"}  # group name is a typed string too
+    assert approved_aliases("FDE_models", aliases) == ("qwen-2-5",)
+    assert approved_aliases("fde_models", aliases) == ("qwen-2-5",)  # group name is a typed string too
 
 
 def test_approved_aliases_reads_the_reverse_source_when_the_field_is_absent():
@@ -1346,25 +1346,53 @@ def test_approved_aliases_reads_the_reverse_source_when_the_field_is_absent():
 
     aliases = [_alias("qwen-2-5", aid="a1"), _alias("gpt-5.4", aid="a2")]
     records = [{"name": "FDE_models", "aliases": [{"id": "a1", "name": "qwen-2-5"}]}]
-    assert approved_aliases("FDE_models", aliases, records) == {"qwen-2-5"}
+    assert approved_aliases("FDE_models", aliases, records) == ("qwen-2-5",)
 
 
 def test_the_two_sources_are_unioned_not_preferred():
-    """A redaction on either surface must not silently shrink the approved set."""
+    """A redaction on either surface must not silently shrink the approved set.
+
+    Unioned for membership, ORDERED by the reverse source: /api/alias-groups is the only one of the
+    two that carries the administrator's own ordering, and that ordering is the preference the
+    router picks by (ADR-0043 amendment). The forward source has none to offer — it is whatever
+    /api/aliases listed — so its members follow rather than lead.
+    """
     from sage.resources.provider import approved_aliases
 
     aliases = [_alias("qwen-2-5", ["FDE_models"], aid="a1"), _alias("local-domino-llm", aid="a2")]
     records = [{"name": "FDE_models", "aliases": [{"id": "a2", "name": "local-domino-llm"}]}]
-    assert approved_aliases("FDE_models", aliases, records) == {"qwen-2-5", "local-domino-llm"}
+    approved = approved_aliases("FDE_models", aliases, records)
+    assert set(approved) == {"qwen-2-5", "local-domino-llm"}
+    assert approved == ("local-domino-llm", "qwen-2-5")
+
+
+def test_the_group_ordering_survives_and_is_not_re_sorted():
+    """The whole point of returning a tuple. `min()` on the set would answer `alpha` here, and
+    nobody chose `alpha`."""
+    from sage.resources.provider import approved_aliases
+
+    aliases = [_alias("alpha", aid="id-alpha"), _alias("zeta", aid="id-zeta")]
+    records = [{"name": "g", "aliases": [{"id": "id-zeta"}, {"id": "id-alpha"}]}]
+    assert approved_aliases("g", aliases, records) == ("zeta", "alpha")
+
+
+def test_a_member_listed_twice_is_taken_once():
+    """Both sources can name the same alias, and a duplicate in the preference order is a second
+    chance to pick a model that was already skipped."""
+    from sage.resources.provider import approved_aliases
+
+    aliases = [_alias("zeta", ["g"], aid="id-zeta"), _alias("alpha", ["g"], aid="id-alpha")]
+    records = [{"name": "g", "aliases": [{"id": "id-alpha"}]}]
+    assert approved_aliases("g", aliases, records) == ("alpha", "zeta")
 
 
 def test_an_unknown_or_unnamed_group_is_empty_which_the_caller_reads_as_refusal():
     from sage.resources.provider import approved_aliases
 
     aliases = [_alias("qwen-2-5", ["FDE_models"])]
-    assert approved_aliases("no-such-group", aliases) == set()
-    assert approved_aliases("", aliases) == set()
-    assert approved_aliases("   ", aliases, [{"name": "FDE_models", "aliases": []}]) == set()
+    assert approved_aliases("no-such-group", aliases) == ()
+    assert approved_aliases("", aliases) == ()
+    assert approved_aliases("   ", aliases, [{"name": "FDE_models", "aliases": []}]) == ()
 
 
 def test_parse_groups_guards_a_bare_string():
@@ -1390,7 +1418,7 @@ def test_a_group_member_the_caller_cannot_call_is_not_approved():
         {"id": "id-opus", "name": "opus"},
         {"id": "id-haiku", "name": "haiku"},
     ]}]
-    assert approved_aliases("sensitive-approved", aliases, records) == {"opus"}
+    assert approved_aliases("sensitive-approved", aliases, records) == ("opus",)
 
 
 def test_an_entirely_unreachable_group_approves_nothing():
@@ -1399,4 +1427,4 @@ def test_an_entirely_unreachable_group_approves_nothing():
     from sage.resources.provider import approved_aliases
 
     records = [{"name": "g", "aliases": [{"id": "id-a", "name": "a"}, {"id": "id-b", "name": "b"}]}]
-    assert approved_aliases("g", [_alias("opus", aid="id-opus")], records) == set()
+    assert approved_aliases("g", [_alias("opus", aid="id-opus")], records) == ()

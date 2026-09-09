@@ -20,10 +20,11 @@ from pathlib import Path
 
 import pytest
 
+import sage.orchestrator.service as service_module
 from sage.assets.provider import Asset, FakeAssetProvider
 from sage.orchestrator.service import NotThisProjectsDataset, Orchestrator
 from sage.provision.domino import FakeControlPlane
-from sage.resources.provider import FakeResourceProvider
+from sage.resources.provider import FakeResourceProvider, LlmAlias
 from sage.router.models import ModelCatalog
 
 # The group the FakeResourceProvider's own `list_alias_groups` answers for, holding `qwen-2-5`.
@@ -68,15 +69,15 @@ def _assets(root: Path) -> FakeAssetProvider:
     return provider
 
 
-def _orch(tmp: Path, control=None) -> Orchestrator:
+def _orch(tmp: Path, control=None, resources=None, catalog=None) -> Orchestrator:
     return Orchestrator(
         workspace_dir=tmp / "mnt" / "code",
         template=_template(tmp),
         gateway=object(),
-        catalog=_catalog(),
+        catalog=catalog or _catalog(),
         project_id="Sage",
         assets=_assets(tmp),
-        resources=FakeResourceProvider(),
+        resources=resources or FakeResourceProvider(),
         control_plane=control,
         domino_project_name="Revenue",
     )
@@ -146,7 +147,7 @@ def test_the_lock_state_is_off_and_reads_nothing_without_the_group(tmp_path, mon
 
     assert orch.sensitivity_state() == {
         "enabled": False, "locked": False, "group": "",
-        "approved": [], "datasets": [], "refusal": None,
+        "approved": [], "datasets": [], "refusal": None, "model": None, "chat_model": None,
     }
 
 
@@ -180,6 +181,85 @@ def test_a_bound_declared_dataset_names_itself_and_the_approved_models(tmp_path,
     assert state["approved"] == [APPROVED]
     assert state["datasets"] == ["claims"]
     assert state["refusal"] is None
+    # And WHERE the lock moves a barred turn to, worked out by the router rather than guessed at in
+    # the browser: the chip and the notice both name it, and a second copy of `nearest_approved` in
+    # JavaScript is how a label comes to promise a model that will not run (ADR-0043). Both slots
+    # are the same alias in this catalog, which is the ordinary shape.
+    assert state["model"] == APPROVED
+    assert state["chat_model"] == APPROVED
+
+
+def test_the_named_model_follows_the_administrators_ordering(tmp_path, monkeypatch):
+    """The end of the chain the ordering travels: /api/alias-groups -> ApprovedModels.order ->
+    SessionState -> `_nearest_approved` -> the name the chip reads.
+
+    Sovereign slots deliberately unapproved, which is the only shape where the ordering decides.
+    Naming a model without it would have been naming an arbitrary one out loud — `min()` would
+    answer `alpha` here, and nobody chose `alpha`.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+
+    class TwoApproved(FakeResourceProvider):
+        def list_llm_aliases(self):
+            return [LlmAlias(id="id-zeta", name="zeta", display_name="zeta"),
+                    LlmAlias(id="id-alpha", name="alpha", display_name="alpha")]
+
+        def list_alias_groups(self):
+            return [{"name": GROUP, "aliases": [{"id": "id-zeta"}, {"id": "id-alpha"}]}]
+
+    vendor = ModelCatalog(sovereign_plan="", sovereign_implement="", sovereign_ask="",
+                          plan="gpt-5.4", implement="gpt-5.4", ask="gpt-5.4")
+    orch = _orch(tmp_path, resources=TwoApproved(), catalog=vendor)
+    _bind(orch, [_dataset_binding("ds_claims", "claims")])
+
+    state = orch.sensitivity_state()
+
+    assert state["approved"] == ["alpha", "zeta"]   # the list stays sorted; the pick does not
+    assert state["model"] == "zeta"
+    assert state["chat_model"] == "zeta"
+
+
+def test_a_router_that_cannot_name_the_model_still_reports_the_lock(tmp_path, monkeypatch):
+    """The name is for a chip; the lock governs what runs. The route answers a failed read with
+    `enabled: False`, which would put every non-approved model back in the picker — so a label that
+    could not be worked out must not travel on the same failure."""
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    monkeypatch.setattr(service_module.llm_router, "nearest_approved",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no")))
+    orch = _orch(tmp_path)
+    _bind(orch, [_dataset_binding("ds_claims", "claims")])
+
+    state = orch.sensitivity_state()
+
+    assert state["locked"] is True
+    assert state["approved"] == [APPROVED]
+    assert state["model"] is None and state["chat_model"] is None
+
+
+def test_chat_and_build_are_answered_separately(tmp_path, monkeypatch):
+    """Two composers, two turns, two sovereign slots. Chat is pinned to the sovereign Ask slot and
+    Build follows its mode, so one field would make whichever surface it was not computed for name
+    a model it will not run — which is the defect the field was added to fix."""
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+
+    class BothApproved(FakeResourceProvider):
+        def list_llm_aliases(self):
+            return [LlmAlias(id="id-plan", name="plan-approved", display_name="plan-approved"),
+                    LlmAlias(id="id-ask", name="ask-approved", display_name="ask-approved")]
+
+        def list_alias_groups(self):
+            return [{"name": GROUP, "aliases": [{"id": "id-plan"}, {"id": "id-ask"}]}]
+
+    split = ModelCatalog(sovereign_plan="plan-approved", sovereign_implement="plan-approved",
+                         sovereign_ask="ask-approved", plan="gpt-5.4", implement="gpt-5.4",
+                         ask="gpt-5.4")
+    orch = _orch(tmp_path, resources=BothApproved(), catalog=split)
+    _bind(orch, [_dataset_binding("ds_claims", "claims")])
+
+    state = orch.sensitivity_state()
+
+    assert state["model"] == "plan-approved"        # Build, in its standing Auto/Plan state
+    assert state["chat_model"] == "ask-approved"    # Chat, pinned to the sovereign Ask slot
 
 
 def test_an_unusable_approved_set_carries_the_refusal_rather_than_an_empty_lock(tmp_path, monkeypatch):

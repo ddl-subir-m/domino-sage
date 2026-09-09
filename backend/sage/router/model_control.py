@@ -29,6 +29,7 @@ class ModelControl:
         self._web_token: object | None = None
         self._sensitivity_token: object | None = None
         self._approved_models: frozenset[str] | None = None
+        self._approved_order: tuple[str, ...] = ()
         # Chat turn pin: same token discipline so a Chat turn cannot leak write tools into a later
         # Ask turn, and an overlapping disarm cannot drop the allowlist mid-flight.
         self._chat_token: object | None = None
@@ -102,7 +103,7 @@ class ModelControl:
         if self._web_token is token:
             self._web_token = None
 
-    def arm_sensitivity(self, approved: frozenset[str]) -> object:
+    def arm_sensitivity(self, approved: frozenset[str], order: tuple[str, ...] = ()) -> object:
         """Lock THIS turn to the models approved for sensitive work (ADR-0043), mirroring arm_web().
 
         Armed per turn rather than held as a standing choice for the same reason read-only is: the
@@ -110,11 +111,17 @@ class ModelControl:
         a previous turn would be a stale one. The orchestrator reads the declaration, arms this, and
         disarms on exit.
 
+        `order` is the same names in the administrator's order, which the router prefers between
+        when several are approved. Optional because a set with no ordering is still a valid lock —
+        the router falls back to sorting — and a caller that only has the set must not be blocked
+        from arming one.
+
         An EMPTY set is never armed — that is a refusal the orchestrator makes before the turn, and
         the router raises rather than fall back if one ever reaches it.
         """
         token = object()
         self._approved_models = approved
+        self._approved_order = order
         self._sensitivity_token = token
         return token
 
@@ -124,6 +131,7 @@ class ModelControl:
         if self._sensitivity_token is token:
             self._sensitivity_token = None
             self._approved_models = None
+            self._approved_order = ()
 
     def arm_chat(self, thread_id: str) -> object:
         """Pin this turn as Chat for `thread_id` and return a token. The shim reads snapshot()
@@ -185,4 +193,5 @@ class ModelControl:
             approved_models=(
                 self._approved_models if self._sensitivity_token is not None else None
             ),
+            approved_order=self._approved_order if self._sensitivity_token is not None else (),
         )

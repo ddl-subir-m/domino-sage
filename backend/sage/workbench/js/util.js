@@ -149,15 +149,30 @@ window.SW = window.SW || {};
     // was a notice with a "Got it" on it — so once dismissed, the one control a person reads to
     // know what is running named a model that could not run.
     //
-    // It does NOT re-implement `llm_router._nearest_approved`. That rule depends on mode and phase,
-    // and a second copy here would be a confident label that is wrong on the turn where it matters.
-    // So it names a model only where there is no rule left to apply — exactly one approved — and
-    // otherwise says that an approved model will run without pretending to know which. Silent about
-    // it is not an option: a wrong name and a dismissible correction is the worst of the three.
-    lockedLabel(sensitivity, name) {
-      if (SW.util.isApproved(sensitivity, name)) return name;
+    // It still does NOT re-implement `llm_router.nearest_approved` — that rule reads the mode, the
+    // phase and the sovereign slots, and a second copy here would be a confident label that is
+    // wrong on the turn where it matters. It reads the answer instead: the server ran that very
+    // function and sent where the lock moves a barred turn to.
+    //
+    // `chat` picks between the two, because Build and Chat are different turns: Chat is pinned to
+    // the sovereign Ask slot and Build follows its mode. Asking with the wrong one is how a chip
+    // comes to name a model the composer it sits in will not run.
+    //
+    // Empty when there is nothing honest to name: a state carrying neither (an older server), or a
+    // lock whose approved set resolved to nothing, where the picker draws `refusal` instead. One
+    // approved model still names itself — there is no rule left to apply to it.
+    lockedRunsOn(sensitivity, chat) {
+      const moved = (sensitivity && (chat ? sensitivity.chat_model : sensitivity.model)) || '';
+      if (moved && SW.util.isApproved(sensitivity, moved)) return moved;
       const approved = (sensitivity && sensitivity.approved) || [];
-      return approved.length === 1 ? approved[0] : SW.brand.text('Approved model');
+      return approved.length === 1 ? approved[0] : '';
+    },
+
+    // Silence is not an option here: a wrong name and a dismissible correction is the worst of the
+    // three, and a blank chip is the second worst.
+    lockedLabel(sensitivity, name, chat) {
+      if (SW.util.isApproved(sensitivity, name)) return name;
+      return SW.util.lockedRunsOn(sensitivity, chat) || SW.brand.text('Approved model');
     },
 
     // The Datasets that armed the lock, as a phrase a sentence can hold. The names the creator sees

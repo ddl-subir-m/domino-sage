@@ -170,6 +170,13 @@ class SessionState:
     # It is never EMPTY here: an approved set that resolves to nothing is a refusal the orchestrator
     # makes before the turn starts, because a router that returns a model cannot express "no".
     approved_models: frozenset[ModelId] | None = None
+    # The same aliases in the order the administrator listed them in the group (ADR-0043). The set
+    # above decides what is allowed; this decides which one is PREFERRED when more than one is, and
+    # the two are separate fields because they answer separate questions — a set has no order to
+    # read, and sorting one would be alphabet dressed up as an administrator's choice.
+    # Empty is not a contradiction: a deployment whose gateway offers no group listing has an
+    # approved set and no ordering for it, and the router falls back the way it always did.
+    approved_order: tuple[ModelId, ...] = ()
 
 
 @dataclass(frozen=True)

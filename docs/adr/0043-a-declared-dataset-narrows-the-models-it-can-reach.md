@@ -240,3 +240,88 @@ the two-key fallback carried over from 685ebf3 is what found the snapshot to tag
 because the Domino UI would not let the same person do this: it asks for a snapshot they had not
 taken, while the API tags the one the Dataset already has. Sage doing it for them is the workflow
 this ADR chose, and the reason it chose it turned out to be more concrete than the argument made.
+
+## Amendment: which approved model, and who chose it
+
+Two questions the first draft left standing, answered together because either alone makes the other
+worse. Both are about the shape of the group an administrator curates, and neither changes what the
+gate refuses.
+
+**The administrator's ordering of the group is a preference, and it was being thrown away.**
+`ApprovedModels.names` is a frozenset, so a group listed as `opus, haiku` and a group listed as
+`haiku, opus` reached the router as the same thing, and the router broke the tie with `min()` —
+alphabetical order standing in for somebody's decision. An ordered tuple now travels beside the set
+(`ApprovedModels.order`, off `/api/alias-groups`, which is the only source that carries an order at
+all), and `llm_router._nearest_approved` reads it after the sovereign slots and before `min()`.
+
+The two fail-closed edges are unchanged and deliberately so. `min(approved)` stays as the last
+resort, for a deployment whose gateway offers no group listing to order — a stable arbitrary pick
+is still better than refusing a turn somebody is waiting on. The empty-set `ValueError` stays: that
+set is the orchestrator's refusal to make before the turn starts, and a router that returns a model
+cannot express "no".
+
+Sovereign slots keep their place above the ordering. A sovereign slot is an assignment made for this
+Sage and already preflighted; the group ordering is a preference expressed about a list of models.
+The narrower statement wins, and the ordering only decides where the narrower one is silent.
+
+**And now that the pick is somebody's, it is said out loud.** `util.lockedLabel` named a model only
+when exactly one was approved, and otherwise wrote "Approved model" — correct, because a second copy
+of `_nearest_approved` in JavaScript would be a confident label that is wrong on the turn where it
+matters. The answer moved instead of the rule: `sensitivity_state` runs the real router and sends
+the result, so the chip and the notice read a choice rather than guessing at one. The narrow rule
+stays underneath as the fallback for a state that carries no answer.
+
+Doing this half alone was the thing to avoid. Naming the model without the ordering would have
+published an arbitrary pick — the chip would have said `haiku` because `h` sorts before `o`, and a
+person would have gone looking for the decision behind it.
+
+**It sends where the lock MOVES a turn, not what `resolve` would run**, which is why
+`nearest_approved` is public and the state does not simply carry `resolve(...).model`. The two
+differ on exactly one input: `resolve` hands back an approved pick unchanged. A browser holding that
+answer names the old pick the moment somebody picks a barred model, which is the original defect
+with a fresher source. `nearest_approved` reads no pick at all, so the answer is safe to hold across
+one — and the browser can already see that an approved pick runs as itself.
+
+**Two of them, one per composer.** Chat is pinned to the sovereign Ask slot and Build follows its
+mode, so `model` and `chat_model` are separate fields. One would have made whichever surface it was
+not computed for say the wrong model out loud — and the chip `lockedLabel` draws is the Chat one, so
+a single Build-shaped answer would have been wrong on the surface that reads it most.
+
+What is left after that is a running Auto build, where the shim's per-step classifier moves the
+phase underneath a state nobody re-read. It needs a deployment whose sovereign slots differ AND are
+separately approved, which is the only shape where the mode decides anything at all.
+
+**The Workbench re-reads on a mode change and not on a model change.** Both follow from the
+paragraphs above: the mode is an input to `nearest_approved` and the pick is not. A refresh per
+model pick would have been the wrong fix for the right worry.
+
+**The name must not be able to take the lock down.** `/api/project/sensitivity` answers a failed
+read with `enabled: false`, and that fallback is right for the lock state and wrong for the label on
+it — an unlocked answer puts non-approved models back in the picker, which is the surface a person
+acts from. So resolving the model is caught separately: the chip falls back to "Approved model" and
+everything that governs anything still ships.
+
+## Amendment: several tags may mean sensitive
+
+`SAGE_SENSITIVE_DATASET_TAG` is now a comma-separated list, and any one of the tags declares a
+Dataset. The original comment argued for one name on the grounds that a list "invites the belief
+that Sage understands their taxonomy". The belief is the risk; the singular was not the fix. A
+customer arrives with `pii` on one team's Datasets and `confidential` on another's, and forcing one
+name means either re-tagging Datasets Sage does not own or leaving half of them undeclared — which
+is the leak, reached through configuration.
+
+They are synonyms, not tiers. `assets/provider.py` (`sensitivity_tags`, `is_sensitive`) and
+`resources/sensitivity.py` (`declared_keys`) take a set of wanted tags, matched by case-insensitive
+equality exactly as before. Writing still picks one — `sensitivity_tag` answers the first configured
+name — because tagging a Dataset with every synonym would make Sage an author of the vocabulary it
+is supposed to be reading.
+
+An empty entry is dropped rather than matched. A trailing comma is the likeliest way to write this
+list, and a tag matching `""` would declare every Dataset on the deployment.
+
+**Explicitly not tiered classification.** A tag routing to a DIFFERENT approved group — `pii` to one
+group, `restricted` to another — is a separate decision and a separate ADR. It needs a mapping in
+configuration rather than a list, an answer for a Dataset carrying two tags at once, and a story for
+what the picker says when the bound Datasets disagree. None of that is answered by this amendment,
+and shipping the list first does not prejudge it: a set of synonyms is the degenerate case of a
+mapping, so tiers can be added over the top without taking anything back.

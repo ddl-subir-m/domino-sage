@@ -262,7 +262,7 @@ window.SW = window.SW || {};
     // chosen cannot express a change.
     assignmentsError: '',
 
-    // The sensitivity lock (ADR-0043): `{ enabled, locked, group, approved, datasets, refusal }`.
+    // The sensitivity lock (ADR-0043): `{ enabled, locked, group, approved, datasets, refusal, model }`.
     // Null until the first read lands, and that is not the same as `enabled: false` — a picker that
     // greyed rows out on a read it never got would refuse models on a lock that may not exist. Every
     // reader below therefore asks `locked` and treats null as "no lock", which is what the
@@ -271,10 +271,16 @@ window.SW = window.SW || {};
     // Read on a scope load and after a Binding changes, and nowhere else. A declaration is a live
     // fact about the Datasets bound RIGHT NOW, and those are the only two moments that set moves.
     sensitivity: null,
-    // Which approved SET the switch notice has already been read for. Kept here rather than in
-    // prefs because "once" means once per switch and not once per person: an administrator moving
-    // the group tomorrow moves the session onto a different model, and that is a new thing to say.
-    sensitivityNoticeFor: '',
+    // Which switches the notice has already been read for — the keys the composer builds, one per
+    // sentence it can say. Kept here rather than in prefs because "once" means once per switch and
+    // not once per person: an administrator moving the group tomorrow moves the session onto a
+    // different model, and that is a new thing to say.
+    //
+    // A LIST and not one slot, because the sentence is per surface as well as per switch: Build and
+    // Chat are pinned to different sovereign slots, so toggling between them alternates between two
+    // keys, and a single slot would have each toggle re-raise the notice the other one dismissed.
+    // Bounded by the switches one session can be told about, which is a handful.
+    sensitivityNoticeFor: [],
 
     // Every standing [[Problem]] GET /api/health reported, as it came (ADR-0027): `{ id, message,
     // fix, owner, body }`, the server's own sentences, rendered and never rewritten here. Empty is
@@ -764,9 +770,20 @@ window.SW = window.SW || {};
     notify();
   }
 
-  // The sensitivity lock (ADR-0043), read from the two moments it can move: a scope load, and a
-  // Binding change. Never polled — a declaration is a live fact about the Datasets bound RIGHT NOW,
-  // and nothing else in a session changes which those are.
+  // The sensitivity lock (ADR-0043), read from the moments it can move: a scope load, a Binding
+  // change, and a mode change. Never polled — a declaration is a live fact about the Datasets bound
+  // RIGHT NOW, and nothing else in a session changes which those are.
+  //
+  // The mode is in that list only since the state started carrying `model`/`chat_model`, where the
+  // lock moves a barred turn to. `nearest_approved` prefers the sovereign slot for the MODE, so
+  // switching to Ask can move the answer where the sovereign Ask slot is a different approved model
+  // — and a chip naming the model of the mode you just left is the defect these fields exist to fix.
+  //
+  // The picked model is deliberately NOT in the list, and that only holds because the server sends
+  // where the lock MOVES a turn rather than what `resolve` would run: an approved pick is named by
+  // the pick itself, right here in the browser, and `nearest_approved` reads no pick at all. Send
+  // `resolve`'s answer instead and this comment becomes false — that answer IS the pick when the
+  // pick is approved, so it would go stale the moment somebody picked a barred model next.
   //
   // A failed read leaves the last answer standing rather than clearing it, and the asymmetry is
   // deliberate in one direction: dropping a lock the UI is drawing would put non-approved models
@@ -2886,6 +2903,11 @@ window.SW = window.SW || {};
         const status = await SW.api.setBuildMode(mode);
         applyModelStatus(status);
         notify();
+        // Only while the lock is actually holding: an opted-out deployment must not pay a round
+        // trip per mode toggle to be told again that nothing narrows. Generation-tagged like the
+        // scope load's own read, so a slow answer for the project somebody just left cannot land
+        // on top of the one they are now looking at.
+        if (SW.util.isLocked(state.sensitivity)) refreshSensitivity(scopeLoad);
       } catch (err) {
         antd.message.error(String((err && err.message) || err));
       }
@@ -6215,11 +6237,16 @@ window.SW = window.SW || {};
     // only one today.
     reloadSensitivity: () => refreshSensitivity(),
 
-    // The switch notice has been read. `key` is the approved SET rather than a bare flag, so an
-    // administrator editing the group moves the session again and the notice comes back — that is a
-    // new fact about a different model, and the one already dismissed was never an answer to it.
+    // The switch notice has been read. `key` is what the notice SAID — the approved set and the
+    // model it named — rather than a bare flag, so an administrator editing OR reordering the group
+    // moves the session again and the notice comes back: that is a new fact about a different
+    // model, and the one already dismissed was never an answer to it. The composer builds the key,
+    // and every key dismissed stays dismissed — see `sensitivityNoticeFor`.
     dismissSensitivityNotice(key) {
-      state.sensitivityNoticeFor = String(key || '');
+      const seen = String(key || '');
+      if (!state.sensitivityNoticeFor.includes(seen)) {
+        state.sensitivityNoticeFor = state.sensitivityNoticeFor.concat(seen);
+      }
       notify();
     },
 

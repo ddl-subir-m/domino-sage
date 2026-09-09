@@ -2027,7 +2027,8 @@ def sensitivity_state() -> JSONResponse:
     except Exception:
         log.exception("sensitivity state read failed")
         return JSONResponse(content={"enabled": False, "locked": False, "group": "",
-                                     "approved": [], "datasets": [], "refusal": None})
+                                     "approved": [], "datasets": [], "refusal": None,
+                                     "model": None, "chat_model": None})
 
 
 @control_app.post("/api/project/assets/{dataset_id}/sensitive")
@@ -3684,8 +3685,8 @@ def _preview_approve_model(model: str) -> str | None:
         return None
     if refusal:
         return refusal
-    if approved is not None and model not in approved:
-        return declared_turn_refusal_for_model(model, approved)
+    if approved is not None and model not in approved.names:
+        return declared_turn_refusal_for_model(model, approved.names)
     return None
 
 

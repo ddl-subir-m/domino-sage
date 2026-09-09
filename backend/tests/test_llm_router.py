@@ -6,9 +6,11 @@ Covers auto(plan/implement) > ask/plan/implement pick > modal default, and the s
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
-from sage.router.llm_router import resolve, resolve_unsigned
+from sage.router.llm_router import nearest_approved, resolve, resolve_unsigned
 from sage.router.models import (
     BEDROCK_SERVED,
     SIGNS_TOOL_CALLS,
@@ -263,11 +265,68 @@ def test_the_lock_outranks_the_signing_pin():
 
 
 def test_an_unapproved_sovereign_slot_falls_back_deterministically():
-    """No sovereign slot approved: any approved alias beats refusing, and the pick must not wobble."""
+    """No sovereign slot approved and no ordering to read: any approved alias beats refusing, and
+    the pick must not wobble."""
     approved = frozenset({"zeta-approved", "alpha-approved"})
     state = SessionState(Mode.AUTO, Phase.PLAN, approved_models=approved)
     assert resolve(state, CATALOG).model == "alpha-approved"
     assert resolve(state, CATALOG).model == "alpha-approved"
+
+
+def test_the_administrators_ordering_decides_before_the_alphabet():
+    """The group is a list somebody wrote in an order. `min()` would answer with the alphabet and
+    call it a decision; the ordering is the only expression of preference in the input."""
+    order = ("zeta-approved", "alpha-approved")
+    state = SessionState(Mode.AUTO, Phase.PLAN,
+                         approved_models=frozenset(order), approved_order=order)
+    assert resolve(state, CATALOG).model == "zeta-approved"
+
+
+def test_a_sovereign_slot_still_outranks_the_administrators_ordering():
+    """The ordering is a preference about a list of models; a sovereign slot is an assignment made
+    for THIS Sage, already preflighted. The narrower statement wins."""
+    order = ("zeta-approved", "sovereign-plan-8b")
+    state = SessionState(Mode.AUTO, Phase.PLAN,
+                         approved_models=frozenset(order), approved_order=order)
+    assert resolve(state, CATALOG).model == "sovereign-plan-8b"
+
+
+def test_an_ordering_that_names_an_unapproved_model_is_skipped():
+    """The order is a preference, never the authority — the set is what decides."""
+    state = SessionState(Mode.AUTO, Phase.PLAN,
+                         approved_models=frozenset({"zeta-approved"}),
+                         approved_order=("gone-from-the-group", "zeta-approved"))
+    assert resolve(state, CATALOG).model == "zeta-approved"
+
+
+def test_nearest_approved_answers_where_a_barred_turn_moves_and_reads_no_pick():
+    """The public half, for a label that has to name the fallback (ADR-0043). Deliberately NOT
+    `resolve`: that returns an approved pick unchanged, so a caller holding its answer would go on
+    naming the old pick after somebody picked a barred model. This reads no pick at all."""
+    order = ("zeta-approved", "alpha-approved")
+    base = SessionState(Mode.AUTO, Phase.PLAN,
+                        approved_models=frozenset(order), approved_order=order)
+    assert nearest_approved(base, CATALOG) == "zeta-approved"
+    for pick in ("strong-vendor", "alpha-approved", None):
+        assert nearest_approved(replace(base, picked_model=pick), CATALOG) == "zeta-approved"
+
+
+def test_nearest_approved_follows_the_mode_the_way_the_lock_does():
+    """It is the same `_lock_preferences`, so an Ask turn and a Chat turn prefer the sovereign Ask
+    slot. That is why the state carries an answer for Build and one for Chat."""
+    assert nearest_approved(SessionState(Mode.AUTO, Phase.IMPLEMENT, approved_models=APPROVED),
+                            CATALOG) == "sovereign-implement-8b"
+    assert nearest_approved(SessionState(Mode.AUTO, Phase.IMPLEMENT, chat_thread_id="t1",
+                                         approved_models=APPROVED), CATALOG) == "sovereign-ask-8b"
+
+
+def test_nearest_approved_raises_with_nothing_approved():
+    """Asking where a lock moves a turn to, when nothing is approved, has no answer that is not a
+    refusal — the same edge `_lock_sensitivity` keeps."""
+    for state in (SessionState(Mode.AUTO, Phase.PLAN, approved_models=frozenset()),
+                  SessionState(Mode.AUTO, Phase.PLAN)):
+        with pytest.raises(ValueError, match="empty approved set"):
+            nearest_approved(state, CATALOG)
 
 
 def test_an_empty_approved_set_raises_rather_than_failing_open():

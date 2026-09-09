@@ -115,17 +115,17 @@ window.SW = window.SW || {};
   // — a picked model changes under somebody with nothing to read — and refusing the turn stops
   // somebody mid-task to teach them what a sentence can teach.
   //
-  // It names the model it moved to only when there is exactly one to name. The choice is
-  // `llm_router._nearest_approved`'s, and it depends on mode and phase; a second copy of that rule
-  // here would be a confident sentence that is wrong on the turn where it matters. One approved
-  // model means there is no rule left to copy, and that is the common shape of a curated group.
+  // It names the model it moved to, from the same `lockedRunsOn` the chip above the box reads — the
+  // router resolved it server-side and neither surface re-derives it. Both or neither: a notice
+  // naming one model while the chip names another is a correction that contradicts the control it
+  // is correcting. The vague sentence survives for the state that carries no answer.
   //
   // Under the box beside the mention guard, and for the same reason: the box is what you are
   // writing, and this is what will happen to it.
-  function LockNotice({ sensitivity, picked, onDismiss }) {
-    const approved = (sensitivity.approved || []);
-    const moved = approved.length === 1
-      ? SW.brand.text('{assistantName} is using {name} instead.', { name: approved[0] })
+  function LockNotice({ sensitivity, picked, chat, onDismiss }) {
+    const runsOn = SW.util.lockedRunsOn(sensitivity, chat);
+    const moved = runsOn
+      ? SW.brand.text('{assistantName} is using {name} instead.', { name: runsOn })
       : SW.brand.text('{assistantName} is using one of the {llmAliasPlural} in {group} instead.',
                       { group: sensitivity.group });
     return h(
@@ -248,7 +248,9 @@ window.SW = window.SW || {};
     // The chip names what will RUN, not what was picked (ADR-0043). The pick is kept underneath and
     // comes back when the declaration goes, the way the per-turn mode pin leaves the standing mode
     // alone — but while the lock holds, the label a person reads has to be true.
-    const modelLabel = SW.util.lockedLabel(sensitivity, pickedLabel);
+    // `true`: this chip is drawn under `!showMode`, so the turn behind it is a Chat turn, which
+    // the router pins to the sovereign Ask slot rather than routing by the build mode.
+    const modelLabel = SW.util.lockedLabel(sensitivity, pickedLabel, true);
     const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
 
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
@@ -589,10 +591,13 @@ window.SW = window.SW || {};
     // and has nothing to announce.
     const pickedModel = showMode ? (override || pinnedModel) : effectiveModel;
     const movedFrom = pickedModel && barredModel(pickedModel) ? pickedModel : '';
-    // What "once" is counted against. The approved SET rather than a bare flag: an administrator
-    // editing the group moves the session again, onto a different model, and the notice already
-    // read was never an answer to that.
-    const noticeKey = String((sensitivity && sensitivity.approved) || []);
+    // What "once" is counted against: what the notice SAYS, which is the approved set and the
+    // model it moved to. Neither alone. The set catches an administrator adding or removing a
+    // member; the model catches them REORDERING the group, where the set is unchanged and the
+    // session moves anyway (`nearest_approved` prefers by that order, ADR-0043). Either way the
+    // notice already read was never an answer to the new fact, so it comes back.
+    const noticeKey = String([(sensitivity && sensitivity.approved) || [],
+                             SW.util.lockedRunsOn(sensitivity, !showMode)]);
 
     return h(
       'div',
@@ -1081,10 +1086,11 @@ window.SW = window.SW || {};
       // resolves to nothing either, because that is a refusal rather than a move, and the turn
       // carries its own sentence for it.
       lockedHere && movedFrom && (sensitivity.approved || []).length > 0 &&
-        sensitivityNoticeFor !== noticeKey &&
+        !(sensitivityNoticeFor || []).includes(noticeKey) &&
         h(LockNotice, {
           sensitivity,
           picked: movedFrom,
+          chat: !showMode,
           onDismiss: () => SW.store.dismissSensitivityNotice(noticeKey),
         })
     );

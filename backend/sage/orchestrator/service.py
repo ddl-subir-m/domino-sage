@@ -44,7 +44,7 @@ from ..assets.provider import (
     FakeAssetProvider,
     FileListing,
     is_sensitive,
-    sensitivity_tag,
+    sensitivity_tags,
 )
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
@@ -146,6 +146,7 @@ from ..resources.publish_guard import (
 )
 from ..resources.sensitivity import SensitivityGate, declared_turn_refusal, group_name
 from ..resources.table_search import Candidate
+from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, signing_slot
 from ..shim.enforcement import EnforcementShim
@@ -7644,7 +7645,10 @@ class Orchestrator:
                 project.control.disarm_web(web_token)
             yield {"type": "error", "message": chat_refusal}
             return
-        chat_sens_token = project.control.arm_sensitivity(chat_approved) if chat_approved else None
+        chat_sens_token = (
+            project.control.arm_sensitivity(chat_approved.names, chat_approved.order)
+            if chat_approved is not None else None
+        )
         tap: _EventTap | None = None
         try:
             client = self._ensure_opencode()
@@ -10127,8 +10131,10 @@ class Orchestrator:
             restore_mode()
             yield persist({"type": "error", "message": sensitivity_refusal})
             return
-        if approved_for_turn:
-            sens_token = project.control.arm_sensitivity(approved_for_turn)
+        if approved_for_turn is not None:
+            sens_token = project.control.arm_sensitivity(
+                approved_for_turn.names, approved_for_turn.order
+            )
 
         def handle_stop() -> dict:
             project.stop_requested = False
@@ -12103,8 +12109,8 @@ class Orchestrator:
             return []
         return sensitive_model_problems(recorded, declared, gate.approved())
 
-    def _sensitivity_for_turn(self, project: Project) -> tuple[frozenset[str] | None, str]:
-        """The approved set to lock this turn to, or the sentence refusing it (ADR-0043).
+    def _sensitivity_for_turn(self, project: Project) -> tuple[ApprovedModels | None, str]:
+        """The approved models to lock this turn to, or the sentence refusing it (ADR-0043).
 
         (None, "") is the ordinary answer and the ordinary cost: nothing read when the deployment
         never opted in, and nothing read beyond the Binding manifest when no Dataset is bound.
@@ -12113,6 +12119,11 @@ class Orchestrator:
         this handed back (None, "") when the approved set resolved to nothing, the turn would run on
         a vendor model with a declared Dataset in scope — the exact leak, arrived at by falling
         through rather than by deciding.
+
+        The whole `ApprovedModels` rather than its `names`, because the administrator's ordering
+        rides on it and the router prefers between several approved models by that order. A caller
+        that only forwarded the set would leave the router to sort — alphabetical order standing in
+        for somebody's decision. Never returned unusable: that shape is the refusal beside it.
         """
         gate = self._sensitivity_gate()
         if not gate.enabled:
@@ -12123,7 +12134,7 @@ class Orchestrator:
         approved = gate.approved()
         if approved is None or not approved.usable:
             return None, declared_turn_refusal(approved or ApprovedModels(), declared)
-        return approved.names, ""
+        return approved, ""
 
     def _sensitivity_gate(self) -> SensitivityGate:
         """One gate per Project, held for the life of this service so its caches survive a turn.
@@ -12749,7 +12760,8 @@ class Orchestrator:
         useful for uploads, which need a writable mount, and no longer a condition of reading.
 
         `declared` is the sensitivity declaration, answered HERE rather than derived from the `tags`
-        list beside it (ADR-0043). The tag name is configuration and the match is case-insensitive,
+        list beside it (ADR-0043). The tag names are configuration, any one of them declares, and
+        the match is case-insensitive;
         and a second copy of both rules in JavaScript is how a badge and the lock behind it come to
         disagree about one Dataset. It is False for every row while the deployment has not opted in,
         because a badge promising that a model will be narrowed says something untrue where nothing
@@ -12758,7 +12770,7 @@ class Orchestrator:
         `project_owned` is the only Dataset the sensitivity tick may be offered on — see
         `_is_project_dataset`.
         """
-        tag = sensitivity_tag() if self._sensitivity_gate().enabled else ""
+        tags = sensitivity_tags() if self._sensitivity_gate().enabled else frozenset()
         return [
             {
                 "id": a.id,
@@ -12767,7 +12779,7 @@ class Orchestrator:
                 "project": a.project,
                 "writable": bool(a.mount_path and os.access(a.mount_path, os.W_OK)),
                 "mount_path": a.mount_path,
-                "declared": bool(tag) and is_sensitive(a, tag),
+                "declared": bool(tags) and is_sensitive(a, tags),
                 "project_owned": self._is_project_dataset(a),
             }
             for a in self._assets.list_datasets(self._domino_project_id)
@@ -12800,10 +12812,27 @@ class Orchestrator:
         the deployment never opted in, and nothing beyond the Binding manifest when no Dataset is
         bound. `refusal` is the sentence a turn would be refused with, so the picker can say the
         approved set resolves to nothing rather than drawing every model disabled with no reason.
+
+        `model` and `chat_model` are where the lock MOVES a barred turn to — the answer to "so what
+        runs instead", which is the only thing a label needs from the router. A turn whose pick is
+        already approved runs on that pick, and the browser can see that for itself. Computed here
+        because the rule (`llm_router.nearest_approved`) reads the mode, the phase and the sovereign
+        slots, and a second copy of it in JavaScript would be a confident sentence that is wrong
+        exactly where it matters.
+
+        TWO of them because Build and Chat are two different turns and each has its own composer.
+        Chat is pinned to the sovereign Ask slot while Build follows its mode, so a deployment whose
+        sovereign slots differ and are separately approved gets two different answers — and one
+        field would have made whichever surface it was not computed for say the wrong model out
+        loud. The composer knows which it is drawing.
+
+        Neither reads a pick, which is what makes them safe to hold: they change when the MODE
+        changes, and the Workbench re-reads on exactly that. What is left is a running Auto build,
+        where the shim's classifier moves the phase underneath — narrow enough to name and leave.
         """
         gate = self._sensitivity_gate()
         off = {"enabled": False, "locked": False, "group": "", "approved": [], "datasets": [],
-               "refusal": None}
+               "refusal": None, "model": None, "chat_model": None}
         if not gate.enabled:
             return off
         project = self.project()
@@ -12813,10 +12842,39 @@ class Orchestrator:
             "enabled": True,
             "locked": bool(declared),
             "group": group_name(),
-            "approved": sorted(approved or ()),
+            "approved": sorted(approved.names) if approved else [],
             "datasets": [b.display_name or b.name for b in declared],
             "refusal": refusal or None,
+            "model": self._locked_model(project, approved, chat=False),
+            "chat_model": self._locked_model(project, approved, chat=True),
         }
+
+    def _locked_model(
+        self, project: Project, approved: ApprovedModels | None, chat: bool
+    ) -> str | None:
+        """Where the lock moves a barred turn of this kind, or None if it could not be worked out.
+
+        `chat_thread_id` is forced rather than read, because it is armed per TURN: between turns the
+        snapshot says Build for both, and asking it would answer the Chat composer with Build's
+        model. The id itself is never used by the router — only its presence, which is the fork.
+
+        Caught here and not left to the route's own handler, which answers a failed read with
+        `enabled: False`. That fallback is right for the lock state and wrong for a label on it:
+        `store.js` records why an unlocked answer is the dangerous direction — it puts non-approved
+        models back in the picker — and a name for a chip must not be able to take the lock down
+        with it. If this ever raises, the chip says "Approved model" and everything that governs
+        anything still ships.
+        """
+        if approved is None:
+            return None
+        state = replace(project.control.snapshot(),
+                        chat_thread_id="unarmed" if chat else None,
+                        approved_models=approved.names, approved_order=approved.order)
+        try:
+            return llm_router.nearest_approved(state, project.shim.catalog)
+        except Exception:
+            log.exception("sensitivity: couldn't work out where the lock moves a barred turn to")
+            return None
 
     def declare_dataset_sensitive(self, dataset_id: str) -> dict:
         """Tag one of this Project's own Datasets sensitive (ADR-0043).

@@ -998,6 +998,12 @@ class ApprovedModels:
     """
 
     names: frozenset[str] = frozenset()
+    # The same names, in the order the administrator put them in the group. Membership is a set
+    # question and preference is an ordered one, so both travel rather than one being re-derived:
+    # sorting the set instead would hand the router alphabetical order and call it a decision.
+    # Empty when nothing resolved, and it may be shorter than `names` is only if a caller builds the
+    # two apart — `approved_aliases` returns the tuple this is made from.
+    order: tuple[str, ...] = ()
     group_name: str = ""
     reachable: bool = True   # False: the gateway listing failed
     group_found: bool = True  # False: no group by that name
@@ -1008,46 +1014,63 @@ class ApprovedModels:
         return bool(self.names)
 
 
-def approved_aliases(group_name: str, aliases: list[LlmAlias], group_records: Any = None) -> set[str]:
-    """The alias NAMES approved for sensitive work, from either direction (ADR-0043).
+def approved_aliases(
+    group_name: str, aliases: list[LlmAlias], group_records: Any = None
+) -> tuple[str, ...]:
+    """The alias NAMES approved for sensitive work, in the administrator's order (ADR-0043).
 
     Two sources for one fact, because only one of them is verified for a non-admin caller. The
     forward read is `groups` on each alias; the reverse is /api/alias-groups, whose records carry
     `{name, aliases: [{id, name}]}`. Either alone is enough, and the union is taken rather than one
     preferred, so a field redacted on one surface does not silently shrink the approved set.
 
+    ORDERED, and the reverse source leads for that reason alone: /api/alias-groups is where the
+    administrator's own ordering of the group survives, and that ordering is the preference the
+    router uses when it has to choose between several approved models. The forward source has no
+    ordering to offer — it is whatever /api/aliases listed — so its members follow, which keeps the
+    answer stable rather than making it meaningful. The SET is identical either way; only the
+    preference order changes, and a deployment with no reverse source loses nothing it had.
+
     Matched case-insensitively on the group name for the same reason the Dataset tag is: a person
     typed it into a free field twice, once here and once in configuration.
 
     An empty result is a REFUSAL, not an absence — `missing-model-group`, `empty-model-group` and
     `no-approved-model-access` are all shaped like this and the caller tells them apart. Never read
-    an empty set as "no lock"; that state is `approved_models=None`.
+    an empty result as "no lock"; that state is `approved_models=None`.
     """
     want = group_name.strip().lower()
     if not want:
-        return set()
+        return ()
     # `aliases` is already intersected with /v1/models by `join_aliases`, so holding a row here IS
     # the proof that this caller may call it. Both sources are filtered through that, which is the
     # difference between "approved" and "approved and reachable" — see below.
     by_id = {a.id: a.name for a in aliases}
     reachable = {a.name for a in aliases}
-    names = {a.name for a in aliases if any(g.lower() == want for g in a.groups)}
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def take(name: str) -> None:
+        # A group member this caller CANNOT call is deliberately not added. Verified live
+        # (2026-09-09): `sensitive-approved` held `opus` and `haiku`, and only `opus` was on
+        # /v1/models — taking the group's word for `haiku` put a model in the approved set that the
+        # gateway then refused, turning a designed `no-approved-model-access` refusal into a dead
+        # turn. The reverse source is a hedge against a REDACTED field, never a second opinion on
+        # permissions.
+        if name and name in reachable and name not in seen:
+            seen.add(name)
+            ordered.append(name)
+
     for rec in (group_records or []):
         if not isinstance(rec, dict) or str(rec.get("name") or "").lower() != want:
             continue
         for member in rec.get("aliases") or []:
             if not isinstance(member, dict):
                 continue
-            # A group member this caller CANNOT call is deliberately not added. Verified live
-            # (2026-09-09): `sensitive-approved` held `opus` and `haiku`, and only `opus` was on
-            # /v1/models — taking the group's word for `haiku` put a model in the approved set that
-            # the gateway then refused, turning a designed `no-approved-model-access` refusal into a
-            # dead turn. The reverse source is a hedge against a REDACTED field, never a second
-            # opinion on permissions.
-            name = by_id.get(str(member.get("id") or "")) or str(member.get("name") or "")
-            if name in reachable:
-                names.add(name)
-    return {n for n in names if n}
+            take(by_id.get(str(member.get("id") or "")) or str(member.get("name") or ""))
+    for alias in aliases:
+        if any(g.lower() == want for g in alias.groups):
+            take(alias.name)
+    return tuple(ordered)
 
 
 def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:

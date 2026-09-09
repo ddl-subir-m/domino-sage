@@ -2,7 +2,7 @@
 
 Lists the project's Domino datasets with their tags. Domino dataset tags are freeform, so the
 sensitivity declaration this reads is a convention, not a built-in field: a Dataset is declared
-sensitive by carrying the tag `SAGE_SENSITIVE_DATASET_TAG` names (ADR-0043).
+sensitive by carrying any of the tags `SAGE_SENSITIVE_DATASET_TAG` names (ADR-0043).
 
 Deep module, narrow interface: list_datasets(project_id) -> [Asset]. Two adapters:
   - DominoAssetProvider : real, via /api/datasetrw/v2/datasets
@@ -12,7 +12,7 @@ Deep module, narrow interface: list_datasets(project_id) -> [Asset]. Two adapter
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -95,25 +95,56 @@ class FileListing:
     measured: bool = True
 
 
-# The tag that declares a Dataset sensitive (ADR-0043). Configurable because Domino tags are
-# freeform and a customer may already have a word for this; ONE name, not a list, because a list
-# invites the belief that Sage understands their taxonomy when all it does is match a string.
+# The tags that declare a Dataset sensitive (ADR-0043). Configurable because Domino tags are
+# freeform and a customer may already have a word for this, and a LIST because a customer can
+# easily have more than one word for it — `pii` on the Datasets one team tagged, `confidential` on
+# another's. Any one of them declares the Dataset; they are synonyms, not tiers, and Sage still
+# understands none of the taxonomy behind them. A tag meaning something DIFFERENT from the others —
+# a stricter class, a different approved group — is a separate decision and does not live here.
 DEFAULT_SENSITIVITY_TAG = "sensitive"
 
 
-def sensitivity_tag(env: dict[str, str] | None = None) -> str:
+def sensitivity_tags(env: dict[str, str] | None = None) -> frozenset[str]:
+    """Every tag that declares a Dataset, lowercased for matching. Never empty.
+
+    `SAGE_SENSITIVE_DATASET_TAG` is comma-separated. Empty entries are dropped rather than matched,
+    because a trailing comma is the likeliest way to write this and a tag that matches "" would
+    declare every Dataset on the deployment.
+    """
     env = env if env is not None else dict(os.environ)
-    return env.get("SAGE_SENSITIVE_DATASET_TAG", "").strip() or DEFAULT_SENSITIVITY_TAG
+    raw = env.get("SAGE_SENSITIVE_DATASET_TAG", "")
+    tags = frozenset(t.strip().lower() for t in raw.split(",") if t.strip())
+    return tags or frozenset({DEFAULT_SENSITIVITY_TAG})
 
 
-def is_sensitive(asset: Asset, tag: str | None = None) -> bool:
-    """Whether this Dataset carries the sensitivity declaration.
+def sensitivity_tag(env: dict[str, str] | None = None) -> str:
+    """The one tag Sage WRITES when it declares a Dataset — the first one configured.
+
+    Reading takes every tag; writing has to pick one, and the first is the one the person who typed
+    the list put first. Kept separate from `sensitivity_tags` so the asymmetry is in the names
+    rather than in a caller's index.
+    """
+    env = env if env is not None else dict(os.environ)
+    raw = env.get("SAGE_SENSITIVE_DATASET_TAG", "")
+    first = next((t.strip() for t in raw.split(",") if t.strip()), "")
+    return first or DEFAULT_SENSITIVITY_TAG
+
+
+def is_sensitive(asset: Asset, tags: Collection[str] | None = None) -> bool:
+    """Whether this Dataset carries any of the sensitivity declarations.
 
     Case-insensitive: the tag is typed by a person into a freeform field, and `Sensitive` meaning
-    something different from `sensitive` would be a trap with no upside.
+    something different from `sensitive` would be a trap with no upside. Equality and not substring,
+    for the same reason: `sensitive-approved` is not a declaration of `sensitive`.
     """
-    want = (tag or sensitivity_tag()).lower()
-    return any(t.lower() == want for t in asset.tags)
+    if tags is None:
+        tags = sensitivity_tags()
+    elif isinstance(tags, str):
+        # A bare string is a Collection of characters, and iterating one would declare a Dataset
+        # tagged `s`. Guarded for the reason `parse_groups` is guarded: the caller meant one tag.
+        tags = (tags,)
+    want = {t.lower() for t in tags}
+    return any(t.lower() in want for t in asset.tags)
 
 
 def walk_files(root: Path) -> FileListing:

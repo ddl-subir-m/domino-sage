@@ -74,8 +74,23 @@ def test_group_name_is_trimmed_and_empty_means_off():
 
 def test_declared_keys_carries_both_id_and_name():
     """The Binding and the listing do not always key the same way; matching one only would miss."""
-    keys = declared_keys([_asset("pii", ["sensitive"], aid="a1"), _asset("logs")], "sensitive")
+    keys = declared_keys([_asset("pii", ["sensitive"], aid="a1"), _asset("logs")], {"sensitive"})
     assert keys == frozenset({"a1", "pii"})
+
+
+def test_declared_keys_takes_every_tag_that_declares():
+    """A deployment can name several synonyms, and any one of them is a declaration (ADR-0043)."""
+    assets = [_asset("pii", ["PII"], aid="a1"), _asset("hr", ["confidential"], aid="a2"),
+              _asset("logs", ["curated"], aid="a3")]
+    keys = declared_keys(assets, {"pii", "confidential"})
+    assert keys == frozenset({"a1", "pii", "a2", "hr"})
+
+
+def test_the_declaring_tags_are_read_from_the_environment_as_a_list():
+    """The gate reads `SAGE_SENSITIVE_DATASET_TAG` itself, so the list has to survive the trip."""
+    env = {**ON, "SAGE_SENSITIVE_DATASET_TAG": "pii, confidential"}
+    gate = _gate(assets=[_asset("hr", ["Confidential"]), _asset("logs", ["sensitive"])], env=env)
+    assert [b.name for b in gate.declared([_dataset("hr"), _dataset("logs")])] == ["hr"]
 
 
 def test_only_a_tagged_dataset_is_declared():
@@ -145,6 +160,44 @@ def test_the_approved_set_resolves_from_the_reverse_source_too():
         groups=[{"name": "sensitive-approved", "aliases": [{"id": "id-qwen-2-5", "name": "qwen-2-5"}]}],
     )
     assert gate.approved().names == frozenset({"qwen-2-5"})
+
+
+def test_the_administrators_ordering_survives_the_read():
+    """`names` is a set and the group is a list somebody wrote in an order. The router prefers by
+    that order, so it has to travel — deriving it back by sorting the set would be the alphabet."""
+    gate = _gate(
+        aliases=[_alias("alpha"), _alias("zeta"), _alias("gpt-5.4")],
+        groups=[{"name": "sensitive-approved",
+                 "aliases": [{"id": "id-zeta"}, {"id": "id-alpha"}]}],
+    )
+    approved = gate.approved()
+    assert approved.order == ("zeta", "alpha")
+    assert approved.names == frozenset({"zeta", "alpha"})
+
+
+def test_the_reverse_source_leads_the_ordering_and_the_forward_source_follows():
+    """Only /api/alias-groups carries an ordering; `groups` on an alias is whatever /api/aliases
+    listed. The union is unchanged — a redacted field still resolves — but the members the
+    administrator ordered come first."""
+    gate = _gate(
+        aliases=[_alias("forward-only", ["sensitive-approved"]), _alias("zeta"), _alias("alpha")],
+        groups=[{"name": "sensitive-approved",
+                 "aliases": [{"id": "id-zeta"}, {"id": "id-alpha"}]}],
+    )
+    approved = gate.approved()
+    assert approved.order == ("zeta", "alpha", "forward-only")
+    assert approved.names == frozenset({"zeta", "alpha", "forward-only"})
+
+
+def test_a_group_member_the_caller_cannot_call_is_left_out_of_the_ordering_too():
+    """The permission filter is what makes `no-approved-model-access` a designed refusal rather than
+    a dead turn, and an unreachable name in the preference order would walk straight past it."""
+    gate = _gate(
+        aliases=[_alias("alpha")],
+        groups=[{"name": "sensitive-approved",
+                 "aliases": [{"id": "id-haiku", "name": "haiku"}, {"id": "id-alpha"}]}],
+    )
+    assert gate.approved().order == ("alpha",)
 
 
 def test_an_unreachable_gateway_is_not_an_approval():

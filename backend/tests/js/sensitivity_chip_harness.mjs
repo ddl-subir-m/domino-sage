@@ -34,7 +34,9 @@ vm.runInContext(fs.readFileSync(ROOT + 'store.js', 'utf8'), sandbox, { filename:
 vm.runInContext(fs.readFileSync(ROOT + 'util.js', 'utf8'), sandbox, { filename: 'util.js' });
 
 const out = (spec.cases || []).map((c) => ({
-  label: sandbox.SW.util.lockedLabel(c.sensitivity, c.picked),
+  // `true` — the chip under test is the Chat composer's, which is where `lockedLabel` is drawn
+  // (`!showMode` in composer.js). Build's chip names its pinned slot directly.
+  label: sandbox.SW.util.lockedLabel(c.sensitivity, c.picked, true),
   approved: sandbox.SW.util.isApproved(c.sensitivity, c.picked),
   locked: sandbox.SW.util.isLocked(c.sensitivity),
   // The rail's mark for the same fact the chip and the picker draw, so a test can hold the three

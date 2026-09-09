@@ -443,5 +443,45 @@ def test_the_tag_name_is_configurable_and_falls_back_to_sensitive():
     assert sensitivity_tag({"SAGE_SENSITIVE_DATASET_TAG": "  PII "}) == "PII"
     assert sensitivity_tag({"SAGE_SENSITIVE_DATASET_TAG": "   "}) == DEFAULT_SENSITIVITY_TAG
     # An explicit tag beats the environment, and still matches case-insensitively.
-    assert is_sensitive(Asset("d1", "x", tags=["pii"]), "PII")
-    assert not is_sensitive(Asset("d1", "x", tags=["sensitive"]), "PII")
+    assert is_sensitive(Asset("d1", "x", tags=["pii"]), ["PII"])
+    assert not is_sensitive(Asset("d1", "x", tags=["sensitive"]), ["PII"])
+
+
+def test_several_tags_can_declare_and_any_one_of_them_does():
+    """A customer can easily have more than one word for this — `pii` on one team's Datasets,
+    `confidential` on another's. They are synonyms, so any one is a declaration (ADR-0043)."""
+    from sage.assets.provider import Asset, is_sensitive, sensitivity_tags
+
+    tags = sensitivity_tags({"SAGE_SENSITIVE_DATASET_TAG": "pii, Confidential ,restricted"})
+    assert tags == frozenset({"pii", "confidential", "restricted"})
+    assert is_sensitive(Asset("d1", "x", tags=["PII"]), tags)
+    assert is_sensitive(Asset("d1", "x", tags=["curated", "restricted"]), tags)
+    assert not is_sensitive(Asset("d1", "x", tags=["sensitive"]), tags)
+
+
+def test_an_empty_entry_in_the_list_never_declares_everything():
+    """A trailing comma is the likeliest way to write this list, and a tag matching "" would
+    declare every Dataset on the deployment."""
+    from sage.assets.provider import DEFAULT_SENSITIVITY_TAG, Asset, is_sensitive, sensitivity_tags
+
+    tags = sensitivity_tags({"SAGE_SENSITIVE_DATASET_TAG": "pii,,  ,"})
+    assert tags == frozenset({"pii"})
+    assert not is_sensitive(Asset("d1", "x", tags=["revenue"]), tags)
+    assert sensitivity_tags({"SAGE_SENSITIVE_DATASET_TAG": " , "}) == \
+        frozenset({DEFAULT_SENSITIVITY_TAG})
+
+
+def test_the_tag_sage_writes_is_the_first_one_configured():
+    """Reading takes every tag; writing has to pick one, and it is the one the person who typed the
+    list put first."""
+    from sage.assets.provider import sensitivity_tag
+
+    assert sensitivity_tag({"SAGE_SENSITIVE_DATASET_TAG": " PII , confidential"}) == "PII"
+
+
+def test_a_bare_string_is_one_tag_and_not_a_bag_of_letters():
+    """A str is a Collection of characters. Iterating one would declare a Dataset tagged `s`."""
+    from sage.assets.provider import Asset, is_sensitive
+
+    assert is_sensitive(Asset("d1", "x", tags=["pii"]), "pii")
+    assert not is_sensitive(Asset("d1", "x", tags=["p"]), "pii")
