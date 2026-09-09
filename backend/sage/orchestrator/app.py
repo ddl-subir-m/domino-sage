@@ -969,7 +969,7 @@ def _mcp_probe(url: str) -> dict:
     import httpx
 
     try:
-        r = httpx.post(url, timeout=3.0, json={
+        r = httpx.post(url, timeout=3.0, headers={"x-sage-diag-probe": "1"}, json={
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -2540,7 +2540,8 @@ async def live_read_mcp(request: Request) -> Response:
             status_code=400,
         )
     batch = isinstance(body, list)
-    out = [r for r in (orchestrator.live_read_call(m) for m in (body if batch else [body]))
+    probe = request.headers.get("x-sage-diag-probe") == "1"
+    out = [r for r in (orchestrator.live_read_call(m, probe=probe) for m in (body if batch else [body]))
            if r is not None]
     if not out:
         # Every message was a notification. 202 with no body is what the transport expects.

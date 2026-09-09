@@ -143,6 +143,24 @@ def test_a_connection_and_a_read_both_say_so_in_the_log(tmp_path: Path, caplog):
     assert any("live read: live_read_table" in m and "not this turn's" in m for m in said)
 
 
+def test_the_diag_probe_does_not_pass_itself_off_as_opencode(tmp_path: Path, caplog):
+    """`/api/diag` reaches the same route and asks the same `tools/list` OpenCode asks on connect.
+
+    Unnamed, opening the diagnostics page would WRITE the evidence the page exists to go looking
+    for: read the log afterwards and OpenCode looks connected whether or not it ever was. A
+    diagnostic that manufactures its own finding is worse than none.
+    """
+    import logging
+
+    orch, _ = _orch(tmp_path, Warehouse())
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator"):
+        orch.live_read_call({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, probe=True)
+
+    said = [r.getMessage() for r in caplog.records]
+    assert any("a /api/diag probe, not OpenCode" in m for m in said)
+    assert not any("OpenCode connected" in m for m in said)
+
+
 def test_the_log_never_carries_the_token_or_a_row(tmp_path: Path, caplog):
     """A token is a turn's authority and the rows are the person's data. The log ring is served by
     `/api/diag/log` to anyone who can open the Builder, so neither belongs in it — the tool name

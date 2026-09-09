@@ -6995,7 +6995,7 @@ class Orchestrator:
             return ()
         return tuple((s.binding, s.rows.table) for s in parse_samples(raw))
 
-    def live_read_call(self, message: dict) -> dict | None:
+    def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
         """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`.
 
         Said out loud, for the reason the table gate's declines are (#204). This path was silent
@@ -7023,7 +7023,12 @@ class Orchestrator:
             return live_read.perform(name, args, turn)
 
         if method in ("initialize", "tools/list"):
-            log.info("live read: OpenCode connected — %s", method)
+            # `/api/diag` reaches this route too, and it asks the same `tools/list` OpenCode asks on
+            # connect. Left unnamed, opening the diagnostics page would WRITE the evidence the page
+            # exists to go looking for — read the log after loading it and OpenCode looks connected
+            # whether or not it ever was. The probe says who it is; this says so.
+            log.info("live read: %s — %s",
+                     "a /api/diag probe, not OpenCode" if probe else "OpenCode connected", method)
         return live_mcp.handle(message, run=run)
 
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
