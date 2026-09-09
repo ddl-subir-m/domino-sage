@@ -4410,16 +4410,28 @@ class Orchestrator:
                 self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
         return self._one_app(app_id)
 
-    def rename_app(self, app_id: str, name: str) -> dict:
+    def rename_app(self, app_id: str, name: str, *, deployment: bool = True) -> dict:
         """Change what an app is called. Its ID is not touched and cannot be: the directory is
         named for it, and Domino fixes a published App's `entryPoint` when the App is created, so a
-        rename that moved the directory would strand the deployment (ADR-0008)."""
+        rename that moved the directory would strand the deployment (ADR-0008).
+
+        The single door onto renaming an app, which is why the deployment call lives here rather
+        than at either caller: the `…` menu comes through `PATCH /api/apps/{id}`, and Publish comes
+        through here too so that the name it accepted reaches Domino without a second copy of this
+        (#219).
+
+        `deployment=False` is Publish's own create branch saying the App was born holding this name
+        — `publish_app` sets it at creation — so there is nothing to rename. Not an optimisation: a
+        redundant call there could FAIL, and then a first publish that named its App perfectly
+        would report a half-rename of it.
+        """
         if app_id not in self._wm.app_ids():
             raise KeyError(app_id)
         name = (name or "").strip()
         if not name:
             raise ValueError("a name is required")
-        self._wm.app_workspace(self._project_id, app_id).set_display_name(name)
+        workspace = self._wm.app_workspace(self._project_id, app_id)
+        workspace.set_display_name(name)
         # The rail's tags name this app from OUTSIDE its directory, so the new name has to be
         # carried to them here — the same one-place-outside problem a delete solves with
         # `forget_app`. Left alone, the chip on every conversation that changed this app keeps the
@@ -4427,7 +4439,81 @@ class Orchestrator:
         # header and the preview have all already moved.
         ThreadStore(self.project(start_preview=False, seed_app=False).record.path).rename_app(
             app_id, name)
-        return self._one_app(app_id)
+        if not deployment:
+            # No `dominoApp` at all rather than `none`: the caller that passes this owns the
+            # deployment's name and is about to say what happened to it, and `none` here would be
+            # this method claiming the app has never been published — which is the one thing that
+            # word means, and which is false of the publish that just created the App.
+            return self._one_app(app_id)
+        return {**self._one_app(app_id),
+                **self._rename_deployment(workspace.domino_app_id(), name)}
+
+    def _rename_deployment(self, deployed_app_id: str, name: str) -> dict:
+        """Carry a rename to the Domino App, and answer with what actually happened to it.
+
+        `PATCH /api/apps/beta/apps/{id}` with just the name: it merges, the URL does not move and
+        no version is deployed, so this costs the person nothing — live-probed 2026-09-08, see
+        `DominoControlPlane.rename_app_deployment`.
+
+        The local rename is already written when this runs, and a failure does NOT take it back.
+        That is the deliberate half of #219's fourth criterion: the person typed a name into a box
+        that closed, and undoing it to match a deployment they cannot see would read as the rename
+        not having worked at all. So the app keeps the name and the one thing that is not true —
+        the App in Domino still answers to the old one — is what comes back, for the caller to say.
+        A silent half-rename is worse than the divergence this exists to fix.
+
+        Three answers rather than two, on `delete_app`'s precedent: an app that was never published
+        has no App to rename, and reporting that as a success would be a sentence about something
+        that never existed. `none` means exactly that and nothing else — never "nobody asked" — so
+        a caller cannot read it as "unpublished" and be wrong.
+        """
+        if not deployed_app_id:
+            return {"dominoApp": "none"}
+        if self._control_plane is None:
+            # A builder with no control plane is the same half-rename with a different cause: the
+            # App is out there under its old name. "none" would say there was no App at all.
+            return {"dominoApp": "failed", "dominoAppError": brand.text(
+                "This builder has no connection to {platformName}, so the published App is still "
+                "called by its old name. Rename it in {platformName}.")}
+        try:
+            self._control_plane.rename_app_deployment(deployed_app_id, name)
+        except NotFound:
+            # A 404 here MIGHT be the App deleted on its own settings page in Domino, which Sage
+            # cannot see happen (#80) — and that deserves its own sentence, because the ordinary
+            # one would be false in both halves: nothing is serving under the old name, and going
+            # to rename it there sends somebody looking for an App that is not on the page.
+            #
+            # But it is not evidence on its own, and this is the same trap `republish_app`'s 404
+            # handler sets out below: PATCH is the only verb this route answers, so a deployment
+            # that does not route it 404s EVERY rename — and telling every creator their App was
+            # deleted, on a deployment where they are all alive and serving, is how one missing
+            # route becomes a wave of people re-publishing Apps that never went anywhere. So ASK,
+            # on the error path where a second call costs nothing, and say "deleted" only when the
+            # App itself is what is missing. `_target_is_gone` answers None for "could not check",
+            # which is not a yes.
+            if self._target_is_gone(deployed_app_id) is True:
+                log.info("rename_app: Domino App %s is gone; nothing to rename", deployed_app_id)
+                return {"dominoApp": "failed", "dominoAppError": brand.text(
+                    "{assistantName} renamed this {builtApp}, but its published {platformName} App "
+                    "is no longer there — it was deleted in {platformName}, so there was nothing "
+                    "to rename. Publish to deploy it again under the new name.")}
+            log.exception("rename_app: Domino App %s answered 404 but is still there",
+                          deployed_app_id)
+            return {"dominoApp": "failed", "dominoAppError": brand.text(
+                "{assistantName} renamed this {builtApp}, but couldn't rename its published "
+                "{platformName} App ({deployed}). The App is still serving at the same URL under "
+                "its old name — rename it in {platformName}, or rename this one again to retry.",
+                deployed=deployed_app_id)}
+        except Exception as e:
+            log.exception("rename_app: couldn't rename Domino App %s", deployed_app_id)
+            # `reason` is the platform's own words, so it rides in as a value and is left exactly as
+            # it arrived — only the sentence around it is ours to re-brand.
+            return {"dominoApp": "failed", "dominoAppError": brand.text(
+                "{assistantName} renamed this {builtApp}, but couldn't rename its published "
+                "{platformName} App ({deployed}): {reason}. The App is still serving at the same "
+                "URL under its old name — rename it in {platformName}, or rename this one again to "
+                "retry.", deployed=deployed_app_id, reason=e)}
+        return {"dominoApp": "renamed"}
 
     def delete_app(self, app_id: str, *, delete_domino_app: bool = False) -> dict:
         """Take a Built App out of the Project, so a rail of abandoned experiments can be cleared
@@ -11275,6 +11361,7 @@ class Orchestrator:
             cp = self._control_plane
             pid = self._domino_project_id
             project_name = self._domino_project_name or self._project_id
+            named_at_creation = False
             if deployed_app_id:  # already published — ship a new version, keep the URL
                 try:
                     app = cp.republish_app(deployed_app_id)
@@ -11303,6 +11390,8 @@ class Orchestrator:
                                      entry_point=project.repo_rel(_ENTRY_POINT))
                 project.workspace.record_domino_app(app.id)
                 out = {"published": True, "app_id": app.id, "url": app.url, "republished": False}
+                # Born holding the name, so the write below has no deployment left to rename.
+                named_at_creation = True
             # The name the person accepted, kept (#218). AFTER the deploy, so a publish that failed
             # leaves nothing behind — including a rename nobody would connect to it, and a name
             # Domino itself refused, which would otherwise become the app's name and then be offered
@@ -11310,9 +11399,34 @@ class Orchestrator:
             #
             # Through `rename_app` rather than `set_display_name`: the rail's conversation tags name
             # this app from outside its directory, and a rename that skipped the sweep would leave
-            # every chip saying `Draft app 2` while the header said otherwise.
-            if chosen and chosen != project.workspace.display_name():
-                self.rename_app(project.workspace.app_id, chosen)
+            # every chip saying `Draft app 2` while the header said otherwise. Since #219 that door
+            # also carries the name to the deployment, which is what makes a re-publish's
+            # `Published new version "Risk monitor"` true of the App as well as of this row — a
+            # version POST carries no name, so nothing else here could have moved it.
+            #
+            # Not skipped when the local name already matches, which is what it used to compare on:
+            # after a rename whose Domino half failed the two names are equal HERE and different
+            # over there, and publish is the obvious next move — a skip would ship code to an App
+            # still wearing the old name while the confirm said otherwise. Rewriting a name to
+            # itself costs a settings write and a tag sweep over the few records naming this app.
+            #
+            # `dominoApp` is absent where no name was accepted, rather than defaulted to `none`: on
+            # a re-publish with the field cleared there IS a published App, and saying `none` of it
+            # would mean the one thing `none` is for — that this app has never been published.
+            if chosen:
+                renamed = self.rename_app(project.workspace.app_id, chosen,
+                                          deployment=not named_at_creation)
+                # The version shipped either way — the code behind the URL is new even where the
+                # name on it is old — so a rename that failed is a warning ON a publish that
+                # worked, not a failure of it. Carried out so the confirm can take back the half of
+                # its sentence that stopped being true.
+                #
+                # `named` for the App that was created holding this name: it was never renamed and
+                # never needed to be, which is neither of the other two answers and is emphatically
+                # not `none` — an App had just been deployed.
+                out["dominoApp"] = "named" if named_at_creation else renamed["dominoApp"]
+                if renamed.get("dominoAppError"):
+                    out["dominoAppError"] = renamed["dominoAppError"]
             # Both branches, because both moved the code behind the URL. `record_domino_app` above runs
             # on the first publish only, so it cannot be where the time is written (#56).
             project.workspace.mark_published()

@@ -47,7 +47,15 @@ window.SW = window.SW || {};
           antd.message.warning('Give it a name.');
           return Promise.reject(new Error('empty name'));
         }
-        return SW.store.renameApp(app.id, value.trim());
+        return SW.store.renameApp(app.id, value.trim()).then((out) => {
+          // The rename landed here whatever the deployment did, so the modal closes either way.
+          // The one outcome worth saying out loud is the half one: the published App is still
+          // serving under its old name, and nobody would find that out by looking at Sage, which
+          // now says the new one on every surface (#219). Held on screen, as Delete's is.
+          if (out && out.dominoApp === 'failed') {
+            antd.message.warning({ content: out.dominoAppError, duration: 10 });
+          }
+        });
       },
     });
   }
@@ -287,6 +295,13 @@ window.SW = window.SW || {};
                 ? `Published a new version of "${shipped}". It takes a few minutes to serve the new code.`
                 : `Published "${shipped}". It takes a few minutes to come up — Open app opens it.`
             );
+            // And the half of that sentence that stopped being true (#219). A re-publish ships a
+            // version, which carries no name, so the name reaches the App through a rename — and
+            // when that refuses, the code behind the URL is new while the name on it is old. The
+            // publish still worked, so this rides beside the success rather than replacing it.
+            if (out && out.dominoApp === 'failed') {
+              antd.message.warning({ content: out.dominoAppError, duration: 10 });
+            }
           })
           .catch((err) => {
             // Held open rather than closed on the failure, on Delete's precedent: nothing was

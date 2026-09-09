@@ -121,10 +121,11 @@ def test_the_deployed_app_carries_the_accepted_name(tmp_path: Path):
     assert cp.app_names[out["app_id"]] == "Desk exposure"
 
 
-def test_a_republish_keeps_the_name_even_though_the_deployment_is_not_renamed(tmp_path: Path):
-    """A re-publish posts a VERSION to an App that already exists, so nothing here renames it in
-    Domino — and the field is still worth accepting, because the name it writes is the one the
-    switcher, the receipts and the next first publish all read."""
+def test_a_republish_keeps_the_name_on_both_sides(tmp_path: Path):
+    """A re-publish posts a VERSION to an App that already exists, and a version carries no name —
+    so the name reaches the deployment through the rename PATCH instead (#219). It used to reach it
+    not at all, which is how a name could be `Risk monitor` on every Sage surface and `Desk
+    exposure` on every Domino one for the life of the App."""
     cp = FakeControlPlane()
     orch = _orch(tmp_path, cp)
     app = orch.project(start_preview=False).workspace
@@ -134,7 +135,7 @@ def test_a_republish_keeps_the_name_even_though_the_deployment_is_not_renamed(tm
 
     assert again["republished"] is True
     assert app.display_name() == "Risk monitor"
-    assert cp.app_names[first["app_id"]] == "Desk exposure"
+    assert cp.app_names[first["app_id"]] == "Risk monitor"
 
 
 def test_a_publish_that_is_refused_writes_no_name(tmp_path: Path):

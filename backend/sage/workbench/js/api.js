@@ -602,6 +602,8 @@ SW.api = {
   // Point Build at another app. 409 while a build is streaming; the caller shows what it says.
   selectApp: (id) => post(`/apps/${encodeURIComponent(id)}/select`, {}),
   // Only the name is writable. The id names the app's directory and never changes.
+  // Answers the rail row plus `dominoApp` — `renamed`, `none`, or `failed` with a
+  // `dominoAppError` sentence for the published App that kept its old name (#219).
   patchApp: (id, body) => patch(`/apps/${encodeURIComponent(id)}`, body),
   // New app in the Build header: minted, seeded and selected server-side, with no Thread and no plan
   // behind it. 409 while a build is streaming, because a turn holds one working tree.
@@ -614,8 +616,13 @@ SW.api = {
   // Publish (or republish) the SELECTED Built App as a live Domino App (#89). No id on the wire:
   // the server publishes the app Build is pointed at, and an id travelling beside it would be a
   // second answer to "which app" — shipping over the wrong one is the failure #70 exists to stop.
-  // Answers {published, app_id, url, manage_url, republished}; a 409 carries `refused` problems
-  // and every other failure carries a sentence, both of which `request` already surfaces.
+  // Answers {published, app_id, url, manage_url, republished, dominoApp}; a 409 carries `refused`
+  // problems and every other failure carries a sentence, both of which `request` already surfaces.
+  // `dominoApp` is the accepted name's other half: a version POST carries no name, so a re-publish
+  // under a new one renames the App separately, and `failed` there is a publish that shipped code
+  // to an App still answering to its old name (#219). `named` is a first publish, whose App was
+  // created holding the name. Absent where the name field was cleared and nothing was accepted —
+  // never `none`, which is reserved for an app that has no published App at all.
   //
   // `name` is the one thing that DOES travel: it is what the person accepted in the confirm's name
   // field, and the server writes it to the app before it deploys (#218). Not an answer to "which

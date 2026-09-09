@@ -172,6 +172,7 @@ class ControlPlane(Protocol):
                       git_ref_value: str | None = None) -> PublishedApp: ...
     def list_project_apps(self, project_id: str) -> list[PublishedApp]: ...
     def list_all_apps(self) -> list[BuiltApp]: ...
+    def rename_app_deployment(self, app_id: str, name: str) -> dict[str, Any]: ...
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]: ...
     def app_manage_url(self, app_id: str, project_name: str) -> str | None: ...
     def app_status(self, app_id: str) -> str: ...
@@ -241,6 +242,11 @@ class DominoControlPlane:
         with self._client() as c:
             r = c.post(f"{self._host}{path}", json=body, headers=self._headers(), params=params)
         return self._check(r, "POST", path)
+
+    def _patch(self, path: str, body: dict[str, Any]) -> Any:
+        with self._client() as c:
+            r = c.patch(f"{self._host}{path}", json=body, headers=self._headers())
+        return self._check(r, "PATCH", path)
 
     def _delete(self, path: str) -> Any:
         with self._client() as c:
@@ -585,6 +591,28 @@ class DominoControlPlane:
             offset += len(items)
         return out
 
+    def rename_app_deployment(self, app_id: str, name: str) -> dict[str, Any]:
+        """Rename a published App in place: PATCH /api/apps/beta/apps/{app_id} with just the name.
+
+        Live-probed on cloud-dogfood, 2026-09-08 (docs/live-runs/2026-09-08-app-rename-probe.md),
+        because none of this could be read off the API surface:
+
+        - PATCH is the ONLY verb routed here. PUT, POST and OPTIONS all fall through to the
+          router's own 404, and there is no `Allow` header to have asked.
+        - The body MERGES. A partial body is not destructive — a full before/after diff of the App
+          moved one line — so the name is the whole body, and sending the App back would only be a
+          chance to drop a field the API grew since.
+        - The URL does not move and no version is deployed. A rename costs no downtime and the
+          people holding the link keep it.
+        - All three Domino surfaces read the record this writes: the App's own page, the project's
+          App list, and the manage page Publish deep-links to.
+
+        Says nothing about CLASSIC, UI-created Apps: those live in another id space, never appear
+        in the beta list, and Sage does not publish them.
+        """
+        d = self._patch(f"{_APPS_PATH}/{app_id}", {"name": name})
+        return d if isinstance(d, dict) else {"renamed": True}
+
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]:
         """Delete a published App deployment: DELETE /api/apps/beta/apps/{app_id}. Required before the
         project can be archived — a project that still contains a published App is rejected the same
@@ -729,6 +757,8 @@ class FakeControlPlane:
     unready_paths: set[str] = field(default_factory=set)  # open_paths whose proxy still has no upstream
     probed_paths: list[str] = field(default_factory=list)  # open_paths a readiness probe was run for
     deleted_apps: list[str] = field(default_factory=list)  # app_ids a deployment delete was asked for
+    renamed_apps: list[tuple[str, str]] = field(default_factory=list)  # (app_id, name) renames asked for
+    rename_failures: set[str] = field(default_factory=set)  # app_ids whose deployment rename refuses
     user: UserRef = UserRef(id="user-1", name="tester")  # who the fake token acts as (the viewer)
     credentials: list[CredentialRef] = field(default_factory=lambda: [
         CredentialRef(id="cred-1", label="test PAT (github.com)", domain="github.com",
@@ -843,6 +873,20 @@ class FakeControlPlane:
 
     def list_all_apps(self) -> list[BuiltApp]:
         return list(self.built)
+
+    def rename_app_deployment(self, app_id: str, name: str) -> dict[str, Any]:
+        # Recorded before it can refuse, for the same reason the delete records: "renaming an
+        # unpublished app makes no control-plane call" is a claim about the call, and a rename that
+        # wrote the same name twice looks the same as one that was never asked for.
+        self.renamed_apps.append((app_id, name))
+        if app_id in self.rename_failures:
+            raise RuntimeError(f"PATCH /api/apps/beta/apps/{app_id} -> 500: rename refused")
+        if app_id not in self.published:
+            # What the real API does for an id whose App is gone — deleted on its own settings page
+            # in Domino, which Sage cannot see happen (#80).
+            raise NotFound(f"PATCH /api/apps/beta/apps/{app_id} -> 404: No app found with id")
+        self.app_names[app_id] = name
+        return {"id": app_id, "name": name}
 
     def delete_app_deployment(self, app_id: str) -> dict[str, Any]:
         # Recorded as well as applied: "deleting an app that was never published makes no
