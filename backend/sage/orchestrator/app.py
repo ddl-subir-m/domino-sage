@@ -1412,7 +1412,13 @@ def diag() -> JSONResponse:
         "agents": orchestrator.resolved_agents(),
         "mcp": _mcp_diag(control_port),
         "opencode_config": _opencode_config_diag(),
-        "custom_tools": _custom_tools_diag(),
+        # Three readings, and only together do they say where a custom tool was lost: what is on
+        # DISK, what OPENCODE made of it, and — on the shim's own line below — what reached the
+        # gateway. With any one missing, "never installed", "installed but never loaded" and
+        # "loaded but never offered" are the same blank.
+        "custom_tools": {**_custom_tools_diag(),
+                         "opencode_holds": orchestrator.opencode_tool_registry(_chat_work_dir()),
+                         "opencode_log": orchestrator.opencode_log_about_tools()},
         "project": None if p is None else {
             "model_calls": p.model_calls,
             "tool_call_responses": p.tool_call_responses,

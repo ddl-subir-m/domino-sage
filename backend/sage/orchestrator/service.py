@@ -5018,6 +5018,23 @@ class Orchestrator:
         except OSError:
             return []
 
+    def opencode_log_about_tools(self, lines: int = 12) -> list[str]:
+        """The lines of OpenCode's own log that mention tools, whatever their age.
+
+        `_opencode_log_tail` shows the LAST few lines, and a tool that failed to load says so at
+        boot — long since scrolled past by the time anyone reads the page. This is the same file,
+        filtered instead of tailed, so a load error survives long enough to be read.
+        """
+        if not self._oc_log_path:
+            return []
+        try:
+            with open(self._oc_log_path, encoding="utf-8", errors="replace") as f:
+                hits = [ln.rstrip() for ln in f
+                        if re.search(r"tool|plugin|node_modules|\bnpm\b", ln, re.IGNORECASE)]
+        except OSError:
+            return []
+        return hits[-lines:]
+
     @staticmethod
     def _switch_conversation(project: Project, conversation: str | None) -> None:
         """A different conversation is a different session. project.session_id caches only the one
@@ -7178,6 +7195,66 @@ class Orchestrator:
             return {"asked": True, "ok": True, "url": url, "servers": r.json()}
         except Exception as e:
             return {"asked": True, "ok": False, "url": url, "error": f"unreadable reply: {e}"}
+
+    def opencode_tool_registry(self, directory: str | None = None) -> dict:
+        """The tool list OPENCODE holds for an instance, asked of OpenCode.
+
+        The missing half of the custom-tool story, and the reason 2026-09-09 cost a day. The shim
+        records what reached the GATEWAY; `custom_tools` records what is on DISK. Nothing said what
+        OpenCode made of the file in between, so "the install did not land", "it landed and the
+        module failed to load" and "it loaded and the tools were dropped later" all read the same.
+
+        `GET /experimental/tool` lists built-ins PLUS custom tools. It never lists MCP tools, which
+        makes it useless for that question and exactly right for this one. It needs `provider` and
+        `model` — the registry genuinely differs by model — so they are read from the config we
+        installed rather than guessed.
+
+        A TIMEOUT IS AN ANSWER. OpenCode installs `@opencode-ai/plugin` from the npm registry the
+        first time it reads the tools directory, whether or not anything imports it, and blocks this
+        call until npm gives up: 132 s measured on a bench with the registry black-holed. So a slow
+        or timed-out reply here means the workspace has no egress and the image needs its warm
+        `~/.config/opencode` — not that the tools are missing.
+
+        Never raises. A diagnostic must never be the thing that breaks the diagnostics page.
+        """
+        server = self._oc_server
+        if server is None:
+            return {"asked": False, "why": "the OpenCode server is not running"}
+        model = ""
+        try:
+            cfg = json.loads(
+                (Path(os.path.expanduser("~/.config/opencode")) / "opencode.json").read_text())
+            model = str(cfg.get("model") or "")
+        except Exception as e:
+            return {"asked": False, "why": f"could not read the installed model: {e}"}
+        provider, _, name = model.partition("/")
+        if not provider or not name:
+            return {"asked": False, "why": f"the installed model is not provider/name: {model!r}"}
+        query = {"provider": provider, "model": name, "agent": "sage-chat"}
+        if directory:
+            query["directory"] = directory
+        try:
+            url = server.url().rstrip("/") + "/experimental/tool?" + urllib.parse.urlencode(query)
+        except Exception as e:
+            return {"asked": False, "why": f"{type(e).__name__}: {e}"}
+        try:
+            with self.diagnostic_window():
+                r = httpx.get(url, timeout=15.0, headers={"Accept": "application/json"})
+        except httpx.TimeoutException:
+            return {"asked": True, "ok": False, "url": url, "error": "timed out",
+                    "probably": "OpenCode is blocked installing @opencode-ai/plugin with no npm "
+                                "egress — warm ~/.config/opencode in the image"}
+        except Exception as e:
+            return {"asked": True, "ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
+        if r.status_code != 200:
+            return {"asked": True, "ok": False, "url": url, "status": r.status_code,
+                    "body": r.text[:300]}
+        try:
+            held = sorted(str(t.get("id")) for t in r.json())
+        except Exception as e:
+            return {"asked": True, "ok": False, "url": url, "error": f"unreadable reply: {e}"}
+        return {"asked": True, "ok": True, "url": url, "tools": held,
+                "ours": [n for n in held if "live_read" in n]}
 
     def _mint_live_read_token(self, thread_id: str) -> str:
         token = "lrt_" + secrets.token_urlsafe(15)
