@@ -22,6 +22,7 @@ import secrets
 import tempfile
 import threading
 import time
+import urllib.parse
 import weakref
 from collections import deque
 from collections.abc import Sequence
@@ -7063,7 +7064,7 @@ class Orchestrator:
         finally:
             self._diag_depth = max(0, self._diag_depth - 1)
 
-    def opencode_mcp_status(self) -> dict:
+    def opencode_mcp_status(self, directory: str | None = None) -> dict:
         """What OPENCODE says about its own MCP servers. Asked of OpenCode, not inferred.
 
         Every other field on the `mcp` block is Sage looking at Sage. `configured` reads the file we
@@ -7075,6 +7076,17 @@ class Orchestrator:
         `opencode serve` answers `GET /mcp` with a status per server, and that is the only
         authoritative answer to "did it connect". Verified against the pinned 1.18.4, which replies
         `{"sage-live-read": {"status": "connected"}}`.
+
+        ASK ABOUT A DIRECTORY. MCP clients are per-instance, and an instance is a directory —
+        measured on 1.18.4: `GET /mcp` and `GET /mcp?directory=X` produce two separate handshakes,
+        and repeating either produces none. Sage's OpenCode server sits in a directory of its own
+        while Chat turns run in `.sage/chat-work`, so the bare call answers for an instance no turn
+        ever uses. That is how this field came to read `connected` while three turns in a row went
+        out with no Live read in their tool list.
+
+        Asking CONNECTS the instance if it was not connected, which is why the caller wraps this in
+        `diagnostic_window`. It also means reading this page is itself an experiment: if a turn
+        taken straight afterwards has the tools, connecting that directory up front is the fix.
 
         Read it beside `reachable`, because the pair is what separates the two failures:
           - reachable ok + status connected  → the tools are there; a missing one is the MODEL's choice
@@ -7088,6 +7100,8 @@ class Orchestrator:
             return {"asked": False, "why": "the OpenCode server is not running"}
         try:
             url = server.url().rstrip("/") + "/mcp"
+            if directory:
+                url += "?directory=" + urllib.parse.quote(directory, safe="")
         except Exception as e:
             # `url()` raises until the server has reported one, which is a real answer here.
             return {"asked": False, "why": f"{type(e).__name__}: {e}"}

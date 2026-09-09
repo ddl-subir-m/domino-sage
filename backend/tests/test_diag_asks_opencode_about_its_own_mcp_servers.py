@@ -421,3 +421,41 @@ def test_a_turn_that_missed_while_serve_never_dialled_is_not_called_late(tmp_pat
     assert "never reached a turn" in out
     assert "connected because you asked" in out
     assert "LATE" not in out
+
+
+def test_the_status_is_asked_about_the_directory_turns_actually_run_in(tmp_path, monkeypatch,
+                                                                       live_read_route):
+    """An MCP client belongs to a DIRECTORY. Measured on the pinned 1.18.4: `GET /mcp` and
+    `GET /mcp?directory=X` make two separate handshakes, and repeating either makes none.
+
+    Sage's OpenCode server sits in a directory of its own while Chat turns run in `.sage/chat-work`,
+    so the bare call answers for an instance no turn ever uses — which is how this field read
+    `connected` while three turns in a row went out with no Live read in their tool list.
+    """
+    seen: list[str] = []
+
+    class _Recording(_Handle):
+        pass
+
+    srv = _opencode({"sage-live-read": {"status": "connected"}})
+    work = tmp_path / "mnt" / "code" / ".sage" / "chat-work"
+    work.mkdir(parents=True)
+    monkeypatch.setattr(app_module.orchestrator, "_wm",
+                        type("W", (), {"_dir": tmp_path / "mnt" / "code"})(), raising=False)
+    real = app_module.orchestrator.opencode_mcp_status
+
+    def _spy(directory=None):
+        seen.append(directory)
+        return real(directory)
+
+    monkeypatch.setattr(app_module.orchestrator, "opencode_mcp_status", _spy, raising=False)
+    try:
+        out = _diag(tmp_path, monkeypatch, live_read_route,
+                    _Recording(f"http://127.0.0.1:{srv.server_port}"))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert str(work) in seen                      # the instance a turn uses was asked about
+    assert None in seen                           # and the server's own, for comparison
+    assert out["opencode_says_chat_work"]["directory"] == str(work)

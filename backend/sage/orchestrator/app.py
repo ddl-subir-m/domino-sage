@@ -975,7 +975,17 @@ def _mcp_diag(control_port: int) -> dict:
         # the bug this block exists for. `GET /mcp` on the OpenCode server is the only thing that
         # answers for OpenCode. See Orchestrator.opencode_mcp_status for how to read it beside
         # `reachable`.
+        #
+        # Twice, because an MCP client belongs to a DIRECTORY and the two directories here are not
+        # the same one. `opencode_says` answers for the server's own instance, which no turn uses.
+        # `opencode_says_chat_work` answers for the instance Chat turns actually run in, and it is
+        # the one worth reading — the bare call reported `connected` while three turns in a row went
+        # out with no Live read in their tool list.
         says = {"opencode_says": orchestrator.opencode_mcp_status()}
+        work = _chat_work_dir()
+        if work:
+            says["opencode_says_chat_work"] = {
+                "directory": work, **orchestrator.opencode_mcp_status(work)}
     except Exception:
         pass
     return {"config": str(src), "servers": out, **reach, **says}
@@ -1005,6 +1015,19 @@ def _mcp_probe(url: str) -> dict:
         return {"ok": False, "status": r.status_code, "error": f"unreadable reply: {e}"}
 
 
+def _chat_work_dir() -> str | None:
+    """Where Chat turns run — the directory whose MCP client is the one that matters.
+
+    Beside the diag rather than inside it because two callers need the same answer and they were
+    computing it separately, which is how one of them came to ask about the wrong instance.
+    """
+    workspace = getattr(getattr(orchestrator, "_wm", None), "_dir", None)
+    if not workspace:
+        return None
+    work = Path(workspace) / ".sage" / "chat-work"
+    return str(work) if work.is_dir() else None
+
+
 def _live_read_verdict(info: dict) -> str:
     """One sentence saying WHOSE end broke, from the fields `_mcp_diag` already gathers.
 
@@ -1016,7 +1039,10 @@ def _live_read_verdict(info: dict) -> str:
     Three outcomes, because three things can be at fault and they used to look identical:
     our route, OpenCode's grip on it, and the model's own choice not to call a tool it was offered.
     """
-    says = info.get("opencode_says") or {}
+    # The chat-work instance when we have it, because that is the client a turn uses. Falling back
+    # to the server's own instance rather than refusing to answer: it is the weaker reading, not a
+    # useless one, and before this the page had nothing else.
+    says = info.get("opencode_says_chat_work") or info.get("opencode_says") or {}
     if not says.get("asked"):
         return ("VERDICT: nobody was asked — "
                 + str(says.get("why") or "the OpenCode server is not up")
