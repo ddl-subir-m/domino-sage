@@ -216,6 +216,21 @@ window.SW = window.SW || {};
     );
   }
 
+  // Names when the wrapper had them, otherwise the width of a positional body. Inventing "0",
+  // "1" as a header is worse than no header (`orient="values"`), but antd given zero column
+  // defs paints one empty row per record — the filename-titled blank grid a warehouse table
+  // reloaded as. The values are already in `rows`; they need a `dataIndex` that can see them.
+  function tablePaintShape(block) {
+    const names = (block.columns || []).map((c) => (
+      c && typeof c === 'object' ? (c.name || c.title || c.field || '') : (c ?? '')
+    ));
+    const width = Math.max(
+      names.length,
+      ...((block.rows || []).map((r) => (Array.isArray(r) ? r.length : 0))),
+    );
+    return { names, width };
+  }
+
   function TableBlock({ block }) {
     const [showAll, setShowAll] = useState(false);
     // With neither columns nor rows, antd paints a bordered box under the title and nothing
@@ -244,10 +259,11 @@ window.SW = window.SW || {};
         )
       );
     }
-    const columns = block.columns.map((name, index) => ({
-      title: name,
+    const { names, width } = tablePaintShape(block);
+    const columns = Array.from({ length: width }, (_, index) => ({
+      title: names[index] || '',
       dataIndex: index,
-      key: name,
+      key: names[index] || String(index),
       ellipsis: true,
       align: index === 0 ? 'left' : 'right',
       render: (value) => {
@@ -1533,9 +1549,13 @@ window.SW = window.SW || {};
           if (!b.columns.length && !b.rows.length) {
             return [b.title, '(no rows)'].filter(Boolean).join('\n');
           }
-          const header = `| ${b.columns.map(cell).join(' | ')} |`;
-          const rule = `| ${b.columns.map(() => '---').join(' | ')} |`;
-          const rows = b.rows.map((row) => `| ${row.map(cell).join(' | ')} |`);
+          const { names, width } = tablePaintShape(b);
+          const headerCells = Array.from({ length: width }, (_, i) => names[i] || '');
+          const header = `| ${headerCells.map(cell).join(' | ')} |`;
+          const rule = `| ${headerCells.map(() => '---').join(' | ')} |`;
+          const rows = b.rows.map((row) => (
+            `| ${Array.from({ length: width }, (_, i) => cell((row || [])[i])).join(' | ')} |`
+          ));
           return [b.title, header, rule, ...rows].filter(Boolean).join('\n');
         }
         if (b.type === 'image') return `[Image: ${b.title || 'untitled'}]`;

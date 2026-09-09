@@ -1035,6 +1035,48 @@ window.SW = window.SW || {};
     return `./api/project/file/raw?path=${encodeURIComponent(path)}`;
   }
 
+  // sage-chat writes `.table.json` in several near-contract shapes. A string is the documented
+  // column; a JSON Table Schema field is `{name, type}`; pandas Index sometimes dumps as
+  // `{0: "date", 1: "tokens"}`. Using any of those as a `row[column]` key left every cell null
+  // while the header row and "Show all N rows" still looked like a table — the blank grid a
+  // warehouse visualisation reloaded as.
+  function tableColumnName(value) {
+    if (value == null) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (Array.isArray(value)) return value.map(tableColumnName).filter(Boolean).join(' ');
+    if (typeof value === 'object') {
+      const inner = value.name ?? value.title ?? value.field ?? value.key;
+      if (inner != null && inner !== value) return tableColumnName(inner);
+    }
+    return '';
+  }
+
+  function tableColumnList(raw) {
+    if (Array.isArray(raw) && raw.length) return raw.map(tableColumnName);
+    if (raw && typeof raw === 'object') {
+      const vals = Object.values(raw);
+      if (vals.length) return vals.map(tableColumnName);
+    }
+    return [];
+  }
+
+  function tableKeyFold(name) {
+    return String(name).toLowerCase().replace(/[\s_-]+/g, '');
+  }
+
+  function tableRecordCell(row, name) {
+    if (!row || typeof row !== 'object') return null;
+    if (Object.prototype.hasOwnProperty.call(row, name)) return row[name];
+    const want = tableKeyFold(name);
+    if (!want) return null;
+    for (const key of Object.keys(row)) {
+      if (tableKeyFold(key) === want) return row[key];
+    }
+    return null;
+  }
+
   async function blocksForArtifacts(items) {
     const blocks = [];
     for (const art of items || []) {
@@ -1071,8 +1113,9 @@ window.SW = window.SW || {};
             : [];
           // Only a record row names its columns. Reading them off a positional row would header
           // the table "0", "1", … — worse than the empty header that shape renders today.
+          const named = tableColumnList(wrapper.columns);
           const columns =
-            (Array.isArray(wrapper.columns) && wrapper.columns.length ? wrapper.columns : null) ||
+            (named.some(Boolean) ? named : null) ||
             (fields.length ? fields : null) ||
             (head && !Array.isArray(head) ? Object.keys(head) : []);
           blocks.push({
@@ -1083,7 +1126,7 @@ window.SW = window.SW || {};
             path,
             columns,
             rows: source.map((row) =>
-              Array.isArray(row) ? row : columns.map((name) => (row || {})[name] ?? null)),
+              Array.isArray(row) ? row : columns.map((name) => tableRecordCell(row, name))),
           });
         } catch (err) {
           blocks.push({ type: 'file', name: art.name || path, path });

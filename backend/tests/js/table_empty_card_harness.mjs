@@ -79,6 +79,11 @@ const button = [...walk(SW.Message({ message }))]
   .find((n) => (n.p || {})['aria-label'] === 'Copy message');
 if (button) button.p.onClick();
 
+const tableNode = nodes.find((n) => n.t === 'Table');
+const tableCols = tableNode ? (tableNode.p || {}).columns || [] : [];
+const tableRows = tableNode ? (tableNode.p || {}).dataSource || [] : [];
+const first = tableRows[0] || {};
+
 console.log(JSON.stringify({
   title: saidBy('sw-block-title')[0] || null,
   // Every line of prose the card puts on screen, in order. A blank card says none.
@@ -86,5 +91,11 @@ console.log(JSON.stringify({
   // Where the card sends someone who cannot read the table it failed to draw.
   links: nodes.filter((n) => n.t === 'a').map((n) => (n.p || {}).href).filter(Boolean),
   table: nodes.some((n) => n.t === 'Table'),
+  // What antd is asked to paint. A card can be `table: true` and still blank on screen: zero
+  // column defs, or `dataIndex` keys that none of the rows have, both draw the grid with no
+  // cells. The filename-derived "api usage detail.table" card was that shape — 50 rows, no
+  // values — so the claim has to reach into the Table props, not stop at whether one exists.
+  headers: tableCols.map((c) => c.title),
+  cells: tableCols.map((c) => first[c.dataIndex]),
   copied,
 }));
