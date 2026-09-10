@@ -85,15 +85,22 @@ def test_a_pandas_index_orient_dump_fills_its_cells():
 
 @needs_node
 def test_a_date_indexed_columns_dump_still_fills_its_cells():
-    """`df.set_index("REPORT_DATE").to_json()` uses the dates as inner keys, not 0/1."""
+    """`df.set_index("REPORT_DATE").to_json()` uses the dates as inner keys, not 0/1.
+
+    This first landed asserting the dates were dropped, which recognised the shape and then
+    deleted the column the person had indexed BY. A labelled index now becomes the first
+    column — see
+    `test_a_table_artifact_with_a_labelled_index_keeps_its_row_names.py`, where the same
+    defect makes a correlation matrix unreadable rather than merely poorer.
+    """
     body = {
         "TEAM": {"2026-01-01": "Product", "2026-01-02": "Engineering"},
         "PRODUCT": {"2026-01-01": "cursor", "2026-01-02": "cursor"},
         "GROSS_SPEND": {"2026-01-01": 12.5, "2026-01-02": 8.0},
     }
     table = _open_with("thr_dated", body)
-    assert table["columns"] == ["TEAM", "PRODUCT", "GROSS_SPEND"]
+    assert table["columns"] == ["", "TEAM", "PRODUCT", "GROSS_SPEND"]
     assert table["rows"] == [
-        ["Product", "cursor", 12.5],
-        ["Engineering", "cursor", 8.0],
+        ["2026-01-01", "Product", "cursor", 12.5],
+        ["2026-01-02", "Engineering", "cursor", 8.0],
     ]

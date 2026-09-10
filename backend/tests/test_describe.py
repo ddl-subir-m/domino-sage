@@ -207,7 +207,10 @@ def test_every_kind_produces_a_single_line_summary_within_budget(tmp_path: Path)
         assert 0 < len(d["summary"]) <= 90
         assert REPLACEMENT not in d["summary"] and REPLACEMENT not in d["detail"]
         assert isinstance(d["size"], int)
-        assert set(d) == {"kind", "summary", "detail", "size"}
+        assert set(d) == {"kind", "summary", "detail", "shape", "size"}
+        # Only a file with columns has a `shape`, and no rendering of shape may carry a row.
+        assert bool(d["shape"]) == (d["kind"] == "tabular")
+        assert "Sample rows:" not in d["shape"]
     assert kinds == {"tabular", "pdf", "image", "binary", "json", "text", "parquet", "excel",
                      "unavailable"}
 

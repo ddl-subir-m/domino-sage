@@ -1281,7 +1281,16 @@ def _pin_key(pin: dict) -> tuple:
 
 
 def _describe_context_file(workspace: Path, item: dict) -> str:
-    """Shape summary for a file chip. Empty when the bytes are not here to read."""
+    """Shape of a file chip. Empty when the bytes are not here to read.
+
+    `shape` over `summary`, because `summary` is written to fit a UI chip in 90 characters and
+    a chat turn reading it learns that a file has nine columns and not one of their names. An
+    agent asked about a column then guesses the name and the values both, and a guess at a value
+    fails silently: a filter matching nothing is an empty frame, not an error, and the turn goes
+    on to write an empty chart and an empty table over it. `shape` names the columns and the few
+    values that are a vocabulary; `detail`, which would also do that, carries verbatim rows into
+    a block assembled for every attached file on every turn.
+    """
     path = item.get("path")
     if not path:
         return ""
@@ -1291,7 +1300,7 @@ def _describe_context_file(workspace: Path, item: dict) -> str:
         d = describe(str(real))
     except (ValueError, OSError, TypeError):
         return ""
-    return str(d.get("summary") or "").strip()
+    return str(d.get("shape") or d.get("summary") or "").strip()
 
 
 def _safe_join(root: Path, rel: str) -> Path:
@@ -2386,7 +2395,10 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
             )
         line = f"- {kind}: {name}{extra}"
         if file_note:
-            return f"{line}. {file_note}"
+            # A column listing is several lines and every other row here is one. Its own lines are
+            # already indented, so the block reads as belonging to the row above it rather than as
+            # four more context rows.
+            return f"{line}.\n{file_note}" if "\n" in file_note else f"{line}. {file_note}"
         if path:
             return (
                 f"{line}. Read that file. Do not search the rest of this workspace for a substitute."
@@ -5243,12 +5255,19 @@ class Orchestrator:
                 # is FOR (ADR-0029), and lifting the whole fresh descriptor over it would make an
                 # @mention re-derive a summary it already has — a full pass over the file, since
                 # the row count in it streams to the end.
-                fresh = self._describe_now(project, entry).get("detail", "")
-                return {**cached, "detail": fresh, "withheld": ""}
+                #
+                # `shape` is withheld beside `detail` and comes back beside it. It carries no row,
+                # but it does carry the values of any column with few enough of them to read as a
+                # vocabulary, and this cache is committed — which is the whole reason `detail`
+                # never reaches it. A test fixture whose `ssn` column held three values put all
+                # three in the manifest the first time this was written without that.
+                again = self._describe_now(project, entry)
+                return {**cached, "detail": again.get("detail", ""),
+                        "shape": again.get("shape", ""), "withheld": ""}
             return cached
         d = self._describe_now(project, entry)
         if d.get("detail"):
-            entry["descriptor"] = {**d, "detail": "", "withheld": _WITHHELD_UNCACHED}
+            entry["descriptor"] = {**d, "detail": "", "shape": "", "withheld": _WITHHELD_UNCACHED}
             return d
         entry["descriptor"] = d
         return d
@@ -12364,6 +12383,7 @@ class Orchestrator:
             if not isinstance(d, dict) or not d.get("detail"):
                 continue
             d["detail"] = ""
+            d["shape"] = ""
             d["withheld"] = _WITHHELD_UNCACHED
             touched = True
         if touched:

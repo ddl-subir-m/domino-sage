@@ -78,6 +78,20 @@ short hyphenated slug as the filename.
   objects, the others a bare array — and the table then shows "No data" next to a chart that
   looks fine. Write it this way instead:
   `json.dump({"title": t, "columns": list(df.columns), "rows": df.values.tolist()}, f)`.
+  `df.values.tolist()` leaves the index out, so **reset a labelled index into a column
+  first** — `df = df.reset_index()`. A correlation matrix without that step is a square of
+  numbers with no way to read which row is which.
+
+- **Never write a chart or a table from an empty frame.** A filter that matches nothing is not
+  an error — pandas returns an empty frame, and writing it produces a blank image and a
+  `{"columns": [], "rows": []}` file under a correct-looking title. Check the frame is not
+  empty before you write either one.
+
+  When a filter empties a frame, the value is usually not what you assumed: `side == "long"`
+  matches nothing in a column holding `LONG`. The context block above lists each column
+  with its values where there are few enough of them — read it. Where it does not, look
+  (`df["side"].unique()`) rather than guess. If the column really is empty, say so in a
+  sentence and write no file: a blank chart tells the person nothing about their data.
 - A correlation, confusion, or other square matrix is **both**: a heatmap PNG and a `.table.json`
   of the same numbers. Do not dump the matrix into the reply text.
 - SQL you actually ran may be saved as `<slug>.sql` next to the result.

@@ -1212,9 +1212,19 @@ window.SW = window.SW || {};
         }
       }
     }
+    // A RangeIndex is pandas' own counter and says nothing, but a labelled index is half the
+    // answer, and on a square matrix it IS the answer: `df.corr().to_json()` writes the tickers
+    // across the top and the same tickers down the side, and dropping the side left nine rows of
+    // floats under a correct header with no way to read which pair any cell belonged to. The
+    // label has no name to recover — `to_json` writes an index's values and never its name — so
+    // the column heads blank, which is what a matrix's top-left corner wants anyway.
+    const labelled = !tableIndexKeys(indexKeys);
     return {
-      columns: keys,
-      rows: indexKeys.map((i) => values.map((v) => (Object.prototype.hasOwnProperty.call(v, i) ? v[i] : null))),
+      columns: labelled ? ['', ...keys] : keys,
+      rows: indexKeys.map((i) => {
+        const cells = values.map((v) => (Object.prototype.hasOwnProperty.call(v, i) ? v[i] : null));
+        return labelled ? [i, ...cells] : cells;
+      }),
     };
   }
 
@@ -1262,7 +1272,14 @@ window.SW = window.SW || {};
             (fields.length ? fields : null) ||
             (head && !Array.isArray(head) ? Object.keys(head) : []);
           if (!source.length) {
-            const dump = pandasOrientedTable(wrapper);
+            // The dump is not always the whole file. A turn that half-remembers the wrapper
+            // writes `{title, data: df.to_dict()}`, or fills `rows` with the dump instead of a
+            // list of rows, and the ladder above only looks for an ARRAY under those keys — so
+            // both fell through to the blank box with a correct title still sitting above it.
+            // The wrapper itself is tried first because that is the plain dump; the rest are the
+            // keys a wrapper would have used.
+            const dump = [wrapper, wrapper.data, wrapper.rows, wrapper.records]
+              .map((o) => pandasOrientedTable(o)).find(Boolean);
             if (dump) {
               columns = dump.columns;
               source = dump.rows;

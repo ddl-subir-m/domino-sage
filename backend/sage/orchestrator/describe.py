@@ -38,6 +38,8 @@ _JSON_PARSE_LIMIT = 32 * 1024 * 1024
 # Extracting text is the expensive part of a PDF; per-page counts past this add nothing.
 _PDF_MAX_PAGES_SCANNED = 20
 _SUMMARY_MAX = 90
+# Distinct values past which a column reads as free text rather than as a vocabulary.
+_VOCABULARY_MAX = 12
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$|^\d{1,2}/\d{1,2}/\d{2,4}$")
 
@@ -48,6 +50,16 @@ def describe(path: str, *, max_detail_chars: int = 1200) -> dict:
     `summary` is a single line <= 90 chars — it is rendered into an always-present index of every
     attachment, so it must be cheap enough to show unconditionally. `detail` is a multi-line block
     hard-capped at `max_detail_chars`, inlined only when the user explicitly mentions that file.
+
+    `shape` is `detail` without the sample rows: column names, inferred types, and the value
+    vocabulary of any column that has one. It exists because those two were the only renderings
+    and neither fits the surface that needed one — a chat turn is handed `summary` for every file
+    in Session context, and "CSV — 9 columns, 2,864 rows" does not name a single column, so an
+    agent asked about one has to guess at both its name and its values. `detail` would answer
+    that, but it carries three verbatim rows, and Session context is assembled for every attached
+    file unconditionally. `shape` is the half of `detail` that is shape, which is all this module
+    ever promised to emit. Only tabular files have one; elsewhere it is empty and the caller keeps
+    whichever rendering it used before.
     """
     try:
         size = os.path.getsize(path)
@@ -64,7 +76,12 @@ def describe(path: str, *, max_detail_chars: int = 1200) -> dict:
     except Exception as e:  # a malformed file must never take down the prompt assembly
         return _unavailable(f"could not be identified — {type(e).__name__}", size)
     try:
-        summary, detail = _HANDLERS[kind](path, head, hint, size)
+        produced = _HANDLERS[kind](path, head, hint, size)
+        # Seven handlers describe a file that has no columns and return two strings; the tabular
+        # one returns three. Widening all eight to carry a `shape` that seven cannot fill would be
+        # eight edits to say nothing.
+        summary, detail = produced[0], produced[1]
+        shape = produced[2] if len(produced) > 2 else ""
     except Exception as e:
         # Magic bytes already identified the type, and that identification is reliable — a parse
         # failure must degrade the DESCRIPTION, not the identification. A truncated PDF is still a
@@ -73,9 +90,10 @@ def describe(path: str, *, max_detail_chars: int = 1200) -> dict:
         detail = (f"Identified as {kind} by its magic bytes, but parsing failed "
                   f"({type(e).__name__}) — the file may be truncated or corrupt. "
                   f"Content was NOT previewed.")
+        shape = ""
 
     return {"kind": kind, "summary": _one_line(summary), "detail": _cap(detail, max_detail_chars),
-            "size": size}
+            "shape": _cap(shape, max_detail_chars), "size": size}
 
 
 # ---------------------------------------------------------------- detection
@@ -145,8 +163,8 @@ def _delimiter(text: str) -> str:
 
 # ---------------------------------------------------------------- handlers
 
-def _describe_tabular(path: str, head: bytes, delim: str, size: int) -> tuple[str, str]:
-    """Columns with inferred types, a row count, and 2-3 sample rows.
+def _describe_tabular(path: str, head: bytes, delim: str, size: int) -> tuple[str, str, str]:
+    """Columns with inferred types, a row count, 2-3 sample rows, and the same without them.
 
     Deliberately derived rather than raw head lines: a 200-column file's head lines are enormous,
     and no number of them tells the agent how many rows exist.
@@ -156,24 +174,74 @@ def _describe_tabular(path: str, head: bytes, delim: str, size: int) -> tuple[st
         try:
             header = next(reader)
         except StopIteration:
-            return "Empty delimited file — no header row", ""
+            return "Empty delimited file — no header row", "", ""
         sample = []
         for row in reader:
             sample.append(row)
             if len(sample) >= _TYPE_SAMPLE_ROWS:
                 break
-        rows = len(sample) + sum(1 for _ in reader)   # streams; never materializes the file
+        types = [_column_type([r[i] for r in sample if i < len(r)]) for i in range(len(header))]
+        # The row count below already walks every row, so reading each string column's vocabulary
+        # on the way past costs a set lookup per cell and not one extra byte of IO. It buys the
+        # thing `shape` exists for: a turn handed column NAMES and no values still has to guess
+        # what is in them, and `side == "long"` against a column holding LONG returns an empty
+        # frame — pandas raises nothing, so the guess is wrong in silence.
+        vocab = {i: set() for i, t in enumerate(types) if t == "string"}
+        for row in sample:
+            _read_vocabulary(vocab, row)
+        rows = len(sample)
+        for row in reader:                            # streams; never materializes the file
+            rows += 1
+            _read_vocabulary(vocab, row)
+            if not vocab:
+                # Every column has outgrown its vocabulary, so the rest of the file has nothing
+                # left to tell us and the count goes back to the fast path it used to use. A wide
+                # file of free text reaches this on its first few rows.
+                rows += sum(1 for _ in reader)
+                break
 
-    types = [_column_type([r[i] for r in sample if i < len(r)]) for i in range(len(header))]
     label = "TSV" if delim == "\t" else "CSV"
     summary = f"{label} — {len(header)} columns, {rows:,} rows"
 
-    lines = [f"{len(header)} columns, {rows:,} data rows, delimiter {delim!r}.", "Columns:"]
-    lines += [f"  {name or f'(unnamed {i})'}: {t}" for i, (name, t) in enumerate(zip(header, types))]
+    head_line = f"{len(header)} columns, {rows:,} data rows, delimiter {delim!r}."
+    plain = [f"  {name or f'(unnamed {i})'}: {t}"
+             for i, (name, t) in enumerate(zip(header, types))]
+    named = [f"{c}{_vocabulary_suffix(vocab.get(i))}" for i, c in enumerate(plain)]
+
+    lines = [head_line, "Columns:"] + plain
     if sample:
         lines.append("Sample rows:")
         lines += [f"  {delim.join(r)}" for r in sample[:3]]
-    return summary, "\n".join(lines)
+    return summary, "\n".join(lines), "\n".join([head_line, "Columns:"] + named)
+
+
+def _read_vocabulary(vocab: dict[int, set], row: list[str]) -> None:
+    """Add one row's cells, dropping any column that has outgrown a vocabulary.
+
+    Dropping rather than capping is what keeps this bounded in memory as well as in output: a
+    column of customer names stops being tracked after thirteen distinct values, so the set never
+    grows to the size of the file.
+    """
+    for i in list(vocab):
+        if i >= len(row):
+            continue
+        value = row[i].strip()
+        if not value:
+            continue
+        vocab[i].add(value)
+        if len(vocab[i]) > _VOCABULARY_MAX:
+            del vocab[i]
+
+
+def _vocabulary_suffix(values: set | None) -> str:
+    """The values of a column that has few enough of them to be a vocabulary rather than content.
+
+    A column past `_VOCABULARY_MAX` is named without its values, which is the line this module
+    draws everywhere else: four hundred customer names would be the file's content, and the
+    agent is told shape. Where a declared sensitive store is in scope the turn is already locked
+    to an approved model (ADR-0043), so these reach no model that `detail`'s rows would not.
+    """
+    return f" ({' | '.join(sorted(values))})" if values else ""
 
 
 def _column_type(values: list[str]) -> str:
@@ -565,7 +633,7 @@ _HANDLERS = {
 
 def _unavailable(reason: str, size: int = 0) -> dict:
     return {"kind": "unavailable", "summary": _one_line(f"Unavailable — {reason}"), "detail": "",
-            "size": size}
+            "shape": "", "size": size}
 
 
 def _one_line(s: str) -> str:
