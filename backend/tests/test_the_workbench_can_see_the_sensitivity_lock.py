@@ -148,7 +148,7 @@ def test_the_lock_state_is_off_and_reads_nothing_without_the_group(tmp_path, mon
     assert orch.sensitivity_state() == {
         "enabled": False, "locked": False, "group": "",
         "approved": [], "datasets": [], "refusal": None, "model": None, "chat_model": None,
-        "reason": "",
+        "slot_models": {}, "reason": "",
     }
 
 
@@ -261,6 +261,47 @@ def test_chat_and_build_are_answered_separately(tmp_path, monkeypatch):
 
     assert state["model"] == "plan-approved"        # Build, in its standing Auto/Plan state
     assert state["chat_model"] == "ask-approved"    # Chat, pinned to the sovereign Ask slot
+
+
+def test_every_assignable_slot_is_answered_separately(tmp_path, monkeypatch):
+    """The model panel draws Plan, Implement and Ask at once, whatever mode the session is in, so
+    `model` answers only one of its three rows. Same split as Chat and Build and for the same
+    reason: `llm_router._lock_preferences` prefers the sovereign slot of the MODE, and the other two
+    rows would name a model they do not get."""
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+
+    class BothApproved(FakeResourceProvider):
+        def list_llm_aliases(self):
+            return [LlmAlias(id="id-plan", name="plan-approved", display_name="plan-approved"),
+                    LlmAlias(id="id-ask", name="ask-approved", display_name="ask-approved")]
+
+        def list_alias_groups(self):
+            return [{"name": GROUP, "aliases": [{"id": "id-plan"}, {"id": "id-ask"}]}]
+
+    split = ModelCatalog(sovereign_plan="plan-approved", sovereign_implement="plan-approved",
+                         sovereign_ask="ask-approved", plan="gpt-5.4", implement="gpt-5.4",
+                         ask="gpt-5.4")
+    orch = _orch(tmp_path, resources=BothApproved(), catalog=split)
+    _bind(orch, [_dataset_binding("ds_claims", "claims")])
+
+    assert orch.sensitivity_state()["slot_models"] == {
+        "plan": "plan-approved", "implement": "plan-approved", "ask": "ask-approved",
+    }
+
+
+def test_a_router_that_cannot_answer_a_slot_leaves_it_out(tmp_path, monkeypatch):
+    """Absent rather than null: the panel substitutes a row's model only where this names one, and a
+    key holding None would make "could not work it out" and "nothing moves" the same read."""
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind(orch, [_dataset_binding("ds_claims", "claims")])
+    monkeypatch.setattr(service_module.llm_router, "nearest_approved",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("no")))
+
+    state = orch.sensitivity_state()
+
+    assert state["locked"] is True
+    assert state["slot_models"] == {}
 
 
 def test_an_unusable_approved_set_carries_the_refusal_rather_than_an_empty_lock(tmp_path, monkeypatch):

@@ -2,7 +2,8 @@
 //
 // Input on stdin: a list of steps. `{}` just opens the panel; `{ "running": true }` opens it during
 // a build; `{ "listing": "down" }` opens it when the gateway will not list Aliases; `{ "set":
-// ["plan", "opus"] }` also changes one row and reports what was written.
+// ["plan", "opus"] }` also changes one row and reports what was written; `{ "sensitivity": {...} }`
+// opens it with the sensitivity lock holding, served from the route the panel actually reads.
 //
 // Nothing is mounted. `createElement` is stubbed to a plain object, so calling the component returns
 // the tree it would draw — which is where a Select's options and disabled state are settled.
@@ -37,6 +38,10 @@ const ALIASES = [
 
 let listing = 'up';
 let failReloadAfterSave = false;
+// The lock, exactly as `/api/project/sensitivity` answers it. Served rather than written into the
+// store, because opening the drawer re-reads it (`openAssignments`) — a value set by hand would be
+// overwritten by that read before the panel drew a single row.
+let sensitivity = null;
 const calls = [];
 
 const json = (body) => ({
@@ -76,6 +81,10 @@ function serve(url, options = {}) {
   // at all, which leaves the panel with no slots of its own to draw.
   if (path === '/project/model/assignments' && listing === 'throw') throw new Error('network down');
   if (path === '/project/model/assignments') return json(panel());
+  if (path.startsWith('/project/sensitivity')) {
+    return json(sensitivity || { enabled: false, locked: false, group: '', approved: [],
+      datasets: [], refusal: null, model: null, chat_model: null, slot_models: {}, reason: '' });
+  }
   if (path === '/project/model' && method === 'POST') {
     const body = JSON.parse(options.body);
     calls.push(body);
@@ -142,6 +151,7 @@ const report = [];
 for (const step of steps) {
   listing = step.listing || 'up';
   failReloadAfterSave = !!step.failReload;
+  sensitivity = step.sensitivity || null;
   SW.store.set({ buildRunning: !!step.running, catalog: status().model.catalog });
   await SW.store.openAssignments(true);
   await settle();
@@ -164,10 +174,17 @@ for (const step of steps) {
     rows,
     problems: all(tree, (n) => n.p && n.p.className === 'sw-assignment-problem')
       .map((n) => (n.c || []).flat(Infinity).filter((c) => typeof c === 'string').join('')),
+    details: all(tree, (n) => n.p && n.p.className === 'sw-assignment-detail')
+      .map((n) => (n.c || []).flat(Infinity).filter((c) => typeof c === 'string').join('')),
     alerts: alerts(tree).map((a) => ({
       type: a.p.type,
       message: a.p.message,
-      description: a.p.description,
+      description: typeof a.p.description === 'string' ? a.p.description : null,
+      // One entry per paragraph, so a sentence dropped from the notice is a shorter list rather
+      // than a substring that happens still to match.
+      paragraphs: typeof a.p.description === 'string' ? [a.p.description]
+        : all(a.p.description, (n) => n.t === 'p')
+          .map((n) => (n.c || []).flat(Infinity).filter((c) => typeof c === 'string').join('')),
       hasAction: !!a.p.action,
     })),
   };

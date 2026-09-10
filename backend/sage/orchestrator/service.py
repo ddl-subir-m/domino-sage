@@ -13122,7 +13122,7 @@ class Orchestrator:
         """
         gate = self._sensitivity_gate()
         off = {"enabled": False, "locked": False, "group": "", "approved": [], "datasets": [],
-               "refusal": None, "model": None, "chat_model": None, "reason": ""}
+               "refusal": None, "model": None, "chat_model": None, "slot_models": {}, "reason": ""}
         if not gate.enabled:
             return off
         project = self.project()
@@ -13146,6 +13146,11 @@ class Orchestrator:
             "refusal": refusal or None,
             "model": self._locked_model(project, approved, chat=False),
             "chat_model": self._locked_model(project, approved, chat=True),
+            # Per SLOT, which is a third question again: `model` and `chat_model` answer "what does
+            # THIS turn run", off the mode the session is in right now, and the model panel draws
+            # all three rows at once regardless of that mode. Reusing `model` for every row would
+            # have made the two rows that are not the current mode name a model they do not get.
+            "slot_models": self._locked_slot_models(project, approved),
         }
 
     def _locked_model(
@@ -13174,6 +13179,42 @@ class Orchestrator:
         except Exception:
             log.exception("sensitivity: couldn't work out where the lock moves a barred turn to")
             return None
+
+    def _locked_slot_models(
+        self, project: Project, approved: ApprovedModels | None
+    ) -> dict[str, str]:
+        """Where the lock moves each assignable slot, for the model panel's three rows (ADR-0043).
+
+        The panel draws Plan, Implement and Ask together, and the lock does not move them to the
+        same place: `llm_router._lock_preferences` prefers the SOVEREIGN slot of the mode a turn is
+        in, and a deployment whose sovereign slots differ and are separately approved gets a
+        different answer per row. `model` and `chat_model` answer for the mode the session happens
+        to be in right now, so a panel drawn off either would name the right model on one row and
+        the wrong one on the other two.
+
+        The mode is forced rather than read for the same reason `_locked_model` forces
+        `chat_thread_id`: it is the fork the rule reads, and the snapshot holds whichever mode the
+        last turn armed. `ASSIGNABLE_SLOTS` and `Mode` share their values, which is what makes the
+        mapping a cast rather than a table that could drift from the slot list.
+
+        A slot that cannot be worked out is ABSENT rather than None-valued: the panel substitutes a
+        row's shown model only where this names one, and a key holding null would make "the router
+        could not answer" and "the router said nothing moves" the same read.
+        """
+        if approved is None:
+            return {}
+        out: dict[str, str] = {}
+        for slot in ASSIGNABLE_SLOTS:
+            try:
+                state = replace(project.control.snapshot(),
+                                chat_thread_id=None,
+                                mode=Mode(slot),
+                                phase=Phase.IMPLEMENT if slot == "implement" else Phase.PLAN,
+                                approved_models=approved.names, approved_order=approved.order)
+                out[slot] = llm_router.nearest_approved(state, project.shim.catalog)
+            except Exception:
+                log.exception("sensitivity: couldn't work out where the lock moves the %s slot", slot)
+        return out
 
     def declare_dataset_sensitive(self, dataset_id: str) -> dict:
         """Tag one of this Project's own Datasets sensitive (ADR-0043).

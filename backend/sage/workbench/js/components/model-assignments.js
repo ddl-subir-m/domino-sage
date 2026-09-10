@@ -141,6 +141,17 @@ window.SW = window.SW || {};
       const current = rows.find((r) => r.slot === spec.slot);
       if (!current) return null;
       const assigned = Boolean(current.assigned);
+      // What the lock moves this slot to, when the assignment it would move IS barred. Drawn as the
+      // row's value rather than left showing the barred one, because a select whose closed state
+      // reads "gpt-5.4 — not allowed" has answered the wrong question: the row is there to say what
+      // this mode runs, and under a lock that is never the barred model (ADR-0043).
+      //
+      // The server's answer, per slot, not a rule re-derived here. `llm_router.nearest_approved`
+      // reads the sovereign slots and the administrator's group ordering, and a second copy of that
+      // in JavaScript would be a confident label that is wrong exactly where it matters — the same
+      // reasoning that keeps `lockedRunsOn` reading `sensitivity.model` for the composer chip.
+      const barredNow = locked && !SW.util.isApproved(sensitivity, current.model);
+      const runs = (barredNow && ((sensitivity.slot_models || {})[spec.slot])) || '';
       return h(
         'div',
         { key: spec.slot, className: 'sw-assignment-row' },
@@ -150,7 +161,7 @@ window.SW = window.SW || {};
           'aria-label': `${spec.label} model`,
           style: { width: '100%' },
           disabled: readOnly,
-          value: assigned || !current.default ? current.model : DEFAULT_KEY,
+          value: runs || (assigned || !current.default ? current.model : DEFAULT_KEY),
           options: options(current),
           onChange: (value) =>
             SW.store.setAssignment(spec.slot, value === DEFAULT_KEY ? null : value),
@@ -161,9 +172,20 @@ window.SW = window.SW || {};
         current.problem
           ? h('div', { className: 'sw-assignment-problem' }, current.problem)
           : null,
-        // Only when it differs from the default: repeating "gpt-5.4 (default)" under a select that
-        // already says exactly that is noise on every row nobody has touched.
-        assigned && current.default
+        // What the row would say if the lock were not holding. Not optional once the value above is
+        // a substitution: without it the panel simply shows a model nobody chose, and the person who
+        // set this slot to `gpt-5.4` last week would read the row as having lost their assignment.
+        // It replaces the default line rather than sitting beside it — while the lock holds, what
+        // the slot reverts to is not the question anybody is asking of this row.
+        //
+        // Says neither "assigned" nor "the default", because `current.model` is whichever of the two
+        // this slot holds and one sentence has to be true of both.
+        runs
+          ? h('div', { className: 'sw-assignment-detail' },
+              `${current.model} isn't approved, so this runs ${runs}.`)
+          // Only when it differs from the default: repeating "gpt-5.4 (default)" under a select that
+          // already says exactly that is noise on every row nobody has touched.
+          : assigned && current.default
           ? h('div', { className: 'sw-assignment-detail' }, `Default is ${current.default}.`)
           : null
       );
@@ -199,9 +221,11 @@ window.SW = window.SW || {};
         // approved models are still assignable from here, which is the whole point of leaving the
         // rest visible and disabled instead of hiding them.
         //
-        // The scope sentence rides with it and is not optional. The lock is the moment a creator
-        // decides how much this promise covers, and one that let them believe a bound Data Source
-        // was gated too would have bought their confidence with something untrue.
+        // One paragraph, and the way out where there is one. The scope sentence — what happens to a
+        // Data Source bound alongside — used to ride here and no longer does: it is a lesson about
+        // a different object, read by somebody who came to change a model, and the limit of the
+        // promise is still said where the promise is made (`resources/pinned_model._egress_note`,
+        // and the app's own AGENTS.md).
         locked
           ? h(Alert, {
               type: lockDead ? 'warning' : 'info',
@@ -210,7 +234,7 @@ window.SW = window.SW || {};
               description: h(
                 'div',
                 null,
-                h('p', { style: { margin: '0 0 8px' } },
+                h('p', { style: { margin: 0 } },
                   lockDead
                     // The server's own sentence, which names WHICH of the four ways the approved set
                     // came back empty and who to ask about it. The fallback exists only so a
@@ -242,9 +266,8 @@ window.SW = window.SW || {};
                 // Dataset is declared — which is exactly the sticky case. Drawn again here it is
                 // the same sentence twice in two paragraphs.
                 !lockDead && SW.util.sessionWayOut(sensitivity)
-                  ? h('p', { style: { margin: '0 0 8px' } }, SW.util.sessionWayOut(sensitivity))
-                  : null,
-                h('p', { style: { margin: 0 } }, SW.util.lockScope())
+                  ? h('p', { style: { margin: '8px 0 0' } }, SW.util.sessionWayOut(sensitivity))
+                  : null
               ),
             })
           : null,

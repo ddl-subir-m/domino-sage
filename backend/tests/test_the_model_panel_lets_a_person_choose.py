@@ -183,3 +183,88 @@ def test_a_save_that_lands_survives_the_reload_that_does_not():
     (drawn,) = _drawn([{"set": ["plan", "opus"], "failReload": True}])
     assert drawn["wrote"] == [{"catalog": {"plan": "opus"}}]
     assert drawn["after"] == "opus", "the panel redrew the pre-save model"
+
+
+# ---- the sensitivity lock (ADR-0043) -------------------------------------------------------------
+# The lock does not close this panel: approved models stay assignable in it, which is the whole
+# reason the rest are drawn disabled rather than hidden. What it DOES change is what each row shows
+# it runs, because the router substitutes at turn time and a row still naming the barred assignment
+# is a control describing a model no turn will use.
+
+# A Bindings lock over the harness's own Aliases: `gpt-5.4` is barred, `coder` and `opus` are not,
+# and the slots resolve to two DIFFERENT approved models — which is the case a panel drawn off one
+# `sensitivity.model` for all three rows gets wrong.
+_LOCK = {
+    "enabled": True, "locked": True, "group": "sensitive-approved",
+    "approved": ["coder", "opus"], "datasets": ["sales-2026"], "refusal": None,
+    "model": "opus", "chat_model": "coder",
+    "slot_models": {"plan": "opus", "implement": "coder", "ask": "coder"},
+    "reason": "declared",
+}
+
+
+def _lock(**over: object) -> dict:
+    return {**_LOCK, **over}
+
+
+def test_a_locked_row_shows_the_model_it_will_actually_run():
+    """FOUND IN LIVE QA (2026-09-10): every row went on reading its barred assignment with "not
+    allowed" beside it, which is a select answering the wrong question — the row exists to say what
+    this mode runs, and under the lock that is never the barred model."""
+    (drawn,) = _drawn([{"sensitivity": _lock()}])
+    assert _row(drawn, "Plan")["value"] == "opus"
+    assert _row(drawn, "Ask and Chat")["value"] == "coder"
+
+
+def test_each_slot_moves_where_its_own_mode_moves():
+    """Two rows, two answers. `llm_router._lock_preferences` prefers the sovereign slot of the mode
+    a turn is in, so a deployment whose sovereign slots differ and are separately approved gets a
+    different model per row — and one field reused for all three would name the right model on one
+    row and the wrong one on the other two."""
+    (drawn,) = _drawn([{"sensitivity": _lock()}])
+    assert _row(drawn, "Plan")["value"] != _row(drawn, "Ask and Chat")["value"]
+
+
+def test_a_slot_already_holding_an_approved_model_is_left_alone():
+    """Substituting there would replace a real assignment with a name the router never chose: an
+    approved pick runs on itself, and the row has nothing to correct."""
+    (drawn,) = _drawn([{"sensitivity": _lock()}])
+    # `implement` runs `coder`, which is approved, so the row still offers the way back.
+    assert _row(drawn, "Implement")["value"] == "__default__"
+    assert not any("coder isn't approved" in d for d in drawn["details"])
+
+
+def test_a_substituted_row_says_what_it_would_have_run():
+    """Without it the panel simply shows a model nobody chose, and the person who set the slot reads
+    the row as having lost their assignment."""
+    (drawn,) = _drawn([{"sensitivity": _lock()}])
+    assert "gpt-5.4 isn't approved, so this runs opus." in drawn["details"]
+
+
+def test_a_row_whose_move_the_server_could_not_work_out_is_not_invented():
+    """`nearest_approved` reads the sovereign slots and the administrator's ordering, and a second
+    copy of that rule in JavaScript would be a confident label wrong exactly where it matters. With
+    no answer the row keeps its own model, disabled in the menu with the reason on it."""
+    (drawn,) = _drawn([{"sensitivity": _lock(slot_models={})}])
+    assert _row(drawn, "Plan")["value"] == "__default__"
+    assert not drawn["details"]
+
+
+def test_the_lock_notice_says_the_limit_and_stops_there():
+    """One paragraph. The scope sentence that used to ride under it — what happens to a Data Source
+    bound alongside — is a lesson about a different object, read here by somebody who came to change
+    a model and now has two paragraphs to get through first."""
+    (drawn,) = _drawn([{"sensitivity": _lock()}])
+    (alert,) = [a for a in drawn["alerts"] if a["message"] == "Allowed models only"]
+    assert alert["paragraphs"] == [
+        "Only approved models can be used with the Dataset sales-2026."
+    ]
+
+
+def test_a_session_lock_still_says_how_to_get_out_of_it():
+    """The one paragraph that is not scope prose: under a sticky lock, removing the Dataset does
+    nothing and a person told only "approved models only" is at a dead end."""
+    (drawn,) = _drawn([{"sensitivity": _lock(reason="session", datasets=[])}])
+    (alert,) = [a for a in drawn["alerts"] if a["message"] == "Allowed models only"]
+    assert len(alert["paragraphs"]) == 2
+    assert "Start a new chat" in alert["paragraphs"][1]

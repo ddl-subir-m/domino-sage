@@ -80,18 +80,6 @@ window.SW = window.SW || {};
       );
     },
 
-    // The limit of the promise, said wherever the promise is (ADR-0043). A guarantee that hides its
-    // own edge is worse than none: a creator who reads "sensitive data is protected" and has a
-    // Snowflake source bound has been told something false about the half that matters most.
-    //
-    // The same sentence rides in the app's own AGENTS.md, beside `_egress_note` in
-    // `resources/pinned_model.py`. Two languages, one claim — check both when either changes.
-    lockScope() {
-      return SW.brand.text(
-        "{dataSourcePlural} can't be marked sensitive. Used with a sensitive {dataset}, they "
-        + "follow the same model limits. Used alone, they don't."
-      );
-    },
 
     // Whether this Binding names a declared Dataset. Matched on the row's ID and never on its name:
     // two Datasets can share a name on one deployment, and the one place that would go wrong is a

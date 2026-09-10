@@ -2043,7 +2043,8 @@ def sensitivity_state(conversation: str = "") -> JSONResponse:
         log.exception("sensitivity state read failed")
         return JSONResponse(content={"enabled": False, "locked": False, "group": "",
                                      "approved": [], "datasets": [], "refusal": None,
-                                     "model": None, "chat_model": None, "reason": ""})
+                                     "model": None, "chat_model": None, "slot_models": {},
+                                     "reason": ""})
 
 
 @control_app.post("/api/project/assets/{dataset_id}/sensitive")
