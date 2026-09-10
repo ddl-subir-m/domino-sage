@@ -16,8 +16,11 @@ relay the one it was given and has no way to name another Conversation's.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
+
+log = logging.getLogger("sage.liveread")
 
 # Verified live against the PINNED OpenCode 1.18.4 (darwin-arm64), not just the published schema.
 # It opens with `protocolVersion: "2025-11-25"`, accepts this older one in reply, and reports the
@@ -140,6 +143,12 @@ def handle(message: dict, *, run: Callable[[str, dict], str]) -> dict | None:
         text = run(str(name), args)
     # Broad on purpose: the assistant reads this, so nothing may escape as a 500.
     except Exception as e:
+        # WARNING, so it outlives one turn in `/api/diag`'s warn ring. A raise here reaches the
+        # assistant as ordinary text, which it reads as an answer and goes off to Python with — so
+        # until this line a read that broke and a read nobody made left the same evidence: an
+        # answer with no card under it. The message is the driver's, and it can name the statement
+        # it choked on; that goes to the creator's own diagnostics, never to the model.
+        log.warning("live read: %s failed — %s: %s", name, type(e).__name__, e)
         return _result(mid, {
             "content": [{"type": "text", "text": str(e)}],
             "isError": True,

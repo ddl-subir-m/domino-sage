@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,8 @@ from typing import Any
 
 from ..orchestrator import brand
 from . import grant, result
+
+log = logging.getLogger("sage.liveread")
 
 # A file head is a look at what the file holds, not a download of it. Both halves are capped: rows
 # by the table cap everything else uses, bytes so that one long line cannot defeat the row cap.
@@ -60,6 +63,19 @@ def _slug(*parts: str) -> str:
     return out[:60] or "live-read"
 
 
+def _no_card(says: str) -> str:
+    """A read that ends with no card. The sentence is returned unchanged, and said out loud on the
+    way past.
+
+    A refusal, a Data Source this turn cannot open and a file that is not there all reach the person
+    as an answer with no table under it — the same thing a crash looks like from outside. Until this
+    line they left the same evidence a crash did: nothing. What is logged is the sentence the
+    assistant was handed, which names a table or a Dataset and never a row.
+    """
+    log.info("live read: no card — %s", says)
+    return says
+
+
 def _receipt_text(receipt: result.Receipt, what: str) -> str:
     """What the assistant is told. The rows are on the person's card, not in this sentence."""
     shape = f"{receipt.rows} row{'' if receipt.rows == 1 else 's'}"
@@ -79,6 +95,11 @@ def _receipt_text(receipt: result.Receipt, what: str) -> str:
         shown = len(receipt.values)
         of = "" if shown == receipt.rows else f" — {shown} of the {receipt.rows} on the card"
         lines.append(f"Rows (the creator shared this table{of}): {receipt.values}")
+    # Every card passes through here, so this is the one place a read that WORKED can say so. The
+    # shape, the column count and the path — never the values, which are the person's even on the
+    # branch above where the creator shared them.
+    log.info("live read: %s — %s, %d columns -> %s",
+             what, shape, len(receipt.columns), receipt.path)
     return "\n".join(lines)
 
 
@@ -87,14 +108,14 @@ def _table(args: dict, turn: Turn) -> str:
     refused = grant.reachable("datasource", name,
                               bound=turn.bound.get("datasource", ()), chips=turn.chips.get("datasource", ()))
     if refused:
-        return refused.says
+        return _no_card(refused.says)
 
     source = turn.source_for(name) if turn.source_for else None
     if source is None:
-        return brand.text(
+        return _no_card(brand.text(
             "{assistantName} could not find {name} among the {dataSourcePlural} it can open here.",
             name=name or "that",
-        )
+        ))
 
     table = str(args.get("table") or "")
     limit = max(1, min(int(args.get("limit") or 5), result.CAP_ROWS))
@@ -130,15 +151,15 @@ def _files(args: dict, turn: Turn) -> str:
     refused = grant.reachable("dataset", name,
                               bound=turn.bound.get("dataset", ()), chips=turn.chips.get("dataset", ()))
     if refused:
-        return refused.says
+        return _no_card(refused.says)
 
     rel = str(args.get("path") or "")
     if not rel:
         listing = turn.list_files(name) if turn.list_files else None
         if listing is None:
-            return brand.text(
+            return _no_card(brand.text(
                 "{assistantName} could not open {name} to see what it holds.", name=name or "that",
-            )
+            ))
         receipt = result.record(
             turn.examples_dir, _slug(name, "files"), f"{name} files",
             ["File", "Bytes"],
@@ -149,25 +170,25 @@ def _files(args: dict, turn: Turn) -> str:
 
     root = turn.dataset_root(name) if turn.dataset_root else None
     if root is None or not Path(root).is_dir():
-        return brand.text(
+        return _no_card(brand.text(
             "{assistantName} can say what {name} holds, but cannot read a file out of it here — "
             "its files are not mounted in this workspace. Ask about the listing instead.",
             name=name or "that {dataset}",
-        )
+        ))
 
     # One file below the Dataset. Resolved inside the mount, so a path climbing out of it reads as
     # a file that is not there rather than as a file somewhere else.
     target = (Path(root) / rel).resolve()
     if not str(target).startswith(str(Path(root).resolve())) or not target.is_file():
-        return brand.text(
+        return _no_card(brand.text(
             "There is no file at {path} in {name}. List the {dataset} first and name one it holds.",
             path=rel, name=name,
-        )
+        ))
 
     head = target.read_bytes()[:HEAD_BYTES].decode("utf-8", "replace")
     rows = list(csv.reader(io.StringIO(head)))
     if len(rows) < 2:
-        return (
+        return _no_card(
             f"{rel} is not laid out as rows and columns, so there is no table to show. "
             "Say what kind of file it is and stop."
         )
