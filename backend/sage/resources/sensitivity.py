@@ -119,21 +119,6 @@ class SensitivityGate:
             return datasets
         return [b for b in datasets if b.id in keys or b.name in keys]
 
-    def declares(self, dataset_id: str, dataset_name: str = "") -> bool:
-        """Whether ONE Dataset carries the declaration, asked without a Binding to hold it.
-
-        For the callers that hold a bare Domino id — an attachment entry deciding what it may write
-        down (ADR-0043) — rather than a scope list. Same cache and same fail-safe as `declared`,
-        which is the point of it living here: a second reader of `declared_keys` somewhere else
-        would be a second answer about one Dataset.
-        """
-        if not self.enabled or not (dataset_id or dataset_name):
-            return False
-        keys = self._keys()
-        if keys is None:
-            return True
-        return dataset_id in keys or (bool(dataset_name) and dataset_name in keys)
-
     def _keys(self) -> frozenset[str] | None:
         """The declared ids and names, or None when the listing would not answer.
 

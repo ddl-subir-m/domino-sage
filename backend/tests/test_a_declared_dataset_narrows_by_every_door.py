@@ -13,7 +13,10 @@ Four claims, and each was a real hole rather than a hypothetical:
   - CROSSED. A `dsfile:` chip carried no Dataset into the Build manifest either, so the handoff did
     not repair it later.
   - AT REST. `.sage/attachments.json` is committed and the descriptor cache lives in it, while
-    `public/data/` is gitignored so that data never enters git.
+    `public/data/` is gitignored so that data never enters git. This one has since stopped being
+    about the declaration at all: #237 withholds `detail` from the cache for EVERY file, because
+    the tag answers nothing on a deployment that never opted in, and the reader the rows are owed
+    protection from is a Project collaborator with a clone rather than a model.
 
 `test_sensitivity_gate.py` covers the gate's own reading and holds the Binding cases. This file is
 about the scope handed TO it, so it goes through the Orchestrator rather than the gate.
@@ -250,7 +253,7 @@ def test_the_manifest_keeps_no_sample_rows_for_a_declared_dataset(tmp_path, monk
     stored = _descriptor_for(orch, "rows.csv")
 
     assert stored["detail"] == ""
-    assert stored["withheld"] == "declared"
+    assert stored["withheld"]
     # The shape survives; only the content goes. A withheld descriptor that also forgot the row
     # count would have made the agent blind to the file rather than to its rows.
     assert "4 columns" in stored["summary"]
@@ -258,19 +261,38 @@ def test_the_manifest_keeps_no_sample_rows_for_a_declared_dataset(tmp_path, monk
         orch.project(start_preview=False).workspace.attachments_path).read_text()
 
 
-def test_an_undeclared_dataset_keeps_its_cached_detail(tmp_path, monkeypatch):
-    """ADR-0029 cached descriptors so a 200-file attach describes each file once rather than once
-    per turn. That is untouched for every Dataset nobody declared, which is all of them on a
-    deployment that never opted in."""
-    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+def test_an_undeclared_dataset_keeps_no_rows_either(tmp_path):
+    """The regression #237 names. No tag, no `SAGE_SENSITIVE_MODEL_GROUP`, nothing declared — which
+    is every deployment — and the committed manifest still holds no rows.
+
+    ADR-0029's cache is what makes a 200-file attach describe each file once rather than once per
+    turn, and it keeps doing that: `kind`, `summary` and `size` are still written. Only `detail` is
+    left out, and only one caller ever reads it."""
     orch = _orch(tmp_path)
     orch.attach_file("ds_logs", "rows.csv")
     orch._resolve_mentions(orch.project(start_preview=False), ["public/data/logs/rows.csv"])
 
     stored = _descriptor_for(orch, "rows.csv")
 
-    assert "078-05-1120" in stored["detail"]
-    assert not stored.get("withheld")
+    assert stored["detail"] == ""
+    assert stored["withheld"]
+    assert "4 columns" in stored["summary"]
+    assert "078-05-1120" not in Path(
+        orch.project(start_preview=False).workspace.attachments_path).read_text()
+
+
+def test_a_mention_carries_the_rows_with_no_gate_at_all(tmp_path):
+    """The other half of #237: withholding is about what is WRITTEN DOWN. An @mention re-reads the
+    file, so the prompt is what it always was — otherwise this would have been a fix that quietly
+    made the assistant worse at reading the file the person just pointed at."""
+    orch = _orch(tmp_path)
+    orch.attach_file("ds_logs", "rows.csv")
+
+    mentions = orch._resolve_mentions(
+        orch.project(start_preview=False), ["public/data/logs/rows.csv"])
+
+    assert mentions is not None
+    assert "078-05-1120" in mentions[0]["detail"]
 
 
 def test_a_mention_still_carries_the_rows_to_an_approved_model(tmp_path, monkeypatch):
@@ -288,34 +310,28 @@ def test_a_mention_still_carries_the_rows_to_an_approved_model(tmp_path, monkeyp
     assert "078-05-1120" in mentions[0]["detail"]
 
 
-def test_a_dataset_tagged_after_the_attach_has_its_rows_scrubbed(tmp_path, monkeypatch):
-    """A Domino tag is self-service and can be added at any time, so the ordinary case is a file
-    attached BEFORE the declaration. Withholding at describe time cannot reach those; the rows are
-    already in the committed manifest by then.
+def test_a_manifest_written_before_the_fix_is_scrubbed_on_open(tmp_path):
+    """Descriptors have been cached in a committed file for as long as they have existed, so an
+    established Project already holds three verbatim rows per CSV. Opening it is where those get
+    rewritten — the same place the other three migrations run.
 
-    Sage owns this file and rewriting it costs nothing, which is what separates this from the app
-    already published against an untagged Dataset — there ADR-0043 leaves the state surfaced for a
-    human, because no interception point exists. Here one does.
+    It rewrites the file and nothing more. The rows already in the history behind it stay there,
+    which is why withholding them is the fix and this is only the cleanup after it.
     """
-    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
     orch = _orch(tmp_path)
-    orch._assets.assets[0] = Asset(
-        "ds_claims", "claims", tags=["curated"], project="Revenue",
-        mount_path=str(tmp_path / "mounts" / "claims"),
-    )
     orch.attach_file("ds_claims", "rows.csv")
-    orch._resolve_mentions(orch.project(start_preview=False), ["public/data/claims/rows.csv"])
-    assert "078-05-1120" in _descriptor_for(orch, "rows.csv")["detail"]
 
-    # Somebody tags it in Domino. The gate holds an undeclared verdict for five seconds, so the
-    # clock is moved rather than waited on.
-    orch._assets.assets[0] = Asset(
-        "ds_claims", "claims", tags=["sensitive"], project="Revenue",
-        mount_path=str(tmp_path / "mounts" / "claims"),
-    )
-    orch._gate = None
+    # Put the rows back, the way every manifest written before #237 carries them.
+    project = orch.project(start_preview=False)
+    entries = project.workspace.read_attachments()
+    for e in entries:
+        if str(e.get("path", "")).endswith("rows.csv"):
+            e["descriptor"] = {**e["descriptor"], "detail": CLAIMS_CSV, "withheld": ""}
+    project.workspace.write_attachments(entries)
+    assert "078-05-1120" in Path(project.workspace.attachments_path).read_text()
 
-    assert orch.sensitivity_state()["locked"] is True
+    orch._project = None   # the next call re-opens the Project, which is where migrations run
+    orch.project(start_preview=False)
+
     assert _descriptor_for(orch, "rows.csv")["detail"] == ""
-    assert "078-05-1120" not in Path(
-        orch.project(start_preview=False).workspace.attachments_path).read_text()
+    assert "078-05-1120" not in Path(project.workspace.attachments_path).read_text()

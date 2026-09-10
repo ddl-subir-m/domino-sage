@@ -398,7 +398,10 @@ def test_descriptor_is_cached_in_the_manifest_so_the_mount_is_read_once(tmp_path
 
     d = _manifest(ws)[0]["descriptor"]
     assert d["kind"] == "tabular"
-    assert "region" in d["detail"] and "revenue" in d["detail"]
+    # The shape is cached. The rows are not: `detail` carries three verbatim rows and this file is
+    # committed, so it is withheld and re-read per @mention instead (#237).
+    assert "2 columns" in d["summary"]
+    assert d["detail"] == "" and d["withheld"]
 
     # Second use must not re-read the mount — the cached descriptor is returned verbatim.
     project = orch.project()

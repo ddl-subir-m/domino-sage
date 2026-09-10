@@ -1069,17 +1069,25 @@ _LIVE_READ_TTL_S = 30 * 60
 
 _SAGE_UPLOAD_PREFIXES = ("uploads/", "sensitive/")
 
-# What a descriptor says instead of its `detail` when the file belongs to a declared Dataset
-# (ADR-0043). `detail` carries CONTENT — `describe._describe_tabular` emits three verbatim rows and
-# `_describe_pdf` a first-page snippet — and the descriptor is cached in `.sage/attachments.json`,
-# which is committed. `public/data/` is gitignored so that data never enters git; three rows of that
-# same data must not enter it through the manifest that describes it.
+# What a descriptor says instead of its `detail`, which is never written down (#237). `detail`
+# carries CONTENT — `describe._describe_tabular` emits three verbatim rows and `_describe_pdf` a
+# first-page snippet — and the descriptor is cached in `.sage/attachments.json`, which is committed
+# and pushed. `public/data/` is gitignored so that data never enters git; three rows of that same
+# data must not enter it through the manifest that describes it.
 #
-# The prompt is NOT what this withholds from. A declared Dataset locks the turn to an approved model
-# and an approved model is allowed to read the rows — that is the whole feature. This is only about
-# what is written down: `_descriptor(want_detail=True)` re-reads the file for the one caller that
-# inlines it.
-_WITHHELD_DECLARED = "declared"
+# Withheld for every file, rather than only for a declared Dataset's (ADR-0043). The tag was the
+# wrong lever: it answers nothing on a deployment that never set SAGE_SENSITIVE_MODEL_GROUP, which
+# is all of them, so the rows were cached for practically every file. And the reader they are owed
+# protection from is not the model — it is a Project collaborator, who can clone the repo without
+# being entitled to the Dataset, and for whom `git log -p` keeps the rows long after the attachment
+# is detached and the Conversation deleted.
+#
+# The prompt is NOT what this withholds from. `_descriptor(want_detail=True)` re-reads the file for
+# the one caller that inlines it, so an @mention carries the rows exactly as it did before.
+#
+# Manifests written before #237 carry the older marker "declared". Every read is a truthiness test,
+# so both spellings mean the same thing and no migration is owed for the value itself.
+_WITHHELD_UNCACHED = "uncached"
 
 
 def _is_sage_upload(entry: dict) -> bool:
@@ -4308,6 +4316,9 @@ class Orchestrator:
         # Third of the same kind, and the one the other two created work for: `examples/` is
         # committed now, so a folder no Thread claims is bytes every clone carries.
         self._sweep_orphaned_artifacts(self._project)
+        # Fourth: every manifest written before #237 holds three verbatim rows per CSV, and it is
+        # committed. Runs after `_rehydrate_attached` above, which is what put the entries in hand.
+        self._scrub_cached_descriptors(self._project)
         return self._project
 
     def _chat_project(self) -> Project:
@@ -5214,26 +5225,30 @@ class Orchestrator:
         times through `_write_agents_data_block` (ADR-0029). Every caller already writes it once for
         its own act, so the write belongs there — one per act rather than one per file.
 
-        `want_detail` exists because a declared Dataset's `detail` is withheld from the cache and
-        only from the cache (see `_WITHHELD_DECLARED`). Default False so the loops keep costing one
-        dict lookup: `_attached_data_lines` describes every attachment on every turn and reads
-        `kind` and `summary` off it, and re-reading two hundred files to serve a field nobody in
-        that loop touches is the bloat ADR-0029 removed. The single caller that inlines `detail`
+        `want_detail` exists because `detail` is withheld from the cache and only from the cache
+        (see `_WITHHELD_UNCACHED`). Default False so the loops keep costing one dict lookup:
+        `_attached_data_lines` describes every attachment on every turn and reads `kind` and
+        `summary` off it, and re-reading two hundred files to serve a field nobody in that loop
+        touches is the bloat ADR-0029 removed. The single caller that inlines `detail`
         (`_resolve_mentions`) asks for it, and pays one file read per mention rather than per file.
         """
         cached = entry.get("descriptor")
         if cached:
-            if want_detail and cached.get("withheld") == _WITHHELD_DECLARED:
+            if want_detail and cached.get("withheld"):
                 # Re-read rather than served from the cache, and NOT written back: the withholding
                 # is the point, and a caller that wanted the rows must not be the thing that puts
                 # them back on disk.
-                return {**cached, **self._describe_now(project, entry), "withheld": ""}
+                #
+                # `detail` alone is taken from the re-read. The rest of the shape is what the cache
+                # is FOR (ADR-0029), and lifting the whole fresh descriptor over it would make an
+                # @mention re-derive a summary it already has — a full pass over the file, since
+                # the row count in it streams to the end.
+                fresh = self._describe_now(project, entry).get("detail", "")
+                return {**cached, "detail": fresh, "withheld": ""}
             return cached
         d = self._describe_now(project, entry)
-        if d.get("detail") and self._sensitivity_gate().declares(
-            str(entry.get("dataset_id") or ""), str(entry.get("dataset") or "")
-        ):
-            entry["descriptor"] = {**d, "detail": "", "withheld": _WITHHELD_DECLARED}
+        if d.get("detail"):
+            entry["descriptor"] = {**d, "detail": "", "withheld": _WITHHELD_UNCACHED}
             return d
         entry["descriptor"] = d
         return d
@@ -5314,10 +5329,9 @@ class Orchestrator:
             if real is None:
                 continue
             fresh = fresh or not entry.get("descriptor")
-            # The only caller that inlines `detail`, so the only one that asks for it. A declared
-            # Dataset's file is re-read here rather than served from the manifest, which is what
-            # keeps the rows out of the committed file without keeping them out of the prompt —
-            # the turn carrying them is already locked to an approved model (ADR-0043).
+            # The only caller that inlines `detail`, so the only one that asks for it. The file is
+            # re-read here rather than served from the manifest, which is what keeps the rows out
+            # of the committed file without keeping them out of the prompt (#237).
             d = self._descriptor(project, entry, want_detail=True)
             item = {"path": m, "name": PurePosix(m).name,
                     "summary": d["summary"], "detail": d["detail"]}
@@ -12316,8 +12330,6 @@ class Orchestrator:
         if not gate.enabled:
             return None, ""
         declared = gate.declared(self._datasets_in_scope(project, conversation))
-        if declared:
-            self._scrub_declared_descriptors(project, declared)
         sticky = conversation is not None and project.record.session_ran_locked(conversation)
         if not declared and not sticky:
             return None, ""
@@ -12328,41 +12340,32 @@ class Orchestrator:
             return None, declared_turn_refusal(approved or ApprovedModels(), declared)
         return approved, ""
 
-    def _scrub_declared_descriptors(self, project: Project, declared: list[Binding]) -> None:
-        """Take sample rows back out of the committed manifest once a Dataset is declared.
+    def _scrub_cached_descriptors(self, project: Project) -> None:
+        """Take sample rows back out of the committed manifest (#237).
 
-        `_descriptor` withholds `detail` for a declared Dataset's files, which covers every file
-        attached AFTER the tag went on. It cannot cover the ones attached before, and that is the
-        ordinary case rather than an edge: a Domino tag is self-service and can be added at any
-        time, and by then three verbatim rows of that Dataset are sitting in the descriptor cache
-        inside `.sage/attachments.json` — the COMMITTED manifest, beside a `public/data/` that is
-        gitignored precisely so that data never enters git.
+        `_descriptor` withholds `detail` from the cache, which covers every file attached after
+        that fix. It cannot cover the ones attached before it, and those are the ordinary case
+        rather than an edge: `.sage/attachments.json` has been committed for as long as
+        descriptors have existed, so an established Project has three verbatim rows per CSV
+        sitting in it, beside a `public/data/` that is gitignored precisely so that data never
+        enters git.
 
-        So the declaration reaches backwards. This is where ADR-0043 draws a different line from
-        the one it drew for an app published before its Dataset was tagged: there it left the state
-        surfaced for a human to act on, because no interception point existed and unpublishing
-        would be destructive. Here Sage owns the file, an interception point is exactly what this
-        is, and rewriting it costs nothing.
+        A migration, so it runs where the other three do — on the way into the Project, once. The
+        write is idempotent and happens only when something changed, so an ordinary open pays a
+        scan of a list already in memory and no I/O at all.
 
-        Called where the lock is worked out rather than from either turn path, so the two cannot
-        drift about which Datasets are declared. It is a write reached from a read
-        (`sensitivity_state` calls it through `_sensitivity_for_turn`), which is deliberate: the
-        moment the Workbench first draws the lock is the earliest anything knows to clean up, and
-        the write is idempotent. Nothing is written when nothing changed, so an ordinary locked
-        turn pays a scan of a list already in memory and no I/O at all.
+        It rewrites the file. It cannot reach the rows already in the history behind it, and no
+        code here can: that is what makes keeping them out in the first place the fix rather than
+        this.
         """
-        ids = {b.id for b in declared}
-        names = {b.name for b in declared}
         touched = False
         for entry in project.attached:
             d = entry.get("descriptor")
             if not isinstance(d, dict) or not d.get("detail"):
                 continue
-            if (str(entry.get("dataset_id") or "") in ids
-                    or str(entry.get("dataset") or "") in names):
-                d["detail"] = ""
-                d["withheld"] = _WITHHELD_DECLARED
-                touched = True
+            d["detail"] = ""
+            d["withheld"] = _WITHHELD_UNCACHED
+            touched = True
         if touched:
             project.workspace.write_attachments(project.attached)
 
