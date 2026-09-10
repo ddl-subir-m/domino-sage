@@ -112,7 +112,10 @@ export const table = {
   args: {
     token,
     source: { type: "string", description: "The Data Source name." },
-    table: { type: "string", description: "The table name." },
+    // Dotted or bare: the context line above names every table `DWH.MARTS.SALES` and hands the
+    // model a SELECT over that same string, so a bare name is the form it has to be reminded of,
+    // not the form it reaches for. Python takes the dots apart.
+    table: { type: "string", description: "The table. A dotted database.schema.table is fine." },
     // Null is the right answer almost always, and now it is also the SAFE one: the read fills
     // both from the position the table was picked at. It did not, once, and an unqualified name
     // reached the warehouse as `..TABLE`.

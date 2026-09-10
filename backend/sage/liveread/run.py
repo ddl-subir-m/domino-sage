@@ -106,6 +106,31 @@ def _receipt_text(receipt: result.Receipt, what: str) -> str:
     return "\n".join(lines)
 
 
+def _split_qualified(table: str) -> tuple[str, str, str]:
+    """A dotted `database.schema.table` taken apart, or ("", "", table) for a plain name.
+
+    The model sends the dotted form because it is the only form anything shows it. The Chat context
+    line names the table `DWH.MARTS.ANTHROPIC__API_KEY_DAILY_USAGE` and hands it a
+    `SELECT * FROM DWH.MARTS.ANTHROPIC__API_KEY_DAILY_USAGE` to copy; this tool then asks for "the
+    table" and gets back the name it was taught. Measured on 2026-09-09, and it reached the store as
+    one identifier: "will not send 'DWH.MARTS.ANTHROPIC__API_KEY_DAILY_USAGE' to a database as a
+    name". Our own prose disagreeing with our own argument, not a model mistake.
+
+    `safe_identifier` was right to refuse it and must keep refusing: it is an allowlist standing in
+    front of a credential that reads the whole warehouse, and a name is taken apart HERE, above it,
+    so that every piece still goes through it one at a time.
+
+    Two and three parts only. Anything longer, or with an empty level, is not a name this can read —
+    it goes down whole to be refused, rather than quietly losing a level on the way.
+    """
+    parts = table.split(".")
+    if len(parts) not in (2, 3) or not all(parts):
+        return "", "", table
+    if len(parts) == 2:
+        return "", parts[0], parts[1]
+    return parts[0], parts[1], parts[2]
+
+
 def _table(args: dict, turn: Turn) -> str:
     name = str(args.get("source") or "")
     refused = grant.reachable("datasource", name,
@@ -120,7 +145,10 @@ def _table(args: dict, turn: Turn) -> str:
             name=name or "that",
         ))
 
-    table = str(args.get("table") or "")
+    # A level the model spelled INSIDE the name wins over one it named beside it: a model that
+    # wrote the whole path meant that path, and the two disagreeing is not a case to split down
+    # the middle.
+    named_db, named_schema, table = _split_qualified(str(args.get("table") or ""))
     limit = max(1, min(int(args.get("limit") or 5), result.CAP_ROWS))
     # The person already said where this table is: the picker recorded a database and a schema when
     # they chose it, and a Binding records the same. Asking the model to repeat them is how a read
@@ -131,8 +159,8 @@ def _table(args: dict, turn: Turn) -> str:
     known = turn.scope_for.get((name, table)) or turn.scope_for.get((name, "")) or ("", "")
     rows = turn.sample_rows(
         source,
-        str(args.get("database") or "") or known[0],
-        str(args.get("schema") or "") or known[1],
+        named_db or str(args.get("database") or "") or known[0],
+        named_schema or str(args.get("schema") or "") or known[1],
         table,
         limit,
     )

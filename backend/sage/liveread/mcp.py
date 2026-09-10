@@ -59,7 +59,11 @@ TOOLS: list[dict[str, Any]] = [
                 # table was picked at. Name one only to reach elsewhere in the same store.
                 "database": {"type": "string", "description": "Omit to use the recorded one."},
                 "schema": {"type": "string", "description": "Omit to use the recorded one."},
-                "table": {"type": "string"},
+                # Dotted or bare. Everything else the agent reads names this table
+                # `DWH.MARTS.SALES`, so that is what it sends, and taking it apart here costs less
+                # than teaching one screen to disagree with the rest.
+                "table": {"type": "string", "description": "The table. A dotted "
+                                                          "database.schema.table is fine."},
                 "limit": {"type": "integer", "description": "Rows to read. Default 5, capped."},
                 "title": {"type": "string", "description": "A short title for the card."},
             },
