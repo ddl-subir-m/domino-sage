@@ -6679,7 +6679,16 @@ class Orchestrator:
         plan_md = self._run_sage_plan(
             project, prompt, self._ensure_thread_session(store, thread_id, project, client))
         if not plan_md:
-            raise ValueError("empty plan")
+            # Said in words, because this sentence is the whole of what the person gets: the route
+            # answers 502 with it and the click puts it in a toast. "empty plan" was Sage's own
+            # name for the outcome, and it named nothing the reader could act on — the offer card
+            # is still on screen and a second try often lands, and neither fact was reachable from
+            # it. No button is named: four surfaces reach this call and they carry four labels
+            # ("Write a plan", "Build this", "Open in Build", and the conversation menu).
+            raise ValueError(
+                "Planning didn't produce a plan this time. Try again, or say a bit more in the "
+                "conversation about what the app should show and what someone should be able to "
+                "do with it.")
         # Same document the gate creates, and it records its Thread the same way. No `app_id`: the
         # app does not exist until the handoff is confirmed, and that is what stamps it.
         _warn_if_shapeless("chat handoff", plan_md)
@@ -6710,6 +6719,9 @@ class Orchestrator:
         sid = session_id
         project.active_session_id = sid
         token = project.control.arm_read_only("plan")
+        # Cleared here, at the start of the turn that will read it, so what is left afterwards
+        # belongs to this plan and not to some earlier turn's gateway.
+        project.last_gateway_error = None
         try:
             seen = self._seen_baseline(client, sid)
             client.send_prompt(sid, prompt, agent="sage-plan")
@@ -6723,7 +6735,25 @@ class Orchestrator:
                         continue
                     if part.get("type") == "text" and part.get("text"):
                         parts.append(part["text"])
-            return _tidy_plan("\n".join(parts))
+            plan_md = _tidy_plan("\n".join(parts))
+            if plan_md:
+                return plan_md
+            # A model call that failed leaves the turn with no assistant text, which is the same
+            # shape as a planner that wrote nothing — and the caller reported both as an empty plan,
+            # a sentence that names neither and offers no way out. The build turn has always read
+            # this field after its own wait (`send_and_wait`, `_build_stream`); this one never did,
+            # so every gateway fault on the Chat handoff arrived as "empty plan".
+            #
+            # Only when there is nothing to keep. A gateway error the shim recovered from is still
+            # recorded, and a plan that came back whole is worth more than the note of a call that
+            # went wrong on the way to it.
+            if project.last_gateway_error is not None:
+                raise ValueError(f"model call failed: {project.last_gateway_error['message']}")
+            # The one number that separates "no inference reached us" from "the model answered with
+            # nothing" — the same diagnostic the gated turn logs, on the path that logged nothing.
+            log.warning("sage-plan produced no text (session=%s, model_calls=%d)",
+                        sid, project.model_calls)
+            return plan_md
         finally:
             project.control.disarm_read_only(token)
             project.active_session_id = None
@@ -7081,6 +7111,13 @@ class Orchestrator:
         if sid and rec.get("directory") == work:
             try:
                 client.messages(sid)
+                # The client is told where this session stands, because it may not be the process
+                # that opened it — Sage restarts, the Thread's session id on disk does not. Only
+                # `create_session` records the directory, so a reused id leaves `is_running` asking
+                # `/session/status` with no workspace, which answers `{}` for a running session:
+                # `wait_for_idle` returns on the appear grace and the caller reads a transcript the
+                # turn is still writing. That is an "empty plan" on a plan nobody had finished.
+                client.note_session_dir(sid, work)
                 return sid
             except httpx.HTTPStatusError:
                 sid = None

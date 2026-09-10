@@ -289,6 +289,18 @@ class OpenCodeClient:
         self._dirs[sid] = directory
         return sid
 
+    def note_session_dir(self, session_id: str, directory: str) -> None:
+        """Say where a session this process did not create stands, so `is_running` can answer.
+
+        A session id read back from disk never passed through `create_session`, so `_dirs` has no
+        entry for it and `GET /session/status` gets asked with no workspace — which v1 answers `{}`
+        for a session that is plainly running (see `is_running`). `wait_for_idle` then gives up on
+        the appear grace and the caller reads a transcript the turn has not written yet. Every
+        caller that reuses a stored session id also knows the directory it was stored with; this is
+        where it hands that over.
+        """
+        self._dirs[session_id] = directory
+
     def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
         """This session's messages, OLDEST FIRST. Pass `limit` for only the newest few.
 

@@ -1116,9 +1116,70 @@ def test_empty_plan_does_not_mark_planned(tmp_path: Path):
     tid = orch.create_thread()["id"]
     # Not a build word: an explicit one is answered by the offer without spending a turn.
     list(orch.chat_stream(tid, "which desk is largest?"))
-    with pytest.raises(ValueError, match="empty plan"):
+    with pytest.raises(ValueError, match="didn't produce a plan"):
         orch.draft_handoff_plan(tid)
     assert (orch.get_thread(tid)["handoff"] or {}).get("status") != "planned"
+
+
+class _GatewayFailsWhilePlanning(FakeOpenCode):
+    """A plan turn where the model call failed: no assistant text, and the shim's note of why.
+
+    `last_gateway_error` is written by the shim's own route (`app.chat_completions`) during the
+    turn, which no fake reaches — so the fake writes it, at the moment the real one would.
+    """
+
+    def __init__(self, workspace: Path) -> None:
+        super().__init__(workspace, [Turn(text="Rates.")])
+        self.project = None
+
+    def send_prompt(self, session_id: str, text: str, model: dict | None = None,
+                    agent: str | None = None, attachments: list[dict] | None = None,
+                    chat: bool = False) -> None:
+        super().send_prompt(session_id, text, model=model, agent=agent,
+                            attachments=attachments, chat=chat)
+        if agent == "sage-plan" and self.project is not None:
+            self.project.last_gateway_error = {"message": "404 model not found",
+                                               "upstream_status": 404}
+
+
+def test_a_failed_model_call_while_planning_is_not_an_empty_plan(tmp_path: Path):
+    """The gateway's fault said as the gateway's fault, not as the planner's silence.
+
+    Both leave a turn with no assistant text, and the handoff used to report the pair as "empty
+    plan" — a sentence that named neither, on the one click that was meant to open Build.
+    """
+    orch, oc = _orch(tmp_path, client=_GatewayFailsWhilePlanning)
+    oc.project = orch.project(start_preview=False)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "which desk is largest?"))
+    with pytest.raises(ValueError, match="model call failed: 404 model not found"):
+        orch.draft_handoff_plan(tid)
+    assert (orch.get_thread(tid)["handoff"] or {}).get("status") != "planned"
+
+
+def test_a_reused_thread_session_tells_the_client_where_it_stands(tmp_path: Path):
+    """A Thread's session outlives the process that opened it; the client's memory of it does not.
+
+    Only `create_session` records a session's directory, and `is_running` needs it — without one it
+    asks `/session/status` with no workspace and gets `{}` for a session that is plainly running.
+    `wait_for_idle` then returns on the appear grace and the plan is read before it is written.
+    """
+    orch, oc = _orch(tmp_path, [Turn(text="Rates.")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "which desk is largest?"))
+    sid, work = oc.sessions[0]["id"], oc.sessions[0]["directory"]
+    assert oc.noted == {}  # this process opened it, so it already knew
+
+    # Sage restarted. The Thread's session id is on disk; nothing else about it is.
+    ws = tmp_path / "mnt" / "code"
+    oc2 = FakeOpenCode(ws, [Turn(text="# Desk dashboard\n\nOne page per position.\n")])
+    orch2 = Orchestrator(workspace_dir=ws, template=tmp_path / "template",
+                         gateway=ScriptedGateway(), catalog=_catalog(), project_id="Sage",
+                         feedback=OkFeedback(), opencode_client=oc2)
+    orch2.draft_handoff_plan(tid)
+
+    assert oc2.sessions == []  # reused, not reopened
+    assert oc2.noted == {sid: work}
 
 
 def test_default_slug_hydrates_the_default_chip(tmp_path: Path, monkeypatch):
