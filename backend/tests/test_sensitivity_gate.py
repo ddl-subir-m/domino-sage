@@ -43,10 +43,11 @@ def _alias(name, groups=()):
     return LlmAlias(id=f"id-{name}", name=name, display_name=name, groups=list(groups))
 
 
-def _gate(assets=(), aliases=(), groups=None, env=ON, clock=None):
+def _gate(assets=(), aliases=(), groups=None, env=ON, clock=None, taxonomy=None):
     return SensitivityGate(
         lambda: list(assets), lambda: list(aliases),
         (lambda: list(groups)) if groups is not None else None,
+        taxonomy,
         env=env, clock=clock or Clock(),
     )
 
@@ -112,6 +113,72 @@ def test_an_unreadable_dataset_listing_treats_the_project_as_declared():
     gate = SensitivityGate(boom, list, env=ON)
     bound = [_dataset("pii"), _dataset("logs")]
     assert gate.declared(bound) == bound
+
+
+# --- The Taxonomy API: a second, unrelated tag system (ADR-0043) --------------------------------
+#
+# LIVE-VERIFIED 2026-09-10: a Dataset tagged through the UI's own Tags panel never reaches the
+# datasetrw tag map `list_assets` reads — it lands in Domino's Taxonomy API instead. `declared()`
+# has to check both.
+
+
+def test_a_taxonomy_declared_dataset_is_declared_even_when_the_old_tag_map_is_not():
+    gate = _gate(assets=[_asset("card_txn_raw")], taxonomy=lambda dsid: ["sensitive"])
+    assert [b.name for b in gate.declared([_dataset("card_txn_raw")])] == ["card_txn_raw"]
+
+
+def test_a_dataset_neither_system_tags_is_not_declared():
+    gate = _gate(assets=[_asset("logs")], taxonomy=lambda dsid: [])
+    assert gate.declared([_dataset("logs")]) == []
+
+
+def test_the_taxonomy_lookup_is_skipped_once_the_old_system_already_declares():
+    """No reason to make a second call about a Dataset the first system already settled."""
+    def boom(dataset_id):
+        raise AssertionError("already declared by the old system; taxonomy must not be asked")
+
+    gate = _gate(assets=[_asset("pii", ["sensitive"])], taxonomy=boom)
+    assert [b.name for b in gate.declared([_dataset("pii")])] == ["pii"]
+
+
+def test_an_unreadable_taxonomy_answer_treats_only_that_dataset_as_declared():
+    """The same fail-safe as an unreadable listing, but scoped to the one Dataset the lookup
+    happened to fail on — a wobble there must not lock every Dataset in scope."""
+    def taxonomy(dataset_id):
+        if dataset_id == "ds-flaky":
+            raise RuntimeError("taxonomy down")
+        return []
+
+    gate = _gate(assets=[_asset("flaky", aid="ds-flaky"), _asset("clean", aid="ds-clean")],
+                 taxonomy=taxonomy)
+    declared = gate.declared([_dataset("flaky", bid="ds-flaky"), _dataset("clean", bid="ds-clean")])
+    assert [b.name for b in declared] == ["flaky"]
+
+
+def test_taxonomy_labels_match_case_insensitively():
+    """Matched on `namespaceLabel` (the category), same case-insensitive rule as the old tag map."""
+    gate = _gate(assets=[_asset("pii")], taxonomy=lambda dsid: ["Sensitive"])
+    assert [b.name for b in gate.declared([_dataset("pii")])] == ["pii"]
+
+
+def test_the_taxonomy_verdict_is_cached_on_the_same_asymmetric_ttl():
+    clock, reads = Clock(), []
+
+    def taxonomy(dataset_id):
+        reads.append(clock.t)
+        return ["sensitive"] if reads[-1] < 2000 else []
+
+    gate = _gate(assets=[_asset("pii")], taxonomy=taxonomy, clock=clock)
+    assert gate.declared([_dataset("pii")]) != []
+    clock.t += DECLARED_TTL_S - 1
+    assert gate.declared([_dataset("pii")]) != []
+    assert len(reads) == 1, "a declared verdict is held"
+
+    clock.t = 2000.0                       # past the declared TTL; the tag has since been removed
+    assert gate.declared([_dataset("pii")]) == []
+    clock.t += UNDECLARED_TTL_S + 1
+    gate.declared([_dataset("pii")])
+    assert len(reads) == 3, "an undeclared verdict expires quickly and is re-read"
 
 
 # --- The cache is asymmetric, which is the point ------------------------------------------------

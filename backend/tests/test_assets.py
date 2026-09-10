@@ -423,6 +423,63 @@ def test_a_non_json_listing_body_renames_the_platform_and_the_noun(_oem_pack, mo
     assert str(e.value).startswith("The Acme Cloud API returned a non-JSON body listing Cubes.")
 
 
+# --- The Taxonomy API: a second, unrelated tag system (ADR-0043) --------------------------------
+#
+# LIVE-VERIFIED 2026-09-10: a Dataset tagged through the UI's own Tags panel (a hierarchical
+# category-then-value picker) never reaches the datasetrw tag map `list_datasets` reads — it lands
+# in Domino's generic Taxonomy API instead, keyed on `entityId`+`entityType`.
+
+
+def test_list_taxonomy_labels_reads_the_namespace_label(monkeypatch):
+    """Matched on `namespaceLabel` (the category), not `label` (the leaf value): ADR-0043's
+    synonym-tag design (`pii`, `confidential`, ... all declaring the same thing) maps onto a
+    taxonomy namespace, not one specific value under it."""
+    import httpx
+
+    calls = []
+
+    def get(url, **kw):
+        calls.append((url, kw.get("params")))
+        return httpx.Response(200, json={"data": [
+            {"namespaceLabel": "sensitive", "label": "sensitive"},
+            {"namespaceLabel": "", "label": "orphan"},
+        ]})
+
+    monkeypatch.setattr(httpx, "get", get)
+
+    assert _provider().list_taxonomy_labels("d1") == ["sensitive"]
+    assert calls == [("http://domino/api/taxonomy/v1/tags",
+                      {"entityId": "d1", "entityType": "dataset"})]
+
+
+def test_list_taxonomy_labels_is_empty_for_an_untagged_dataset(monkeypatch):
+    """Per-entity: an untagged Dataset answers an empty `data` list, never a 404."""
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(200, json={"data": []}))
+
+    assert _provider().list_taxonomy_labels("d1") == []
+
+
+def test_list_taxonomy_labels_failure_is_reported_not_swallowed(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(httpx, "get",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("proxy said no")))
+
+    with pytest.raises(ResourceUnavailable, match="didn't answer"):
+        _provider().list_taxonomy_labels("d1")
+
+
+def test_list_taxonomy_labels_refused_reports_the_status(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(403, text="denied"))
+
+    with pytest.raises(ResourceUnavailable, match="answered 403"):
+        _provider().list_taxonomy_labels("d1")
+
+
 # --- The sensitivity declaration (ADR-0043) ------------------------------------------------------
 
 def test_is_sensitive_matches_the_tag_case_insensitively():

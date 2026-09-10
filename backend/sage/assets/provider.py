@@ -170,6 +170,13 @@ class AssetProvider(Protocol):
     def list_files(self, asset: Asset) -> FileListing: ...
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int: ...
 
+    def list_taxonomy_labels(self, dataset_id: str) -> list[str]:
+        """The Taxonomy API's tag categories (`namespaceLabel`) attached to one Dataset through its
+        own Tags panel — a second, unrelated tagging system from the datasetrw tag map
+        `list_datasets` reads (ADR-0043). [] is a valid answer: the sensitivity gate falls back to
+        the old system alone when a provider has nothing here."""
+        return []
+
 
 class UnconfiguredAssetProvider:
     """No DOMINO_API_HOST. Raises rather than inventing datasets, so the rail cannot look populated."""
@@ -396,6 +403,53 @@ class DominoAssetProvider:
             if not items or (total is not None and offset >= total):
                 break
         return found
+
+    def list_taxonomy_labels(self, dataset_id: str) -> list[str]:
+        """The Taxonomy tag categories (`namespaceLabel`, not the leaf `label`) attached to one
+        Dataset — the tags a person attaches through the Dataset's own Tags panel, a second and
+        unrelated tagging system from the datasetrw tag map `list_datasets` reads (ADR-0043).
+
+        Per-entity: `/api/taxonomy/v1/tags?entityId&entityType=dataset` takes one Dataset at a time
+        and answers `{"data": []}` for an untagged one, never a 404. Matched on `namespaceLabel`
+        rather than `label`: ADR-0043's synonym-tag design (`pii`, `confidential`, ... all declaring
+        the same thing) maps onto a taxonomy *namespace*, not one specific value under it.
+        """
+        import httpx
+
+        if not self._api_host:
+            raise ResourceUnavailable(brand.text(
+                "{assistantName} lists {datasetPlural} from the {platformName} API, and it is not "
+                "configured to reach one, so it cannot tell which {datasetPlural} you have."
+            ))
+        url = f"{self._api_host}/api/taxonomy/v1/tags"
+        try:
+            headers = {"Authorization": f"Bearer {self._token_provider()}"}
+            r = httpx.get(url, headers=headers,
+                          params={"entityId": dataset_id, "entityType": "dataset"},
+                          timeout=self._timeout_s)
+        except Exception as e:
+            raise ResourceUnavailable(
+                brand.text(
+                    "The {platformName} API didn't answer at /api/taxonomy/v1/tags ({err}).",
+                    err=type(e).__name__,
+                )
+            ) from e
+        if r.status_code >= 400:
+            raise ResourceUnavailable(
+                brand.text(
+                    "The {platformName} API answered {code} at /api/taxonomy/v1/tags.",
+                    code=r.status_code,
+                )
+            )
+        try:
+            data = r.json()
+        except ValueError as e:
+            raise ResourceUnavailable(brand.text(
+                "The {platformName} API returned a non-JSON body reading Taxonomy tags."
+            )) from e
+        rows = (data.get("data") or []) if isinstance(data, dict) else []
+        return [str(row["namespaceLabel"]) for row in rows
+                if isinstance(row, dict) and row.get("namespaceLabel")]
 
     def _files_api_json(self, path: str, params: dict[str, Any], asset: Asset) -> Any:
         """GET one datasetrw endpoint about a Dataset's files, or refuse naming that Dataset.

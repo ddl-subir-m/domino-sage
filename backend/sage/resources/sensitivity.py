@@ -25,6 +25,7 @@ import logging
 import os
 import time
 from collections.abc import Callable, Collection
+from typing import Any
 
 from ..assets.provider import Asset, is_sensitive, sensitivity_tags
 from ..orchestrator import brand
@@ -77,6 +78,7 @@ class SensitivityGate:
         list_assets: Callable[[], list[Asset]],
         list_aliases: Callable[[], list[LlmAlias]],
         list_alias_groups: Callable[[], list[dict]] | None = None,
+        list_taxonomy_tags: Callable[[str], list[str]] | None = None,
         *,
         env: dict[str, str] | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -84,6 +86,10 @@ class SensitivityGate:
         self._list_assets = list_assets
         self._list_aliases = list_aliases
         self._list_alias_groups = list_alias_groups
+        # A second, unrelated tagging system — Domino's Taxonomy API, behind a Dataset's own Tags
+        # panel — that the datasetrw tag map `list_assets` reads never sees. Optional: a deployment
+        # whose operators only use the old tag map still declares correctly with this left unset.
+        self._list_taxonomy_tags = list_taxonomy_tags
         self._env = env
         self._clock = clock
         # The cached fact is the listing's verdict — which Dataset ids and names are declared — not
@@ -91,6 +97,9 @@ class SensitivityGate:
         # One gate per Project, because `list_assets` is Project-scoped.
         self._declared: tuple[float, frozenset[str]] | None = None
         self._approved: tuple[float, ApprovedModels] | None = None
+        # Per-Dataset, because the Taxonomy API takes one entityId at a time and `declared()` only
+        # ever asks about a turn's small scope — never the whole Project like `_declared` above.
+        self._taxonomy: dict[str, tuple[float, bool]] = {}
 
     @property
     def enabled(self) -> bool:
@@ -117,7 +126,8 @@ class SensitivityGate:
         keys = self._keys()
         if keys is None:
             return datasets
-        return [b for b in datasets if b.id in keys or b.name in keys]
+        return [b for b in datasets
+                if b.id in keys or b.name in keys or self._taxonomy_declared(b.id)]
 
     def _keys(self) -> frozenset[str] | None:
         """The declared ids and names, or None when the listing would not answer.
@@ -136,6 +146,33 @@ class SensitivityGate:
         keys = declared_keys(assets, sensitivity_tags(self._env))
         self._declared = (self._clock(), keys)
         return keys
+
+    def _taxonomy_declared(self, dataset_id: str) -> bool:
+        """Whether the Taxonomy API declares this one Dataset, cached per id with the same
+        asymmetric TTL `_keys()` uses for the old system.
+
+        A per-Dataset call rather than one project-wide listing like `_keys()`, because
+        `/api/taxonomy/v1/tags` takes one `entityId` at a time and `declared()` only ever asks
+        about a turn's small scope, never the whole Project. Fails the same safe way `_keys()`
+        does: an unreadable answer for THIS Dataset treats it as declared rather than silently
+        skipping it.
+        """
+        if self._list_taxonomy_tags is None:
+            return False
+        cached = self._fresh(self._taxonomy.get(dataset_id),
+                             self._ttl_for(self._taxonomy.get(dataset_id)))
+        if cached is not None:
+            return cached
+        try:
+            labels = self._list_taxonomy_tags(dataset_id)
+        except Exception:
+            log.exception(
+                "sensitivity: couldn't read Taxonomy tags for dataset %s; treating it as declared",
+                dataset_id)
+            return True
+        declared = any(label.strip().lower() in sensitivity_tags(self._env) for label in labels)
+        self._taxonomy[dataset_id] = (self._clock(), declared)
+        return declared
 
     def approved(self) -> ApprovedModels | None:
         """The approved models, or None when the deployment never opted in.
@@ -194,7 +231,7 @@ class SensitivityGate:
         claimed = sum(1 for a in aliases if any(g.lower() == want for g in a.groups))
         return bool(claimed), claimed
 
-    def _ttl_for(self, entry: tuple[float, frozenset[str]] | None) -> float:
+    def _ttl_for(self, entry: tuple[float, Any] | None) -> float:
         return DECLARED_TTL_S if entry and entry[1] else UNDECLARED_TTL_S
 
     def _fresh(self, entry, ttl: float):

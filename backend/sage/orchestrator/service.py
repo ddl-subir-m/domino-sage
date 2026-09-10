@@ -12491,6 +12491,9 @@ class Orchestrator:
                 # Optional by design: the approved set still resolves from `groups` on the alias
                 # records, so an adapter without this reverse source is a hedge missing, not a break.
                 getattr(self._resources, "list_alias_groups", None),
+                # Optional the same way: an adapter without the Taxonomy API still declares
+                # correctly off the old datasetrw tag map alone.
+                getattr(self._assets, "list_taxonomy_labels", None),
             )
         return self._gate
 
