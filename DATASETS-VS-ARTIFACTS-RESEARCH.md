@@ -73,9 +73,12 @@ simultaneously, and it says nothing whatsoever about what happens on a concurren
 - **no** statement of last-writer-wins, interleaving, or torn-write behaviour;
 - **no** "do not write to a Dataset from multiple executions" warning;
 - **no** concurrency primitive anywhere in the `datasetrw` API — no ETag, no `If-Match`, no lock/lease
-  endpoint, and in fact **no file-byte read/write endpoint at all**. The public API surface is metadata,
-  grants, snapshots and tags only (verified against `spikes/domino-probes/public-api.json`); all file
-  I/O goes through the mount, where the platform has no visibility.
+  endpoint. The *public* spec goes further and carries **no file-byte read/write endpoint at all**: its
+  surface is metadata, grants, snapshots and tags only (verified against
+  `spikes/domino-probes/public-api.json`). The `/v4` spec **does** carry file read and write routes
+  (see `GRANTABLE-STORES-RESEARCH.md` on branch `research/domino-grantable-stores`) — but none of them
+  carries a concurrency primitive either, and bulk file I/O still goes through the mount, where the
+  platform has no visibility.
 
 Everything below is either (a) Domino stating that it does *not* coordinate, (b) structural evidence
 that both mounts exist at once, or (c) clearly-labelled storage-backend inference. **None of it is
