@@ -1,10 +1,14 @@
 // Live read, as an OpenCode CUSTOM TOOL rather than an MCP one (ADR-0041).
 //
-// The MCP transport does not deliver. Measured on the pinned 1.18.4 in a live workspace: OpenCode
-// held `sage-live-read` connected for the very instance the turn ran in — confirmed by
-// `GET /mcp?directory=` two seconds before the model call — and sent the model ten built-in tools
-// and none of ours. Config clean, port right, no project config, no `tools` filter, agent resolved.
-// That is opencode #33027, and nothing on our side of the boundary can fix it.
+// This is the ONE copy of Live read the model is offered, and it is a custom tool rather than an
+// MCP one. Not because MCP is broken — it is not. Turns used to run on OpenCode's v2 API, whose
+// prompt path sends the model no custom tools AND no MCP tools; moving them to v1 (`7b9209e`, see
+// `driver/opencode.py`) delivered both at once. Measured in production: `all 13:` carrying
+// `live_read_table` AND `sage-live-read_live_read_table`, and the model called one.
+//
+// Two tools with the same description and the same Python route behind them only give the model
+// something to guess about, so Sage declares no MCP server and keeps this. A custom tool needs no
+// server, no handshake and no port: the fetch below goes to a route this process already serves.
 //
 // NOTHING IS IMPORTED HERE, AND THAT IS THE POINT. This file used to open with
 // `import { tool } from "@opencode-ai/plugin"`, and that one line cost a day. OpenCode installs
