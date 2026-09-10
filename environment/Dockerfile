@@ -92,6 +92,15 @@ ENV SAGE_MANAGE_URL=${SAGE_MANAGE_URL}
 ARG SAGE_SENSITIVE_MODEL_GROUP=
 ENV SAGE_SENSITIVE_MODEL_GROUP=${SAGE_SENSITIVE_MODEL_GROUP}
 
+# Optional: the Dataset tags that DECLARE a Dataset sensitive. Comma-separated; any one of
+# them declares. Blank = `sensitive`, which is what most deployments want. Set this only when
+# the customer already words it differently — `pii` on one team's Datasets, `confidential` on
+# another's. An empty entry is dropped rather than matched, so a trailing comma cannot
+# accidentally declare every Dataset. Only read when the gate above is set; with the gate off
+# nothing reads this. Non-secret; tag names.
+ARG SAGE_SENSITIVE_DATASET_TAG=
+ENV SAGE_SENSITIVE_DATASET_TAG=${SAGE_SENSITIVE_DATASET_TAG}
+
 # --- Sage code + warm template, baked ---------------------------------------------------------
 # ARGs above each git op so bumping the rev busts the layer cache and pulls the latest on rebuild.
 ARG SAGE_REPO_URL=https://github.com/ddl-subir-m/domino-sage.git   # FILL IN if different
