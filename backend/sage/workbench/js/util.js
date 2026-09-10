@@ -1079,6 +1079,88 @@ window.SW = window.SW || {};
       if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) return 'linux';
       return 'macos';
     },
+
+    // The 409 from `remove_project_resource` names the Built Apps and conversations that still
+    // need the Resource. Dumping that sentence into one Modal.info body reprints the titles
+    // (the server line AND "Held in") and turns untitled chats — first message as title — into
+    // a wall of @mentions (#168). The payload already has the lists; this is the lists as lists,
+    // and the how-to under each group rather than in the names.
+    stillBoundNotice({ apps, refs, conversations, scopeName }) {
+      const appList = apps || [];
+      const chatList = conversations || [];
+      const files = refs || [];
+      const row = (name, key) => h(
+        'div',
+        { key, className: 'sw-still-bound-row', title: name },
+        name
+      );
+      const appHint = files.length
+        ? 'Remove those uses in Build.'
+        : appList.length > 1
+          ? 'Remove it from those apps in Build.'
+          : 'Remove it from that app in Build.';
+      const appSection = appList.length
+        ? h(
+            'div',
+            { className: 'sw-still-bound-section' },
+            h(
+              'div',
+              { className: 'sw-group-label' },
+              appList.length === 1
+                ? SW.brand.text('{count} {builtApp}', { count: 1 })
+                : SW.brand.text('{count} {builtAppPlural}', { count: appList.length })
+            ),
+            ...appList.map((name, i) => row(name, `app-${i}`)),
+            files.length
+              ? h(
+                  'div',
+                  {
+                    className: 'sw-still-bound-meta',
+                    title: files.join(', '),
+                  },
+                  `Used in ${files.join(', ')}`
+                )
+              : null,
+            h('p', { className: 'sw-caption' }, appHint)
+          )
+        : null;
+      const chatSection = chatList.length
+        ? h(
+            'div',
+            { className: 'sw-still-bound-section' },
+            h(
+              'div',
+              { className: 'sw-group-label' },
+              chatList.length === 1
+                ? '1 conversation'
+                : `${chatList.length} conversations`
+            ),
+            ...chatList.map((name, i) => row(name, `chat-${i}`)),
+            h(
+              'p',
+              { className: 'sw-caption' },
+              'Close the chip there, or delete the conversation.'
+            )
+          )
+        : null;
+      return {
+        title: "Can't remove this yet",
+        content: h(
+          'div',
+          { className: 'sw-still-bound' },
+          h(
+            'p',
+            { className: 'sw-still-bound-intro' },
+            SW.brand.text(
+              'Still needed in {scope}. Clear the uses below, then try again.',
+              { scope: scopeName }
+            )
+          ),
+          appSection,
+          chatSection
+        ),
+      };
+    },
   };
 
   // Small shared presentational pieces used across modes ------------------

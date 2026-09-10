@@ -3564,26 +3564,19 @@ window.SW = window.SW || {};
               // the only thing standing between the reader and a sentence they cannot act on.
               const held = (err.payload && err.payload.conversations) || [];
               if (apps.length || held.length) {
-                const subject = [
-                  apps.length &&
-                    SW.brand.text(apps.length > 1 ? '{builtAppPlural}' : 'one {builtApp}'),
-                  held.length && (held.length > 1 ? 'conversations' : 'one conversation'),
-                ].filter(Boolean).join(' and ');
-                const inApps = refs.length
-                  ? ` Used in: ${refs.join(', ')}. Remove those uses in Build, then remove it here.`
-                  // The code word this used to say names the app-scoped pair in `service.py` and
-                  // never on screen, and the act it points at is now a control of its own (#96).
-                  : apps.length ? ' Remove it from that app in Build, then remove it here.' : '';
-                // Both ways out, because they are not the same act: closing the chip keeps the
-                // conversation and its history, and only the reader knows which they meant.
-                const inChats = held.length
-                  ? ` Held in: ${held.join(', ')}. Close the chip there, or delete the` +
-                    ' conversation, then remove it here.'
-                  : '';
+                // Lists, not the server sentence: err.message already concatenates the same
+                // names, and reprinting them under Held in is how untitled chats become a wall.
+                // Both ways out of a chip stay on the conversation group: closing it keeps the
+                // history, deleting the conversation does not, and only the reader knows which.
+                const notice = SW.util.stillBoundNotice({
+                  apps, refs, conversations: held, scopeName,
+                });
                 antd.Modal.info({
-                  title: `${resource.name} is still used by ${subject}`,
-                  content: `${err.message}, so it can't leave ${scopeName} yet.` + inApps + inChats,
+                  title: notice.title,
+                  content: notice.content,
                   okText: 'Got it',
+                  className: 'sw-still-bound-modal',
+                  width: 440,
                 });
               } else {
                 antd.message.error(err.message);

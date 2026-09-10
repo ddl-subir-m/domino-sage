@@ -64,12 +64,17 @@ def test_workbench_is_the_default_ui():
     assert store.status_code == 200
     # A refused removal names the Built Apps that still bind it and the source that still uses
     # it, rather than a dead-end toast. The app refusing is often not the one on screen (#71); what
-    # the refusal has to carry is asserted against the route, in test_project_resources.
+    # the refusal has to carry is asserted against the route, in test_project_resources. The lists
+    # are drawn as lists — concatenating err.message with Held in is how untitled chats became a
+    # wall of @mentions.
     assert b"err.payload && err.payload.apps" in store.content
     assert b"err.payload && err.payload.refs" in store.content
     # A live conversation holding a context chip refuses it too, and that holder has no app source
     # behind it — so the titles are the only thing the reader can act on (#168).
     assert b"err.payload && err.payload.conversations" in store.content
+    assert b"SW.util.stillBoundNotice" in store.content
+    assert b"Held in: ${held.join" not in store.content
+    assert b"err.message}, so it can't leave" not in store.content
     assert b"gatewayAliases" in store.content
     assert b"resourcesLoading" in store.content
     assert b"resourceListing" in store.content

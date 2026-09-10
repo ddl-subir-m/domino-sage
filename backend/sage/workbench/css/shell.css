@@ -872,6 +872,48 @@ a.sw-topnav-link {
   white-space: nowrap;
 }
 
+/* A Project removal the 409 refused. Apps and conversations as two lists, not one
+   paragraph of titles — untitled chats use the first message as the title (#168). */
+.sw-still-bound-modal .ant-modal-confirm-body {
+  align-items: flex-start;
+}
+.sw-still-bound {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  min-width: 0;
+  max-height: min(60vh, 28rem);
+  overflow: auto;
+}
+.sw-still-bound-intro {
+  margin: 0;
+  font-size: var(--fs-13);
+  color: var(--gray-600);
+  line-height: 1.5;
+}
+.sw-still-bound-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sw-still-bound-section .sw-group-label { margin-bottom: var(--s1); }
+.sw-still-bound-row,
+.sw-still-bound-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sw-still-bound-row {
+  font-size: var(--fs-13);
+  color: var(--dark-700);
+  line-height: 1.4;
+  padding: 2px 0;
+}
+.sw-still-bound-meta { font-size: var(--fs-12); color: var(--gray-500); }
+.sw-still-bound-section .sw-caption { margin: var(--s1) 0 0; line-height: 1.5; }
+
 /* A kind that would not list, said once above its rows. It sits between the group head and the
    first row because it is a fact about the KIND — it is as true of a group holding twelve carried
    rows as of an empty one, and only the group head is above both (#161). */
