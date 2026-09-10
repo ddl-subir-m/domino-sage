@@ -164,9 +164,10 @@ def glossary_terms(path: Path | None = None) -> list[str]:
 def _entries(path: Path | None = None) -> Iterator[tuple[str, int, str | None]]:
     """Each glossary entry as `term, line, kind`, with `kind` None when unmarked."""
     text = (path or GLOSSARY).read_text(encoding="utf-8")
-    for match in _TERM.finditer(text):
-        nxt = text.find("\n**", match.end())
-        body = text[match.start(): len(text) if nxt < 0 else nxt]
+    matches = list(_TERM.finditer(text))
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[match.start():end]
         kind = _KIND.search(body)
         yield match.group(1), text.count("\n", 0, match.start()) + 1, (
             kind.group(1) if kind else None
