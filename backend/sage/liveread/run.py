@@ -45,6 +45,9 @@ class Turn:
     chips: dict[str, tuple[str, ...]] = field(default_factory=dict)
     shared: tuple[tuple[str, str], ...] = ()
     binding_for: dict[str, str] = field(default_factory=dict)
+    # Where a table already sits, so a read does not have to ask the model to say it again. Keyed
+    # (Data Source, table), with (Data Source, "") holding that store's last recorded position.
+    scope_for: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)
     source_for: Callable[[str], Any] | None = None
     sample_rows: Callable[..., Any] | None = None
     # Listing and reading are two different reaches. Every Dataset can be LISTED, mounted or not —
@@ -119,10 +122,17 @@ def _table(args: dict, turn: Turn) -> str:
 
     table = str(args.get("table") or "")
     limit = max(1, min(int(args.get("limit") or 5), result.CAP_ROWS))
+    # The person already said where this table is: the picker recorded a database and a schema when
+    # they chose it, and a Binding records the same. Asking the model to repeat them is how a read
+    # ends up with neither — `statement` fills a level it was given nothing for with nothing at all,
+    # so a missing database turns `DWH.MARTS.T` into `..T` and the store rejects a statement no one
+    # can read. What the model DOES name still wins: a table it reached for in another schema of the
+    # same store is a real request, and the recorded position is a default, not a fence.
+    known = turn.scope_for.get((name, table)) or turn.scope_for.get((name, "")) or ("", "")
     rows = turn.sample_rows(
         source,
-        str(args.get("database") or ""),
-        str(args.get("schema") or ""),
+        str(args.get("database") or "") or known[0],
+        str(args.get("schema") or "") or known[1],
         table,
         limit,
     )

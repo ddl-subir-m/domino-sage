@@ -7322,11 +7322,21 @@ class Orchestrator:
         # Session context. A table chip carries the TABLE in `name` and the store in `sourceName`,
         # and it is the store that has to be named here (see `_chat_context_line`).
         chips: dict[str, tuple[str, ...]] = {}
+        # And WHERE each table sits. `confirm_thread_table` writes the position the person picked
+        # onto the chip, so it is already recorded here — the read filled it from the model instead,
+        # which meant a turn where the model named neither level sent the store `..TABLE`.
+        scope_for: dict[tuple[str, str], tuple[str, str]] = {}
         for item in (store.read_context(thread_id).get("items") or []):
             kind = str(item.get("kind") or "")
             if kind in ("data_source", "table"):
                 name = str(item.get("sourceName") or item.get("subtitle") or item.get("name") or "")
                 key = "datasource"
+                scope = item.get("scope") if isinstance(item.get("scope"), dict) else None
+                position = (str((scope or {}).get("database") or ""),
+                            str((scope or {}).get("schema") or ""))
+                if name and any(position):
+                    scope_for[(name, str((scope or {}).get("table") or ""))] = position
+                    scope_for[(name, "")] = position
             elif kind == "dataset":
                 name, key = str(item.get("name") or ""), "dataset"
             else:
@@ -7346,6 +7356,13 @@ class Orchestrator:
             bound[kind] = bound.get(kind, ()) + (name,)
             if kind == "datasource" and row.get("id"):
                 binding_for[name] = str(row["id"])
+                # `setdefault`, so a chip wins: a Binding is what the app reads and a chip is what
+                # THIS conversation is looking at, and the second is the more recent answer to
+                # "where does the person mean".
+                position = (str(row.get("database") or ""), str(row.get("schema") or ""))
+                if any(position):
+                    scope_for.setdefault((name, str(row.get("table") or "")), position)
+                    scope_for.setdefault((name, ""), position)
 
         sources = {}
         try:
@@ -7377,6 +7394,7 @@ class Orchestrator:
             chips=chips,
             shared=self._shared_samples(project),
             binding_for=binding_for,
+            scope_for=scope_for,
             source_for=sources.get,
             sample_rows=self._resources.sample_rows,
             list_files=list_files,

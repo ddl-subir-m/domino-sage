@@ -55,8 +55,10 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "token": _TOKEN,
                 "source": {"type": "string", "description": "The Data Source name."},
-                "database": {"type": "string"},
-                "schema": {"type": "string"},
+                # Optional, and genuinely so: left out, the read uses the database and schema the
+                # table was picked at. Name one only to reach elsewhere in the same store.
+                "database": {"type": "string", "description": "Omit to use the recorded one."},
+                "schema": {"type": "string", "description": "Omit to use the recorded one."},
                 "table": {"type": "string"},
                 "limit": {"type": "integer", "description": "Rows to read. Default 5, capped."},
                 "title": {"type": "string", "description": "A short title for the card."},

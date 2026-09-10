@@ -103,8 +103,11 @@ export const table = {
     token,
     source: { type: "string", description: "The Data Source name." },
     table: { type: "string", description: "The table name." },
-    database: { type: ["string", "null"], description: "The database." + OPTIONAL },
-    schema: { type: ["string", "null"], description: "The schema." + OPTIONAL },
+    // Null is the right answer almost always, and now it is also the SAFE one: the read fills
+    // both from the position the table was picked at. It did not, once, and an unqualified name
+    // reached the warehouse as `..TABLE`.
+    database: { type: ["string", "null"], description: "The database. Send null to read it where the table was picked." },
+    schema: { type: ["string", "null"], description: "The schema. Send null to read it where the table was picked." },
     limit: { type: ["integer", "null"], description: "Rows to read. Default 5, capped." + OPTIONAL },
     title: { type: ["string", "null"], description: "A short title for the card." + OPTIONAL },
   },

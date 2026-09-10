@@ -277,3 +277,31 @@ def test_a_binding_is_what_puts_the_store_in_range_for_a_build_turn(tmp_path: Pa
 
     assert "Use it in this conversation" in oc.said
     assert resources.asked == []
+
+
+def test_the_read_goes_to_the_position_the_person_picked_the_table_at(tmp_path: Path):
+    """The wiring for the levels the model was being asked to repeat.
+
+    `confirm_thread_table` writes the database and schema onto the chip when someone clicks a table
+    on the card. Until this, `_live_read_turn` dropped them and the read used whatever the model
+    happened to say — which on the turn that opened this was nothing at all.
+    """
+    resources = Warehouse()
+    orch, oc = _orch(tmp_path, resources)
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(
+        tid, {"kind": "data_source", "id": "ds1", "name": "Snowflake-Data-Warehouse"})
+
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    items = store.read_context(tid).get("items") or []
+    items[0]["sourceName"] = "Snowflake-Data-Warehouse"
+    items[0]["scope"] = {"database": "DWH", "schema": "MARTS", "table": "GONG__CALLS"}
+    store.write_context(tid, {"items": items})
+
+    list(orch.chat_stream(tid, "show me 1 sample conversation"))
+    # The model names the table and nothing else, which is the whole call it should have to make.
+    _call(orch, "live_read_table", {
+        "token": _token(oc), "source": "Snowflake-Data-Warehouse",
+        "table": "GONG__CALLS", "limit": 1,
+    })
+    assert resources.asked == [("Snowflake-Data-Warehouse", "DWH", "MARTS", "GONG__CALLS", 1)]
