@@ -16,6 +16,7 @@ from pathlib import Path
 from ..gateway.client import CostLabels, GatewayClient
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
+    KIND_DATASET,
     KIND_LLM_ALIAS,
     KIND_MODEL_API,
     Binding,
@@ -527,12 +528,40 @@ def transcript_markdown(history: list[dict]) -> str:
     return ("\n\n".join(lines) + "\n") if lines else ""
 
 
+def _dataset_binding(item: dict) -> Binding | None:
+    """A Dataset Binding for a chip that names one, or None (ADR-0043).
+
+    Its own reader because a Dataset arrives in two chip shapes and NEITHER is the shape below
+    reads. A file Chat fetched to answer a question is `kind: "file"` carrying `datasetId`; a
+    Dataset row pinned whole keeps its id behind a `dataset:` prefix. `_BINDABLE` matched on kind
+    alone and saw neither, so a Chat that read a declared Dataset crossed into a Build whose
+    manifest recorded no Dataset — and the lock the Chat should have been under did not survive
+    the crossing either.
+
+    The Dataset's own name, never the chip's: a file chip's `name` is the FILE, and a Binding
+    labelled `patients.csv` names no Dataset anybody can find in the rail.
+    """
+    did = str(item.get("datasetId") or "")
+    name = str(item.get("datasetName") or "")
+    if not did and str(item.get("kind") or "") == "dataset":
+        rid = str(item.get("parentId") or item.get("resourceId") or "")
+        did = rid[len("dataset:"):] if rid.startswith("dataset:") else rid
+        name = name or str(item.get("name") or "")
+    if not did or did.startswith(("ctx_", "table:", "dsfile:", "file:")):
+        return None
+    label = name or did
+    return Binding(KIND_DATASET, did, label, label)
+
+
 def binding_from_context(item: dict) -> Binding | None:
     """A Binding for a Session context row that names a Resource, or None.
 
     A table chip is still a Data Source Binding: the id is the source, and Scope rides
     on the Binding. Leaf ids (`table:…`, `dsfile:…`) are not Resource ids.
     """
+    dataset = _dataset_binding(item)
+    if dataset is not None:
+        return dataset
     kind = item.get("kind")
     if kind == "datasource":
         kind = KIND_DATA_SOURCE

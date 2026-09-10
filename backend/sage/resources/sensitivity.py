@@ -2,8 +2,14 @@
 
 Two questions, one module, because they are only ever asked together and neither is useful alone:
 
-    declared(bindings) -> the bound Datasets carrying the sensitivity tag
+    declared(scope)    -> the Datasets in scope carrying the sensitivity tag
     approved()         -> the models an administrator approved, or None when the feature is off
+
+`scope` is a Binding list and is deliberately NOT the Binding manifest. A Dataset reaches a turn
+three ways — bound to the app, attached into its tree, or pinned to a Conversation — and only the
+caller knows which of those it can see. Reading the manifest here made the other two invisible,
+which is a lock that never fired for the two doors people actually use. The caller assembles the
+list (`Orchestrator._datasets_in_scope`) and this module still decides which of them are declared.
 
 Deep module, narrow interface. The router stays pure (it is handed a frozenset), the publish guard
 stays pure (it is handed an `ApprovedModels`), and every network read and every cache lives here.
@@ -90,28 +96,61 @@ class SensitivityGate:
     def enabled(self) -> bool:
         return bool(group_name(self._env))
 
-    def declared(self, bindings: list[Binding]) -> list[Binding]:
-        """The declared Datasets this Project binds. Empty when the feature is off.
+    def declared(self, scope: list[Binding]) -> list[Binding]:
+        """The declared Datasets among the ones in scope. Empty when the feature is off.
+
+        `scope` is every Dataset this turn can reach, however it got there — see the module note.
+        Non-Dataset kinds are ignored rather than refused, so a caller can hand over a whole
+        manifest without filtering it first.
 
         A listing failure answers the SAFE way, not the convenient one: if Sage cannot tell whether
-        a bound Dataset is declared, it treats the Project as declared and lets `approved()` decide
-        what that costs. The alternative is answering "not sensitive" because the network wobbled.
+        a Dataset in scope is declared, it treats the Project as declared and lets `approved()`
+        decide what that costs. The alternative is answering "not sensitive" because the network
+        wobbled. That fail-safe covers all three doors, because it is keyed on the listing rather
+        than on how the Dataset arrived.
         """
         if not self.enabled:
             return []
-        dataset_bindings = [b for b in bindings if b.kind == KIND_DATASET]
-        if not dataset_bindings:
+        datasets = [b for b in scope if b.kind == KIND_DATASET]
+        if not datasets:
             return []
+        keys = self._keys()
+        if keys is None:
+            return datasets
+        return [b for b in datasets if b.id in keys or b.name in keys]
+
+    def declares(self, dataset_id: str, dataset_name: str = "") -> bool:
+        """Whether ONE Dataset carries the declaration, asked without a Binding to hold it.
+
+        For the callers that hold a bare Domino id — an attachment entry deciding what it may write
+        down (ADR-0043) — rather than a scope list. Same cache and same fail-safe as `declared`,
+        which is the point of it living here: a second reader of `declared_keys` somewhere else
+        would be a second answer about one Dataset.
+        """
+        if not self.enabled or not (dataset_id or dataset_name):
+            return False
+        keys = self._keys()
+        if keys is None:
+            return True
+        return dataset_id in keys or (bool(dataset_name) and dataset_name in keys)
+
+    def _keys(self) -> frozenset[str] | None:
+        """The declared ids and names, or None when the listing would not answer.
+
+        None rather than an empty set, because the two mean opposite things and every caller has to
+        tell them apart: empty is "nothing is declared", unreadable is "assume it is".
+        """
         cached = self._fresh(self._declared, self._ttl_for(self._declared))
-        if cached is None:
-            try:
-                assets = self._list_assets()
-            except Exception:
-                log.exception("sensitivity: couldn't list Datasets; treating this Project as declared")
-                return dataset_bindings
-            cached = declared_keys(assets, sensitivity_tags(self._env))
-            self._declared = (self._clock(), cached)
-        return [b for b in dataset_bindings if b.id in cached or b.name in cached]
+        if cached is not None:
+            return cached
+        try:
+            assets = self._list_assets()
+        except Exception:
+            log.exception("sensitivity: couldn't list Datasets; treating this Project as declared")
+            return None
+        keys = declared_keys(assets, sensitivity_tags(self._env))
+        self._declared = (self._clock(), keys)
+        return keys
 
     def approved(self) -> ApprovedModels | None:
         """The approved models, or None when the deployment never opted in.

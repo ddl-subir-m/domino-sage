@@ -11,9 +11,11 @@ blanket refusal refuses the ordinary case. It named the condition that would reo
 a per-Data-Source sensitivity declaration, or Domino exposes a classification Sage can read."
 
 That condition has fired. A Domino Dataset carries freeform tags, and Sage already reads them. So a
-Dataset tagged `sensitive` now narrows the models Sage will use while it is attached, and narrows
+Dataset tagged `sensitive` now narrows the models Sage will use while it is **in scope**, and narrows
 the models the app Sage builds may be published against. The approved models are named by a
 **Domino LLM Gateway alias group**, which an administrator curates and Sage only reads.
+
+"In scope" is the load-bearing word and it is defined in *Which Datasets are in scope*, below.
 
 The gate is off until an administrator configures it.
 
@@ -89,8 +91,13 @@ already been shown to reach gates that the Build path applies.
 app Sage is writing is gated at the moment its own model call would carry sensitive rows.
 
 **Publish.** `publish_guard` refuses an app that binds a non-approved Alias while a sensitive Dataset
-is attached, reusing `sensitive-rows-to-vendor-model` — the code the deleted implementation used for
-exactly this refusal.
+is in scope, reusing `sensitive-rows-to-vendor-model` — the code the deleted implementation used for
+exactly this refusal. Two lists meet here and they are not the same list: only a BOUND Alias is
+pinned into the app's source, so the manifest names the model, while the declared half comes from
+the wider scope — an app whose sensitive rows arrive as files under `public/data` ships the same
+rows as one that also wrote a Binding down. No Conversation is consulted: an app is published, a
+Conversation is not, and a chip pinned to a chat does not travel until a handoff writes it into the
+manifest.
 
 **Binding is deliberately not gated.** Refusing to attach an Alias would be the strongest point, and
 it is the wrong one: a creator picking a model is not thinking about data, and a refusal there
@@ -116,6 +123,64 @@ and path while the rows go to the Artifact and reach the person. Nothing sensiti
 so there is nothing here to gate. This is recorded because a later reader who sees "sensitive" and
 "reads a Dataset" in one sentence will otherwise gate it, and gating it would break the one path
 built to keep rows away from the model.
+
+**A descriptor is NOT the same case, and the two are easy to read as one.** `describe()` promises a
+file's shape and not its content, and its tabular branch breaks that promise on purpose: it emits
+three verbatim rows, and the PDF branch a first-page snippet. Those reach the model — so unlike a
+Live read they are inside the gate, and the turn carrying them is locked to an approved model like
+any other. What they must not do is get written down; see *What the manifest may hold*, below.
+
+The two surfaces differ here and a reader who assumes they behave alike will gate the wrong one:
+Chat's chip inlines `summary` only (`_describe_context_file`), which carries no values, while
+Build's `@mention` inlines `detail` (`_resolve_mentions`), which carries the rows.
+
+## Which Datasets are in scope
+
+A Dataset reaches a turn three ways, and all three put its rows in front of a model. The gate read
+the Binding manifest alone, which is the door people use least — so the lock did not fire for either
+of the two doors the product actually puts in front of somebody.
+
+**Bound.** `bind_dataset` wrote a record. The only one a manifest knows about.
+
+**Attached.** Files sit under `public/data/<slug>` and `@mention` inlines their descriptor. Attaching
+writes no Binding — that is a separate act behind a separate button, and ADR-0021 keeps it separate
+on purpose. The attachment entry keeps `dataset_id`, which is the same id space the Binding uses, so
+the two join without a listing.
+
+**Pinned.** A Chat `dsfile:` chip. Chat has no Built App and writes no manifest at all, so before
+this the Chat lock could only fire on whatever the selected app happened to have bound — never on a
+Chat act. A chip belongs to one Conversation, so this source is consulted only when there is a
+Conversation to consult; the unscoped Build turn and the preview proxy have none.
+
+`Orchestrator._datasets_in_scope` assembles the three and the gate still decides which are declared,
+which is why the fail-safe covers all of them: it is keyed on the Dataset LISTING rather than on how
+the Dataset arrived. The one place this is not fail-closed is an unreadable Conversation, which
+narrows the scope rather than failing the turn — bounded, because the sticky lock already holds
+every Conversation whose transcript actually carries declared rows.
+
+**The crossing was repaired with it.** `binding_from_context` matched on chip kind, and a Dataset
+chip is `kind: "file"` carrying `datasetId`. So a Chat that read declared rows crossed into a Build
+whose manifest recorded no Dataset, and the lock did not survive the handoff either.
+
+## What the manifest may hold
+
+`.sage/attachments.json` is committed, and the descriptor cache lives in it. `public/data/` is
+gitignored precisely so that data never enters git — and three verbatim rows of that same data were
+being committed beside it, in the file whose job is to survive into the published app.
+
+So a declared Dataset's `detail` is withheld from the cache and only from the cache. The prompt still
+gets it: the turn is locked to an approved model, and an approved model reading the rows is the
+feature rather than a gap in it. `_descriptor(want_detail=True)` re-reads the file for the one caller
+that inlines it, which costs a read per mention rather than per file — the loops that describe every
+attachment on every turn read `kind` and `summary` and are untouched, which is what keeps ADR-0029's
+cache doing the job it was built for.
+
+**The declaration reaches backwards.** A Domino tag is self-service and can be added at any time, so
+the ordinary case is a file attached before the declaration existed, with its rows already committed.
+`_scrub_declared_descriptors` takes them out when the lock engages. This is a different answer from
+the one given to an app published before its Dataset was tagged, and deliberately: there no
+interception point exists and unpublishing would be destructive, while here Sage owns the file and
+rewriting it costs nothing. Two situations that look alike and are not.
 
 ## Failing closed without failing everyone
 

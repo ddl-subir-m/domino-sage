@@ -1069,6 +1069,18 @@ _LIVE_READ_TTL_S = 30 * 60
 
 _SAGE_UPLOAD_PREFIXES = ("uploads/", "sensitive/")
 
+# What a descriptor says instead of its `detail` when the file belongs to a declared Dataset
+# (ADR-0043). `detail` carries CONTENT — `describe._describe_tabular` emits three verbatim rows and
+# `_describe_pdf` a first-page snippet — and the descriptor is cached in `.sage/attachments.json`,
+# which is committed. `public/data/` is gitignored so that data never enters git; three rows of that
+# same data must not enter it through the manifest that describes it.
+#
+# The prompt is NOT what this withholds from. A declared Dataset locks the turn to an approved model
+# and an approved model is allowed to read the rows — that is the whole feature. This is only about
+# what is written down: `_descriptor(want_detail=True)` re-reads the file for the one caller that
+# inlines it.
+_WITHHELD_DECLARED = "declared"
+
 
 def _is_sage_upload(entry: dict) -> bool:
     """A Sage-managed upload: bytes Sage wrote under a dataset's `uploads/` or `sensitive/` folder.
@@ -5188,7 +5200,7 @@ class Orchestrator:
             self._clear_turn_baseline()
             self._release_turn()
 
-    def _descriptor(self, project: Project, entry: dict) -> dict:
+    def _descriptor(self, project: Project, entry: dict, *, want_detail: bool = False) -> dict:
         """Typed shape summary (kind/summary/detail/size) for one attachment, cached in the manifest.
 
         The agent needs each file's SHAPE, never its content — the built app fetches the full file at
@@ -5200,10 +5212,39 @@ class Orchestrator:
         The cache is filled into the entry here and PERSISTED BY THE CALLER. This wrote the manifest
         itself once per file, which made a 200-file folder attach rewrite the whole manifest 200
         times through `_write_agents_data_block` (ADR-0029). Every caller already writes it once for
-        its own act, so the write belongs there — one per act rather than one per file."""
+        its own act, so the write belongs there — one per act rather than one per file.
+
+        `want_detail` exists because a declared Dataset's `detail` is withheld from the cache and
+        only from the cache (see `_WITHHELD_DECLARED`). Default False so the loops keep costing one
+        dict lookup: `_attached_data_lines` describes every attachment on every turn and reads
+        `kind` and `summary` off it, and re-reading two hundred files to serve a field nobody in
+        that loop touches is the bloat ADR-0029 removed. The single caller that inlines `detail`
+        (`_resolve_mentions`) asks for it, and pays one file read per mention rather than per file.
+        """
         cached = entry.get("descriptor")
         if cached:
+            if want_detail and cached.get("withheld") == _WITHHELD_DECLARED:
+                # Re-read rather than served from the cache, and NOT written back: the withholding
+                # is the point, and a caller that wanted the rows must not be the thing that puts
+                # them back on disk.
+                return {**cached, **self._describe_now(project, entry), "withheld": ""}
             return cached
+        d = self._describe_now(project, entry)
+        if d.get("detail") and self._sensitivity_gate().declares(
+            str(entry.get("dataset_id") or ""), str(entry.get("dataset") or "")
+        ):
+            entry["descriptor"] = {**d, "detail": "", "withheld": _WITHHELD_DECLARED}
+            return d
+        entry["descriptor"] = d
+        return d
+
+    def _describe_now(self, project: Project, entry: dict) -> dict:
+        """Describe one attachment off disk, with no cache on either side of it.
+
+        Split out of `_descriptor` so that the withheld-and-asked-for path reads the file the same
+        way the first description did. Two spellings of "describe this attachment" is how the
+        `detail` a mention inlines and the `detail` a manifest holds could come to differ.
+        """
         try:
             real = _safe_join(project.workspace.path, entry["path"]).resolve()
             d = describe(str(real))
@@ -5215,7 +5256,6 @@ class Orchestrator:
         except (ValueError, OSError) as e:  # describe() itself never raises; _safe_join can
             d = {"kind": "unavailable", "summary": f"not described ({type(e).__name__})",
                  "detail": "", "size": 0}
-        entry["descriptor"] = d
         return d
 
     def _resolve_mentions(self, project: Project, mentions: list[str] | None) -> list[dict] | None:
@@ -5274,7 +5314,11 @@ class Orchestrator:
             if real is None:
                 continue
             fresh = fresh or not entry.get("descriptor")
-            d = self._descriptor(project, entry)
+            # The only caller that inlines `detail`, so the only one that asks for it. A declared
+            # Dataset's file is re-read here rather than served from the manifest, which is what
+            # keeps the rows out of the committed file without keeping them out of the prompt —
+            # the turn carrying them is already locked to an approved model (ADR-0043).
+            d = self._descriptor(project, entry, want_detail=True)
             item = {"path": m, "name": PurePosix(m).name,
                     "summary": d["summary"], "detail": d["detail"]}
             if d["kind"] == "image":
@@ -12184,7 +12228,7 @@ class Orchestrator:
         # of Bindings (a declared Dataset and an LLM Alias) and an app that reads no Data Source can
         # still be refused by it (ADR-0043). Putting it after the early return below would have made
         # it silently inert for exactly the app it exists to stop.
-        sensitive_problems = self._sensitive_model_problems(recorded)
+        sensitive_problems = self._sensitive_model_problems(project, recorded)
         bindings = data_source_bindings(recorded)
         if not bindings:
             if sensitive_problems:
@@ -12206,20 +12250,32 @@ class Orchestrator:
         if problems:
             raise PublishRefused(problems)
 
-    def _sensitive_model_problems(self, recorded: list[Binding]) -> list[PublishProblem]:
+    def _sensitive_model_problems(
+        self, project: Project, recorded: list[Binding]
+    ) -> list[PublishProblem]:
         """Refuse an app that reads a declared Dataset through an unapproved model (ADR-0043).
 
         Costs nothing on an ordinary publish: the gate answers off without a call when the
         deployment never set SAGE_SENSITIVE_MODEL_GROUP, and answers empty without a gateway read
-        when no Dataset is bound. So a gateway wobble cannot block a publish that this decision has
-        nothing to say about.
+        when no Dataset is in scope. So a gateway wobble cannot block a publish that this decision
+        has nothing to say about.
+
+        Two lists, and they are not the same list. `recorded` is the manifest, and it is what names
+        the Alias the app would call — only a BOUND Alias is pinned into the app's source. The
+        declared half comes from the wider scope, because ADR-0043's promise is about a Dataset
+        being ATTACHED, and an app whose sensitive rows arrive as files under `public/data` ships
+        exactly the same rows as one that also wrote a Binding down.
+
+        No Conversation is passed, and that is not an omission: an app is published, a Conversation
+        is not, and a chip pinned to a chat does not travel into the app until a handoff writes it
+        into the manifest this already reads.
 
         Unlike the two guards beside it, a failure here is NOT caught and turned into "no problem".
         The gate already answers an unreadable listing as `reachable=False`, which is a refusal —
         "Sage could not check where the rows would go" is not a reason to send them.
         """
         gate = self._sensitivity_gate()
-        declared = gate.declared(recorded)
+        declared = gate.declared(self._datasets_in_scope(project, None))
         if not declared:
             return []
         return sensitive_model_problems(recorded, declared, gate.approved())
@@ -12259,7 +12315,9 @@ class Orchestrator:
         gate = self._sensitivity_gate()
         if not gate.enabled:
             return None, ""
-        declared = gate.declared(parse_bindings(project.workspace.read_bindings()))
+        declared = gate.declared(self._datasets_in_scope(project, conversation))
+        if declared:
+            self._scrub_declared_descriptors(project, declared)
         sticky = conversation is not None and project.record.session_ran_locked(conversation)
         if not declared and not sticky:
             return None, ""
@@ -12269,6 +12327,96 @@ class Orchestrator:
             # under a sticky lock there is no Dataset left to name.
             return None, declared_turn_refusal(approved or ApprovedModels(), declared)
         return approved, ""
+
+    def _scrub_declared_descriptors(self, project: Project, declared: list[Binding]) -> None:
+        """Take sample rows back out of the committed manifest once a Dataset is declared.
+
+        `_descriptor` withholds `detail` for a declared Dataset's files, which covers every file
+        attached AFTER the tag went on. It cannot cover the ones attached before, and that is the
+        ordinary case rather than an edge: a Domino tag is self-service and can be added at any
+        time, and by then three verbatim rows of that Dataset are sitting in the descriptor cache
+        inside `.sage/attachments.json` — the COMMITTED manifest, beside a `public/data/` that is
+        gitignored precisely so that data never enters git.
+
+        So the declaration reaches backwards. This is where ADR-0043 draws a different line from
+        the one it drew for an app published before its Dataset was tagged: there it left the state
+        surfaced for a human to act on, because no interception point existed and unpublishing
+        would be destructive. Here Sage owns the file, an interception point is exactly what this
+        is, and rewriting it costs nothing.
+
+        Called where the lock is worked out rather than from either turn path, so the two cannot
+        drift about which Datasets are declared. It is a write reached from a read
+        (`sensitivity_state` calls it through `_sensitivity_for_turn`), which is deliberate: the
+        moment the Workbench first draws the lock is the earliest anything knows to clean up, and
+        the write is idempotent. Nothing is written when nothing changed, so an ordinary locked
+        turn pays a scan of a list already in memory and no I/O at all.
+        """
+        ids = {b.id for b in declared}
+        names = {b.name for b in declared}
+        touched = False
+        for entry in project.attached:
+            d = entry.get("descriptor")
+            if not isinstance(d, dict) or not d.get("detail"):
+                continue
+            if (str(entry.get("dataset_id") or "") in ids
+                    or str(entry.get("dataset") or "") in names):
+                d["detail"] = ""
+                d["withheld"] = _WITHHELD_DECLARED
+                touched = True
+        if touched:
+            project.workspace.write_attachments(project.attached)
+
+    def _datasets_in_scope(self, project: Project, conversation: str | None) -> list[Binding]:
+        """Every Dataset this turn can reach, by whichever of the three doors it came through.
+
+        The gate used to read the Binding manifest alone, and the manifest is the door people use
+        least. A Dataset reaches a turn three ways and all three put its rows in a prompt:
+
+          - BOUND. `bind_dataset` wrote a record. The only one the manifest knows about.
+          - ATTACHED. Files sit under `public/data/<slug>` and `@mention` inlines their descriptor.
+            The entry keeps `dataset_id`, which is the same id space the Binding uses, so the two
+            join without a listing.
+          - PINNED. A Chat `dsfile:` chip. Chat has no Built App and writes no manifest at all
+            (`confirm_thread_dataset_file`), so before this the Chat lock could not fire from any
+            Chat act — only from whatever the selected app happened to bind.
+
+        Deduplicated on the Domino id, because a bound Dataset is usually also attached and the
+        refusal names what it finds: naming one Dataset twice reads as two.
+
+        `conversation` is consulted only when there is one. `""` is the unscoped Build turn and
+        `None` is the preview proxy, and neither has a Conversation whose chips could be read —
+        the same three-way distinction `_sensitivity_for_turn` already turns on.
+
+        Non-Dataset Bindings are dropped here rather than in the gate. The gate ignores them too,
+        but the sentence "these are the Datasets in scope" should be true of what this returns.
+        """
+        scope = [b for b in parse_bindings(project.workspace.read_bindings())
+                 if b.kind == KIND_DATASET]
+        seen = {b.id for b in scope}
+
+        def add(dataset_id, dataset_name) -> None:
+            did = str(dataset_id or "")
+            if not did or did in seen:
+                return
+            seen.add(did)
+            # The recorded name, falling back to the id. `declared` matches on either, so a row
+            # that kept no name still joins on the id — and one that kept no id was never a
+            # Dataset row to begin with, which is what the guard above says.
+            name = str(dataset_name or "") or did
+            scope.append(Binding(KIND_DATASET, did, name, name))
+
+        for entry in project.attached:
+            add(entry.get("dataset_id"), entry.get("dataset"))
+        if conversation:
+            # `read_context` answers `{"items": []}` for a Thread it cannot read, so an unreadable
+            # Conversation narrows the scope rather than failing the turn. That is the one place
+            # this reader is not fail-closed, and it is bounded: the sticky lock already holds any
+            # Conversation whose earlier turn ran under the lock, which is every Conversation whose
+            # transcript actually carries declared rows.
+            items = ThreadStore(project.record.path).read_context(conversation).get("items") or []
+            for item in items:
+                add(item.get("datasetId"), item.get("datasetName"))
+        return scope
 
     def _sensitivity_gate(self) -> SensitivityGate:
         """One gate per Project, held for the life of this service so its caches survive a turn.
@@ -12978,7 +13126,7 @@ class Orchestrator:
         if not gate.enabled:
             return off
         project = self.project()
-        declared = gate.declared(parse_bindings(project.workspace.read_bindings()))
+        declared = gate.declared(self._datasets_in_scope(project, conversation))
         # Asked here as well as inside `_sensitivity_for_turn`, because that one answers WHETHER the
         # turn is locked and this needs to know WHICH of the two reasons — the sentences differ and
         # nothing in its return says. The two cannot disagree: both read this one fact and the live

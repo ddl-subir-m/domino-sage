@@ -6161,6 +6161,18 @@ window.SW = window.SW || {};
       // halves together and writes them together, which is why the Upload directly above this has
       // never flickered. Nothing a promote changes is something the platform listing answers (#162).
       await refreshWorkingSet();
+      // Except the lock, which a promote CAN move (ADR-0043): `upload_file` attaches the promoted
+      // file under `public/data/`, so a Dataset that was in nobody's scope is now in this app's.
+      // The three other attach paths reach this through `loadScopeData`, which this one
+      // deliberately does not call, so it is asked for by name.
+      //
+      // Behind a LOCAL test, because #162's whole claim is that a promote reads no platform
+      // listing and this read is one. `declared` rides on the Dataset row the rail already holds,
+      // so an opted-out deployment — where no row ever carries it — pays nothing, and neither does
+      // a promote onto an ordinary Dataset. The already-locked half is for the other direction: a
+      // second declared Dataset joining the scope changes the sentence the notice draws.
+      const target = state.resourceIndex[`dataset:${res.dataset_id || datasetId}`];
+      if ((target && target.declared) || SW.util.isLocked(state.sensitivity)) refreshSensitivity();
       const tid = conversationId();
       const old = (state.attachments || []).find(
         (a) => a.resourceId === oldId || a.path === resource.path
