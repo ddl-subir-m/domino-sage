@@ -167,7 +167,9 @@ def handle(message: dict, *, run: Callable[[str, dict], str]) -> dict | None:
         # until this line a read that broke and a read nobody made left the same evidence: an
         # answer with no card under it. The message is the driver's, and it can name the statement
         # it choked on; that goes to the creator's own diagnostics, never to the model.
-        log.warning("live read: %s failed — %s: %s", name, type(e).__name__, e)
+        log.warning("live read: %s failed — %s: %s — the turn answers from Python instead, "
+                    "so the rows reach the model rather than the card (ADR-0041)",
+                    name, type(e).__name__, e)
         return _result(mid, {
             "content": [{"type": "text", "text": _failed_text(str(e))}],
             "isError": True,

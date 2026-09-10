@@ -24,7 +24,13 @@ def test_a_server_opencode_has_never_dialled_says_never(tmp_path: Path):
     an absent field reads as "the page is old", and reads that way whether or not it is."""
     orch, _ = _orch(tmp_path, [Turn(text="ok")])
 
-    assert orch.live_read_reach() == {"opencode_connected": "never", "turns_without_tools": 0}
+    # The WHOLE block, deliberately: an absent field is what this test exists to catch, and an
+    # empty `fell_through` is a fact of its own — no read has ended with the model querying the
+    # table itself — rather than a page that did not look.
+    assert orch.live_read_reach() == {
+        "opencode_connected": "never", "turns_without_tools": 0,
+        "fell_through": [], "fell_through_since_boot": 0,
+    }
 
 
 def test_a_chat_turn_that_ran_before_the_handshake_is_counted(tmp_path: Path):

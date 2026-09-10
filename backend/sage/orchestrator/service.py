@@ -3553,6 +3553,15 @@ class Orchestrator:
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
         self._live_read: dict[str, tuple[str, float]] = {}
         self._live_read_lock = threading.Lock()
+        # Reads that ended in the model querying the table itself. ADR-0041 permits it — "a
+        # read-only turn may read the world", and Chat queries Data Sources every day — but it is a
+        # DIFFERENT door from the one the person bound the table for, and rows go into the model's
+        # context down that one. The gateway routes to Vendor-backed Aliases as well as
+        # Domino-hosted ones, so on some turns that means the rows leave Domino. Answering is still
+        # the right call; a turn that silently CHANGED which door it used, and left no way to know
+        # afterwards, was not. Bounded, and a running count beside it for when the ring rolls.
+        self._live_read_fell_through: deque[dict] = deque(maxlen=20)
+        self._live_read_fell_through_n = 0
         # When OpenCode first dialled the Live read server, and how many Chat turns ran before it
         # did. Measured live: OpenCode connected FIFTEEN MINUTES after boot, with no turn running,
         # and every Chat turn before that was handed no Live read tools at all — the model was told
@@ -7118,11 +7127,19 @@ class Orchestrator:
         about 130ms. So `never` before the first Chat turn is the NORMAL reading and says nothing
         is wrong. It is only a finding once `turns_without_tools` is above zero. This field is
         still Sage watching its own door; for what OpenCode itself thinks, read `opencode_says`.
+
+        `fell_through` is the other half, and it is about the person's data rather than the
+        wiring: reads that failed, after which the assistant was told to query the table in Python
+        itself. That answer is allowed and usually right, but it puts rows in the model's context
+        instead of on the person's card, and this is the only place that says which turns did it.
+        Seconds from boot again, and never a row or a token.
         """
         at = self._opencode_mcp_at
         return {
             "opencode_connected": "never" if at is None else round(at - self._boot_at, 1),
             "turns_without_tools": self._chat_turns_before_mcp,
+            "fell_through": list(self._live_read_fell_through),
+            "fell_through_since_boot": self._live_read_fell_through_n,
         }
 
     @contextlib.contextmanager
@@ -7438,7 +7455,20 @@ class Orchestrator:
                 log.info("live read: %s — the token is not this turn's, asking again", name)
                 return "That read token is not current. Ask again on this turn."
             log.info("live read: %s", name)
-            return live_read.perform(name, args, turn)
+            try:
+                return live_read.perform(name, args, turn)
+            except Exception as e:
+                # Recorded and re-raised, never handled here: `mcp.handle` owns what the assistant
+                # is told, and what it is told is to answer from Python instead. Never the rows and
+                # never the token — the tool, the Conversation and what broke are the whole record.
+                self._live_read_fell_through.append({
+                    "tool": name,
+                    "thread": turn.thread_id,
+                    "at": round(time.monotonic() - self._boot_at, 1),
+                    "why": f"{type(e).__name__}: {e}"[:200],
+                })
+                self._live_read_fell_through_n += 1
+                raise
 
         if method in ("initialize", "tools/list"):
             # `/api/diag` reaches this route too, and it asks the same `tools/list` OpenCode asks on
