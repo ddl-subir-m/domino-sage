@@ -91,6 +91,19 @@ TOOLS: list[dict[str, Any]] = [
 _TOOL_NAMES = frozenset(t["name"] for t in TOOLS)
 
 
+def _failed_text(why: str) -> str:
+    """What the assistant reads when a read broke.
+
+    The driver's message on its own is a sentence about SQL, and an assistant handed one goes off
+    to answer the question another way — which is right. What it did next was say "here are the
+    first 5 rows" over a card nobody had written, because nothing had told it the screen was still
+    empty. So that is said first and the message second.
+    """
+    return (f"The live read did not happen: {why}. Nothing was put on the person's screen. "
+            "Query the data with Python and write the table file yourself, and do not say "
+            "anything is showing that you did not write.")
+
+
 def _result(mid: Any, payload: dict) -> dict:
     return {"jsonrpc": "2.0", "id": mid, "result": payload}
 
@@ -152,7 +165,7 @@ def handle(message: dict, *, run: Callable[[str, dict], str]) -> dict | None:
         # it choked on; that goes to the creator's own diagnostics, never to the model.
         log.warning("live read: %s failed — %s: %s", name, type(e).__name__, e)
         return _result(mid, {
-            "content": [{"type": "text", "text": str(e)}],
+            "content": [{"type": "text", "text": _failed_text(str(e))}],
             "isError": True,
         })
     return _result(mid, {"content": [{"type": "text", "text": text}]})

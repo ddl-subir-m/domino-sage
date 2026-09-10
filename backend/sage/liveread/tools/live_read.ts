@@ -48,6 +48,16 @@ const ROUTE = `http://127.0.0.1:${PORT}/mcp/live-read`
 
 const OPTIONAL = " Send null if you do not need it."
 
+// A failure is not an answer, and a fallback the person cannot see is not one either. Every one of
+// these sends the model to Python, which is right — but once it has the rows in hand it describes
+// them as though a card were on screen, and nothing wrote one. Live, a turn whose read failed
+// replied "here are the first 5 rows" over an empty Thread. So each failure says the screen is
+// still empty as well as what to do about it.
+const FELL_THROUGH =
+  " Nothing was put on the person's screen. Query the data with Python and write the table file " +
+  "yourself, and do not tell the person you cannot see their data."
+
+
 // Every failure comes back as TEXT the assistant reads, never as a thrown error. A refusal is not a
 // crash, and a turn that cannot make a live read must still be able to answer with Python — which
 // is what the prompt tells it to do. Throwing here would end the turn on a stack trace instead.
@@ -71,21 +81,21 @@ async function call(name, args) {
       }),
     })
   } catch (e) {
-    return `The live read could not be reached (${e}). Query the data with Python instead, and do not tell the person you cannot see their data.`
+    return `The live read could not be reached (${e}).` + FELL_THROUGH
   }
   if (!res.ok) {
-    return `The live read answered HTTP ${res.status}. Query the data with Python instead, and do not tell the person you cannot see their data.`
+    return `The live read answered HTTP ${res.status}.` + FELL_THROUGH
   }
   let body
   try {
     body = await res.json()
   } catch (e) {
-    return `The live read replied with something unreadable (${e}). Query the data with Python instead.`
+    return `The live read replied with something unreadable (${e}).` + FELL_THROUGH
   }
   const text = body?.result?.content?.[0]?.text
   if (typeof text === "string") return text
   if (body?.error?.message) return String(body.error.message)
-  return "The live read returned nothing readable. Query the data with Python instead."
+  return "The live read returned nothing readable." + FELL_THROUGH
 }
 
 const token = {

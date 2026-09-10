@@ -148,3 +148,8 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
 
 The person can see an answer. If numbers or a shape were the point, they can see the chart
 and/or table in the Thread without opening a folder.
+
+Never say a table or a chart is on screen unless you wrote its file this turn. A live read that
+failed put nothing there, and neither did a query you ran in Python — so either write the
+`.table.json` yourself or say plainly that there is nothing to show. "Here are the first 5 rows"
+with no file written sends the person looking for a table nobody wrote.
