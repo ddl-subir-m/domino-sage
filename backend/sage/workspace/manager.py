@@ -508,18 +508,19 @@ class ProjectRecord:
         clear on a server restart while the history it is about came back, and a lock that a restart
         lifts is the exact hole this closes (ADR-0043).
 
-        An empty `conversation` is the unscoped Build turn — the CLI, a test — which keeps its
-        session in `.sage/session.json` and keeps this beside it. One file for all of them, rather
-        than one per Built App: that over-restricts an unscoped turn in a second app of the same
-        Project, and over-restricting is the safe direction here, the same way the declaration
-        cache holds "declared" long and "not declared" barely at all.
+        An empty `conversation` is the unscoped Build turn, which keeps its session in
+        `.sage/session.json` and keeps this beside it. One file for all of them, rather than one per
+        Built App: that over-restricts an unscoped turn in a second app of the same Project, and
+        over-restricting is the safe direction here, the same way the declaration cache holds
+        "declared" long and "not declared" barely at all.
 
-        That slot has no way out, and it is the one place the copy's advice does not apply: you
-        cannot start a new unscoped conversation, so once this file exists every later unscoped
-        build in the Project runs locked. Accepted rather than fixed, because the Workbench mints a
-        Conversation before it ever builds — this is reachable only from the CLI, where nobody is
-        being told to start a new chat, and where the alternative to a lock with no way out is a
-        transcript with no lock.
+        That slot has no way out — there is no new unscoped conversation to start — so once the file
+        exists every later unscoped turn in the Project runs locked. Left that way because no
+        shipped path reaches it: the Workbench sends a conversation on every build and mints one
+        first if there is none, so the callers are this repo's tests and a hand-written POST to
+        `/api/project/build/stream` with the field left out. Checked rather than assumed, because
+        the docstrings above say "CLI" and there is no CLI. If one is ever added, the way out has to
+        be added with it — the alternative here is a transcript with no lock, which is the hole.
 
         On the Project record and NOT on `Workspace`, for the reason the session id is: one
         conversation can build several apps, and a taint filed under `apps/<appId>/` would be lost

@@ -421,10 +421,13 @@ and the read-only and web grants are already armed and BEFORE the `try/finally` 
 so a raise walking out of the generator would leave every one of them live on a `ModelControl` that
 is not per-turn state.
 
-**Two smaller edges, named rather than fixed.** The unscoped Build turn — the CLI, a test — has one
-lock slot per Project and no way to start a new one, so once it is locked it stays locked; the
-Workbench mints a Conversation before it ever builds, so this is a CLI-only shape, and the
-alternative to a lock with no way out there is a transcript with no lock. And the panel's sticky
+**Two smaller edges, named rather than fixed.** The unscoped Build turn has one lock slot per
+Project and no way to start a new one, so once it is locked it stays locked. No shipped path reaches
+it: the Workbench sends a conversation on every build and mints one first if there is none, which
+leaves this repo's tests and a hand-written POST with the field omitted. Worth writing down because
+the older docstrings around `build_session_path` call that caller "the CLI" and there is no CLI —
+if one is ever added, it needs a way out added with it, since the alternative is a transcript with
+no lock. And the panel's sticky
 sentence says the lock holds in Chat and in a build, where the Bindings sentence beside it also says
 "at publish" — because `sensitive_model_problems` reads the CURRENT Bindings and there is no
 publish-time gate left to promise once the Dataset is gone. A sentence about the lock that is false
