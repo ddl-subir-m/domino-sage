@@ -1135,12 +1135,7 @@ window.SW = window.SW || {};
                 ? '1 conversation'
                 : `${chatList.length} conversations`
             ),
-            ...chatList.map((name, i) => row(name, `chat-${i}`)),
-            h(
-              'p',
-              { className: 'sw-caption' },
-              'Close the chip there, or delete the conversation.'
-            )
+            ...chatList.map((name, i) => row(name, `chat-${i}`))
           )
         : null;
       return {

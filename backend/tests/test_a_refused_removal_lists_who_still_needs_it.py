@@ -90,7 +90,6 @@ def test_each_group_says_what_to_do_under_its_own_list():
     assert "3 conversations" in said
     assert "src/App.tsx" in said
     assert "Remove those uses in Build." in said
-    assert "Close the chip there, or delete the conversation." in said
 
 
 def test_an_app_only_refusal_does_not_draw_a_conversation_group():
@@ -117,7 +116,6 @@ def test_a_chip_only_refusal_does_not_draw_an_app_group():
     assert "Built App" not in said
     assert [row["text"] for row in _rows(rendered)] == ["Positions review"]
     assert "1 conversation" in said
-    assert "Close the chip there, or delete the conversation." in said
 
 
 def test_two_apps_take_the_plural():
