@@ -139,12 +139,28 @@ window.SW = window.SW || {};
         { className: 'sw-mention-guard-text' },
         // One phrase for one and for several — `declaredPhrase` writes both — so the sentence
         // around it cannot pick a verb that only agrees with one of them.
-        SW.brand.text(
-          "This app reads {datasets}, declared sensitive in {platformName}, so {picked} can't be "
-          + 'used here. ',
-          { datasets: SW.util.declaredPhrase(sensitivity), picked }
-        ) + moved
+        //
+        // TWO openings, because after an unbind the first one is false: the app reads nothing
+        // declared any more and the transcript still holds the rows (ADR-0043). Saying "this app
+        // reads" there points at a panel with no Dataset on it, and the creator's next move is to
+        // go looking for the row that is keeping them locked.
+        (SW.util.lockedBySession(sensitivity)
+          ? SW.brand.text(
+            "This conversation has already read {datasets}, so {picked} can't be used in it. ",
+            { datasets: SW.util.declaredPhrase(sensitivity), picked }
+          )
+          : SW.brand.text(
+            "This app reads {datasets}, declared sensitive in {platformName}, so {picked} can't be "
+            + 'used here. ',
+            { datasets: SW.util.declaredPhrase(sensitivity), picked }
+          )) + moved
       ),
+      // The way out, on its own line and only when there is one to give. Under the Bindings lock
+      // the creator already has a better one — unbind the Dataset — and it is not offered here
+      // because the notice is about the model, not about the data.
+      SW.util.sessionWayOut(sensitivity)
+        ? h('div', { className: 'sw-mention-guard-text' }, SW.util.sessionWayOut(sensitivity))
+        : null,
       h(Space, { size: 8, wrap: true },
         h(Button, {
           size: 'small',
@@ -604,13 +620,16 @@ window.SW = window.SW || {};
     // and has nothing to announce.
     const pickedModel = showMode ? (override || pinnedModel) : effectiveModel;
     const movedFrom = pickedModel && barredModel(pickedModel) ? pickedModel : '';
-    // What "once" is counted against: what the notice SAYS, which is the approved set and the
-    // model it moved to. Neither alone. The set catches an administrator adding or removing a
-    // member; the model catches them REORDERING the group, where the set is unchanged and the
-    // session moves anyway (`nearest_approved` prefers by that order, ADR-0043). Either way the
-    // notice already read was never an answer to the new fact, so it comes back.
+    // What "once" is counted against: what the notice SAYS, which is the approved set, the model
+    // it moved to, and which of the two reasons is holding the lock. None of them alone. The set
+    // catches an administrator adding or removing a member; the model catches them REORDERING the
+    // group, where the set is unchanged and the session moves anyway (`nearest_approved` prefers by
+    // that order, ADR-0043); the reason catches the creator unbinding the Dataset, after which the
+    // notice says something it has never said — that unbinding did not work, and what does. Either
+    // way the notice already read was never an answer to the new fact, so it comes back.
     const noticeKey = String([(sensitivity && sensitivity.approved) || [],
-                             SW.util.lockedRunsOn(sensitivity, !showMode)]);
+                             SW.util.lockedRunsOn(sensitivity, !showMode),
+                             (sensitivity && sensitivity.reason) || '']);
 
     return h(
       'div',

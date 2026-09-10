@@ -2011,8 +2011,13 @@ def list_assets() -> dict:
 
 
 @control_app.get("/api/project/sensitivity")
-def sensitivity_state() -> JSONResponse:
+def sensitivity_state(conversation: str = "") -> JSONResponse:
     """The state of the sensitivity lock, for the surfaces that draw it (ADR-0043).
+
+    `conversation` is the Conversation the surfaces are drawn beside. It carries the sticky half of
+    the lock (ADR-0043): a Conversation that has already run a turn under the lock stays locked once
+    the Dataset is unbound, and nothing in the Bindings says so any more. Omitting it asks about the
+    Bindings alone, which is the right question for a caller that is not looking at a Conversation.
 
     Its own route rather than a field on `/api/project/status`, for the reason
     `/api/project/model/assignments` is: the status poll runs on a timer, and a locked Project would
@@ -2024,12 +2029,21 @@ def sensitivity_state() -> JSONResponse:
     this answers.
     """
     try:
-        return JSONResponse(content=orchestrator.sensitivity_state())
+        asked = safe_id(conversation, "conversation id") if conversation else None
+    except ValueError:
+        # An id that could not name a Thread names no locked one either — nothing can ever have
+        # written a lock under an id `safe_id` refuses. Answered as a Bindings-only read rather than
+        # left to the handler below, which reports the lock OFF: that is the dangerous direction
+        # (see store.js), it puts non-approved models back in the picker, and until this parameter
+        # existed nothing outside this process could reach that handler at all.
+        asked = None
+    try:
+        return JSONResponse(content=orchestrator.sensitivity_state(asked))
     except Exception:
         log.exception("sensitivity state read failed")
         return JSONResponse(content={"enabled": False, "locked": False, "group": "",
                                      "approved": [], "datasets": [], "refusal": None,
-                                     "model": None, "chat_model": None})
+                                     "model": None, "chat_model": None, "reason": ""})
 
 
 @control_app.post("/api/project/assets/{dataset_id}/sensitive")
@@ -3678,7 +3692,9 @@ def _preview_approve_model(model: str) -> str | None:
     if project is None:
         return None
     try:
-        approved, refusal = orchestrator._sensitivity_for_turn(project)
+        # No conversation: the previewed app's model call carries the app's CURRENT Bindings and no
+        # transcript, so the sticky lock a conversation may be carrying is not about this (ADR-0043).
+        approved, refusal = orchestrator._sensitivity_for_turn(project, None)
     except Exception:
         # A preview call is not a turn, and Sage failing to read its own gate must not take the
         # preview down. The publish guard still refuses, so nothing ships on this path.

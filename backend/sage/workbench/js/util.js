@@ -187,10 +187,31 @@ window.SW = window.SW || {};
       return SW.util.lockedRunsOn(sensitivity, chat) || SW.brand.text('Approved model');
     },
 
+    // Whether the lock is the CONVERSATION's rather than the Bindings' (ADR-0043). Once a turn has
+    // run under the lock the transcript holds the rows, so unbinding the Dataset moves the same
+    // rows onto whatever model is picked next — the lock stays and the Datasets go.
+    //
+    // Read off the server's `reason` rather than inferred from an empty `datasets` list, which is
+    // also what an older server and a failed read look like. Guessing there draws the sticky
+    // sentence on a Project that never had a Dataset bound at all.
+    lockedBySession(sensitivity) {
+      return !!(SW.util.isLocked(sensitivity) && sensitivity.reason === 'session');
+    },
+
     // The Datasets that armed the lock, as a phrase a sentence can hold. The names the creator sees
     // on the rows, so the explanation points at something they can go and look at.
+    //
+    // Under the session lock there is no row left to point at, and naming one that has been unbound
+    // is worse than naming none — it sends the creator to the panel to remove something that is
+    // already gone, and they come back to a lock that has not moved.
     declaredPhrase(sensitivity) {
       const names = (sensitivity && sensitivity.datasets) || [];
+      // An OBJECT in both shapes, never a clause: every sentence below supplies its own subject
+      // ("this app reads", "this conversation has already read"), and a phrase that carried one too
+      // read "this conversation has already read data this conversation has already read".
+      if (SW.util.lockedBySession(sensitivity)) {
+        return SW.brand.text('data declared sensitive');
+      }
       if (!names.length) return SW.brand.text('a declared {dataset}');
       if (names.length === 1) return SW.brand.text('the {dataset} {name}', { name: names[0] });
       return SW.brand.text('the {datasetPlural} {names}', {
@@ -198,20 +219,41 @@ window.SW = window.SW || {};
       });
     },
 
+    // The way out of a lock the conversation is carrying, said wherever that lock is explained.
+    // It is the ONLY way out and it is not the one a creator will guess: unbinding is the obvious
+    // move and it is deliberately the wrong one. Empty while the Bindings are the reason, because
+    // there the creator has a better way out than abandoning the conversation.
+    sessionWayOut(sensitivity) {
+      if (!SW.util.lockedBySession(sensitivity)) return '';
+      return SW.brand.text(
+        "Unbinding the {dataset} won't lift this — the rows are already in this conversation. "
+        + 'Start a new chat to work without the lock.'
+      );
+    },
+
     // Why one Alias is greyed out, on the row that is greyed out. A disabled control that does not
     // explain itself is the defect this exists to avoid, so the sentence names the model, the group
     // it is missing from, the Datasets that made the group matter, and both ways out — the one that
     // keeps the data (ask for the model to be approved) first.
+    //
+    // Under the session lock the second way out changes rather than disappears: removing the
+    // Dataset is no longer one, and starting a new chat is.
     lockReason(sensitivity, name) {
+      const group = (sensitivity && sensitivity.group) || '';
+      const datasets = SW.util.declaredPhrase(sensitivity);
+      if (SW.util.lockedBySession(sensitivity)) {
+        return SW.brand.text(
+          "{name} isn't in {group}, the {llmAlias} group approved for sensitive data, and this "
+          + 'conversation has already read {datasets}. Ask your {platformName} administrator to '
+          + 'add it to the group, or start a new chat.',
+          { name, group, datasets }
+        );
+      }
       return SW.brand.text(
         "{name} isn't in {group}, the {llmAlias} group approved for sensitive data, and this app "
         + 'reads {datasets}. Ask your {platformName} administrator to add it to the group, or '
         + 'remove {datasets} from the app.',
-        {
-          name,
-          group: (sensitivity && sensitivity.group) || '',
-          datasets: SW.util.declaredPhrase(sensitivity),
-        }
+        { name, group, datasets }
       );
     },
 

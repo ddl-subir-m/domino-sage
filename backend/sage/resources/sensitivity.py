@@ -189,12 +189,26 @@ def declared_turn_refusal(approved: ApprovedModels, declared: list[Binding]) -> 
     A sibling of `publish_guard._unusable`, not a reuse of it: the four reasons are the same four,
     but the thing to do afterwards is not. "Publish again" is wrong advice to a person who was
     trying to ask a question, so the reason is shared and the closing act is written for the turn.
+
+    An EMPTY `declared` is the sticky lock: this conversation read declared rows on an earlier turn
+    and the Binding has since gone. The four reasons are unchanged — they are about the approved
+    group, which never knew why the lock was on — but the sentence may no longer name a Dataset,
+    because there is none left on the panel to go and look at, and it gains a second way out. Both
+    are true there: an administrator can still fix the group, and a new chat is not waiting on one.
     """
+    sentence = _unusable_reason(approved, declared)
+    return sentence if declared else f"{sentence} {session_lock_way_out()}"
+
+
+def _unusable_reason(approved: ApprovedModels, declared: list[Binding]) -> str:
+    """Which of the four ways the approved set came to be unusable, said out loud. Split from the
+    sentence above only so the sticky lock's extra way out is appended in one place rather than
+    four."""
     names = _dataset_phrase(declared)
     if not approved.reachable:
         return brand.text(
             "{assistantName} couldn't reach the {llmGateway} to check which models are approved for "
-            "sensitive data, and this project uses {names}. Try again in a moment.", names=names)
+            "sensitive data, and {scope}. Try again in a moment.", scope=_scope_phrase(declared))
     if not approved.group_found:
         return brand.text(
             "No {llmAlias} group named {group} exists on the {llmGateway}, so nothing is approved "
@@ -215,11 +229,55 @@ def declared_turn_refusal(approved: ApprovedModels, declared: list[Binding]) -> 
 
 
 def _dataset_phrase(declared: list[Binding]) -> str:
+    """What the lock is holding for, as an object a sentence can refuse to work with.
+
+    Empty means the lock is the conversation's own and no Dataset is bound any more, so the phrase
+    names the reading rather than the Dataset. Naming one that has been unbound would send the
+    creator to a panel row that is no longer there.
+    """
     names = [b.display_name or b.name for b in declared]
+    if not names:
+        return brand.text("the data this conversation has already read")
     if len(names) == 1:
         return brand.text("the {dataset} {name}", name=names[0])
     return brand.text("the {datasetPlural} {names}",
                       names=f"{', '.join(names[:-1])} and {names[-1]}")
+
+
+def _scope_phrase(declared: list[Binding]) -> str:
+    """The same fact as a clause, for the one reason that reads "and {scope}" rather than refusing
+    an object. Two shapes rather than one phrase bent to fit both: "this project uses the data this
+    conversation has already read" is not a sentence anybody meant."""
+    if not declared:
+        return brand.text("this conversation has already read data declared sensitive")
+    return brand.text("this project uses {names}", names=_dataset_phrase(declared))
+
+
+def session_lock_way_out() -> str:
+    """The way out of a lock the conversation is carrying rather than the Bindings (ADR-0043).
+
+    Said wherever the sticky lock is explained, because it is the ONLY way out and it is not the one
+    a creator will guess: unbinding the Dataset is the obvious move and it is deliberately the wrong
+    one — the rows are already in the transcript, which is re-sent on every turn after them.
+    """
+    return brand.text(
+        "Unbinding the {dataset} won't lift this — the rows are already in this conversation. "
+        "Start a new chat to work without the lock.")
+
+
+def unrecorded_lock_refusal() -> str:
+    """The sentence refusing a turn whose lock could not be written down (ADR-0043).
+
+    The lock has to outlive the turn, because what it protects is the transcript the turn is about
+    to write. A turn that ran without recording it would put declared rows into a conversation that
+    the next turn — and every turn after a restart — reads as clean. So the write failing stops the
+    turn, and this says so in the one register that fits: nothing the creator did is wrong, and
+    nothing they can do in Sage fixes it.
+    """
+    return brand.text(
+        "{assistantName} couldn't record that this conversation is reading data declared sensitive, "
+        "so it stopped rather than read it unrecorded. The {project} volume may be full or read "
+        "only. Try again, and tell your {platformName} administrator if it keeps happening.")
 
 
 def declared_turn_refusal_for_model(model: str, approved: frozenset[str]) -> str:

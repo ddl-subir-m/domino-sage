@@ -233,11 +233,17 @@ def test_the_way_through_to_build_is_the_rails_own_route_and_not_a_copy_of_it():
 
 def test_split_leaves_chat_exactly_as_it_is_today():
     """Half of this ticket is a promise that nothing changed. Under split, Chat reads the Chat half
-    and nothing else — no merged read, and no rail list it has never needed."""
+    and nothing else — no merged read, and no rail list it has never needed.
+
+    The lock read is not a transcript read and is named here rather than allowed past: half the
+    sensitivity lock is the Conversation's own (ADR-0043), so opening one asks about it, and an
+    exact list is the only thing that would catch a merged read arriving later dressed as this."""
     step = _split("thr_both")
 
     assert _shape(step) == [["user", ["which desks lost money?"]], ["user", ["thanks"]]]
-    assert step["calls"] == ["/threads/thr_both", "/threads/thr_both/context"]
+    assert step["calls"] == ["/threads/thr_both",
+                             "/project/sensitivity?conversation=thr_both",
+                             "/threads/thr_both/context"]
 
 
 # ---- the plan card folds under unified --------------------------------------------------------

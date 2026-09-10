@@ -341,3 +341,96 @@ configuration rather than a list, an answer for a Dataset carrying two tags at o
 what the picker says when the bound Datasets disagree. None of that is answered by this amendment,
 and shipping the list first does not prejudge it: a set of synonyms is the degenerate case of a
 mapping, so tiers can be added over the top without taking anything back.
+
+## Amendment: the lock follows the conversation, not the Binding
+
+The gate above reads the live Bindings, and that was the whole of it. `unbind` edits the Binding
+manifest and rewrites the app's resources; it does not touch the Chat Thread or the OpenCode session
+behind it. The transcript persists and is re-sent on every turn after. So: turn 1 reads a declared
+Dataset under the lock, turn 5 the creator unbinds it, turn 6 sends the same transcript — rows
+included — to whatever vendor model is picked. Nothing in the gate had anything to say, because by
+then nothing was declared.
+
+Compaction is the sharpest form of it. It sends the WHOLE conversation, and `COMPACT_FALLBACK` is
+`gpt-5.4`. The invariant pinned above — the shim rewrites `model` on every request — holds only for
+a turn that is ARMED, and after the unbind nothing armed. `test_compaction_cannot_leave_the_lock`
+proved the rewrite and could not have proved this; the two files now name each other.
+
+**Once any turn of a conversation has run under the lock, that conversation stays locked.** The way
+out is a new chat, not an unbind. `_sensitivity_for_turn` reads a sticky bit beside the live
+declaration, and everything past it is unchanged: the bit does not depend on Bindings at all, so the
+existing arm-or-refuse path runs exactly as it did. Both harnesses set it, from the one place each
+of them already armed from.
+
+**It is per conversation, and it is on disk.** Not on `SensitivityGate`, which is per Project and
+holds caches — this is a fact about one conversation's history, not about the Project's Datasets.
+Not in memory either: a restart clears a flag while the history it is about comes back, and a lock a
+restart lifts is the hole with an extra step. It lives on `ProjectRecord` beside the session id and
+the transcript, under `.sage/threads/<id>/`, for the reason the session id lives there — one
+conversation can build several apps, and a bit filed under `apps/<appId>/` would be lost at exactly
+the moment a Chat handoff creates the app it hands off to. That is also why the handoff needs no
+mechanism of its own and is tested anyway: it carries the same conversation id, and a handoff that
+dropped the bit would be the same leak with one extra step in front of it.
+
+Written BEFORE the prompt goes out, so a turn that dies has still tainted the conversation — the
+transcript it was building is what carries the rows. A turn REFUSED above never reaches it, which
+matters in the other direction: marking there would leave a conversation locked for good on the
+strength of a turn that never happened, after an administrator fixed the group.
+
+**`None` is not `""`.** The preview proxy passes no conversation, because the previewed app's own
+model call carries the app's current Bindings and no transcript; the unscoped Build turn — the CLI,
+a test — passes the empty string, because it has a transcript like any other and keeps its slot
+beside its session. The parameter has no default so that a harness added later has to answer the
+question. A default would have made the hole reachable by omission, which is the shape it had.
+
+**The old sentence is false the moment it is needed.** Every locked-turn sentence named the declared
+Dataset, and that is exactly what is gone. Pointing a creator at `the Dataset claims` sends them to
+a panel with no `claims` on it, to remove something already removed, and they come back to a lock
+that has not moved. The sticky sentences name the reading instead — "this conversation has already
+read data declared sensitive" — and carry the way out, which is the part nobody guesses: unbinding
+is the obvious move and it is deliberately the wrong one. `sensitivity_state` reports `reason`
+(`declared` / `session`) so the browser picks the sentence rather than inferring one from an empty
+`datasets` list, which is also what an older server and a failed read look like. The live reason
+wins while there is one: it names a row somebody can go and look at, which the other cannot.
+
+The lock read now carries the Conversation. Asking without one un-greys every model the next turn
+would refuse, on the surface the person acts from — so it is re-read wherever a Conversation opens,
+and the way out is made to work at the moment it is taken: closing a Conversation DROPS a session
+lock locally rather than re-reading, because that reset is synchronous and reaches no network. Only
+a session lock, and only because `reason` is `session` exactly when no declared Dataset is bound —
+there is no live half underneath it to lose. Dropping a Bindings lock there would put non-approved
+models back in a picker while the Dataset barring them is still attached.
+
+**Fail-closed edges are unchanged, deliberately.** A group that breaks after the conversation was
+tainted still refuses the turn — the sticky lock is a lock, not a grandfather clause — and the
+empty-set `ValueError` in `llm_router._nearest_approved` stays where it is.
+
+### What this promise does not cover
+
+Stated here so nobody later reads it as wider than it is. **A build under the lock can put rows
+somewhere the conversation does not reach.** `public/data/`, a committed file, a line of code — all
+of them outlive the session, and the same unbind also defeats the publish guard, which checks
+current Bindings too. This amendment covers the models SAGE calls while it holds a transcript. It is
+not a promise about a creator who unbinds deliberately in order to launder data out of a Project.
+
+**A lock that cannot be written down refuses the turn.** Running unrecorded would leave declared
+rows in a conversation that the next turn — and every turn after a restart — reads as clean, which
+is the hole again with a full disk in place of an unbind. Both harnesses refuse the way they refuse
+an unusable group: by disarming first. The marker is written after the Chat pin, the turn-mode pin
+and the read-only and web grants are already armed and BEFORE the `try/finally` that releases them,
+so a raise walking out of the generator would leave every one of them live on a `ModelControl` that
+is not per-turn state.
+
+**Two smaller edges, named rather than fixed.** The unscoped Build turn — the CLI, a test — has one
+lock slot per Project and no way to start a new one, so once it is locked it stays locked; the
+Workbench mints a Conversation before it ever builds, so this is a CLI-only shape, and the
+alternative to a lock with no way out there is a transcript with no lock. And the panel's sticky
+sentence says the lock holds in Chat and in a build, where the Bindings sentence beside it also says
+"at publish" — because `sensitive_model_problems` reads the CURRENT Bindings and there is no
+publish-time gate left to promise once the Dataset is gone. A sentence about the lock that is false
+at the moment somebody relies on it is the thing this whole amendment is against.
+
+The blunt fix — a per-Project taint that never clears — was rejected on the same grounds as the
+per-turn cache above: it over-restricts every Project that ever bound a declared Dataset, forever,
+with no way back short of a new Project, and it would fire hardest on the deployments that opted in.
+The narrower promise is the one that can be kept and said out loud.

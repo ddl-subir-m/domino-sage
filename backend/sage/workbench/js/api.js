@@ -755,7 +755,16 @@ SW.api = {
   // The sensitivity lock, for every surface that draws it (ADR-0043). Its own read rather than a
   // field on the status poll, which runs on a timer: a locked Project would pay a gateway listing
   // per tick to answer a question that only moves when an administrator edits a group.
-  sensitivity: () => request('/project/sensitivity'),
+  //
+  // `conversation` carries the sticky half of the lock: a Conversation that has already run a turn
+  // under it stays locked once the Dataset is unbound, and nothing in the Bindings says so. Omitted
+  // rather than sent empty when there is no Conversation open, so the route reads one parameter or
+  // none rather than an empty string it has to treat as a third case.
+  sensitivity: (conversation) => request(
+    conversation
+      ? `/project/sensitivity?conversation=${encodeURIComponent(conversation)}`
+      : '/project/sensitivity'
+  ),
   // Tag a Dataset this Project owns. Refused server-side for one shared in, because the tag marks
   // the whole Dataset for everyone who reads it and the form cannot name them.
   declareDatasetSensitive: (datasetId) =>

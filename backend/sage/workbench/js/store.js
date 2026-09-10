@@ -771,8 +771,13 @@ window.SW = window.SW || {};
   }
 
   // The sensitivity lock (ADR-0043), read from the moments it can move: a scope load, a Binding
-  // change, and a mode change. Never polled — a declaration is a live fact about the Datasets bound
-  // RIGHT NOW, and nothing else in a session changes which those are.
+  // change, a mode change, and opening a Conversation. Never polled — a declaration is a live fact
+  // about the Datasets bound RIGHT NOW, and nothing else in a session changes which those are.
+  //
+  // The Conversation is in that list, and is sent with the read, because half the lock is the
+  // Conversation's own: once a turn of it has run under the lock the transcript holds the rows, so
+  // unbinding the Dataset leaves the lock standing and the Bindings say nothing about it. Ask
+  // without naming one and the picker un-greys every model the next turn will refuse.
   //
   // The mode is in that list only since the state started carrying `model`/`chat_model`, where the
   // lock moves a barred turn to. `nearest_approved` prefers the sovereign slot for the MODE, so
@@ -790,10 +795,34 @@ window.SW = window.SW || {};
   // back in the picker on a network wobble, and the picker is the surface a person acts from.
   // Nothing is enforced here, so a stale "locked" costs an explanation that is a beat out of date,
   // while a stale "unlocked" is a model somebody picks and the router then refuses under them.
+  // A session lock belongs to ONE conversation (ADR-0043), so it does not survive leaving that one.
+  // Dropped synchronously wherever the open conversation changes, and BEFORE the read that replaces
+  // it: `refreshSensitivity` leaves the last answer standing when a read fails, which is right for a
+  // Bindings lock and wrong for this one — it would draw conversation A's lock, and A's sentence
+  // about rows A read, over conversation B for the rest of the session.
+  //
+  // Only `reason === 'session'`. That is sent only when no declared Dataset is bound, so there is no
+  // live half underneath it to lose, and B's own taint arrives with the read. Clearing a Bindings
+  // lock here would put non-approved models back in the picker while the Dataset barring them is
+  // still attached, which is the stale-unlocked direction and the dangerous one.
+  // Notifies when it actually drops one, because two of its three call sites have already rendered
+  // by the time they reach it and the third is about to. Left to the read that follows, a failed
+  // request would leave the stale lock on screen — which is the case this exists for.
+  function dropSessionLock() {
+    if (!state.sensitivity || state.sensitivity.reason !== 'session') return;
+    state.sensitivity = null;
+    notify();
+  }
+
   function refreshSensitivity(gen) {
-    return SW.api.sensitivity().then(
+    const asked = (state.thread && state.thread.id) || '';
+    return SW.api.sensitivity(asked).then(
       (read) => {
         if (gen !== undefined && gen !== scopeLoad) return;
+        // The answer is about the Conversation that was open when it was asked. Opening B while A
+        // is still in flight lands two of these in either order, and the older one carries A's
+        // sticky lock — which is a picker greying rows out for a Conversation nobody is looking at.
+        if (((state.thread && state.thread.id) || '') !== asked) return;
         state.sensitivity = read;
         notify();
       },
@@ -4599,6 +4628,12 @@ window.SW = window.SW || {};
       // Leaving it set drew "Thinking…" under an empty new conversation that was doing nothing.
       state.typing = null;
       notify();
+      // The advertised way out of a session lock is this button (ADR-0043), so it has to actually
+      // take the lock off the screen. Dropped BEFORE the read rather than left to it: the read's
+      // error handler leaves the last answer standing, so one failed request would draw the
+      // abandoned conversation's lock — and its sentence — over a brand-new empty one.
+      dropSessionLock();
+      refreshSensitivity();
       // Starting from an app copies what that app needs into the conversation,
       // so the context it opens with is the app's rather than a stranger's.
       await Promise.all([refreshAttachments(), loadThreadList()]);
@@ -4686,6 +4721,16 @@ window.SW = window.SW || {};
       state.planViewerId = null;
       state.typing = null;
       notify();
+      // Half the lock is this Conversation's own (ADR-0043), so the answer standing on screen
+      // belongs to the one that was open before. Unawaited beside the attachments read below: the
+      // view is already painted, and a lock arriving a beat later is the same deferral a scope load
+      // makes. It carries no `gen` because it does not need this one — it holds the Conversation it
+      // asked about and drops its own answer if that has moved on.
+      //
+      // The drop comes first for the reason it does in `newThread`: a read that fails or is
+      // superseded leaves the last answer standing, and that answer is the previous Conversation's.
+      dropSessionLock();
+      refreshSensitivity();
       await refreshAttachments();
       if (gen !== openSeq) return thread;
       if (thread.planId) await store.loadPlan(thread.planId);
@@ -4703,6 +4748,11 @@ window.SW = window.SW || {};
     clearConversation() {
       state.thread = null;
       state.messages = [];
+      // "Start a new chat" is the way out the copy gives, and a lock still drawn over an empty
+      // screen makes the one instruction it gives look like it did nothing. Dropped rather than
+      // re-read because this reset is synchronous and reaches no network — every other caller of
+      // it depends on that.
+      dropSessionLock();
       state.buildHistory = [];
       state.conversationChat = [];
       buildSeq = null;

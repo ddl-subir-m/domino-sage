@@ -145,7 +145,12 @@ from ..resources.publish_guard import (
     publish_problems,
     sensitive_model_problems,
 )
-from ..resources.sensitivity import SensitivityGate, declared_turn_refusal, group_name
+from ..resources.sensitivity import (
+    SensitivityGate,
+    declared_turn_refusal,
+    group_name,
+    unrecorded_lock_refusal,
+)
 from ..resources.table_search import Candidate
 from ..router import llm_router
 from ..router.model_control import ModelControl
@@ -7664,17 +7669,36 @@ class Orchestrator:
         # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
         # Chat and Build cannot drift: `llm_router` applies it outside their fork, and this is the
         # Chat half of putting it there. A refusal ends the turn before OpenCode is even started.
-        chat_approved, chat_refusal = self._sensitivity_for_turn(project)
+        chat_approved, chat_refusal = self._sensitivity_for_turn(project, thread_id)
         if chat_refusal:
             project.control.disarm_chat(chat_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
             yield {"type": "error", "message": chat_refusal}
             return
-        chat_sens_token = (
-            project.control.arm_sensitivity(chat_approved.names, chat_approved.order)
-            if chat_approved is not None else None
-        )
+        chat_sens_token = None
+        if chat_approved is not None:
+            # Written before the prompt goes out, because what it records is that this Thread's
+            # transcript is about to hold declared rows. A turn that then dies has still put them
+            # there, and a turn refused above never got here (ADR-0043).
+            #
+            # A failed write refuses the turn — running unrecorded would leave declared rows in a
+            # conversation the next turn reads as clean — and refuses it the way the sensitivity
+            # refusal three lines above does, by disarming first. Nothing here is inside the `try`
+            # below, so a raise from this point walks out of the generator with the Chat pin and any
+            # web grant still live, and `ModelControl` is not per-turn state.
+            try:
+                project.record.mark_session_locked(thread_id)
+            except OSError:
+                log.exception("sensitivity: couldn't record the lock on this conversation")
+                project.control.disarm_chat(chat_token)
+                if web_token is not None:
+                    project.control.disarm_web(web_token)
+                yield {"type": "error", "message": unrecorded_lock_refusal()}
+                return
+            chat_sens_token = project.control.arm_sensitivity(
+                chat_approved.names, chat_approved.order
+            )
         tap: _EventTap | None = None
         try:
             client = self._ensure_opencode()
@@ -10152,12 +10176,29 @@ class Orchestrator:
         # models an administrator approved. An approved set that resolves to nothing REFUSES the
         # turn rather than leaving it unlocked — `arm_sensitivity` is never handed an empty set, and
         # the router raises rather than fall back if one ever reaches it.
-        approved_for_turn, sensitivity_refusal = self._sensitivity_for_turn(project)
+        # `build_conversation` rather than a parameter: `approve_stream` reaches here too, and the
+        # pin is what both of them set before anything is persisted (`_begin_conversation`). Empty
+        # is the unscoped Build turn, which has a transcript and so needs a lock slot like any other.
+        sens_conversation = str(project.build_conversation or "")
+        approved_for_turn, sensitivity_refusal = self._sensitivity_for_turn(
+            project, sens_conversation
+        )
         if sensitivity_refusal:
             restore_mode()
             yield persist({"type": "error", "message": sensitivity_refusal})
             return
         if approved_for_turn is not None:
+            # Before the prompt, for the reason the Chat half is: see `mark_session_locked`. And a
+            # failed write refuses through `restore_mode()` for the reason the refusal above does —
+            # the turn-mode pin, the read-only grant and any web grant are already armed here, and
+            # a raise would walk out of the generator leaving every one of them live.
+            try:
+                project.record.mark_session_locked(sens_conversation)
+            except OSError:
+                log.exception("sensitivity: couldn't record the lock on this conversation")
+                restore_mode()
+                yield persist({"type": "error", "message": unrecorded_lock_refusal()})
+                return
             sens_token = project.control.arm_sensitivity(
                 approved_for_turn.names, approved_for_turn.order
             )
@@ -12135,8 +12176,24 @@ class Orchestrator:
             return []
         return sensitive_model_problems(recorded, declared, gate.approved())
 
-    def _sensitivity_for_turn(self, project: Project) -> tuple[ApprovedModels | None, str]:
+    def _sensitivity_for_turn(
+        self, project: Project, conversation: str | None
+    ) -> tuple[ApprovedModels | None, str]:
         """The approved models to lock this turn to, or the sentence refusing it (ADR-0043).
+
+        Two ways to be locked, and the second one is why `conversation` has no default. A live
+        declaration is the obvious one. The other is that a turn of THIS conversation already ran
+        under the lock: the transcript holds the rows from then on and is re-sent on every turn
+        after, so unbinding the Dataset moves the same rows onto a vendor model rather than taking
+        them out of scope. Once a conversation is locked it stays locked, and the way out is a new
+        chat rather than an unbind.
+
+        `conversation` names the conversation to consult, `""` being the unscoped Build turn, and
+        `None` meaning there is no conversation in the question at all — which is what the preview
+        proxy passes, because the previewed app's own model call carries the app's current
+        Bindings and no transcript. Required rather than defaulted so that a harness added later
+        has to answer it: a default would have made the hole reachable by omission, which is the
+        shape the hole had in the first place.
 
         (None, "") is the ordinary answer and the ordinary cost: nothing read when the deployment
         never opted in, and nothing read beyond the Binding manifest when no Dataset is bound.
@@ -12155,10 +12212,13 @@ class Orchestrator:
         if not gate.enabled:
             return None, ""
         declared = gate.declared(parse_bindings(project.workspace.read_bindings()))
-        if not declared:
+        sticky = conversation is not None and project.record.session_ran_locked(conversation)
+        if not declared and not sticky:
             return None, ""
         approved = gate.approved()
         if approved is None or not approved.usable:
+            # `declared` is handed on as it is, empty included: it is what the refusal names, and
+            # under a sticky lock there is no Dataset left to name.
             return None, declared_turn_refusal(approved or ApprovedModels(), declared)
         return approved, ""
 
@@ -12826,8 +12886,16 @@ class Orchestrator:
         pname = self._domino_project_name
         return bool(pname) and asset.project == pname
 
-    def sensitivity_state(self) -> dict:
+    def sensitivity_state(self, conversation: str | None = None) -> dict:
         """What the Workbench draws the lock from (ADR-0043): is it on, what does it allow, and why.
+
+        `conversation` is the Conversation the surfaces are drawn beside, and it is what lets this
+        answer the sticky lock: a Conversation that has already run a turn under the lock stays
+        locked after the Dataset is unbound, and the picker has to grey the same rows out then as
+        it did before. `reason` says which of the two it is, because the sentence differs — one
+        names a Dataset the creator can go and look at, and the other cannot, and offers a new chat
+        instead. Optional because a caller with no Conversation in hand (a bare state read) is
+        asking about the Bindings alone.
 
         One read for four surfaces — the model panel, the two composer pickers, and the notice that
         says the session moved — because they are answering one question and four copies of it would
@@ -12858,18 +12926,27 @@ class Orchestrator:
         """
         gate = self._sensitivity_gate()
         off = {"enabled": False, "locked": False, "group": "", "approved": [], "datasets": [],
-               "refusal": None, "model": None, "chat_model": None}
+               "refusal": None, "model": None, "chat_model": None, "reason": ""}
         if not gate.enabled:
             return off
         project = self.project()
         declared = gate.declared(parse_bindings(project.workspace.read_bindings()))
-        approved, refusal = self._sensitivity_for_turn(project)
+        # Asked here as well as inside `_sensitivity_for_turn`, because that one answers WHETHER the
+        # turn is locked and this needs to know WHICH of the two reasons — the sentences differ and
+        # nothing in its return says. The two cannot disagree: both read this one fact and the live
+        # declaration beside it, and neither holds a cached verdict of its own.
+        sticky = conversation is not None and project.record.session_ran_locked(conversation)
+        approved, refusal = self._sensitivity_for_turn(project, conversation)
         return {
             "enabled": True,
-            "locked": bool(declared),
+            "locked": bool(declared) or sticky,
             "group": group_name(),
             "approved": sorted(approved.names) if approved else [],
             "datasets": [b.display_name or b.name for b in declared],
+            # The live declaration wins the sentence while there is one: it names a row the creator
+            # can go and look at, which the session reason cannot. "session" is what is left, and it
+            # is the only state where `datasets` is empty and `locked` is still true.
+            "reason": "declared" if declared else ("session" if sticky else ""),
             "refusal": refusal or None,
             "model": self._locked_model(project, approved, chat=False),
             "chat_model": self._locked_model(project, approved, chat=True),

@@ -148,6 +148,7 @@ def test_the_lock_state_is_off_and_reads_nothing_without_the_group(tmp_path, mon
     assert orch.sensitivity_state() == {
         "enabled": False, "locked": False, "group": "",
         "approved": [], "datasets": [], "refusal": None, "model": None, "chat_model": None,
+        "reason": "",
     }
 
 

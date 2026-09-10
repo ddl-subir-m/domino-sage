@@ -18,14 +18,30 @@ class _Stub:
     def __init__(self, answer):
         self._project = object()
         self._answer = answer
+        self.asked_about = "unasked"
 
-    def _sensitivity_for_turn(self, project):
+    def _sensitivity_for_turn(self, project, conversation):
+        self.asked_about = conversation
         return self._answer
 
 
 def _refusal(monkeypatch, answer, model):
     monkeypatch.setattr(app_module, "orchestrator", _Stub(answer))
     return app_module._preview_approve_model(model)
+
+
+def test_the_preview_names_no_conversation(monkeypatch):
+    """`None` and not `""` (ADR-0043). Half the lock is a conversation's own — once one has run a
+    turn under the lock its transcript keeps the rows — but the previewed app's own model call
+    carries the app's CURRENT Bindings and no transcript, so no conversation is in the question.
+    The empty string is a different answer: it names the unscoped Build turn, which has one.
+    """
+    stub = _Stub((APPROVED, ""))
+    monkeypatch.setattr(app_module, "orchestrator", stub)
+
+    app_module._preview_approve_model("opus")
+
+    assert stub.asked_about is None
 
 
 def test_an_approved_model_is_allowed_through(monkeypatch):
@@ -55,7 +71,10 @@ def test_a_gate_that_raises_leaves_the_preview_up(monkeypatch):
     """A preview call is not a turn, and Sage failing to read its own gate must not take the preview
     down. The publish guard still refuses, so nothing ships on this path."""
     class Boom(_Stub):
-        def _sensitivity_for_turn(self, project):
+        # The same arity the caller uses. With the old one-argument signature this test went on
+        # passing after the caller grew a parameter — but it was proving that the `except` catches a
+        # TypeError from an arity mismatch, and the raise below was never reached.
+        def _sensitivity_for_turn(self, project, conversation):
             raise RuntimeError("gateway down")
 
     monkeypatch.setattr(app_module, "orchestrator", Boom((None, "")))

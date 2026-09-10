@@ -496,6 +496,66 @@ class ProjectRecord:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps({"session_id": session_id}))
 
+    def sensitivity_lock_path(self, conversation: str = "") -> Path:
+        """Where a conversation records that one of its turns ran under the sensitivity lock.
+
+        Beside the transcript, and for the same reason `build_session_path` is: the fact is about
+        THIS conversation's history, which is the thing that outlives the turn and gets re-sent on
+        every one after it. A conversation whose Thread is deleted takes this with it, which is
+        correct — the rows went with it.
+
+        On disk rather than in memory because the transcript is on disk. An in-memory flag would
+        clear on a server restart while the history it is about came back, and a lock that a restart
+        lifts is the exact hole this closes (ADR-0043).
+
+        An empty `conversation` is the unscoped Build turn — the CLI, a test — which keeps its
+        session in `.sage/session.json` and keeps this beside it. One file for all of them, rather
+        than one per Built App: that over-restricts an unscoped turn in a second app of the same
+        Project, and over-restricting is the safe direction here, the same way the declaration
+        cache holds "declared" long and "not declared" barely at all.
+
+        That slot has no way out, and it is the one place the copy's advice does not apply: you
+        cannot start a new unscoped conversation, so once this file exists every later unscoped
+        build in the Project runs locked. Accepted rather than fixed, because the Workbench mints a
+        Conversation before it ever builds — this is reachable only from the CLI, where nobody is
+        being told to start a new chat, and where the alternative to a lock with no way out is a
+        transcript with no lock.
+
+        On the Project record and NOT on `Workspace`, for the reason the session id is: one
+        conversation can build several apps, and a taint filed under `apps/<appId>/` would be lost
+        at exactly the moment a Chat handoff creates the app it hands off to.
+        """
+        if not conversation:
+            return self.path / ".sage" / "sensitivity.json"
+        return (self.path / ".sage" / "threads"
+                / safe_id(conversation, "conversation id") / "sensitivity.json")
+
+    def session_ran_locked(self, conversation: str = "") -> bool:
+        """Has any turn of this conversation already run under the lock (ADR-0043)?
+
+        Presence of the file is the whole answer, and the body is never read — it is written for a
+        human reading the Project volume. Nothing in it could be more trustworthy than the fact that
+        something wrote it, and a parse that could fail is a way for the lock to come off.
+        """
+        return self.sensitivity_lock_path(conversation).exists()
+
+    def mark_session_locked(self, conversation: str = "") -> None:
+        """Record that a turn of this conversation ran under the lock, before its prompt goes out.
+
+        Idempotent, and written BEFORE the turn runs, so a turn that then dies has still tainted the
+        conversation. That is deliberate — the transcript it was building is what carries the rows,
+        and a turn that got far enough to be armed got far enough to put them there.
+
+        A failed write is NOT swallowed. It takes the turn down with it, which is the direction to
+        fail in: the alternative is a turn that reads declared rows into a transcript nothing will
+        remember reading them into.
+        """
+        p = self.sensitivity_lock_path(conversation)
+        if p.exists():
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"lockedAt": _now()}))
+
     @property
     def catalog_overrides_path(self) -> Path:
         """Per-project overrides of the plan/implement/sovereign/default model ids, layered on

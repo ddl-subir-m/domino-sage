@@ -6,6 +6,10 @@ vendor alias `gpt-5.4`, handed to OpenCode as a resolution handle whenever the r
 from `CONTEXT_LIMITS`, and the only thing that stops it becoming the model is `enforcement.handle`
 overwriting `model` on every request from `llm_router.resolve`.
 
+What this file cannot see is whether a turn is armed at all. It proves the rewrite on an ARMED turn;
+`test_the_lock_follows_the_conversation` proves that a turn is still one after the creator unbinds
+the Dataset — which is where these same rows used to walk out to `COMPACT_FALLBACK`.
+
 That was a comment. Under a governance promise an untested invariant IS the vulnerability, so these
 tests hold it: if anyone makes the shim's rewrite conditional again, or routes summarize around it,
 this file goes red rather than a declared Dataset going quietly to a vendor.
