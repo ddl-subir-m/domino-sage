@@ -287,8 +287,8 @@ def sensitive_model_problems(
         return [PublishProblem(*_unusable(approved, names))]
     return [
         PublishProblem(SENSITIVE_TO_VENDOR, brand.text(
-            "{alias} isn't approved for sensitive data, and this app reads {names}. Use an approved "
-            "{llmAlias}, or remove {alias} from this app, then publish again.",
+            "{alias} isn't allowed with {names}. Use an approved model, or remove {alias}, then "
+            "publish again.",
             alias=b.display_name, names=names,
         ), b.kind, b.id)
         for b in aliases if b.display_name not in approved.names and b.id not in approved.names
@@ -299,27 +299,24 @@ def _unusable(approved: ApprovedModels, names: str) -> tuple[str, str]:
     """Which of the four this is, and the sentence for it. Ordered most-specific first."""
     if not approved.reachable:
         return UNCHECKED_ALIAS, brand.text(
-            "{assistantName} couldn't reach the {llmGateway} to check which models are approved for "
-            "sensitive data, and this app reads {names}. Try publishing again in a moment.",
+            "{assistantName} couldn't check which models are allowed for {names}. Try publishing "
+            "again in a moment.",
             names=names,
         )
     if not approved.group_found:
         return MISSING_MODEL_GROUP, brand.text(
-            "No {llmAlias} group named {group} exists on the {llmGateway}, so {assistantName} can't "
-            "tell which models are approved for sensitive data. This app reads {names}. Ask your "
+            "Nothing is approved for {names}: no {llmAlias} group named {group} exists. Ask a "
             "{platformName} administrator to create the group, then publish again.",
             group=approved.group_name, names=names,
         )
     if not approved.members:
         return EMPTY_MODEL_GROUP, brand.text(
-            "The {llmAlias} group {group} has no models in it, so nothing is approved for sensitive "
-            "data. This app reads {names}. Ask your {platformName} administrator to add a model to "
-            "the group, then publish again.",
+            "Nothing is approved for {names}: the {llmAlias} group {group} is empty. Ask a "
+            "{platformName} administrator to add a model, then publish again.",
             group=approved.group_name, names=names,
         )
     return NO_APPROVED_MODEL_ACCESS, brand.text(
-        "You don't have access to any of the {count} models in the {llmAlias} group {group}, which "
-        "are the only ones approved for sensitive data. This app reads {names}. Ask your "
+        "You don't have access to any of the {count} models approved for {names}. Ask a "
         "{platformName} administrator for access to one of them, then publish again.",
-        count=str(approved.members), group=approved.group_name, names=names,
+        count=str(approved.members), names=names,
     )

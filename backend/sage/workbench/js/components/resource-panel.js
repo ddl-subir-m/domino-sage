@@ -44,9 +44,8 @@ window.SW = window.SW || {};
           'This data is sensitive'
         ),
         h('p', { style: { margin: '8px 0 0' }, className: 'sw-caption' }, SW.brand.text(
-          'Ticking this tags the whole {dataset} in {platformName}, not just this file — every '
-          + 'file already on it counts as sensitive too. {assistantName} will then only use '
-          + '{llmAliasPlural} approved for sensitive data while this {dataset} is in scope.',
+          'This marks the whole {dataset} as sensitive, including files already on it. Only '
+          + 'approved models can be used with it.',
           { dataset: target.name }))
       ),
       okText: 'Add file',

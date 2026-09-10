@@ -73,11 +73,10 @@ window.SW = window.SW || {};
     //
     // A DECLARATION and never a detection. The tag is freeform and self-service, so every sentence
     // below says what somebody declared and none of them claims Sage looked at the rows.
-    DECLARED_MARK: 'declared sensitive',
+    DECLARED_MARK: 'Sensitive',
     declaredTitle() {
       return SW.brand.text(
-        'Tagged sensitive in {platformName}. While this {dataset} is in scope, {assistantName} '
-        + 'only uses {llmAliasPlural} an administrator approved for sensitive data.'
+        'This {dataset} is tagged sensitive. Only approved models can be used while it is attached.'
       );
     },
 
@@ -89,10 +88,8 @@ window.SW = window.SW || {};
     // `resources/pinned_model.py`. Two languages, one claim — check both when either changes.
     lockScope() {
       return SW.brand.text(
-        "{datasetPlural} can carry this declaration and {dataSourcePlural} can't — {platformName} "
-        + 'has no classification field on one for {assistantName} to read. A {dataSource} bound '
-        + 'beside a declared {dataset} is covered anyway, because the lock is for the whole app; a '
-        + '{dataSource} on its own is not covered at all.'
+        "{dataSourcePlural} can't be marked sensitive. Used with a sensitive {dataset}, they "
+        + "follow the same model limits. Used alone, they don't."
       );
     },
 
@@ -142,7 +139,7 @@ window.SW = window.SW || {};
     // DISPLAY name under `name`, and `approved` holds aliases. Asking with the display name marks an
     // approved Alias barred wherever the two differ — the exact inverse of the defect this was added
     // to fix, and the rail and the picker disagreeing about one Binding all over again.
-    BARRED_MARK: 'not approved',
+    BARRED_MARK: 'Not allowed',
     isBarred(sensitivity, resource) {
       return !!(resource && resource.kind === 'model_llm' && SW.util.isLocked(sensitivity)
         && !SW.util.isApproved(sensitivity, resource.alias || resource.name));
@@ -207,10 +204,10 @@ window.SW = window.SW || {};
     declaredPhrase(sensitivity) {
       const names = (sensitivity && sensitivity.datasets) || [];
       // An OBJECT in both shapes, never a clause: every sentence below supplies its own subject
-      // ("this app reads", "this conversation has already read"), and a phrase that carried one too
-      // read "this conversation has already read data this conversation has already read".
+      // ("isn't allowed with", "already used"), and a phrase that carried one too read
+      // "this chat already used this chat already used".
       if (SW.util.lockedBySession(sensitivity)) {
-        return SW.brand.text('data declared sensitive');
+        return SW.brand.text('sensitive data');
       }
       if (!names.length) return SW.brand.text('a declared {dataset}');
       if (names.length === 1) return SW.brand.text('the {dataset} {name}', { name: names[0] });
@@ -226,34 +223,29 @@ window.SW = window.SW || {};
     sessionWayOut(sensitivity) {
       if (!SW.util.lockedBySession(sensitivity)) return '';
       return SW.brand.text(
-        "Unbinding the {dataset} won't lift this — the rows are already in this conversation. "
-        + 'Start a new chat to work without the lock.'
+        "Removing the {dataset} won't unlock this chat. Start a new chat to use any model."
       );
     },
 
     // Why one Alias is greyed out, on the row that is greyed out. A disabled control that does not
-    // explain itself is the defect this exists to avoid, so the sentence names the model, the group
-    // it is missing from, the Datasets that made the group matter, and both ways out — the one that
-    // keeps the data (ask for the model to be approved) first.
+    // explain itself is the defect this exists to avoid, so the sentence names the model, the
+    // Datasets that made the group matter, and both ways out — the one that keeps the data (ask
+    // for the model to be approved) first.
     //
     // Under the session lock the second way out changes rather than disappears: removing the
     // Dataset is no longer one, and starting a new chat is.
     lockReason(sensitivity, name) {
-      const group = (sensitivity && sensitivity.group) || '';
       const datasets = SW.util.declaredPhrase(sensitivity);
       if (SW.util.lockedBySession(sensitivity)) {
         return SW.brand.text(
-          "{name} isn't in {group}, the {llmAlias} group approved for sensitive data, and this "
-          + 'conversation has already read {datasets}. Ask your {platformName} administrator to '
-          + 'add it to the group, or start a new chat.',
-          { name, group, datasets }
+          "{name} isn't allowed in this chat — it already used {datasets}. Ask an admin to "
+          + 'approve it, or start a new chat.',
+          { name, datasets }
         );
       }
       return SW.brand.text(
-        "{name} isn't in {group}, the {llmAlias} group approved for sensitive data, and this app "
-        + 'reads {datasets}. Ask your {platformName} administrator to add it to the group, or '
-        + 'remove {datasets} from the app.',
-        { name, group, datasets }
+        "{name} isn't allowed with {datasets}. Ask an admin to approve it, or remove {datasets}.",
+        { name, datasets }
       );
     },
 

@@ -423,7 +423,7 @@ def test_the_refusal_names_no_dataset_and_offers_a_new_chat(tmp_path: Path):
         ApprovedModels(group_name=GROUP, group_found=True, members=2), [])
 
     assert "Dataset claims" not in sentence
-    assert "already read" in sentence
+    assert "sensitive data" in sentence
     assert "Start a new chat" in sentence
 
 
@@ -496,7 +496,7 @@ def test_a_chat_turn_that_cannot_record_its_lock_is_refused(tmp_path: Path, monk
 
     events = list(orch.chat_stream(tid, "what is in the claims data?"))
 
-    assert any(e.get("type") == "error" and "unrecorded" in e["message"] for e in events)
+    assert any(e.get("type") == "error" and "couldn't save" in e["message"] for e in events)
     assert oc.prompts == []
 
 
@@ -530,7 +530,7 @@ def test_a_build_turn_that_cannot_record_its_lock_is_refused(tmp_path: Path, mon
 
     events = list(orch.build_stream("show the claims", conversation="thr_build"))
 
-    assert any(e.get("type") == "error" and "unrecorded" in e["message"] for e in events)
+    assert any(e.get("type") == "error" and "couldn't save" in e["message"] for e in events)
     assert oc.prompts == []
     snapshot = orch.project(start_preview=False).control.snapshot()
     assert snapshot.web_allowed is False

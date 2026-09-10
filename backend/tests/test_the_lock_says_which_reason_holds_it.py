@@ -49,15 +49,14 @@ def test_the_sticky_lock_names_the_reading_and_not_a_dataset():
     got = _read([{"sensitivity": SESSION}])[0]
 
     assert got["bySession"] is True
-    assert got["phrase"] == "data declared sensitive"
+    assert got["phrase"] == "sensitive data"
     assert "claims" not in got["reason"]
     # The WHOLE sentence, not a substring of it. The phrase is an object and every sentence supplies
-    # its own subject, and the first version of this carried one too — "this conversation has
-    # already read data this conversation has already read", which every substring assertion passed.
+    # its own subject, and the first version of this carried one too — "this chat already used this
+    # chat already used", which every substring assertion passed.
     assert got["reason"] == (
-        "gpt-5.4 isn't in sensitive-approved, the LLM Alias group approved for sensitive data, and "
-        "this conversation has already read data declared sensitive. Ask your Domino administrator "
-        "to add it to the group, or start a new chat."
+        "gpt-5.4 isn't allowed in this chat — it already used sensitive data. Ask an admin to "
+        "approve it, or start a new chat."
     )
 
 
@@ -68,7 +67,7 @@ def test_the_sticky_lock_gives_the_only_way_out_there_is():
     got = _read([{"sensitivity": SESSION}])[0]
 
     assert "Start a new chat" in got["wayOut"]
-    assert "won't lift this" in got["wayOut"]
+    assert "won't unlock" in got["wayOut"]
     assert "start a new chat" in got["reason"]
 
 
@@ -81,9 +80,8 @@ def test_a_bound_dataset_still_names_itself_and_offers_the_better_way_out():
     assert got["bySession"] is False
     assert got["phrase"] == "the Dataset claims"
     assert got["reason"] == (
-        "gpt-5.4 isn't in sensitive-approved, the LLM Alias group approved for sensitive data, and "
-        "this app reads the Dataset claims. Ask your Domino administrator to add it to the group, "
-        "or remove the Dataset claims from the app."
+        "gpt-5.4 isn't allowed with the Dataset claims. Ask an admin to approve it, or remove "
+        "the Dataset claims."
     )
     assert got["wayOut"] == ""
 

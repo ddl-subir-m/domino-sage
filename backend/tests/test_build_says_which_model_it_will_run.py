@@ -269,8 +269,8 @@ def test_a_model_outside_the_approved_group_is_closed_and_says_why():
     barred = next(i for i in _flat(row["items"]) if i["key"] == IMPLEMENT_MODEL)
 
     assert barred["disabled"] is True
-    assert "not approved for sensitive data" in barred["label"]
-    assert "FDE_models" in barred["title"]
+    assert "not allowed" in barred["label"]
+    assert IMPLEMENT_MODEL in barred["title"]
     # Names the Dataset that closed it, so the explanation points at something to go and look at.
     assert "claims" in barred["title"]
 

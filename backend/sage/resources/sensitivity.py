@@ -207,25 +207,22 @@ def _unusable_reason(approved: ApprovedModels, declared: list[Binding]) -> str:
     names = _dataset_phrase(declared)
     if not approved.reachable:
         return brand.text(
-            "{assistantName} couldn't reach the {llmGateway} to check which models are approved for "
-            "sensitive data, and {scope}. Try again in a moment.", scope=_scope_phrase(declared))
+            "{assistantName} couldn't check which models are allowed for {names}. Try again in a "
+            "moment.", names=names)
     if not approved.group_found:
         return brand.text(
-            "No {llmAlias} group named {group} exists on the {llmGateway}, so nothing is approved "
-            "for sensitive data and {assistantName} can't work with {names}. Ask your "
+            "Nothing is approved for {names}: no {llmAlias} group named {group} exists. Ask a "
             "{platformName} administrator to create the group.",
             group=approved.group_name, names=names)
     if not approved.members:
         return brand.text(
-            "The {llmAlias} group {group} has no models in it, so nothing is approved for sensitive "
-            "data and {assistantName} can't work with {names}. Ask your {platformName} "
-            "administrator to add a model to the group.",
+            "Nothing is approved for {names}: the {llmAlias} group {group} is empty. Ask a "
+            "{platformName} administrator to add a model.",
             group=approved.group_name, names=names)
     return brand.text(
-        "You don't have access to any of the {count} models in the {llmAlias} group {group}, which "
-        "are the only ones approved for sensitive data. {assistantName} can't work with {names} "
-        "until you do. Ask your {platformName} administrator for access to one of them.",
-        count=str(approved.members), group=approved.group_name, names=names)
+        "You don't have access to any of the {count} models approved for {names}. Ask a "
+        "{platformName} administrator for access to one of them.",
+        count=str(approved.members), names=names)
 
 
 def _dataset_phrase(declared: list[Binding]) -> str:
@@ -237,20 +234,11 @@ def _dataset_phrase(declared: list[Binding]) -> str:
     """
     names = [b.display_name or b.name for b in declared]
     if not names:
-        return brand.text("the data this conversation has already read")
+        return brand.text("sensitive data")
     if len(names) == 1:
         return brand.text("the {dataset} {name}", name=names[0])
     return brand.text("the {datasetPlural} {names}",
                       names=f"{', '.join(names[:-1])} and {names[-1]}")
-
-
-def _scope_phrase(declared: list[Binding]) -> str:
-    """The same fact as a clause, for the one reason that reads "and {scope}" rather than refusing
-    an object. Two shapes rather than one phrase bent to fit both: "this project uses the data this
-    conversation has already read" is not a sentence anybody meant."""
-    if not declared:
-        return brand.text("this conversation has already read data declared sensitive")
-    return brand.text("this project uses {names}", names=_dataset_phrase(declared))
 
 
 def session_lock_way_out() -> str:
@@ -261,8 +249,7 @@ def session_lock_way_out() -> str:
     one — the rows are already in the transcript, which is re-sent on every turn after them.
     """
     return brand.text(
-        "Unbinding the {dataset} won't lift this — the rows are already in this conversation. "
-        "Start a new chat to work without the lock.")
+        "Removing the {dataset} won't unlock this chat. Start a new chat to use any model.")
 
 
 def unrecorded_lock_refusal() -> str:
@@ -275,9 +262,8 @@ def unrecorded_lock_refusal() -> str:
     nothing they can do in Sage fixes it.
     """
     return brand.text(
-        "{assistantName} couldn't record that this conversation is reading data declared sensitive, "
-        "so it stopped rather than read it unrecorded. The {project} volume may be full or read "
-        "only. Try again, and tell your {platformName} administrator if it keeps happening.")
+        "{assistantName} couldn't save that this chat is using sensitive data, so it stopped. "
+        "Try again, and tell a {platformName} administrator if it keeps happening.")
 
 
 def declared_turn_refusal_for_model(model: str, approved: frozenset[str]) -> str:
@@ -288,7 +274,5 @@ def declared_turn_refusal_for_model(model: str, approved: frozenset[str]) -> str
     simply pointed at the wrong model — which the creator fixes themselves, in the picker, now.
     """
     return brand.text(
-        "{model} isn't approved for sensitive data, and this project uses a {dataset} that is "
-        "declared sensitive. Bind an approved {llmAlias} in {assistantName} — {options} — then "
-        "reload the preview.",
+        "{model} isn't allowed with sensitive data. Switch to {options}, then reload the preview.",
         model=model, options=", ".join(sorted(approved)))

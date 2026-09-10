@@ -6315,14 +6315,13 @@ window.SW = window.SW || {};
       }
       if (res.tagged) {
         antd.message.success(SW.brand.text(
-          '{name} is declared sensitive. {assistantName} will only use approved models while it is '
-          + 'in scope.',
+          '{name} is now sensitive. Only approved models can be used with it.',
           { name: res.dataset }
         ));
       } else {
         antd.message.warning(SW.brand.text(
-          "{assistantName} couldn't tag {name} in {platformName}. The file is uploaded. Tag the "
-          + '{dataset} in {platformName} to declare it.',
+          "Couldn't mark {name} as sensitive. The file is uploaded — tag the {dataset} in "
+          + '{platformName} to finish.',
           { name: res.dataset }
         ));
       }

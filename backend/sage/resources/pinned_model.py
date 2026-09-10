@@ -267,11 +267,8 @@ def _egress_note(sources: list[Binding]) -> list[str]:
             "Both are allowed, and they are not the same amount of data leaving {platformName}."),
         "",
         brand.text(
-            "One of the two data surfaces can be declared sensitive, and it is not this one. A "
-            "{dataset} carries tags, so one tagged sensitive narrows the models this app may use "
-            "and may be published against. A {dataSource} has no classification field at all, so "
-            "nothing here is checked against one. An app that binds both is covered by the "
-            "{dataset}'s declaration, because that check is for the whole app; an app that binds a "
-            "{dataSource} alone is not covered. Write as though these rows are the sensitive ones."),
+            "{dataSourcePlural} can't be marked sensitive. Used with a sensitive {dataset}, they "
+            "follow the same model limits. Used alone, they don't. Write as though these rows are "
+            "the sensitive ones."),
         "",
     ]

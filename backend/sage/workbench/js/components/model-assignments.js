@@ -129,7 +129,7 @@ window.SW = window.SW || {};
             ? (sensitivity.refusal || SW.util.lockReason(sensitivity, a.name))
             : (a.problem || undefined),
           label: barred
-            ? `${a.name} — not approved for sensitive data`
+            ? `${a.name} — not allowed`
             : a.serving
             ? (a.display_name && a.display_name !== a.name ? `${a.name} — ${a.display_name}` : a.name)
             : `${a.name} — not serving`,
@@ -206,7 +206,7 @@ window.SW = window.SW || {};
           ? h(Alert, {
               type: lockDead ? 'warning' : 'info',
               showIcon: true,
-              message: 'Approved models only',
+              message: 'Allowed models only',
               description: h(
                 'div',
                 null,
@@ -216,19 +216,8 @@ window.SW = window.SW || {};
                     // came back empty and who to ask about it. The fallback exists only so a
                     // response that somehow carried none still says something true.
                     ? (sensitivity.refusal || SW.brand.text(
-                        'Nothing is approved for sensitive data yet, and {scope} {datasets}. '
-                        + 'Ask your {platformName} administrator about the {llmAlias} group '
-                        + '{group}.',
-                        {
-                          // The subject moves with the reason, the same way the sentence below it
-                          // does: after an unbind the app reads nothing declared and the
-                          // conversation is what is carrying the rows.
-                          scope: SW.util.lockedBySession(sensitivity)
-                            ? 'this conversation has already read'
-                            : 'this app reads',
-                          datasets: SW.util.declaredPhrase(sensitivity),
-                          group: sensitivity.group,
-                        }
+                        'No models are approved for sensitive data yet. Ask a {platformName} '
+                        + 'administrator to approve one.'
                       ))
                     // Which of the two locks is holding changes the subject of the sentence, not
                     // just its wording: after an unbind it is the conversation that read the rows
@@ -241,22 +230,12 @@ window.SW = window.SW || {};
                     // sentence about the lock that is false at the moment somebody relies on it.
                     : SW.util.lockedBySession(sensitivity)
                       ? SW.brand.text(
-                          'This conversation has already read {datasets}, so {assistantName} will '
-                          + 'only use the {llmAliasPlural} in {group} in it. That holds in {chat} '
-                          + 'and in a build.',
-                          {
-                            datasets: SW.util.declaredPhrase(sensitivity),
-                            group: sensitivity.group,
-                          }
+                          'This chat already used {datasets}, so only approved models are allowed.',
+                          { datasets: SW.util.declaredPhrase(sensitivity) }
                         )
                       : SW.brand.text(
-                          'This app reads {datasets}, so {assistantName} will only use the '
-                          + '{llmAliasPlural} in {group}. That holds in {chat}, in a build and at '
-                          + 'publish.',
-                          {
-                            datasets: SW.util.declaredPhrase(sensitivity),
-                            group: sensitivity.group,
-                          }
+                          'Only approved models can be used with {datasets}.',
+                          { datasets: SW.util.declaredPhrase(sensitivity) }
                         )),
                 // NOT under `lockDead`: that branch renders `sensitivity.refusal`, the server's own
                 // sentence, and `declared_turn_refusal` already appends this one to it whenever no

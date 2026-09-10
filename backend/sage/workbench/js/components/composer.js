@@ -125,9 +125,8 @@ window.SW = window.SW || {};
   function LockNotice({ sensitivity, picked, chat, onDismiss }) {
     const runsOn = SW.util.lockedRunsOn(sensitivity, chat);
     const moved = runsOn
-      ? SW.brand.text('{assistantName} is using {name} instead.', { name: runsOn })
-      : SW.brand.text('{assistantName} is using one of the {llmAliasPlural} in {group} instead.',
-                      { group: sensitivity.group });
+      ? SW.brand.text('Using {name} instead.', { name: runsOn })
+      : SW.brand.text('Using an approved model instead.');
     return h(
       'div',
       // The mention guard's shape, with its own class over the top. Same place, same layout, and
@@ -141,17 +140,16 @@ window.SW = window.SW || {};
         // around it cannot pick a verb that only agrees with one of them.
         //
         // TWO openings, because after an unbind the first one is false: the app reads nothing
-        // declared any more and the transcript still holds the rows (ADR-0043). Saying "this app
-        // reads" there points at a panel with no Dataset on it, and the creator's next move is to
-        // go looking for the row that is keeping them locked.
+        // declared any more and the transcript still holds the rows (ADR-0043). Naming the Dataset
+        // there points at a panel with no row on it, and the creator's next move is to go looking
+        // for the thing that is keeping them locked.
         (SW.util.lockedBySession(sensitivity)
           ? SW.brand.text(
-            "This conversation has already read {datasets}, so {picked} can't be used in it. ",
+            "This chat already used {datasets}, so {picked} isn't allowed. ",
             { datasets: SW.util.declaredPhrase(sensitivity), picked }
           )
           : SW.brand.text(
-            "This app reads {datasets}, declared sensitive in {platformName}, so {picked} can't be "
-            + 'used here. ',
+            "{picked} isn't allowed with {datasets}. ",
             { datasets: SW.util.declaredPhrase(sensitivity), picked }
           )) + moved
       ),
@@ -166,7 +164,7 @@ window.SW = window.SW || {};
           size: 'small',
           type: 'primary',
           onClick: () => SW.store.openAssignments(true),
-        }, 'See approved models'),
+        }, 'See allowed models'),
         h(Button, { size: 'small', onClick: onDismiss }, 'Got it'))
     );
   }
@@ -528,7 +526,7 @@ window.SW = window.SW || {};
           label: id === pinnedModel
             ? `${id} (default)`
             : barredModel(id)
-            ? `${id} — not approved for sensitive data`
+            ? `${id} — not allowed`
             : id,
         })),
         ...(extraModels.length
@@ -540,7 +538,7 @@ window.SW = window.SW || {};
                 disabled: barredModel(o.id),
                 title: barredModel(o.id) ? lockNote(o.id) : undefined,
                 label: barredModel(o.id)
-                  ? `${o.id} — not approved for sensitive data`
+                  ? `${o.id} — not allowed`
                   : `${o.id} (${o.provider})`,
               })),
             }]
@@ -569,7 +567,7 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-model-option-detail' },
-              barred ? `${option.alias} — not approved for sensitive data` : option.alias
+              barred ? `${option.alias} — not allowed` : option.alias
             )
           ),
         };
