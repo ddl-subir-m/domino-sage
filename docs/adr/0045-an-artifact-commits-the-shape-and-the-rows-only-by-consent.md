@@ -106,6 +106,40 @@ So charts of a Data Source or Dataset read do not survive a restart unless the P
 That is #222 reopened, deliberately, for exactly the charts that matter. The
 opt-in is what buys them back, and the sentence on it says so.
 
+## A JSON is redacted; a PNG is kept out of git
+
+The two Artifacts get different mechanisms, and the reason is that only one of them can be edited
+in place. A `.table.json` is committed **with a field removed**. A PNG has no field to remove, so
+it is **gitignored** — written, rendered, never committed.
+
+"Not committed" had three implementations and they are not interchangeable:
+
+**Do not write the PNG at all.** Rejected, because it cannot be enforced. In Chat the agent has a
+shell, and `shim/chat_paths.py` gates **write tool names**. A `savefig` from Python never passes
+through that gate. Any rule that depends on intercepting the write is a rule Chat walks around.
+
+**Write it and leave it untracked.** Rejected as fragile. It needs every staging path to remember
+an exclusion, and the save walks the tree; one `git add -A` anywhere puts it back.
+
+**Write it and gitignore it.** Chosen. It holds regardless of who writes the file or how, because
+it is declarative and matches on path rather than on interception. Sage already edits this file
+programmatically — `_unignore_chat_artifacts` (`service.py:16147`) is the same act in the other
+direction — so the rule for `examples/**/*.png` is present while **Kept rows** is off and removed
+while it is on. That function becomes conditional rather than unconditional.
+
+Two consequences, both worth expecting.
+
+**A stopped turn leaves the PNG behind.** ADR-0006 measured this: `clean -fd` has no `-x`, so
+ignored files are left alone, and a gitignored chart **survives** a revert as an orphan rather
+than being reverted. It is litter on the Builder's own disk and never on the remote, and the
+manifest that indexes Artifacts reverts with the turn, so nothing points at it. Accepted.
+
+**The chart still renders in the session that drew it.** The file is on disk; only git declines
+it. So the caption-without-an-image state is a **restored transcript** state, not a live one — a
+person watching their own chart appear sees it normally, and loses it on the next Builder restart.
+That is a narrower loss than "charts do not work", and it is the state the card must render
+honestly rather than as a broken image.
+
 ## Where the opt-in lives
 
 **Once per Project, off by default, in the Add-people modal**, beside the destination:
