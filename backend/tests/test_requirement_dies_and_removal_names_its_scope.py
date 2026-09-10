@@ -139,6 +139,18 @@ def test_a_project_row_no_app_is_bound_to_says_nothing_of_the_kind():
 
 
 @needs_node
+def test_chat_says_nothing_about_the_selected_app():
+    """Chat draws no app rail, so "Required by {app}" names a row nobody can see — and which app it
+    is comes from Build, not from the Conversation on screen. A Conversation that built nothing then
+    read as though it had. Same rule the `Not used by {app}` half has always kept."""
+    step = _run([{"panel": "thr_many", "select": "app_a", "mode": "chat"}])[-1]
+
+    bound = _row(step["rows"], "Market data EOD")
+    assert not any("Required by" in t for t in bound["texts"])
+    assert "is-required" not in bound["className"]
+
+
+@needs_node
 def test_the_subtitle_follows_the_selected_app():
     """`app_c` is bound to `al_2`, which is in nobody's Project rows here — so under `app_c` the
     same three rows carry no subtitle. The list is the app's, not the Project's."""

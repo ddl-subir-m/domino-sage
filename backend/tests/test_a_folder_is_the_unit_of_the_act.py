@@ -658,7 +658,10 @@ def test_every_folder_row_carries_its_count_its_size_and_the_act(tmp_path: Path)
         ("2024", "2 files · 3.0 KB"),
         ("2025", "1 file · 512 B"),
     ]
-    assert {r["act"] for r in rows} == {"Attach folder to Desk margins"}
+    # The verb alone. The rail is one column wide and sits beside the file names, so the app it
+    # acts on is named on hover and in the confirmation, not in the label.
+    assert {r["act"] for r in rows} == {"Attach folder"}
+    assert {r["title"] for r in rows} == {"Attach this folder to Desk margins"}
     assert not [r for r in rows if r["disabled"]]
 
 
@@ -741,7 +744,28 @@ def test_with_no_app_selected_the_act_says_that_rather_than_naming_none():
     rows = _tree(files=_PARTITIONED)["rows"]
 
     assert {r["act"] for r in rows} == {"Attach folder"}
+    # No app to name, so the hover names none either — the row's one sentence is the refusal.
+    assert {r["title"] for r in rows} == {""}
     assert all(r["disabled"] and "No app selected" in r["reason"] for r in rows)
+
+
+def test_chat_draws_the_numbers_and_neither_folder_act():
+    """ADR-0029: "Chat gains no folder act." The act ships bytes into a Built App and commits it to
+    a publish-time rehydrate, and Chat draws no app rail — so the label named an app the reader
+    cannot see, picked by whatever Build selected last, beside a Conversation that built nothing.
+    Not disabled with a reason: this is a place the act does not belong, not one it is refused in.
+    The numbers stay, because they are orientation."""
+    rows = _tree(files=_PARTITIONED, app="Desk margins", mode="chat")["rows"]
+
+    assert [(r["name"], r["meta"]) for r in rows] == [
+        ("All files", "4 files · 3.6 KB"),
+        ("raw", "3 files · 3.5 KB"),
+        ("2024", "2 files · 3.0 KB"),
+        ("2025", "1 file · 512 B"),
+    ]
+    assert {r["act"] for r in rows} == {""}
+    assert {r["remove"] for r in rows} == {""}
+    assert {r["reason"] for r in rows} == {""}
 
 
 def test_a_refusal_reaches_the_person_in_the_servers_own_words():

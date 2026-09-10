@@ -698,7 +698,12 @@ window.SW = window.SW || {};
         { key: resource.id },
         h(SW.ResourceRow, {
           resource: row,
-          required: requiredIds.has(resource.id),
+          // Build only, the same rule `saysAppUse` keeps below and for the same reason: "Required
+          // by <app>" — and the accent bar it draws — names an app Chat puts on no rail. The
+          // selected app is Project state the server holds, so in Chat it was whatever Build
+          // touched last, and it overwrote the Project-wide "Used by N apps" that #127 gave that
+          // slot. A Conversation that built nothing then read as though it had.
+          required: inBuild && requiredIds.has(resource.id),
           app: activeApp,
           saysAppUse,
           inContext,

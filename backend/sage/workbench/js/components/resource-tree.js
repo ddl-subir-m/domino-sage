@@ -139,9 +139,22 @@ window.SW = window.SW || {};
     const meta = !measured
       ? `${shown} · size not measured`
       : stat.bytes ? `${shown} · ${SW.util.bytes(stat.bytes)}` : shown;
+    // A row with no act is not a row with a shut one: Chat is a place this act does not belong
+    // (ADR-0029), not a place it is refused, and a disabled button with a reason beside it would
+    // say the opposite. The numbers stay — they are orientation, which Chat is entitled to.
+    if (!act) {
+      return h(
+        'span',
+        { className: 'sw-tree-folder-acts' },
+        h('span', { className: 'sw-tree-folder-meta' }, meta)
+      );
+    }
     // Nothing left to add is its own unavailable state, with its own reason. Offered anyway it
     // would open a confirmation about zero files and answer with a no-op.
     const reason = act.reason || (stat.pending ? '' : act.carried);
+    // The scope, on a label that no longer carries it. Absent when there is nothing to name, so a
+    // row with no app selected draws no empty tooltip.
+    const titled = (title, node) => (title ? h(Tooltip, { title }, node) : node);
     // The other direction, and it does NOT share the attach's gate. Attach is withheld wherever the
     // subtree cannot be measured, because the cap has to be pre-flighted; the removal reads the
     // app's own record, so a Dataset that has since lost its mount does not strand what it already
@@ -159,7 +172,7 @@ window.SW = window.SW || {};
             { title: reason },
             h(Button, { size: 'small', type: 'link', disabled: true }, act.label)
           )
-        : h(
+        : titled(act.title, h(
             Button,
             {
               size: 'small',
@@ -169,9 +182,9 @@ window.SW = window.SW || {};
               onClick: () => act.run({ path, label, files: stat.pending, bytes: stat.adds }),
             },
             act.label
-          ),
+          )),
       remove && held
-        ? h(
+        ? titled(remove.title, h(
             Button,
             {
               size: 'small',
@@ -182,7 +195,7 @@ window.SW = window.SW || {};
               onClick: () => remove.run({ path, label, files: held }),
             },
             remove.label
-          )
+          ))
         : null
     );
   }
@@ -466,7 +479,14 @@ window.SW = window.SW || {};
     // once, here: the server's answer about this listing, and the one thing only the client knows
     // — which Built App the label would name (ADR-0008 makes that a question every surface has to
     // answer, and a door promising "to this app" with none selected is a dead end).
-    const app = SW.store.get().activeApp;
+    // ADR-0029 settles this: "Chat gains no folder act." The act ships bytes into a Built App and
+    // commits it to a publish-time rehydrate, and Chat draws no app rail — so in Chat this named an
+    // app the reader cannot see, picked by whatever Build last selected, on a Conversation that may
+    // have built nothing at all. Read off the route rather than off the app, because "no app
+    // selected" and "not a place this act belongs" are different answers and only one of them is a
+    // refusal worth drawing.
+    const inBuild = SW.router.get().mode === 'build';
+    const app = inBuild ? SW.store.get().activeApp : null;
     // A cancelled confirmation changed nothing, so it costs no fetch. A removal that FAILED can
     // still have moved files — it commits what it unlinked — and answers `'stale'`, which is
     // truthy here for exactly that reason.
@@ -474,8 +494,17 @@ window.SW = window.SW || {};
       if (changed) setReread((n) => n + 1);
       return changed;
     };
-    const act = {
-      label: app ? `Attach folder to ${app.name}` : 'Attach folder',
+    const act = !inBuild ? null : {
+      // The verb alone, in both directions. The app is named on hover and again in the
+      // confirmation, which is where an irreversible act has to name it — but the LABEL sits in a
+      // rail one column wide, beside the file names, and `Attach folder to <app>` wrapped the row
+      // onto two lines and still ran off the edge. It also grew under a person who had only
+      // crossed to Build: same row, same act, suddenly twice as long, and it stayed long back in
+      // Chat because the selection did.
+      label: 'Attach folder',
+      // Only when there is an app to name. With none selected the act is unavailable anyway, and
+      // `reason` below is the sentence that row needs.
+      title: app ? `Attach this folder to ${app.name}` : '',
       // Fails CLOSED on a listing that carried no answer. Reading a missing `folder_act` as
       // "available" would draw an enabled button on exactly the Datasets the route turns down,
       // which is the one arrangement this field exists to make impossible.
@@ -494,13 +523,16 @@ window.SW = window.SW || {};
           bytes,
         }).then(rereadIfChanged),
     };
-    // The removal, which names the app for the reason every removal label does: the scope is the
-    // only thing telling the three of them apart (ADR-0011). With no app selected there is no scope
-    // to name and nothing carried to remove, so it is absent rather than disabled — unlike the
-    // attach, which is a door somebody came looking for and has to say why it is shut.
+    // The removal. The scope is still the only thing telling the three removals apart (ADR-0011),
+    // and it is still said — in the tooltip, and in a confirmation that names the app in its title,
+    // its sentence and its OK, which is before anything is taken away. What it no longer does is
+    // say it in a rail-width label. With no app selected there is no scope to name and nothing
+    // carried to remove, so it is absent rather than disabled — unlike the attach, which is a door
+    // somebody came looking for and has to say why it is shut.
     const remove = app
       ? {
-          label: `Remove folder from ${app.name}`,
+          label: 'Remove folder',
+          title: `Remove this folder from ${app.name}`,
           run: ({ path, label, files: count }) =>
             SW.store.removeFolderFromApp({
               datasetId,

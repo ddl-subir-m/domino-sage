@@ -546,8 +546,10 @@ detach, a bare "Stop using" (it does not say where)
 
 **Attach folder**:
 Putting every file below one Dataset folder into a Built App in a single act, at any depth and
-including the Dataset's own root. It is the same word the app's single-file door already uses, so
-the label is "Attach folder to <app>" and its inverse is "Remove folder from <app>". Both refuse
+including the Dataset's own root. It is the same word the app's single-file door already uses. The
+labels are "Attach folder" and "Remove folder"; the app each one acts on is named on hover and
+again in the confirmation, which is where the scope has to be said before anything moves, and not
+in a label that sits in a one-column rail beside the file names. Both refuse
 whole rather than land half: over the size cap, or with any file still read by the app's code,
 nothing moves and the sentence names the numbers or the files. The attach is offered only on a
 mounted Dataset with a complete listing — every file in an unmounted one comes down one at a time

@@ -15,6 +15,7 @@
 // Input on stdin: `{ files, folder_act, app, query, press }`.
 //   `files` / `folder_act` — the `/files` answer, in the shape the route writes it.
 //   `app`                  — the selected Built App's name, or null for none selected.
+//   `mode`                 — the route the tree is drawn on: 'chat', or Build by default.
 //   `measured`             — whether the listing weighed its files. Defaults to true.
 //   `query`                — the tree's filter box.
 //   `press`                — the folder path to press the act on ('' is the Dataset root).
@@ -193,7 +194,9 @@ const sandbox = {
   requestAnimationFrame: (fn) => fn(),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
-  location: { hash: '#/build' },
+  // The act is Build's (ADR-0029). The route is what says so, so it is an input here rather
+  // than a constant.
+  location: { hash: input.mode === 'chat' ? '#/chat' : '#/build' },
   history: { replaceState() {} },
   addEventListener() {},
   removeEventListener() {},
@@ -292,7 +295,15 @@ function readRow(row) {
   const buttons = inner.filter((n) => n.t === 'Button');
   const button = buttons[0];
   const removal = buttons.find((n) => n.p.danger);
-  const tooltip = inner.find((n) => n.t === 'Tooltip');
+  // A tooltip wraps its one button, and it says two different things: WHY the act is shut when the
+  // button is disabled, and WHICH app it acts on when it is not — the scope the rail-width label no
+  // longer spells out. Matched to the button it wraps rather than taken by position, because either
+  // one can carry a tooltip without the other.
+  const tipOn = (btn) => {
+    const t = btn && inner.find((n) => n.t === 'Tooltip' && n.c[0] === btn);
+    return t ? String(t.p.title || '') : '';
+  };
+  const tip = tipOn(button);
   // The folder this row acts on, taken off the act's own props rather than guessed from the name:
   // two partitions can hold a folder with the same name and only the path tells them apart.
   const acts = inner.find((n) => typeof n.t === 'function' && n.t.name === 'FolderActs');
@@ -301,9 +312,11 @@ function readRow(row) {
     meta: meta ? words(meta) : '',
     act: button ? words(button) : '',
     disabled: Boolean(button && button.p.disabled),
-    reason: tooltip ? String(tooltip.p.title || '') : '',
+    reason: button && button.p.disabled ? tip : '',
+    title: button && !button.p.disabled ? tip : '',
     press: button && !button.p.disabled ? button.p.onClick : null,
     remove: removal ? words(removal) : '',
+    removeTitle: tipOn(removal),
     removeDanger: Boolean(removal && removal.p.danger),
     removeDisabled: Boolean(removal && removal.p.disabled),
     pressRemove: removal && !removal.p.disabled ? removal.p.onClick : null,

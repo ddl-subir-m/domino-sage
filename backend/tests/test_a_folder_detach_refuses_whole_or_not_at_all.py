@@ -863,13 +863,25 @@ _MIXED = [
 
 
 def test_a_folder_the_app_carries_offers_the_removal_beside_the_attach():
-    """Both folder acts on one row, each naming the app it acts on (ADR-0011)."""
+    """Both folder acts on one row, each saying the app it acts on (ADR-0011) — on hover, since
+    the label itself has to fit a rail one column wide."""
     rows = _tree(files=_MIXED, app="Desk margins")["rows"]
 
     by_path = {r["path"]: r for r in rows}
-    assert by_path["raw/2024"]["remove"] == "Remove folder from Desk margins"
+    assert by_path["raw/2024"]["remove"] == "Remove folder"
+    assert by_path["raw/2024"]["removeTitle"] == "Remove this folder from Desk margins"
     assert by_path["raw/2024"]["removeDanger"] is True
-    assert by_path[""]["remove"] == "Remove folder from Desk margins"
+    assert by_path[""]["remove"] == "Remove folder"
+
+
+def test_chat_offers_no_removal_either_over_a_folder_the_app_carries():
+    """The other direction of ADR-0029's "Chat gains no folder act." The attach going quiet while
+    the removal stayed would leave the one act that takes something away on the surface with no app
+    on it."""
+    rows = _tree(files=_MIXED, app="Desk margins", mode="chat")["rows"]
+
+    assert {r["remove"] for r in rows} == {""}
+    assert {r["act"] for r in rows} == {""}
 
 
 def test_a_folder_the_app_carries_nothing_from_offers_no_removal():
@@ -907,10 +919,10 @@ def test_a_removal_that_stopped_part_way_still_re_reads_the_listing():
 
     before = {r["path"]: r for r in out["rows"]}
     after = {r["path"]: r for r in out["after"]}
-    assert before["raw/2024"]["remove"] == "Remove folder from Desk margins"
+    assert before["raw/2024"]["remove"] == "Remove folder"
     # One of the two went, so the row still carries one — and the one that LEFT is attachable
     # again, which a listing nobody re-read would have gone on calling attached.
-    assert after["raw/2024"]["remove"] == "Remove folder from Desk margins"
+    assert after["raw/2024"]["remove"] == "Remove folder"
     assert after["raw/2024"]["disabled"] is False
     assert before["raw/2024"]["disabled"] is True                   # nothing to add before it
 
@@ -932,7 +944,7 @@ def test_the_removal_is_offered_even_where_the_attach_is_withheld():
 
     by_path = {r["path"]: r for r in rows}
     assert by_path["raw/2024"]["disabled"] is True                 # the attach
-    assert by_path["raw/2024"]["remove"] == "Remove folder from Desk margins"
+    assert by_path["raw/2024"]["remove"] == "Remove folder"
     assert by_path["raw/2024"]["removeDisabled"] is False
 
 
@@ -944,9 +956,9 @@ def test_the_tree_re_reads_after_an_act_rather_than_describing_the_state_before_
 
     before = {r["path"]: r for r in out["rows"]}
     after = {r["path"]: r for r in out["after"]}
-    assert before["raw/2024"]["remove"] == "Remove folder from Desk margins"
+    assert before["raw/2024"]["remove"] == "Remove folder"
     assert after["raw/2024"]["remove"] == ""                    # nothing carried there now
-    assert after["raw/2024"]["act"] == "Attach folder to Desk margins"
+    assert after["raw/2024"]["act"] == "Attach folder"
     assert after["raw/2024"]["disabled"] is False               # and it is attachable again
 
 
@@ -955,7 +967,7 @@ def test_a_cancelled_confirmation_changes_nothing_and_costs_no_re_read():
 
     assert out["posted"] == []
     assert {r["path"]: r["remove"] for r in out["after"]}["raw/2024"] \
-        == "Remove folder from Desk margins"
+        == "Remove folder"
 
 
 def test_the_count_comes_from_the_app_record_not_from_the_listing():
