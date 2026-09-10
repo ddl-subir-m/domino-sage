@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 import httpx
 
@@ -212,10 +213,69 @@ def map_event(raw: dict) -> AgentEvent:
     return AgentEvent(kind=kind, payload={"type": t, **props})
 
 
+def _flatten_message(m: dict) -> dict:
+    """v1's `{info, parts}` -> the flat message every caller in Sage already reads.
+
+    v2 answered a message flat — `{id, type, text, content, ...}` — and callers key off
+    `type == "assistant"`, walk `content`, and identify a part by `m["id"]` plus the part's own id
+    (`_part_key`). v1 nests the same information under `info` and `parts`. Normalising here is what
+    keeps the surface change inside this file: the test double stands in at this class's METHODS,
+    not at the HTTP routes, so every test that speaks the old shape keeps speaking it.
+
+    `role` becomes `type` because that is the key the callers branch on, and `text` is rebuilt from
+    the text parts so a caller that wants the whole answer need not walk them itself.
+    """
+    info = dict(m.get("info") or {})
+    parts = list(m.get("parts") or [])
+    return {
+        **info,
+        "type": str(info.get("role") or ""),
+        "content": parts,
+        "text": "".join(str(p.get("text") or "") for p in parts if p.get("type") == "text"),
+    }
+
+
 @dataclass
 class OpenCodeClient:
+    """Sage's half of the OpenCode HTTP API — and it speaks v1 for everything a TURN does.
+
+    OpenCode 1.18.4 serves TWO complete APIs from one process: 162 routes, of which the 58 under
+    `/api/*` are v2 (`operationId: v2.session.*`) and the rest are v1. They are not two spellings of
+    one thing. They keep SEPARATE MESSAGE STORES, and — the reason for this class's shape —
+    **v2's prompt path sends the model no custom tools and no MCP tools.**
+
+    Measured 2026-09-09 by pointing the provider `baseURL` at a logging stand-in gateway and reading
+    the `tools` array that actually left OpenCode, with the real config, agent and model:
+
+        POST /session/{id}/prompt_async   apply_patch bash glob grep LIVE_READ_FILES
+                                          LIVE_READ_TABLE read skill task todowrite webfetch
+        POST /api/session/{id}/prompt     apply_patch bash edit glob grep question read skill
+                                          todowrite webfetch websearch write
+
+    Sage used to be entirely on v2, so Live read could never arrive — as an MCP server, and then
+    again as a custom tool. Every surface that reported it healthy (`opencode mcp list`, `GET /mcp`,
+    `/experimental/tool`) reads the REGISTRY, which was correctly populated the whole time; v2 simply
+    never handed that registry to the model. See ADR-0041.
+
+    v2 also silently drops `agent` and `model` from the prompt body — its schema takes only
+    `delivery, id, prompt, resume` — so every Chat turn ran as OpenCode's default `build` agent, not
+    `sage-chat`. v1 takes both in the body and honours them.
+
+    WHAT STAYS ON v2: session creation, because `POST /api/session` accepts `location.directory` and
+    a v1 prompt into a v2-created session works end to end — verified for tools, messages, busy
+    status and events. `agent_summaries` too: it reads resolved config, not session state.
+
+    The method signatures and return shapes here are the contract the test double copies, so
+    `messages()` normalises v1's `{info, parts}` back to the flat shape every caller already reads.
+    """
+
     base_url: str
     timeout_s: float = 300.0
+    # Only `GET /session/status` needs the workspace, and only the client knows which session
+    # belongs to which. Remembered here rather than threaded through every caller; a session made
+    # before this process started is simply absent, and `is_running` degrades to what it already
+    # did when it could not tell — see there.
+    _dirs: dict[str, str] = dataclass_field(default_factory=dict)
 
     def create_session(self, directory: str, model: dict | None = None) -> str:
         body: dict = {"location": {"directory": directory}}
@@ -225,17 +285,22 @@ class OpenCodeClient:
         r.raise_for_status()
         payload = r.json()
         # /api/* responses wrap the resource in {"data": {...}}.
-        return (payload.get("data") or payload)["id"]
+        sid = (payload.get("data") or payload)["id"]
+        self._dirs[sid] = directory
+        return sid
 
     def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
         """This session's messages, OLDEST FIRST. Pass `limit` for only the newest few.
 
-        `order` is sent explicitly because the server's default is `desc` — verified against the
-        pinned 1.18.4, which answers a two-message session as [assistant, user]. Every caller here
-        reads this list as a transcript, oldest to newest: the poll loops keep "the latest text
-        part" by letting the last assignment win, so on a desc list they kept the EARLIEST text of
-        the turn and showed an intermediate "let me try..." as the finished answer. The test double
-        appends in chronological order, so no test could see it.
+        READ FROM v1, because that is where the turns are: the two APIs keep separate message
+        stores, so a v1 prompt is invisible to `GET /api/session/{id}/message` and vice versa —
+        measured, 2 messages on one surface and 0 on the other for the same session id.
+
+        v1 has no `order`. It answers chronologically already, and `limit` gives the NEWEST N still
+        in that order (measured on a six-message session: `limit=2` returned the last user/assistant
+        pair, oldest of the two first). So the desc-then-reverse dance v2 needed is gone — along
+        with the bug it existed for, where a desc list made the poll loops keep the EARLIEST text of
+        a turn and show an intermediate "let me try..." as the finished answer.
 
         `limit` exists because this is polled once a second for the length of a turn, and the whole
         transcript came back every time — a cost that grows with the conversation rather than with
@@ -243,12 +308,11 @@ class OpenCodeClient:
         emitted on an earlier poll and is already in the caller's `seen` set, so nothing is lost by
         not looking at it again.
         """
-        params: dict = {"order": "desc", "limit": limit} if limit is not None else {"order": "asc"}
-        r = httpx.get(f"{self.base_url}/api/session/{session_id}/message",
+        params: dict = {"limit": limit} if limit is not None else {}
+        r = httpx.get(f"{self.base_url}/session/{session_id}/message",
                       params=params, timeout=30)
         r.raise_for_status()
-        data = r.json().get("data", [])
-        return list(reversed(data)) if limit is not None else data
+        return [_flatten_message(m) for m in r.json()]
 
     def last_message_id(self, session_id: str) -> str | None:
         ms = self.messages(session_id)
@@ -297,19 +361,28 @@ class OpenCodeClient:
         Confirmed end to end (OpenCode -> shim -> gateway -> sonnet): the model read a test image
         correctly."""
         text = with_attachment_listing(text, attachments, chat=chat)
-        body: dict = {"prompt": {"text": text}}
-        images = [{"uri": a["image_uri"], "name": a["name"]}
-                  for a in (attachments or []) if a.get("image_uri")]
-        if images:
-            body["prompt"]["files"] = images
+        # v1 carries text and media as PARTS, where v2 took `prompt.text` and `prompt.files`. The
+        # base64 constraint above is unchanged — it is a property of how OpenCode forwards media,
+        # not of which API asked it to.
+        parts: list[dict] = [{"type": "text", "text": text}]
+        images = [a for a in (attachments or []) if a.get("image_uri")]
+        for a in images:
+            uri = str(a["image_uri"])
+            mime = uri[5:].split(";", 1)[0] if uri.startswith("data:") else "application/octet-stream"
+            parts.append({"type": "file", "mime": mime, "url": uri, "filename": a["name"]})
+        body: dict = {"parts": parts}
         if attachments:
             log.info("prompt: %d attachment(s), %d media part(s), body %d bytes",
                      len(attachments), len(images), len(json.dumps(body)))
+        # v1 HONOURS these. v2 took only `delivery, id, prompt, resume` and dropped both on the
+        # floor, which is why every Chat turn ran as the default `build` agent instead of
+        # `sage-chat` — the agent whose prompt is the mirrored AGENTS.md.
         if model:
             body["model"] = model
         if agent:
             body["agent"] = agent
-        r = httpx.post(f"{self.base_url}/api/session/{session_id}/prompt", json=body, timeout=self.timeout_s)
+        r = httpx.post(f"{self.base_url}/session/{session_id}/prompt_async",
+                       json=body, timeout=self.timeout_s)
         r.raise_for_status()
 
     def summarize(self, session_id: str, provider_id: str, model_id: str, *, auto: bool = False) -> None:
@@ -322,7 +395,7 @@ class OpenCodeClient:
         """
         body = {"providerID": provider_id, "modelID": model_id, "auto": auto}
         r = httpx.post(
-            f"{self.base_url}/api/session/{session_id}/summarize",
+            f"{self.base_url}/session/{session_id}/summarize",
             json=body, timeout=self.timeout_s)
         r.raise_for_status()
 
@@ -350,15 +423,21 @@ class OpenCodeClient:
                         and len(str(v)) <= 80} or {"keys": sorted(a)[:12]})
         return out
 
-    def is_running(self, session_id: str) -> bool:
+    def is_running(self, session_id: str, directory: str | None = None) -> bool:
         # 30s (was 15s): OpenCode's Node server can be briefly CPU-bound (serializing a large context)
         # and slow to answer this health poll. build_stream also tolerates a poll timeout, but a more
         # generous window avoids tripping that path on a normal busy turn.
-        r = httpx.get(f"{self.base_url}/api/session/active", timeout=30)
+        # v1 answers {sid: {"type": "busy"}} and needs the WORKSPACE to answer at all — without
+        # `directory` it returns {} for a session that is plainly running. v2's /session/active
+        # sees only v2 turns, so it reported every v1 turn as finished the instant it started.
+        work = directory or self._dirs.get(session_id)
+        params = {"directory": work} if work else {}
+        r = httpx.get(f"{self.base_url}/session/status", params=params, timeout=30)
         r.raise_for_status()
-        return session_id in r.json().get("data", {})
+        return str((r.json().get(session_id) or {}).get("type") or "") == "busy"
 
-    def wait_for_idle(self, session_id: str, timeout_s: float = 300, poll_s: float = 1.0, appear_grace_s: float = 10.0) -> None:
+    def wait_for_idle(self, session_id: str, timeout_s: float = 300, poll_s: float = 1.0,
+                      appear_grace_s: float = 10.0, directory: str | None = None) -> None:
         """Block until the whole multi-step turn finishes.
 
         A turn spans several steps (model->tool->model); /api/session/active reports
@@ -371,7 +450,7 @@ class OpenCodeClient:
         start = time.monotonic()
         appeared = False
         while time.monotonic() - start < timeout_s:
-            running = self.is_running(session_id)
+            running = self.is_running(session_id, directory)
             if running:
                 appeared = True
             elif appeared:
@@ -381,7 +460,9 @@ class OpenCodeClient:
             time.sleep(poll_s)
 
     def interrupt(self, session_id: str) -> None:
-        httpx.post(f"{self.base_url}/api/session/{session_id}/interrupt", timeout=30)
+        # v1's spelling of interrupt. v2's `/interrupt` only knows about v2 turns, and the turn
+        # is a v1 one now, so stopping through it would report success and stop nothing.
+        httpx.post(f"{self.base_url}/session/{session_id}/abort", timeout=30)
 
     def session_events(self, session_id: str, *, directory: str | None = None) -> SessionEvents:
         """This session's turn events, live, off the global /event stream. See SessionEvents.
@@ -392,7 +473,12 @@ class OpenCodeClient:
 
     def events(self, session_id: str) -> Iterator[AgentEvent]:
         """The per-session DURABLE stream: resumable (?after=), but checkpoints only — it carries
-        no text.delta. Use session_events() to watch a turn; this is for replaying one."""
+        no text.delta. Use session_events() to watch a turn; this is for replaying one.
+
+        UNUSED, and v2-only: it can no longer replay anything Sage does, because the turns run on
+        v1 now and the two APIs do not share a store. Left in place rather than deleted because
+        nothing calls it either way — but do not reach for it without reading the class docstring.
+        """
         with httpx.stream("GET", f"{self.base_url}/api/session/{session_id}/event", timeout=None) as r:
             for line in r.iter_lines():
                 if line.startswith("data: "):

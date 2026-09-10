@@ -21,6 +21,15 @@ class _Resp:
             raise httpx.HTTPStatusError("boom", request=None, response=None)
 
 
+def _text(body: dict) -> str:
+    """The text the model will read, out of v1's parts array."""
+    return "".join(p["text"] for p in body["parts"] if p["type"] == "text")
+
+
+def _files(body: dict) -> list[dict]:
+    return [p for p in body["parts"] if p["type"] == "file"]
+
+
 _ATT = {"path": "public/data/sales-2026/uploads/q3.csv", "name": "q3.csv",
         "summary": "CSV — 12 columns, 48,231 rows", "detail": "columns: region, amount"}
 
@@ -33,11 +42,11 @@ def test_send_prompt_embeds_the_workspace_relative_path_not_the_mount_path(monke
                         lambda url, json, timeout: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "use this", attachments=[_ATT])
     assert len(calls) == 1
-    text = calls[0]["prompt"]["text"]
+    text = _text(calls[0])
     assert text.startswith("use this")
     assert "public/data/sales-2026/uploads/q3.csv" in text
     assert "/mnt/" not in text                       # never the absolute mount path
-    assert "files" not in calls[0]["prompt"]         # no images here -> no media parts
+    assert _files(calls[0]) == []         # no images here -> no media parts
 
 
 def test_send_prompt_renders_the_summary_and_detail_of_each_attachment(monkeypatch):
@@ -45,7 +54,7 @@ def test_send_prompt_renders_the_summary_and_detail_of_each_attachment(monkeypat
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
                         lambda url, json, timeout: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "use this", attachments=[_ATT])
-    text = calls[0]["prompt"]["text"]
+    text = _text(calls[0])
     assert "q3.csv" in text
     assert "CSV — 12 columns, 48,231 rows" in text
     assert "columns: region, amount" in text
@@ -63,7 +72,7 @@ def test_send_prompt_reads_no_files_and_renders_from_the_dicts_alone(monkeypatch
     ghost = {"path": "public/data/x/uploads/nope.csv", "name": "nope.csv",
              "summary": "CSV — 3 columns, 9 rows", "detail": ""}
     OpenCodeClient("http://x").send_prompt("s1", "use this", attachments=[ghost])
-    text = calls[0]["prompt"]["text"]
+    text = _text(calls[0])
     assert "public/data/x/uploads/nope.csv" in text   # path that does not exist on disk
     assert "CSV — 3 columns, 9 rows" in text
 
@@ -73,7 +82,7 @@ def test_send_prompt_text_only_when_no_attachments(monkeypatch):
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
                         lambda url, json, timeout: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "just text")
-    assert calls[0]["prompt"] == {"text": "just text"}   # untouched when nothing attached
+    assert calls[0]["parts"] == [{"type": "text", "text": "just text"}]  # nothing attached
 
 
 def test_chat_send_prompt_does_not_talk_about_the_built_app(monkeypatch):
@@ -86,7 +95,7 @@ def test_chat_send_prompt_does_not_talk_about_the_built_app(monkeypatch):
                       "summary": "CSV — 2 columns", "detail": ""}],
         chat=True,
     )
-    text = calls[0]["prompt"]["text"]
+    text = _text(calls[0])
     assert "what data is there in @desk.csv" in text
     assert ".sage/scratch/desk.csv" in text
     assert "built app MUST" not in text
@@ -146,8 +155,9 @@ def test_an_image_attachment_rides_prompt_files_as_a_data_uri(monkeypatch):
          "summary": "PNG image — 800x600", "detail": "PNG image, 800x600.",
          "image_uri": "data:image/png;base64,AAAA"}])
 
-    assert calls[0]["prompt"]["files"] == [{"uri": "data:image/png;base64,AAAA", "name": "shot.png"}]
-    assert "shot.png" in calls[0]["prompt"]["text"]   # descriptor still rendered alongside
+    assert _files(calls[0]) == [{"type": "file", "mime": "image/png",
+                                 "url": "data:image/png;base64,AAAA", "filename": "shot.png"}]
+    assert "shot.png" in _text(calls[0])   # descriptor still rendered alongside
 
 
 def test_a_mixed_attachment_set_sends_media_parts_only_for_the_images(monkeypatch):
@@ -159,8 +169,8 @@ def test_a_mixed_attachment_set_sends_media_parts_only_for_the_images(monkeypatc
         {"path": "public/data/ds/uploads/shot.png", "name": "shot.png", "summary": "PNG image",
          "detail": "", "image_uri": "data:image/png;base64,BBBB"}])
 
-    assert [f["name"] for f in calls[0]["prompt"]["files"]] == ["shot.png"]
-    assert "q3.csv" in calls[0]["prompt"]["text"]
+    assert [f["filename"] for f in _files(calls[0])] == ["shot.png"]
+    assert "q3.csv" in _text(calls[0])
 
 
 def test_an_image_that_could_not_be_inlined_tells_the_agent_it_cannot_see_it(monkeypatch):
@@ -173,9 +183,9 @@ def test_an_image_that_could_not_be_inlined_tells_the_agent_it_cannot_see_it(mon
         {"path": "public/data/ds/uploads/big.png", "name": "big.png",
          "summary": "PNG image — 900x900", "detail": "PNG image, 900x900.", "image_uri": None}])
 
-    text = calls[0]["prompt"]["text"]
+    text = _text(calls[0])
     assert "NOT shown to you" in text and "too large to inline" in text
-    assert "files" not in calls[0]["prompt"]      # nothing to send as media
+    assert _files(calls[0]) == []      # nothing to send as media
 
 
 def test_a_normal_data_attachment_gets_no_image_note(monkeypatch):
@@ -184,7 +194,7 @@ def test_a_normal_data_attachment_gets_no_image_note(monkeypatch):
                         lambda url, json, timeout: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "chart it", attachments=[_ATT])
 
-    assert "NOT shown to you" not in calls[0]["prompt"]["text"]
+    assert "NOT shown to you" not in _text(calls[0])
 
 
 def test_summarize_posts_provider_and_model(monkeypatch):
@@ -193,7 +203,7 @@ def test_summarize_posts_provider_and_model(monkeypatch):
                         lambda url, json, timeout: calls.append((url, json)) or _Resp(200))
     OpenCodeClient("http://x").summarize("s1", "sage-gateway", "sonnet", auto=False)
     url, body = calls[0]
-    assert url.endswith("/api/session/s1/summarize")
+    assert url.endswith("/session/s1/summarize") and "/api/" not in url
     assert body == {"providerID": "sage-gateway", "modelID": "sonnet", "auto": False}
 
 
@@ -206,34 +216,74 @@ class _JsonResp(_Resp):
         return self._payload
 
 
-def test_messages_asks_for_oldest_first_because_the_server_defaults_to_newest(monkeypatch):
-    """The server's default order is `desc` — verified live against the pinned 1.18.4, which
-    answers a two-message session as [assistant, user].
+def _v1(mid: str, role: str, text: str) -> dict:
+    """One row shaped the way v1 answers: the payload nests under `info`, parts alongside it."""
+    return {"info": {"id": mid, "role": role, "sessionID": "s1"},
+            "parts": [{"id": f"prt_{mid}", "type": "text", "text": text}]}
 
-    Every caller reads this list as a transcript and lets the last assignment win when it keeps
-    "the latest text part". On a desc list that keeps the EARLIEST text of the turn, which is how
-    an intermediate "let me try to access that file..." was shown as the finished answer. The test
-    double appends chronologically, so nothing but this assertion can see the difference.
+
+def test_messages_reads_the_surface_the_turns_actually_ran_on(monkeypatch):
+    """v1, because the two APIs keep SEPARATE message stores.
+
+    Measured on 1.18.4: a session prompted through v1 answers 2 messages on
+    `GET /session/{id}/message` and 0 on `GET /api/session/{id}/message` — and the reverse for a
+    v2-prompted one. Sage prompts on v1 now (the only path that sends the model our tools), so
+    reading v2 here would poll an empty transcript for the length of every turn.
     """
     seen = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.get",
-                        lambda url, params, timeout: seen.update(params) or _JsonResp({"data": []}))
+                        lambda url, params, timeout: seen.update(url=url) or _JsonResp([]))
     OpenCodeClient("http://x").messages("s1")
-    assert seen == {"order": "asc"}
+
+    assert seen["url"].endswith("/session/s1/message")
+    assert "/api/" not in seen["url"]
+
+
+def test_messages_sends_no_order_because_v1_is_chronological_already(monkeypatch):
+    """v1 takes `limit` and `before`, and no `order`; it answers oldest-first as it is.
+
+    v2 needed `order=asc` because its default was `desc`, which once made the poll loops keep the
+    EARLIEST text of a turn and show an intermediate "let me try to access that file..." as the
+    finished answer. A parameter v1 does not have would be ignored rather than refused, so this
+    pins that we stopped sending it.
+    """
+    seen = {}
+    monkeypatch.setattr("sage.driver.opencode.httpx.get",
+                        lambda url, params, timeout: seen.update(params) or _JsonResp([]))
+    OpenCodeClient("http://x").messages("s1")
+
+    assert seen == {}
 
 
 def test_a_bounded_poll_asks_for_the_newest_few_and_hands_them_back_oldest_first(monkeypatch):
     # The whole transcript came back on every poll, once a second for the length of a turn, so the
-    # cost grew with the Thread rather than the question. `limit` has to page from the NEW end,
-    # which is `desc` — so the rows come back reversed to keep every caller's transcript order.
+    # cost grew with the Thread rather than the question. Measured on a six-message session: v1's
+    # `limit` returns the newest N ALREADY chronological, so unlike v2 there is nothing to reverse
+    # — and reversing would reintroduce the bug `order` was added to fix.
     seen = {}
-    newest_first = [{"id": "m3"}, {"id": "m2"}, {"id": "m1"}]
+    newest_last = [_v1("m2", "user", "second"), _v1("m3", "assistant", "answer")]
     monkeypatch.setattr(
         "sage.driver.opencode.httpx.get",
-        lambda url, params, timeout: seen.update(params) or _JsonResp({"data": newest_first}))
-    out = OpenCodeClient("http://x").messages("s1", limit=3)
-    assert seen == {"order": "desc", "limit": 3}
-    assert [m["id"] for m in out] == ["m1", "m2", "m3"]
+        lambda url, params, timeout: seen.update(params) or _JsonResp(newest_last))
+    out = OpenCodeClient("http://x").messages("s1", limit=2)
+
+    assert seen == {"limit": 2}
+    assert [m["id"] for m in out] == ["m2", "m3"]
+
+
+def test_a_v1_message_arrives_in_the_flat_shape_every_caller_reads(monkeypatch):
+    """v1 nests as {info, parts}; callers branch on `type == "assistant"`, walk `content`, and key
+    a part by `m["id"]`. Normalising in the driver is what kept this surface change out of the
+    orchestrator AND out of the test double, which stands in at the client's methods."""
+    monkeypatch.setattr("sage.driver.opencode.httpx.get",
+                        lambda url, params, timeout: _JsonResp([_v1("m1", "assistant", "hello")]))
+
+    m = OpenCodeClient("http://x").messages("s1")[0]
+
+    assert m["id"] == "m1"
+    assert m["type"] == "assistant"
+    assert m["text"] == "hello"
+    assert [p["type"] for p in m["content"]] == ["text"]
 
 
 # Frames below are the shapes captured from opencode-ai@1.18.4's global /event stream on
@@ -547,3 +597,79 @@ def test_stop_is_a_no_op_once_the_server_has_exited(monkeypatch):
     srv = drv.OpenCodeServer(cwd=".")
     srv._proc = proc
     srv.stop()
+
+
+# --- the busy signal and the stop button, both v1 now ---------------------------------------------
+#
+# These two are the quiet half of the surface change. Nothing asserted them before, and both fail
+# SILENTLY in the direction that looks like success: v2's /session/active reports {} for a v1 turn,
+# so every turn reads as finished the instant it starts, and v2's /interrupt returns 200 while
+# stopping nothing.
+
+
+def test_busy_is_read_from_v1_and_carries_the_workspace(monkeypatch):
+    """v1 answers `{sid: {"type": "busy"}}` and needs `directory` to answer at all — measured, it
+    returns {} for a plainly running session when the workspace is not named."""
+    seen = {}
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: _Resp(200))
+    monkeypatch.setattr("sage.driver.opencode.httpx.get",
+                        lambda url, params, timeout: seen.update(url=url, **params)
+                        or _JsonResp({"s1": {"type": "busy"}}))
+    c = OpenCodeClient("http://x")
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: _JsonResp({"id": "s1"}))
+    c.create_session("/work/dir")
+
+    assert c.is_running("s1") is True
+    assert seen["url"].endswith("/session/status") and "/api/" not in seen["url"]
+    assert seen["directory"] == "/work/dir"
+
+
+def test_an_idle_session_is_not_busy(monkeypatch):
+    monkeypatch.setattr("sage.driver.opencode.httpx.get",
+                        lambda url, params, timeout: _JsonResp({}))
+
+    assert OpenCodeClient("http://x").is_running("s1") is False
+
+
+def test_a_session_this_process_did_not_create_still_answers(monkeypatch):
+    """Session ids outlive the process that made them — Sage stores one per project and reuses it
+    across restarts. Without a remembered workspace this asks anyway rather than raising; it
+    degrades to the not-running answer, which is what `wait_for_idle`'s appear-grace already
+    tolerates."""
+    seen = {}
+    monkeypatch.setattr("sage.driver.opencode.httpx.get",
+                        lambda url, params, timeout: seen.update(params) or _JsonResp({}))
+
+    assert OpenCodeClient("http://x").is_running("unknown") is False
+    assert seen == {}
+
+
+def test_stop_uses_v1s_abort(monkeypatch):
+    """v2's /interrupt knows only about v2 turns: it answers 200 and stops nothing."""
+    seen = {}
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, timeout: seen.update(url=url) or _Resp(200))
+
+    OpenCodeClient("http://x").interrupt("s1")
+
+    assert seen["url"].endswith("/session/s1/abort")
+    assert "/api/" not in seen["url"]
+
+
+def test_the_prompt_goes_to_the_path_that_carries_our_tools(monkeypatch):
+    """The whole point. Measured against a logging stand-in gateway on 1.18.4: this path sends the
+    model `live_read_table`/`live_read_files`; `/api/session/{id}/prompt` sends neither, nor any MCP
+    tool, and silently drops `agent` and `model` from the body as well."""
+    seen = {}
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: seen.update(url=url, body=json) or _Resp(200))
+
+    OpenCodeClient("http://x").send_prompt("s1", "hello", model={"providerID": "p", "modelID": "m"},
+                                           agent="sage-chat")
+
+    assert seen["url"].endswith("/session/s1/prompt_async")
+    assert "/api/" not in seen["url"]
+    assert seen["body"]["agent"] == "sage-chat"
+    assert seen["body"]["model"] == {"providerID": "p", "modelID": "m"}
