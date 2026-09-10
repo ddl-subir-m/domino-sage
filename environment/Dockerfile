@@ -83,6 +83,14 @@ ENV SAGE_MODEL_SOVEREIGN_ASK=${SAGE_MODEL_SOVEREIGN_ASK}
 # Non-secret; it is a URL.
 ARG SAGE_MANAGE_URL=
 ENV SAGE_MANAGE_URL=${SAGE_MANAGE_URL}
+# Optional: turns the sensitivity gate ON (ADR-0043). Names the LLM Alias group whose members may
+# be used with a Dataset tagged `sensitive`. Blank = off, which is the default everywhere, because
+# Domino dataset tags are freeform and pre-existing — a Project must not lock itself on an upgrade
+# nobody asked for. Blank also means the rail draws NO declaration badge, whatever tag a Dataset
+# carries, so a deployment that wants the badge has to set this. Non-secret; it is a group name.
+# The tag read is `sensitive` unless SAGE_SENSITIVE_DATASET_TAG says otherwise.
+ARG SAGE_SENSITIVE_MODEL_GROUP=
+ENV SAGE_SENSITIVE_MODEL_GROUP=${SAGE_SENSITIVE_MODEL_GROUP}
 
 # --- Sage code + warm template, baked ---------------------------------------------------------
 # ARGs above each git op so bumping the rev busts the layer cache and pulls the latest on rebuild.
