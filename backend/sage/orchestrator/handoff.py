@@ -545,7 +545,7 @@ def _dataset_binding(item: dict) -> Binding | None:
     name = str(item.get("datasetName") or "")
     if not did and str(item.get("kind") or "") == "dataset":
         rid = str(item.get("parentId") or item.get("resourceId") or "")
-        did = rid[len("dataset:"):] if rid.startswith("dataset:") else rid
+        did = rid.removeprefix("dataset:")
         name = name or str(item.get("name") or "")
     if not did or did.startswith(("ctx_", "table:", "dsfile:", "file:")):
         return None
