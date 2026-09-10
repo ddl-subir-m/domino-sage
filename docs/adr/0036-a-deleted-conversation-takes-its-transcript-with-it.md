@@ -105,3 +105,11 @@ both of them run; a write inside it is the shape of bug that ADR-0008 removed on
   those Artifacts, and the next sweep reads the same file, finds the app gone, and finishes the
   purge. A verdict frozen onto the tombstone at delete time would have stranded them for good.
 - Language: [CONTEXT.md](../../CONTEXT.md).
+
+## Revised by
+
+[ADR-0046](0046-a-delete-reaches-the-rows-only-where-they-never-entered-git.md) keeps this
+decision and narrows what its title may be read to promise. The act is unchanged. What a delete
+can reach now depends on [[Kept rows]]: with it off no data rows ever entered git, so the delete
+genuinely takes them; with it on the rows stay in history, on the remote, beyond any delete path
+Sage can write.

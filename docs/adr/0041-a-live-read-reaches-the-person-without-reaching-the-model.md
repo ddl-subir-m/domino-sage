@@ -213,3 +213,13 @@ enters a prompt, so there is nothing here for that lock to hold.
 This is written down because the two decisions read as if they must meet. A later reader who sees
 "sensitive" and "reads a Dataset" in one sentence will reach for the gate — and gating a Live read
 would break the one path built to keep rows away from the model in the first place.
+
+## Revised by
+
+[ADR-0045](0045-an-artifact-commits-the-shape-and-the-rows-only-by-consent.md) keeps the decision
+this document is named for — the rows still reach the person and not the model — and retracts one
+sentence of its reasoning. *"Nothing leaves Domino on the way to the answer, so there is no
+decision to ask for"* is false whenever the Project's git remote is not Domino's, which Domino
+permits: the Artifact this read writes is committed and pushed. So the Artifact now carries the
+**shape** of the read, and carries rows only where the Project turned [[Kept rows]] on. The
+section *What lands, and where* above should be read against that.

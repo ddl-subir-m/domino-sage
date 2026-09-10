@@ -246,10 +246,25 @@ the numbers computed belongs to [[Chat]], and Sage offers the switch rather than
 that hit its cap says so rather than reading as the whole
 ([ADR-0029](docs/adr/0029-a-folder-is-the-unit-of-the-act-and-a-file-is-the-unit-of-the-record.md)).
 Distinct from a [[Named query]], which the Built App runs, and from [[Sample rows]], which are a
-fixed few given to the assistant once.
+fixed few given to the assistant once. The [[Artifact]] it writes holds the shape of the read —
+columns, a row count, the statement and the date — and holds the rows themselves only where
+[[Kept rows]] is on. A person looking at an older read asks for it again; those rows are read as
+**they** are, reach the card, and are never written down
+([ADR-0045](docs/adr/0045-an-artifact-commits-the-shape-and-the-rows-only-by-consent.md)).
 _Kind_: name
 _Avoid_: query, Named query (that is the app's), sample, Sample rows (those are the agent's),
 preview, peek, fetch, lookup
+
+**Kept rows**:
+The Project's standing answer to whether real data rows may be committed into its files. Off
+until someone turns it on, and turned on beside the name of the git remote they will be pushed
+to, because that name is the only part of the audience Sage can read. It governs every writer
+alike — a [[Live read]], a [[Chat]] turn's table, a chart — since deciding per source would need
+an audience Sage cannot obtain. It is not a Domino grant and it narrows nothing on the platform;
+it decides only what Sage writes down. Distinct from [[Sample rows]], which answers whether the
+assistant may see values, never whether they may be published.
+_Kind_: name
+_Avoid_: row consent, data toggle, opt-in, retention setting, sharing
 
 **Attachment**:
 A file bound into the Built App, reachable by the app's code. A file never becomes a Binding, so
@@ -432,7 +447,11 @@ _Avoid_: Untitled, sandbox, ephemeral, temporary project, scratch
 A file an assistant turn or a [[Live read]] wrote under `examples/<threadId>/` and indexed in that Conversation's
 manifest — a PNG chart, a table JSON, a query, a note. The directory is named for the role
 these files play at handoff, not for the term. Handoff names Artifacts by path; it does not
-copy them, and it does not replay a chart object from memory.
+copy them, and it does not replay a chart object from memory. An Artifact is committed and
+pushed, so it is readable by everyone the Project's git remote lets in — a set Sage cannot
+enumerate, because the remote need not be Domino's. It therefore holds the **shape** of what
+was read, and holds real data rows only where [[Kept rows]] is on
+([ADR-0045](docs/adr/0045-an-artifact-commits-the-shape-and-the-rows-only-by-consent.md)).
 _Kind_: name
 _Avoid_: card, chart DSL, canvas, output, widget, Domino Artifacts
 
