@@ -307,6 +307,7 @@ function readRow(row) {
   // The folder this row acts on, taken off the act's own props rather than guessed from the name:
   // two partitions can hold a folder with the same name and only the path tells them apart.
   const acts = inner.find((n) => typeof n.t === 'function' && n.t.name === 'FolderActs');
+  const actsBox = inner.find((n) => cls(n) === 'sw-tree-folder-acts');
   return {
     name: head ? words(head).trim() : '',
     meta: meta ? words(meta) : '',
@@ -316,6 +317,10 @@ function readRow(row) {
     title: button && !button.p.disabled ? tip : '',
     press: button && !button.p.disabled ? button.p.onClick : null,
     remove: removal ? words(removal) : '',
+    // Whether the numbers sit INSIDE the acts box. They must not: the name, the numbers and two
+    // text buttons do not fit one rail line, so the CSS puts the box on the line below and the
+    // numbers stay up beside the name. Nested again, they go down with it.
+    metaInActs: Boolean(actsBox && meta && flatten(actsBox).includes(meta)),
     removeTitle: tipOn(removal),
     removeDanger: Boolean(removal && removal.p.danger),
     removeDisabled: Boolean(removal && removal.p.disabled),

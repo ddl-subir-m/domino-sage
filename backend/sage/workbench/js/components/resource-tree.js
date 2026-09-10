@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useEffect, useRef } = React;
+  const { createElement: h, Fragment, useState, useEffect, useRef } = React;
   const { Button, Spin, Tooltip } = antd;
   const { DownOutlined, RightOutlined } = icons;
 
@@ -142,13 +142,7 @@ window.SW = window.SW || {};
     // A row with no act is not a row with a shut one: Chat is a place this act does not belong
     // (ADR-0029), not a place it is refused, and a disabled button with a reason beside it would
     // say the opposite. The numbers stay — they are orientation, which Chat is entitled to.
-    if (!act) {
-      return h(
-        'span',
-        { className: 'sw-tree-folder-acts' },
-        h('span', { className: 'sw-tree-folder-meta' }, meta)
-      );
-    }
+    if (!act) return h('span', { className: 'sw-tree-folder-meta' }, meta);
     // Nothing left to add is its own unavailable state, with its own reason. Offered anyway it
     // would open a confirmation about zero files and answer with a no-op.
     const reason = act.reason || (stat.pending ? '' : act.carried);
@@ -160,10 +154,18 @@ window.SW = window.SW || {};
     // app's own record, so a Dataset that has since lost its mount does not strand what it already
     // gave (ADR-0029). What it needs is only that the app carries something here — offered
     // otherwise, it would open a question about zero files and answer with a no-op.
+    // Two children of the ROW, not one box beside the name. The name, the numbers and both doors
+    // want ~350px and the rail gives 280 at its widest — so the name, which is the one item here
+    // that shrinks, was squeezed to nothing and its own text wrapped down THROUGH the buttons. The
+    // numbers go on the name's line, where they cost little and stay beside what they measure; the
+    // doors take the line under it, which fits them at every rail width the dock allows.
     return h(
+      Fragment,
+      null,
+      h('span', { className: 'sw-tree-folder-meta' }, meta),
+      h(
       'span',
       { className: 'sw-tree-folder-acts' },
-      h('span', { className: 'sw-tree-folder-meta' }, meta),
       reason
         // Unavailable WITH its reason, rather than absent: a folder row that simply offers nothing
         // is indistinguishable from one nobody has built the act for yet.
@@ -197,6 +199,7 @@ window.SW = window.SW || {};
             remove.label
           ))
         : null
+      )
     );
   }
 
@@ -219,7 +222,7 @@ window.SW = window.SW || {};
           'button',
           { className: 'sw-tree-folder-head', onClick: () => setOpen(!open) },
           h(open ? DownOutlined : RightOutlined, { style: { fontSize: 9 } }),
-          h('span', null, name)
+          h('span', { className: 'sw-tree-folder-name' }, name)
         ),
         h(FolderActs, { path, label: name, totals, carried, act, remove, measured })
       ),

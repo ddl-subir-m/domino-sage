@@ -749,6 +749,20 @@ def test_with_no_app_selected_the_act_says_that_rather_than_naming_none():
     assert all(r["disabled"] and "No app selected" in r["reason"] for r in rows)
 
 
+def test_the_numbers_stay_beside_the_name_and_the_doors_take_the_line_below():
+    """The name, the numbers and two text buttons want about 350px; the rail gives 280 at its
+    default width and drags narrower. The name is the only item that shrinks, so it was squeezed to
+    nothing and its own text wrapped down through the buttons — "All files" arrived as "All" over
+    the acts and "files" under them. The CSS drops the acts box to its own line, which only works
+    while the numbers are outside that box."""
+    rows = _tree(files=_PARTITIONED, app="Desk margins")["rows"]
+
+    assert [r["meta"] for r in rows] == [
+        "4 files · 3.6 KB", "3 files · 3.5 KB", "2 files · 3.0 KB", "1 file · 512 B",
+    ]
+    assert not any(r["metaInActs"] for r in rows)
+
+
 def test_chat_draws_the_numbers_and_neither_folder_act():
     """ADR-0029: "Chat gains no folder act." The act ships bytes into a Built App and commits it to
     a publish-time rehydrate, and Chat draws no app rail — so the label named an app the reader

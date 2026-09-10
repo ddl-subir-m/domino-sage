@@ -781,10 +781,18 @@ a.sw-topnav-link {
   gap: 8px;
   min-height: 28px;
   /* A row can carry both directions at once — attach what is missing, remove what is carried — so
-     in a narrow rail they wrap under the folder name rather than overflowing it. */
+     in a narrow rail they take the line under the folder name rather than overflowing it. */
   flex-wrap: wrap;
 }
 .sw-tree-folder-row .sw-tree-folder-head { flex: 1; min-width: 0; }
+/* The one item on this row that gives way, so it is also the one that has to say it ran out of
+   room. Without this it wrapped instead — and since the acts beside it do not shrink, "All files"
+   broke in half and its second word came down THROUGH the buttons. */
+.sw-tree-folder-name, .sw-tree-root-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sw-tree-root-name {
   flex: 1;
   min-width: 0;
@@ -798,9 +806,15 @@ a.sw-topnav-link {
   align-items: center;
   gap: 4px;
 }
+/* In the rail, both doors take the line under the folder name. The name, the numbers and two text
+   buttons want about 350px; the dock is 280 at its default and can be dragged narrower still. The
+   catalog is a wide surface and keeps them on the one line. */
+.sw-tree-rail .sw-tree-folder-acts { flex: 1 0 100%; }
 /* The numbers the act confirms with, on screen BEFORE the click rather than inside the refusal
-   after it: the attach cap is what decides whether this act can succeed at all. */
+   after it: the attach cap is what decides whether this act can succeed at all. Beside the name,
+   which is what they measure, and never squeezed by the doors below them. */
 .sw-tree-folder-meta {
+  flex: none;
   font-size: var(--fs-11);
   color: var(--gray-500);
   white-space: nowrap;
