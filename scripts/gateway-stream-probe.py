@@ -15,18 +15,27 @@ and the socket closing is never measured, so a stream that stalls and then dies 
 small GAP. `sonnet` read GAP=0.4s on a 302.8s wall; its real stall was ~297s. Read GAP
 together with `wall` and `chunks`, never alone.
 
+It also reports whether the alias streams a reasoning field (the `rsn` column), because a
+new alias has to be asked both questions and this run already pays for the frames. See the
+comment at the detection site for what a negative does and does not prove.
+
 Usage:
   python gw_probe6.py                      # ramp 1 -> 4 -> 8 concurrent, with tool call
   python gw_probe6.py --levels 8 --rounds 3
   python gw_probe6.py --no-tools           # plain text generation instead
 """
-import argparse, json, os, queue, random, string, sys, threading, time
+import argparse, json, os, queue, random, re, string, sys, threading, time
 import urllib.request, urllib.error
 
 BASE = os.environ.get("GATEWAY_BASE_URL",
                       "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1")
 TOKEN_URL = os.environ.get("GATEWAY_TOKEN_URL", "http://localhost:8899/access-token")
 CLIENT_TIMEOUT = 600
+
+# `"reasoning":` / `"reasoning_content":` as a KEY, not as text. The colon is load-bearing: a
+# content delta whose whole value is the word reasoning is quoted exactly like the key, and read
+# as a hit without it. Caught in testing, not in review.
+RSN_KEY = re.compile(rb'"reasoning(?:_content)?"\s*:')
 
 WRITE_TOOL = [{"type": "function", "function": {
     "name": "write_file",
@@ -73,7 +82,7 @@ def one(model, n_words, max_out, use_tools, out: queue.Queue, idx: int) -> None:
 
     t0 = time.monotonic()
     ttfb = None; last = t0; gap = 0.0; chunks = 0
-    done = False; fin = ""; nbytes = 0
+    done = False; fin = ""; nbytes = 0; rsn = None
     try:
         with urllib.request.urlopen(req, timeout=CLIENT_TIMEOUT) as resp:
             status = resp.status
@@ -87,6 +96,20 @@ def one(model, n_words, max_out, use_tools, out: queue.Queue, idx: int) -> None:
                 if not raw.strip():
                     continue
                 chunks += 1; nbytes += len(raw)
+                # Does this alias stream reasoning, and does the gateway relay it? OpenCode's
+                # bundled @ai-sdk/openai-compatible reads `delta.reasoning_content ?? delta.reasoning`
+                # and replays whatever it collected as `reasoning_content` on the assistant message
+                # of EVERY later request, for the life of the session. So an alias that emits this
+                # costs window and money on every turn after the one that produced it, and the probe
+                # is the cheapest place to find out — the frames are already being paid for here.
+                #
+                # The first frame is kept VERBATIM rather than reduced to a flag: "yes" cannot say
+                # which of the two field names arrived, and the shape is what a later decision would
+                # be made against. A negative proves only "not on this alias, through this adapter":
+                # the gateway's Anthropic and Bedrock adapters translate to OpenAI-shape chunks and
+                # use neither field, so silence there is the adapter's, not the model's.
+                if rsn is None and RSN_KEY.search(raw):
+                    rsn = raw[:600].decode(errors="replace").strip()
                 if b"[DONE]" in raw:
                     done = True
                 elif b'"finish_reason"' in raw:
@@ -112,6 +135,7 @@ def one(model, n_words, max_out, use_tools, out: queue.Queue, idx: int) -> None:
     out.put({"i": idx, "wall": round(time.monotonic() - t0, 1),
              "ttfb": round(ttfb, 1) if ttfb else None, "gap": round(gap, 1),
              "chunks": chunks, "kb": nbytes // 1024, "fin": fin or "-",
+             "rsn": "yes" if rsn else "-", "frame": rsn,
              "status": status, "outcome": outcome})
 
 
@@ -135,7 +159,7 @@ def main() -> int:
         for n in args.levels:
             print(f"=== round {rnd_i}  concurrency {n} ===")
             print(f"{'req':>4}{'wall':>8}{'ttfb':>7}{'GAP':>7}{'chunks':>8}"
-                  f"{'KB':>6}{'fin':>12}{'stat':>6}  outcome")
+                  f"{'KB':>6}{'rsn':>5}{'fin':>12}{'stat':>6}  outcome")
             q: queue.Queue = queue.Queue()
             ts = [threading.Thread(target=one, args=(args.model, args.words, args.max_out,
                                                      not args.no_tools, q, i), daemon=True)
@@ -150,8 +174,8 @@ def main() -> int:
                 if "205 SIGNATURE" in r["outcome"]:
                     hits.append(r)
                 print(f"{r['i']:>4}{r['wall']:>8}{str(r['ttfb']):>7}{r['gap']:>7}"
-                      f"{r['chunks']:>8}{r['kb']:>6}{r['fin']:>12}{str(r['status']):>6}"
-                      f"  {r['outcome']}")
+                      f"{r['chunks']:>8}{r['kb']:>6}{r['rsn']:>5}{r['fin']:>12}"
+                      f"{str(r['status']):>6}  {r['outcome']}")
             print()
 
     gaps = sorted(r["gap"] for r in all_rows if r["gap"])
@@ -166,6 +190,21 @@ def main() -> int:
         else:
             print(f"   Max gap {gaps[-1]}s is far from 60s. This load is not enough.")
             print("   Raise --levels (try 16, 24) or run while a real build is going.")
+    # Counted against the requests that actually streamed, not against every request: a run where
+    # the alias 400s on all eight would otherwise report "no reasoning" and read as an answer.
+    streamed = [r for r in all_rows if r["chunks"]]
+    frames = [r["frame"] for r in streamed if r["frame"]]
+    if frames:
+        print(f"\nreasoning: {len(frames)}/{len(streamed)} streaming requests carried a reasoning")
+        print("   field. OpenCode replays it as `reasoning_content` on the assistant message of")
+        print("   every LATER request in the session, so it is a per-turn window and cost charge,")
+        print("   not a one-off. First frame verbatim:")
+        print(f"     {frames[0]}")
+    elif streamed:
+        print(f"\nreasoning: none of {len(streamed)} streaming requests carried reasoning_content")
+        print("   or reasoning. That is true for THIS alias through THIS adapter only — the")
+        print("   gateway's Anthropic and Bedrock adapters translate to OpenAI-shape chunks and")
+        print("   use neither field, so a negative there says nothing about the model itself.")
     if hits:
         print(f"\nREPRODUCED {len(hits)}x. Gaps on those: "
               f"{[h['gap'] for h in hits]}, chunks: {[h['chunks'] for h in hits]}")
