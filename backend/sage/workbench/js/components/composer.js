@@ -3,7 +3,8 @@ window.SW = window.SW || {};
 (function () {
   const { createElement: h, useState, useRef, useEffect } = React;
   const { Input, Button, Dropdown, Tag, Tooltip, Space } = antd;
-  const { PlusOutlined, ArrowUpOutlined, DownOutlined, CloseOutlined } = icons;
+  const { PlusOutlined, ArrowUpOutlined, DownOutlined, CloseOutlined,
+          InfoCircleOutlined, LockOutlined } = icons;
 
   function BUILD_MODES() {
     return [
@@ -124,48 +125,51 @@ window.SW = window.SW || {};
   // writing, and this is what will happen to it.
   function LockNotice({ sensitivity, picked, chat, onDismiss }) {
     const runsOn = SW.util.lockedRunsOn(sensitivity, chat);
-    const moved = runsOn
-      ? SW.brand.text('Using {name} instead.', { name: runsOn })
-      : SW.brand.text('Using an approved model instead.');
+    const using = runsOn
+      ? SW.brand.text('Using {name}', { name: runsOn })
+      : SW.brand.text('Using an approved model');
+    // The kind, never the row's name. A Dataset id is the longest, least useful word in this
+    // sentence, and after an unbind it would name a panel row that is already gone (ADR-0043).
+    const several = ((sensitivity && sensitivity.datasets) || []).length > 1;
+    const why = SW.util.lockedBySession(sensitivity)
+      ? SW.brand.text(
+        "this chat already used sensitive data, so {picked} isn't allowed.",
+        { picked }
+      )
+      : several
+        ? SW.brand.text("{picked} isn't approved for these {datasetPlural}.", { picked })
+        : SW.brand.text("{picked} isn't approved for this {dataset}.", { picked });
+    const wayOut = SW.util.sessionWayOut(sensitivity);
     return h(
       'div',
-      // The mention guard's shape, with its own class over the top. Same place, same layout, and
-      // deliberately not the same ink: that one is a warning about a prompt somebody is mid-way
-      // through writing, and this is a statement of what is already true.
-      { className: 'sw-mention-guard sw-lock-notice' },
+      // Same place as the mention guard — under the box — and deliberately not the same shape.
+      // That one is a warning about a prompt still being written. This is a confirmation of a
+      // switch that has already happened, so it is a line, not a filled incident.
+      { className: 'sw-lock-notice' },
+      h(InfoCircleOutlined, { className: 'sw-lock-notice-icon' }),
       h(
         'div',
-        { className: 'sw-mention-guard-text' },
-        // One phrase for one and for several — `declaredPhrase` writes both — so the sentence
-        // around it cannot pick a verb that only agrees with one of them.
-        //
-        // TWO openings, because after an unbind the first one is false: the app reads nothing
-        // declared any more and the transcript still holds the rows (ADR-0043). Naming the Dataset
-        // there points at a panel with no row on it, and the creator's next move is to go looking
-        // for the thing that is keeping them locked.
-        (SW.util.lockedBySession(sensitivity)
-          ? SW.brand.text(
-            "This chat already used {datasets}, so {picked} isn't allowed. ",
-            { datasets: SW.util.declaredPhrase(sensitivity), picked }
-          )
-          : SW.brand.text(
-            "{picked} isn't allowed with {datasets}. ",
-            { datasets: SW.util.declaredPhrase(sensitivity), picked }
-          )) + moved
+        { className: 'sw-lock-notice-body' },
+        h('div', { className: 'sw-lock-notice-text' }, `${using} — ${why}`),
+        // The way out, only when there is one to give. Under the Bindings lock the creator
+        // already has a better one — unbind the Dataset — and it is not offered here because
+        // the notice is about the model, not about the data.
+        wayOut ? h('div', { className: 'sw-lock-notice-way' }, wayOut) : null
       ),
-      // The way out, on its own line and only when there is one to give. Under the Bindings lock
-      // the creator already has a better one — unbind the Dataset — and it is not offered here
-      // because the notice is about the model, not about the data.
-      SW.util.sessionWayOut(sensitivity)
-        ? h('div', { className: 'sw-mention-guard-text' }, SW.util.sessionWayOut(sensitivity))
-        : null,
-      h(Space, { size: 8, wrap: true },
-        h(Button, {
-          size: 'small',
-          type: 'primary',
-          onClick: () => SW.store.openAssignments(true),
-        }, 'See allowed models'),
-        h(Button, { size: 'small', onClick: onDismiss }, 'Got it'))
+      h(Button, {
+        size: 'small',
+        type: 'link',
+        className: 'sw-lock-notice-link',
+        onClick: () => SW.store.openAssignments(true),
+      }, 'Allowed models'),
+      h(Button, {
+        size: 'small',
+        type: 'text',
+        className: 'sw-lock-notice-dismiss',
+        icon: h(CloseOutlined, { style: { fontSize: 10 } }),
+        onClick: onDismiss,
+        'aria-label': 'Got it',
+      })
     );
   }
 
@@ -915,7 +919,10 @@ window.SW = window.SW || {};
                   // the row's hover cannot say different things about one Alias.
                   title: barredModel(effectiveModel) ? lockNote(effectiveModel) : undefined,
                 },
-                h(Space, { size: 4 }, modelLabel, h(DownOutlined, { style: { fontSize: 9 } }))
+                h(Space, { size: 4 },
+                  barredModel(effectiveModel)
+                    && h(LockOutlined, { style: { fontSize: 11 } }),
+                  modelLabel, h(DownOutlined, { style: { fontSize: 9 } }))
               )
             ),
           !showMode &&

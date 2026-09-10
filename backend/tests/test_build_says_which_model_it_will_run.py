@@ -296,13 +296,16 @@ def test_an_unlocked_project_closes_nothing_and_says_nothing():
 
 def test_the_session_moving_onto_an_approved_model_is_said_once():
     """Switch and tell them. Switching in silence fails the confidence the promise is meant to
-    build, and refusing the turn would stop somebody mid-task to teach what a sentence can teach."""
+    build, and refusing the turn would stop somebody mid-task to teach what a sentence can teach.
+    The Dataset's id stays off the line — it is an identifier, and the kind is enough."""
     (row,) = _drawn([{"mode": "plan", "sensitivity": _locked()}])
 
     assert row["lockNotice"], "the lock moved the session and drew no notice"
-    assert "claims" in row["lockNotice"]
+    assert "claims" not in row["lockNotice"]
+    assert "Dataset" in row["lockNotice"]
     assert PLAN_MODEL in row["lockNotice"]      # what it moved off
     assert APPROVED in row["lockNotice"]        # what it moved to
+    assert "Allowed models" in row["lockNotice"]
 
 
 def test_a_pick_that_was_already_approved_is_not_announced_as_a_switch():

@@ -826,13 +826,43 @@
    buttons off the line. */
 .sw-mention-guard-text { flex: 1; min-width: 180px; line-height: 1.5; }
 
-/* The sensitivity lock's switch notice (ADR-0043): the guard's layout, in info ink. Nothing has
-   gone wrong here and nothing is about to — the session is already running on an approved model,
-   and this says so once. Warning ink would read as a fault the person is expected to clear. */
+/* The sensitivity lock's switch notice (ADR-0043). Under the box like the mention
+   guard, but a line rather than a filled incident: nothing has gone wrong, the session
+   is already on an approved model, and this says so once. Warning ink would read as a
+   fault the person is expected to clear; a full info fill made the empty Chat state
+   about the Dataset's id. */
 .sw-lock-notice {
-  border-color: var(--info);
-  background: var(--info-bg);
-  color: var(--dark-700);
+  display: flex;
+  align-items: flex-start;
+  gap: 6px var(--s2);
+  margin-top: var(--s2);
+  padding: 2px 2px 0;
+  font-size: var(--fs-12);
+  color: var(--gray-600);
+  line-height: 1.45;
+}
+.sw-lock-notice-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--info);
+  font-size: 12px;
+}
+.sw-lock-notice-body { flex: 1; min-width: 180px; }
+.sw-lock-notice-way { margin-top: 2px; color: var(--gray-500); }
+.sw-lock-notice-link.ant-btn-link {
+  padding: 0;
+  height: auto;
+  font-size: var(--fs-12);
+  flex: none;
+  align-self: center;
+}
+.sw-lock-notice-dismiss.ant-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  flex: none;
+  align-self: center;
+  color: var(--gray-500);
 }
 
 .sw-composer-input { padding: var(--s2) var(--s3) 0; position: relative; }
