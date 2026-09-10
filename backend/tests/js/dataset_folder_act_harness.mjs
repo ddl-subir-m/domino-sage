@@ -317,9 +317,9 @@ function readRow(row) {
     title: button && !button.p.disabled ? tip : '',
     press: button && !button.p.disabled ? button.p.onClick : null,
     remove: removal ? words(removal) : '',
-    // Whether the numbers sit INSIDE the acts box. They must not: the name, the numbers and two
-    // text buttons do not fit one rail line, so the CSS puts the box on the line below and the
-    // numbers stay up beside the name. Nested again, they go down with it.
+    // Whether the numbers sit INSIDE the acts box. They must not: Chat's right column is the
+    // count, and the short Attach / Remove sit beside the name. Nested in the box they would
+    // travel with the doors instead of holding the right edge.
     metaInActs: Boolean(actsBox && meta && flatten(actsBox).includes(meta)),
     removeTitle: tipOn(removal),
     removeDanger: Boolean(removal && removal.p.danger),

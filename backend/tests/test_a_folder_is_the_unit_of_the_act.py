@@ -658,9 +658,9 @@ def test_every_folder_row_carries_its_count_its_size_and_the_act(tmp_path: Path)
         ("2024", "2 files · 3.0 KB"),
         ("2025", "1 file · 512 B"),
     ]
-    # The verb alone. The rail is one column wide and sits beside the file names, so the app it
-    # acts on is named on hover and in the confirmation, not in the label.
-    assert {r["act"] for r in rows} == {"Attach folder"}
+    # The short half, like "Use here". The rail is one column wide beside the file names, so the
+    # glossary and the app stay on hover, aria-label, and the confirmation.
+    assert {r["act"] for r in rows} == {"Attach"}
     assert {r["title"] for r in rows} == {"Attach this folder to Desk margins"}
     assert not [r for r in rows if r["disabled"]]
 
@@ -743,18 +743,16 @@ def test_a_dataset_that_reports_no_sizes_shows_no_size():
 def test_with_no_app_selected_the_act_says_that_rather_than_naming_none():
     rows = _tree(files=_PARTITIONED)["rows"]
 
-    assert {r["act"] for r in rows} == {"Attach folder"}
+    assert {r["act"] for r in rows} == {"Attach"}
     # No app to name, so the hover names none either — the row's one sentence is the refusal.
     assert {r["title"] for r in rows} == {""}
     assert all(r["disabled"] and "No app selected" in r["reason"] for r in rows)
 
 
-def test_the_numbers_stay_beside_the_name_and_the_doors_take_the_line_below():
-    """The name, the numbers and two text buttons want about 350px; the rail gives 280 at its
-    default width and drags narrower. The name is the only item that shrinks, so it was squeezed to
-    nothing and its own text wrapped down through the buttons — "All files" arrived as "All" over
-    the acts and "files" under them. The CSS drops the acts box to its own line, which only works
-    while the numbers are outside that box."""
+def test_the_count_stays_out_of_the_acts_so_it_keeps_chats_right_column():
+    """Chat is name left, count right. Build adds short Attach / Remove beside the name. The
+    numbers have to stay a sibling of the acts box — nested inside it they would leave Chat's
+    right column and sit with the doors."""
     rows = _tree(files=_PARTITIONED, app="Desk margins")["rows"]
 
     assert [r["meta"] for r in rows] == [

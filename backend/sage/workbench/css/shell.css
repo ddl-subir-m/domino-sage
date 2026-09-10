@@ -774,28 +774,30 @@ a.sw-topnav-link {
 .sw-tree-folder-body { padding-left: 12px; }
 /* A folder's own row: the name it opens by, and the act that takes everything under it
    (ADR-0029). The head keeps its own hit area and the acts sit beside it, so opening a folder and
-   attaching one are two targets rather than one ambiguous row. */
+   attaching one are two targets rather than one ambiguous row. Chat is name left, numbers right;
+   Build adds short Attach / Remove next to the name and keeps that right column. */
 .sw-tree-folder-row, .sw-tree-root-row {
   display: flex;
   align-items: center;
   gap: 8px;
   min-height: 28px;
-  /* A row can carry both directions at once — attach what is missing, remove what is carried — so
-     in a narrow rail they take the line under the folder name rather than overflowing it. */
-  flex-wrap: wrap;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
-.sw-tree-folder-row .sw-tree-folder-head { flex: 1; min-width: 0; }
-/* The one item on this row that gives way, so it is also the one that has to say it ran out of
-   room. Without this it wrapped instead — and since the acts beside it do not shrink, "All files"
-   broke in half and its second word came down THROUGH the buttons. */
+/* Grows none, shrinks first. Flex 1 pushed Attach / Remove onto the count; wrapping the doors
+   onto a second line is what made "All files" break through the buttons. */
+.sw-tree-folder-row .sw-tree-folder-head,
+.sw-tree-root-name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
 .sw-tree-folder-name, .sw-tree-root-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 .sw-tree-root-name {
-  flex: 1;
-  min-width: 0;
   font-size: var(--fs-12);
   color: var(--gray-500);
   padding: 4px 0;
@@ -804,17 +806,19 @@ a.sw-topnav-link {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 10px;
 }
-/* In the rail, both doors take the line under the folder name. The name, the numbers and two text
-   buttons want about 350px; the dock is 280 at its default and can be dragged narrower still. The
-   catalog is a wide surface and keeps them on the one line. */
-.sw-tree-rail .sw-tree-folder-acts { flex: 1 0 100%; }
-/* The numbers the act confirms with, on screen BEFORE the click rather than inside the refusal
-   after it: the attach cap is what decides whether this act can succeed at all. Beside the name,
-   which is what they measure, and never squeezed by the doors below them. */
+/* Same ink as Use here / Pin: the ant small-link padding made Attach / Remove look like a
+   different control sitting in Chat's row. */
+.sw-tree-folder-acts .ant-btn.ant-btn-sm {
+  padding: 0;
+  height: auto;
+  font-size: var(--fs-12);
+}
+/* Chat's right column. margin-left: auto holds it there whether or not the doors are drawn. */
 .sw-tree-folder-meta {
   flex: none;
+  margin-left: auto;
   font-size: var(--fs-11);
   color: var(--gray-500);
   white-space: nowrap;

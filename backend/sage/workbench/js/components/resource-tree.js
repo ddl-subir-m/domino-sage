@@ -154,15 +154,15 @@ window.SW = window.SW || {};
     // app's own record, so a Dataset that has since lost its mount does not strand what it already
     // gave (ADR-0029). What it needs is only that the app carries something here — offered
     // otherwise, it would open a question about zero files and answer with a no-op.
-    // Two children of the ROW, not one box beside the name. The name, the numbers and both doors
-    // want ~350px and the rail gives 280 at its widest — so the name, which is the one item here
-    // that shrinks, was squeezed to nothing and its own text wrapped down THROUGH the buttons. The
-    // numbers go on the name's line, where they cost little and stay beside what they measure; the
-    // doors take the line under it, which fits them at every rail width the dock allows.
+    // Chat's row is the layout: name left, numbers right. Build adds the two doors beside the
+    // name, as short ink ("Attach" / "Remove") the way a file row says "Use here" for Use in this
+    // conversation — the glossary and the app stay on hover, aria-label, and the confirmation.
+    // Full "Attach folder" / "Remove folder" next to the count is what wrapped "All files" through
+    // the buttons in a 280px rail. The numbers are a sibling of the doors, never inside that box,
+    // so they keep Chat's right column.
     return h(
       Fragment,
       null,
-      h('span', { className: 'sw-tree-folder-meta' }, meta),
       h(
       'span',
       { className: 'sw-tree-folder-acts' },
@@ -172,13 +172,19 @@ window.SW = window.SW || {};
         ? h(
             Tooltip,
             { title: reason },
-            h(Button, { size: 'small', type: 'link', disabled: true }, act.label)
+            h(Button, {
+              size: 'small',
+              type: 'link',
+              disabled: true,
+              'aria-label': act.ariaLabel,
+            }, act.label)
           )
         : titled(act.title, h(
             Button,
             {
               size: 'small',
               type: 'link',
+              'aria-label': act.ariaLabel,
               // What the act would ADD, which is the number the cap turns on and therefore the
               // number the question has to name.
               onClick: () => act.run({ path, label, files: stat.pending, bytes: stat.adds }),
@@ -191,6 +197,7 @@ window.SW = window.SW || {};
             {
               size: 'small',
               type: 'link',
+              'aria-label': remove.ariaLabel,
               // The existing removal styling, and for the existing reason: it is the one act on
               // this row that takes something away (ADR-0011).
               danger: true,
@@ -199,7 +206,8 @@ window.SW = window.SW || {};
             remove.label
           ))
         : null
-      )
+      ),
+      h('span', { className: 'sw-tree-folder-meta' }, meta)
     );
   }
 
@@ -498,13 +506,11 @@ window.SW = window.SW || {};
       return changed;
     };
     const act = !inBuild ? null : {
-      // The verb alone, in both directions. The app is named on hover and again in the
-      // confirmation, which is where an irreversible act has to name it — but the LABEL sits in a
-      // rail one column wide, beside the file names, and `Attach folder to <app>` wrapped the row
-      // onto two lines and still ran off the edge. It also grew under a person who had only
-      // crossed to Build: same row, same act, suddenly twice as long, and it stayed long back in
-      // Chat because the selection did.
-      label: 'Attach folder',
+      // The short half, in both directions, the way a file row says "Use here". `Attach folder
+      // to <app>` wrapped the row; `Attach folder` next to the count still shoved "All files"
+      // through the buttons. The glossary and the app stay on hover, aria-label, and confirmation.
+      label: 'Attach',
+      ariaLabel: 'Attach folder',
       // Only when there is an app to name. With none selected the act is unavailable anyway, and
       // `reason` below is the sentence that row needs.
       title: app ? `Attach this folder to ${app.name}` : '',
@@ -534,7 +540,8 @@ window.SW = window.SW || {};
     // somebody came looking for and has to say why it is shut.
     const remove = app
       ? {
-          label: 'Remove folder',
+          label: 'Remove',
+          ariaLabel: 'Remove folder',
           title: `Remove this folder from ${app.name}`,
           run: ({ path, label, files: count }) =>
             SW.store.removeFolderFromApp({

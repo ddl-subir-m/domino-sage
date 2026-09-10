@@ -547,10 +547,11 @@ detach, a bare "Stop using" (it does not say where)
 **Attach folder**:
 Putting every file below one Dataset folder into a Built App in a single act, at any depth and
 including the Dataset's own root. It is the same word the app's single-file door already uses. The
-labels are "Attach folder" and "Remove folder"; the app each one acts on is named on hover and
-again in the confirmation, which is where the scope has to be said before anything moves, and not
-in a label that sits in a one-column rail beside the file names. Both refuse
-whole rather than land half: over the size cap, or with any file still read by the app's code,
+rail ink is the short half, "Attach" and "Remove", the way a file row says "Use here" for
+[[Use in this conversation]]; hover, aria-label, and the confirmation keep "Attach folder" and
+"Remove folder" and name the app, which is where the scope has to be said before anything moves.
+A full glossary phrase next to Chat's file-count column is what wrapped the folder name through
+the buttons. Both refuse whole rather than land half: over the size cap, or with any file still read by the app's code,
 nothing moves and the sentence names the numbers or the files. The attach is offered only on a
 mounted Dataset with a complete listing — every file in an unmounted one comes down one at a time
 and nothing reports how far along that got (#153 corrected the other reason: the sizes are
