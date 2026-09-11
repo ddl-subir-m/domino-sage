@@ -26,6 +26,8 @@ import re
 import struct
 from pathlib import Path
 
+from ..shim import refusal_scan
+
 # Enough to cover every magic number we check plus a representative CSV/text head. Read once.
 _HEAD_BYTES = 8192
 # csv sample rows used for type inference. More rows barely improve the guess and cost a re-scan.
@@ -42,6 +44,8 @@ _SUMMARY_MAX = 90
 _VOCABULARY_MAX = 12
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$|^\d{1,2}/\d{1,2}/\d{2,4}$")
+# The ISO half of it alone, so `_date_format` can say WHICH of the two a column is written in.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$")
 
 
 def describe(path: str, *, max_detail_chars: int = 1200) -> dict:
@@ -233,6 +237,25 @@ def _read_vocabulary(vocab: dict[int, set], row: list[str]) -> None:
             del vocab[i]
 
 
+def _vocabulary_safe(values: set) -> bool:
+    """Whether a column's vocabulary can be said out loud.
+
+    `shape` is otherwise derived — names, types, counts — and this is the one part of it that is
+    somebody's data, copied. Usually that is the point: `side (LONG | SHORT)` is what stops an agent
+    filtering on `"long"` and getting an empty frame in silence. But low cardinality is not the same
+    as harmless, and the module already knows it: the comment on the manifest cache records a test
+    fixture whose `ssn` column held three values and put all three in the committed manifest.
+
+    So the vocabulary is held to the same bar as anything else leaving for a gateway. `refusal_scan`
+    is the repo's existing answer to "is this a value that must not travel" — five patterns measured
+    against the live guardrail — and reusing it keeps one definition rather than a second that
+    drifts. It is a FLOOR, not a ceiling: it knows about emails, phone-shaped and card-shaped digit
+    runs and SSNs, and nothing about a column of names. A column that fails it loses its values and
+    keeps its type, which is what every other column gets.
+    """
+    return not any(p.search(v) for v in values for _, p in refusal_scan._PATTERNS)
+
+
 def _vocabulary_suffix(values: set | None) -> str:
     """The values of a column that has few enough of them to be a vocabulary rather than content.
 
@@ -241,6 +264,8 @@ def _vocabulary_suffix(values: set | None) -> str:
     agent is told shape. Where a declared sensitive store is in scope the turn is already locked
     to an approved model (ADR-0043), so these reach no model that `detail`'s rows would not.
     """
+    if values and not _vocabulary_safe(values):
+        return ""
     return f" ({' | '.join(sorted(values))})" if values else ""
 
 
@@ -250,9 +275,48 @@ def _column_type(values: list[str]) -> str:
         return "string"
     for name, test in (("bool", _is_bool), ("int", _is_int), ("float", _is_float),
                        ("date", _DATE_RE.match)):
-        if all(test(v) for v in vals):
-            return name
+        if not all(test(v) for v in vals):
+            continue
+        if name == "int" and (digits := _digit_string(vals)):
+            return digits
+        if name == "date":
+            return f"date ({_date_format(vals)})"
+        return name
     return "string"
+
+
+# An identifier that happens to be spelled in digits. Measured on a real attachment: a 16-digit
+# `card_number` column came back `int`, which is not a number in any sense the agent can use —
+# arithmetic on it is meaningless, and JavaScript loses the low digits of anything past 2^53. The
+# two marks are a leading zero (a US zip is `02134`, and `int` drops the zero silently) and a
+# constant width of ten or more, which is where identifiers live.
+#
+# Width is reported because it is the fact the agent needs and the one a sample row used to carry:
+# `digits(16)` says "parse as text, expect sixteen" without showing sixteen of anybody's.
+_ID_DIGIT_WIDTH = 10
+
+
+def _digit_string(vals: list[str]) -> str:
+    """`digits(n)` for a digit column that is an identifier, or "" for one that is a quantity."""
+    if not all(v.isdigit() for v in vals):
+        return ""            # a sign or a space: whatever it is, it is not an id
+    widths = {len(v) for v in vals}
+    leading_zero = any(v[0] == "0" and len(v) > 1 for v in vals)
+    if leading_zero:
+        return f"digits({widths.pop()})" if len(widths) == 1 else "digits"
+    if len(widths) == 1 and widths.copy().pop() >= _ID_DIGIT_WIDTH:
+        return f"digits({widths.pop()})"
+    return ""
+
+
+# Which spelling, not which value. `_DATE_RE` accepts an ISO date and a slash date alike, so `date`
+# alone leaves the agent to guess — and `new Date("3/4/2026")` is March in one hemisphere's reading
+# and April in the other. Naming the pattern costs nothing and is the one fact a sample row was
+# really carrying here.
+def _date_format(vals: list[str]) -> str:
+    if all(_ISO_DATE_RE.match(v) for v in vals):
+        return "YYYY-MM-DD" if len(vals[0]) == 10 else "YYYY-MM-DD hh:mm"
+    return "M/D/Y — ambiguous, confirm before parsing"
 
 
 def _is_bool(v: str) -> bool:

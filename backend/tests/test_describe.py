@@ -318,3 +318,62 @@ def test_a_non_image_is_never_offered_for_inlining(tmp_path: Path):
     p = tmp_path / "data.csv"
     p.write_text("a,b\n1,2\n")
     assert fit_image(str(p), 3 * 1024 * 1024) is None
+
+
+# --------------------------------------------------------------- #250: shape, not rows
+
+def _shape_csv(tmp_path, text: str):
+    p = tmp_path / "t.csv"
+    p.write_text(text)
+    return describe(str(p))
+
+
+def test_a_digit_identifier_is_not_an_integer(tmp_path):
+    """A 16-digit card number came back `int` off a real attachment. Arithmetic on it is
+    meaningless, JavaScript loses its low digits past 2^53, and an agent told `int` has no reason
+    to suspect either. The width is the fact a sample row used to carry, said without one."""
+    d = _shape_csv(tmp_path, "card_number,qty\n4871715921430428,3\n4871715921430429,11\n")
+    assert "card_number: digits(16)" in d["shape"]
+    assert "qty: int" in d["shape"], "a quantity is still a quantity"
+
+
+def test_a_leading_zero_survives_as_a_digit_string(tmp_path):
+    """A US zip is `02134`. Typed `int` the zero is gone and nothing says so."""
+    d = _shape_csv(tmp_path, "billing_zip\n02134\n07030\n")
+    assert "billing_zip: digits(5)" in d["shape"]
+
+
+def test_a_date_says_which_spelling_it_is(tmp_path):
+    """`_DATE_RE` accepts both, and `new Date("3/4/2026")` is March or April depending on who
+    reads it. The spelling is derived; no real date is shown to say it."""
+    iso = _shape_csv(tmp_path, "d\n2026-09-11\n2026-09-12\n")
+    assert "d: date (YYYY-MM-DD)" in iso["shape"]
+    slash = _shape_csv(tmp_path, "d\n3/4/2026\n5/6/2026\n")
+    assert "ambiguous" in slash["shape"]
+
+
+def test_a_vocabulary_that_is_somebody_s_data_is_withheld(tmp_path):
+    """The one part of `shape` that is verbatim content. Low cardinality is not harmless: the
+    manifest cache's own comment records a fixture whose `ssn` column held three values and put
+    all three in the committed file. An enum that is not somebody's data still gets through."""
+    d = _shape_csv(tmp_path, "region,ssn,contact,side\n"
+                       "north,111-22-3333,a@x.com,LONG\n"
+                       "south,444-55-6666,b@x.com,SHORT\n")
+    assert "region: string (north | south)" in d["shape"]
+    assert "side: string (LONG | SHORT)" in d["shape"]
+    assert "ssn: string\n" in d["shape"] + "\n"
+    assert "111-22-3333" not in d["shape"]
+    assert "a@x.com" not in d["shape"]
+
+
+def test_shape_carries_no_row_the_guardrail_would_refuse(tmp_path):
+    """The whole point, measured against the deployed rule set rather than asserted. `detail` is
+    the same file WITH its sample rows, and it is what both mention paths used to inline."""
+    from sage.shim import refusal_scan
+    d = _shape_csv(tmp_path, "name,email,card_number,ssn\n"
+                       "A,a@x.com,4871715921430428,111-22-3333\n"
+                       "B,b@x.com,4871715921430429,444-55-6666\n"
+                       "C,c@x.com,4871715921430430,777-88-9999\n")
+    hit = lambda t: any(p.search(t) for _, p in refusal_scan._PATTERNS)
+    assert hit(d["detail"]), "the fixture has to be poisonous for this test to mean anything"
+    assert not hit(d["shape"])
