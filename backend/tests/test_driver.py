@@ -332,6 +332,22 @@ def test_a_step_that_ends_on_tool_calls_has_not_ended_the_turn():
                              _SID).payload == {"finish": "stop"}
 
 
+def test_a_refused_request_ends_the_session_rather_than_failing_a_step():
+    # The one frame worth reading outside the `session.next.` family. A provider that refuses the
+    # REQUEST — a content filter, an auth error — does not fail a step: it ends the session. Chat
+    # read only the prefixed family, so a gateway guardrail block reached the person as a turn that
+    # said nothing at all.
+    ev = map_session_event(_frame("session.error", error={
+        "name": "ContentFilterError", "data": {"message": "Blocked by guardrail: Block phone numbers"},
+    }), _SID)
+    assert ev.kind == "error"
+    assert ev.payload["error"]["data"]["message"] == "Blocked by guardrail: Block phone numbers"
+    # sessionID is optional on this frame, and /event is global, so an unattributed error could
+    # belong to any session in the container. Dropped rather than blamed on this turn — the
+    # transcript read at the end of the turn picks the message's own error up regardless.
+    assert map_session_event({"id": "e", "type": "session.error", "properties": {}}, _SID) is None
+
+
 def test_the_global_stream_carries_other_sessions_and_housekeeping_and_neither_is_this_turn():
     # /event is process-wide. Without the sessionID filter a Thread would show another Thread's
     # turn; without the type filter it would show plugin and catalog chatter as agent activity.

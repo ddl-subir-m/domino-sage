@@ -102,6 +102,9 @@ class BreakingOpenCode(FakeOpenCode):
         super().__init__(workspace, turns)
         self.orch: Orchestrator | None = None
         self.break_on = set(break_on or ())
+        # What the shim wrote down. Overridable so a test can plant a refusal of a different KIND —
+        # a guardrail block reads nothing like a missing model, and is said differently.
+        self.break_message = "gateway returned 404: Model 'GLM-5.2' not found"
 
     def send_prompt(self, session_id: str, text: str, model: dict | None = None,
                     agent: str | None = None, attachments: list[dict] | None = None,
@@ -109,7 +112,7 @@ class BreakingOpenCode(FakeOpenCode):
         super().send_prompt(session_id, text, model, agent, attachments, chat)
         if self._next in self.break_on and self.orch is not None:
             self.orch.project(start_preview=False).last_gateway_error = {
-                "message": "gateway returned 404: Model 'GLM-5.2' not found",
+                "message": self.break_message,
                 "upstream_status": 404,
             }
 

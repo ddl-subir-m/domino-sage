@@ -95,7 +95,21 @@ def map_session_event(raw: dict, session_id: str) -> AgentEvent | None:
     """
     t = str(raw.get("type") or "")
     props = raw.get("properties") or {}
-    if not t.startswith("session.next.") or props.get("sessionID") != session_id:
+    if props.get("sessionID") != session_id:
+        return None
+    if t == "session.error":
+        # The TURN's own failure, not one step's — and the one frame worth reading outside the
+        # `session.next.` family. A provider that refuses the request rather than the work ends the
+        # session instead of failing a step: ContentFilterError, ProviderAuthError, APIError. A
+        # gateway guardrail block is one of those, and reading only the prefixed family made it
+        # reach the person as silence.
+        #
+        # sessionID is optional on this frame, and a frame without one is dropped by the check
+        # above. That is deliberate: /event is global, so an unattributed error could belong to any
+        # session in the container, and the transcript read at the end of the turn picks up the
+        # message's own `error` anyway.
+        return AgentEvent(kind="error", payload={"error": props.get("error")})
+    if not t.startswith("session.next."):
         return None
 
     if t == "session.next.text.delta":

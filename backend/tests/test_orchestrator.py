@@ -509,7 +509,10 @@ def test_seen_baseline_marks_prior_turn_parts_so_they_dont_echo(tmp_path: Path):
         {"type": "assistant", "id": "a1", "content": [{"type": "text"}, {"type": "tool"}]},
     ]
     seen = orch._seen_baseline(_FakeOC(session), "s1")
-    assert seen == {("a1", 0), ("a1", 1)}  # both parts of the prior assistant message, none of the user msg
+    # Both parts of the prior assistant message, none of the user message — plus that message's own
+    # failure, which is keyed separately because a message refused before it wrote anything has no
+    # parts to be keyed by, and would otherwise be re-read as the NEXT turn's refusal.
+    assert seen == {("a1", 0), ("a1", 1), ("a1", "#error")}
 
 
 def test_seen_baseline_keys_on_part_id_when_one_is_present(tmp_path: Path):
@@ -519,7 +522,8 @@ def test_seen_baseline_keys_on_part_id_when_one_is_present(tmp_path: Path):
     orch = _orch(tmp_path)
     session = [{"type": "assistant", "id": "a1",
                 "content": [{"type": "tool", "id": "prt_1"}, {"type": "text", "id": "prt_2"}]}]
-    assert orch._seen_baseline(_FakeOC(session), "s1") == {("a1", "prt_1"), ("a1", "prt_2")}
+    assert orch._seen_baseline(_FakeOC(session), "s1") == {
+        ("a1", "prt_1"), ("a1", "prt_2"), ("a1", "#error")}
     # ...and the text part is still recognised once the pending tool part ahead of it disappears.
     reindexed = {"type": "assistant", "id": "a1", "content": [{"type": "text", "id": "prt_2"}]}
     assert _part_key(reindexed, 0, reindexed["content"][0]) in orch._seen_baseline(_FakeOC(session), "s1")

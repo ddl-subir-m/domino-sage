@@ -1930,6 +1930,21 @@ def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
     return (m["id"], part.get("id") or i)
 
 
+# The `seen` key for a message's OWN error, which belongs to the message and not to any part of it.
+# A part's key ends in its id (a string) or its index (an int), so this cannot collide with one.
+_MESSAGE_ERROR = "#error"
+
+
+def _message_error_key(m: dict) -> tuple[str, object]:
+    """Identity of an assistant message's failure, for the same emit-once `seen` set as its parts.
+
+    A message that failed before it wrote anything has no parts at all, so the part keys cannot
+    stand in for it: without a key of its own, the previous turn's refusal is re-read on the first
+    poll of the next turn and reported against a question that never failed.
+    """
+    return (m["id"], _MESSAGE_ERROR)
+
+
 class _EventTap:
     """A turn's live event stream, drained by the turn loop without ever blocking it.
 
@@ -7934,6 +7949,11 @@ class Orchestrator:
                        or project.record.path)
             project.active_session_id = sid
             before = snapshot_files(project.record.path)
+            # Cleared here so what is read at the end of this turn belongs to this turn. Every build
+            # entry point already does this; Chat never did, because Chat never read the field —
+            # which is the gap, not the clearing. The turn lock means no other turn is running to
+            # have its error wiped.
+            project.last_gateway_error = None
             seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
             # Resolved against the chat workdir, which is where the agent stands and the only place
             # every path in the prompt resolves: `examples/` and `.sage/scratch/` are the Project's
@@ -8178,9 +8198,35 @@ class Orchestrator:
                     continue
                 pending_text = ""
                 polled_running = False
+                # Whether the LAST assistant message in the transcript carries a failure of its own.
+                # The question `answered` asks is "did anything arrive after this went wrong", and
+                # for the transcript that is the same question as "is the failed message the last
+                # one" — a step that failed and was retried has a later message after it.
+                turn_failed = False
                 for m in msgs:
                     if m.get("type") != "assistant":
                         continue
+                    # The turn's own refusal, which reaches Chat through the transcript and not only
+                    # through the stream. `session.next.step.failed` is one step saying no; a
+                    # provider that refuses the REQUEST ends the session, and that lands here as the
+                    # message's `error` with nothing else in the message at all. Live, a gateway
+                    # guardrail block on an attached CSV did exactly that: no step failed, no text
+                    # arrived, and the turn closed `ok: True` with an empty Thread under it — the
+                    # person was told nothing, by anything, about a policy that had refused them.
+                    #
+                    # Read on every poll, reported on the first: the flag has to say what the
+                    # transcript says NOW, because the poll that sees the failure is rarely the poll
+                    # that ends the turn, and a text part is re-read every time (it is never added
+                    # to `seen`). Keyed off `seen` for the reporting alone.
+                    failure = m.get("error")
+                    turn_failed = bool(failure)
+                    if failure and _message_error_key(m) not in seen:
+                        seen.add(_message_error_key(m))
+                        last_activity = time.monotonic()
+                        raw = _error_raw(failure)
+                        if said := _chat_error_text(failure, mentioned):
+                            step_error, step_reason = said, recall.reason_key(raw)
+                        log.warning("chat: the turn failed — %s", failure)
                     for i, part in enumerate(m.get("content", [])):
                         if not isinstance(part, dict):
                             continue  # OpenCode can emit a bare string part; nothing to key or read
@@ -8236,7 +8282,12 @@ class Orchestrator:
                     # persisted and replayed, so a reload does not bring it back.
                     body = _take_no_build_marker(pending_text)[0] if pending_text else ""
                     if body.strip():
-                        answered = True
+                        # Shown either way — a refused turn's half-answer is still worth reading,
+                        # and the Thread keeps the status line under it. But it is not an ANSWER
+                        # when the message it came from is the one that failed: that is narration
+                        # the model wrote on its way to being refused, and counting it would drop
+                        # the refusal on a `done ok: True`.
+                        answered = not turn_failed
                         ev = {"type": "agent", "kind": "text", "text": body}
                         store.append_history(thread_id, ev)
                         yield ev
@@ -8253,6 +8304,22 @@ class Orchestrator:
                 art_ev = {"type": "artifacts", "items": artifacts}
                 store.append_history(thread_id, art_ev)
                 yield art_ev
+            # The shim's own record of the call that failed, which is the one witness that does not
+            # depend on OpenCode reporting anything. The gateway answers 400, /v1/chat/completions
+            # sees the body and writes it here — before OpenCode has decided whether to call it a
+            # failed step, a dead session or nothing at all. Build has always read this field after
+            # its wait; Chat never did, so a refusal the shim had already written down in full could
+            # still end a Chat turn in silence.
+            #
+            # Only when there is nothing to keep, the same rule the handoff planner uses: an error
+            # the shim recovered from is still recorded, and an answer that came back whole is worth
+            # more than the note of a call that went wrong on the way to it.
+            if not answered and not step_error and project.last_gateway_error is not None:
+                failed = project.last_gateway_error
+                if said := _chat_error_text(failed, mentioned):
+                    step_error = said
+                    step_reason = recall.reason_key(_error_raw(failed))
+                    log.warning("chat: the gateway refused a call this turn — %s", failed)
             done = {"type": "done", "ok": True, "decision": "answered"}
             if step_error and not answered:
                 # The turn ended, and the person has nothing. `done ok:True` with an empty Thread is
@@ -9848,12 +9915,15 @@ class Orchestrator:
         set starts empty for each user turn. Without this baseline, a follow-up turn's first poll
         re-walks the previous turn's completed parts and re-emits them — the prior turn's summary
         reappearing at the top of the new turn (the "ordering" echo). Keys come from _part_key and
-        must match the poll loop in _build_stream. Best-effort: on a poll error we return an empty
+        _message_error_key and must match the poll loop in _build_stream and _chat_stream — a
+        message's failure is baselined as well as its parts, since a message that failed before it
+        wrote anything has no parts. Best-effort: on a poll error we return an empty
         baseline (worst case is the echo, not a broken build) and let the loop retry."""
         seen: set[tuple[str, object]] = set()
         try:
             for m in client.messages(sid, limit=limit) if limit else client.messages(sid):
                 if m.get("type") == "assistant":
+                    seen.add(_message_error_key(m))
                     for i, part in enumerate(m.get("content", [])):
                         seen.add(_part_key(m, i, part))
         except httpx.HTTPError as e:
@@ -10638,6 +10708,10 @@ class Orchestrator:
         # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
         # it re-sends the same turn into a session that heard none of this — so it puts them back.
         first_send_extras = (mention_files, resource_note, chat_note, unusable_note, ambiguous_note)
+        # The files the person named, kept for the whole turn. `mention_files` is emptied after the
+        # first send — the block rides the user's turn and not the nudges — but a refusal can arrive
+        # on any send, and the suspects a guardrail refusal names are the same ones either way.
+        turn_mentions = mention_files
         # (b) Retry budget, measured. One pass of this loop is one send_prompt and everything the
         # agent does before Sage decides whether to nudge it again, so the spans it opens ARE the
         # answer to "how many model turns does a build spend, and where do they go". Named by what
@@ -11017,7 +11091,18 @@ class Orchestrator:
                 if owns_turn:
                     self._turn_gave_up = True
                 restore_mode()
-                message = f"model call failed: {err['message']}"
+                # A guardrail block is said in words here too, for the reason it is said in words
+                # in Chat: the gateway's refusal arrives wrapped in three levels of escaped JSON,
+                # and "model call failed: {the whole nest}" is not a sentence anybody can act on.
+                # Same translation, same wording as Chat — one refusal should not read as two
+                # different products depending on which half of the Workbench met it.
+                #
+                # The mentions are the suspects. A guardrail reads everything the turn carries, and
+                # in Build that is the files the person @-referenced — which is exactly what
+                # `_named_files` wants to name and what `turn_mentions` holds for the whole turn.
+                message = (brand.text("{assistantName} couldn't finish — {reason}", reason=refusal)
+                           if (refusal := _guardrail_sentence(err["message"], turn_mentions))
+                           else f"model call failed: {err['message']}")
                 if owns_turn and is_approval:
                     # The kept plan is invisible: the card's Approve button was spent the moment
                     # this turn started, and what is left on screen is a gateway's 404. Say the one

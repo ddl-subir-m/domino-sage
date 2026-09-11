@@ -47,6 +47,10 @@ class Turn:
     # AttributeError of 2026-09-05 reproduces from this shape). True appends one still-running
     # `write` after this turn's other parts, which is where the live one sat: last, and open.
     broken_write: bool = False
+    # The message's OWN failure, which is where a refusal of the REQUEST lands — a content filter,
+    # an auth error — as opposed to a step's, which arrives on the event stream. Set it to the
+    # OpenCode error shape, `{"name": ..., "data": {"message": ...}}`.
+    error: dict | None = None
 
 
 class FakeOpenCode:
@@ -163,6 +167,8 @@ class FakeOpenCode:
         assistant: dict = {"id": f"m{n}", "type": "assistant", "content": parts}
         if turn.tokens is not None:
             assistant["tokens"] = turn.tokens
+        if turn.error is not None:
+            assistant["error"] = turn.error
         msgs.append(assistant)
 
     def summarize(self, session_id: str, provider_id: str, model_id: str, *, auto: bool = False) -> None:
