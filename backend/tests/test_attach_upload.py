@@ -422,6 +422,40 @@ def test_agents_md_lists_each_attachment_with_a_one_line_shape(tmp_path: Path):
     assert "fetch `data/sales_2026/uploads/q3.csv`" in line
 
 
+def test_the_collapsed_folder_line_admits_the_placeholder_and_opens_the_one_door(tmp_path: Path):
+    """Above the threshold the block stops naming files and hands over a folder plus `<name>`.
+    That is right for the prompt budget and wrong for the agent: grep is banned three lines up and
+    would find nothing anyway (gitignored, symlinked), so the only move left is the listing it is
+    also told not to do. Live, that turn spent itself on five identical `ls -R` calls."""
+    from sage.orchestrator.service import FOLDER_COLLAPSE_THRESHOLD
+
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    ws = orch.project(start_preview=False).workspace.path
+    for i in range(FOLDER_COLLAPSE_THRESHOLD + 1):
+        orch.upload_file(f"part_{i:02d}.csv", b"region,revenue\nwest,10\n")
+
+    line = next(ln for ln in (ws / "AGENTS.md").read_text().splitlines()
+                if ln.startswith(f"- {FOLDER_COLLAPSE_THRESHOLD + 1} files in "))
+
+    assert "`<name>` is a placeholder, not a file name" in line
+    assert "list that folder to read the real names." in line
+    assert "Grep will not find them." in line
+
+
+def test_the_block_says_what_to_do_when_a_path_it_names_does_not_open(tmp_path: Path):
+    """The grep ban is correct and was the whole instruction. A ban with no exit is what turns one
+    wrong path into a ten-minute turn: the agent may not search, may not invent, and was never told
+    that reporting the failure is the right answer."""
+    orch = _orch(tmp_path, assets=FakeAssetProvider())
+    ws = orch.project(start_preview=False).workspace.path
+    orch.upload_file("q3.csv", b"region,revenue\nwest,10\n")
+
+    block = (ws / "AGENTS.md").read_text()
+
+    assert "If a path above does not open, say which one and stop" in block
+    assert "do not run the same look-up again expecting a different answer" in block
+
+
 def test_a_binary_attachment_never_puts_decoded_bytes_in_front_of_the_agent(tmp_path: Path):
     """A PDF used to be utf-8-decoded into the prompt as a 'SCHEMA SAMPLE' of mojibake."""
     orch = _orch(tmp_path, assets=FakeAssetProvider())

@@ -272,6 +272,39 @@ def test_the_chat_workdir_link_survives_a_second_turn(tmp_path: Path):
     assert (work / rel).read_text() == "a\n1\n"
 
 
+def test_the_chat_workdir_link_follows_the_app_it_points_at(tmp_path: Path):
+    """A Project holds many apps, and Chat borrows `public/data/` from whichever one is selected.
+    A link left on the first app makes every `public/data/...` path in the prompt resolve into the
+    wrong app — the file is on disk, the rail shows it, and the agent is told to read a path that
+    holds nothing. It then cannot search for a substitute either, so it never gets out."""
+    one = tmp_path / "apps" / "app_one" / "public" / "data"
+    two = tmp_path / "apps" / "app_two" / "public" / "data"
+    (one / "ds" / "uploads").mkdir(parents=True)
+    (one / "ds" / "uploads" / "old.csv").write_text("a\n1\n")
+    (two / "ds" / "uploads").mkdir(parents=True)
+    (two / "ds" / "uploads" / "new.csv").write_text("b\n2\n")
+
+    ensure_chat_workdir(tmp_path, "# chat", data_dir=one)
+    work = ensure_chat_workdir(tmp_path, "# chat", data_dir=two)
+
+    assert (work / "public" / "data").resolve() == two.resolve()
+    assert (work / "public/data/ds/uploads/new.csv").read_text() == "b\n2\n"
+    assert not (work / "public/data/ds/uploads/old.csv").exists()
+
+
+def test_the_chat_workdir_never_replaces_a_real_data_directory(tmp_path: Path):
+    """Only a symlink is ours to re-point. Unlinking a directory here would delete whatever a
+    person had put in it, which is a far worse failure than the stale link this guards."""
+    work = tmp_path / ".sage" / "chat-work"
+    (work / "public" / "data").mkdir(parents=True)
+    (work / "public" / "data" / "theirs.csv").write_text("kept\n")
+
+    ensure_chat_workdir(tmp_path, "# chat", data_dir=tmp_path / "apps" / "app_one" / "public" / "data")
+
+    assert (work / "public" / "data" / "theirs.csv").read_text() == "kept\n"
+    assert not (work / "public" / "data").is_symlink()
+
+
 # ---- one record per Thread (#64) -------------------------------------------------
 
 

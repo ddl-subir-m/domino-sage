@@ -1303,6 +1303,58 @@ def _describe_context_file(workspace: Path, item: dict) -> str:
     return str(d.get("shape") or d.get("summary") or "").strip()
 
 
+def _context_folder_state(workspace: Path, item: dict) -> str:
+    """What a Dataset chip's folder holds, in one sentence, named.
+
+    A chip that gives a folder and no names asks for something the agent cannot do. It is told to
+    read those files, told not to grep (`public/data/` is gitignored and every attachment is a
+    symlink, so a search returns no matches even when the value is there) and told not to search
+    elsewhere for a substitute. Listing the folder is the only door left, so it lists — and when the
+    folder is missing or empty, nothing it is allowed to do next can help. It lists again. That is
+    the loop this exists to close: name the files, or say plainly that there are none to name.
+
+    Four states, one of which is always true, so the sentence is never silent. Capped at
+    FOLDER_COLLAPSE_THRESHOLD for the reason that constant already gives: per-file lines are right
+    for five files and ruinous for two hundred, on every turn, forever.
+
+    A name with nothing behind it is its own state. A rehydrate can leave the symlinks dangling, so
+    a folder can hold entries that all refuse to open — reporting that as "no files" would send the
+    person looking for an attachment they already made.
+    """
+    path = str(item.get("path") or "")
+    if not path:
+        return ""
+    try:
+        root = _safe_join(workspace, path)
+        if not root.is_dir():
+            raise FileNotFoundError(path)
+        entries = sorted(p for p in root.rglob("*") if p.is_file() or p.is_symlink())
+    except (ValueError, OSError, TypeError):
+        return brand.text(
+            "{assistantName} cannot read that folder from where it is working, so the files in it "
+            "cannot be opened this turn. Tell the person that, and name the path. Do not read "
+            "anything else in its place."
+        )
+    readable = [e for e in entries if e.is_file()]
+    if not entries:
+        return brand.text(
+            "That folder holds no files, so there is nothing to read from this {dataset} this "
+            "turn. Tell the person that. Do not read anything else in its place."
+        )
+    if not readable:
+        return brand.text(
+            "That folder names {n} file(s) and not one of them opens. Tell the person that, and "
+            "name the path. Do not read anything else in its place.",
+            n=str(len(entries)),
+        )
+    names = [e.relative_to(root).as_posix() for e in readable]
+    shown = ", ".join(f"`{n}`" for n in names[:FOLDER_COLLAPSE_THRESHOLD])
+    rest = len(names) - FOLDER_COLLAPSE_THRESHOLD
+    if rest > 0:
+        return f"Read these files: {shown}, and {rest} more in that folder — list it for the rest."
+    return f"Read these files: {shown}."
+
+
 def _safe_join(root: Path, rel: str) -> Path:
     """Join rel under root, rejecting anything that escapes it (.., absolute). Resolves the escape
     check LEXICALLY (os.path.normpath) so it doesn't follow the attached symlink at the leaf —
@@ -2317,7 +2369,7 @@ def _at_token_hits(token: str, name: str, path: str) -> bool:
     return t in names or t in stems
 
 
-def _chat_context_line(item: dict, *, file_note: str = "") -> str:
+def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = "") -> str:
     """One Session-context row for sage-chat: identity, and how its contents can be reached.
 
     A Dataset without a mount is still readable — through the Domino data library, which is how
@@ -2346,10 +2398,14 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
         # (ADR-0014). A Dataset somebody called `{dataset}` therefore comes through as they wrote it.
         if path:
             return brand.text(
-                "- {dataset} {name}{where}, files at {path}. Read those files. "
+                "- {dataset} {name}{where}, files at {path}. {state} "
                 "This chip does not put them in an app; Attach folder on this {dataset} is that act. "
-                "Do not search the rest of this workspace for a substitute.",
+                "Do not search the rest of this workspace for a substitute: if the path above does "
+                "not open, say so and name it, and stop.",
                 name=name, where=where, path=path,
+                # Falls back to the old sentence when no workspace was given to look in, which is
+                # the one case where naming files would be a guess.
+                state=folder_note or "Read those files.",
             )
         unique = _dataset_unique_name(item, name)
         if not unique:
@@ -2401,7 +2457,8 @@ def _chat_context_line(item: dict, *, file_note: str = "") -> str:
             return f"{line}.\n{file_note}" if "\n" in file_note else f"{line}. {file_note}"
         if path:
             return (
-                f"{line}. Read that file. Do not search the rest of this workspace for a substitute."
+                f"{line}. Read that file. Do not search the rest of this workspace for a "
+                f"substitute: if it does not open, say so and name it, and stop."
             )
         return line
     if kind in ("data_source", "datasource"):
@@ -7631,10 +7688,15 @@ class Orchestrator:
         if items or urls:
             lines.append("Session context:")
             for it in items:
-                note = ""
-                if workspace is not None and str(it.get("kind") or "") in ("file", "artifact"):
+                note = folder = ""
+                kind = str(it.get("kind") or "")
+                if workspace is not None and kind in ("file", "artifact"):
                     note = _describe_context_file(workspace, it)
-                lines.append(_chat_context_line(it, file_note=note))
+                elif workspace is not None and kind == "dataset":
+                    # A Dataset chip names a FOLDER, so the file describer cannot answer for it —
+                    # `describe()` on a directory says "Is a directory", which is true and useless.
+                    folder = _context_folder_state(workspace, it)
+                lines.append(_chat_context_line(it, file_note=note, folder_note=folder))
             for url in urls:
                 lines.append(
                     f"- URL {url}. Read this page and answer from what it contains. "
@@ -7661,7 +7723,10 @@ class Orchestrator:
             f".table.json at examples/{thread_id}/. A matrix is a heatmap PNG plus the table. "
             "Never tell the user whether a chart or table was needed. "
             "That folder already exists, not a React file, not src/. Write the file there; "
-            "do not list directories. "
+            # Scoped, because unscoped it was read as a blanket ban. It was only ever about hunting
+            # for the OUTPUT folder — the next clause says the same thing about the input side — and
+            # a Dataset chip names a folder whose files can be learned no other way.
+            "do not list directories to find where to write. "
             "@name in the user's message is the file listed above; read that path."
         )
         # Put on the turn rather than only in AGENTS.md, and last, because that is where it holds:
@@ -15666,6 +15731,17 @@ class Orchestrator:
                 f"- {len(entries)} files in `{folder}` — {shape} "
                 f"— fetch `{folder.removeprefix('public/')}/{leaf}` (relative to base) "
                 f"— from dataset **{'**, **'.join(sources)}**"
+                # The collapse is right (per-file lines grow with file count, forever) but it leaves
+                # the agent holding a folder and a placeholder. Grep is banned three lines up and
+                # would find nothing anyway, so without this sentence the only move left is to list
+                # the folder while being told not to — which is how a turn spends itself on five
+                # identical `ls -R` calls. Name the one listing that IS wanted.
+                f" — `{leaf}` is a placeholder, not a file name: list that folder to read the real "
+                + ("names. " if leaf == "<name>" else
+                   # The roll-up put this line's folder a level ABOVE where the files are, so a
+                   # listing that does not go down finds directories and no data.
+                   "paths — the files sit BELOW it, so list it deeply. ")
+                + "Grep will not find them."
             )
         return lines
 
@@ -15722,7 +15798,9 @@ class Orchestrator:
                 ("To look INSIDE one of these files, use the read tool on its exact disk path. Do NOT "
                  "use grep/search: `public/data/` is gitignored and each file is a symlink, so search "
                  "skips them and returns no matches even when the value IS present. A search that "
-                 "finds nothing here proves nothing — read the file instead."), "",
+                 "finds nothing here proves nothing — read the file instead. If a path above does "
+                 "not open, say which one and stop: do not search for a substitute, and do not run "
+                 "the same look-up again expecting a different answer."), "",
             ]
             lines += self._attached_data_lines(project)
         # Belt and braces (ADR-0039). The card that asks which files to attach can be skipped,

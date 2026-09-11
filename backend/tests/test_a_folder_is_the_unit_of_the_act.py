@@ -300,9 +300,14 @@ def test_a_folder_partitioned_to_the_day_still_collapses(tmp_path: Path):
     # are, and `raw/2026/part.csv` does not exist. An agent following that pattern would get the SPA
     # fallback instead of the CSV and "fix" it by copying the file into `src/` — the leak this block
     # exists to prevent.
+    # The same roll-up decides how the line tells the agent to find the names it was not given
+    # (ADR-0047): a listing that stops at this folder finds directories and no data.
     assert block == [("- 24 files in `public/data/sales_2026/raw/2026` — CSV — 2 columns, 1 rows "
                      "— fetch `data/sales_2026/raw/2026/<subpath>` (relative to base) "
-                     "— from dataset **sales_2026**")]
+                     "— from dataset **sales_2026**"
+                     " — `<subpath>` is a placeholder, not a file name: list that folder to read "
+                     "the real paths — the files sit BELOW it, so list it deeply. Grep will not "
+                     "find them.")]
 
 
 def test_a_folder_whose_files_really_are_in_it_still_says_name(tmp_path: Path):

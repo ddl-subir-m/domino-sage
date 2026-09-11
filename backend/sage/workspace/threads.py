@@ -737,8 +737,23 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
 
 
 def _ensure_dir_link(link: Path, target: Path) -> None:
+    """Point `link` at `target`, re-pointing one that stands somewhere else.
+
+    Re-pointing is the whole reason this is not a one-line `symlink_to`. `target` changes when the
+    Project's selected app changes — a Project holds many (ADR-0008) — and a link left on the first
+    app's tree makes every `public/data/...` path in the prompt resolve into a DIFFERENT app. The
+    file is on the mount, the rail draws it, and the agent cannot open it: it is told to read a path,
+    told not to search for a substitute, and finds nothing there. That is a loop, not an error.
+
+    A real directory is left alone. Only a symlink is ours to replace; unlinking a directory here
+    would delete whatever a person had put in it.
+    """
     target.mkdir(parents=True, exist_ok=True)
-    if link.is_symlink() or link.exists():
+    if link.is_symlink():
+        if link.resolve() == target.resolve():
+            return
+        link.unlink()
+    elif link.exists():
         return
     link.symlink_to(Path(os.path.relpath(target, link.parent)), target_is_directory=True)
 
