@@ -1310,6 +1310,13 @@ window.SW = window.SW || {};
             // Carried so a table that still recovers nothing can hand over the file instead of
             // painting the blank box that started this.
             path,
+            // What a table whose Project does not keep rows has left: how many were read and when
+            // (ADR-0045). `keptRows: false` is written by the pass that emptied the file, so it
+            // tells that table apart from a frame that really was empty — the two want opposite
+            // sentences, and only one of them is worth offering the file for.
+            keptRows: data.keptRows,
+            rowCount: typeof data.rowCount === 'number' ? data.rowCount : null,
+            readAt: data.readAt || null,
             columns,
             rows: source.map((row) =>
               Array.isArray(row) ? row : columns.map((name) => tableRecordCell(row, name))),

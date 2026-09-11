@@ -13,6 +13,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -802,6 +803,61 @@ def revert_denied_writes(root: Path, thread_id: str, before: dict[str, bytes]) -
             path.write_bytes(prev)
             reverted.append(rel)
     return reverted
+
+
+def withhold_table_rows(root: Path, thread_id: str, before: dict[str, bytes], *,
+                        kept_rows: bool) -> list[str]:
+    """Rewrite each `.table.json` this turn wrote so it commits its shape and not its rows.
+
+    ADR-0045 first put this in the shim, and the shim cannot hold it: `shim.chat_paths` is pure and
+    reads the tool calls of the NEXT request, by which time the file is on disk — its own docstring
+    says a denied write "is not reverted on disk, it still landed". `revert_denied_writes` is the
+    seam that does fix up a turn's writes, so this is its sibling and runs beside it. It also holds
+    where the shim could not: a table written by a heredoc in the agent's shell passes no write tool
+    and is on disk all the same, and a pass over the tree finds it either way.
+
+    `before` means what it means there — this turn's writes. A table from an earlier turn was
+    already decided under whatever answer the Project gave then, and re-deciding it now would
+    rewrite a Conversation nobody had opened.
+
+    It takes every `.table.json` the turn left behind and not only the ones the model composed,
+    because ADR-0045 is one rule over every writer and an exemption here would be a hole with a
+    Live read's name on it.
+
+    It is called from Chat's two turn ends, and that is not yet every turn end: a Live read inside
+    a BUILD turn writes under `examples/<conversation>/` too, and the scan there records those
+    Artifacts without passing them through here. That half is #254's, along with what the receipt
+    hands the assistant and what Read again puts on the card without touching disk.
+    """
+    from . import table_shape
+
+    if kept_rows:
+        return []
+    rewritten: list[str] = []
+    root = Path(root)
+    thread_dir = root / "examples" / safe_id(thread_id, "thread id")
+    if not thread_dir.is_dir():
+        return rewritten
+    for path in sorted(thread_dir.rglob(f"*{table_shape.SUFFIX}")):
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if before.get(rel) == raw:
+            continue
+        # When the turn wrote it, not when this pass ran. The card's sentence is about the age of
+        # the data, and the two dates part company on a turn that ran for minutes.
+        read_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
+        try:
+            body = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            kept = table_shape.unreadable(read_at)
+        else:
+            kept = table_shape.shape_only(body, read_at=read_at)
+        path.write_text(json.dumps(kept, indent=2, default=str) + "\n")
+        rewritten.append(rel)
+    return rewritten
 
 
 # What a single Chat Artifact may weigh and still belong in a commit. A matplotlib PNG at the dpi

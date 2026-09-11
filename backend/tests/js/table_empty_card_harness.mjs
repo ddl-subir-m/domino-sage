@@ -51,6 +51,12 @@ for (const f of ['util.js', 'api.js', 'prefs.js', 'store.js', 'components/messag
 }
 const SW = sandbox.SW;
 
+// The Project's CURRENT answer, which is not the same fact as the one in the file and is read from
+// the store rather than from the block (ADR-0045). Off unless a test says otherwise, which is the
+// state every other test here is written against. An env var rather than a second field on stdin:
+// the input to this harness is one block, and its sibling test file depends on that.
+if (process.env.KEPT_ROWS === '1') SW.store.set({ keptRows: { on: true, destination: '' } });
+
 function* walk(node) {
   if (!node || typeof node !== 'object') return;
   if (Array.isArray(node)) { for (const c of node) yield* walk(c); return; }

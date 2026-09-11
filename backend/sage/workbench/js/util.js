@@ -899,6 +899,22 @@ window.SW = window.SW || {};
       return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     },
 
+    // The as-of date of a piece of DATA, which is not the same thing as the time of an event and so
+    // is deliberately not `relativeTime`. Three differences, and each one is a bug that was there:
+    // `relativeTime` reads `Date.now()` on every render, so a transcript left open overnight
+    // silently re-dates a read that never moved (#217, in the app switcher); its absolute fallback
+    // renders in the viewer's zone, so a read at 01:00Z dates to the day before for anyone west of
+    // UTC, while the stamp is written in UTC; and a provenance line reads as a date rather than as
+    // "2 hours ago" — ADR-0045's card says *Read 10 September 2026* for that reason. `''` rather
+    // than `Invalid Date` because the value is read out of a file, and a file can hold anything.
+    longDate(iso) {
+      if (!iso) return '';
+      const then = new Date(iso);
+      if (Number.isNaN(then.getTime())) return '';
+      return then.toLocaleDateString(
+        'en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+    },
+
     isoDaysAgo(days) {
       const d = new Date(TODAY);
       d.setDate(d.getDate() - days);

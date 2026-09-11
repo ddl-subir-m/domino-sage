@@ -231,8 +231,57 @@ window.SW = window.SW || {};
     return { names, width };
   }
 
+  // What a table says when its Project does not keep data rows (ADR-0045): the columns, how many
+  // rows were read, and when. A receipt rather than a grid — the rows are not late, they are not
+  // coming, and "No data" over a correct title would send someone looking for a fault.
+  function tableReceiptLines(block) {
+    const lines = [];
+    if (block.columns.length) lines.push(block.columns.join(', '));
+    // `longDate`, not `relativeTime`: this stamp is the age of the DATA, and the reasons it must
+    // not drift with the clock or with the viewer's zone are written where that helper is.
+    const count = `${SW.util.number(block.rowCount)} ${block.rowCount === 1 ? 'row' : 'rows'}`;
+    const when = SW.util.longDate(block.readAt);
+    lines.push(when ? `${count}, read ${when}` : `${count} read`);
+    // Named as the switch is labelled, and where it is: a person reading this card is one setting
+    // away from the rows, and "Kept rows" is what the decision is called rather than what the
+    // control says. Not said over a frame that was empty — nothing was withheld from that one, and
+    // an offer to turn rows on would not bring any back.
+    //
+    // Nor said once the setting IS on. `keptRows` on the block is read off the FILE and records
+    // what that file holds, which is the right thing for it to record: an Artifact written before
+    // the switch was flipped still holds no rows, and repairing it later would be writing rows
+    // nobody asked anyone to write. But the instruction is in the present tense and about the
+    // Project, so after the flip it tells somebody to switch on a thing they already switched on.
+    const on = ((SW.store.get() || {}).keptRows || {}).on;
+    if (block.rowCount > 0 && !on) {
+      lines.push(SW.brand.text(
+        'Rows aren\'t kept in this {project}\'s files. To keep them, switch on "Keep data rows" '
+        + 'in Add people.'));
+    }
+    return lines;
+  }
+
+  // A table whose rows this Project does not keep, told apart from one the recovery ladder could
+  // not read. Both arrive with no rows; only this one knows how many there were, and the other
+  // needs the older card underneath — the one that offers the file rather than naming a count it
+  // never had.
+  const isTableReceipt = (block) =>
+    block.keptRows === false && !block.rows.length && block.rowCount != null;
+
   function TableBlock({ block }) {
     const [showAll, setShowAll] = useState(false);
+    if (isTableReceipt(block)) {
+      return h(
+        'div',
+        { className: 'sw-block-card' },
+        block.title &&
+          h('div', { className: 'sw-block-head' },
+            h('div', { className: 'sw-block-title' }, block.title)),
+        h('div', { className: 'sw-block-body' },
+          ...tableReceiptLines(block).map((line) =>
+            h('div', { className: 'sw-block-sub' }, line)))
+      );
+    }
     // With neither columns nor rows, antd paints a bordered box under the title and nothing
     // else — it reads as a rendering fault, and it names neither what is missing nor anything
     // to do about it. Two of these arrived under a correct "Adverse Events Summary" title. The
@@ -1705,6 +1754,11 @@ window.SW = window.SW || {};
         if (b.type === 'code') return `\`\`\`${b.language || ''}\n${b.value}\n\`\`\``;
         if (b.type === 'table') {
           const cell = (v) => String(v ?? '').replace(/\|/g, '\\|');
+          // The same sentences the card shows. Pasting "(no rows)" for a table whose rows the
+          // Project declined to keep would report an empty read, which is not what happened.
+          if (isTableReceipt(b)) {
+            return [b.title, ...tableReceiptLines(b)].filter(Boolean).join('\n');
+          }
           // The card says this in words; a pasted `|  |` over `|  |` says it in a syntax that
           // renders as an empty table wherever it lands, which is how this reached a bug report.
           if (!b.columns.length && !b.rows.length) {
