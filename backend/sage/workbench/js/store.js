@@ -1206,6 +1206,22 @@ window.SW = window.SW || {};
   // orients are transposes of each other: columns names the frame's columns at the top level
   // with the row index inside; index names the row index at the top level with column names
   // inside. Numeric-looking keys pick which is which; a date index is columns-orient too.
+  // Every key a shape-only `.table.json` carries, and none of them is a column. The same list as
+  // `workspace/table_shape.py:_KEYS`, in the same order, and a test pins them to each other — kept
+  // equal by convention, the next key added there reads as data here while the Python stays green.
+  const RECEIPT_KEYS = ['title', 'columns', 'rows', 'rowCount', 'readAt', 'keptRows',
+                        'cap', 'truncated', 'statement', 'source'];
+
+  // Stripped only where `keptRows` says this file is a receipt, for the reason `table_shape`
+  // uses it: nothing else writes that key. A frame really can have a column called `title` or
+  // `source`, and dropping those out of somebody's data to protect a file that is not a receipt
+  // is the blank box this ladder exists to prevent.
+  function receiptFreeWrapper(wrapper) {
+    if (!wrapper || wrapper.keptRows !== false) return wrapper;
+    return Object.fromEntries(
+      Object.entries(wrapper).filter(([k]) => !RECEIPT_KEYS.includes(k)));
+  }
+
   function pandasOrientedTable(obj) {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
     const entries = Object.entries(obj).filter(([, v]) => tableSeriesOfScalars(v));
@@ -1304,7 +1320,13 @@ window.SW = window.SW || {};
             // both fell through to the blank box with a correct title still sitting above it.
             // The wrapper itself is tried first because that is the plain dump; the rest are the
             // keys a wrapper would have used.
-            const dump = [wrapper, wrapper.data, wrapper.rows, wrapper.records]
+            //
+            // A receipt's own keys come off the wrapper before the guess runs. `source` is a small
+            // object of strings and numbers, which is the very shape this is looking for, so a card
+            // that recorded which read made it read back as a one-row table headed with the names
+            // of its own metadata (#256). Only at this level — a frame really can have a column
+            // called `title`, and under `data` that is what it means.
+            const dump = [receiptFreeWrapper(wrapper), wrapper.data, wrapper.rows, wrapper.records]
               .map((o) => pandasOrientedTable(o)).find(Boolean);
             if (dump) {
               columns = dump.columns;
@@ -1324,6 +1346,13 @@ window.SW = window.SW || {};
             keptRows: data.keptRows,
             rowCount: typeof data.rowCount === 'number' ? data.rowCount : null,
             readAt: data.readAt || null,
+            // Which read made this file, so the card can run it again as whoever is looking at it
+            // (#256). Only a Live read through a Binding writes one, which is what keeps the
+            // button off a table the Chat agent composed — re-reading that one's source hands back
+            // the file, not the table (#258). Carried whole and never read here: the card posts it
+            // back verbatim, and the server is what makes sense of it.
+            source: data.source && typeof data.source === 'object' && !Array.isArray(data.source)
+              ? data.source : null,
             // Only a Live read knows this: it stopped at a LIMIT and there is more behind it
             // (ADR-0029 — truncation is a fact the caller reads, not a silence). Without it a read
             // cut at the cap renders "500 rows" and reads as the whole table, which is the wrong

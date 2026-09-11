@@ -20,13 +20,14 @@ SUFFIX = ".table.json"
 # the shapes below put values under `data`, under `records`, and under the frame's own column names
 # at the top level — a blacklist would have to name each one, and would miss the next.
 #
-# The last three are optional and belong to a writer that already knew them: ADR-0045's table names
-# `cap`, `truncated` and the statement among what a Live read Artifact commits, so a whitelist that
-# dropped them made this pass shrink a file that was already correct. Each is type-guarded on the
-# way through (`_carried`), which is what keeps an optional key from becoming a way to smuggle
-# values back in under a name the rule allows.
+# The last four are optional and belong to a writer that already knew them: ADR-0045's table names
+# `cap`, `truncated` and the statement among what a Live read Artifact commits, and `source` is what
+# a viewer reads that table again through (#256), so a whitelist that dropped them made this pass
+# shrink a file that was already correct. Each is type-guarded on the way through (`_carried`),
+# which is what keeps an optional key from becoming a way to smuggle values back in under a name the
+# rule allows.
 _KEYS = ("title", "columns", "rows", "rowCount", "readAt", "keptRows",
-         "cap", "truncated", "statement")
+         "cap", "truncated", "statement", "source")
 
 
 def shape_only(body: Any, *, read_at: str) -> dict:
@@ -80,6 +81,38 @@ def _carried(body: Any) -> dict:
     statement = body.get("statement")
     if isinstance(statement, str) and statement.endswith(".sql"):
         out["statement"] = statement
+    source = _source(body.get("source"))
+    if source:
+        out["source"] = source
+    return out
+
+
+# What a `source` may name, and nothing else. A nested object is the one shape on this whitelist
+# that could hold a whole row under a key nobody checks, so it gets a whitelist of its own rather
+# than riding in whole on the strength of its name.
+_SOURCE_KEYS = {"kind": str, "binding": str, "table": str, "database": str, "schema": str,
+                "path": str, "limit": int}
+
+
+def _source(raw: Any) -> dict:
+    """Which read produced this table, so a different viewer can run it again (#256).
+
+    An identifier, never a value: a Binding id and a table name, or a Binding id and a path inside
+    a Dataset. That is why it is allowed past a rule whose whole job is keeping values out of a
+    committed file, and why each field is type-checked on the way through like every other optional
+    key here.
+
+    `kind`, `binding` and a target are all required, because a card reads them together: `kind` says
+    which read to run, the Binding is what a viewer runs it through, and the table or path is what
+    it reads. Half a record is worse than none — it puts a **Read again** button on a card whose
+    press can only come back with a failure (#258).
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out = {k: raw[k] for k, want in _SOURCE_KEYS.items()
+           if k in raw and isinstance(raw[k], want) and not isinstance(raw[k], bool)}
+    if not out.get("kind") or not out.get("binding") or not (out.get("table") or out.get("path")):
+        return {}
     return out
 
 
@@ -144,12 +177,28 @@ def columns_and_count(body: Any) -> tuple[list[str], int]:
         # No array anywhere, which is every `to_json` orient that keeps no list: the rows are the
         # dict's own values. The wrapper is tried first because that is the plain dump, then the
         # keys a wrapper would have used.
-        for candidate in (wrapper, wrapper.get("data"), wrapper.get("rows"),
-                          wrapper.get("records")):
+        #
+        # A RECEIPT's own keys come off the wrapper first, and only a receipt's. `source` is a small
+        # object of strings and numbers, which is exactly the shape this guess is looking for, so a
+        # receipt that carries one read back as a one-row table with a column called `source`
+        # (#256) — a card headed with the names of its own metadata.
+        #
+        # Stripped only where `keptRows` says this file came through here, for the reason
+        # `_is_receipt` uses it: nothing else writes that key. A frame really can have a column
+        # called `title` or `source`, and dropping those out of somebody's data to protect a file
+        # that is not a receipt is the blank box this whole ladder exists to prevent.
+        for candidate in (_without_receipt_keys(wrapper),
+                          wrapper.get("data"), wrapper.get("rows"), wrapper.get("records")):
             dump = _pandas_oriented(candidate)
             if dump:
                 return dump
     return columns, len(source)
+
+
+def _without_receipt_keys(wrapper: dict) -> dict:
+    """The wrapper with the receipt's own keys removed, where it is a receipt at all."""
+    return ({k: v for k, v in wrapper.items() if k not in _KEYS}
+            if _is_receipt(wrapper) else wrapper)
 
 
 def _column_name(value: Any) -> str:

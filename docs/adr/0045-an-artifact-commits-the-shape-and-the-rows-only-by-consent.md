@@ -193,6 +193,57 @@ Re-reading on demand rather than on open is also what keeps the cost sane. ADR-0
 Live read is not cached across turns, on purpose. Re-rendering on open would mean a warehouse
 query every time a card scrolls into view.
 
+## What the card writes down, so somebody else can read it again
+
+The receipt had the shape of a table and no way to say which source produced it. `statement` is a
+path to a committed `.sql` sibling, which gives the SQL and not the store to run it against — a
+Project holds many — and a file head writes no statement at all.
+
+So the receipt carries a `source`: a **Binding id**, and either a table name or a path inside a
+Dataset. The Binding is the Project's rather than the reader's, which is what makes it enough for a
+**different** viewer — it resolves against the Bindings as they stand when they press, so a read the
+author could make and this viewer cannot is refused on the line the agent would have been refused
+on.
+
+It is an **identifier and never a value**, which is the only reason it is allowed past a whitelist
+whose whole job is keeping values out of a committed file. `table_shape` re-checks every field of it
+on the way in, because a nested object is the one key on that list that could otherwise carry a row
+under a name the rule allows.
+
+A table's **database and schema are written as levels**, never folded into its name. A dotted name
+can carry both or neither, and "neither" sends the press back down the ladder to the Binding's
+recorded position — so a read the model aimed at `MARTS.CALLS`, in a store whose Binding records
+`SALES`, would come back on the press as `SALES.CALLS`: a different table's rows, under this card's
+title, called today's. A level that was genuinely empty is still written as nothing and the press
+takes the Binding's answer for it, which is the ladder the agent's own read climbs; what must not
+happen is a level that WAS known being replaced by another.
+
+No Binding, no record, and no button (#258). A read reached through a Session chip alone is
+something this Conversation is looking at rather than something the Project holds, and a table the
+Chat agent composed is not a read at all — re-reading its source hands back the file, not the table.
+
+**The stamp does not move.** It goes on saying when the *file* was read, and a second line under the
+fresh rows says when *those* were. The two are two facts: the file is durable and the rows are not,
+so a stamp that updated to today would claim a freshness the card loses on the next reload.
+
+**A press is not a turn**, which is why "the rows never touch disk" has to stay literal here rather
+than lean on the guards around it. Two things keep rows out of a committed Artifact: `result.record`
+strips them for every caller, and an end-of-turn sweep empties `examples/<thread>/**/*.table.json`.
+Only the first would cover a button, because the sweep is wired into the Chat turn path and a press
+is nobody's turn. So anything on this path that ever does write must go through `result.record`; a
+fresh write path here would have no guard on either side.
+
+The same shift caught a guard that had been adequate until this ticket. A file read resolves its path
+inside the Dataset's mount, and the check was a string prefix — which held while the only writer of
+that path was the model, through a tool whose arguments an agent composes. The button hands the same
+string to the same function **from a request body**, and mounts are siblings under one parent, so
+`../sales-private/rows.csv` out of `/mnt/data/sales` read the Dataset next door. Nothing about the
+guard changed; what changed is who can reach it.
+
+That is the general shape to watch for when a control gets a route: a check sized for the callers it
+had. Both sides are resolved now, so a symlink planted inside the mount fails it too — `examples` is
+linked into every app, so planted symlinks are not hypothetical here.
+
 ## Considered options
 
 **Keep committing, and tell the person.** Rejected as the whole answer, kept as the opt-in. It is

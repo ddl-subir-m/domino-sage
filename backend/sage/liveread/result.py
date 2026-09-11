@@ -42,6 +42,15 @@ CAP_ROWS = 500
 VALUES_BUDGET_CHARS = 8000
 
 
+def stamp() -> str:
+    """When a read happened, in UTC, in the one format the card parses.
+
+    Shared with **Read again** (#256) so the two cannot drift into writing different stamps for the
+    same fact.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 @dataclass(frozen=True)
 class Receipt:
     """What the assistant is told about a Live read. Never the rows, unless `values` was earned.
@@ -87,6 +96,7 @@ def record(
     table: str = "",
     shared: tuple[tuple[str, str], ...] = (),
     keep_rows: bool = False,
+    source: dict | None = None,
 ) -> Receipt:
     """Write the Artifact for one Live read and return what the assistant may be told about it.
 
@@ -97,6 +107,11 @@ def record(
     `keep_rows` is the Project's answer (ADR-0045), and it defaults to the safe one. A writer added
     later that forgets to ask therefore commits a shape rather than somebody's address — the same
     reason `values` can only be filled by `grant.values_allowed` and by nothing else.
+
+    `source` is which read made this file, and it is written only where the rows were NOT kept. A
+    card holding its rows has its answer already; the one that does not is the card that needs a
+    way to ask again (#256). It is handed to `shape_only` like the rest, so one module decides what
+    an Artifact with no rows keeps, and that module re-checks every field of it.
     """
     examples_dir.mkdir(parents=True, exist_ok=True)
     kept = list(rows[:cap])
@@ -124,8 +139,9 @@ def record(
         body.update({"cap": cap, "truncated": short})
         if statement_path:
             body["statement"] = statement_path
-        body = table_shape.shape_only(
-            body, read_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        if source:
+            body["source"] = source
+        body = table_shape.shape_only(body, read_at=stamp())
     (examples_dir / name).write_text(json.dumps(body, indent=2, default=str) + "\n")
 
     return Receipt(

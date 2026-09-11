@@ -47,7 +47,10 @@ class Turn:
     bound: dict[str, tuple[str, ...]] = field(default_factory=dict)
     chips: dict[str, tuple[str, ...]] = field(default_factory=dict)
     shared: tuple[tuple[str, str], ...] = ()
-    binding_for: dict[str, str] = field(default_factory=dict)
+    # The Binding id behind each name, keyed by kind for the reason `bound` is: a Dataset called DWH
+    # and a Data Source called DWH are two Bindings, and a card that named the wrong one would send
+    # a **Read again** into the wrong store (#256).
+    binding_for: dict[tuple[str, str], str] = field(default_factory=dict)
     # Where a table already sits, so a read does not have to ask the model to say it again. Keyed
     # (Data Source, table), with (Data Source, "") holding that store's last recorded position.
     scope_for: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)
@@ -170,20 +173,29 @@ def _split_qualified(table: str) -> tuple[str, str, str]:
     return parts[0], parts[1], parts[2]
 
 
-def _table(args: dict, turn: Turn) -> str:
+@dataclass(frozen=True)
+class Read:
+    """What one read came back with, before anything is written down or said out loud.
+
+    `refused` is the sentence the person is owed, and it is the only failure shape here: a caller
+    handed a bare failure invents a reason for it, which is the transcript ADR-0041 opens with.
+    Exactly one of `refused` and the rows means anything.
+    """
+
+    columns: list[str] = field(default_factory=list)
+    rows: list[list] = field(default_factory=list)
+    truncated: bool = False
+    refused: str = ""
+
+
+def _scoped(args: dict, turn: Turn) -> tuple[str, str, str, str, int]:
+    """Which store, which levels, which table and how many rows one table read means.
+
+    Its own function because **Read again** resolves the same way the agent did (#256): a card that
+    recorded a bare table name gets the Binding's recorded position back, and one that recorded the
+    whole path keeps it.
+    """
     name = str(args.get("source") or "")
-    refused = grant.reachable("datasource", name,
-                              bound=turn.bound.get("datasource", ()), chips=turn.chips.get("datasource", ()))
-    if refused:
-        return _no_card(refused.says)
-
-    source = turn.source_for(name) if turn.source_for else None
-    if source is None:
-        return _no_card(brand.text(
-            "{assistantName} could not find {name} among the {dataSourcePlural} it can open here.",
-            name=name or "that",
-        ))
-
     # A level the model spelled INSIDE the name wins over one it named beside it: a model that
     # wrote the whole path meant that path, and the two disagreeing is not a case to split down
     # the middle.
@@ -196,43 +208,103 @@ def _table(args: dict, turn: Turn) -> str:
     # can read. What the model DOES name still wins: a table it reached for in another schema of the
     # same store is a real request, and the recorded position is a default, not a fence.
     known = turn.scope_for.get((name, table)) or turn.scope_for.get((name, "")) or ("", "")
-    rows = turn.sample_rows(
-        source,
-        named_db or str(args.get("database") or "") or known[0],
-        named_schema or str(args.get("schema") or "") or known[1],
-        table,
-        limit,
-    )
+    return (name,
+            named_db or str(args.get("database") or "") or known[0],
+            named_schema or str(args.get("schema") or "") or known[1],
+            table,
+            limit)
+
+
+def _table_rows(turn: Turn, name: str, database: str, schema: str, table: str, limit: int) -> Read:
+    """Rows out of one Data Source in range, or the sentence saying why there are none.
+
+    Shared by the agent's read and by **Read again**, so the grant one passes is the grant the other
+    passes. A viewer whose access went away is refused on the same line the agent would be, which is
+    what makes "the button reads as the viewer" a property rather than a promise (#256).
+    """
+    refused = grant.reachable("datasource", name,
+                              bound=turn.bound.get("datasource", ()), chips=turn.chips.get("datasource", ()))
+    if refused:
+        return Read(refused=refused.says)
+
+    source = turn.source_for(name) if turn.source_for else None
+    if source is None:
+        return Read(refused=brand.text(
+            "{assistantName} could not find {name} among the {dataSourcePlural} it can open here.",
+            name=name or "that",
+        ))
+
+    rows = turn.sample_rows(source, database, schema, table, limit)
     # A statement that came back full is a statement that hit its own LIMIT, and there is almost
     # certainly more behind it. This is the opposite of the listing rule in ADR-0029, where a walk
     # that exactly fills the cap is NOT truncated — a walk knows it enumerated everything, and a
     # LIMIT knows only that it stopped.
-    full = len(rows.rows) >= limit
+    return Read(list(rows.columns), [list(r) for r in rows.rows], len(rows.rows) >= limit)
+
+
+def _source(kind: str, binding: str, limit: int, **named: str) -> dict:
+    """What the card records about the read that made it, so a viewer can run it again (#256).
+
+    Empty without a Binding or without a target, and an empty source is a card with no **Read again**
+    button (#258). That is the right floor rather than a gap. A read reached through a Session chip
+    alone is a thing this Conversation is looking at, not something the Project holds, so there is
+    nothing for a different viewer to re-read it through; and a record naming a store and no table
+    would put a button on a card whose press can only come back with a failure.
+
+    Identifiers only — a Binding id and a table name or a path. `table_shape` re-checks every field
+    on the way into the file, because this is the one key on that whitelist that could otherwise
+    carry a row under a name the rule allows.
+
+    The database and the schema are written as the levels they are, and never folded into the table
+    name. A dotted name can only carry both or neither, and "neither" sends the press back down the
+    ladder in `_scoped` to the Binding's recorded position — so a read the model aimed at
+    `MARTS.CALLS` in a store whose Binding records `SALES` would read `SALES.CALLS` on the press and
+    put a DIFFERENT table's rows on that card, under its title, saying they were today's.
+
+    A level that was empty at read time is still written as nothing, and the press takes the
+    Binding's answer for it. That is the same ladder the agent's own read climbs, so the two agree;
+    what is closed here is a recorded level being overwritten by a different one.
+    """
+    target = {k: v for k, v in named.items() if v}
+    if not binding or not (target.get("table") or target.get("path")):
+        return {}
+    return {"kind": kind, "binding": binding, "limit": limit, **target}
+
+
+def _table(args: dict, turn: Turn) -> str:
+    name, database, schema, table, limit = _scoped(args, turn)
+    read = _table_rows(turn, name, database, schema, table, limit)
+    if read.refused:
+        return _no_card(read.refused)
+
+    binding = turn.binding_for.get(("datasource", name), "")
     receipt = result.record(
         turn.examples_dir,
         _slug(table or name),
         str(args.get("title") or table or name),
-        list(rows.columns),
-        [list(r) for r in rows.rows],
+        read.columns,
+        read.rows,
         cap=limit,
-        truncated=full,
-        binding=turn.binding_for.get(name, ""),
+        truncated=read.truncated,
+        binding=binding,
         table=table,
         shared=turn.shared,
         keep_rows=turn.keep_rows,
+        source=_source("table", binding, limit, table=table, database=database, schema=schema),
     )
     return _receipt_text(receipt, f"{table or name}")
 
 
 def _files(args: dict, turn: Turn) -> str:
     name = str(args.get("dataset") or "")
-    refused = grant.reachable("dataset", name,
-                              bound=turn.bound.get("dataset", ()), chips=turn.chips.get("dataset", ()))
-    if refused:
-        return _no_card(refused.says)
-
     rel = str(args.get("path") or "")
     if not rel:
+        # The listing arm checks the grant itself. The file arm gets it from `_file_rows`, which is
+        # where **Read again** gets it too — one check on that road rather than two written alike.
+        refused = grant.reachable("dataset", name,
+                                  bound=turn.bound.get("dataset", ()), chips=turn.chips.get("dataset", ()))
+        if refused:
+            return _no_card(refused.says)
         listing = turn.list_files(name) if turn.list_files else None
         if listing is None:
             return _no_card(brand.text(
@@ -250,9 +322,35 @@ def _files(args: dict, turn: Turn) -> str:
         )
         return _receipt_text(receipt, f"the files in {name}")
 
+    read = _file_rows(turn, name, rel)
+    if read.refused:
+        return _no_card(read.refused)
+    receipt = result.record(
+        turn.examples_dir, _slug(name, Path(rel).stem), f"{Path(rel).name}",
+        read.columns, read.rows,
+        truncated=read.truncated,
+        keep_rows=turn.keep_rows,
+        source=_source("file", turn.binding_for.get(("dataset", name), ""), result.CAP_ROWS,
+                       path=rel),
+    )
+    return _receipt_text(receipt, rel)
+
+
+def _file_rows(turn: Turn, name: str, rel: str) -> Read:
+    """The head of one file inside a mounted Dataset, or the sentence saying why not.
+
+    The other half of the pair `_table_rows` is half of: the agent's read and **Read again** take
+    the same road here too, including the grant, so a Dataset that stopped being reachable refuses
+    the button the same way it refuses the agent (#256).
+    """
+    refused = grant.reachable("dataset", name,
+                              bound=turn.bound.get("dataset", ()), chips=turn.chips.get("dataset", ()))
+    if refused:
+        return Read(refused=refused.says)
+
     root = turn.dataset_root(name) if turn.dataset_root else None
     if root is None or not Path(root).is_dir():
-        return _no_card(brand.text(
+        return Read(refused=brand.text(
             "{assistantName} can say what {name} holds, but cannot read a file out of it here — "
             "its files are not mounted in this workspace. Ask about the listing instead.",
             name=name or "that {dataset}",
@@ -260,9 +358,14 @@ def _files(args: dict, turn: Turn) -> str:
 
     # One file below the Dataset. Resolved inside the mount, so a path climbing out of it reads as
     # a file that is not there rather than as a file somewhere else.
+    #
+    # `is_relative_to` and not `startswith`: mounts are siblings under one parent, so a string
+    # prefix lets `../sales-private/rows.csv` out of `/mnt/data/sales` and into the Dataset next to
+    # it — a grant this function just refused. It mattered less when only the model could name the
+    # path; **Read again** takes it from a request body (#256).
     target = (Path(root) / rel).resolve()
-    if not str(target).startswith(str(Path(root).resolve())) or not target.is_file():
-        return _no_card(brand.text(
+    if not target.is_relative_to(Path(root).resolve()) or not target.is_file():
+        return Read(refused=brand.text(
             "There is no file at {path} in {name}. List the {dataset} first and name one it holds.",
             path=rel, name=name,
         ))
@@ -270,18 +373,80 @@ def _files(args: dict, turn: Turn) -> str:
     head = target.read_bytes()[:HEAD_BYTES].decode("utf-8", "replace")
     rows = list(csv.reader(io.StringIO(head)))
     if len(rows) < 2:
-        return _no_card(
+        return Read(refused=(
             f"{rel} is not laid out as rows and columns, so there is no table to show. "
             "Say what kind of file it is and stop."
-        )
-    columns, body = rows[0], rows[1:]
-    receipt = result.record(
-        turn.examples_dir, _slug(name, Path(rel).stem), f"{Path(rel).name}",
-        columns, [r for r in body if r],
-        truncated=len(head.encode()) >= HEAD_BYTES,
-        keep_rows=turn.keep_rows,
-    )
-    return _receipt_text(receipt, rel)
+        ))
+    return Read(rows[0], [r for r in rows[1:] if r], len(head.encode()) >= HEAD_BYTES)
+
+
+class NoSuchRead(ValueError):
+    """A source record no card could have written.
+
+    Its own type so a caller can tell it from a `ValueError` raised anywhere below — a limit that
+    will not parse, a driver that raises one of its own. Those are refusals a person is owed a
+    sentence for; this one is a caller that made the record up.
+    """
+
+
+def read_again(source: dict, turn: Turn) -> Read:
+    """Run the read one card came from again, now, as whoever is looking at the card (#256).
+
+    The whole of ADR-0045's answer to a stale transcript, and its cost: this writes NOTHING. The
+    rows go back in the response and reach the browser only, so a **Kept rows** opt-out cannot be
+    defeated by a click, and a save straight after one commits the shape it always did.
+
+    The Binding id in the record is resolved against the Project's Bindings as they stand now, which
+    is what makes the read the viewer's own: a name that is no longer bound, or a store this person
+    cannot open, refuses here exactly as it would refuse the agent.
+    """
+    record = source if isinstance(source, dict) else {}
+    kind = str(record.get("kind") or "")
+    binding = str(record.get("binding") or "")
+    try:
+        limit = max(1, min(int(record.get("limit") or result.CAP_ROWS), result.CAP_ROWS))
+    except (TypeError, ValueError, OverflowError):
+        # Read as "no limit given" rather than as a fault. The cap is the read's floor either way,
+        # and a number that will not parse says nothing about what the person may see.
+        limit = result.CAP_ROWS
+    bound_kind = {"table": "datasource", "file": "dataset"}.get(kind, "")
+    if not bound_kind or not binding:
+        # Not a refusal anybody is owed a sentence for: a card with no source shows no button, so
+        # arriving here at all means a caller made this record up.
+        raise NoSuchRead("that card records no read to run again")
+
+    name = next((n for (k, n), i in turn.binding_for.items() if k == bound_kind and i == binding), "")
+    if not name:
+        # Named for what the card is, because a file card's viewer never asked about a table.
+        return Read(refused=brand.text(
+            "{assistantName} cannot reach what this {what} was read from — it is no longer one of "
+            "this {project}'s {dataSourcePlural} or {datasetPlural}.",
+            what="file" if kind == "file" else "table",
+        ))
+    if kind == "file":
+        # Capped here, where the agent's read is capped by `result.record` on the way to the file.
+        # 256KB of short rows is several thousand of them, and a card saying "4,217 rows" over a
+        # receipt stamped 500 is two numbers about one read.
+        read = _file_rows(turn, name, str(record.get("path") or ""))
+        return _capped(read, limit)
+    _, database, schema, table, limit = _scoped(
+        {"source": name,
+         "table": str(record.get("table") or ""),
+         "database": str(record.get("database") or ""),
+         "schema": str(record.get("schema") or ""),
+         "limit": limit}, turn)
+    return _table_rows(turn, name, database, schema, table, limit)
+
+
+def _capped(read: Read, limit: int) -> Read:
+    """At most `limit` rows, saying so where it cut.
+
+    A table read is capped by the store's own LIMIT before it gets here. A file head is not: it is
+    whatever fits in `HEAD_BYTES`, and only `result.record` trimmed it on the way to disk.
+    """
+    if read.refused or len(read.rows) <= limit:
+        return read
+    return Read(read.columns, read.rows[:limit], True)
 
 
 def perform(name: str, args: dict, turn: Turn) -> str:

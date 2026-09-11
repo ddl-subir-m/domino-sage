@@ -16,7 +16,12 @@ import vm from 'node:vm';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const block = JSON.parse(fs.readFileSync(0, 'utf8'));
+// Every request the card makes. Nothing may be re-read on open or on scroll — only on a press
+// (#256) — so the claim is a count and not a shape.
+const fetched = [];
 
+const cells = [];
+const cursor = { n: 0 };
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, Infinity, encodeURIComponent, decodeURIComponent,
@@ -27,7 +32,13 @@ const sandbox = {
   addEventListener() {}, removeEventListener() {},
   React: {
     createElement: (t, p, ...c) => ({ t, p: p || {}, c }),
-    useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
+    // A real cell, so a press can be followed: the card sets state and is rendered again, which is
+    // the only way to see what a press PUT on screen rather than only that it called something.
+    useState: (init) => {
+      const i = cursor.n++;
+      if (i >= cells.length) cells.push(typeof init === 'function' ? init() : init);
+      return [cells[i], (v) => { cells[i] = typeof v === 'function' ? v(cells[i]) : v; }];
+    },
     useEffect: () => {},
     useMemo: (fn) => fn(),
     useRef: () => ({ current: null }),
@@ -40,8 +51,11 @@ const sandbox = {
     message: { success() {}, error() {}, info() {}, warning() {} },
   },
   icons: new Proxy({}, { get: (_, name) => String(name) }),
-  fetch: async () => ({ ok: true, status: 200, headers: { get: () => 'application/json' },
-                        json: async () => ({}), text: async () => '' }),
+  fetch: async (url) => {
+    fetched.push(String(url));
+    return { ok: true, status: 200, headers: { get: () => 'application/json' },
+             json: async () => JSON.parse(process.env.READ_AGAIN || '{}'), text: async () => '' };
+  },
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
@@ -67,9 +81,23 @@ function* walk(node) {
 // `MessageBlock` only routes: for a table it returns a `TableBlock` ELEMENT, and a stubbed
 // `createElement` never calls it. Step through that one hop so the card under test is the card the
 // router actually picks, rather than one this harness named for itself.
-const routed = SW.MessageBlock({ block });
-const tree = routed && typeof routed.t === 'function' ? routed.t(routed.p) : routed;
-const nodes = [...walk(tree)];
+function render() {
+  cursor.n = 0;
+  const routed = SW.MessageBlock({ block });
+  const tree = routed && typeof routed.t === 'function' ? routed.t(routed.p) : routed;
+  return [...walk(tree)];
+}
+
+let nodes = render();
+// One press, then the card again. `PRESS` names the button by its label, so a test that presses
+// something the card does not offer fails loudly rather than quietly proving nothing.
+if (process.env.PRESS) {
+  const pressed = nodes.find(
+    (n) => n.t === 'Button' && (n.c || []).flat(Infinity).includes(process.env.PRESS));
+  if (!pressed) { console.error(`no button labelled ${process.env.PRESS}`); process.exit(2); }
+  await pressed.p.onClick();
+  nodes = render();
+}
 const saidBy = (cls) => nodes.filter((n) => (n.p || {}).className === cls)
   .map((n) => (n.c || []).flat(Infinity).filter((c) => typeof c === 'string').join(''))
   .filter(Boolean);
@@ -104,4 +132,10 @@ console.log(JSON.stringify({
   headers: tableCols.map((c) => c.title),
   cells: tableCols.map((c) => first[c.dataIndex]),
   copied,
+  // What the card offers to press, and everything it asked the server for. A card that re-reads
+  // on open would show a request here with no press behind it (#256).
+  buttons: nodes.filter((n) => n.t === 'Button')
+    .map((n) => (n.c || []).flat(Infinity).filter((c) => typeof c === 'string').join(''))
+    .filter(Boolean),
+  fetched,
 }));

@@ -30,7 +30,7 @@ def turn_for(tmp_path, **kw):
         "source_for": lambda n: seen if n == "DWH" else None,
         "sample_rows": lambda s, db, sc, t, lim: FakeRows(
             ["ID", "TITLE"], [[i, f"call {i}"] for i in range(lim)]),
-        "binding_for": {"DWH": "bnd_1"},
+        "binding_for": {("datasource", "DWH"): "bnd_1"},
     }
     base.update(kw)
     return run.Turn(**base)

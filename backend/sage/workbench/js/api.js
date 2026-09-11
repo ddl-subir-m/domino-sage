@@ -570,6 +570,10 @@ SW.api = {
   flushChat: () => post('/threads/save', {}),
   draftHandoffPlan: (id) => post(`/threads/${id}/handoff/plan`, {}),
   clearRecall: (id, scope) => post(`/threads/${id}/recall/clear`, { scope }),
+  // Read one card's table again, as whoever is looking at it (#256). `source` is the record the
+  // Artifact carries, posted back unread: the card chooses nothing, so there is nothing here for a
+  // browser to get wrong. The rows come back in the response and are never written anywhere.
+  readAgain: (id, source) => post(`/threads/${id}/live-read`, { source }),
   // Build's half. No thread in the path: the session being emptied is filed per (Conversation,
   // app), and the app is whichever one is selected — which only the server can say (ADR-0022).
   // The rung below clearing: stop sending ONE named thing the gateway refuses, and keep the

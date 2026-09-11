@@ -51,6 +51,7 @@ from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..liveread import mcp as live_mcp
+from ..liveread import result as live_result
 from ..liveread import run as live_read
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
@@ -3737,6 +3738,16 @@ def _mentioned_in(text: str, token: str) -> bool:
     if not token:
         return False
     return _mention_word(token) in _mention_tokens_in(text)
+
+
+def _sendable(row: list) -> list:
+    """One row as JSON can carry it: a warehouse hands back dates and decimals.
+
+    The same coercion `result.record` gets for free from `json.dumps(default=str)`, done by hand
+    because a response is serialised by the framework rather than by us — without it a table with a
+    `TIMESTAMP` column answers a press with a 500, and only on the tables somebody actually has.
+    """
+    return [v if v is None or isinstance(v, (str, int, float, bool)) else str(v) for v in row]
 
 
 def _mention_word(text: str) -> str:
@@ -8206,8 +8217,16 @@ class Orchestrator:
         Conversation while its turn runs, and "may this be read" deserves the current answer.
         """
         thread_id = self._live_read_thread(token)
-        if not thread_id:
-            return None
+        return self._live_read_turn_for(thread_id) if thread_id else None
+
+    def _live_read_turn_for(self, thread_id: str) -> live_read.Turn:
+        """The same thing for a Conversation named directly rather than by a turn's token.
+
+        **Read again** has no turn and no token — it is a person pressing a button on a card (#256)
+        — but it reaches exactly what that Conversation's agent could reach, through the same
+        records. One builder, so the button and the agent cannot drift into two answers about what
+        is in range.
+        """
         project = self._chat_project()
         store = ThreadStore(project.record.path)
 
@@ -8239,15 +8258,19 @@ class Orchestrator:
         # What the current Built App holds a Binding for. `workspace` IS that app (ADR-0008), so
         # this is per app and not per Project, which is what "what this app reads" has to mean.
         bound: dict[str, tuple[str, ...]] = {}
-        binding_for: dict[str, str] = {}
+        binding_for: dict[tuple[str, str], str] = {}
         for row in project.workspace.read_bindings():
             name = str(row.get("name") or "")
             kind = "dataset" if str(row.get("kind") or "") == "dataset" else "datasource"
             if not name:
                 continue
             bound[kind] = bound.get(kind, ()) + (name,)
+            if row.get("id"):
+                # Keyed by kind as well as name, because the two namespaces are separate: a Dataset
+                # called DWH must not hand its id to a card that was read from a Data Source called
+                # DWH (#256).
+                binding_for[(kind, name)] = str(row["id"])
             if kind == "datasource" and row.get("id"):
-                binding_for[name] = str(row["id"])
                 # `setdefault`, so a chip wins: a Binding is what the app reads and a chip is what
                 # THIS conversation is looking at, and the second is the more recent answer to
                 # "where does the person mean".
@@ -8296,6 +8319,41 @@ class Orchestrator:
             list_files=list_files,
             dataset_root=dataset_root,
         )
+
+    def live_read_again(self, thread_id: str, source: dict) -> dict:
+        """Read one card's table again, now, as whoever is looking at it (#256, ADR-0045).
+
+        Nothing is written. The rows go back in this response and reach the browser only, so a
+        Project that answered **Kept rows** with no still commits a shape after the press, and a
+        reload shows the thin card again — which is why the card's own stamp keeps saying when the
+        FILE was read rather than when this ran. The stamp here is about these rows and belongs to
+        the screen, not to the Artifact.
+
+        A refusal comes back as a sentence with a 200, because it is an answer and not a fault: the
+        person asked whether they can see today's rows and the honest reply is that they cannot, and
+        the card goes on showing the shape it already had.
+        """
+        turn = self._live_read_turn_for(thread_id)
+        try:
+            read = live_read.read_again(source or {}, turn)
+        except live_read.NoSuchRead:
+            # A record no card could have written. The caller's problem, not the person's, so it
+            # goes back as one rather than as a sentence about the data. Its own type and not a bare
+            # `ValueError`, or a driver that raises one hands its own words to the page.
+            raise
+        except Exception as e:
+            # The store answered with a failure rather than with rows — a credential the platform
+            # will not open for this viewer looks exactly like this. Logged whole and said short:
+            # the driver's own words are about a connection, not about what the person asked.
+            log.info("live read again: %s failed — %s", (source or {}).get("kind"), e)
+            return {"refused": brand.text(
+                "{assistantName} could not read that just now. The store did not answer."
+            )}
+        if read.refused:
+            return {"refused": read.refused}
+        return {"columns": read.columns, "rows": [_sendable(r) for r in read.rows],
+                "rowCount": len(read.rows),
+                "truncated": read.truncated, "readAt": live_result.stamp()}
 
     def _shared_samples(self, project: Project) -> tuple[tuple[str, str], ...]:
         """The (Binding, table) pairs the creator put in front of the agent, from their own record.

@@ -3100,6 +3100,32 @@ async def live_read_mcp(request: Request) -> Response:
     return JSONResponse(out if batch else out[0])
 
 
+@control_app.post("/api/threads/{thread_id}/live-read")
+def read_again(thread_id: str, body: dict = Body(default={})) -> JSONResponse:
+    """Read one card's table again and hand the rows back to the browser (#256, ADR-0045).
+
+    Body: `{source: {...}}`, the record the Artifact itself carries, posted back verbatim. The
+    browser chooses nothing here — a card that recorded no source shows no button, so a source this
+    route has to make sense of is one somebody made up.
+
+    Nothing is written. The rows exist in this response and nowhere else, which is what keeps a
+    **Kept rows** opt-out from being defeated by a click.
+
+    It runs as whoever is asking, because each viewer has their own Builder running under their own
+    identity: two people pressing the same button see what each of them is entitled to see, and the
+    refusal one of them gets is a 200 with a sentence in it — an answer, not a fault.
+
+    No 404 arm, because there is no lookup to miss: what a read may reach comes from the Project's
+    Bindings, and the Conversation only adds its Session chips. An id naming no Conversation
+    therefore reaches LESS, not more, and refusing it would be a check this route does not make
+    pretending to be one it does.
+    """
+    try:
+        return JSONResponse(orchestrator.live_read_again(thread_id, (body or {}).get("source") or {}))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
 @control_app.post("/api/threads/{thread_id}/context")
 def add_thread_context(thread_id: str, body: dict) -> JSONResponse:
     try:

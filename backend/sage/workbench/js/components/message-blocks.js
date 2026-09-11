@@ -265,6 +265,19 @@ window.SW = window.SW || {};
     return lines;
   }
 
+  // What a press put on screen, said in the same words the stamp above it uses and with the same
+  // absolute date, so the two dates read as two facts rather than as one that changed. The reason
+  // rides with it: these rows are not in the file, and the next person to open this Conversation
+  // sees the shape again (ADR-0045).
+  function freshRowsLine(fresh) {
+    const n = SW.util.number(fresh.rowCount);
+    const counted = `${fresh.truncated ? 'the first ' : ''}${n} ${fresh.rowCount === 1 ? 'row' : 'rows'}`;
+    const when = SW.util.longDate(fresh.readAt);
+    return SW.brand.text(
+      `Now on screen: ${counted}${when ? `, read ${when}` : ''}. This {project} doesn't keep data ` +
+      'rows in its files, so these are not saved.');
+  }
+
   // A table whose rows this Project does not keep, told apart from one the recovery ladder could
   // not read. Both arrive with no rows; only this one knows how many there were, and the other
   // needs the older card underneath — the one that offers the file rather than naming a count it
@@ -274,6 +287,38 @@ window.SW = window.SW || {};
 
   function TableBlock({ block }) {
     const [showAll, setShowAll] = useState(false);
+    // Today's rows, and they live here and nowhere else (ADR-0045). Nothing writes them back to the
+    // Artifact, so a reload is the thin card again — which is why the stamp above them goes on
+    // saying when the FILE was read rather than when this ran. State, not a fetch on render: a read
+    // that happened on open would put a warehouse query behind every scroll (#256).
+    const [again, setAgain] = useState(null);
+    const [refused, setRefused] = useState('');
+    const [reading, setReading] = useState(false);
+
+    // Blocks are rendered with the index as the key, so React reuses this instance when a message's
+    // block list grows or reorders — a chart landing beside the table, an artifact refresh. Without
+    // this, table A's rows stay on screen under table B's title and B's stamp, which is the one
+    // thing this card must never do. Keyed on the file, because that is what the card IS.
+    useEffect(() => { setAgain(null); setRefused(''); }, [block.path]);
+
+    async function readAgain() {
+      const thread = ((SW.store.get() || {}).thread || {}).id || '';
+      setReading(true);
+      setRefused('');
+      try {
+        const out = await SW.api.readAgain(thread, block.source);
+        if (out && out.refused) { setAgain(null); setRefused(out.refused); }
+        else { setAgain(out); }
+      } catch {
+        // The sentence a person is owed, never the transport's. A failed press leaves the card
+        // exactly as it was, which is the shape it can always show.
+        setRefused(SW.brand.text(
+          '{assistantName} could not read that just now. Try again in a moment.'));
+      } finally {
+        setReading(false);
+      }
+    }
+
     if (isTableReceipt(block)) {
       return h(
         'div',
@@ -283,7 +328,21 @@ window.SW = window.SW || {};
             h('div', { className: 'sw-block-title' }, block.title)),
         h('div', { className: 'sw-block-body' },
           ...tableReceiptLines(block).map((line) =>
-            h('div', { className: 'sw-block-sub' }, line)))
+            h('div', { className: 'sw-block-sub' }, line)),
+          refused && h('div', { className: 'sw-block-sub' }, refused),
+          // No Binding, no button (#258). A table the Chat agent composed is not a read — its
+          // source would hand back the file rather than the table — and a button that cannot
+          // answer is worse on that card than no button at all.
+          block.source && h(
+            Button,
+            { type: 'link', size: 'small', style: { padding: 0 }, loading: reading,
+              onClick: readAgain },
+            'Read again'
+          )),
+        again && h('div', { className: 'sw-block-body' },
+          h('div', { className: 'sw-block-sub' }, freshRowsLine(again))),
+        ...(again ? tableGrid({ ...block, columns: again.columns || [], rows: again.rows || [] },
+                              showAll, setShowAll) : [])
       );
     }
     // With neither columns nor rows, antd paints a bordered box under the title and nothing
@@ -312,6 +371,19 @@ window.SW = window.SW || {};
         )
       );
     }
+    return h(
+      'div',
+      { className: 'sw-block-card' },
+      block.title &&
+        h('div', { className: 'sw-block-head' }, h('div', { className: 'sw-block-title' }, block.title)),
+      ...tableGrid(block, showAll, setShowAll)
+    );
+  }
+
+  // The grid itself, as plain nodes rather than a component. Two cards draw it — the one whose
+  // Project keeps its rows, and a receipt after somebody presses **Read again** (#256) — and a
+  // nested component here would be an element the card returns rather than the table it drew.
+  function tableGrid(block, showAll, setShowAll) {
     const { names, width } = tablePaintShape(block);
     const columns = Array.from({ length: width }, (_, index) => ({
       title: names[index] || '',
@@ -330,12 +402,7 @@ window.SW = window.SW || {};
     }));
     const all = block.rows.map((row, index) => ({ key: index, ...row }));
     const rows = showAll ? all : all.slice(0, 10);
-
-    return h(
-      'div',
-      { className: 'sw-block-card' },
-      block.title &&
-        h('div', { className: 'sw-block-head' }, h('div', { className: 'sw-block-title' }, block.title)),
+    return [
       h(Table, { size: 'small', pagination: false, dataSource: rows, columns, scroll: { x: true } }),
       all.length > 10 &&
         h(
@@ -346,8 +413,8 @@ window.SW = window.SW || {};
             { type: 'link', size: 'small', style: { padding: 0 }, onClick: () => setShowAll(!showAll) },
             showAll ? 'Show fewer' : `Show all ${all.length} rows`
           )
-        )
-    );
+        ),
+    ];
   }
 
   // Two ways this card arrives, and they are not the same moment. The classifier notices an app
