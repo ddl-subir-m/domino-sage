@@ -2234,6 +2234,33 @@ def _guardrail_sentence(text: str) -> str:
             "administrator about the policy.")
 
 
+def _mention_block(d: dict) -> str:
+    """What an @mention hands the MODEL: the shape, never the sample rows (#250).
+
+    `describe` emits both. `detail` is the schema PLUS two or three verbatim rows; `shape` is the
+    same block without them — names, inferred types, and the vocabulary of any column that has a
+    small one. Both callers used to take `detail`, and that is how real rows reached a gateway from
+    a question nobody thought was about data: "sample 3 rows from @x.csv" put three customers'
+    emails, card numbers and SSNs into the user message itself, where they stayed for every later
+    turn in that session (measured 2026-09-11, byte-identical offsets 35 minutes apart).
+
+    The values path is not being taken away, it is being told apart from this one. Live read
+    (ADR-0041) already puts rows on a card and keeps them out of Recall, and it covers Datasets as
+    well as bound tables. So the person who wants rows still gets rows; what changes is that asking
+    to SEE data and asking the model to UNDERSTAND it stop being the same request.
+
+    Shape-or-detail rather than shape-only: only tabular files have a `shape`, and for the rest
+    `detail` is already derived — `_describe_json` emits key paths and types and says in its own
+    docstring that it never emits values. A file kind that previews content rather than describing
+    it is a separate surface and not what this fixes.
+
+    One helper for both callers, deliberately. Chat's and Build's mention paths are the same
+    decision made twice, and the last time they were allowed to drift apart one of them kept the
+    rows for a year.
+    """
+    return str(d.get("shape") or d.get("detail") or "")
+
+
 def _error_raw(err: object) -> str:
     """The failing frame's own words, before Sage says anything about them.
 
@@ -5547,12 +5574,11 @@ class Orchestrator:
             if real is None:
                 continue
             fresh = fresh or not entry.get("descriptor")
-            # The only caller that inlines `detail`, so the only one that asks for it. The file is
-            # re-read here rather than served from the manifest, which is what keeps the rows out
-            # of the committed file without keeping them out of the prompt (#237).
+            # Re-read here rather than served from the manifest, which is what keeps the rows out
+            # of the committed file (#237). `_mention_block` is what keeps them out of the prompt.
             d = self._descriptor(project, entry, want_detail=True)
             item = {"path": m, "name": PurePosix(m).name,
-                    "summary": d["summary"], "detail": d["detail"]}
+                    "summary": d["summary"], "detail": _mention_block(d)}
             if d["kind"] == "image":
                 item["image_uri"] = self._image_data_uri(real)
             out.append(item)
@@ -7461,7 +7487,7 @@ class Orchestrator:
                 "path": path,
                 "name": name,
                 "summary": str(d.get("summary") or ""),
-                "detail": str(d.get("detail") or ""),
+                "detail": _mention_block(d),
             })
         return out or None
 

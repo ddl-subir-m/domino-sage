@@ -281,10 +281,20 @@ def test_an_undeclared_dataset_keeps_no_rows_either(tmp_path):
         orch.project(start_preview=False).workspace.attachments_path).read_text()
 
 
-def test_a_mention_carries_the_rows_with_no_gate_at_all(tmp_path):
-    """The other half of #237: withholding is about what is WRITTEN DOWN. An @mention re-reads the
-    file, so the prompt is what it always was — otherwise this would have been a fix that quietly
-    made the assistant worse at reading the file the person just pointed at."""
+def test_a_mention_carries_the_shape_and_not_the_rows(tmp_path):
+    """#237 made this about what gets WRITTEN DOWN, and left the prompt as it was: an @mention
+    re-read the file, so three verbatim rows went into the user's own message every time.
+
+    #250 is where that stopped. Measured 2026-09-11: "sample 3 rows from @<a raw table>" put three
+    customers' emails, card numbers and SSNs into the message, OpenCode replayed the message list on
+    every later request, and a build turn in a different Conversation was refused on them
+    thirty-five minutes later. The file it named had been removed. Nothing a person could do reached
+    the rows, because they were never in a file — they were in the sentence they had typed.
+
+    The assistant is not made worse at reading the file it was pointed at: `shape` names every
+    column, its type and its vocabulary, and the file is still on disk at the path in the same
+    block. What it can no longer do is quote somebody's row without being asked to.
+    """
     orch = _orch(tmp_path)
     orch.attach_file("ds_logs", "rows.csv")
 
@@ -292,13 +302,23 @@ def test_a_mention_carries_the_rows_with_no_gate_at_all(tmp_path):
         orch.project(start_preview=False), ["public/data/logs/rows.csv"])
 
     assert mentions is not None
-    assert "078-05-1120" in mentions[0]["detail"]
+    assert "078-05-1120" not in mentions[0]["detail"]
+    assert "columns" in mentions[0]["detail"], "the shape is still there to work from"
 
 
-def test_a_mention_still_carries_the_rows_to_an_approved_model(tmp_path, monkeypatch):
-    """What is withheld is what gets WRITTEN DOWN, and only that. The turn carrying this detail is
-    already locked to an approved model, and an approved model is allowed to read the rows — that
-    is the feature rather than a gap in it."""
+def test_an_approved_model_does_not_get_the_rows_either(tmp_path, monkeypatch):
+    """This used to assert the opposite, and the reasoning was sound at the time: ADR-0043 locks a
+    turn carrying a declared Dataset to an approved model, and an approved model may read the rows.
+
+    What changed is not that permission. It is that the @mention descriptor stopped being the way
+    rows are read at all. Live read (ADR-0041) shows rows on the card without putting them in the
+    message, and it covers Datasets as well as bound tables — so the capability has a door, and it
+    is one where the rows do not outlive the turn that asked for them.
+
+    Two rules would have been worse than one. "Approved models get rows through a second door" is
+    not a sentence anyone can hold in their head while diagnosing a refusal, and the refusal is
+    where this always gets found.
+    """
     monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
     orch = _orch(tmp_path)
     orch.attach_file("ds_claims", "rows.csv")
@@ -307,7 +327,7 @@ def test_a_mention_still_carries_the_rows_to_an_approved_model(tmp_path, monkeyp
     mentions = orch._resolve_mentions(project, ["public/data/claims/rows.csv"])
 
     assert mentions is not None
-    assert "078-05-1120" in mentions[0]["detail"]
+    assert "078-05-1120" not in mentions[0]["detail"]
 
 
 def test_a_manifest_written_before_the_fix_is_scrubbed_on_open(tmp_path):
