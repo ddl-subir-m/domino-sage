@@ -958,6 +958,17 @@ window.SW = window.SW || {};
   // deleting one they never asked for. Same shape as `selecting`, for the same reason.
   let creating = false;
 
+  // Whether the Rail on screen is one the Rail opened for itself. `railHidden` is one value
+  // carrying two meanings — a choice somebody made, and a panel the UI moved on its own behalf —
+  // and everything awkward about it comes from those two being indistinguishable once set. The
+  // preference tells them apart on DISK (`toggleRail` is the only writer). Nothing told them apart
+  // in memory, so an auto-expand had no end: `expandRail` opens the Rail to show that a press
+  // worked, and only a row click ever undid it.
+  //
+  // Not state and not a preference. Nothing draws it, nobody chose it, and it must not survive a
+  // reload — it is true only for the few seconds between a press and the conversation it starts.
+  let railAutoExpanded = false;
+
   // The Build rail's list. `activeApp` follows it rather than being set beside it, so the row that
   // is lit and the app the server is pointed at cannot drift apart.
   //
@@ -3529,6 +3540,10 @@ window.SW = window.SW || {};
 
     toggleRail() {
       state.railHidden = !state.railHidden;
+      // A hand on the control, so whatever the Rail had opened for itself is over — in both
+      // directions. Opening by hand makes this a choice rather than an answer to a press, and
+      // closing by hand ends the open outright.
+      railAutoExpanded = false;
       // A filter is a question about the list, and it is dropped whichever way this goes.
       //
       // Closing: a closed Rail is not showing the list, so leaving it set would bring it back on
@@ -3551,6 +3566,7 @@ window.SW = window.SW || {};
     // choice, and only `toggleRail` above has a hand on it.
     collapseRail() {
       state.railHidden = true;
+      railAutoExpanded = false;
       state.railAppFilter = null;
       notify();
     },
@@ -3562,6 +3578,9 @@ window.SW = window.SW || {};
     // panel you just clicked, so the press looked dead.
     expandRail() {
       state.railHidden = false;
+      // Marked, because this is the one open nobody asked for. See `newThread`, which is where
+      // the reason in the comment above runs out and this gets read back.
+      railAutoExpanded = true;
       state.railAppFilter = null;
       notify();
     },
@@ -4828,6 +4847,20 @@ window.SW = window.SW || {};
       // Leaving it set drew "Thinking…" under an empty new conversation that was doing nothing.
       state.typing = null;
       notify();
+      // And the Rail that was opened to draw that placeholder closes with it. `expandRail` opens
+      // it for one reason — the pending row is the only thing on screen saying the press worked —
+      // and the `pendingConversation` clear above is that reason running out. Without this the
+      // open had no end at all: only a row click undid it, and somebody who STARTED a conversation
+      // never makes one, so a panel nobody chose stayed open for the rest of the session.
+      //
+      // Guarded, and that is what the flag is for. A row click may close a Rail somebody opened by
+      // hand, because clicking a row ANSWERS the Rail — it asks which conversation you are looking
+      // at. Typing the first message answers nothing it asked, so a Rail that was chosen survives.
+      //
+      // After the `notify` and not beside the clear it belongs to, because `collapseRail` notifies:
+      // called up there it would publish this view half-written — the new Thread already set, the
+      // conversation's messages not yet cleared — and draw the abandoned transcript under it.
+      if (railAutoExpanded) store.collapseRail();
       // The advertised way out of a session lock is this button (ADR-0043), so it has to actually
       // take the lock off the screen. Dropped BEFORE the read rather than left to it: the read's
       // error handler leaves the last answer standing, so one failed request would draw the
@@ -5005,6 +5038,20 @@ window.SW = window.SW || {};
       try {
         const app = await SW.api.createApp();
         store.clearConversation();
+        // The Rail gets out of the way, for the reason it does when you click one of its rows
+        // (#150): a New app puts a new app in the preview, and the preview is the thing 260px of
+        // Rail is taking from. Here rather than beside the two doors that call this — the app
+        // picker's own button and the empty state's — because both mean the same act, which is the
+        // argument `newConversation` makes about its three.
+        //
+        // It reaches the Rail at all because nothing else was ending an auto-expand. `expandRail`
+        // does not write the preference and is not meant to last, but only a row click ever undid
+        // it — so a Conversation started from Chat's collapsed head left the Rail open across the
+        // mode switch and across this, which is the one place in Build that can least afford it.
+        //
+        // `collapseRail`, not `toggleRail`: someone who opened the Rail by hand keeps that choice
+        // for their next load. Same rule, same reason, as every other auto-collapse here.
+        store.collapseRail();
         await store.loadBuild();
         state.activePlanId = null;
         state.activePlan = null;
