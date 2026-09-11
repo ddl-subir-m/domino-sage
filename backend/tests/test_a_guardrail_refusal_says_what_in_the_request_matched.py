@@ -73,3 +73,33 @@ def test_a_scan_never_replaces_the_error_it_was_explaining():
         def items(self): raise RuntimeError("nope")
 
     assert refusal_scan.candidates({"messages": Hostile()}) == []
+
+
+def test_a_sage_id_is_not_a_carrier():
+    """The theory that cost a round of investigation, and the reason the boundary is a WORD one.
+
+    Sage's ids are hex, so a run of ten digits turns up in one by chance — `app_1a0908182187e6abddb1f`
+    carries `0908182187`. A digit-boundary rule flags every id like it. The live gateway refuses
+    none of them: that id, the path it sits in, and the id inside a sentence all pass, because a
+    letter touching the run removes the word boundary. Flagging ids would bury the real carrier in
+    noise from the one string that appears in every single request.
+    """
+    for text in ("app_1a0908182187e6abddb1f",
+                 "apps/app_1a0908182187e6abddb1f/src/lib/csv.ts",
+                 "thr_1a090dfba9830a7f18ba4",
+                 "read apps/app_1a0908182187e6abddb1f/src/App.tsx now"):
+        assert refusal_scan.candidates({"messages": [{"content": text}]}) == [], text
+
+
+def test_the_boundary_is_a_word_boundary_not_a_digit_one():
+    """Each line measured against the live gateway on 2026-09-11."""
+    def hit(value: str) -> bool:
+        return bool(refusal_scan.candidates({"messages": [{"content": value}]}))
+
+    assert hit("1234567890")            # bare: refused live
+    assert hit("x 1234567890 y")        # spaces: refused live
+    assert hit("(1234567890)")          # punctuation: refused live
+    assert not hit("a1234567890")       # letter on the left: allowed live
+    assert not hit("1234567890a")       # letter on the right: allowed live
+    assert not hit("_1234567890")       # underscore is a word character: allowed live
+    assert not hit("a7777777777777777")  # and the card rule carries the same boundary

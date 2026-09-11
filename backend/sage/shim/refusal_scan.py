@@ -22,6 +22,22 @@ so the obvious `\d{13,19}` for a card number is wrong in the direction that matt
 millisecond timestamp, which is the single most common long number in a payload, and would have sent
 the next reader to a field the gateway never objected to.
 
+The boundary is a WORD boundary and not merely a digit one, which is the difference between a useful
+scan and a misleading one. Measured:
+
+    1234567890         refused       bare
+    x 1234567890 y     refused       space either side
+    (1234567890)       refused       punctuation either side
+    a1234567890        allowed       a letter touching it
+    1234567890a        allowed       the same on the right
+    _1234567890        allowed       underscore is a word character too
+
+That last group is the load-bearing one. Sage's own ids are hex — `app_1a0908182187e6abddb1f` holds
+the ten-digit run `0908182187` — and a digit-boundary rule flags every one of them while the gateway
+refuses none. Verified against the live gateway: that app id, that path, and that id inside a
+sentence all pass. An id is NOT a carrier, and a scan that says it is sends the next reader to a
+field the gateway never objected to, which is this module's one job not to do.
+
 So an ordinary row id, an account number or a seconds-precision timestamp refuses a turn, and
 nothing about the payload looks like PII to a person reading it. Naming the offset is the whole
 value here: it turns "something in 170KB" into one field.
@@ -39,10 +55,10 @@ from typing import Any
 # Named for what they cost, not for what they are: `digits_10_11` is the phone rule, and it is first
 # because it is the one that fires on data nobody would think to look at.
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("10-11 digit run (phone)", re.compile(r"(?<!\d)\d{10,11}(?!\d)")),
+    ("10-11 digit run (phone)", re.compile(r"\b\d{10,11}\b")),
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
-    ("SSN", re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")),
-    ("16 digit run (card)", re.compile(r"(?<!\d)\d{16}(?!\d)")),
+    ("SSN", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
+    ("16 digit run (card)", re.compile(r"\b\d{16}\b")),
 ]
 
 _KEEP = 2          # leading characters left readable, enough to recognise a timestamp or a domain
