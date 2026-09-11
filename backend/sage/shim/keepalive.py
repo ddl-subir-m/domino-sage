@@ -158,13 +158,30 @@ def upstream_error(chunk: bytes) -> str | None:
 def guardrail_frame(chunk: bytes) -> bool:
     """Whether an error frame inside a 200 stream is a guardrail refusal. A PROBE, not a guard.
 
-    Nothing branches on this — `orchestrator.app.relay` logs it and carries on. It exists to answer
-    one open question from real traffic: can a guardrail refuse on this path at all? Every guardrail
-    refusal captured so far has been a RAISED `GatewayUpstreamError`, which is what
-    `shim.enforcement._capture_refusal` hangs off. If one can arrive as a frame instead, then on that
-    path the payload is never captured, `project.last_refused` stays None, and the withhold search
-    returns at its first line saying nothing (`service.py:7618`). If the log line never fires, the
-    gap is theoretical and nothing needs building.
+    Nothing branches on this — `orchestrator.app.relay` logs it and carries on. It was written to
+    answer one open question: can a guardrail refuse on this path at all? MEASURED against
+    `Block PII` on 2026-09-11, the answer is NO, so this is a tripwire and not a gap.
+
+        request PII, stream=false                     HTTP 400          0.66s
+        request PII, stream=true                      HTTP 400          0.66s
+        400KB request, PII in the last line           HTTP 400          3.42s
+        400KB request, PII in the first line          HTTP 400          1.30s
+        model EMITS 1234567890 / 7777777777777777     200, clean
+        model EMITS jane.doe@example.com              200, clean
+        model EMITS 555-123-4567                      200, clean
+
+    The emit rows are the load-bearing ones. A response the gateway has already begun cannot be
+    turned into a 400, so an output-side guardrail would have nowhere to refuse but a frame. Every
+    shape there is a confirmed input-side refusal and every one comes back clean the other way:
+    the response is not scanned. The 400KB rows close the other way in — a payload big enough that
+    the gateway commits headers before it finishes deciding. It does not commit. It scans first,
+    synchronously, and short-circuits on the first match, which is why tail costs 3.42s and head
+    1.30s. So `Block PII` always raises, and `shim.enforcement._capture_refusal` always sees it.
+
+    Kept because the guardrail set belongs to the Domino administrator, not to Sage. An
+    output-side guardrail added later would be invisible to every capture Sage has. If this line
+    ever fires, the payload was NOT captured: `project.last_refused` stays None and
+    `_withhold_search` returns at its first line without a word (`service.py:7618`).
 
     Reads the marker off the RAW chunk, deliberately. `upstream_error` above returns `err["message"]`
     alone, so a sibling `guardrail_blocked` — the gateway's machine field, and the one

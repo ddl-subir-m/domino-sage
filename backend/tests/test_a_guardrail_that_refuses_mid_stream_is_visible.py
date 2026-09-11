@@ -7,10 +7,16 @@ recognises and `orchestrator.app.relay` handles. Nothing raises there, so on tha
 is never captured, `project.last_refused` stays None, and `_withhold_search` returns at its first
 line without a word (`service.py:7618`).
 
-Whether a GUARDRAIL ever arrives that way is unmeasured. Every guardrail refusal seen so far has
-been a raised error. So this is instrumentation, not a fix: it makes the answer fall out of real
-traffic instead of being guessed at. If the log line never fires, the gap is theoretical and the
-code stays as it is.
+Whether a GUARDRAIL ever arrives that way is now MEASURED, and it does not. `Block PII` scans the
+request and answers 400 before a response byte exists — with `stream: true`, and at 400KB with the
+match in the last line, where a gateway that committed headers early would have had to refuse in a
+frame. It never commits. And the response is not scanned at all: the model will emit
+`1234567890`, `7777777777777777`, `jane.doe@example.com` and `555-123-4567` for you, each a
+confirmed input-side refusal, each clean coming back. The rows are in `ka.guardrail_frame`.
+
+So the predicate stays as a tripwire against a config change, not as a fix for a live gap. The
+guardrail set belongs to the Domino administrator, and an output-side one added later is the only
+thing that could put a refusal on this path — where nothing Sage has would capture it.
 
 The predicate reads the RAW chunk rather than `upstream_error`'s answer, and that is the whole
 point of it existing. `upstream_error` returns `err["message"]` alone (keepalive.py:154), so the
