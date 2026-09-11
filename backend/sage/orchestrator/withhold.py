@@ -144,10 +144,17 @@ def search(messages: list[dict], ask, *, cap: int = MAX_CALLS) -> Found:
 
     `ask(messages) -> BLOCKED | CLEAN | UNKNOWN` is the only thing here that talks to a gateway.
 
-    Probes are ordered newest-first at every split. That is a STRUCTURAL prior — where in the
-    conversation the thing arrived — and not a guess about what the policy matches: the file
-    somebody just attached is the ordinary culprit, and ordering by it costs nothing when it is
-    wrong.
+    Probes are ordered newest-first at every split, which is tidy and buys nothing. MEASURED: the
+    cost is identical wherever the carrier sits — 4 files/7 calls, 8/9, 16/11, the same for every
+    position. `_find_all` has to probe BOTH halves at every level because it finds all carriers
+    rather than the first, so one half recursing and the other stopping clean is two probes per
+    level whatever order they are in. Ordering only pays in a search that can stop early, and this
+    one deliberately cannot.
+
+    So a hint about where to look — from `refusal_scan`, from recency, from anywhere — cannot be
+    spent here as an ordering. It would have to buy a fast path: probe the single most likely
+    candidate alone, and if the rest come back clean, stop. That is a different search with a
+    different failure mode (it can miss a second carrier), and it is not what this does.
 
     Nothing here reads the payload to decide what a guardrail would object to, and the reason is not
     that such a rule is unknowable. It is that the rule is HARD, and being nearly right about it is
