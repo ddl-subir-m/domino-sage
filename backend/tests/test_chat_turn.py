@@ -760,17 +760,46 @@ def _track_saves(orch):
     return calls
 
 
-def test_chat_first_turn_saves(tmp_path: Path):
+def test_chat_first_turn_hands_its_save_to_the_timer(tmp_path: Path):
+    """A first turn still commits — it just is not what the person waits for.
+
+    The save used to run inside the turn's own generator, which kept the SSE stream open across
+    a commit, a fetch, a merge and a push. Here it is queued instead, with the reason that names
+    it, and the turn ends at `done`.
+    """
     orch, _ = _orch(tmp_path, [Turn(text="Rates is the largest desk.")])
+    orch._chat_save_turn_s = 60.0  # hold it still; fired by hand below
     calls = _track_saves(orch)
     thread = orch.create_thread()
     events = list(orch.chat_stream(thread["id"], "what's our gross exposure by desk?"))
 
+    assert calls == []
+    assert not any(e.get("type") == "saved" for e in events)
+    assert events[-1]["type"] == "done"
+    assert orch._chat_dirty is True
+    assert orch._chat_save_timer is not None
+    assert orch._chat_save_reason == "first"
+
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
     assert calls == ["chat (first)"]
-    saved = next(e for e in events if e["type"] == "saved")
-    assert saved["ok"] is True
     assert orch._chat_dirty is False
     assert orch._chat_save_timer is None
+
+
+def test_a_turn_that_wrote_nothing_still_waits_the_idle_delay(tmp_path: Path):
+    """The post-turn delay is for work worth keeping; a plain turn keeps the 30s coalescing."""
+    orch, _oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="Still Rates.")])
+    orch._chat_save_turn_s = 60.0
+    _track_saves(orch)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what's our gross exposure by desk?"))
+    assert orch._chat_save_timer.interval == 60.0  # "first": armed on the turn delay
+
+    list(orch.chat_stream(tid, "say more"))
+    assert orch._chat_save_timer.interval == orch._chat_save_idle_s
+    assert orch._chat_save_reason == "idle"
+    orch._cancel_chat_idle_save()
 
 
 def test_chat_text_followup_saves_on_idle_not_every_turn(tmp_path: Path):
@@ -793,11 +822,20 @@ def test_chat_text_followup_saves_on_idle_not_every_turn(tmp_path: Path):
     assert orch._chat_save_timer is None
 
 
-def test_chat_artifact_followup_saves_immediately(tmp_path: Path):
+def test_chat_artifact_followup_saves_without_holding_the_turn_open(tmp_path: Path):
+    """A turn that wrote an Artifact commits it at once — but not on the stream.
+
+    `chat (artifacts)` rather than `chat (idle)` is the point: the reason survives the handoff to
+    the timer, so the commit still says which turn's work it is. What does NOT survive is a
+    `saved` frame, because the turn no longer waits to learn the answer — and Chat never drew one
+    (its stream handler has no branch for it).
+    """
     orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    orch._chat_save_turn_s = 60.0  # hold it still; fired by hand below
     calls = _track_saves(orch)
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "hello"))
+    orch._cancel_chat_idle_save()
     calls.clear()
 
     table = '{"title": "Desks", "columns": ["desk"], "rows": [["Rates"]]}'
@@ -807,9 +845,38 @@ def test_chat_artifact_followup_saves_immediately(tmp_path: Path):
     ))
     events = list(orch.chat_stream(tid, "what's in this CSV?"))
 
+    assert calls == []
+    assert not any(e.get("type") == "saved" for e in events)
+    assert events[-1]["type"] == "done"
+    assert orch._chat_save_reason == "artifacts"
+
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
     assert calls == ["chat (artifacts)"]
-    assert next(e for e in events if e["type"] == "saved")["ok"] is True
     assert orch._chat_dirty is False
+
+
+def test_a_button_waits_out_a_save_but_not_a_turn(tmp_path: Path):
+    """The post-turn commit holds the lock after the stream has closed, so a door that refuses
+    the instant it is busy would answer "a build is already running" about a `git push`. It waits
+    that one out. A real turn it still refuses at once — a silent wait behind a build is worse."""
+    import threading
+    import time
+
+    orch, _oc = _orch(tmp_path, [Turn(text="ok")])
+
+    orch._turn_lock.acquire()
+    orch._chat_saving = True
+    threading.Timer(0.2, orch._turn_lock.release).start()
+    assert orch._acquire_for_door(wait=5.0) is True
+    orch._turn_lock.release()
+
+    orch._turn_lock.acquire()
+    orch._chat_saving = False
+    t0 = time.monotonic()
+    assert orch._acquire_for_door(wait=5.0) is False
+    assert time.monotonic() - t0 < 1.0  # refused, not waited out
+    orch._turn_lock.release()
 
 
 def test_chat_leave_thread_flushes(tmp_path: Path):
@@ -839,6 +906,9 @@ def test_chat_leave_thread_flushes(tmp_path: Path):
 
 def test_flush_chat_save_and_shutdown_cancel_idle(tmp_path: Path):
     orch, oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="Still Rates.")])
+    # The first turn queues its own save (see `_after_chat_turn`); held still so it cannot land
+    # in the middle of this test's count. The next turn cancels it.
+    orch._chat_save_turn_s = 60.0
     calls = _track_saves(orch)
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "what's our gross exposure by desk?"))

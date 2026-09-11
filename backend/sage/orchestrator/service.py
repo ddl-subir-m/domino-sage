@@ -3922,6 +3922,16 @@ class Orchestrator:
         self._chat_dirty_thread: str | None = None
         self._chat_save_timer: threading.Timer | None = None
         self._chat_save_idle_s = 30.0
+        # What a turn that wrote something waits before committing it: nothing. It is a separate
+        # number from the idle delay rather than a literal `0` so a test can hold the save still
+        # and fire it by hand, the way the idle one already does.
+        self._chat_save_turn_s = 0.0
+        # Why the reason is held here rather than passed to the timer: the post-turn save and the
+        # idle one land in the same callback, and without this every commit a turn produced would
+        # read `chat (idle)`.
+        self._chat_save_reason = "idle"
+        # True only while a queued Chat save holds the turn lock. See `_acquire_for_door`.
+        self._chat_saving = False
 
     def turn_busy(self) -> bool:
         """True while a build/approve turn holds the turn lock. The UI polls this to tell a dropped
@@ -4767,7 +4777,7 @@ class Orchestrator:
         sitting in the rail with nothing pointed at it.
         """
         project = self.project(start_preview=False, seed_app=False)
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "start a new app")
         try:
             with self._app_lock:
@@ -4932,7 +4942,7 @@ class Orchestrator:
         if app_id not in self._wm.app_ids():
             raise KeyError(app_id)
         project = self.project(start_preview=False, seed_app=False)
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "delete the app")
         try:
             # Read before the directory goes: the id that reaches the Domino App is in the app's
@@ -5219,7 +5229,7 @@ class Orchestrator:
         the next turn brings it back already reading the new file, and somebody who renames the
         product and then goes to lunch pays for no restart at all.
         """
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "change the name")
         try:
             install()
@@ -6556,9 +6566,17 @@ class Orchestrator:
         if timer is not None:
             timer.cancel()
 
-    def _arm_chat_idle_save(self) -> None:
+    def _arm_chat_idle_save(self, reason: str = "idle", delay: float | None = None) -> None:
+        """Queue the save to run off this thread. One timer slot, so one save is ever pending.
+
+        `delay=0` is how a turn hands its own commit over (see `_after_chat_turn`): it is not a
+        wait, it is the handoff itself. The timer IS the background thread — `threading.Timer`
+        subclasses `Thread` — so nothing else has to be spawned to get off the turn.
+        """
         self._cancel_chat_idle_save()
-        timer = threading.Timer(self._chat_save_idle_s, self._on_chat_save_idle)
+        self._chat_save_reason = reason
+        wait = self._chat_save_idle_s if delay is None else delay
+        timer = threading.Timer(wait, self._on_chat_save_idle)
         timer.daemon = True
         self._chat_save_timer = timer
         timer.start()
@@ -6571,9 +6589,13 @@ class Orchestrator:
             log.warning("chat: save deferred to the restart — the workspace is wedged")
             return
         if self._turn_lock.locked():
-            self._arm_chat_idle_save()
+            # Re-armed at the idle delay, not at whatever this attempt was armed with: a post-turn
+            # save that lost the race to the next turn has become an idle save, and re-arming at 0
+            # would spin a thread against a held lock for as long as that turn runs. The reason is
+            # carried through so the commit still says which turn's work it is.
+            self._arm_chat_idle_save(self._chat_save_reason)
             return
-        self._flush_chat_save("idle")
+        self._flush_chat_save(self._chat_save_reason)
 
     def _flush_chat_save(self, reason: str, *, holding_turn: bool = False) -> dict | None:
         """Commit + push if Chat has unsaved files. Returns the `saved` event, or None."""
@@ -6593,37 +6615,59 @@ class Orchestrator:
             if not self._turn_wedged:
                 self._arm_chat_idle_save()
             return None
+        self._chat_saving = True
         try:
             return self._chat_save_now(reason)
         finally:
+            # Lowered before the release, so a door that takes the lock next does not read a save
+            # that has already finished as a reason to wait for one.
+            self._chat_saving = False
             self._release_turn()
 
     def _chat_save_now(self, reason: str) -> dict | None:
         """The save itself. The caller owns the turn lock; this decides what to do with the result."""
+        t0 = time.monotonic()
         try:
             project = self.project(start_preview=False)
             result = self._save_to_git(project, f"chat ({reason})")
+            # Logged rather than recorded as a span. The save runs off the turn now, and `timing`
+            # keeps ONE current record in a module global that `finish_turn` clears — a span raised
+            # here would either be dropped or, worse, land in the next turn's record. This line is
+            # the only place the git cost is still readable.
+            log.info("chat save (%s): %.0fms", reason, (time.monotonic() - t0) * 1000)
         except Exception:
             log.exception("chat save failed")
-            self._arm_chat_idle_save()
+            # `reason` carried into the retry, not dropped back to the default: a commit that
+            # failed is still this turn's work, and the next attempt should say so.
+            self._arm_chat_idle_save(reason)
             return {"type": "saved", "ok": False, "pushed": False, "detail": "chat save failed"}
         if result is None or result.get("ok"):
             self._chat_dirty = False
             self._chat_dirty_thread = None
         else:
-            self._arm_chat_idle_save()
+            self._arm_chat_idle_save(reason)
         return result
 
-    def _after_chat_turn(self, thread_id: str, *, immediate: str | None) -> dict | None:
+    def _after_chat_turn(self, thread_id: str, *, immediate: str | None) -> None:
+        """Hand the turn's commit to the timer. Never saves on the caller's thread.
+
+        `immediate` still means what it meant — a first turn or one that wrote an Artifact is
+        worth committing now rather than in thirty seconds — but "now" is `delay=0` on the timer
+        instead of inline. It used to run here, inside `_chat_stream`'s `finally`, which held the
+        SSE generator open: `git add -A`, a commit, a fetch, a merge and a push, two network round
+        trips, all after the answer was already on screen. The browser's reader only lets go of
+        the turn when the generator is exhausted, so the "…is working on this conversation" bar
+        and the thread re-read waited on a push nobody was watching (measured: 2.5s).
+
+        Nothing downstream needs the commit: Artifacts are served off the filesystem and the next
+        turn's baseline is a byte snapshot, not a git read. And the `saved` event this used to
+        return was never drawn — Chat's stream handler has no branch for it, and it is not written
+        to the Thread — so there is no line to lose by not waiting for one.
+        """
         self._chat_dirty = True
         self._chat_dirty_thread = thread_id
-        if immediate:
-            # No `holding_turn`: the turn let the lock go at `done`, so this save takes it itself.
-            # If the next turn got there first the commit waits for the idle timer, which is what
-            # an ordinary text turn already does — later is fine for a commit.
-            return self._flush_chat_save(immediate)
-        self._arm_chat_idle_save()
-        return None
+        self._arm_chat_idle_save(immediate or "idle",
+                                 delay=self._chat_save_turn_s if immediate else None)
 
     def decline_handoff_stream(self, thread_id: str):
         """`Not now` on a Build offer: stop offering, and answer the question if one is waiting.
@@ -6709,7 +6753,7 @@ class Orchestrator:
         the sheet payload. Creates no app: that is what confirming does (ADR-0008).
 
         Idempotent once the Thread's handoff names a plan document. Does not teleport into Build."""
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "try again")
         try:
             return self._draft_handoff_plan(thread_id)
@@ -6724,7 +6768,7 @@ class Orchestrator:
         already exists, and anything else — absent, empty, `{"appId": ""}` — means a new one. The
         default lives HERE rather than in the sheet's markup, so a caller that says nothing gets a
         new app and never someone else's (docs/workbench/handoff.md §4, #73)."""
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "try again")
         try:
             # `_app_lock` as well, because confirming BINDS an app and then keeps reading the one it
@@ -6752,7 +6796,7 @@ class Orchestrator:
         made several, into several apps. Without it the newest would answer for all of them, and
         pressing Change on the first card would rewrite the second app's crossing.
         """
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "try again")
         try:
             # `_app_lock` for the same reason confirming takes it: this selects an app and then
@@ -7520,7 +7564,7 @@ class Orchestrator:
         """
         if scope not in (recall.SUMMARY, recall.EMPTY):
             raise ValueError(f"unknown scope {scope!r}")
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "try again")
         try:
             project = self.project(start_preview=False)
@@ -8679,10 +8723,11 @@ class Orchestrator:
                 project.control.disarm_web(web_token)
             if chat_sens_token is not None:
                 project.control.disarm_sensitivity(chat_sens_token)
+            # Reads ~0ms now, and that is the honest number: what it measures is the person
+            # waiting, and the commit it queues is no longer something they wait for. The git
+            # work's own duration is in the `chat save (…)` log line.
             with timing.span("after.save"):
-                saved = self._after_chat_turn(thread_id, immediate=immediate)
-            if saved:
-                yield saved
+                self._after_chat_turn(thread_id, immediate=immediate)
 
     def _maybe_compact_chat(self, client, sid: str, project: Project) -> None:
         """After a Chat turn, compact the OpenCode session if it has grown too large.
@@ -8747,6 +8792,27 @@ class Orchestrator:
             self._write_app_data(project)
         except Exception:
             log.exception("app data: could not re-check the query catalog")
+
+    def _acquire_for_door(self, wait: float = 10.0) -> bool:
+        """Take the turn lock for a button that touches the working tree. Refuses at once, except
+        against a Chat save.
+
+        A save is the one holder with no turn inside it, and since the post-turn commit moved off
+        the stream (`_after_chat_turn`) it holds the lock at exactly the wrong moment: the answer
+        is on screen, the turn bar is gone, the person believes it is over — and that is when they
+        press Write a plan. Refusing there says "a build is already running" about a `git push`
+        nobody can see, and the button they pressed did nothing.
+
+        Bounded the way `_acquire_for_reset` is bounded, and for the same reason: `_chat_saving` is
+        true for exactly the window where the lock is about to free itself, so waiting is waiting
+        for a commit and a push, not for a build. Every other holder still refuses immediately —
+        a real turn is a wait nobody should be made to sit through silently.
+        """
+        if self._turn_lock.acquire(blocking=False):
+            return True
+        if not self._chat_saving:
+            return False
+        return self._turn_lock.acquire(timeout=wait)
 
     def _acquire_for_reset(self, wait: float = 15.0) -> bool:
         """Take the turn lock for a reset, waiting only while a Stop is still unwinding the turn.
@@ -12451,7 +12517,7 @@ class Orchestrator:
         #
         # Non-blocking, like publish's and Delete's: there is nothing to wait out, and a Pull latest
         # that sat silently until a long build finished would look like a control that did nothing.
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "pull the latest changes")
         try:
             git.commit_all(path, "build: save before pull",
@@ -12520,7 +12586,7 @@ class Orchestrator:
         #
         # Non-blocking, like Delete's: there is nothing to wait out here, and a Publish that sat
         # silently until a long build finished would look like a control that did nothing.
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "publish")
         try:
             project = self.project()
@@ -13191,7 +13257,7 @@ class Orchestrator:
         # Nothing pins the catalog for the duration of a turn, unlike `arm_turn_mode`, so a change
         # accepted here would move the rest of a running build onto another model with the first
         # half's tool calls in context. Same guard the override chip already closes against.
-        if not self._turn_lock.acquire(blocking=False):
+        if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "change the model")
         try:
             overrides = project.record.read_catalog_overrides()
