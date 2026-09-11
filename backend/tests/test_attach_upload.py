@@ -826,6 +826,45 @@ def test_a_handoff_hands_the_scratch_bytes_over_instead_of_fetching_them_again(t
     assert (root / fetched["path"]).is_file()                 # the chip's path still resolves
 
 
+def test_a_chip_marked_inbuild_attaches_into_the_app_instead_of_scratch(tmp_path: Path):
+    """A Built App started from the Build rail has no handoff behind it (#74), so the server can't
+    tell "is this Build" from the Thread alone — the client's own URL is the only signal, carried
+    as `inBuild`. When it's set, a file mention takes the same route a folder attach already does:
+    straight into `public/data/`, not the chat-scratch fetch."""
+    assets = _UnmountedAssets()
+    orch = _orch(tmp_path, assets=assets)
+    project = orch.project(start_preview=False)
+    ws, root = project.workspace.path, project.record.path
+    tid = orch.create_thread()["id"]
+
+    row = orch.add_thread_context(tid, {
+        "kind": "file", "name": "wells.csv",
+        "datasetId": "ds_shared", "datasetRelPath": "raw/wells.csv", "inBuild": True,
+    })
+
+    assert row["path"] == "public/data/Oil-and-Gas-Demo/raw/wells.csv"
+    entry = _manifest(ws)[0]
+    assert entry["path"] == row["path"]
+    assert (ws / entry["path"]).read_bytes() == b"a,b\n1,2\n"
+    assert not (root / ".sage" / "scratch" / "datasets").exists()  # never took the scratch route
+
+
+def test_inbuild_is_a_routing_signal_and_is_never_persisted(tmp_path: Path):
+    """The flag says which route THIS mention takes, once — it has no meaning as stored chip
+    state, and the client sends it on every mention regardless of whether one already exists."""
+    orch = _orch(tmp_path, assets=_UnmountedAssets())
+    orch.project(start_preview=False)
+    tid = orch.create_thread()["id"]
+
+    orch.add_thread_context(tid, {
+        "kind": "file", "name": "wells.csv",
+        "datasetId": "ds_shared", "datasetRelPath": "raw/wells.csv", "inBuild": True,
+    })
+
+    stored = orch.thread_context(tid)["items"]
+    assert all("inBuild" not in i for i in stored)
+
+
 def _chip(orch, thread_id: str) -> dict:
     return orch.add_thread_context(thread_id, {
         "kind": "file", "name": "wells.csv",

@@ -500,7 +500,7 @@ SW.api = {
     }));
   },
   addToConversation: async (id, resourceId, addedBy) => {
-    const { resourceIndex } = SW.store.get();
+    const { resourceIndex, activeApp } = SW.store.get();
     const resource = resourceIndex[resourceId] || {};
     const kind = resource.kind === 'table' ? 'data_source'
       : resource.kind === 'datasource' ? 'data_source'
@@ -538,6 +538,11 @@ SW.api = {
       datasetRelPath: resource.datasetRelPath,
       datasetName: resource.datasetName,
       scope: resource.scope,
+      // Whether this mention lands in the app's real asset tree (`attach_file`) or a chat-scratch
+      // fetch depends on where the click happened, not on this Thread's history — a Built App
+      // started from the Build rail has no handoff behind it (#74), so the server can't reconstruct
+      // "is this Build" from the thread alone. The URL already knows.
+      inBuild: SW.router.get().mode === 'build' && !!activeApp,
     });
     return {
       id: row.id,

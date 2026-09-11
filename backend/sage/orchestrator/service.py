@@ -1181,8 +1181,9 @@ _LEAF_ID_PREFIXES = ("table:", "dsfile:")
 # picker reads `alias` and `reasoning_efforts` off the project's own resources when the Alias
 # listing is unavailable, so a join without them writes an option that cannot be selected. A chip
 # has no use for any of them, so they ride in on the mention and are taken back off before it is
-# stored.
-_MEMBERSHIP_ONLY_FIELDS = ("description", "alias", "capabilities", "reasoning_efforts")
+# stored. `inBuild` is the same idea for a different consumer: it routes a dataset-file mention to
+# `attach_file` vs `fetch_dataset_file_for_chat` and has no business in the stored chip either.
+_MEMBERSHIP_ONLY_FIELDS = ("description", "alias", "capabilities", "reasoning_efforts", "inBuild")
 
 # Set once `_backfill_membership_from_bindings` has reconciled this Project's working set with the
 # Bindings that predate membership-on-bind (#140). In the Project's settings rather than derived
@@ -6248,9 +6249,15 @@ class Orchestrator:
         rel = row.get("datasetRelPath")
         if str(row.get("kind") or "") == "file" and dataset_id and rel and not row.get("path"):
             try:
-                # Fetched for the question, not for the app. `_confirm_handoff` is where a Thread
-                # says it is becoming an app, and where these bytes reach `public/data/`.
-                fetched = self.fetch_dataset_file_for_chat(str(dataset_id), str(rel))
+                # `inBuild` is the client's own URL, not this Thread's history: a Built App started
+                # from the Build rail has no handoff behind it (#74), so the server has nothing to
+                # reconstruct "is this Build" from. When it's set, this is the app's real route —
+                # same as a folder attach — and the bytes land in `public/data/`. Otherwise it's
+                # fetched for the question, not for the app.
+                if row.get("inBuild"):
+                    fetched = self.attach_file(str(dataset_id), str(rel))
+                else:
+                    fetched = self.fetch_dataset_file_for_chat(str(dataset_id), str(rel))
                 row["path"] = fetched.get("path")
             except (LookupError, FileNotFoundError, ValueError, AttachTooLarge,
                     ResourceUnavailable):
