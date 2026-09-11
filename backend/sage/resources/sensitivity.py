@@ -80,6 +80,7 @@ class SensitivityGate:
         list_alias_groups: Callable[[], list[dict]] | None = None,
         list_taxonomy_tags: Callable[[str], list[str]] | None = None,
         *,
+        list_taxonomy_tags_for: Callable[[Collection[str]], dict[str, list[str]]] | None = None,
         env: dict[str, str] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -90,6 +91,10 @@ class SensitivityGate:
         # panel — that the datasetrw tag map `list_assets` reads never sees. Optional: a deployment
         # whose operators only use the old tag map still declares correctly with this left unset.
         self._list_taxonomy_tags = list_taxonomy_tags
+        # The same answer for many Datasets at once. Only the rail's listing needs it — the turn
+        # gate reads one Dataset at a time — so it is optional beside the single read rather than
+        # replacing it, and `declares` falls back to asking one by one without it.
+        self._list_taxonomy_tags_for = list_taxonomy_tags_for
         self._env = env
         self._clock = clock
         # The cached fact is the listing's verdict — which Dataset ids and names are declared — not
@@ -128,6 +133,60 @@ class SensitivityGate:
             return datasets
         return [b for b in datasets
                 if b.id in keys or b.name in keys or self._taxonomy_declared(b.id)]
+
+    def declares(self, assets: list[Asset]) -> frozenset[str]:
+        """The ids among these Datasets that carry a declaration, by EITHER tagging system.
+
+        The rail's per-row badge reads this, so the badge and the lock resolve the same question
+        through the same matching rule. They used to answer it twice — the badge off `Asset.tags`
+        alone, the lock off that plus Taxonomy — and a Dataset tagged through its own Tags panel
+        drew no chip while the lock behind it fired. A badge that disagrees with the lock promises
+        something other than what is kept, which is the one failure this module must not have.
+
+        Empty when the feature is off, for the same reason `declared()` is: a badge on a
+        deployment that never opted in promises a narrowing that will not happen.
+
+        Asks the Taxonomy side in ONE call for every Dataset the old map does not already declare,
+        and fills the same per-Dataset cache `_taxonomy_declared` reads, so a listing warms the
+        verdicts a later turn needs rather than racing them.
+
+        Unlike `declared()`, an unreadable answer here does NOT fail safe onto every row. The
+        fail-safe belongs where the cost is real — the turn gate, which decides what may run. A
+        listing that cannot reach Taxonomy would otherwise badge every Dataset on screen sensitive
+        on a network wobble, which teaches people to stop believing the badge.
+        """
+        if not self.enabled:
+            return frozenset()
+        tags = sensitivity_tags(self._env)
+        old = {a.id for a in assets if is_sensitive(a, tags)}
+        ask = [a.id for a in assets if a.id and a.id not in old
+               and self._fresh(self._taxonomy.get(a.id),
+                               self._ttl_for(self._taxonomy.get(a.id))) is None]
+        if ask and self._list_taxonomy_tags is not None:
+            self._warm_taxonomy(ask)
+        return frozenset(old | {a.id for a in assets if a.id not in old
+                                and (self._taxonomy.get(a.id) or (0.0, False))[1]})
+
+    def _warm_taxonomy(self, dataset_ids: list[str]) -> None:
+        """Read Taxonomy for these Datasets and cache each verdict, in one call where the provider
+        offers one. Never raises: a listing that cannot reach Taxonomy simply leaves those rows
+        unbadged (see `declares`), and the turn gate still applies its own fail-safe later."""
+        labels_for: dict[str, list[str]] = {}
+        bulk = self._list_taxonomy_tags_for
+        try:
+            if bulk is not None:
+                labels_for = bulk(dataset_ids)
+            else:
+                assert self._list_taxonomy_tags is not None
+                labels_for = {d: self._list_taxonomy_tags(d) for d in dataset_ids}
+        except Exception:
+            log.exception("sensitivity: couldn't read Taxonomy tags for the Dataset listing")
+            return
+        tags = sensitivity_tags(self._env)
+        for dataset_id in dataset_ids:
+            labels = labels_for.get(dataset_id) or []
+            declared = any(str(label).strip().lower() in tags for label in labels)
+            self._taxonomy[dataset_id] = (self._clock(), declared)
 
     def _keys(self) -> frozenset[str] | None:
         """The declared ids and names, or None when the listing would not answer.

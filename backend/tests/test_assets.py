@@ -469,6 +469,56 @@ def test_list_taxonomy_labels_is_empty_for_an_untagged_dataset(monkeypatch):
     assert _provider().list_taxonomy_labels("d1") == []
 
 
+def test_list_taxonomy_labels_for_asks_once_for_every_dataset(monkeypatch):
+    """`datasetIds` is plural, and LIVE-VERIFIED 2026-09-11 it takes a comma-separated list: two
+    ids came back as two entries, each carrying only its own tags. The rail badges every row at
+    once and polls while open, so one call per row would make a refresh cost a call per Dataset."""
+    import httpx
+
+    calls = []
+
+    def get(url, **kw):
+        calls.append((url, kw.get("params")))
+        return httpx.Response(200, json=[
+            {"datasetRwDto": {"id": "d1"}, "taxonomyTags": [{"namespaceLabel": "sensitive"}]},
+            {"datasetRwDto": {"id": "d2"}, "taxonomyTags": []},
+        ])
+
+    monkeypatch.setattr(httpx, "get", get)
+
+    assert _provider().list_taxonomy_labels_for(["d1", "d2"]) == {"d1": ["sensitive"], "d2": []}
+    assert calls == [("http://domino/v4/datasetrw/datasets-v2",
+                      {"datasetIds": "d1,d2", "includeTaxonomyTags": "true"})]
+
+
+def test_list_taxonomy_labels_for_keys_off_the_answer_not_the_order_asked(monkeypatch):
+    """A Dataset the caller cannot read is DROPPED from the response rather than returned empty.
+    Zipping the answer against the request would then shift every later id onto the wrong row —
+    and a wrong row here badges an innocent Dataset sensitive, or leaves a declared one bare."""
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda url, **kw: httpx.Response(200, json=[
+        {"datasetRwDto": {"id": "d3"}, "taxonomyTags": [{"namespaceLabel": "sensitive"}]},
+    ]))
+
+    labels = _provider().list_taxonomy_labels_for(["d1", "d2", "d3"])
+
+    assert labels == {"d3": ["sensitive"]}
+    assert labels.get("d1") is None
+
+
+def test_list_taxonomy_labels_for_asks_nothing_when_there_are_no_datasets(monkeypatch):
+    """An empty listing must not spend a call, nor send `datasetIds=` and ask about everything."""
+    import httpx
+
+    def boom(url, **kw):
+        raise AssertionError("no Datasets to ask about")
+
+    monkeypatch.setattr(httpx, "get", boom)
+
+    assert _provider().list_taxonomy_labels_for([]) == {}
+
+
 def test_list_taxonomy_labels_failure_is_reported_not_swallowed(monkeypatch):
     import httpx
 

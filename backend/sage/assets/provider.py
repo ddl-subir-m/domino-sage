@@ -177,6 +177,17 @@ class AssetProvider(Protocol):
         the old system alone when a provider has nothing here."""
         return []
 
+    def list_taxonomy_labels_for(self, dataset_ids: Collection[str]) -> dict[str, list[str]]:
+        """`list_taxonomy_labels` for many Datasets in one answer, keyed by Dataset id.
+
+        The rail badges every row at once and polls while it is open, so one call per row would
+        make an ordinary refresh cost a call per Dataset. A Dataset carrying no tags may be absent
+        from the mapping rather than hold an empty list, so read it with `.get(id) or []`.
+
+        Defaults to asking one at a time, so an adapter that knows only the single read stays
+        correct without implementing this."""
+        return {d: self.list_taxonomy_labels(d) for d in dataset_ids}
+
 
 class UnconfiguredAssetProvider:
     """No DOMINO_API_HOST. Raises rather than inventing datasets, so the rail cannot look populated."""
@@ -213,6 +224,10 @@ class FakeAssetProvider:
 
     root: Path | None = None
     assets: list[Asset] = field(default_factory=list)
+    # Taxonomy tags by Dataset id — the second tagging system, empty unless a test sets it. Kept
+    # beside `assets` rather than on the Asset, because that is where the real split lives: the
+    # datasetrw listing that fills `Asset.tags` never carries these (ADR-0043).
+    taxonomy: dict[str, list[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.root is None:
@@ -243,6 +258,9 @@ class FakeAssetProvider:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
         return dest.stat().st_size
+
+    def list_taxonomy_labels(self, dataset_id: str) -> list[str]:
+        return list(self.taxonomy.get(dataset_id) or [])
 
 
 def parse_tags(raw: Any) -> list[str]:
@@ -405,8 +423,14 @@ class DominoAssetProvider:
         return found
 
     def list_taxonomy_labels(self, dataset_id: str) -> list[str]:
-        """The Taxonomy tag categories (`namespaceLabel`, not the leaf `label`) attached to one
-        Dataset — the tags a person attaches through the Dataset's own Tags panel, a second and
+        """The Taxonomy tag categories attached to ONE Dataset — see `list_taxonomy_labels_for`,
+        which this asks for a single id. Kept because the sensitivity gate reads one Dataset at a
+        time as a turn's scope names it, where the rail reads the whole listing at once."""
+        return self.list_taxonomy_labels_for([dataset_id]).get(dataset_id) or []
+
+    def list_taxonomy_labels_for(self, dataset_ids: Collection[str]) -> dict[str, list[str]]:
+        """The Taxonomy tag categories (`namespaceLabel`, not the leaf `label`) attached to these
+        Datasets — the tags a person attaches through a Dataset's own Tags panel, a second and
         unrelated tagging system from the datasetrw tag map `list_datasets` reads (ADR-0043).
 
         Goes through `/v4/datasetrw/datasets-v2?datasetIds=&includeTaxonomyTags=true`, not the
@@ -420,9 +444,20 @@ class DominoAssetProvider:
         same `namespaceLabel`/`label` shape. Matched on `namespaceLabel` rather than `label`:
         ADR-0043's synonym-tag design (`pii`, `confidential`, ... all declaring the same thing)
         maps onto a taxonomy *namespace*, not one specific value under it.
+
+        `datasetIds` is plural and LIVE-VERIFIED 2026-09-11 to take a comma-separated list: two
+        ids came back as two entries, each carrying only its own `taxonomyTags`. That is what
+        lets the rail badge every row for one call instead of one call per row.
+
+        Keyed off each entry's own `datasetRwDto.id` rather than the order asked in, because a
+        Dataset the caller cannot read is dropped from the response rather than returned empty —
+        zipping the answer against the request would then shift every later id onto the wrong row.
         """
         import httpx
 
+        ids = [str(d) for d in dataset_ids if str(d or "").strip()]
+        if not ids:
+            return {}
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
                 "{assistantName} lists {datasetPlural} from the {platformName} API, and it is not "
@@ -432,7 +467,7 @@ class DominoAssetProvider:
         try:
             headers = {"Authorization": f"Bearer {self._token_provider()}"}
             r = httpx.get(url, headers=headers,
-                          params={"datasetIds": dataset_id, "includeTaxonomyTags": "true"},
+                          params={"datasetIds": ",".join(ids), "includeTaxonomyTags": "true"},
                           timeout=self._timeout_s)
         except Exception as e:
             raise ResourceUnavailable(
@@ -454,10 +489,18 @@ class DominoAssetProvider:
             raise ResourceUnavailable(brand.text(
                 "The {platformName} API returned a non-JSON body reading Taxonomy tags."
             )) from e
-        entry = data[0] if isinstance(data, list) and data else None
-        rows = (entry.get("taxonomyTags") or []) if isinstance(entry, dict) else []
-        return [str(row["namespaceLabel"]) for row in rows
-                if isinstance(row, dict) and row.get("namespaceLabel")]
+        out: dict[str, list[str]] = {}
+        for entry in data if isinstance(data, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            dto = entry.get("datasetRwDto")
+            did = str(dto.get("id") or "") if isinstance(dto, dict) else ""
+            if not did:
+                continue
+            rows = entry.get("taxonomyTags") or []
+            out[did] = [str(row["namespaceLabel"]) for row in rows
+                        if isinstance(row, dict) and row.get("namespaceLabel")]
+        return out
 
     def _files_api_json(self, path: str, params: dict[str, Any], asset: Asset) -> Any:
         """GET one datasetrw endpoint about a Dataset's files, or refuse naming that Dataset.

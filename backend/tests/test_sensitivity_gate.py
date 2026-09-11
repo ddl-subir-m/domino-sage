@@ -115,6 +115,101 @@ def test_an_unreadable_dataset_listing_treats_the_project_as_declared():
     assert gate.declared(bound) == bound
 
 
+# --- What the rail's badge reads (`declares`) ---------------------------------------------------
+#
+# LIVE 2026-09-11: the badge used to recompute declaration off `Asset.tags` alone while the lock
+# read that PLUS Taxonomy, so a Dataset tagged through its own Tags panel drew no chip while the
+# lock behind it fired. Both now ask this one method, so they cannot drift apart again.
+
+def _bulk(answers, calls=None):
+    def read(ids):
+        if calls is not None:
+            calls.append(list(ids))
+        return {d: list(answers.get(d) or []) for d in ids}
+    return read
+
+
+def _gate_bulk(assets, answers, calls=None, env=ON, clock=None):
+    return SensitivityGate(
+        lambda: list(assets), lambda: [], None,
+        lambda dsid: list(answers.get(dsid) or []),
+        list_taxonomy_tags_for=_bulk(answers, calls),
+        env=env, clock=clock or Clock(),
+    )
+
+
+def test_the_badge_declares_a_dataset_that_only_the_taxonomy_knows_about():
+    """The case that was broken on screen: `tags` empty, the chip plainly there."""
+    assets = [_asset("drug_analysis"), _asset("logs")]
+    gate = _gate_bulk(assets, {"ds-drug_analysis": ["sensitive"]})
+
+    assert gate.declares(assets) == frozenset({"ds-drug_analysis"})
+
+
+def test_the_badge_asks_the_taxonomy_once_for_the_whole_listing():
+    """The rail polls while it is open. One call per row would make a refresh cost a call per
+    Dataset, which is why the provider reads them in bulk."""
+    calls: list[list[str]] = []
+    assets = [_asset("a"), _asset("b"), _asset("c")]
+    gate = _gate_bulk(assets, {"ds-c": ["sensitive"]}, calls)
+
+    gate.declares(assets)
+
+    assert len(calls) == 1
+    assert sorted(calls[0]) == ["ds-a", "ds-b", "ds-c"]
+
+
+def test_the_badge_does_not_ask_about_a_dataset_the_old_map_already_declares():
+    """Same short-circuit `declared()` has: the old system answering ends the question."""
+    calls: list[list[str]] = []
+    assets = [_asset("pii", ["sensitive"]), _asset("logs")]
+    gate = _gate_bulk(assets, {}, calls)
+
+    assert gate.declares(assets) == frozenset({"ds-pii"})
+    assert calls == [["ds-logs"]]
+
+
+def test_an_unreadable_taxonomy_leaves_the_listing_UNBADGED_rather_than_badging_everything():
+    """DELIBERATELY the opposite of `declared()`, and the asymmetry must not be tidied away.
+
+    `declared()` fails SAFE because it decides what may run: guessing "not sensitive" on a network
+    wobble sends rows to a vendor model. This decides what a row LOOKS like, where the same guess
+    costs nothing — and badging every Dataset on screen sensitive because Taxonomy blinked teaches
+    people to stop believing the badge. The turn gate still applies its own fail-safe afterwards.
+    """
+    def boom(ids):
+        raise RuntimeError("taxonomy down")
+
+    assets = [_asset("a"), _asset("b")]
+    gate = SensitivityGate(
+        lambda: list(assets), lambda: [], None, lambda dsid: [],
+        list_taxonomy_tags_for=boom, env=ON, clock=Clock(),
+    )
+
+    assert gate.declares(assets) == frozenset()
+
+
+def test_the_badge_declares_nothing_while_the_deployment_has_not_opted_in():
+    """A badge on a deployment that never turned the feature on promises a narrowing that will
+    not happen. Domino tags are freeform and pre-existing (see the opted-out cases above)."""
+    assets = [_asset("pii", ["sensitive"])]
+    gate = _gate_bulk(assets, {"ds-pii": ["sensitive"]}, env={})
+
+    assert gate.declares(assets) == frozenset()
+
+
+def test_a_listing_warms_the_verdict_the_next_turn_reads():
+    """The two surfaces share one per-Dataset cache, so a rail refresh spares the turn that
+    follows it a second round trip — and, more importantly, they cannot answer differently."""
+    calls: list[list[str]] = []
+    assets = [_asset("pii")]
+    gate = _gate_bulk(assets, {"ds-pii": ["sensitive"]}, calls)
+
+    assert gate.declares(assets) == frozenset({"ds-pii"})
+    assert gate.declared([_dataset("pii")]) == [_dataset("pii")]
+    assert len(calls) == 1
+
+
 # --- The Taxonomy API: a second, unrelated tag system (ADR-0043) --------------------------------
 #
 # LIVE-VERIFIED 2026-09-10: a Dataset tagged through the UI's own Tags panel never reaches the

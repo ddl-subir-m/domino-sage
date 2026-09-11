@@ -116,6 +116,24 @@ def test_the_tag_is_read_case_insensitively_once_the_group_is_configured(tmp_pat
     assert rows["logs"]["declared"] is False
 
 
+def test_a_taxonomy_tagged_dataset_is_badged_though_the_old_tag_map_is_empty(tmp_path, monkeypatch):
+    """The Tags panel on a Dataset's own page writes Domino's Taxonomy API, not the datasetrw
+    snapshot-tag map this listing reads, so `tags` stays empty while the chip is plainly on screen.
+
+    LIVE 2026-09-11: `drug-analysis-cbv23` tagged `sensitive: sensitive` came back here with
+    `tags: []` and drew no chip, while the lock behind it read the other system and fired. A badge
+    that disagrees with the lock is the failure this file exists to catch.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    orch._assets.taxonomy = {"ds_logs": ["sensitive"]}
+
+    rows = {r["name"]: r for r in orch.list_assets()}
+
+    assert rows["logs"]["declared"] is True
+    assert rows["claims"]["declared"] is True
+
+
 def test_a_row_says_whether_this_project_owns_the_dataset(tmp_path, monkeypatch):
     """The one condition on offering the tick. A Domino tag marks a whole Dataset snapshot, so
     ticking a box on a Dataset shared in from `Platform` would lock that Project's work from inside
