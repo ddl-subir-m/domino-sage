@@ -232,6 +232,54 @@ def terminal_finish_reason(chunk: bytes) -> str | None:
     return _finish_reason(chunk, TERMINAL_FINISH_REASONS)
 
 
+def tool_names(chunk: bytes) -> list[str]:
+    """The tool names a chunk announces, or [] when it announces none.
+
+    The ledger could already say that a step COST 6.4 seconds and could never say what it spent them
+    on, so which steps to cut had to be guessed at from chunk counts. That guess is the expensive
+    kind: it looks well-founded and is not checkable.
+
+    A name arrives once per tool call, in the delta that opens it — the arguments stream in after,
+    under the same index and with no name — so reading only the opening delta counts each call once
+    without accumulating anything. Order is kept: a step that reads twice before writing is a
+    different step from one that writes twice, and the sequence is the part worth seeing.
+
+    Deliberately not a general SSE parser, for the reason `sniff` gives for using a substring: the
+    byte check rejects the whole hot path first, and only a chunk that already says `tool_calls`
+    pays for a parse. Silence is normal — a text-only step announces nothing.
+    """
+    if b'"tool_calls"' not in chunk:
+        return []
+    found: list[str] = []
+    for line in chunk.split(b"\n"):
+        payload = line.strip()
+        if not payload.startswith(b"data:"):
+            continue
+        payload = payload[len(b"data:"):].strip()
+        if not payload.startswith(b"{"):   # skips [DONE] and SSE comments
+            continue
+        try:
+            obj = json.loads(payload)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        for choice in obj.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            for call in delta.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function")
+                name = (fn or {}).get("name") if isinstance(fn, dict) else None
+                if name:
+                    found.append(str(name))
+    return found
+
+
 def usage_tokens(chunk: bytes) -> tuple[int | None, int | None] | None:
     """`(input_tokens, cached_tokens)` off a `usage` frame, or None when this chunk carries none.
 

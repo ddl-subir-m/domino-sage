@@ -249,3 +249,62 @@ def test_a_slow_first_byte_says_whether_the_shim_or_the_gateway_spent_it(monkeyp
     prep, ttfb = run(shim_delay=0.0, gateway_delay=0.30)
     assert prep < 200, f"the gateway's 300ms leaked into the shim's half ({prep}ms)"
     assert ttfb - prep >= 250, f"the gateway's 300ms is missing from its half ({ttfb - prep}ms)"
+
+
+def test_a_step_records_what_it_spent_its_round_trip_on(monkeypatch):
+    """Eighteen calls in one approve turn, and the ledger could say what each COST and never what it
+    was for. Ranking them for removal then came down to reading chunk counts and guessing, which is
+    the expensive kind of guess: it looks well-founded and cannot be checked.
+
+    Two things are asserted, and the second is the one that rots. A name arrives once, in the delta
+    that OPENS a tool call, and the arguments stream after it under the same index with no name —
+    so a reader that keys on `"name"` anywhere, or that accumulates per chunk, double-counts every
+    call with arguments long enough to split. Order is kept because a step that reads twice before
+    writing is a different step from one that writes twice.
+    """
+    import types
+
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as orchmod
+    from sage.shim import keepalive as ka
+
+    monkeypatch.setattr(ka, "FIRST_BYTE_BUDGET_S", 0.05)
+    monkeypatch.setattr(ka, "KEEPALIVE_INTERVAL_S", 0.05)
+
+    def opens(name: str) -> bytes:
+        return (b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":'
+                b'{"name":"' + name.encode() + b'","arguments":""}}]}}]}\n\n')
+
+    def args(fragment: str) -> bytes:
+        return (b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":'
+                b'{"arguments":"' + fragment.encode() + b'"}}]}}]}\n\n')
+
+    # `**_` rather than the named hooks: the shim's callback list grows (on_resolved, then
+    # on_refused), and a fake that spells them out fails the next time one is added for a reason
+    # that has nothing to do with what this test is about.
+    def handle(body, project, session=None, **_):
+        def gen():
+            yield opens("read")
+            yield args("{\\\"pa")          # the same call, still streaming: no second name
+            yield args("th\\\":1}")
+            yield opens("read")            # a genuine second read
+            yield opens("write")
+            yield b'data: {"choices":[{"delta":{"content":"done"}}]}\n\n'
+        return gen()
+
+    proj = types.SimpleNamespace(
+        id="p", session_id="s", active_session_id=None,
+        shim=types.SimpleNamespace(handle=handle),
+        model_calls=0, tool_call_responses=0, last_gateway_error=None,
+    )
+    monkeypatch.setattr(orchmod, "orchestrator", types.SimpleNamespace(project=lambda: proj))
+
+    timing.start_turn("build", "what did the step do")
+    TestClient(orchmod.control_app).post("/v1/chat/completions",
+                                         json={"model": "gpt-5.4", "messages": []})
+    timing.finish_turn(ok=True, decision="-")
+    call = timing.as_dict(timing.recent(1)[0])["calls"][0]
+
+    assert call["tools"] == ["read", "read", "write"]
+    assert "tools=read,read,write" in timing.render(timing.recent(1)[0])

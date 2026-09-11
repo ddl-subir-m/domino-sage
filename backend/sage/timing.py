@@ -72,6 +72,12 @@ class ModelCall:
     # 2026-09-11 against a live Builder, one implement call reported ttfb=38.9s where its seventeen
     # neighbours reported ~2.4s, and nothing recorded could say which side of this line it sat on.
     prepared: float | None = None
+    # What this step actually did. A call line could say it cost 6.4 seconds and never say what for,
+    # so the only way to rank steps for removal was to read chunk counts and guess — and a guess
+    # that looks well-founded is the expensive kind. Ordered and not deduped: two reads before a
+    # write is a different step from one read, and a step that re-reads what it just wrote is the
+    # one worth cutting.
+    tools: list[str] = field(default_factory=list)
     t1: float | None = None
     chunks: int = 0
     ok: bool = True
@@ -282,6 +288,15 @@ class _CallHandle:
         if self._call is not None and self._call.prepared is None:
             self._call.prepared = time.monotonic()
 
+    def tool(self, names: list[str]) -> None:
+        """Record the tools this step announced. Capped, because a runaway step must not become a
+        memory leak — the same reason `observe` caps its samples."""
+        if self._call is None or not names:
+            return
+        room = 40 - len(self._call.tools)
+        if room > 0:
+            self._call.tools.extend(str(n)[:40] for n in names[:room])
+
     def chunk(self) -> None:
         if self._call is not None:
             self._call.chunks += 1
@@ -368,7 +383,7 @@ def as_dict(rec: TurnRecord) -> dict:
                    "ttfbMs": None if c.first_byte is None else round((c.first_byte - c.t0) * 1000),
                    "prepMs": None if c.prepared is None else round((c.prepared - c.t0) * 1000),
                    "ms": None if c.t1 is None else round((c.t1 - c.t0) * 1000),
-                   "chunks": c.chunks, "reqBytes": c.request_bytes,
+                   "chunks": c.chunks, "reqBytes": c.request_bytes, "tools": list(c.tools),
                    "inTokens": c.input_tokens, "cachedTokens": c.cached_tokens,
                    "ok": c.ok, "error": c.error} for c in rec.calls],
         "counters": {k: round(v, 1) for k, v in rec.counters.items()},
@@ -408,11 +423,14 @@ def render(rec: TurnRecord) -> str:
         # grew is a conversation getting heavier, and one that grew on a steady request is not.
         req = f" req={c['reqBytes'] / 1024:.0f}KB" if c["reqBytes"] else ""
         tok = f" in={c['inTokens']}tok" if c["inTokens"] is not None else ""
+        # Last on the line and in call order, because this is what the line is read FOR once the
+        # question is "which of these eighteen steps did not need to be its own round trip".
+        tools = f" tools={','.join(c['tools'])}" if c.get("tools") else ""
         rows.append((c["atMs"],
                      (f"  {c['atMs'] / 1000:7.1f}  {(c['ms'] or 0) / 1000:7.1f}s      "
                       f"· call {c['n']} {c['model'] or '?'}/{c['phase'] or '?'} "
                       f"ttfb={ttfb}{shim} total={total} chunks={c['chunks']}"
-                      f"{req} {tok}"
+                      f"{req} {tok}{tools}"
                       f"{'' if c['ok'] else '  FAILED ' + c['error']}")))
     rows.sort(key=lambda r: r[0])
     lines = [head, "      at    dur", *[r[1] for r in rows]]
