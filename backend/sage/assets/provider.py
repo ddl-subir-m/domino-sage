@@ -409,10 +409,17 @@ class DominoAssetProvider:
         Dataset — the tags a person attaches through the Dataset's own Tags panel, a second and
         unrelated tagging system from the datasetrw tag map `list_datasets` reads (ADR-0043).
 
-        Per-entity: `/api/taxonomy/v1/tags?entityId&entityType=dataset` takes one Dataset at a time
-        and answers `{"data": []}` for an untagged one, never a 404. Matched on `namespaceLabel`
-        rather than `label`: ADR-0043's synonym-tag design (`pii`, `confidential`, ... all declaring
-        the same thing) maps onto a taxonomy *namespace*, not one specific value under it.
+        Goes through `/v4/datasetrw/datasets-v2?datasetIds=&includeTaxonomyTags=true`, not the
+        `/api/taxonomy/v1/tags?entityId=&entityType=dataset` a DevTools capture of the UI's own
+        Tags panel suggested: that path isn't in `swagger.json` at all (it's undocumented), and
+        LIVE-VERIFIED 2026-09-10, it 404s from inside a workspace even though it answers from a
+        laptop — the internal cluster proxy Sage's own `DOMINO_API_HOST` points at doesn't route
+        it. `/v4/...` is the documented public API (same prefix `_files_api_json` already uses,
+        for the same reason: `/api/...` 404s internally where `/v4/...` doesn't), and its
+        `includeTaxonomyTags` flag documents populating each dataset's `taxonomyTags` with this
+        same `namespaceLabel`/`label` shape. Matched on `namespaceLabel` rather than `label`:
+        ADR-0043's synonym-tag design (`pii`, `confidential`, ... all declaring the same thing)
+        maps onto a taxonomy *namespace*, not one specific value under it.
         """
         import httpx
 
@@ -421,23 +428,23 @@ class DominoAssetProvider:
                 "{assistantName} lists {datasetPlural} from the {platformName} API, and it is not "
                 "configured to reach one, so it cannot tell which {datasetPlural} you have."
             ))
-        url = f"{self._api_host}/api/taxonomy/v1/tags"
+        url = f"{self._api_host}/v4/datasetrw/datasets-v2"
         try:
             headers = {"Authorization": f"Bearer {self._token_provider()}"}
             r = httpx.get(url, headers=headers,
-                          params={"entityId": dataset_id, "entityType": "dataset"},
+                          params={"datasetIds": dataset_id, "includeTaxonomyTags": "true"},
                           timeout=self._timeout_s)
         except Exception as e:
             raise ResourceUnavailable(
                 brand.text(
-                    "The {platformName} API didn't answer at /api/taxonomy/v1/tags ({err}).",
+                    "The {platformName} API didn't answer at /v4/datasetrw/datasets-v2 ({err}).",
                     err=type(e).__name__,
                 )
             ) from e
         if r.status_code >= 400:
             raise ResourceUnavailable(
                 brand.text(
-                    "The {platformName} API answered {code} at /api/taxonomy/v1/tags.",
+                    "The {platformName} API answered {code} at /v4/datasetrw/datasets-v2.",
                     code=r.status_code,
                 )
             )
@@ -447,7 +454,8 @@ class DominoAssetProvider:
             raise ResourceUnavailable(brand.text(
                 "The {platformName} API returned a non-JSON body reading Taxonomy tags."
             )) from e
-        rows = (data.get("data") or []) if isinstance(data, dict) else []
+        entry = data[0] if isinstance(data, list) and data else None
+        rows = (entry.get("taxonomyTags") or []) if isinstance(entry, dict) else []
         return [str(row["namespaceLabel"]) for row in rows
                 if isinstance(row, dict) and row.get("namespaceLabel")]
 

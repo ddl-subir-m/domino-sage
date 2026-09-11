@@ -433,30 +433,38 @@ def test_a_non_json_listing_body_renames_the_platform_and_the_noun(_oem_pack, mo
 def test_list_taxonomy_labels_reads_the_namespace_label(monkeypatch):
     """Matched on `namespaceLabel` (the category), not `label` (the leaf value): ADR-0043's
     synonym-tag design (`pii`, `confidential`, ... all declaring the same thing) maps onto a
-    taxonomy namespace, not one specific value under it."""
+    taxonomy namespace, not one specific value under it.
+
+    Goes through `/v4/datasetrw/datasets-v2?includeTaxonomyTags=true`, not the undocumented
+    `/api/taxonomy/v1/tags` a DevTools capture first suggested — that path isn't in
+    `swagger.json` and 404s from inside a workspace (LIVE-VERIFIED 2026-09-10)."""
     import httpx
 
     calls = []
 
     def get(url, **kw):
         calls.append((url, kw.get("params")))
-        return httpx.Response(200, json={"data": [
-            {"namespaceLabel": "sensitive", "label": "sensitive"},
-            {"namespaceLabel": "", "label": "orphan"},
-        ]})
+        return httpx.Response(200, json=[{
+            "datasetRwDto": {"id": "d1"},
+            "taxonomyTags": [
+                {"namespaceLabel": "sensitive", "label": "sensitive"},
+                {"namespaceLabel": "", "label": "orphan"},
+            ],
+        }])
 
     monkeypatch.setattr(httpx, "get", get)
 
     assert _provider().list_taxonomy_labels("d1") == ["sensitive"]
-    assert calls == [("http://domino/api/taxonomy/v1/tags",
-                      {"entityId": "d1", "entityType": "dataset"})]
+    assert calls == [("http://domino/v4/datasetrw/datasets-v2",
+                      {"datasetIds": "d1", "includeTaxonomyTags": "true"})]
 
 
 def test_list_taxonomy_labels_is_empty_for_an_untagged_dataset(monkeypatch):
-    """Per-entity: an untagged Dataset answers an empty `data` list, never a 404."""
+    """Per-entity: an untagged Dataset omits `taxonomyTags` entirely, never a 404."""
     import httpx
 
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(200, json={"data": []}))
+    monkeypatch.setattr(httpx, "get",
+                        lambda *a, **k: httpx.Response(200, json=[{"datasetRwDto": {"id": "d1"}}]))
 
     assert _provider().list_taxonomy_labels("d1") == []
 
