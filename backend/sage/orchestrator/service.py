@@ -7965,8 +7965,8 @@ class Orchestrator:
         lines.append(
             "This turn answers a question about data. Do not greet by asking what to build, "
             "and do not offer an app unless the person asked to make one that other people would use. "
-            "If a chart or table would help, write it without being asked — a PNG and/or "
-            f".table.json at examples/{thread_id}/. A matrix is a heatmap PNG plus the table. "
+            "If a chart or table would help, write it without being asked — one PNG or one "
+            f".table.json at examples/{thread_id}/, not both. A matrix is a heatmap PNG. "
             "Never tell the user whether a chart or table was needed. "
             "That folder already exists, not a React file, not src/. Write the file there; "
             # Scoped, because unscoped it was read as a blanket ban. It was only ever about hunting

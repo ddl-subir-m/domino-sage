@@ -73,3 +73,42 @@ def test_the_prompt_never_makes_a_missing_tool_a_reason_to_give_up():
     # And the half that matters to the person reading the Thread: a tool name is never the reason
     # they are given for not getting their own data.
     assert "never name a tool to them as the reason" in prompt
+
+
+def test_the_turn_writes_one_artifact_not_two():
+    """A second file is a second write step, and a step is a whole round trip through the gateway.
+
+    Measured on 2026-09-11: a Chat turn cost 7-8 model steps and 73-84% of its wall clock sat
+    inside them. The prompt used to ask for a chart AND a table whenever the person might want
+    both, and for a matrix it asked for both outright — so the rule that produced the extra step
+    was in the prompt, not in the question.
+
+    Both copies, because `template/chat/AGENTS.md` is the source of truth and `opencode.json` is
+    what the model is actually sent. Editing one alone is the failure this asserts against.
+    """
+    root = Path(__file__).resolve().parents[2]
+    md = (root / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
+    prompt = json.loads((root / "opencode.json").read_text(encoding="utf-8"))[
+        "agent"]["sage-chat"]["prompt"]
+    for probe in ("Write **one** of them, whichever fits the answer — not both",
+                  "square matrix is a heatmap PNG"):
+        assert probe in md, probe
+        assert probe in prompt, probe
+    # The rule it replaced, in either of the two shapes it had.
+    assert "Write both when they would copy" not in md
+    assert "square matrix is **both**" not in md
+
+
+def test_the_turn_is_told_to_do_the_work_in_one_script():
+    """Looking in one step and computing in the next doubles the round trips for no extra answer.
+
+    The `.unique()` line is the one the prompt itself used to invite a separate look with, so it
+    carries the same instruction rather than contradicting it."""
+    root = Path(__file__).resolve().parents[2]
+    md = (root / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
+    prompt = json.loads((root / "opencode.json").read_text(encoding="utf-8"))[
+        "agent"]["sage-chat"]["prompt"]
+    for probe in ("**Do the whole job in one script.**",
+                  "inside the script you are already running, not in a"):
+        assert probe in md, probe
+        assert probe in prompt, probe
