@@ -202,3 +202,19 @@ def test_the_withheld_row_reaches_the_build_transcript(tmp_path: Path):
     orch, _out = _run_build(tmp_path)
     orch.withhold_build_content(["file:raw.csv"], ["raw.csv"])
     assert recall.withheld(_build_history(orch)) == frozenset({"file:raw.csv"})
+
+
+def test_a_turn_the_local_scan_can_place_pays_for_two_probes_not_seven(tmp_path: Path):
+    """The fast path, end to end. `refusal_scan` reads the captured payload for free and names the
+    file; the search spends one call asking the gateway whether withholding it clears the refusal,
+    and stops on CLEAN.
+
+    MEASURED live 2026-09-11 against the real gateway, four files with one poisoned: 7 probes / 8.9s
+    without the hint, 2 probes / 3.0s with it, the same carrier both ways. The probes ARE the wait —
+    each one re-sends the whole conversation — so calls are the budget and bytes are not.
+    """
+    orch, _tid, out, gw = _run(tmp_path)
+    found = next(e for e in out if e["type"] == recall.FOUND)
+    assert [c["label"] for c in found["carriers"]] == ["raw.csv"]
+    assert found["complete"] is True
+    assert gw.probes == 2, f"the scan placed it and the search still spent {gw.probes}"

@@ -179,3 +179,86 @@ def test_a_fingerprint_is_recorded_never_the_text():
     assert POISON not in text_key(m)
     assert text_key(m) == text_key({"role": "user", "content": f"ssn {POISON}"})
     assert text_key(m) != text_key({"role": "user", "content": "ssn 111-22-3333"})
+
+
+# The fast path. A local scanner (`shim/refusal_scan.py`) can often name the offending message on
+# sight, and when it is right the whole bisect is wasted work. What it may never do is DECIDE: its
+# rules are a reading of a policy that belongs to an administrator who can change it without telling
+# Sage, and they have already needed one correction. So the hint picks who is asked first, and the
+# gateway still says who goes.
+
+
+def test_a_right_hint_settles_it_in_two_calls():
+    """Nine calls become two: the root probe, then one asking whether withholding the hinted file
+    clears the refusal. A CLEAN answer to that IS the proof — nothing else can still be a carrier,
+    or the payload it was in would not have come back clean."""
+    msgs = _convo()
+    ask, seen = _asker()
+    found = search(msgs, ask, hint=[file_key("raw.csv")])
+    assert [c.label for c in found.carriers] == ["raw.csv"]
+    assert found.complete is True
+    assert found.calls == 2, f"spent {found.calls} on a hint that was right"
+    assert len(seen) == 2
+
+
+def test_a_wrong_hint_costs_one_call_and_finds_the_answer_anyway():
+    """The scanner is allowed to be wrong. It matches on rules Sage wrote down by watching a gateway
+    it cannot read, so being wrong is the expected case, not the exceptional one."""
+    msgs = _convo()
+    ask, _ = _asker()
+    blind = search(msgs, _asker()[0])
+    found = search(msgs, ask, hint=[file_key("clean_0.csv")])
+    assert [c.label for c in found.carriers] == ["raw.csv"], "the gateway still decides"
+    assert found.complete is True
+    assert found.calls == blind.calls + 1, "one wasted probe, and the full search behind it"
+
+
+def test_a_hint_naming_nothing_in_this_payload_is_ignored():
+    """A stale hint, or one off a different request, must not cost a call at all."""
+    ask, _ = _asker()
+    with_hint = search(_convo(), ask, hint=["file:/nowhere/else.csv"])
+    without = search(_convo(), _asker()[0])
+    assert with_hint.calls == without.calls
+
+
+def test_a_hint_is_never_enough_on_its_own():
+    """The rule this whole module exists to hold. If the gateway will not confirm it, the hint does
+    not take anybody's file away — the search falls through and proves it the long way or not at
+    all. A `refusal_scan` that named a file Sage then deleted from the conversation on its own
+    authority would be guessing with someone else's data."""
+    msgs = _convo()
+    calls = {"n": 0}
+
+    def ask(messages: list[dict]) -> str:
+        """Refuses everything — so the hint can never be confirmed."""
+        calls["n"] += 1
+        return BLOCKED
+
+    found = search(msgs, ask, hint=[file_key("raw.csv")])
+    assert found.carriers == []
+    assert found.complete is False
+    assert found.stopped == "not in this conversation's content"
+
+
+def test_the_scanner_points_at_the_carrier_that_holds_the_match():
+    """Where the hint comes from. `refusal_scan` is asked one message at a time, through its own
+    public function, so nothing here parses its log line or reaches past it for its rules — which
+    have been corrected twice from live measurement and belong to it, not to this module."""
+    assert withhold.suspects(_convo()) == {file_key("raw.csv")}
+
+
+def test_a_payload_the_scanner_likes_nowhere_hints_nothing():
+    """No hint is the ordinary case, and it has to cost nothing: the search runs exactly as it did
+    before this existed."""
+    msgs = [{"role": "system", "content": "You are Sage."},
+            {"role": "user", "content": "Chart weekly panel spend."},
+            *_read("c0", "clean.csv", "ticker,week\nVLTA,2026-01-02")]
+    assert withhold.suspects(msgs) == set()
+
+
+def test_sages_own_instructions_are_never_suspected():
+    """The same exclusion the search itself holds. A hint that named the system prompt would spend
+    its one free call proving Sage cannot withhold its own instructions."""
+    msgs = [{"role": "system", "content": f"You are Sage. Never write {POISON}."},
+            {"role": "user", "content": "Chart weekly panel spend."}]
+    assert withhold.suspects(msgs) == set()

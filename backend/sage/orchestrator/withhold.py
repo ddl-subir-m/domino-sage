@@ -43,6 +43,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from ..shim import refusal_scan
 from ..shim.chat_paths import apply_withheld, file_key, read_path_from_tool_call, text_key
 
 BLOCKED = "blocked"   # the gateway refused this payload
@@ -94,6 +95,22 @@ def carriers(messages: list[dict]) -> list[Carrier]:
     reaches all three messages. That is also what makes the bisect converge when a paged read put
     the same file in four messages.
     """
+    out: list[Carrier] = []
+    seen: set[str] = set()
+    for carrier, _message in _walk(messages):
+        if carrier.key not in seen:
+            seen.add(carrier.key)
+            out.append(carrier)
+    return out
+
+
+def _walk(messages: list[dict]):
+    """Every (carrier, message) pair, undeduped and in payload order.
+
+    Split out because `suspects` needs the message a carrier came from and `carriers` deliberately
+    throws it away — one file read three times is ONE carrier, and which of the three messages it
+    was is exactly what the dedupe exists to forget.
+    """
     paths: dict[str, str] = {}
     for m in messages:
         if not isinstance(m, dict) or m.get("role") != "assistant":
@@ -102,23 +119,38 @@ def carriers(messages: list[dict]) -> list[Carrier]:
             if isinstance(call, dict) and (path := read_path_from_tool_call(call)):
                 if cid := str(call.get("id") or ""):
                     paths[cid] = path
-    out: list[Carrier] = []
-    seen: set[str] = set()
     for m in messages:
         if not isinstance(m, dict) or m.get("role") in _NEVER:
             continue
         cid = str(m.get("tool_call_id") or "")
         if m.get("role") == "tool" and cid in paths:
             path = paths[cid]
-            carrier = Carrier(file_key(path), os.path.basename(path) or path, True)
-        else:
-            if not _has_text(m):
-                continue
-            carrier = Carrier(text_key(m), _text_label(m), False)
-        if carrier.key not in seen:
-            seen.add(carrier.key)
-            out.append(carrier)
-    return out
+            yield Carrier(file_key(path), os.path.basename(path) or path, True), m
+        elif _has_text(m):
+            yield Carrier(text_key(m), _text_label(m), False), m
+
+
+def suspects(messages: list[dict]) -> set[str]:
+    """Carrier keys a LOCAL scan flags, as a hint for `search`'s fast path — never as an answer.
+
+    `refusal_scan` is asked one message at a time, through its own public `candidates`, so the rules
+    stay in the module that owns them: nothing here parses its log line, and nothing here holds a
+    second copy of a regex that has already needed correcting twice from live measurement.
+
+    Local and free — regex over a payload already in memory, no gateway, no I/O. A miss costs the
+    search nothing and a false hit costs it one call, which is the whole reason this is allowed to
+    be a guess at all.
+    """
+    hit: set[str] = set()
+    for carrier, message in _walk(messages):
+        if carrier.key in hit:
+            continue
+        try:
+            if refusal_scan.candidates({"messages": [message]}):
+                hit.add(carrier.key)
+        except Exception:  # pragma: no cover - a hint must never replace the failure it explains
+            return hit
+    return hit
 
 
 def _has_text(message: dict) -> bool:
@@ -139,22 +171,29 @@ def _text_label(message: dict) -> str:
     return "an earlier answer in this conversation"
 
 
-def search(messages: list[dict], ask, *, cap: int = MAX_CALLS) -> Found:
+def search(messages: list[dict], ask, *, cap: int = MAX_CALLS, hint=()) -> Found:
     """Which carriers the gateway is refusing, or as much of that as `cap` calls can prove.
 
     `ask(messages) -> BLOCKED | CLEAN | UNKNOWN` is the only thing here that talks to a gateway.
+    `hint` is carrier keys somebody suspects, and it is spent on a FAST PATH rather than an
+    ordering — see below for why ordering would buy nothing.
 
     Probes are ordered newest-first at every split, which is tidy and buys nothing. MEASURED: the
     cost is identical wherever the carrier sits — 4 files/7 calls, 8/9, 16/11, the same for every
     position. `_find_all` has to probe BOTH halves at every level because it finds all carriers
     rather than the first, so one half recursing and the other stopping clean is two probes per
-    level whatever order they are in. Ordering only pays in a search that can stop early, and this
-    one deliberately cannot.
+    level whatever order they are in. Ordering only pays in a search that can stop early.
 
-    So a hint about where to look — from `refusal_scan`, from recency, from anywhere — cannot be
-    spent here as an ordering. It would have to buy a fast path: probe the single most likely
-    candidate alone, and if the rest come back clean, stop. That is a different search with a
-    different failure mode (it can miss a second carrier), and it is not what this does.
+    Which is what `hint` buys instead: withhold the hinted carriers and ask once. A CLEAN answer
+    ends the search at two calls, because a payload that comes back clean cannot still hold a
+    carrier. Anything else falls through to the full search below, one call poorer and none the
+    wiser — so a hint is free to be wrong, and cannot be right in a way that takes a file away
+    without the gateway saying so.
+
+    It can also be right and INCOMPLETE, which is the same fall-through: `refusal_scan.candidates`
+    stops at `_MAX_HITS = 12` and reports one match per pattern per string, so a payload with
+    thirty card numbers in one message names one of them. Treating its list as a complete carrier
+    set is exactly what the verify probe refuses to do.
 
     Nothing here reads the payload to decide what a guardrail would object to, and the reason is not
     that such a rule is unknowable. It is that the rule is HARD, and being nearly right about it is
@@ -168,10 +207,11 @@ def search(messages: list[dict], ask, *, cap: int = MAX_CALLS) -> Found:
         777777777777777 / 16 / 17      OK / GUARDRAIL / OK   cards are exactly 16, word-fenced
 
     `shim/refusal_scan.py` locates matches for somebody DIAGNOSING a refusal, values masked, and is
-    the right tool for that. Its regex is a digit-boundary one with no separator form, so it
-    over-reports every run fenced by letters and misses `555-123-4567` entirely — which is why
-    nothing here may read it as an all-clear. It could reasonably ORDER the candidates below, as a
-    hint about where to look first; it must never decide the answer.
+    the right tool for that. Its rules now fence on a word boundary and carry the separated phone
+    form, both corrected from live measurement after this paragraph first claimed otherwise — which
+    is the point, not a footnote. They are a reading of somebody else's policy, they have been
+    wrong twice, and the administrator who owns that policy can change it again without telling
+    Sage. So the scanner may say who is asked FIRST; it must never decide the answer.
 
     So: hint from a scanner if you like, verdict from the gateway always. A recovery that takes a
     person's file away has to be right rather than probable, and the rule it would otherwise depend
@@ -197,6 +237,17 @@ def search(messages: list[dict], ask, *, cap: int = MAX_CALLS) -> Found:
         found.stopped = "not blocked" if verdict == CLEAN else "no verdict"
         found.complete = verdict == CLEAN
         return found
+
+    # The fast path. Only worth a call when the hint names something this payload actually holds,
+    # and never when it names everything — "withhold all of it and the refusal goes" is the floor
+    # probe below, which proves the cause is reachable and nothing about which carrier it is.
+    picked = [c for c in all_carriers if c.key in set(hint or ())]
+    if picked and len(picked) < len(all_carriers):
+        rest = [c for c in all_carriers if c not in picked]
+        if probe(rest) == CLEAN:
+            found.carriers = picked
+            found.complete = True
+            return found
 
     # The floor: everything withholdable withheld. Without this the search cannot tell "this message
     # is the cause" from "the cause is somewhere I cannot reach" — Sage's own system prompt, the

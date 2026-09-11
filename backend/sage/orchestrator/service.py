@@ -7661,7 +7661,13 @@ class Orchestrator:
         pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="sage-withhold")
         try:
-            return withhold.search(payload, self._withhold_probe(model, labels, pool))
+            # The local scan reads the payload for free and often places the carrier on sight, which
+            # turns the whole bisect into one confirming call. MEASURED live 2026-09-11, four files
+            # with one poisoned: 7 probes / 8.9s without the hint, 2 probes / 3.0s with it, the same
+            # carrier and `complete` either way. It only ever picks who is asked first — a wrong
+            # hint costs one probe and the full search runs behind it.
+            return withhold.search(payload, self._withhold_probe(model, labels, pool),
+                                   hint=withhold.suspects(payload))
         finally:
             pool.shutdown(wait=False)
 
