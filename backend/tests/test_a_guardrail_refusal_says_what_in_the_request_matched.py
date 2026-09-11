@@ -149,7 +149,6 @@ def test_the_separated_phone_is_its_own_rule_and_not_a_digit_run():
     it was missed by a scan that otherwise scored every other row — and it is the single most
     recognisable piece of PII in the whole table.
     """
-    import re
 
     digit_runs = [p for label, p in refusal_scan._PATTERNS if "digit run" in label]
     assert digit_runs, "the digit-run rules are what this test is contrasting against"

@@ -131,7 +131,7 @@ def _bulk(answers, calls=None):
 
 def _gate_bulk(assets, answers, calls=None, env=ON, clock=None):
     return SensitivityGate(
-        lambda: list(assets), lambda: [], None,
+        lambda: list(assets), list, None,
         lambda dsid: list(answers.get(dsid) or []),
         list_taxonomy_tags_for=_bulk(answers, calls),
         env=env, clock=clock or Clock(),
@@ -182,7 +182,7 @@ def test_an_unreadable_taxonomy_leaves_the_listing_UNBADGED_rather_than_badging_
 
     assets = [_asset("a"), _asset("b")]
     gate = SensitivityGate(
-        lambda: list(assets), lambda: [], None, lambda dsid: [],
+        lambda: list(assets), list, None, lambda dsid: [],
         list_taxonomy_tags_for=boom, env=ON, clock=Clock(),
     )
 

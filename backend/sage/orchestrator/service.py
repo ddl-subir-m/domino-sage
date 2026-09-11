@@ -44,8 +44,6 @@ from ..assets.provider import (
     DatasetFile,
     FakeAssetProvider,
     FileListing,
-    is_sensitive,
-    sensitivity_tags,
 )
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer

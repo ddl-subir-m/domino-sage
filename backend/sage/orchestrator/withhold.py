@@ -135,9 +135,9 @@ def _walk(messages: list[dict]):
         if not isinstance(m, dict) or m.get("role") != "assistant":
             continue
         for call in m.get("tool_calls") or []:
-            if isinstance(call, dict) and (path := read_path_from_tool_call(call)):
-                if cid := str(call.get("id") or ""):
-                    paths[cid] = path
+            if (isinstance(call, dict) and (path := read_path_from_tool_call(call))
+                    and (cid := str(call.get("id") or ""))):
+                paths[cid] = path
     for m in messages:
         if not isinstance(m, dict) or m.get("role") in _NEVER:
             continue

@@ -8,7 +8,7 @@ shape of a value-matching guardrail.
 from __future__ import annotations
 
 from sage.orchestrator import withhold
-from sage.orchestrator.withhold import BLOCKED, CLEAN, UNKNOWN, Carrier, carriers, search
+from sage.orchestrator.withhold import BLOCKED, CLEAN, UNKNOWN, carriers, search
 from sage.shim.chat_paths import apply_withheld, file_key, text_key
 
 POISON = "222-33-4444"
@@ -19,7 +19,7 @@ def _read(cid: str, path: str, body: str) -> list[dict]:
     return [
         {"role": "assistant", "content": None, "tool_calls": [
             {"id": cid, "type": "function",
-             "function": {"name": "read", "arguments": '{"filePath": "%s"}' % path}}]},
+             "function": {"name": "read", "arguments": f'{{"filePath": "{path}"}}'}}]},
         {"role": "tool", "tool_call_id": cid, "content": body},
     ]
 

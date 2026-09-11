@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sage.orchestrator import recall, withhold
+from sage.orchestrator import recall
 from sage.workspace.threads import ThreadStore
 
 from .fake_opencode import Turn
@@ -77,7 +77,7 @@ def _run(tmp_path: Path):
 
 
 def test_the_search_names_the_file_and_leaves_the_others_alone(tmp_path: Path):
-    _orch_, tid, out, _gw = _run(tmp_path)
+    _orch, _tid, out, _gw = _run(tmp_path)
     found = next(e for e in out if e["type"] == recall.FOUND)
     assert [c["label"] for c in found["carriers"]] == ["raw.csv"]
     assert found["complete"] is True
@@ -85,7 +85,7 @@ def test_the_search_names_the_file_and_leaves_the_others_alone(tmp_path: Path):
 
 
 def test_the_rows_arrive_in_the_order_a_person_can_read(tmp_path: Path):
-    _orch_, _tid, out, _gw = _run(tmp_path)
+    _orch, _tid, out, _gw = _run(tmp_path)
     order = [e["type"] for e in out if e["type"] in
              ("error", recall.SEARCH, recall.FOUND, recall.SUGGEST, "done")]
     assert order[0] == "error"
@@ -141,9 +141,9 @@ def test_the_withheld_set_is_armed_from_the_transcript(tmp_path: Path):
 # these are Build's. The assertions are deliberately the same sentences — if either half ever needs
 # its own branch in the search, the filter or the card, the seam is in the wrong place.
 
-from .test_a_dead_alias_stops_the_turn_before_it_starts import BUILD, PLAN  # noqa: E402
-from .test_a_dead_alias_stops_the_turn_before_it_starts import _orch as _build_orch  # noqa: E402
-from .test_a_refused_request_is_not_a_silent_turn import BLOCKED as _BLOCKED  # noqa: E402
+from .test_a_dead_alias_stops_the_turn_before_it_starts import BUILD, PLAN
+from .test_a_dead_alias_stops_the_turn_before_it_starts import _orch as _build_orch
+from .test_a_refused_request_is_not_a_silent_turn import BLOCKED as _BLOCKED
 
 _NEST = _BLOCKED["data"]["message"]
 
@@ -165,14 +165,14 @@ def _run_build(tmp_path: Path, payload: list[dict] | None = None):
 
 
 def test_build_names_the_file_the_same_way_chat_does(tmp_path: Path):
-    orch, out = _run_build(tmp_path)
+    _orch, out = _run_build(tmp_path)
     found = next(e for e in out if e["type"] == recall.FOUND)
     assert [c["label"] for c in found["carriers"]] == ["raw.csv"]
     assert found["complete"] is True
 
 
 def test_build_puts_the_rows_in_the_same_order(tmp_path: Path):
-    _orch_, out = _run_build(tmp_path)
+    _orch, out = _run_build(tmp_path)
     order = [e["type"] for e in out if e["type"] in
              ("error", recall.SEARCH, recall.FOUND, recall.SUGGEST, "done")]
     assert order[0] == "error"
@@ -191,7 +191,7 @@ def test_build_finds_pasted_text_too(tmp_path: Path):
     """The fourth cell: Build turns carry a typed prompt, so they can be poisoned without a file."""
     payload = [{"role": "system", "content": "You are Sage."},
                {"role": "user", "content": f"use ssn {POISON} as the sample row"}]
-    orch, out = _run_build(tmp_path, payload)
+    _orch, out = _run_build(tmp_path, payload)
     found = next(e for e in out if e["type"] == recall.FOUND)
     assert [c["label"] for c in found["carriers"]] == ["the message you sent"]
     assert found["carriers"][0]["is_file"] is False
@@ -213,7 +213,7 @@ def test_a_turn_the_local_scan_can_place_pays_for_two_probes_not_seven(tmp_path:
     without the hint, 2 probes / 3.0s with it, the same carrier both ways. The probes ARE the wait —
     each one re-sends the whole conversation — so calls are the budget and bytes are not.
     """
-    orch, _tid, out, gw = _run(tmp_path)
+    _orch, _tid, out, gw = _run(tmp_path)
     found = next(e for e in out if e["type"] == recall.FOUND)
     assert [c["label"] for c in found["carriers"]] == ["raw.csv"]
     assert found["complete"] is True
