@@ -88,7 +88,11 @@ THEMES: dict[str, dict[str, str]] = {
 # the same way `test_every_theme_has_a_stylesheet_block` holds the CSS half in place.
 THEME_LOGOS: dict[str, dict[str, str]] = {
     "domino": {"logoUrl": "./img/domino-logo.svg", "logoAlt": "Domino"},
-    "google-cloud": {"logoUrl": "./img/google-cloud-logo.svg", "logoAlt": "Google Cloud"},
+    # The mark says "Google Bloom" — a codename — while the theme id stays `google-cloud`, because
+    # the id labels a stylesheet block and a codename is not a reason to rename one. The unused
+    # `google-cloud-logo.svg` beside it is kept on purpose: it is the SOURCE the Bloom mark was cut
+    # from, and regenerating without it means scraping the console again.
+    "google-cloud": {"logoUrl": "./img/google-bloom-logo.svg", "logoAlt": "Google Bloom"},
 }
 
 # Which marks belong to a theme rather than to an OEM. A theme may replace one of its own and must
