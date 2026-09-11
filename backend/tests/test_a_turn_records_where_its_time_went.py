@@ -216,7 +216,7 @@ def test_a_slow_first_byte_says_whether_the_shim_or_the_gateway_spent_it(monkeyp
             pass
 
     def run(shim_delay: float, gateway_delay: float) -> tuple[float, float]:
-        def handle(body, project, session=None, on_resolved=None):
+        def handle(body, project, session=None, on_resolved=None, on_refused=None):
             spin(shim_delay)                 # the rewrite: routing, tool filter, signing veto
 
             def gen():

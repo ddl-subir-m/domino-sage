@@ -33,7 +33,7 @@ def _post(client):
 # ---- live path: orchestrator control_app (what OpenCode hits at runtime) --------------------------
 
 def _fake_project(gen_factory):
-    shim = types.SimpleNamespace(handle=lambda body, project, session=None, on_resolved=None: gen_factory())
+    shim = types.SimpleNamespace(handle=lambda body, project, session=None, on_resolved=None, on_refused=None: gen_factory())
     return types.SimpleNamespace(
         id="p", session_id="s", active_session_id=None, shim=shim,
         model_calls=0, tool_call_responses=0, last_gateway_error=None,
@@ -88,7 +88,7 @@ def test_control_app_fast_upstream_error_still_returns_502(monkeypatch):
 # ---- standalone shim app (shares the same keepalive logic) ---------------------------------------
 
 def _shim_client(monkeypatch, gen_factory):
-    fake = types.SimpleNamespace(handle=lambda body, project, session=None, on_resolved=None: gen_factory())
+    fake = types.SimpleNamespace(handle=lambda body, project, session=None, on_resolved=None, on_refused=None: gen_factory())
     monkeypatch.setattr(shimmod, "_shim", fake)
     return TestClient(shimmod.app)
 

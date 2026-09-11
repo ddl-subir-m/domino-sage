@@ -3252,6 +3252,45 @@ def clear_build_recall(body: dict = Body(default={})) -> dict:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
 
+@control_app.post("/api/threads/{thread_id}/recall/withhold")
+def withhold_recall(thread_id: str, body: dict = Body(default={})) -> dict:
+    """Stop sending one named thing the gateway's guardrail refuses (ADR-0022).
+
+    The rung below `recall/clear`, and the one to reach for first: clearing empties Recall, while
+    this takes away one file or one message the search has already proved is the reason. The
+    Conversation, its transcript and the file on disk all stand.
+
+    Body: `{keys: [...], labels: [...]}`, straight off the `withhold-found` row — fingerprints and
+    names, never the refused text. Not a stream, for the reason the clear above is not: the turn it
+    belongs to has already failed and owes no answer. Whether to re-run that turn is the caller's
+    call, because only the caller knows whether anything the turn read survived the withhold.
+    """
+    try:
+        return orchestrator.withhold_content(thread_id, (body or {}).get("keys") or [],
+                                             (body or {}).get("labels") or [])
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "Unknown conversation"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.post("/api/project/recall/withhold")
+def withhold_build_recall(body: dict = Body(default={})) -> dict:
+    """The Build half of the route above — same row, the app's own transcript.
+
+    Its own route for the reason the Build clear has one: a Build Conversation's transcript is filed
+    per (conversation, app), and one Conversation can drive several Built Apps.
+    """
+    try:
+        return orchestrator.withhold_build_content(
+            (body or {}).get("keys") or [], (body or {}).get("labels") or [],
+            str((body or {}).get("conversation") or ""))
+    except TurnBusy as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
 @control_app.post("/api/project/build/approve")
 def build_approve(body: dict) -> StreamingResponse:
     """Approve a gated plan (SPEC P6) and stream the build.
@@ -3568,9 +3607,19 @@ async def chat_completions(request: Request):
     # The live session, so a phased build tags each phase with its OWN session id — that's what makes
     # per-phase spend separable in the gateway dashboard (group by tag:sage-session). Falling back to
     # the project session keeps normal turns tagged exactly as before.
+    def _refused(model: str, messages) -> None:
+        """The payload a guardrail just refused, kept for exactly as long as the search needs it.
+
+        Held in memory on the Project and nowhere else — never a transcript row, never in this
+        route's JSON, never logged. `_withhold_search` takes it and clears the slot in the same
+        breath, whether or not it ends up searching. It is the content a policy has refused to move,
+        so the only correct lifetime is the shortest one that still answers "which part was it".
+        """
+        project.last_refused = (model, messages)
+
     gen = project.shim.handle(body, project=project.id,
                               session=project.active_session_id or project.session_id,
-                              on_resolved=call.model)
+                              on_resolved=call.model, on_refused=_refused)
     # The boundary between our time and the gateway's. `handle` is not a generator — it rewrites the
     # request here and now (phase classification, the read-only tool filter, routing, the signing
     # veto) and only the `route` it returns is lazy, so the HTTP call does not start until `ka.pump`
@@ -3635,6 +3684,13 @@ async def chat_completions(request: Request):
             if not flagged and b"tool_calls" in chunk:
                 flagged = True
                 project.tool_call_responses += 1
+            # Which tools, and not only whether there were any. The flag above answers "did this turn
+            # try a tool", which is what `build_stream` needs to explain a no-edit turn; this answers
+            # "what did this STEP spend its round trip on", which is what a turn of eighteen calls
+            # needs before any of them can be cut. Same substring gate as the flag, so a text-only
+            # chunk costs one `in` and nothing else.
+            if names := ka.tool_names(chunk):
+                call.tool(names)
             # What the provider says it read, when it says anything. Most models here say nothing —
             # sonnet sends no usage frame at all — so this is recorded when offered and never
             # waited for. `request_bytes` above is the signal that is always there.

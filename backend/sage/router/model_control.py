@@ -41,6 +41,14 @@ class ModelControl:
         # takes effect on the next turn, rather than half-applying to this one. See arm_turn_mode().
         self._turn_mode: Mode | None = None
         self._turn_mode_token: object | None = None
+        # Content this Conversation has stopped sending, because the gateway's guardrail refuses it
+        # (ADR-0022). Same token discipline as the rest, and it earns it: unkeyed, the set would
+        # outlive its turn and withhold another Conversation's content — and a withhold that reaches
+        # the wrong turn is a silent wrong answer, not a visible failure. The orchestrator computes
+        # it from the transcript, which is what lets the shim apply it without ever learning whether
+        # it is serving Chat or Build.
+        self._withheld: frozenset[str] = frozenset()
+        self._withheld_token: object | None = None
 
     def set_mode(self, mode: Mode) -> None:
         """The user's standing mode choice — what the next turn runs as. While a turn is pinned
@@ -146,6 +154,26 @@ class ModelControl:
             self._chat_token = None
             self._chat_thread_id = None
 
+    def arm_withheld(self, keys: frozenset[str] | set[str]) -> object:
+        """Pin the content this turn must not send, and return a token.
+
+        Armed per turn from the transcript rather than held as standing state, for the reason
+        `recall.offer` derives rather than counts: the transcript is the one account that survives a
+        Sage Builder restart — and the poison survives one too, since the session id is read back
+        off disk.
+        """
+        token = object()
+        self._withheld = frozenset(keys)
+        self._withheld_token = token
+        return token
+
+    def disarm_withheld(self, token: object) -> None:
+        """Drop the pin, but only if `token` is still the live one — an out-of-order exit from a
+        superseded turn must never unpin the turn that replaced it."""
+        if self._withheld_token is token:
+            self._withheld_token = None
+            self._withheld = frozenset()
+
     def arm_turn_mode(self, mode: Mode) -> object:
         """Pin `mode` for THIS turn and return its token, mirroring arm_read_only(). Every request the
         turn makes then resolves against one mode, whatever the user does to the picker while it
@@ -188,6 +216,7 @@ class ModelControl:
             read_only_turn=self._read_only_token is not None,
             read_only_reason=self._read_only_reason,
             chat_thread_id=self._chat_thread_id if self._chat_token is not None else None,
+            withheld=self._withheld if self._withheld_token is not None else frozenset(),
             chat_model=self._chat_model,
             reasoning_effort=self._reasoning_effort,
             approved_models=(

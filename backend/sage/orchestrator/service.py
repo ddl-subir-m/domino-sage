@@ -51,7 +51,7 @@ from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
-from ..gateway.client import GatewayClient
+from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..liveread import mcp as live_mcp
 from ..liveread import run as live_read
 from ..preview.prefix import domino_base_prefix, publish_available
@@ -177,7 +177,7 @@ from ..workspace.threads import (
     snapshot_files,
     title_from_prompt,
 )
-from . import brand, chat_compact, recall, scope, table_rank
+from . import brand, chat_compact, recall, scope, table_rank, withhold
 from . import handoff as chat_handoff
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
@@ -322,6 +322,11 @@ _PERSISTED_EVENTS = frozenset({
     "error",
     # The ladder's own two rows, so an offer and a clear survive a reload the way Chat's do.
     recall.SUGGEST, recall.CLEARED,
+    # And the three rungs below it (ADR-0022, `withhold.py`). Chat's store takes anything; Build
+    # drops whatever is not listed here, so a search that streamed fine would vanish on F5 — and
+    # the withheld row vanishing would be worse than cosmetic, since it is what `recall.withheld`
+    # reads back to keep the content withheld after a restart.
+    recall.SEARCH, recall.FOUND, recall.WITHHELD,
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
@@ -3264,6 +3269,11 @@ class Project:
     # failed turn is reported as an error instead of silently falling through to "typecheck clean"
     # on an unmodified workspace (the turn never touched any files).
     last_gateway_error: dict | None = None
+    # The payload a guardrail refused, as (alias, messages), handed over by the shim at the one
+    # moment the refusal and the request are both in hand. In memory only, one slot, never written
+    # to a transcript and never serialized to a client: it holds the content a policy has just
+    # refused to move. `_withhold_search` takes it and drops it in the same breath.
+    last_refused: tuple[str, list] | None = None
     # Set by the /build/stop endpoint; build_stream() polls it to revert and stop early.
     stop_requested: bool = False
     # Set by /api/preview/runtime-error when the live preview reports an uncaught/render error.
@@ -7583,6 +7593,106 @@ class Orchestrator:
         if ev is not None:
             yield ev
 
+    def _withhold_search(self, project: Project, append, reason: str):
+        """Ask the gateway which part of this Conversation it is refusing, and write down the answer.
+
+        The SAME generator on Chat and Build. The only thing either half passes in is `append`, which
+        puts a row in whichever transcript owns the turn — that one argument is the whole difference
+        between the two surfaces, and holding it to one argument is what stops this becoming two
+        implementations that drift apart the way `clear_recall` and `clear_build_recall` already have.
+
+        Runs BETWEEN the error row and the recall offer, on the turn lock. Off the lock it would race
+        the turn queue rather than occasionally lose to it: `_release_turn` wakes whatever is waiting,
+        so a person who typed while this turn streamed has a turn that starts the instant `done` is
+        yielded. That turn would clear the captured payload, re-arm over this search, and start a
+        second one from a transcript that does not yet hold the answer. Holding the lock also does
+        the queued turn a favour — it waits for the withhold instead of being refused by the same
+        content and searching for it all over again.
+
+        Never raises. A Conversation that has just lost a turn must not also lose the reason.
+        """
+        captured = project.last_refused
+        # One search per refusal. The slot holds content a policy just refused to move, so it is
+        # dropped here rather than on the next turn's reset — whether or not the search then runs.
+        project.last_refused = None
+        if not captured or not str(reason or "").startswith("guardrail:"):
+            return
+        model, payload = captured
+        if not payload:
+            return
+        ev = {"type": recall.SEARCH}
+        append(ev)
+        yield ev
+        try:
+            found = self._run_withhold_search(project, model, payload)
+        except Exception:
+            log.exception("withhold: the search failed")
+            found = withhold.Found(stopped="the search failed")
+        row = {
+            "type": recall.FOUND,
+            "carriers": [{"key": c.key, "label": c.label, "is_file": c.is_file}
+                         for c in found.carriers],
+            # Whether withholding these actually clears the refusal, proven by a probe rather than
+            # assumed. False means the caller must not claim anything has been fixed.
+            "complete": found.complete,
+            # What the turn would still have to answer from. Zero means re-running it is pointless,
+            # and the card offers to stop sending rather than to carry on.
+            "surviving": max(found.total - len(found.carriers), 0),
+            "stopped": found.stopped,
+        }
+        append(row)
+        yield row
+
+    def _run_withhold_search(self, project: Project, model: str, payload: list[dict]):
+        """The gateway half of the search, kept apart so `withhold.search` stays pure and testable.
+
+        Probes the alias that was refused, never the turn's configured model: a guardrail is attached
+        per alias (measured — `Block PII` covers gpt-5.4 alone), so probing anything else answers
+        CLEAN for every subset and reports that nothing was refused.
+        """
+        labels = CostLabels(
+            phase="ask", mode="auto",
+            # The documented value for a call that is not the builder working. These probes are
+            # deliberately separable in the gateway's cost dashboard: six full-context requests the
+            # person never asked for, on a turn that already failed, should not read as their spend.
+            component="probe", route_reason="withhold-search",
+            session=project.session_id, project_name=self._cost_project_label,
+        )
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="sage-withhold")
+        try:
+            return withhold.search(payload, self._withhold_probe(model, labels, pool))
+        finally:
+            pool.shutdown(wait=False)
+
+    def _withhold_probe(self, model: str, labels: CostLabels, pool, timeout_s: float = 30.0):
+        """One probe: send this payload and report only whether a guardrail refused it.
+
+        Every verdict that is not a clean answer or a guardrail block is UNKNOWN, which stops the
+        search rather than steering it. A transport fault read as CLEAN would mark an innocent
+        message as the carrier and take away a file that was never the problem.
+        """
+        def ask(messages: list[dict]) -> str:
+            request = {"model": model, "messages": messages,
+                       "max_tokens": 16, "temperature": 0, "stream": True}
+
+            def _call() -> str:
+                b"".join(self._gateway.route(request, labels))
+                return withhold.CLEAN
+
+            try:
+                return pool.submit(_call).result(timeout=timeout_s)
+            except GatewayUpstreamError as err:
+                if "guardrail_blocked" in (err.body or ""):
+                    return withhold.BLOCKED
+                log.warning("withhold: probe got %s, not a guardrail verdict", err.status)
+                return withhold.UNKNOWN
+            except Exception as e:
+                log.warning("withhold: probe failed (%s: %s)", type(e).__name__, e)
+                return withhold.UNKNOWN
+
+        return ask
+
     def _record_plan_refusal(self, store: ThreadStore, thread_id: str, project: Project,
                              said: str, *, offer: bool = True) -> None:
         """Put a failed handoff plan on the Thread, and advance the ladder if it earned a rung.
@@ -7714,6 +7824,52 @@ class Orchestrator:
         ev = {"type": recall.CLEARED, "scope": scope}
         store.append_history(thread_id, ev)
         return ev
+
+    @staticmethod
+    def _withhold_row(keys: list, labels: list) -> dict:
+        """The row both doors write. Fingerprints and names only — never the refused text."""
+        clean = [str(k) for k in (keys or []) if str(k or "").strip()]
+        if not clean:
+            raise ValueError("no content named")
+        return {"type": recall.WITHHELD, "keys": clean,
+                "labels": [str(x) for x in (labels or [])][:len(clean)]}
+
+    def withhold_content(self, thread_id: str, keys: list, labels: list) -> dict:
+        """Stop sending this content on this Conversation, and say so on the transcript.
+
+        No turn lock, for `clear_recall`'s reason: this appends one row to one file, and the set it
+        feeds is re-derived at the start of the next turn (`recall.withheld`) rather than held
+        anywhere a running turn could read half-written. The row IS the state, which is also what
+        carries the withhold across a Sage Builder restart — the poison survives one, so this has to.
+
+        Unlike clearing, nothing is thrown away: the session stands, the transcript stands, and the
+        content stays on disk and on screen. It is only no longer sent.
+        """
+        store = ThreadStore(self._chat_project().record.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        ev = self._withhold_row(keys, labels)
+        store.append_history(thread_id, ev)
+        return ev
+
+    def withhold_build_content(self, keys: list, labels: list,
+                               conversation: str | None = None) -> dict:
+        """The Build half of `withhold_content` — same row, the app's transcript.
+
+        Takes the turn lock where the Chat twin does not, for exactly the reason
+        `clear_build_recall` does: it pins the Project to a conversation through
+        `_switch_conversation`, which a turn streaming in another conversation reads.
+        """
+        ev = self._withhold_row(keys, labels)
+        if not self._acquire_for_door():
+            raise TurnBusy(self._turn_wedged, "try again")
+        try:
+            project = self.project(start_preview=False)
+            self._switch_conversation(project, conversation)
+            project.app_for_turn().append_history(ev, project.build_conversation)
+            return ev
+        finally:
+            self._release_turn()
 
     # ---- Live read (ADR-0041) ----------------------------------------------------------------
     # One OpenCode server hosts many Conversations, so a tool call cannot say which turn it belongs
@@ -8356,6 +8512,11 @@ class Orchestrator:
             yield done
 
         chat_token = project.control.arm_chat(thread_id)
+        # What this Conversation has stopped sending, read back out of its own transcript (ADR-0022).
+        # Derived per turn rather than held, so it survives a Sage Builder restart — which matters
+        # because the poison survives one too: `_recover_session` reads the session id back off disk,
+        # and an un-armed restart would refuse every turn all over again.
+        withheld_token = project.control.arm_withheld(recall.withheld(history))
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
         # Chat and Build cannot drift: `llm_router` applies it outside their fork, and this is the
@@ -8363,6 +8524,7 @@ class Orchestrator:
         chat_approved, chat_refusal = self._sensitivity_for_turn(project, thread_id)
         if chat_refusal:
             project.control.disarm_chat(chat_token)
+            project.control.disarm_withheld(withheld_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
             yield from refuse_before_the_turn(chat_refusal)
@@ -8383,6 +8545,7 @@ class Orchestrator:
             except OSError:
                 log.exception("sensitivity: couldn't record the lock on this conversation")
                 project.control.disarm_chat(chat_token)
+                project.control.disarm_withheld(withheld_token)
                 if web_token is not None:
                     project.control.disarm_web(web_token)
                 yield from refuse_before_the_turn(unrecorded_lock_refusal())
@@ -8815,6 +8978,13 @@ class Orchestrator:
                 done = {"type": "done", "ok": False, "decision": "step failed"}
                 # After the error and before `done`, so a client reading the stream in order sees
                 # what failed before it is offered a way out of it.
+                #
+                # The search goes first because it is the cheaper rung: it takes away one named
+                # thing, where clearing Recall empties it. `_maybe_offer_recall` still runs, and
+                # still says the same thing — it is what catches the refusal the search could not
+                # account for.
+                yield from self._withhold_search(
+                    project, lambda ev: store.append_history(thread_id, ev), step_reason)
                 yield from self._maybe_offer_recall(store, thread_id)
             if artifacts:
                 done["artifacts"] = artifacts
@@ -8831,6 +9001,7 @@ class Orchestrator:
             if tap is not None:
                 tap.close()
             project.control.disarm_chat(chat_token)
+            project.control.disarm_withheld(withheld_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
             if chat_sens_token is not None:
@@ -10761,6 +10932,13 @@ class Orchestrator:
         # it's the user's standing choice now and runs their next turn. `mode` overrides the pick for
         # a turn Sage runs on the user's behalf (approving a plan from a read-only mode).
         mode_token = project.control.arm_turn_mode(mode_at_start)
+        # What this Conversation has stopped sending on this app (ADR-0022). Read out of the Build
+        # transcript rather than the Thread's, because a Conversation can drive several Built Apps
+        # and each has its own session — the same reason `_record_build_recall_offer` counts per
+        # (Conversation, app). Armed exactly as Chat arms it; the shim cannot tell the two apart,
+        # which is what keeps one filter serving both halves.
+        withheld_token = project.control.arm_withheld(
+            recall.withheld(project.app_for_turn().read_history(project.build_conversation)))
         # The failure-replan flag, consumed. Written here rather than beside its read because it has to
         # land after the pre-turn commit: a stop reverts the tree to that commit, and a flag cleared
         # ahead of it would take the gate the failure earned down with it.
@@ -10965,6 +11143,10 @@ class Orchestrator:
             # the user's standing choice was never touched and there is nothing to put back. Whatever
             # they picked while this turn streamed is what runs next.
             project.control.disarm_turn_mode(mode_token)
+            # Safe to drop here even though this runs before the refusal is written: the search
+            # below withholds against the payload it captured, not against the armed set, and every
+            # request this turn will make has already been made.
+            project.control.disarm_withheld(withheld_token)
             if escalated_pick:
                 project.control.pick(original_pick)
             if ro_token is not None:
@@ -11669,6 +11851,11 @@ class Orchestrator:
                 yield persist({"type": "error", "message": message, "reason": reason})
                 # Between the error and the `done`, for the reason Chat puts it there: a client
                 # reading the stream in order sees what failed before it is offered a way out of it.
+                #
+                # The same generator Chat runs, with `persist` as the one argument that differs —
+                # it writes to the app's transcript under this Conversation rather than the Thread's.
+                # Everything a person sees on either half comes out of the same code.
+                yield from self._withhold_search(project, persist, reason)
                 offered = self._record_build_recall_offer(project)
                 if offered is not None:
                     yield offered

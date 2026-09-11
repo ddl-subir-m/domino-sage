@@ -526,6 +526,17 @@
   line-height: 1.6;
   color: var(--gray-600);
 }
+/* The guardrail search's card. Rides the .sw-nudge shape; these two rules are all it adds. */
+.sw-withhold-file {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-12);
+  word-break: break-all;
+}
+.sw-withhold-scope {
+  margin-top: var(--s1);
+  color: var(--gray-500);
+  font-size: var(--fs-12);
+}
 .sw-nudge-main { flex: 1; min-width: 0; }
 .sw-nudge strong { color: var(--dark-700); }
 

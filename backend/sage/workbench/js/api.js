@@ -572,6 +572,12 @@ SW.api = {
   clearRecall: (id, scope) => post(`/threads/${id}/recall/clear`, { scope }),
   // Build's half. No thread in the path: the session being emptied is filed per (Conversation,
   // app), and the app is whichever one is selected — which only the server can say (ADR-0022).
+  // The rung below clearing: stop sending ONE named thing the gateway refuses, and keep the
+  // Conversation. `keys` are fingerprints off the `withhold-found` row, never the refused text.
+  withholdContent: (id, keys, labels) =>
+    post(`/threads/${id}/recall/withhold`, { keys, labels }),
+  withholdBuildContent: (conversation, keys, labels) =>
+    post('/project/recall/withhold', { keys, labels, conversation: conversation || '' }),
   clearBuildRecall: (conversation, scope) =>
     post('/project/recall/clear', { scope, conversation: conversation || '' }),
   confirmHandoff: (id, include, target) => post(`/threads/${id}/handoff/confirm`, { include, target }),

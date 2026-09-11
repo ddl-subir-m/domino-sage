@@ -785,6 +785,89 @@ window.SW = window.SW || {};
     );
   }
 
+  // The guardrail search's card (ADR-0022). One block type, two frames: a spinner while the search
+  // runs, then the answer in its place. `store.putWithholdCard` does the replacing, so React keeps
+  // this component instance across the two — which is why nothing here may seed `useState` from the
+  // settled data. It would run once, on the spinner frame, and never see what was found.
+  //
+  // Deliberately the `sw-nudge` shape, not `sw-suggestion`: this is the quiet rung. Clearing Recall
+  // is the loud one, and its card sits below this when the search could not account for everything.
+  function WithholdCard({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+    if (block.searching) {
+      return h('div', { className: 'sw-nudge' },
+        h(Spin, { size: 'small', style: { marginTop: 4 } }),
+        h('div', { className: 'sw-nudge-main' },
+          h('div', null, 'Finding what the policy matched…')));
+    }
+
+    const carriers = block.carriers || [];
+    const named = (c) => (c.is_file
+      ? h('strong', { key: c.key, className: 'sw-withhold-file' }, c.label)
+      : h('span', { key: c.key }, c.label));
+    const list = carriers.length === 1
+      ? [named(carriers[0])]
+      : carriers.flatMap((c, i) => (i ? [', ', named(c)] : [named(c)]));
+
+    // Nothing to take away. Said plainly rather than left blank: the clear-Recall offer renders
+    // underneath, and a person owes an explanation for why the cheaper rung was skipped.
+    if (!carriers.length) {
+      return h('div', { className: 'sw-nudge' },
+        h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+        h('div', { className: 'sw-nudge-main' },
+          h('div', null, block.stopped === "not in this conversation's content"
+            ? "What the policy matched isn't in anything this conversation can stop sending."
+            : "Sage couldn't work out which part the policy matched.")));
+    }
+
+    // Found, but withholding them does not clear the refusal — so there is more than these, and
+    // offering to take them away would promise a fix that the next turn would disprove.
+    if (!block.complete) {
+      return h('div', { className: 'sw-nudge' },
+        h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+        h('div', { className: 'sw-nudge-main' },
+          h('div', null, 'The policy matched ', ...list,
+            ", and something else as well that Sage couldn't pin down.")));
+    }
+
+    const survives = (block.surviving || 0) > 0;
+    const onlyText = carriers.length === 1 && !carriers[0].is_file;
+    return h('div', { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h('div', { className: 'sw-nudge-main' },
+        h('div', null,
+          onlyText
+            ? h(React.Fragment, null,
+                'It matched something in ', ...list, ", not in a file. Sage won't change what you "
+                + 'wrote — it can stop sending it, and this conversation will work again.')
+            : h(React.Fragment, null, 'It matched values in ', ...list, '. ',
+                survives
+                  ? 'Nothing else this turn read is affected.'
+                  : 'That was everything this turn read, so this question '
+                    + "can't be answered from what's left.")),
+        h('div', { className: 'sw-withhold-scope' },
+          'Applies to this conversation. A new conversation starts fresh.'),
+        block.live
+          ? h('div', { style: { marginTop: 8 } },
+              h(Space, { size: 8, wrap: true },
+                h(Button, {
+                  type: 'primary', size: 'small',
+                  loading: busy === 'withhold', disabled: !!busy,
+                  onClick: run('withhold', () => SW.store.withholdContent(block)),
+                  // Names the thing, never "it": a destructive-sounding button that does not say
+                  // what it acts on is the one people refuse to press. "Continue without" is only
+                  // honest while something survives to continue WITH.
+                }, onlyText ? 'Stop sending that message'
+                  : carriers.length > 1
+                    ? (survives ? 'Continue without these files' : 'Stop sending these files')
+                    : (survives ? 'Continue without this file' : 'Stop sending this file')),
+                h(Button, {
+                  type: 'text', size: 'small', disabled: !!busy,
+                  onClick: () => SW.store.dismissWithholdCard(),
+                }, 'Dismiss')))
+          : null));
+  }
+
   function GraduationNudge({ onSave }) {
     const { thread, resourceGroups } = SW.store.get();
     const files = (resourceGroups.file || []).filter((f) => f.sandbox);
@@ -1569,6 +1652,8 @@ window.SW = window.SW || {};
         return h(BuildStalled, { block });
       case 'plan_suggestion':
         return h(PlanSuggestion, { block });
+      case 'withhold':
+        return h(WithholdCard, { block });
       case 'recall_offer':
         return h(RecallOffer, { block });
       case 'recall_cleared':

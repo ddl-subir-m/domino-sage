@@ -160,6 +160,12 @@ class SessionState:
     # A Chat turn (docs/workbench/chat.md). When set, the shim keeps write/bash tools (Chat writes
     # Artifacts) and only allows writes under that Thread's examples/ and .sage/threads/ dirs.
     chat_thread_id: str | None = None
+    # Content the gateway's guardrail refuses, which this Conversation has therefore stopped sending
+    # (ADR-0022). Keys are `file:<path>` or `text:<fingerprint>` — see shim.chat_paths. Applies to
+    # Chat and Build alike: the orchestrator reads the set out of whichever transcript owns the
+    # turn, so the shim never has to know which half it is serving. Empty when nothing is armed.
+    withheld: frozenset[str] = frozenset()
+
     # Standing Chat pick. Ignored on Build turns. None means catalog.ask.
     chat_model: ModelId | None = None
     # OpenAI-style reasoning_effort for Chat, when the picked alias supports it. None omits the field.

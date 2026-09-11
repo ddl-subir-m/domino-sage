@@ -1446,6 +1446,20 @@ window.SW = window.SW || {};
           truncated: !!ev.truncated,
           live: !!ev.live,
         });
+      } else if (ev.type === 'withhold-found') {
+        // Replayed settled, never searching. `live` is absent on a server row, so the buttons do
+        // not come back — the house rule for every card that can run a turn. A `withhold-search`
+        // row is skipped entirely here: replaying a spinner gives one that never stops.
+        ensureAssistant().blocks.push({
+          type: 'withhold',
+          searching: false,
+          carriers: ev.carriers || [],
+          complete: !!ev.complete,
+          surviving: ev.surviving || 0,
+          stopped: ev.stopped || '',
+          surface: 'chat',
+          live: false,
+        });
       } else if (ev.type === 'recall-cleared') {
         assistant = null;
         messages.push({
@@ -1756,7 +1770,13 @@ window.SW = window.SW || {};
   // field ends: a message and the prompt under it are both free text, and on any typeable
   // separator one pair of them could spell out another pair exactly.
   const liveCardKey = (ev) => [ev.type, ev.sourceId || ev.datasetId || '',
-                               ev.prompt || '', ev.message || ''].join('\u0000');
+                               ev.prompt || '', ev.message || '',
+                               // The guardrail search's card carries none of the fields
+                               // above, and what it found is the only thing telling two of
+                               // them apart. Without this a second refusal in the same
+                               // Conversation would light the buttons back up on the first.
+                               (ev.carriers || []).map((c) => c && c.key).join(',')]
+                               .join('\u0000');
 
   // Thrown away and re-owned the moment the conversation or the app underneath them changes. It has
   // to CLEAR rather than merely stop matching: a reader who steps into another conversation and back
@@ -1805,6 +1825,32 @@ window.SW = window.SW || {};
     for (const message of messages) {
       const at = (message.blocks || []).findIndex(
         (b) => b.type === 'table_candidates' && b.searching && b.sourceId === block.sourceId);
+      if (at >= 0) { message.blocks[at] = block; return; }
+    }
+    fallback.blocks.push(block);
+  }
+
+  // The guardrail search's card, replaced where it stands so the spinner becomes the answer in the
+  // same frame rather than a second card under the first. One search per turn, so unlike
+  // `putTableCard` there is nothing to key on.
+  //
+  // Only ever replaces a card still marked `searching`: a settled one is the turn's answer.
+  // The question the failed turn asked, so a withhold that leaves data behind can re-run it.
+  // Read back off the transcript rather than held: the turn that failed may have been several
+  // frames ago, and the transcript is the only copy that survives a reload.
+  function lastUserPrompt(messages) {
+    for (let i = (messages || []).length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (!message || message.role !== 'user') continue;
+      const text = (message.blocks || []).find((b) => b.type === 'text' && b.value);
+      if (text) return text.value;
+    }
+    return '';
+  }
+
+  function putWithholdCard(messages, fallback, block) {
+    for (const message of messages) {
+      const at = (message.blocks || []).findIndex((b) => b.type === 'withhold' && b.searching);
       if (at >= 0) { message.blocks[at] = block; return; }
     }
     fallback.blocks.push(block);
@@ -1971,6 +2017,20 @@ window.SW = window.SW || {};
         // Same backstop as `done` above: a turn that failed is not still reading a warehouse.
         dropTableCard(messages, null);
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+      } else if (ev.type === 'withhold-found') {
+        // Build's half of the Chat branch above, and deliberately identical to it: the same block
+        // type, the same component, the same live-vs-replay rule. Only `surface` differs, because
+        // the click has to know which door to write through.
+        ensureAssistant().blocks.push({
+          type: 'withhold',
+          searching: false,
+          carriers: ev.carriers || [],
+          complete: !!ev.complete,
+          surviving: ev.surviving || 0,
+          stopped: ev.stopped || '',
+          surface: 'build',
+          live: cardIsLive(ev),
+        });
       } else if (ev.type === 'recall-cleared') {
         // A divider, not a status line: the transcript above it is still true, and what changed is
         // only what the model can remember of it (ADR-0022).
@@ -2769,7 +2829,7 @@ window.SW = window.SW || {};
     if (ev.type === 'reset-offer' || ev.type === 'incoming-changes'
         || ev.type === 'build-stalled' || ev.type === 'mentions-unresolved'
         || ev.type === 'table-candidates' || ev.type === 'source-candidates'
-        || ev.type === 'dataset-files') {
+        || ev.type === 'dataset-files' || ev.type === 'withhold-found') {
       ev.live = true;
       // And remembered past this row's own life (#209). The next transcript read replaces the row
       // with the server's copy of it, which carries no flag — so the mark on the row alone lasted
@@ -6003,6 +6063,31 @@ window.SW = window.SW || {};
               at: new Date().toISOString(),
               blocks: [{ type: 'plan_suggestion', reason: ev.reason }],
             });
+          } else if (ev.type === 'withhold-search') {
+            // The failure is already on screen; this is the line under it. Pushed as its own block
+            // so the answer can replace it where it stands rather than arrive as a second card.
+            state.typing = null;
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks,
+                                { type: 'withhold', searching: true, surface: 'chat', live: true }];
+            notify();
+          } else if (ev.type === 'withhold-found') {
+            // Replaces the spinner IN PLACE. `live` is set here and nowhere else: this frame came
+            // over SSE, so its buttons belong to the person watching, while the row a reload reads
+            // back off the transcript renders the same sentence with none.
+            state.typing = null;
+            ensurePushed();
+            putWithholdCard(state.messages, assistant, {
+              type: 'withhold',
+              searching: false,
+              carriers: ev.carriers || [],
+              complete: !!ev.complete,
+              surviving: ev.surviving || 0,
+              stopped: ev.stopped || '',
+              surface: 'chat',
+              live: true,
+            });
+            notify();
           } else if (ev.type === 'table-candidates') {
             // The tables a search found, asked about before the turn ran (#188). `live` is set here
             // and nowhere else: this frame arrived over SSE, so its buttons belong to the person
@@ -6182,6 +6267,50 @@ window.SW = window.SW || {};
         (m) => !m.blocks.some((b) => b.type === 'recall_offer')
       );
       notify();
+    },
+
+    // The rung below clearing, on both halves. Takes away one named thing the gateway refuses and
+    // leaves the Conversation standing — so unlike `clearRecall` there is nothing to warn about and
+    // nothing lost but the thing that was already unusable.
+    //
+    // Re-runs the failed turn only when something it read survives. Withhold the only file a turn
+    // opened and there is nothing left to answer from, so re-running would spend a whole turn on
+    // "I cannot read that" — the server says which case this is in `surviving`.
+    // Local, like `dismissRecallOffer`: hiding a card is not an answer worth writing down. The
+    // next refusal searches again and offers again, which is the behaviour a person expects from
+    // something that only appears on a turn that has already failed.
+    dismissWithholdCard() {
+      state.messages = state.messages.filter((m) => !m.blocks.some((b) => b.type === 'withhold'));
+      notify();
+    },
+
+    async withholdContent(block) {
+      const id = state.thread && state.thread.id;
+      if (!id) return;
+      const again = (block.surviving || 0) > 0 ? lastUserPrompt(state.messages) : '';
+      const keys = (block.carriers || []).map((c) => c.key);
+      const labels = (block.carriers || []).map((c) => c.label);
+      if (!keys.length) return;
+      state.messages = state.messages.filter((m) => !m.blocks.some((b) => b.type === 'withhold'));
+      notify();
+      try {
+        if (block.surface === 'build') await SW.api.withholdBuildContent(id, keys, labels);
+        else await SW.api.withholdContent(id, keys, labels);
+      } catch (e) {
+        antd.message.error(e && e.message ? e.message : "Couldn't stop sending that.");
+        return;
+      }
+      // Re-read rather than push a receipt in from here: the server wrote the row and the
+      // transcript is what renders it. One copy of the truth, as everywhere else on this object.
+      if (block.surface === 'build') {
+        await applyBuildRead(await readBuildTranscript(id));
+        notify();
+      } else {
+        await store.openThread(id);
+      }
+      // `echo: false` because the question is already on the transcript — this is the same turn
+      // running again with the refused content no longer in it, not a new thing the person asked.
+      if (again) await store.sendMessage(again, { echo: false });
     },
 
     // Build's half of `clearRecall` below. The conversation is `state.thread.id` here too — a Build

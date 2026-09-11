@@ -66,6 +66,12 @@ WEB_TOOLS = frozenset({"webfetch", "web_fetch", "fetch", "websearch", "web_searc
 # is a defensive alias for a driver swap, same as WEB_TOOLS; no read name is listed, so a future
 # driver that has one won't be blocked from answering with it.
 TODO_TOOLS = frozenset({"todowrite", "todo_write"})
+# Tools that OPEN a file. Carries no phase meaning and is deliberately folded into nothing above —
+# reading is neutral for classify() and always allowed on a read-only turn. It exists for one job:
+# naming the file a tool result came from, so a guardrail refusal can be reported as a file the
+# person recognises (chat_paths.read_path_from_tool_call). Missing a name here costs accuracy of
+# LABELLING only, never of the withhold itself, which falls back to a content fingerprint.
+READ_TOOLS = frozenset({"read", "read_file", "readfile", "view", "cat", "open", "get_file"})
 _TURN_BOUNDARY_ROLES = frozenset({"user", "human"})
 
 # --- Rescue signals (see assess) ------------------------------------------------------------

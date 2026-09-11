@@ -31,6 +31,32 @@ SUGGEST = "recall-suggest"
 SUMMARY = "summary"   # cleared, but told what was said
 EMPTY = "empty"       # cleared, told nothing
 
+# The rungs BELOW clearing, added once the gateway could be asked what it matched rather than
+# guessed at (see `withhold.py`). Clearing Recall empties it; these take away one named thing and
+# leave the Conversation standing, so they are tried first and `offer` catches what they cannot
+# reach. All three are written on Chat and Build alike, into whichever transcript owns the turn.
+SEARCH = "withhold-search"      # a search is running; the card shows a spinner
+FOUND = "withhold-found"        # the search finished, with or without an answer
+WITHHELD = "recall-withheld"    # the person said yes; this content is no longer sent
+
+
+def withheld(history: list[dict]) -> frozenset[str]:
+    """Everything this Conversation has stopped sending, derived from the transcript.
+
+    Derived rather than stored, for the reason the whole module is: the transcript survives a Sage
+    Builder restart, and so does the poison — `_recover_session` reads the session id back off disk,
+    so a withhold held only in memory would let a restarted Conversation refuse all over again.
+
+    The rows carry fingerprints, never the refused text (`chat_paths.text_key`). That matters more
+    here than anywhere else in Sage: what is being written down is the thing a policy just refused
+    to move.
+    """
+    keys: set[str] = set()
+    for row in history or []:
+        if isinstance(row, dict) and row.get("type") == WITHHELD:
+            keys.update(str(k) for k in (row.get("keys") or []) if k)
+    return frozenset(keys)
+
 # The gateway's own words for a guardrail refusal, which `service._guardrail_sentence` also reads.
 _GUARDRAIL = re.compile(r"Blocked by guardrail:\s*([^\"'}\\]+)")
 

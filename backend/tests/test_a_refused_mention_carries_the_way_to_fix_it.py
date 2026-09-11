@@ -208,7 +208,9 @@ def test_only_the_frame_that_arrived_this_session_carries_buttons():
     # which keep the rule for the sharpest reason of the five: their buttons write a record — a
     # Binding, or an Attachment — and start a build.
     assert "|| ev.type === 'table-candidates' || ev.type === 'source-candidates'" in store
-    assert "|| ev.type === 'dataset-files') {" in store
+    # And the guardrail search's answer (ADR-0022), which keeps the rule for the same reason: its
+    # button writes a row that changes what every later turn sends, and re-runs the failed turn.
+    assert "|| ev.type === 'dataset-files' || ev.type === 'withhold-found') {" in store
     assert "ev.live = true;" in store
     # Stamped on the row AND remembered past it (#209). The row is replaced by the server's copy on
     # the next transcript read, which carries no flag, so the mark alone survived until the next poll

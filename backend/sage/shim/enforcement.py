@@ -15,13 +15,13 @@ from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
 
-from ..gateway.client import CostLabels, GatewayClient
+from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Reason, is_bedrock, reasoning_efforts_for, supports_vision
 from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, assess
 from . import keepalive as ka
-from .chat_paths import strip_denied_writes
+from .chat_paths import apply_withheld, strip_denied_writes
 
 # What the agent sees in place of an image its model can't accept. It must know an image WAS
 # attached — a silently dropped part reads as "the user sent nothing", and the agent then invents
@@ -50,6 +50,41 @@ def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
         dropped += sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
         out.append({**m, "content": parts})
     return out, dropped
+
+
+def _capture_refusal(stream: Iterator[bytes], request: dict[str, Any], on_refused) -> Iterator[bytes]:
+    """Hand the payload to `on_refused` if — and only if — a guardrail is what refused it.
+
+    This is the one place the refused payload exists and the refusal is known at the same moment.
+    `route` is lazy, so the rewritten `request` is already alive in its frame; capturing here keeps
+    it for a few seconds longer rather than retaining anything new. Capturing EARLIER, where
+    `on_resolved` fires, would mean holding every payload permanently against the chance one is
+    refused — a standing in-process copy of exactly what the guardrail exists to stop moving.
+
+    Deliberately narrow. `guardrail_blocked` is the gateway's own machine field (measured: the body
+    is 93 bytes and byte-identical whatever matched), so an auth failure or a bad model id never
+    reaches the callback. Nothing is copied: the caller owns what it does with the list, and the
+    orchestrator drops it as soon as the search is over.
+
+    Hands back the MODEL as well as the messages, and that is not incidental: a guardrail is
+    attached per alias (measured — `Block PII` covers gpt-5.4 and none of sonnet, haiku, Opus-4.8,
+    gemini-3.7-flash or Gemma 4 31B), so a search that probed a different alias would come back
+    clean on every subset and report that nothing was refused.
+
+    A raising callback is logged loudly and swallowed. `on_resolved`'s site downgrades its failures
+    to `log.debug`, which is right for telemetry and wrong here — a capture that fails silently
+    turns into a search that finds nothing, with no way to tell that from a clean conversation.
+    """
+    try:
+        yield from stream
+    except GatewayUpstreamError as err:
+        if on_refused is not None and "guardrail_blocked" in (err.body or ""):
+            try:
+                on_refused(str(request.get("model") or ""), request.get("messages"))
+            except Exception:
+                logging.getLogger("sage.shim").exception(
+                    "shim: could not hand back the payload a guardrail refused")
+        raise
 
 
 def split_parallel_tool_calls(messages: list[Any]) -> list[Any]:
@@ -172,7 +207,7 @@ class EnforcementShim:
         self._catalog = catalog
 
     def handle(self, request: dict[str, Any], project: str, session: str | None = None,
-               on_resolved=None) -> Iterator[bytes]:
+               on_resolved=None, on_refused=None) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this.
 
         `project` is kept for the log line only — the gateway captures the caller's Domino project
@@ -262,6 +297,20 @@ class EnforcementShim:
                     ", ".join(offered) or "NOT OFFERED", len(names), ", ".join(names))
         if chat_id and isinstance(request.get("messages"), list):
             request = {**request, "messages": strip_denied_writes(request["messages"], chat_id)}
+
+        # Content this Conversation has stopped sending, because the gateway's guardrail refuses it
+        # and would otherwise refuse every later turn along with it (ADR-0022).
+        #
+        # Deliberately OUTSIDE the `chat_id` guard above. A Build turn carries no Chat thread id and
+        # needs this exactly as much; keying on the armed set instead of on the surface is what makes
+        # Chat and Build one code path rather than two implementations that drift.
+        #
+        # Replaces content, never drops a message: a `role:"tool"` message removed while its
+        # `tool_call` stays behind is an HTTP 400 on gpt-5.4, sonnet, haiku and gemini alike
+        # (measured). That also keeps this step invisible to `unsigned_tool_messages` and
+        # `split_parallel_tool_calls` below, which read ids and roles rather than content.
+        if state.withheld and isinstance(request.get("messages"), list):
+            request = {**request, "messages": apply_withheld(request["messages"], state.withheld)}
 
         decision = llm_router.resolve(state, self._catalog)
 
@@ -421,4 +470,4 @@ class EnforcementShim:
             version=_SAGE_VERSION,
             project_name=self._project_name,
         )
-        return self._gateway.route(request, labels)
+        return _capture_refusal(self._gateway.route(request, labels), request, on_refused)
