@@ -7627,6 +7627,12 @@ class Orchestrator:
             # What the turn would still have to answer from. Zero means re-running it is pointless,
             # and the card offers to stop sending rather than to carry on.
             "surviving": max(found.total - len(found.carriers), 0),
+            # Whether the question itself is one of the things going. `surviving` cannot say: it
+            # counts what is left to answer FROM, and the common case has a typed message matched
+            # while every file it read survives. Re-running that asks nothing — the same words hash
+            # to the same key and are replaced again — and leaves a permanent second copy of the
+            # text the gateway refuses, since the session has no delete (ADR-0022).
+            "prompt": withhold.prompt_withheld(payload, found.carriers),
             "stopped": found.stopped,
         }
         append(row)
@@ -7821,15 +7827,20 @@ class Orchestrator:
         return ev
 
     @staticmethod
-    def _withhold_row(keys: list, labels: list) -> dict:
+    def _withhold_row(keys: list, labels: list, prompt: bool = False) -> dict:
         """The row both doors write. Fingerprints and names only — never the refused text."""
         clean = [str(k) for k in (keys or []) if str(k or "").strip()]
         if not clean:
             raise ValueError("no content named")
         return {"type": recall.WITHHELD, "keys": clean,
-                "labels": [str(x) for x in (labels or [])][:len(clean)]}
+                "labels": [str(x) for x in (labels or [])][:len(clean)],
+                # Whether the person's own question is what went. The receipt is re-derived
+                # from this row, so without it here the one sentence that stops somebody
+                # retyping a question into silence is lost at the next reload.
+                "prompt": bool(prompt)}
 
-    def withhold_content(self, thread_id: str, keys: list, labels: list) -> dict:
+    def withhold_content(self, thread_id: str, keys: list, labels: list,
+                         prompt: bool = False) -> dict:
         """Stop sending this content on this Conversation, and say so on the transcript.
 
         No turn lock, for `clear_recall`'s reason: this appends one row to one file, and the set it
@@ -7843,19 +7854,20 @@ class Orchestrator:
         store = ThreadStore(self._chat_project().record.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
-        ev = self._withhold_row(keys, labels)
+        ev = self._withhold_row(keys, labels, prompt)
         store.append_history(thread_id, ev)
         return ev
 
     def withhold_build_content(self, keys: list, labels: list,
-                               conversation: str | None = None) -> dict:
+                               conversation: str | None = None,
+                               prompt: bool = False) -> dict:
         """The Build half of `withhold_content` — same row, the app's transcript.
 
         Takes the turn lock where the Chat twin does not, for exactly the reason
         `clear_build_recall` does: it pins the Project to a conversation through
         `_switch_conversation`, which a turn streaming in another conversation reads.
         """
-        ev = self._withhold_row(keys, labels)
+        ev = self._withhold_row(keys, labels, prompt)
         if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "try again")
         try:

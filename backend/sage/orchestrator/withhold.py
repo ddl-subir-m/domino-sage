@@ -104,6 +104,25 @@ def carriers(messages: list[dict]) -> list[Carrier]:
     return out
 
 
+def prompt_withheld(messages: list[dict], withheld: list[Carrier]) -> bool:
+    """Is the turn's own question one of the things being taken away?
+
+    A fact about the payload, not about what the gateway refused, which is why it sits beside
+    `search` rather than inside it: `Found` says what a probe proved, and this says whether re-asking
+    is worth a call. `surviving` cannot answer it — that counts what is left to answer FROM, and a
+    question can be withheld while every file it read survives. That pair is the common case, not a
+    corner: a guardrail matches typed words far more often than an attachment.
+
+    Only the LAST user message counts. An earlier question, or an answer above, can be withheld with
+    this turn's question still standing, and re-running then is worth the call.
+    """
+    keys = {c.key for c in withheld}
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") in ("user", "human") and _has_text(m):
+            return text_key(m) in keys
+    return False
+
+
 def _walk(messages: list[dict]):
     """Every (carrier, message) pair, undeduped and in payload order.
 

@@ -436,7 +436,16 @@ window.SW = window.SW || {};
       'div',
       { className: 'sw-recall-cleared' },
       `No longer sending ${labels.join(', ') || 'that content'}. Nothing was changed or deleted — `
-      + `this conversation stops sending ${many ? 'them' : 'it'}. A new conversation starts fresh.`
+      + `this conversation stops sending ${many ? 'them' : 'it'}. `
+      // Only when their own question was what went. Retyping it is the obvious next move and the
+      // one that fails without a word: the same text hashes to the same key, so it is stopped
+      // before it is sent and nothing appears to say why. Said here because there is nowhere else
+      // — no card is drawn for a turn that was never refused. On a withheld FILE this is worse
+      // than silence, since it would set a person rewriting words that were fine all along.
+      + (block.prompt
+        ? 'Ask again in different words — Sage stops the same ones before they are sent. '
+        : '')
+      + 'A new conversation starts fresh.'
     );
   }
 

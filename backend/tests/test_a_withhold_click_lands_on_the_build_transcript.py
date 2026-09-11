@@ -27,21 +27,22 @@ RAW = {"key": "file:/mnt/data/raw.csv", "label": "card_panel_transactions_RAW.cs
 PASTED = {"key": "text:abc123", "label": "the message you sent", "is_file": False}
 
 
-def _refused(carrier: dict, surviving: int) -> list[dict]:
+def _refused(carrier: dict, surviving: int, prompt: bool = False) -> list[dict]:
     """The frames a refused Build turn sends: the failure, the search, what it found, the end."""
     return [
         {"type": "error", "message": 'Blocked by guardrail: "Block PII"'},
         {"type": recall.SEARCH},
         {"type": recall.FOUND, "carriers": [carrier], "complete": True,
-         "surviving": surviving, "stopped": ""},
+         "surviving": surviving, "prompt": prompt, "stopped": ""},
         {"type": "done", "ok": False, "decision": "gateway error"},
     ]
 
 
-def _click(act: str, carrier: dict = RAW, surviving: int = 2) -> dict:
+def _click(act: str, carrier: dict = RAW, surviving: int = 2, prompt: bool = False) -> dict:
     out = subprocess.run(
         ["node", str(_HARNESS)],
-        input=json.dumps({"history": [], "events": _refused(carrier, surviving), "act": act}),
+        input=json.dumps(
+            {"history": [], "events": _refused(carrier, surviving, prompt), "act": act}),
         capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 

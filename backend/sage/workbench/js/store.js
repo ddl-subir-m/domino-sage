@@ -1502,6 +1502,7 @@ window.SW = window.SW || {};
           carriers: ev.carriers || [],
           complete: !!ev.complete,
           surviving: ev.surviving || 0,
+          prompt: !!ev.prompt,
           stopped: ev.stopped || '',
           surface: 'chat',
           live: false,
@@ -1514,7 +1515,8 @@ window.SW = window.SW || {};
           id: `rw_${messages.length}`,
           role: 'system',
           order: pos,
-          blocks: [{ type: 'recall_withheld', labels: ev.labels || [], surface: 'chat' }],
+          blocks: [{ type: 'recall_withheld', labels: ev.labels || [],
+                     prompt: !!ev.prompt, surface: 'chat' }],
         });
       } else if (ev.type === 'recall-cleared') {
         assistant = null;
@@ -2113,6 +2115,7 @@ window.SW = window.SW || {};
           carriers: ev.carriers || [],
           complete: !!ev.complete,
           surviving: ev.surviving || 0,
+          prompt: !!ev.prompt,
           stopped: ev.stopped || '',
           surface: 'build',
           live: cardIsLive(ev),
@@ -2130,7 +2133,8 @@ window.SW = window.SW || {};
           id: `bw_${messages.length}`,
           role: 'system',
           order: pos,
-          blocks: [{ type: 'recall_withheld', labels: ev.labels || [], surface: 'build' }],
+          blocks: [{ type: 'recall_withheld', labels: ev.labels || [],
+                     prompt: !!ev.prompt, surface: 'build' }],
         });
       } else if (ev.type === 'recall-cleared') {
         // A divider, not a status line: the transcript above it is still true, and what changed is
@@ -6220,6 +6224,7 @@ window.SW = window.SW || {};
               carriers: ev.carriers || [],
               complete: !!ev.complete,
               surviving: ev.surviving || 0,
+              prompt: !!ev.prompt,
               stopped: ev.stopped || '',
               surface: 'chat',
               live: true,
@@ -6435,13 +6440,20 @@ window.SW = window.SW || {};
       // and the person watched a card that did not move: `state.messages` is not what Build draws,
       // `lastUserPrompt` found nothing in it, and `sendMessage` is Chat's turn.
       const drawn = onBuild ? state.buildMessages : state.messages;
-      const again = (block.surviving || 0) > 0 ? lastUserPrompt(drawn) : '';
+      // Two questions, and re-running needs both answered. `surviving` says there is something left
+      // to answer FROM; `prompt` says the question itself is one of the things going. They come
+      // apart in the case a person meets most: the guardrail matched what they typed, every file
+      // the turn read survives, and `surviving` counts those files. Re-sending then asks nothing —
+      // the same words hash to the same key (`chat_paths.text_key`) and are replaced by a
+      // placeholder that tells the model to say it cannot see them — and the copy stays for good,
+      // because the session has no delete, no revert and no fork (ADR-0022).
+      const again = (block.surviving || 0) > 0 && !block.prompt ? lastUserPrompt(drawn) : '';
       const keys = (block.carriers || []).map((c) => c.key);
       const labels = (block.carriers || []).map((c) => c.label);
       if (!keys.length) return;
       try {
-        if (onBuild) await SW.api.withholdBuildContent(id, keys, labels);
-        else await SW.api.withholdContent(id, keys, labels);
+        if (onBuild) await SW.api.withholdBuildContent(id, keys, labels, block.prompt);
+        else await SW.api.withholdContent(id, keys, labels, block.prompt);
       } catch (e) {
         antd.message.error(e && e.message ? e.message : "Couldn't stop sending that.");
         return;

@@ -60,7 +60,16 @@ def test_a_withheld_row_draws_the_receipt_that_says_it_worked():
     landed was the buttons going quiet — and on Build not even that. Chat and Build render the same
     row for the same reason they share every other part of this: it says the same thing."""
     assert _read([{"type": "user", "text": "chart it"}, FOUND, WITHHELD])["withheld"] == [
-        {"labels": ["raw.csv"], "surface": "chat"}]
+        {"labels": ["raw.csv"], "surface": "chat", "prompt": False}]
+
+
+def test_a_replayed_receipt_still_knows_the_question_was_what_went():
+    """The sentence telling a person to ask again in different words is drawn from this block, and
+    a reload is the moment it would quietly stop being drawn."""
+    withheld = {**WITHHELD, "keys": ["text:abc123"], "labels": ["the message you sent"],
+                "prompt": True}
+    assert _read([{"type": "user", "text": "chart it"}, FOUND, withheld])["withheld"] == [
+        {"labels": ["the message you sent"], "surface": "chat", "prompt": True}]
 
 
 def test_the_receipt_retires_the_card_that_asked_the_question():

@@ -147,3 +147,20 @@ def test_several_withheld_things_read_as_plural():
     said = _text(_receipt(labels=["raw.csv", "export.csv"]))
     assert "raw.csv" in said and "export.csv" in said
     assert "them" in said
+
+
+def test_the_receipt_says_to_ask_again_in_different_words():
+    """The non-obvious thing, and the only place a person can be told it. Retyping the question is
+    the obvious move after a refusal, and it is the one that silently fails: the same words hash to
+    the same key, so they are stopped before they are sent and nothing on screen says why.
+
+    Only when their own question was the thing withheld. On a withheld FILE the words are fine and
+    this would send a person rewriting a question that was never the problem.
+    """
+    said = _text(_receipt(prompt=True, labels=["the message you sent"]))
+    assert "different words" in said, "a person who retypes the same question hits the same wall"
+    assert "Nothing was changed or deleted" in said, "still a receipt, still bound by ADR-0022"
+
+
+def test_a_withheld_file_is_not_a_reason_to_rewrite_the_question():
+    assert "different words" not in _text(_receipt())

@@ -3260,14 +3260,17 @@ def withhold_recall(thread_id: str, body: dict = Body(default={})) -> dict:
     this takes away one file or one message the search has already proved is the reason. The
     Conversation, its transcript and the file on disk all stand.
 
-    Body: `{keys: [...], labels: [...]}`, straight off the `withhold-found` row — fingerprints and
-    names, never the refused text. Not a stream, for the reason the clear above is not: the turn it
-    belongs to has already failed and owes no answer. Whether to re-run that turn is the caller's
-    call, because only the caller knows whether anything the turn read survived the withhold.
+    Body: `{keys: [...], labels: [...], prompt: bool}`, straight off the `withhold-found` row —
+    fingerprints and names, never the refused text. Not a stream, for the reason the clear above is
+    not: the turn it belongs to has already failed and owes no answer. Whether to re-run that turn
+    is the caller's call, because only the caller knows whether anything the turn read survived the
+    withhold. `prompt` rides along so the receipt still knows, after a reload, that the person's own
+    question was what went — which is the one case where retyping it fails without a word.
     """
     try:
         return orchestrator.withhold_content(thread_id, (body or {}).get("keys") or [],
-                                             (body or {}).get("labels") or [])
+                                             (body or {}).get("labels") or [],
+                                             bool((body or {}).get("prompt")))
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "Unknown conversation"})
     except ValueError as e:
@@ -3284,7 +3287,8 @@ def withhold_build_recall(body: dict = Body(default={})) -> dict:
     try:
         return orchestrator.withhold_build_content(
             (body or {}).get("keys") or [], (body or {}).get("labels") or [],
-            str((body or {}).get("conversation") or ""))
+            str((body or {}).get("conversation") or ""),
+            bool((body or {}).get("prompt")))
     except TurnBusy as e:
         return JSONResponse(status_code=409, content={"error": str(e)})
     except ValueError as e:
