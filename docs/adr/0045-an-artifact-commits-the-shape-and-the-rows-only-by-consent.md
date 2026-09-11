@@ -81,15 +81,27 @@ source kind would need the audience fact Sage was just shown it cannot obtain.
 | Live read of a table (`liveread/result.record`) | Columns, row count, `cap`, `truncated`, the statement, the timestamp. **No `rows`.** | Up to `CAP_ROWS` rows, as today. |
 | Live read of a file head in a Dataset mount | Same shape, no rows. | Rows, as today. |
 | Live read listing a Dataset's files | **Unchanged.** `[[path, size]]` is filenames; a filename is not a row. | Unchanged. |
-| A `.table.json` written by `sage-chat` | The `rows` array is **stripped by the shim** before the write lands. | Written as the agent composed it. |
+| A `.table.json` written by `sage-chat` | Rewritten **at the end of the turn** to its title, columns, row count and the date read. **No `rows`.** | Written as the agent composed it. |
 | A `.png` chart | **Not committed.** The card renders the title and the date, with no image. | Committed, as today. |
 | The `.sql` sibling | Committed. It carries no values: `sample_rows` takes a table and a limit, and cannot filter (ADR-0041). | Committed. |
 
-The Chat half is enforced rather than asked for. `shim/chat_paths.py` already intercepts every
-write and reads the path out of the tool arguments; it reads the body on the same hook and drops
-the array. An instruction in the prompt would not do — and if one is added anyway, note that the
-Chat prompt lives in **two** hand-synced places, `template/chat/AGENTS.md` and inline in
-`opencode.json`, so a change to one alone is a change the model never sees.
+The Chat half is enforced rather than asked for. An instruction in the prompt would not do — and if
+one is added anyway, note that the Chat prompt lives in **two** hand-synced places,
+`template/chat/AGENTS.md` and inline in `opencode.json`, so a change to one alone is a change the
+model never sees.
+
+This first said the shim strips the array before the write lands. **It cannot.** `shim/chat_paths.py`
+is pure — no I/O, by its own docstring — and it acts on the tool calls of the *next* request, by
+which time the file is on disk; the same docstring says a denied write "is not reverted on disk, it
+still landed". The seam that does fix up a turn's writes is `revert_denied_writes`
+(`workspace/threads.py`), which runs at the end of the turn over a before/after snapshot of the
+tree. The strip is its sibling, `withhold_table_rows`, and runs beside it.
+
+Turn end is also the stronger place, for the reason the PNG section gives below: the shim gates
+write **tool names**, and a table written by a heredoc in the agent's shell passes no write tool at
+all. A pass over the tree finds it either way. What it costs is that the rows exist on the Builder's
+own disk for the length of one turn — never in the commit, and never on the remote, which is the
+audience this decision is about.
 
 ## The PNG follows the opt-in, and this is the uncomfortable part
 

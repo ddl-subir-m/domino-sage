@@ -899,20 +899,20 @@ window.SW = window.SW || {};
       return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     },
 
-    // Always absolute, unlike `relativeTime`. For a stamp on data rather than on an event: a card
-    // that says when its table was read is asking the person to judge how stale it is, and "2 days
-    // ago" on a transcript they opened last week answers a different question than it looks like.
-    //
-    // Read back in UTC, which is the zone the stamp was written in. Rendering it in the viewer's
-    // zone would date a read made at 01:00 UTC to the day before for anyone west of it — a silent
-    // off-by-one on the only number this card exists to report. Empty for anything unparseable,
-    // because the value comes out of a file and `Invalid Date` on screen is worse than no date.
+    // The as-of date of a piece of DATA, which is not the same thing as the time of an event and so
+    // is deliberately not `relativeTime`. Three differences, and each one is a bug that was there:
+    // `relativeTime` reads `Date.now()` on every render, so a transcript left open overnight
+    // silently re-dates a read that never moved (#217, in the app switcher); its absolute fallback
+    // renders in the viewer's zone, so a read at 01:00Z dates to the day before for anyone west of
+    // UTC, while the stamp is written in UTC; and a provenance line reads as a date rather than as
+    // "2 hours ago" — ADR-0045's card says *Read 10 September 2026* for that reason. `''` rather
+    // than `Invalid Date` because the value is read out of a file, and a file can hold anything.
     longDate(iso) {
       if (!iso) return '';
-      const when = new Date(iso);
-      if (isNaN(when.getTime())) return '';
-      return when.toLocaleDateString('en-US',
-        { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+      const then = new Date(iso);
+      if (Number.isNaN(then.getTime())) return '';
+      return then.toLocaleDateString(
+        'en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
     },
 
     isoDaysAgo(days) {

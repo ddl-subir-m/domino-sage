@@ -66,13 +66,13 @@ def test_a_table_read_commits_its_shape_and_none_of_its_values(tmp_path: Path):
                 turn_for(tmp_path))
 
     card = _artifact(tmp_path, "gong-calls.table.json")
-    assert card["shapeOnly"] is True
+    assert card["keptRows"] is False
     assert card["columns"] == ["ID", "EMAIL"]
     assert card["rowCount"] == 2
     assert card["cap"] == 2
     assert card["truncated"] is True
     assert card["readAt"]
-    assert "rows" not in card, "a `rows` key at all is a promise of values"
+    assert card["rows"] == [], "the key stays, so one receipt shape exists rather than two"
     assert b"acme.com" not in _bytes(tmp_path, "gong-calls.table.json")
 
 
@@ -104,10 +104,10 @@ def test_a_file_head_commits_its_shape_and_none_of_its_values(tmp_path: Path):
                 turn_for(tmp_path, dataset_root=lambda n: _mount(tmp_path)))
 
     card = _artifact(tmp_path, "gong-exports-calls.table.json")
-    assert card["shapeOnly"] is True
+    assert card["keptRows"] is False
     assert card["columns"] == ["ID", "EMAIL"]
     assert card["rowCount"] == 2
-    assert "rows" not in card
+    assert card["rows"] == []
     assert b"acme.com" not in _bytes(tmp_path, "gong-exports-calls.table.json")
 
 
@@ -182,7 +182,7 @@ def test_a_table_the_creator_shared_still_reaches_the_model_with_kept_rows_off(t
     )
     assert "the creator shared this table" in said
     assert "person0@acme.com" in said
-    assert "rows" not in _artifact(tmp_path, "gong-calls.table.json")
+    assert _artifact(tmp_path, "gong-calls.table.json")["rows"] == []
 
 
 def test_the_model_is_told_how_many_of_the_read_rows_it_got_not_how_many_are_on_a_card(tmp_path):
@@ -228,7 +228,23 @@ def test_a_writer_that_says_nothing_keeps_no_rows(tmp_path: Path):
     """The default is the safe one, structurally rather than by documentation: a writer added later
     that forgets to ask commits a shape, not somebody's address."""
     result.record(tmp_path / "e" / "thr_a", "s", "t", ["EMAIL"], [["person@acme.com"]])
-    assert "rows" not in json.loads((tmp_path / "e" / "thr_a" / "s.table.json").read_text())
+    assert json.loads((tmp_path / "e" / "thr_a" / "s.table.json").read_text())["rows"] == []
+
+
+def test_the_file_this_writes_is_one_the_chat_pass_leaves_alone(tmp_path: Path):
+    """One contract, held from both ends. `withhold_table_rows` runs over every `.table.json` a
+    Chat turn left behind, including one a Live read wrote — so if the two disagreed about what a
+    receipt keeps, the pass would quietly shrink this file and drop the halves of ADR-0029's rule
+    on the way past. Idempotence is what makes them one shape rather than two that look alike."""
+    from sage.workspace import table_shape
+
+    result.record(tmp_path / "e" / "thr_a", "s", "t", ["ID"], [[1], [2], [3]],
+                  cap=2, statement="SELECT * FROM T LIMIT 2")
+    written = json.loads((tmp_path / "e" / "thr_a" / "s.table.json").read_text())
+
+    assert table_shape.shape_only(written, read_at="2026-01-01T00:00:00Z") == written
+    assert written["truncated"] is True and written["cap"] == 2
+    assert written["statement"] == "examples/thr_a/s.sql"
 
 
 # ---- the Project's answer reaches the read ------------------------------------------------------

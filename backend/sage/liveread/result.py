@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..workspace import table_shape
 from . import grant
 
 # Chat's table cap, kept the same on purpose: one Live read and one Chat table disagreeing about how
@@ -111,27 +112,20 @@ def record(
         (examples_dir / f"{slug}.sql").write_text(statement.rstrip() + "\n")
         statement_path = f"examples/{examples_dir.name}/{slug}.sql"
 
-    if keep_rows:
-        # Chat's shape exactly — `{title, columns, rows}` with rows as positional arrays. The
-        # Workbench reads this and nothing else; a bare array of objects renders as "No data" beside
-        # a chart that looks fine, which is the failure the Chat instructions spell out at length.
-        body: dict = {"title": title, "columns": list(columns), "rows": kept}
-    else:
-        # No `rows` key at all rather than an empty one: a `rows` array is a promise of values, and
-        # an empty one reads as a table that came back with none. `shapeOnly` is what the card tests
-        # for, so a file that deliberately holds no rows is never mistaken for a malformed dump the
-        # renderer's salvage path could rescue.
-        body = {
-            "title": title,
-            "columns": list(columns),
-            "shapeOnly": True,
-            "rowCount": len(kept),
-            "cap": cap,
-            "truncated": short,
-            "readAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
+    # Chat's shape exactly — `{title, columns, rows}` with rows as positional arrays. The Workbench
+    # reads this and nothing else; a bare array of objects renders as "No data" beside a chart that
+    # looks fine, which is the failure the Chat instructions spell out at length.
+    body: dict = {"title": title, "columns": list(columns), "rows": kept}
+    if not keep_rows:
+        # The halves of ADR-0029's rule, and the pointer to the statement — handed to `shape_only`
+        # rather than added after it, so one module decides what an Artifact with no rows keeps.
+        # The pass that empties a table Chat wrote is then a no-op over this file rather than a
+        # second opinion about it (#253), and the card has one shape to read.
+        body.update({"cap": cap, "truncated": short})
         if statement_path:
             body["statement"] = statement_path
+        body = table_shape.shape_only(
+            body, read_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     (examples_dir / name).write_text(json.dumps(body, indent=2, default=str) + "\n")
 
     return Receipt(

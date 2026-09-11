@@ -1268,31 +1268,6 @@ window.SW = window.SW || {};
           // all, where `columns` and `rows` both fell through to empty and antd painted its
           // "No data" placeholder. Recover the wrapper from the records rather than trust every
           // turn's Python to have followed the contract.
-          // A file that SAYS it holds no rows is not a dump anything can salvage. ADR-0045 has a
-          // Live read commit the shape — columns, a count, the cap, whether it stopped short, when
-          // it was read — and, unless the Project keeps data rows in its files, none of the values.
-          // The recovery below would run over it, find nothing, and push the captioned blank grid
-          // it was written to prevent. Tested for explicitly rather than inferred from a missing
-          // `rows`, because that is also what a malformed dump looks like, and the two want
-          // opposite treatment.
-          if (data && data.shapeOnly === true) {
-            blocks.push({
-              type: 'table',
-              title: data.title || art.title,
-              path,
-              columns: tableColumnList(data.columns),
-              rows: [],
-              // What the card renders, and no more. The file also commits `cap` and a pointer to
-              // the `.sql` because ADR-0045 says an Artifact carries them; parsing them to a block
-              // nothing reads would be two fields to keep in step for nobody.
-              shape: {
-                rowCount: Number(data.rowCount || 0),
-                truncated: !!data.truncated,
-                readAt: data.readAt || '',
-              },
-            });
-            continue;
-          }
           const bare = Array.isArray(data) ? data : null;
           const wrapper = bare ? {} : data;
           // A third way to miss it, and the one that reads worst: the wrapper is there, `title`
@@ -1335,6 +1310,18 @@ window.SW = window.SW || {};
             // Carried so a table that still recovers nothing can hand over the file instead of
             // painting the blank box that started this.
             path,
+            // What a table whose Project does not keep rows has left: how many were read and when
+            // (ADR-0045). `keptRows: false` is written by the pass that emptied the file, so it
+            // tells that table apart from a frame that really was empty — the two want opposite
+            // sentences, and only one of them is worth offering the file for.
+            keptRows: data.keptRows,
+            rowCount: typeof data.rowCount === 'number' ? data.rowCount : null,
+            readAt: data.readAt || null,
+            // Only a Live read knows this: it stopped at a LIMIT and there is more behind it
+            // (ADR-0029 — truncation is a fact the caller reads, not a silence). Without it a read
+            // cut at the cap renders "500 rows" and reads as the whole table, which is the wrong
+            // claim about exactly the tables somebody asks about. A table Chat wrote never sets it.
+            truncated: data.truncated === true,
             columns,
             rows: source.map((row) =>
               Array.isArray(row) ? row : columns.map((name) => tableRecordCell(row, name))),

@@ -231,47 +231,59 @@ window.SW = window.SW || {};
     return { names, width };
   }
 
-  // What a card can say about a table whose values were never committed: its width, how many rows
-  // were read, whether the read stopped short, and when it ran. Shared with `copyTextFor`, so what
-  // gets pasted is the sentence that was on screen.
-  function shapeSentence(block) {
-    const shape = block.shape || {};
-    const columns = (block.columns || []).length;
-    const rows = Number(shape.rowCount || 0);
-    const counted = `${rows} ${rows === 1 ? 'row' : 'rows'}`;
-    // A date this cannot read drops the whole clause rather than stamping the card with the words
-    // `Invalid Date`, which is what an unparseable `readAt` out of the file would otherwise paint.
-    const when = SW.util.longDate(shape.readAt);
-    const read = when ? ` Read ${when}.` : '';
-    return `${columns} ${columns === 1 ? 'column' : 'columns'}, ` +
-      `${shape.truncated ? `the first ${counted}` : counted}.${read}`;
+  // What a table says when its Project does not keep data rows (ADR-0045): the columns, how many
+  // rows were read, and when. A receipt rather than a grid — the rows are not late, they are not
+  // coming, and "No data" over a correct title would send someone looking for a fault.
+  function tableReceiptLines(block) {
+    const lines = [];
+    if (block.columns.length) lines.push(block.columns.join(', '));
+    // `longDate`, not `relativeTime`: this stamp is the age of the DATA, and the reasons it must
+    // not drift with the clock or with the viewer's zone are written where that helper is.
+    const counted = `${SW.util.number(block.rowCount)} ${block.rowCount === 1 ? 'row' : 'rows'}`;
+    // "the first", where the read stopped at a LIMIT with more behind it. The plain count over a
+    // capped read claims the whole table, and the assistant beside this card was told otherwise —
+    // its receipt says "the first 500 rows (there are more)".
+    const count = block.truncated ? `the first ${counted}` : counted;
+    const when = SW.util.longDate(block.readAt);
+    lines.push(when ? `${count}, read ${when}` : `${count} read`);
+    // Named as the switch is labelled, and where it is: a person reading this card is one setting
+    // away from the rows, and "Kept rows" is what the decision is called rather than what the
+    // control says. Not said over a frame that was empty — nothing was withheld from that one, and
+    // an offer to turn rows on would not bring any back.
+    //
+    // Nor said once the setting IS on. `keptRows` on the block is read off the FILE and records
+    // what that file holds, which is the right thing for it to record: an Artifact written before
+    // the switch was flipped still holds no rows, and repairing it later would be writing rows
+    // nobody asked anyone to write. But the instruction is in the present tense and about the
+    // Project, so after the flip it tells somebody to switch on a thing they already switched on.
+    const on = ((SW.store.get() || {}).keptRows || {}).on;
+    if (block.rowCount > 0 && !on) {
+      lines.push(SW.brand.text(
+        'Rows aren\'t kept in this {project}\'s files. To keep them, switch on "Keep data rows" '
+        + 'in Add people.'));
+    }
+    return lines;
   }
+
+  // A table whose rows this Project does not keep, told apart from one the recovery ladder could
+  // not read. Both arrive with no rows; only this one knows how many there were, and the other
+  // needs the older card underneath — the one that offers the file rather than naming a count it
+  // never had.
+  const isTableReceipt = (block) =>
+    block.keptRows === false && !block.rows.length && block.rowCount != null;
 
   function TableBlock({ block }) {
     const [showAll, setShowAll] = useState(false);
-    // The Artifact committed the shape of this table and none of its values, because the Project
-    // does not keep data rows in its files (ADR-0045). That is a decision, not a failure, so the
-    // card carries what the file knows rather than handing antd a header with nothing under it —
-    // which is the blank grid two of the recoveries below exist to prevent.
-    if (block.shape) {
+    if (isTableReceipt(block)) {
       return h(
         'div',
         { className: 'sw-block-card' },
         block.title &&
           h('div', { className: 'sw-block-head' },
             h('div', { className: 'sw-block-title' }, block.title)),
-        h(
-          'div',
-          { className: 'sw-block-body' },
-          h('div', { className: 'sw-block-sub' }, shapeSentence(block)),
-          // The names, not just how many. A column name carries no values, the assistant is handed
-          // the same list, and without them a card meant to say what the table holds says less
-          // about its shape than the rows-kept card it replaces — where every name was a header.
-          (block.columns || []).length > 0 &&
-            h('div', { className: 'sw-block-sub' }, block.columns.join(', ')),
-          h('div', { className: 'sw-block-sub' },
-            "Data rows are not kept in this Project's files.")
-        )
+        h('div', { className: 'sw-block-body' },
+          ...tableReceiptLines(block).map((line) =>
+            h('div', { className: 'sw-block-sub' }, line)))
       );
     }
     // With neither columns nor rows, antd paints a bordered box under the title and nothing
@@ -1746,10 +1758,11 @@ window.SW = window.SW || {};
         if (b.type === 'code') return `\`\`\`${b.language || ''}\n${b.value}\n\`\`\``;
         if (b.type === 'table') {
           const cell = (v) => String(v ?? '').replace(/\|/g, '\\|');
-          // A table that committed no values pastes the sentence the card shows. A markdown table
-          // of its column names with nothing under them would say a frame came back empty, which
-          // is not what happened.
-          if (b.shape) return [b.title, shapeSentence(b)].filter(Boolean).join('\n');
+          // The same sentences the card shows. Pasting "(no rows)" for a table whose rows the
+          // Project declined to keep would report an empty read, which is not what happened.
+          if (isTableReceipt(b)) {
+            return [b.title, ...tableReceiptLines(b)].filter(Boolean).join('\n');
+          }
           // The card says this in words; a pasted `|  |` over `|  |` says it in a syntax that
           // renders as an empty table wherever it lands, which is how this reached a bug report.
           if (!b.columns.length && !b.rows.length) {

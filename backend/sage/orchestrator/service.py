@@ -174,6 +174,7 @@ from ..workspace.threads import (
     revert_denied_writes,
     snapshot_files,
     title_from_prompt,
+    withhold_table_rows,
 )
 from . import brand, chat_compact, recall, scope, table_rank, withhold
 from . import handoff as chat_handoff
@@ -8721,6 +8722,8 @@ class Orchestrator:
                     # into Build by that list (handoff.md §1), which made the nudge below an offer to
                     # start again with none of the work the person had just waited minutes for.
                     revert_denied_writes(project.record.path, thread_id, before)
+                    withhold_table_rows(project.record.path, thread_id, before,
+                                        kept_rows=project.record.kept_rows())
                     timed_out = [
                         store.record_artifact(thread_id, path=rel)
                         for rel in new_artifact_paths(project.record.path, thread_id, before)
@@ -8969,6 +8972,11 @@ class Orchestrator:
             # reader wants to know is what the end of a turn costs, not which of the two walks it.
             with timing.span("after.artifacts"):
                 revert_denied_writes(project.record.path, thread_id, before)
+                # Before the scan below records them, so what the Thread lists and what git takes
+                # are the same file. A table the turn wrote keeps its shape and keeps its rows only
+                # where the Project said so (ADR-0045).
+                withhold_table_rows(project.record.path, thread_id, before,
+                                    kept_rows=project.record.kept_rows())
                 artifacts = [
                     store.record_artifact(thread_id, path=rel)
                     for rel in new_artifact_paths(project.record.path, thread_id, before)

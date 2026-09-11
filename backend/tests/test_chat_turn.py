@@ -145,7 +145,11 @@ def test_chat_turn_records_artifact_and_reverts_a_write_outside_its_thread(tmp_p
     arts = next(e for e in events if e.get("type") == "artifacts")["items"]
     assert arts[0]["kind"] == "table"
     assert arts[0]["path"] == f"examples/{tid}/exposure.table.json"
-    assert (project.record.path / arts[0]["path"]).read_text() == table
+    # Its shape, not its rows: this Project has not turned Kept rows on (ADR-0045), and what that
+    # costs the file is settled in `test_a_table_chat_wrote_commits_its_shape_not_its_rows.py`.
+    # What is claimed here is that the Artifact survived the turn at all.
+    kept = json.loads((project.record.path / arts[0]["path"]).read_text())
+    assert kept["title"] == "Desks" and kept["columns"] == ["desk"]
     hist = orch.thread_history(tid)
     assert hist[0]["type"] == "user"
     ctx = orch.thread_context(tid)["items"]
