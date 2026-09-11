@@ -159,10 +159,14 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   in context. For a {dataSource}, query it with `domino_data` already in this environment:
   `from domino_data.data_sources import DataSourceClient` then
   `DataSourceClient().get_datasource("<name from context>").query("<sql>").to_pandas()`.
-  Do not grep the filesystem, env, or `/opt/sage` for credentials. Do not print a large dump
-  into the reply; summarise, then write a chart or table file for the detail.
-- After writing a file, the reply is a few sentences about what it shows — not a recap of the
-  code you ran.
+  Do not grep the filesystem, env, or `/opt/sage` for credentials. **Print little.** What a
+  script prints is kept and re-read on every step that follows it, so print the few numbers you
+  need and no more — never a whole frame, and at most a handful of rows. `df.head()` on a wide
+  frame is a page of text you pay for again on every step after it. Summarise in the reply, and
+  write the chart or table file for the detail.
+- After writing a file, the reply is a sentence or two about what it shows — not a recap of the
+  code you ran, and never the script itself. Nobody asked to read it, and it is repeated back
+  to you on every step that follows.
 
 ## What a finished turn looks like
 

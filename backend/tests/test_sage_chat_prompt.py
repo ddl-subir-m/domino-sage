@@ -112,3 +112,23 @@ def test_the_turn_is_told_to_do_the_work_in_one_script():
                   "inside the script you are already running, not in a"):
         assert probe in md, probe
         assert probe in prompt, probe
+
+
+def test_the_turn_is_told_that_what_it_prints_it_pays_for_again():
+    """Tool output is the one transcript cost Sage cannot cap from the outside.
+
+    `opencode.json` has no tools block and the driver never sees a tool result on the way in, so a
+    `bash` that prints a whole frame is stored in the session verbatim and re-sent on every step
+    after it. Measured on 2026-09-11, a step's time to first byte tracked its payload — ~1.5s at
+    14KB against ~4s at 321KB — so what one step prints is what every later step waits for. The
+    prompt is the only lever there is, which is why this rule is pinned rather than left to taste.
+    """
+    root = Path(__file__).resolve().parents[2]
+    md = (root / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
+    prompt = json.loads((root / "opencode.json").read_text(encoding="utf-8"))[
+        "agent"]["sage-chat"]["prompt"]
+    for probe in ("**Print little.**",
+                  "re-read on every step that follows it",
+                  "never the script itself"):
+        assert probe in md, probe
+        assert probe in prompt, probe
