@@ -1312,6 +1312,32 @@ window.SW = window.SW || {};
     return blocks;
   }
 
+  // Which row in a transcript still holds a LIVE offer to start the model over, or -1 (ADR-0022).
+  // Shared by both transcripts, because the ladder is one ladder and the two halves disagreeing
+  // about which rung a Conversation is on would be worse than either answer.
+  //
+  // A `recall-cleared` retires every offer above it: the person acted, and the session those rungs
+  // were counted against is gone. `dismissedRecallOffers` is the other retirement — "Not now",
+  // which is this tab's alone and is deliberately not written to the transcript, because hiding a
+  // card is not an answer worth keeping.
+  // Keyed by surface as well as position. Under the split view the two transcripts number their own
+  // rows, so a Chat offer and a Build offer can both be row 3 — and one "Not now" would hide the
+  // other, on the other side of the Workbench, for a refusal nobody had seen yet.
+  const dismissedRecallOffers = new Set();
+  const recallOfferKey = (surface, pos) => `${surface}:${pos}`;
+
+  function recallOfferIndex(history, surface) {
+    let live = -1;
+    for (const [i, ev] of (history || []).entries()) {
+      if (ev.type === 'recall-suggest') live = i;
+      else if (ev.type === 'recall-cleared') live = -1;
+    }
+    if (live < 0) return -1;
+    const row = history[live];
+    const pos = row.order === undefined ? live : row.order;
+    return dismissedRecallOffers.has(recallOfferKey(surface, pos)) ? -1 : live;
+  }
+
   async function historyToMessages(history, handoff) {
     const messages = [];
     let assistant = null;
@@ -1338,8 +1364,12 @@ window.SW = window.SW || {};
     // Only the newest offer is live, for the same reason. Unlike a Build offer there is no
     // suppressed flag to consult: declining is not permanent (ADR-0022), so a later refusal
     // re-offers and the older card is simply the dead one.
-    const liveRecall = (history || []).reduce(
-      (last, ev, i) => (ev.type === 'recall-suggest' ? i : last), -1);
+    //
+    // A clear retires the offer above it. Without that clause the reduce kept pointing at the last
+    // suggestion whatever followed it, so the re-read that runs straight after `clearRecall` drew
+    // the card again, buttons and all — asking someone to start over from a session they had just
+    // started over. The next refusal writes its own suggestion and lights that one instead.
+    const liveRecall = recallOfferIndex(history, 'chat');
     const shownArts = new Set();
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
@@ -1430,7 +1460,7 @@ window.SW = window.SW || {};
           id: `ro_${messages.length}`,
           role: 'system',
           order: pos,
-          blocks: [{ type: 'recall_offer', scope: ev.scope }],
+          blocks: [{ type: 'recall_offer', scope: ev.scope, offerKey: recallOfferKey('chat', pos) }],
         });
       } else if (ev.type === 'handoff-suggest' && !hideSuggest && i === liveSuggest) {
         assistant = null;
@@ -1796,6 +1826,11 @@ window.SW = window.SW || {};
     let assistant = null;
     let pendingPlan = null;
     let pos = 0;
+    // Only the newest offer keeps its buttons, the same rule the Chat transcript follows. An older
+    // one is a record that the ladder was climbed here once; clicking it would clear a session that
+    // has been replaced since, and the rung it was offered at is no longer the rung this
+    // Conversation is on.
+    const liveRecall = recallOfferIndex(history, 'build');
     const ensureAssistant = () => {
       if (!assistant) {
         assistant = { id: `ba_${messages.length}`, role: 'assistant', at: new Date().toISOString(),
@@ -1930,6 +1965,29 @@ window.SW = window.SW || {};
         // Same backstop as `done` above: a turn that failed is not still reading a warehouse.
         dropTableCard(messages, null);
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+      } else if (ev.type === 'recall-cleared') {
+        // A divider, not a status line: the transcript above it is still true, and what changed is
+        // only what the model can remember of it (ADR-0022).
+        assistant = null;
+        messages.push({
+          id: `brc_${messages.length}`,
+          role: 'system',
+          order: pos,
+          blocks: [{ type: 'recall_cleared', scope: ev.scope }],
+        });
+      } else if (ev.type === 'recall-suggest' && i === liveRecall) {
+        assistant = null;
+        messages.push({
+          id: `bro_${messages.length}`,
+          role: 'system',
+          order: pos,
+          // `surface` is what sends the button to Build's clear rather than Chat's. The card is
+          // one component on both sides because it says the same thing; the session it empties is
+          // filed per (Conversation, app) here and per Thread there, and only the caller knows
+          // which of those it is standing in.
+          blocks: [{ type: 'recall_offer', scope: ev.scope, surface: 'build',
+                     offerKey: recallOfferKey('build', pos) }],
+        });
       } else if (ev.type === 'saved') {
         const value = ev.ok
           ? (ev.pushed ? 'Saved and pushed' : `Saved${ev.detail ? ` — ${ev.detail}` : ''}`)
@@ -6041,10 +6099,44 @@ window.SW = window.SW || {};
 
     // Dismissal is local and lasts until the next refusal re-offers. Nothing is patched: the
     // transcript is the record, and hiding a card is not an answer worth writing into it.
-    dismissRecallOffer() {
+    //
+    // Remembered in `dismissedRecallOffers` as well as filtered out of what is on screen, because
+    // filtering alone only lasted until the next read rebuilt these messages — which is every
+    // `openThread`, and in Build every two-second poll. The comment above has said "lasts until the
+    // next refusal" since it shipped; this is what makes that true.
+    dismissRecallOffer(offerKey) {
+      if (offerKey !== undefined) dismissedRecallOffers.add(offerKey);
       state.messages = state.messages.filter(
         (m) => !m.blocks.some((b) => b.type === 'recall_offer')
       );
+      notify();
+    },
+
+    // Build's half of `clearRecall` below. The conversation is `state.thread.id` here too — a Build
+    // Conversation IS the Thread that drove it — but the app is not named at all: the server empties
+    // the session filed under whichever Built App is selected, which is the one this transcript
+    // belongs to (ADR-0022).
+    async clearBuildRecall(scope) {
+      try {
+        await SW.api.clearBuildRecall(state.thread && state.thread.id, scope);
+      } catch (e) {
+        antd.message.error("Couldn't clear recall.");
+        return;
+      }
+      // Re-read rather than push the divider in from here, for the reason Chat re-opens: the server
+      // wrote the event and the transcript is what renders it. One copy of the truth. The card goes
+      // with it — the `recall-cleared` row the server just wrote retires the offer above it.
+      const watched = state.thread && state.thread.id;
+      await applyBuildRead(
+        watched ? await readBuildTranscript(watched) : { merged: null, history: [] });
+      notify();
+    },
+
+    // Remembered rather than filtered out of what is drawn, because Build rebuilds this transcript
+    // from `buildHistory` every two seconds — a filtered message list lasted until the next tick.
+    dismissBuildRecallOffer(offerKey) {
+      if (offerKey !== undefined) dismissedRecallOffers.add(offerKey);
+      applyBuildTranscript();
       notify();
     },
 

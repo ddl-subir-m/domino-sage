@@ -83,6 +83,40 @@ def offer(history: list[dict]) -> str | None:
     return None if window[-1].get("scope") == EMPTY else EMPTY
 
 
+def offer_now(history: list[dict]) -> str | None:
+    """Which clear to offer on a SINGLE refusal, for a caller whose one refusal is evidence enough.
+
+    `offer` waits for two because one may be a blip, and clearing costs the model everything it has
+    been told. The Chat → Build handoff is the exception, and it is the reason this exists: it is
+    not an ordinary turn. It is a click made deliberately, on a card already on screen, and it
+    plans in the Thread's OWN session — so a refusal there is a fact about the Conversation rather
+    than about one request. Making that click a throwaway, purely to reach a rung the next click
+    would reach anyway, is a wasted failure in front of somebody who has already had one.
+
+    Every other rule is `offer`'s, unchanged, which is the point of sharing the window: which rung
+    comes next, and when to stop offering, are decided the same way on both paths. The only
+    difference is the count required to open the ladder at all.
+
+    NOT a general loosening. `offer` stays as it is for Chat turns and Build turns, where a single
+    failure really can be a blip and the person has lost nothing by trying again.
+    """
+    rows = [e for e in (history or []) if isinstance(e, dict)]
+    if not rows or rows[-1].get("type") != "error":
+        return None
+    key = str(rows[-1].get("reason") or "")
+    if not key:
+        return None
+    seen = _errors(rows, key)
+    # Since the previous identical refusal, exactly as `offer` measures it — or since the start of
+    # the Conversation, when this refusal is the first of its kind and there is no previous one to
+    # measure from.
+    start = seen[-2] + 1 if len(seen) >= 2 else 0
+    window = [e for e in rows[start:seen[-1]] if e.get("type") == CLEARED]
+    if not window:
+        return SUMMARY
+    return None if window[-1].get("scope") == EMPTY else EMPTY
+
+
 def terminal(history: list[dict]) -> bool:
     """True when the transcript ends on a refusal that survived a complete clear.
 

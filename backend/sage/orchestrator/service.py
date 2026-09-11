@@ -313,6 +313,15 @@ _MODE_AGENT = {Mode.ASK: "sage-ask", Mode.PLAN: "sage-plan", Mode.IMPLEMENT: "sa
 # here so a reload redraws the step checklist — a build that shows six phases live and nothing after
 # F5 reads as lost work.
 _PERSISTED_EVENTS = frozenset({
+    # `error` carries the sentence saying WHY a turn failed, and it was the one frame a reload
+    # could not get back: `done` keeps the decision ("gateway error"), and a decision is not a
+    # reason anybody can act on. The client has replayed these rows since it shipped — see the
+    # `ev.type === 'error'` branch in the history reader — so nothing was waiting on a renderer,
+    # only on the write. It is also what `recall.offer` counts (ADR-0022): a ladder over a
+    # transcript that keeps no refusals can never reach its second rung.
+    "error",
+    # The ladder's own two rows, so an offer and a clear survive a reload the way Chat's do.
+    recall.SUGGEST, recall.CLEARED,
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
@@ -2200,6 +2209,70 @@ def _error_raw(err: object) -> str:
         data = err.get("data") if isinstance(err.get("data"), dict) else {}
         return str(data.get("message") or err.get("message") or err.get("name") or "")
     return ""
+
+
+def _at_last_rung(history: list[dict], reason: str) -> bool:
+    """Is the refusal ABOUT to be appended the one that survived a complete clear (ADR-0022)?
+
+    Takes the pending refusal rather than reading it off `history`, because every caller asks
+    before writing it down — the sentence it changes is the one being built. Two callers ask, and
+    they have to get the same answer: one adds the last rung's note, the other withholds "say try
+    again", and a turn that did both would tell someone to retry in the same breath as telling them
+    retrying is not the problem.
+    """
+    return recall.terminal(list(history or []) + [{"type": "error", "reason": reason}])
+
+
+def _said_already(history: list[dict], reason: str) -> bool:
+    """Did the row directly above this one already carry this exact sentence?
+
+    The guardrail sentence is a paragraph: what was matched, that guardrails read file contents and
+    not only what you typed, which file this turn read, and what to do about it. It earns that
+    length once. Printed twice in a row it earns none of it — and twice in a row is the NORMAL case
+    on the handoff, because the click that fails is the one made straight after the turn that
+    failed, on the same poison, naming the same file.
+
+    An ANSWER resets it, not a question. Being answered in between means the person has read other
+    things, scrolled, possibly come back tomorrow, and the paragraph is worth its length again.
+    Typing means none of that — and every retry is a question, so stopping on one would have made
+    this fire nowhere except the handoff. "I said it, they read it, they tried again, I said the
+    same 300 characters" is exactly the run being collapsed.
+
+    Compared on the rendered reason rather than on `reason_key`, deliberately. Two refusals with the
+    same key can name DIFFERENT files — that is exactly the pair ADR-0022's ladder exists to connect
+    — and naming the second file is the most useful thing the second row does. Identical keys with
+    identical prose is the case with nothing left to add.
+    """
+    for row in reversed(history or []):
+        kind = row.get("type")
+        # Assistant TEXT and Artifacts are answers. A tool call is not one — it is work inside a
+        # turn that then failed, and Build records every one of them, so counting those as an answer
+        # would have meant Build never collapsed anything.
+        if kind == "artifacts" or (kind == "agent" and row.get("kind") == "text"):
+            return False
+        if kind == "error":
+            return bool(reason) and reason in str(row.get("message") or "")
+    return False
+
+
+def _last_rung_note(history: list[dict], reason: str) -> str:
+    """The sentence the third rung of the ladder owes, or "" (ADR-0022).
+
+    `recall.terminal` has been the documented end of the ladder since it shipped and nothing ever
+    called it, so a Conversation that had been started over COMPLETELY and was refused again got
+    the same sentence as the first blip and no offer under it — `recall.offer` correctly declines
+    to suggest a third clear, and nothing said why the offer had stopped coming. The person was
+    left with the one reading the evidence does not support: that Sage had given up silently.
+
+    The refusal about to be appended is not in `history` yet, so it is passed separately: two
+    identical refusals with a complete clear between them is what `terminal` reads, and this call
+    sits on what would be the second of them.
+    """
+    if not _at_last_rung(history, reason):
+        return ""
+    return ("\n\nThis conversation has already been started over completely and it is still being "
+            "refused, so what the gateway matched is in the message you just sent, or in a file it "
+            "names. Change that, or ask your Domino administrator about the policy.")
 
 
 def _chat_error_text(err: object, attachments: list[dict] | None = None) -> str:
@@ -6748,8 +6821,23 @@ class Orchestrator:
         prompt = chat_handoff.plan_prompt(thread_id, digest,
                                           voice=_PLAN_VOICE, shape=_PLAN_SHAPE)
         client = self._ensure_opencode()
-        plan_md = self._run_sage_plan(
-            project, prompt, self._ensure_thread_session(store, thread_id, project, client))
+        # This planner runs in the THREAD'S OWN session, which is what makes a refusal here a
+        # Conversation-level fact rather than one click's bad luck: whatever the gateway refused in
+        # Chat is still in that session, so it refuses this too. The transcript is where that has
+        # to be written down — the route answers 502 and a toast is gone on the next render, so a
+        # failure recorded nowhere left `recall.offer` counting to one forever while the one thing
+        # that would fix it (a fresh session) went unoffered.
+        try:
+            plan_md = self._run_sage_plan(
+                project, prompt, self._ensure_thread_session(store, thread_id, project, client),
+                # Files and Artifacts only, the same kinds `_chat_mention_files` lets Chat name.
+                # A guardrail reads contents, and a Data Source chip has none to read — naming one
+                # under "this turn read" would send someone to look in the wrong place.
+                suspects=[i for i in context
+                          if str(i.get("kind") or "") in ("file", "artifact")])
+        except ValueError as e:
+            self._record_plan_refusal(store, thread_id, project, str(e))
+            raise
         if not plan_md:
             # Said in words, because this sentence is the whole of what the person gets: the route
             # answers 502 with it and the click puts it in a toast. "empty plan" was Sage's own
@@ -6780,12 +6868,17 @@ class Orchestrator:
         self._flush_chat_save("plan", holding_turn=True)
         return self._handoff_sheet_payload(store, thread_id, project, plan_md, handoff)
 
-    def _run_sage_plan(self, project: Project, prompt: str, session_id: str) -> str:
+    def _run_sage_plan(self, project: Project, prompt: str, session_id: str,
+                       suspects: list[dict] | None = None) -> str:
         """sage-plan on a session the caller picked. No typecheck. Read-only arming so src/ stays put.
 
         The session is the caller's because the two callers stand in different places: a gated build
         turn plans in the app, and a Chat handoff plans in the Thread — before an app exists, which
         is a directory OpenCode could not have opened.
+
+        `suspects` are the files a guardrail refusal should name, in the `{"name": ...}` shape
+        `_named_files` reads. The caller's, for the same reason the session is: what this turn
+        carried is a fact about where it was called from, and the planner cannot see it.
         """
         client = self._ensure_opencode()
         sid = session_id
@@ -6820,7 +6913,14 @@ class Orchestrator:
             # recorded, and a plan that came back whole is worth more than the note of a call that
             # went wrong on the way to it.
             if project.last_gateway_error is not None:
-                raise ValueError(f"model call failed: {project.last_gateway_error['message']}")
+                raw = str(project.last_gateway_error["message"])
+                # A guardrail refusal, said the way Chat and Build already say it (ADR-0014). This
+                # path is the one a refused Conversation is MOST likely to reach next — the offer
+                # card is on screen when the turn under it fails — and it was the one path that
+                # still handed over the transport nest whole. Every other failure keeps the wording
+                # it had, because "404 model not found" is already a sentence.
+                raise ValueError(_guardrail_sentence(raw, suspects)
+                                 or f"model call failed: {raw}")
             # The one number that separates "no inference reached us" from "the model answered with
             # nothing" — the same diagnostic the gated turn logs, on the path that logged nothing.
             log.warning("sage-plan produced no text (session=%s, model_calls=%d)",
@@ -7246,20 +7346,137 @@ class Orchestrator:
                 "app were offered on this question already and turned down — do not raise any of "
                 "them again.")
 
-    def _maybe_offer_recall(self, store: ThreadStore, thread_id: str):
-        """The offer a twice-refused Conversation is owed, or nothing (ADR-0022).
+    @staticmethod
+    def _record_recall_offer(store: ThreadStore, thread_id: str, *,
+                             rule=recall.offer) -> dict | None:
+        """Write the offer a refused Conversation is owed, or nothing (ADR-0022).
 
         Read back out of the store rather than tracked through the turn: the error was appended a
-        moment ago, and the transcript is the thing `recall.offer` reasons over. Tracking it in
-        locals would mean two accounts of the same ladder, and the stored one is the one that
-        survives a restart.
+        moment ago, and the transcript is the thing the rule reasons over. Tracking it in locals
+        would mean two accounts of the same ladder, and the stored one is the one that survives a
+        restart.
+
+        A plain function rather than the generator below, because the ladder has two kinds of
+        caller now. A Chat turn streams the offer as it writes it; the handoff planner has no
+        stream to put it on — it answers a POST — and only the written row reaches that person, on
+        the Thread they go back to.
+
+        `rule` is how many refusals open the ladder, and only the handoff passes anything but the
+        default — see `recall.offer_now`. It is a parameter rather than a branch on the caller so
+        that the choice is made where the reason for it lives, and so `recall` stays the one place
+        that knows what a rung is.
         """
-        scope = recall.offer(store.read_history(thread_id))
+        scope = rule(store.read_history(thread_id))
         if not scope:
-            return
+            return None
         ev = {"type": recall.SUGGEST, "scope": scope}
         store.append_history(thread_id, ev)
-        yield ev
+        return ev
+
+    def _maybe_offer_recall(self, store: ThreadStore, thread_id: str):
+        ev = self._record_recall_offer(store, thread_id)
+        if ev is not None:
+            yield ev
+
+    def _record_plan_refusal(self, store: ThreadStore, thread_id: str, project: Project,
+                             said: str) -> None:
+        """Put a failed handoff plan on the Thread, and advance the ladder if it earned a rung.
+
+        The row is keyed off the SHIM's raw record rather than the sentence above it, for the
+        reason `_error_raw` exists: the sentence names this turn's suspects, and the whole job of
+        `reason_key` is to connect two refusals whose suspects differ. Falling back to the sentence
+        keeps the row useful for every other failure, where the two are the same string anyway.
+
+        The sentence is SHORT when the row above it already said the same thing, which on this path
+        is the normal case rather than the exception: the click that fails is the one made straight
+        after the turn that failed, on the same poison, naming the same file. Said twice, the
+        paragraph stops being an explanation and becomes something to scroll past — with the offer
+        card underneath saying it a third time in its own words.
+
+        What the short row adds instead is the one fact the first one could not: a DIFFERENT request
+        was refused the same way, so what was matched is in the Conversation rather than in the
+        message. That is the evidence for the card below it.
+
+        Never raises. A Conversation that just lost its plan must not also lose the reason because
+        writing it down went wrong.
+        """
+        try:
+            raw = _error_raw(project.last_gateway_error) or said
+            history = store.read_history(thread_id)
+            if _said_already(history, said):
+                message = brand.text(
+                    "{assistantName} couldn't write a plan either — the same refusal, on a "
+                    "different request. What was matched is in this conversation, not in what "
+                    "you typed.")
+            else:
+                message = brand.text("{assistantName} couldn't write a plan — {reason}",
+                                     reason=said)
+            reason = recall.reason_key(raw)
+            # The last rung reaches this path too, and it matters most here: `offer_now` stops
+            # offering after a complete clear, so without this sentence the click that failed would
+            # be the one with no offer under it AND no reason given for the silence.
+            message += _last_rung_note(history, reason)
+            store.append_history(thread_id, {
+                "type": "error", "reason": reason, "message": message})
+            # Opened on ONE refusal here, unlike every other caller. A failed handoff is not a turn
+            # somebody can shrug at and retry: it is a deliberate click, on a card already on
+            # screen, and the planner runs in the Thread's own session — so it is a fact about the
+            # Conversation. Waiting for a second one spends a click to learn what this one already
+            # said (`recall.offer_now`).
+            self._record_recall_offer(store, thread_id, rule=recall.offer_now)
+        except Exception:
+            log.exception("handoff: couldn't record a refused plan on the thread")
+
+    @staticmethod
+    def _record_build_recall_offer(project: Project) -> dict | None:
+        """The Build half of `_record_recall_offer` (ADR-0022).
+
+        Build's own store rather than the Thread's, because Build's transcript is its own: a
+        Conversation can drive several Built Apps, each with its own session, and a refusal in one
+        of them says nothing about the others. The ladder therefore counts per (Conversation, app),
+        which is exactly the pair the session id is filed under.
+        """
+        app = project.app_for_turn()
+        scope = recall.offer(app.read_history(project.build_conversation))
+        if not scope:
+            return None
+        ev = {"type": recall.SUGGEST, "scope": scope}
+        app.append_history(ev, project.build_conversation)
+        return ev
+
+    def clear_build_recall(self, scope: str, conversation: str | None = None) -> dict:
+        """Start the model over on a Build Conversation, keeping the app and everything on screen.
+
+        The same move as `clear_recall` and for the same reason: Recall lives in the OpenCode
+        session, so dropping the stored id IS the clear. What Build keeps is bigger than what Chat
+        keeps and none of it is at risk — the app is files on disk, the plan is in `.sage/`, and the
+        transcript is `history.jsonl`. The agent opens the app's directory and reads all of it back.
+
+        `project.session_id` is cleared alongside the file because Build caches the id in memory
+        where Chat re-reads it every turn. Leaving the cache would hand the next turn the very
+        session this call exists to abandon.
+
+        Under the turn lock, which Chat's clear does not need: this one pins the Project to a
+        conversation (`_switch_conversation`) and drops the cached session id, and a turn streaming
+        in another conversation reads both. Chat's touches one file on disk and nothing shared. A
+        refusal is the normal case here anyway — the offer is drawn on a turn that already failed,
+        so the lock is free by the time anybody can click it.
+        """
+        if scope not in (recall.SUMMARY, recall.EMPTY):
+            raise ValueError(f"unknown scope {scope!r}")
+        if not self._turn_lock.acquire(blocking=False):
+            raise TurnBusy(self._turn_wedged, "try again")
+        try:
+            project = self.project(start_preview=False)
+            self._switch_conversation(project, conversation)
+            app = project.app_for_turn()
+            project.record.clear_session_id(project.build_conversation, app.app_id)
+            project.session_id = None
+            ev = {"type": recall.CLEARED, "scope": scope}
+            app.append_history(ev, project.build_conversation)
+            return ev
+        finally:
+            self._release_turn()
 
     def clear_recall(self, thread_id: str, scope: str) -> dict:
         """Start the model over on this Conversation, keeping everything the person can see.
@@ -7906,6 +8123,25 @@ class Orchestrator:
             # Counted at the point the turn is pinned as Chat, which is where its tool list is about
             # to be assembled. A turn counted here was handed no Live read, whatever it then said.
             self._chat_turns_before_mcp += 1
+        def refuse_before_the_turn(said: str):
+            """End the turn on a refusal Sage made itself, and write it down (ADR-0043).
+
+            Written down for the reason a gateway refusal is: a turn that ends with a question on
+            screen and no answer under it sends someone looking for a Sage bug. These two refusals
+            streamed the sentence and kept no copy, so a reload showed the question alone — the
+            silent turn again, from the one direction that had nothing to do with the gateway.
+
+            `done` for the same reason. Every other exit from this turn yields one, the client
+            reads it as the turn settling, and two paths that skipped it were asking every reader
+            of this stream to special-case them.
+            """
+            err = {"type": "error", "message": said}
+            store.append_history(thread_id, err)
+            yield err
+            done = {"type": "done", "ok": False, "decision": "refused"}
+            store.append_history(thread_id, done)
+            yield done
+
         chat_token = project.control.arm_chat(thread_id)
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
@@ -7916,7 +8152,7 @@ class Orchestrator:
             project.control.disarm_chat(chat_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
-            yield {"type": "error", "message": chat_refusal}
+            yield from refuse_before_the_turn(chat_refusal)
             return
         chat_sens_token = None
         if chat_approved is not None:
@@ -7936,7 +8172,7 @@ class Orchestrator:
                 project.control.disarm_chat(chat_token)
                 if web_token is not None:
                     project.control.disarm_web(web_token)
-                yield {"type": "error", "message": unrecorded_lock_refusal()}
+                yield from refuse_before_the_turn(unrecorded_lock_refusal())
                 return
             chat_sens_token = project.control.arm_sensitivity(
                 chat_approved.names, chat_approved.order
@@ -8325,11 +8561,19 @@ class Orchestrator:
                 # The turn ended, and the person has nothing. `done ok:True` with an empty Thread is
                 # the shape that sends someone looking for a Sage bug when the provider had already
                 # said what was wrong. Artifacts written before the failing step are still theirs.
+                # Read once: the short form and the last rung's note are both decided from it, and
+                # the row below is what changes it.
+                rows_before = store.read_history(thread_id)
+                # A run of identical refusals says the paragraph once. Unlike the handoff, where
+                # this is the normal case, here it takes a person asking the same thing twice —
+                # but it is the same noise, and the ladder is about to offer the way out anyway.
+                said = (brand.text("{assistantName} was refused the same way again.")
+                        if _said_already(rows_before, step_error)
+                        else brand.text("{assistantName} couldn't finish — {reason}",
+                                        reason=step_error))
                 err = {"type": "error",
                        "reason": step_reason,
-                       "message": brand.text(
-                           "{assistantName} couldn't finish — {reason}",
-                           reason=step_error)}
+                       "message": said + _last_rung_note(rows_before, step_reason)}
                 store.append_history(thread_id, err)
                 yield err
                 done = {"type": "done", "ok": False, "decision": "step failed"}
@@ -11100,16 +11344,43 @@ class Orchestrator:
                 # The mentions are the suspects. A guardrail reads everything the turn carries, and
                 # in Build that is the files the person @-referenced — which is exactly what
                 # `_named_files` wants to name and what `turn_mentions` holds for the whole turn.
-                message = (brand.text("{assistantName} couldn't finish — {reason}", reason=refusal)
-                           if (refusal := _guardrail_sentence(err["message"], turn_mentions))
-                           else f"model call failed: {err['message']}")
-                if owns_turn and is_approval:
+                reason_said = (refusal
+                               if (refusal := _guardrail_sentence(err["message"], turn_mentions))
+                               else f"model call failed: {err['message']}")
+                # The Conversation's history, read before this refusal joins it, so the ladder and
+                # the sentence below agree about which rung this is.
+                build_history = project.app_for_turn().read_history(project.build_conversation)
+                # Said once per run of identical refusals, for the reason Chat says it once: the
+                # guardrail sentence is a paragraph, and a second copy of it directly under the
+                # first explains nothing the first did not.
+                message = (brand.text("{assistantName} was refused the same way again.")
+                           if _said_already(build_history, reason_said)
+                           else brand.text("{assistantName} couldn't finish — {reason}",
+                                           reason=reason_said))
+                # `reason` is what makes this refusal comparable to the last one (ADR-0022). Build
+                # reported gateway failures from the first day and never keyed them, so a
+                # Conversation refused the same way ten times over had ten unrelated errors on its
+                # transcript and no way out offered from any of them.
+                reason = recall.reason_key(str(err["message"]))
+                last_rung = _at_last_rung(build_history, reason)
+                if owns_turn and is_approval and not last_rung:
                     # The kept plan is invisible: the card's Approve button was spent the moment
                     # this turn started, and what is left on screen is a gateway's 404. Say the one
                     # sentence that gets the person out of here, on the row that stopped them.
+                    #
+                    # Withheld at the last rung, where it stops being true. A Conversation that has
+                    # already been started over completely and is STILL refused will be refused
+                    # again, so "say try again" sends someone round a loop they have been round
+                    # twice — the plan is still here, and that is no longer the thing in the way.
                     message += brand.text(
                         '\n\nThe plan is still here. Say "try again" to build it.')
-                yield persist({"type": "error", "message": message})
+                message += _last_rung_note(build_history, reason)
+                yield persist({"type": "error", "message": message, "reason": reason})
+                # Between the error and the `done`, for the reason Chat puts it there: a client
+                # reading the stream in order sees what failed before it is offered a way out of it.
+                offered = self._record_build_recall_offer(project)
+                if offered is not None:
+                    yield offered
                 yield persist({"type": "done", "ok": False, "decision": "gateway error"})
                 return
 

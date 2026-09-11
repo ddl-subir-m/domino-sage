@@ -346,6 +346,20 @@ window.SW = window.SW || {};
   // answers are in the transcript and the summary is built from them — the second keeps nothing.
   function RecallOffer({ block }) {
     const complete = (block || {}).scope === 'empty';
+    // One card, two sessions. Build's Recall lives per (Conversation, app) and Chat's per Thread,
+    // so the button has to know which transcript drew it.
+    //
+    // The detail line differs too, because the PROMISE differs. Chat's first clear carries a
+    // written summary of the conversation into the fresh session (`recall.seed`); Build has no
+    // such thing and needs none — the agent opens the app's own directory, so the files and the
+    // plan come back by being read. Saying "a short summary of what was said" on this side would
+    // describe a mechanism that is not there, and the two halves would be promising the same
+    // words for different reasons.
+    const build = (block || {}).surface === 'build';
+    const clear = (scope) => (build ? SW.store.clearBuildRecall(scope) : SW.store.clearRecall(scope));
+    const dismiss = () => (build
+      ? SW.store.dismissBuildRecallOffer((block || {}).offerKey)
+      : SW.store.dismissRecallOffer((block || {}).offerKey));
     return h(
       'div',
       { className: 'sw-suggestion' },
@@ -358,12 +372,21 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-suggestion-detail' },
+        // eslint-disable-next-line no-nested-ternary
         complete
-          ? 'The summary carried over must hold the value too. Clearing Recall completely leaves '
-            + 'the model nothing from this conversation. Your transcript stays.'
-          : 'The gateway has refused the same way twice, so what it matched is in this '
-            + "conversation's Recall. Clearing Recall starts the model over: your transcript "
-            + 'stays, and the model keeps a short summary of what was said.'
+          ? (build
+            ? 'Starting over was not enough, so what the gateway matched came back into the new '
+              + 'session. Clearing Recall again leaves the model nothing it has been told here. '
+              + 'Your app, its plan and this transcript all stay.'
+            : 'The summary carried over must hold the value too. Clearing Recall completely leaves '
+              + 'the model nothing from this conversation. Your transcript stays.')
+          : (build
+            ? 'The gateway has refused the same way twice, so what it matched is in this '
+              + "conversation's Recall. Clearing Recall starts the model over: your app, its plan "
+              + 'and this transcript stay, and the agent reads them back.'
+            : 'The gateway has refused the same way twice, so what it matched is in this '
+              + "conversation's Recall. Clearing Recall starts the model over: your transcript "
+              + 'stays, and the model keeps a short summary of what was said.')
       ),
       h(
         Space,
@@ -373,7 +396,7 @@ window.SW = window.SW || {};
           {
             type: 'primary',
             size: 'small',
-            onClick: () => SW.store.clearRecall(complete ? 'empty' : 'summary'),
+            onClick: () => clear(complete ? 'empty' : 'summary'),
           },
           complete ? 'Clear recall completely' : 'Clear recall'
         ),
@@ -381,7 +404,7 @@ window.SW = window.SW || {};
         // it is a judgment made before trying anything else, and this is the only exit. Hiding it
         // after one "not now" rebuilds the dead end. The offer cannot nag: it appears only on a
         // turn that has already failed.
-        h(Button, { size: 'small', onClick: () => SW.store.dismissRecallOffer() }, 'Not now')
+        h(Button, { size: 'small', onClick: dismiss }, 'Not now')
       )
     );
   }

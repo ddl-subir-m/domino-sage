@@ -47,6 +47,10 @@ const sandbox = {
     store: {
       clearRecall: (scope) => clicked.push(`clear:${scope}`),
       dismissRecallOffer: () => clicked.push('dismiss'),
+      // Build's half. Recorded separately, because the card reaching the WRONG clear is a defect
+      // this harness is in a position to catch: the two empty different sessions.
+      clearBuildRecall: (scope) => clicked.push(`clear-build:${scope}`),
+      dismissBuildRecallOffer: () => clicked.push('dismiss-build'),
       draftHandoffPlan: () => clicked.push('plan'),
       dismissPlanSuggestion: () => clicked.push('dismiss-plan'),
       get: () => ({ threads: [], touched: [] }),

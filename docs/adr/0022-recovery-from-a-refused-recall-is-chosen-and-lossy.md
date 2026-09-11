@@ -101,10 +101,52 @@ one sentence, and it would have turned an afternoon of investigation into a glan
 - A cleared Conversation answers worse than one that never failed, on purpose and visibly.
 - Sage never redacts a person's data to get it past a policy, and never will as a consequence of
   this decision.
-- Build has the same failure and is not covered here. Its answer is the same ladder seeded from the
-  plan document, which ADR-0007 already makes durable and which a Build turn is already told to
-  work from. Chat ships first because Chat is where this was hit and Chat's Recall is the cheaper
-  of the two to lose.
+- Build now has the same ladder. It was deferred here, and the deferral cost more than expected:
+  `error` was not in `_PERSISTED_EVENTS`, so Build's transcript kept no refusals at all — a reload
+  got back `done: gateway error` and no sentence, and a ladder that counts refusals could not have
+  been added without fixing that first. Build's session is filed per (Conversation, app), so its
+  ladder counts per that pair rather than per Thread.
+
+  No seed was needed in the end. Chat carries a written summary into the fresh session because its
+  Recall is the only copy of what was said; a Build agent opens the app's own directory, so the
+  files and the plan (ADR-0007) come back by being read. The offer card says so on that side rather
+  than promising a summary that does not exist.
+- The Chat → Build handoff plans in the Thread's own session, so a refused Conversation refuses the
+  handoff too — and that is the likeliest next click, because the offer card is on screen when the
+  turn under it fails. It reported the raw transport nest and wrote nothing to the Thread, so
+  `recall.offer` counted to one forever. It now says the guardrail's own sentence (ADR-0014) and
+  records the refusal, which is what puts that click on the ladder.
+- The last rung is wired. `recall.terminal` shipped with this decision, was documented as the end of
+  the ladder, and nothing called it: a Conversation started over completely and refused again got a
+  first blip's sentence and no offer under it. `offer` is right to decline a third clear; what was
+  missing was saying why it had stopped coming. Build also withholds "say try again to build it"
+  there, where trying again has already failed twice.
+- The handoff opens the ladder on ONE refusal (`recall.offer_now`), alone among the callers. "One
+  refusal is noise" holds where a person can shrug and retry having lost nothing. A failed handoff
+  is not that: it is a deliberate click, on a card already on screen, into the Thread's own session.
+  The second click would only reach a rung the first already earned, so requiring it spends a
+  failure in front of somebody who has just had one. Opening earlier does not CLIMB faster — the
+  window is shared with `offer`, so escalation is still bought by a clear that did not work.
+
+  The cost, accepted: the plan prompt carries a digest of the person's own messages, rebuilt from
+  the transcript on every click. If the guardrail matched something they typed rather than
+  something a tool read, clearing Recall cannot help — the digest comes straight back. The ladder
+  still converges (the next rung, then the last rung's sentence says where the value must be), but
+  it spends a clear finding out. That case only arises when the Chat turns succeeded and only the
+  plan was refused; when Chat was refused too, the poison is in Recall and the clear is right.
+- The guardrail paragraph is said once per run of identical refusals. It is four sentences long and
+  it earns that once; the handoff made twice-in-a-row the NORMAL case, because the click that fails
+  is the one made straight after the turn that failed, on the same poison, naming the same file —
+  and the offer card underneath then said it a third time in its own words. The second row carries
+  the one fact the first could not instead: a DIFFERENT request was refused the same way, so what
+  was matched is in the Conversation. That is the evidence for the card.
+
+  Two limits. A refusal naming a different Attachment is still said in full, because that pair is
+  the one this ladder exists to connect. And an ANSWER resets the run, not a question: every retry
+  is a question, so stopping on one would collapse nothing outside the handoff.
+- An offer is retired by the clear it asked for. The reduce picking the newest suggestion ignored
+  everything after it, so the re-read that runs immediately after `clearRecall` drew the card again
+  — asking someone to start over from a session they had just started over.
 - `Clear recall` is not offered outside a refusal. Once the concept has a name, a general control
   is a small addition, and no one has asked for one; a permanently visible "make the model forget"
   on every Conversation is a loaded gun.

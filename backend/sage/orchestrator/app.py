@@ -3230,6 +3230,27 @@ def clear_recall(thread_id: str, body: dict = Body(default={})) -> dict:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
 
+@control_app.post("/api/project/recall/clear")
+def clear_build_recall(body: dict = Body(default={})) -> dict:
+    """The Build half of the route above (ADR-0022).
+
+    Its own route rather than a `conversation` on that one, because the two clears empty different
+    sessions: a Build Conversation's session is filed per (conversation, app), and one Conversation
+    can drive several Built Apps. Routing both through the Thread would make "start over" mean
+    whichever of those the caller happened to be looking at.
+
+    `conversation` is optional for the reason it is optional everywhere else in Build: an empty one
+    is the unscoped Build turn, which has a session and a transcript like any other.
+    """
+    scope = str((body or {}).get("scope") or "")
+    try:
+        return orchestrator.clear_build_recall(scope, str((body or {}).get("conversation") or ""))
+    except TurnBusy as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
 @control_app.post("/api/project/build/approve")
 def build_approve(body: dict) -> StreamingResponse:
     """Approve a gated plan (SPEC P6) and stream the build.

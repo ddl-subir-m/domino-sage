@@ -496,6 +496,19 @@ class ProjectRecord:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps({"session_id": session_id}))
 
+    def clear_session_id(self, conversation: str | None = None, app_id: str = "") -> None:
+        """Forget which OpenCode session this Build conversation was talking to (ADR-0022).
+
+        The Build half of `ThreadStore.clear_session_id`, and it removes the file for the same
+        reason: `_ensure_session` reads the id back off disk on the next turn, finds nothing, and
+        opens a fresh session on the same directory. Nothing else rides on the id, so the app, its
+        plan, its transcript and its history all stay exactly where they are.
+
+        Per app as well as per conversation, because the id is: one Conversation can drive several
+        Built Apps (#72), and starting over on one of them must not forget the others.
+        """
+        self.build_session_path(conversation, app_id).unlink(missing_ok=True)
+
     def sensitivity_lock_path(self, conversation: str = "") -> Path:
         """Where a conversation records that one of its turns ran under the sensitivity lock.
 
