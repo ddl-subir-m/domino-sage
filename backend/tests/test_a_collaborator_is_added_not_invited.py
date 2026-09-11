@@ -675,6 +675,59 @@ def test_the_stack_shows_who_is_on_the_project_rather_than_who_is_present():
     assert "is-active" not in said and "is-idle" not in said
 
 
+# ---- Kept rows: the decision the modal also carries (ADR-0045) ----------------------------------
+
+
+@needs_node
+def test_the_dialog_names_the_place_the_rows_would_go():
+    """A toggle that does not name its destination cannot be weighed by anybody. The host name is
+    the only part of the audience Sage can read, because a Project pushes through whatever git
+    credential is present and that need not be Domino's."""
+    said = " ".join(modal(connected=True, keptRows={
+        "on": False, "destination": "github.com/acme/analytics"})["said"])
+    assert "Keep data rows in this Project's files" in said
+    assert "They're committed and pushed to github.com/acme/analytics." in said
+
+
+@needs_node
+def test_a_destination_nobody_can_read_is_said_rather_than_left_blank():
+    """The case the safe default exists for. A sentence naming nothing would read as though the
+    rows went nowhere, which is the one reading that would make turning it on feel free."""
+    said = " ".join(modal(connected=True, keptRows={"on": False, "destination": ""})["said"])
+    assert "can't read where this Project pushes" in said
+
+
+@needs_node
+def test_the_dialog_says_a_later_delete_cannot_undo_it():
+    """ADR-0046's half sentence, said where the choice is made. The delete dialog is too late for
+    it — by then the rows are pushed, and saying it there explains a loss rather than offering a
+    choice."""
+    said = " ".join(modal(connected=True)["said"])
+    assert "can't be undone by a later delete" in said
+    assert "git history keeps them" in said
+
+
+@needs_node
+def test_a_project_that_was_never_asked_reads_as_off():
+    assert modal(connected=True)["keptRowsOn"] is False
+
+
+@needs_node
+def test_reopening_shows_the_answer_this_project_gave_and_not_the_default():
+    """The decision is the Project's and it is read back from the Project's committed settings, so
+    the modal opens on what was decided rather than on what is safe to assume."""
+    assert modal(connected=True, keptRows={"on": True, "destination": "x/y"})["keptRowsOn"] is True
+
+
+@needs_node
+def test_the_decision_is_answerable_even_when_the_people_cannot_be_read():
+    """A failed read of who is on the Project says nothing about where the Project pushes, and the
+    two states that replace the people list must not take this question away with them."""
+    for state in ({"connected": False}, {"connected": True, "error": "503"}):
+        said = " ".join(modal(**state)["said"])
+        assert "Keep data rows in this Project's files" in said
+
+
 def test_the_word_invite_is_gone_from_the_workbench():
     """CONTEXT.md rules it out: Sage cannot invite, because there is no acceptance step to wait on.
     A person is on the Project the moment the creator picks them."""

@@ -142,6 +142,10 @@ window.SW = window.SW || {};
     membersConnected: false,
     membersError: '',
     membersLoading: true,
+    // Whether this Project commits real data rows, and where they would be pushed (ADR-0045). Off
+    // and unnamed until the read lands, which is the safe pair to paint on: the default has to
+    // hold while the destination is still unknown.
+    keptRows: { on: false, destination: '' },
     // The two rows the People modal must not offer Remove on, in Domino's id space. `state.me`
     // cannot stand in for `selfId`: it is read off the viewer JWT, whose subject is the identity
     // provider's id and does not join against a collaborator row.
@@ -764,9 +768,13 @@ window.SW = window.SW || {};
     // to deliver either.
     refreshSensitivity(gen);
 
-    const read = await SW.api.members();
+    // Taken with the members because they are read together — the People modal is the one surface
+    // that renders both, and **Kept rows** is a decision about the same audience the list is
+    // about. Two local reads, so this is one round trip's wait rather than two.
+    const [read, kept] = await Promise.all([SW.api.members(), SW.api.keptRows()]);
     if (gen !== scopeLoad) return;
     applyMembers(read);
+    state.keptRows = kept;
     notify();
   }
 

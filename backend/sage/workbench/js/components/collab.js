@@ -3,7 +3,7 @@ window.SW = window.SW || {};
 (function () {
   const { createElement: h, useState, useEffect } = React;
   const {
-    Modal, Input, Select, Button, Tooltip, Popover, Empty, Badge,
+    Modal, Input, Select, Button, Tooltip, Popover, Empty, Badge, Switch,
   } = antd;
   const { UserAddOutlined, BellOutlined } = icons;
 
@@ -55,11 +55,12 @@ window.SW = window.SW || {};
   SW.PeopleModal = function PeopleModal() {
     const {
       peopleOpen, members, directory, ownerId, selfId, membersConnected, membersError,
-      membersLoading, scope,
+      membersLoading, scope, keptRows,
     } = SW.store.get();
     const [picked, setPicked] = useState([]);
     const [busy, setBusy] = useState(false);
     const [removing, setRemoving] = useState('');
+    const [keptBusy, setKeptBusy] = useState(false);
 
     // Cleared on close, because the modal is mounted for the life of the Shell and only returns
     // null below — React keeps its state across an open and a close. Without this, a creator who
@@ -247,6 +248,66 @@ window.SW = window.SW || {};
       );
     }
 
+    // Kept rows (ADR-0045). Written the moment it is flipped rather than on the modal's OK, which
+    // belongs to the Add: a person who turns this on and then presses Escape has still answered.
+    const setKept = async (on) => {
+      setKeptBusy(true);
+      try {
+        SW.store.set({ keptRows: await SW.api.setKeptRows(on) });
+      } catch (e) {
+        antd.message.error(e.message);
+      } finally {
+        setKeptBusy(false);
+      }
+    };
+
+    // The host name is the thing that makes the choice informed — a toggle without it is a setting
+    // nobody can weigh — and it is the only part of the audience Sage can read, because a
+    // {project} pushes through whatever git credential is present.
+    //
+    // Read from the server already stripped of any credential the remote URL carried. "" is not a
+    // blank to hide: a destination nobody has looked up is exactly the case the safe default is
+    // for, and saying so is more use than a sentence that names nothing.
+    const destination = (keptRows && keptRows.destination) || '';
+    const goes = destination
+      ? SW.brand.text("They're committed and pushed to {destination}.", { destination })
+      : SW.brand.text(
+        "{assistantName} can't read where this {project} pushes, so it can't name who would be "
+        + 'able to read them.'
+      );
+
+    // Rendered in every state of the read above, including the two that replace the people list: a
+    // failure to read who is on the {project} says nothing about where the {project} pushes, and
+    // this decision is answerable either way.
+    const rowsSection = h(
+      'div',
+      { className: 'sw-kept-rows' },
+      h(
+        'div',
+        { className: 'sw-kept-rows-head' },
+        h(Switch, {
+          size: 'small',
+          checked: !!(keptRows && keptRows.on),
+          loading: keptBusy,
+          onChange: setKept,
+          'aria-label': SW.brand.text("Keep data rows in this {project}'s files"),
+        }),
+        // The label toggles too. A switch beside a sentence reads as one control, and half of it
+        // being inert is a thing a person finds out by clicking.
+        h('span', {
+          className: 'sw-field-label sw-kept-rows-label',
+          onClick: () => { if (!keptBusy) setKept(!(keptRows && keptRows.on)); },
+        }, SW.brand.text("Keep data rows in this {project}'s files"))
+      ),
+      h('div', { className: 'sw-caption' }, goes),
+      // ADR-0046's half sentence, said where the choice is made. The delete dialog is too late for
+      // it: by then the rows are pushed, and saying it there explains a loss rather than offering
+      // a choice.
+      h('div', { className: 'sw-caption' },
+        "Turning this on can't be undone by a later delete — once rows are committed and pushed, "
+        + 'git history keeps them.')
+    );
+
     return h(
       Modal,
       {
@@ -258,7 +319,8 @@ window.SW = window.SW || {};
         okButtonProps: { disabled: picked.length === 0 },
         onOk: add,
       },
-      body
+      body,
+      rowsSection
     );
   };
 
