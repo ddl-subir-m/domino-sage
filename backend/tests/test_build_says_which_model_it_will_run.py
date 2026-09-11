@@ -130,6 +130,17 @@ def test_auto_names_the_phase_it_is_in_rather_than_just_a_model():
     assert PLAN_MODEL in row["why"] and IMPLEMENT_MODEL in row["why"]
 
 
+def test_a_pick_made_in_implement_does_not_leak_into_auto():
+    """`ModelControl.set_mode` never clears `_picked_model` — a pick made while Implement is the
+    standing mode survives the switch to Auto, because the router itself needs no help forgetting
+    it: `_resolve_build` only reads `picked_model` in Plan and Implement (ADR-0017's own words,
+    "Auto follows phase"). The picker's `override` must forget it too, or the chip goes on naming a
+    model nobody assigned to this phase and the assignments drawer never mentions."""
+    _, row = _drawn([{"mode": "implement", "pick": PLAN_MODEL}, {"mode": "auto"}])
+    assert row["offered"] is False
+    assert row["label"] == f"{IMPLEMENT_MODEL} · building"
+
+
 def test_the_picker_closes_while_a_build_is_running():
     """A pick is not pinned for the turn the way the mode is — `ModelControl.snapshot` reads
     `_picked_model` live, so the shim would resolve the rest of this build against a new model with

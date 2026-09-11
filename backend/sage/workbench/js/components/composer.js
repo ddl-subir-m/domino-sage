@@ -492,7 +492,13 @@ window.SW = window.SW || {};
     // Implement, then switch to Plan. It is the pinned row at that point, and reading it as an
     // override would mark nothing selected and drop the "(default)" off a control that is running
     // exactly the default.
-    const override = buildModel && buildModel !== pinnedModel ? buildModel : '';
+    //
+    // Gated on `overridable`: the router (llm_router._resolve_build) reads `picked_model` only in
+    // Plan and Implement and ignores it in Auto and Ask, but `buildModel` itself is never cleared
+    // on a mode switch (ModelControl.set_mode does not touch it). Without this gate, a pick made
+    // while in Implement kept showing up as the Auto/Ask chip's label after switching away — a
+    // model the assignments drawer never named and the router was no longer honouring.
+    const override = overridable && buildModel && buildModel !== pinnedModel ? buildModel : '';
     // Build's chip under the lock (ADR-0043), the same rule as the Chat chip one bar over: the
     // label has to name what will RUN. It reads `sensitivity.model`, which is Build's half of the
     // server's answer — `chat_model` is Chat's, and they differ wherever the sovereign Ask slot and
