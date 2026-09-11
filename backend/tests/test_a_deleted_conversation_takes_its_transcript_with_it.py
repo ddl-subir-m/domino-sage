@@ -325,6 +325,54 @@ def test_the_sweep_gives_back_the_files_the_conversation_fetched(tmp_path: Path)
     assert released == ["data/desk.csv"]
 
 
+def test_deleting_a_conversation_gives_back_the_files_it_uploaded(tmp_path: Path):
+    """The upload half, which was never released at all.
+
+    `upload_scratch` writes to `.sage/scratch/<name>`. A Dataset file fetched to answer a question
+    goes one level down, under `.sage/scratch/datasets/`, and `_release_chat_file` guarded on THAT
+    prefix — so an uploaded file failed the guard on the function's first line and the bytes stayed
+    where they were.
+
+    Nothing else reaches them. Scratch is at the PROJECT root, so deleting the app does not touch
+    it; it is gitignored, so no commit, clone or revert carries it away; and `_list_scratch_files`
+    is the only surface that can even see it. Live, a CSV of card transactions uploaded to one
+    Conversation outlived that Conversation, the app, and the creation of a new one — and every
+    later turn that read it was refused by a PII guardrail, on data the person had removed from
+    every place they could see.
+    """
+    orch = _orch(tmp_path)
+    store = _store(orch)
+    up = orch.upload_scratch("transactions.csv", b"name,email\nDana,dana@acme.com\n")
+    dest = orch._chat_project().record.path / up["path"]
+    assert dest.is_file()
+    tid = _furnish(store)
+    (store.thread_dir(tid) / "context.json").write_text(
+        json.dumps({"items": [{"path": up["path"]}]}))
+
+    orch.delete_thread(tid)
+
+    assert not dest.exists()
+
+
+def test_an_upload_another_conversation_still_names_is_kept(tmp_path: Path):
+    """The hold-back the fetched half already had, now that uploads reach it. An upload is shared
+    by filename, so the person closing one Conversation is not speaking for the other one."""
+    orch = _orch(tmp_path)
+    store = _store(orch)
+    up = orch.upload_scratch("transactions.csv", b"name,email\nDana,dana@acme.com\n")
+    dest = orch._chat_project().record.path / up["path"]
+    keep = _furnish(store, title="Still using it")
+    (store.thread_dir(keep) / "context.json").write_text(
+        json.dumps({"items": [{"path": up["path"]}]}))
+    tid = _furnish(store)
+    (store.thread_dir(tid) / "context.json").write_text(
+        json.dumps({"items": [{"path": up["path"]}]}))
+
+    orch.delete_thread(tid)
+
+    assert dest.is_file()
+
+
 # ---- what the person is told ----
 
 @_needs_node

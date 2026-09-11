@@ -6441,8 +6441,17 @@ class Orchestrator:
         linked the app's data path at these very bytes: deleting them would leave the app pointing
         at nothing. Only what Sage fetched is deleted — a mounted Dataset is a symlink here, so the
         Dataset's own bytes are never what goes.
+
+        Both kinds of scratch file, which is the whole of the fix here. An UPLOAD lands at
+        `.sage/scratch/<name>` and a fetched Dataset file one level down, under
+        `.sage/scratch/datasets/` — and this guard read the deeper prefix, so an upload failed it on
+        the first line and was never released by anything. Nothing else could reach it either:
+        scratch is at the PROJECT root, so deleting the app leaves it; it is gitignored, so no
+        commit, clone or revert carries it away. Live, an uploaded CSV of card transactions outlived
+        its Conversation, its app, and the creation of a new one, and went on getting later turns
+        refused by a PII guardrail — on data the person had removed from every place they could see.
         """
-        if not path.startswith(_CHAT_DATA_PREFIX):
+        if not path.startswith(_SCRATCH_PREFIX):
             return False
         for _, item in self._live_thread_context(project):
             if str(item.get("path") or "") == path:
@@ -6460,6 +6469,9 @@ class Orchestrator:
         except OSError:
             log.warning("chat: could not release the fetched copy of %s", path)
             return False
+        # Still floored at `datasets/`, which that tree is required to keep. An upload needs no
+        # pruning and gets none: its parent IS the scratch root, which is not below this floor, so
+        # the walk does not start.
         _prune_empty_dirs(
             dest.parent, _safe_join(project.record.path, _CHAT_DATA_PREFIX.rstrip("/")))
         return True
