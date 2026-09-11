@@ -78,6 +78,10 @@ def test_a_chip_in_this_conversation_is_what_the_read_goes_through(tmp_path: Pat
     orch.add_thread_context(tid, {"kind": "data_source", "id": "ds1",
                                   "name": "Snowflake-Data-Warehouse"})
     list(orch.chat_stream(tid, "show me 1 sample conversation"))
+    # **Kept rows** on, because the claim below is that the row reaches the person's card at all.
+    # What the Artifact keeps of it afterwards is ADR-0045's question, and this is the whole stack
+    # that carries the Project's answer down to the writer.
+    orch.set_kept_rows(True)
 
     said = _call(orch, "live_read_table", {
         "token": _token(oc), "source": "Snowflake-Data-Warehouse",

@@ -899,6 +899,22 @@ window.SW = window.SW || {};
       return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     },
 
+    // Always absolute, unlike `relativeTime`. For a stamp on data rather than on an event: a card
+    // that says when its table was read is asking the person to judge how stale it is, and "2 days
+    // ago" on a transcript they opened last week answers a different question than it looks like.
+    //
+    // Read back in UTC, which is the zone the stamp was written in. Rendering it in the viewer's
+    // zone would date a read made at 01:00 UTC to the day before for anyone west of it — a silent
+    // off-by-one on the only number this card exists to report. Empty for anything unparseable,
+    // because the value comes out of a file and `Invalid Date` on screen is worse than no date.
+    longDate(iso) {
+      if (!iso) return '';
+      const when = new Date(iso);
+      if (isNaN(when.getTime())) return '';
+      return when.toLocaleDateString('en-US',
+        { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+    },
+
     isoDaysAgo(days) {
       const d = new Date(TODAY);
       d.setDate(d.getDate() - days);

@@ -1268,6 +1268,31 @@ window.SW = window.SW || {};
           // all, where `columns` and `rows` both fell through to empty and antd painted its
           // "No data" placeholder. Recover the wrapper from the records rather than trust every
           // turn's Python to have followed the contract.
+          // A file that SAYS it holds no rows is not a dump anything can salvage. ADR-0045 has a
+          // Live read commit the shape — columns, a count, the cap, whether it stopped short, when
+          // it was read — and, unless the Project keeps data rows in its files, none of the values.
+          // The recovery below would run over it, find nothing, and push the captioned blank grid
+          // it was written to prevent. Tested for explicitly rather than inferred from a missing
+          // `rows`, because that is also what a malformed dump looks like, and the two want
+          // opposite treatment.
+          if (data && data.shapeOnly === true) {
+            blocks.push({
+              type: 'table',
+              title: data.title || art.title,
+              path,
+              columns: tableColumnList(data.columns),
+              rows: [],
+              // What the card renders, and no more. The file also commits `cap` and a pointer to
+              // the `.sql` because ADR-0045 says an Artifact carries them; parsing them to a block
+              // nothing reads would be two fields to keep in step for nobody.
+              shape: {
+                rowCount: Number(data.rowCount || 0),
+                truncated: !!data.truncated,
+                readAt: data.readAt || '',
+              },
+            });
+            continue;
+          }
           const bare = Array.isArray(data) ? data : null;
           const wrapper = bare ? {} : data;
           // A third way to miss it, and the one that reads worst: the wrapper is there, `title`

@@ -231,8 +231,49 @@ window.SW = window.SW || {};
     return { names, width };
   }
 
+  // What a card can say about a table whose values were never committed: its width, how many rows
+  // were read, whether the read stopped short, and when it ran. Shared with `copyTextFor`, so what
+  // gets pasted is the sentence that was on screen.
+  function shapeSentence(block) {
+    const shape = block.shape || {};
+    const columns = (block.columns || []).length;
+    const rows = Number(shape.rowCount || 0);
+    const counted = `${rows} ${rows === 1 ? 'row' : 'rows'}`;
+    // A date this cannot read drops the whole clause rather than stamping the card with the words
+    // `Invalid Date`, which is what an unparseable `readAt` out of the file would otherwise paint.
+    const when = SW.util.longDate(shape.readAt);
+    const read = when ? ` Read ${when}.` : '';
+    return `${columns} ${columns === 1 ? 'column' : 'columns'}, ` +
+      `${shape.truncated ? `the first ${counted}` : counted}.${read}`;
+  }
+
   function TableBlock({ block }) {
     const [showAll, setShowAll] = useState(false);
+    // The Artifact committed the shape of this table and none of its values, because the Project
+    // does not keep data rows in its files (ADR-0045). That is a decision, not a failure, so the
+    // card carries what the file knows rather than handing antd a header with nothing under it —
+    // which is the blank grid two of the recoveries below exist to prevent.
+    if (block.shape) {
+      return h(
+        'div',
+        { className: 'sw-block-card' },
+        block.title &&
+          h('div', { className: 'sw-block-head' },
+            h('div', { className: 'sw-block-title' }, block.title)),
+        h(
+          'div',
+          { className: 'sw-block-body' },
+          h('div', { className: 'sw-block-sub' }, shapeSentence(block)),
+          // The names, not just how many. A column name carries no values, the assistant is handed
+          // the same list, and without them a card meant to say what the table holds says less
+          // about its shape than the rows-kept card it replaces — where every name was a header.
+          (block.columns || []).length > 0 &&
+            h('div', { className: 'sw-block-sub' }, block.columns.join(', ')),
+          h('div', { className: 'sw-block-sub' },
+            "Data rows are not kept in this Project's files.")
+        )
+      );
+    }
     // With neither columns nor rows, antd paints a bordered box under the title and nothing
     // else — it reads as a rendering fault, and it names neither what is missing nor anything
     // to do about it. Two of these arrived under a correct "Adverse Events Summary" title. The
@@ -1705,6 +1746,10 @@ window.SW = window.SW || {};
         if (b.type === 'code') return `\`\`\`${b.language || ''}\n${b.value}\n\`\`\``;
         if (b.type === 'table') {
           const cell = (v) => String(v ?? '').replace(/\|/g, '\\|');
+          // A table that committed no values pastes the sentence the card shows. A markdown table
+          // of its column names with nothing under them would say a frame came back empty, which
+          // is not what happened.
+          if (b.shape) return [b.title, shapeSentence(b)].filter(Boolean).join('\n');
           // The card says this in words; a pasted `|  |` over `|  |` says it in a syntax that
           // renders as an empty table wherever it lands, which is how this reached a bug report.
           if (!b.columns.length && !b.rows.length) {

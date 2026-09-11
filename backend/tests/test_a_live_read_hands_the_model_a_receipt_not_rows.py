@@ -22,9 +22,11 @@ from sage.liveread import grant, result
 
 
 def test_the_artifact_holds_the_rows_and_the_receipt_holds_only_their_shape(tmp_path):
+    # `keep_rows` because this is the claim about the split between the card and the receipt, and
+    # a Project that keeps no rows has no card rows to split off (ADR-0045).
     r = result.record(
         tmp_path / "examples" / "thr_abc", "sample-conversation", "Sample conversation",
-        ["ID", "TITLE"], [[1, "Acme <> Domino"]],
+        ["ID", "TITLE"], [[1, "Acme <> Domino"]], keep_rows=True,
     )
 
     assert r.columns == ["ID", "TITLE"]
@@ -39,7 +41,8 @@ def test_the_artifact_holds_the_rows_and_the_receipt_holds_only_their_shape(tmp_
 def test_the_table_artifact_is_written_in_the_shape_the_workbench_reads(tmp_path):
     # `{title, columns, rows}` with rows as positional arrays. A bare array of objects renders as
     # "No data" on a card, which is the failure Chat's own instructions spell out at length.
-    result.record(tmp_path / "examples" / "thr_abc", "t", "Sample conversation", ["A"], [[1]])
+    result.record(tmp_path / "examples" / "thr_abc", "t", "Sample conversation", ["A"], [[1]],
+                  keep_rows=True)
     on_disk = json.loads((tmp_path / "examples" / "thr_abc" / "t.table.json").read_text())
 
     assert sorted(on_disk) == ["columns", "rows", "title"]
@@ -76,7 +79,8 @@ def test_an_unreadable_share_record_shows_the_assistant_nothing():
 
 
 def test_a_result_over_the_cap_is_cut_and_says_so(tmp_path):
-    r = result.record(tmp_path / "e" / "thr_a", "s", "t", ["N"], [[i] for i in range(12)], cap=5)
+    r = result.record(tmp_path / "e" / "thr_a", "s", "t", ["N"], [[i] for i in range(12)], cap=5,
+                      keep_rows=True)
 
     assert r.rows == 5 and r.truncated is True and r.cap == 5
     assert len(json.loads((tmp_path / "e" / "thr_a" / "s.table.json").read_text())["rows"]) == 5

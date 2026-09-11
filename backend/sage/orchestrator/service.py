@@ -8213,6 +8213,10 @@ class Orchestrator:
         return live_read.Turn(
             thread_id=thread_id,
             examples_dir=store.examples_dir(thread_id),
+            # Read here with everything else, and for the same reason: a creator can answer **Kept
+            # rows** while this turn runs, and the Artifact this read is about to write is governed
+            # by what the Project says now (ADR-0045).
+            keep_rows=project.record.kept_rows(),
             bound=bound,
             chips=chips,
             shared=self._shared_samples(project),
