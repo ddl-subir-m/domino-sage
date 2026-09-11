@@ -103,3 +103,55 @@ def test_the_boundary_is_a_word_boundary_not_a_digit_one():
     assert not hit("1234567890a")       # letter on the right: allowed live
     assert not hit("_1234567890")       # underscore is a word character: allowed live
     assert not hit("a7777777777777777")  # and the card rule carries the same boundary
+
+
+# Every row measured against the live gateway on gpt-5.4, 2026-09-11, by two sessions probing
+# independently. `True` means the gateway refused the payload, so the scan must flag it; `False`
+# means the gateway accepted it, so the scan must stay quiet. Kept as one table because the value of
+# this module is agreement with that gateway, and a rule that drifts from it is worse than no rule:
+# the caller's else-branch tells the next reader to go and re-probe, so a miss does not merely stay
+# silent, it sends them to re-derive a row we already had.
+LIVE = [
+    ("1234567890", True),                   # bare ten
+    ("a1234567890b", False),                # same number, letter-fenced
+    ("0908182187", True),                   # bare ten, leading zero
+    ("a0908182187b", False),                # same, letter-fenced
+    ("app_1a0908182187e6abddb1f", False),   # the real Sage id shape
+    ("555-123-4567", True),                 # separated form
+    ("555.123.4567", True),                 # dot separates
+    ("555 123 4567", True),                 # so does a space
+    ("555-123.4567", True),                 # each position independent, not a backreference
+    ("555/123/4567", False),                # a slash does not
+    ("a555-123-4567b", False),              # separated form, word-fenced
+    ("222-33-4444", True),                  # SSN
+    ("777777777777777", False),             # fifteen
+    ("7777777777777777", True),             # sixteen
+    ("77777777777777777", False),           # seventeen
+    ("a7777777777777777b", False),          # sixteen, letter-fenced
+    ("jane.doe@example.com", True),         # email
+]
+
+
+def test_the_scan_agrees_with_the_live_gateway_on_every_measured_shape():
+    wrong = []
+    for text, refused in LIVE:
+        flagged = bool(refusal_scan.candidates({"messages": [{"content": text}]}))
+        if flagged != refused:
+            wrong.append(f"{text!r}: gateway {'refused' if refused else 'allowed'}, "
+                         f"scan {'flagged' if flagged else 'stayed quiet'}")
+    assert not wrong, "scan disagrees with the live gateway:\n  " + "\n  ".join(wrong)
+
+
+def test_the_separated_phone_is_its_own_rule_and_not_a_digit_run():
+    """Why it needed a pattern of its own rather than a looser digit rule.
+
+    `555-123-4567` holds runs of three, three and four. No `\\d{N}` rule reaches it at any length, so
+    it was missed by a scan that otherwise scored every other row — and it is the single most
+    recognisable piece of PII in the whole table.
+    """
+    import re
+
+    digit_runs = [p for label, p in refusal_scan._PATTERNS if "digit run" in label]
+    assert digit_runs, "the digit-run rules are what this test is contrasting against"
+    assert not any(p.search("555-123-4567") for p in digit_runs)
+    assert refusal_scan.candidates({"messages": [{"content": "555-123-4567"}]})

@@ -9,6 +9,9 @@ was run against the wrong rule.
 The rule is broader than "personal data" suggests, which is why guessing fails. Measured against the
 live gateway that day:
 
+    555-123-4567       refused       and the separated form, which no digit run matches
+    555.123.4567       refused       dot and space separate too
+    555/123/4567       allowed       but a slash does not
     1234567890         refused       a bare ten-digit run is a phone number
     1757592000         refused       the same, and that is a unix timestamp in SECONDS
     1757592000000      allowed       the same instant in milliseconds is thirteen digits
@@ -56,6 +59,14 @@ from typing import Any
 # because it is the one that fires on data nobody would think to look at.
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("10-11 digit run (phone)", re.compile(r"\b\d{10,11}\b")),
+    # The separated form is a SECOND rule, not a variant of the one above: `555-123-4567` carries a
+    # run of three, a run of three and a run of four, so no digit-run pattern reaches it at any
+    # length. Missing it was worse than a plain miss — the caller's else-branch tells the next reader
+    # that the gateway's rules are not ours and to go and re-probe, which for a plain phone number
+    # sends them to re-derive a row `scripts/guardrail-probe.py` has had in its table all along.
+    # Separators are space, dot and hyphen, each position independent (`555-123.4567` is refused
+    # live, so this is not a backreference) and `/` is NOT one — `555/123/4567` passes.
+    ("phone (separated)", re.compile(r"\b\d{3}[ .-]\d{3}[ .-]\d{4}\b")),
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
     ("SSN", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     ("16 digit run (card)", re.compile(r"\b\d{16}\b")),
