@@ -190,10 +190,12 @@ def search(messages: list[dict], ask, *, cap: int = MAX_CALLS, hint=()) -> Found
     wiser — so a hint is free to be wrong, and cannot be right in a way that takes a file away
     without the gateway saying so.
 
-    It can also be right and INCOMPLETE, which is the same fall-through: `refusal_scan.candidates`
-    stops at `_MAX_HITS = 12` and reports one match per pattern per string, so a payload with
-    thirty card numbers in one message names one of them. Treating its list as a complete carrier
-    set is exactly what the verify probe refuses to do.
+    It can also be right and INCOMPLETE, which is the same fall-through: a SECOND carrier the scan
+    did not flag leaves the confirming probe still BLOCKED, and the full search runs behind it. The
+    only thing that causes that is a rule the scan gets wrong or does not have — `suspects` reads
+    whether `candidates` found anything at all and discards the list, so neither its `_MAX_HITS` cap
+    nor its one-match-per-pattern shortening can reach this: both shorten a non-empty answer and
+    neither can make a match report as none.
 
     Nothing here reads the payload to decide what a guardrail would object to, and the reason is not
     that such a rule is unknowable. It is that the rule is HARD, and being nearly right about it is
