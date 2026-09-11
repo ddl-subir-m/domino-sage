@@ -74,6 +74,60 @@ def has_remote(path: Path) -> bool:
     return r.returncode == 0 and bool(r.stdout.strip())
 
 
+def push_url(path: Path) -> str:
+    """Where a save from this Project would send its commits, or "" when that cannot be read.
+
+    Sage's knowledge of its own destination used to be `has_remote` above — a boolean — which is
+    enough to decide whether to push and nothing like enough to ask somebody's permission to push
+    rows (ADR-0045). The name of the host is the only part of the audience Sage can read, because
+    a Domino Project pushes through whatever git credential is present and that can be GitHub,
+    GitLab or an enterprise install.
+
+    Rooted on `is_repo_root` for the reason #20 records: locally the workspace sits INSIDE Sage's
+    own source tree, and a bare `remote get-url` there walks up and answers with Sage's repository.
+    The dialog would then name a destination this Project has never pushed to in its life, which is
+    worse than naming none. `--push` because that is the URL a push actually uses when a `pushurl`
+    is configured.
+    """
+    if not is_repo_root(path):
+        return ""
+    r = _git(path, "remote", "get-url", "--push", "origin", check=False)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def destination_name(url: str) -> str:
+    """A remote written the way a person can weigh it: `github.com/acme/analytics`.
+
+    The credential comes out first, and that is why this is here rather than in the browser: the
+    helper can leave a token in the URL, and this string goes on a screen and into screenshots.
+    One place to get it right.
+
+    A scheme, a port and a trailing `.git` are dropped because none of them is part of the
+    judgement being asked for, and the two spellings of one destination — HTTPS and SSH — have to
+    read the same or the same question looks like two. A remote that is a filesystem path has no
+    host to name, so the path is the whole of the honest answer.
+    """
+    text = (url or "").strip()
+    if not text:
+        return ""
+    _, scheme, after = text.partition("://")
+    if scheme:
+        rest = after
+    else:
+        host, colon, repo = text.partition(":")
+        if not colon or "/" in host:
+            return _without_dot_git(text)
+        rest = f"{host}/{repo.lstrip('/')}"
+    authority, slash, repo = rest.partition("/")
+    authority = authority.rpartition("@")[2].split(":", 1)[0]
+    return _without_dot_git(authority + slash + repo)
+
+
+def _without_dot_git(text: str) -> str:
+    trimmed = text.rstrip("/")
+    return trimmed.removesuffix(".git")
+
+
 def _identity_args(path: Path) -> list[str]:
     """Use the repo's configured identity (the platform sets it) when present; otherwise fall back to
     a neutral one so an unconfigured environment still commits cleanly rather than erroring.

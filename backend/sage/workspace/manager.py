@@ -388,6 +388,20 @@ class ProjectRecord:
     def write_settings(self, settings: dict) -> None:
         _write_settings_file(self.settings_path, settings)
 
+    def kept_rows(self) -> bool:
+        """Whether this Project may commit real data rows into its files (ADR-0045).
+
+        Off until somebody turns it on. The default has to be the safe one because it is the one
+        that holds when the destination is unknown, and the destination is unknown until someone
+        looks at `git.push_url`.
+        """
+        return bool(self.read_settings().get("keptRows"))
+
+    def set_kept_rows(self, on: bool) -> None:
+        settings = self.read_settings()
+        settings["keptRows"] = bool(on)
+        self.write_settings(settings)
+
     def is_untitled(self) -> bool:
         return bool(self.read_settings().get("untitled"))
 

@@ -863,6 +863,13 @@ SW.api = {
   members: () => request('/members').catch((e) => ({
     members: [], directory: [], ownerId: '', self: '', connected: false, error: e.message,
   })),
+  // Whether this Project keeps real data rows in its files, and the git remote they would be
+  // pushed to (ADR-0045). The destination is read and stripped of any credential server-side, so
+  // nothing here has to know that a remote URL can carry a token. Falls back to the safe pair:
+  // a read that failed must not paint the toggle on, and must not name a destination either.
+  keptRows: () => request('/project/kept-rows').catch(() => ({ on: false, destination: '' })),
+  setKeptRows: (on) => request('/project/kept-rows', { method: 'POST', body: { on } }),
+
   // No project id in the body: the server uses its own. Answers 200 with per-person outcomes even
   // when some of them failed, so the caller reads `failed`, not the status.
   addCollaborators: (userIds) => request('/collaborators', { method: 'POST', body: { userIds } }),

@@ -60,6 +60,7 @@ const sandbox = {
     Empty: { PRESENTED_IMAGE_SIMPLE: 'PRESENTED_IMAGE_SIMPLE' },
     Badge: 'Badge',
     Alert: 'Alert',
+    Switch: 'Switch',
     message: { success: () => {}, error: () => {} },
   },
   icons: { UserAddOutlined: 'UserAddOutlined', BellOutlined: 'BellOutlined' },
@@ -87,6 +88,7 @@ sandbox.SW.store.set({
   membersConnected: spec.connected === true,
   membersError: spec.error || '',
   membersLoading: spec.loading === true,
+  keptRows: spec.keptRows || { on: false, destination: '' },
 });
 
 // Every string in the tree, props included: a caption, an okText and a placeholder are props rather
@@ -127,6 +129,21 @@ function pickerOptions(node) {
   return (found || []).map((o) => o.value);
 }
 
+// Whether the Kept rows toggle is on. Read off the Switch's own `checked` prop rather than off a
+// word, because the claim is about what the control shows, not about what the copy beside it says.
+function toggleOn(node) {
+  let found = null;
+  (function walk(n) {
+    if (found !== null) return;
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (!n || typeof n !== 'object') return;
+    if (n.t === 'Switch') { found = n.p.checked === true; return; }
+    Object.values(n.p || {}).forEach(walk);
+    (n.c || []).forEach(walk);
+  })(node);
+  return found;
+}
+
 function render() {
   cursor = 0;
   effects = [];
@@ -163,4 +180,5 @@ console.log(JSON.stringify({
   removable: removeButtons(modal).length,
   offers: pickerOptions(modal),
   stackSaid: stringsIn(stack),
+  keptRowsOn: toggleOn(modal),
 }));

@@ -333,6 +333,20 @@ a.sw-topnav-link {
 }
 .sw-people-error { display: grid; gap: var(--s3); justify-items: start; }
 
+/* Kept rows (ADR-0045). Its own group under the list rather than a row in it: it is a decision
+   about the Project, not about a person, and the rule is that space within a group is half the
+   space between groups. */
+.sw-kept-rows {
+  margin-top: var(--s4);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--gray-200);
+  display: grid;
+  gap: var(--s1);
+}
+.sw-kept-rows-head { display: flex; align-items: center; gap: var(--s2); }
+.sw-kept-rows-label { cursor: pointer; }
+.sw-kept-rows .sw-caption { line-height: 1.5; }
+
 /* Notifications ---------------------------------------------------------- */
 
 .sw-notif-pop { width: 360px; margin: -12px -16px; }

@@ -13808,7 +13808,7 @@ class Orchestrator:
                 added["item"],
             )
         if added["added"]:
-            self._save_working_set("project resources")
+            self._save_project_record("project resources")
         return {"added": added["added"], "item": added["item"]}
 
     def remove_project_resource(self, resource_id: str) -> bool:
@@ -13855,11 +13855,38 @@ class Orchestrator:
 
         self.project(start_preview=False).record.update_project_resources(change)
         if found["ok"]:
-            self._save_working_set("project resources")
+            self._save_project_record("project resources")
         return found["ok"]
 
-    def _save_working_set(self, reason: str) -> None:
-        """Commit a change to the Project's working set, the way `delete_thread` commits its own.
+    def kept_rows(self) -> dict:
+        """This Project's standing answer to whether real data rows may be committed, and the place
+        they would be pushed to (ADR-0045).
+
+        Both halves in one read, because neither is an answer on its own: the toggle cannot be
+        weighed without the destination, and the destination is only interesting because of the
+        toggle. `destination` is "" when Sage cannot read where this Project pushes, which the
+        dialog renders as a sentence rather than as a blank.
+        """
+        from ..workspace import git
+
+        record = self.project(start_preview=False).record
+        return {"on": record.kept_rows(),
+                "destination": git.destination_name(git.push_url(record.path))}
+
+    def set_kept_rows(self, on: bool) -> dict:
+        """Record the answer and commit it, so the next Builder in this Project reads this one's
+        decision rather than asking again. Answers the same shape as `kept_rows`, so the dialog
+        re-renders from the write."""
+        self.project(start_preview=False).record.set_kept_rows(on)
+        self._save_project_record("kept rows")
+        return self.kept_rows()
+
+    def _save_project_record(self, reason: str) -> None:
+        """Commit a change to the Project's own record, the way `delete_thread` commits its own.
+
+        The working set was the first caller and **Kept rows** is the second: both are deliberate,
+        Project-scoped acts that write one file under `.sage/`, and the loss below is the same one
+        either way.
 
         `update_project_resources` writes the file and nothing else, so until this existed the row
         only reached git when some unrelated act saved afterwards — a chat turn, a handoff, a build,

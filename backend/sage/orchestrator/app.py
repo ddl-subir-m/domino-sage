@@ -3336,6 +3336,24 @@ async def set_settings(request: Request) -> JSONResponse:
     return JSONResponse(content=settings)
 
 
+@control_app.get("/api/project/kept-rows")
+def get_kept_rows() -> JSONResponse:
+    """Whether this Project keeps real data rows in its files, and where they would be pushed.
+
+    A Project-level decision, so no artifact and no thread id: the audience is the Project's git
+    remote, and asking per Artifact would ask the same question often enough that the answer
+    becomes a reflex (ADR-0045)."""
+    return JSONResponse(content=orchestrator.kept_rows())
+
+
+@control_app.post("/api/project/kept-rows")
+async def set_kept_rows(request: Request) -> JSONResponse:
+    """Record the answer. Answers the whole read back, so the dialog re-renders from the write
+    rather than from what it assumed the write did."""
+    body = await request.json()
+    return JSONResponse(content=orchestrator.set_kept_rows(bool((body or {}).get("on"))))
+
+
 @control_app.get("/api/project/plan")
 def project_plan() -> JSONResponse:
     """The plan this app is being built from, or `{}` when there is none.
