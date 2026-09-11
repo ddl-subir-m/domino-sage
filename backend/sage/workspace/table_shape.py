@@ -1,8 +1,8 @@
 """What a `.table.json` keeps when the Project does not keep its rows (ADR-0045). Pure: no I/O.
 
-`workspace.threads.withhold_table_rows` does the writing, at the end of a Chat turn. This half is
-separate for the reason `shim.chat_paths` is: the rule is worth reading on its own, and a rule with
-a filesystem in it is not.
+`workspace.threads.withhold_table_rows` does the writing, at the end of a Chat or Build turn. This
+half is separate for the reason `shim.chat_paths` is: the rule is worth reading on its own, and a
+rule with a filesystem in it is not.
 
 The count and the column names are recovered the way `store.js` recovers them to paint the card,
 and the ladder there is the specification for the one here. A turn writes this file in whichever

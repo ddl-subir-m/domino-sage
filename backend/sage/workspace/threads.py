@@ -824,10 +824,27 @@ def withhold_table_rows(root: Path, thread_id: str, before: dict[str, bytes], *,
     because ADR-0045 is one rule over every writer and an exemption here would be a hole with a
     Live read's name on it.
 
-    It is called from Chat's two turn ends, and that is not yet every turn end: a Live read inside
-    a BUILD turn writes under `examples/<conversation>/` too, and the scan there records those
-    Artifacts without passing them through here. That half is #254's, along with what the receipt
-    hands the assistant and what Read again puts on the card without touching disk.
+    It is called from Chat's two turn ends and from Build's four: the turn end, the Stop, and the
+    same pair again in `_phased_approve` (#259). The phased build needs its own calls rather than
+    inheriting Build's — a phase runs the build loop with `owns_turn` False and never reaches that
+    turn end, while `_phased_approve` is what commits everything the phases wrote.
+
+    A Stop counts as a turn end here even though it reverts, because Build's reverts are rooted in
+    the Built App and `examples/` is a symlink out of it: the Artifact survives. It has to be the
+    turn's OWN ending that asks, whichever ending it is — by the next turn these bytes are in its
+    `before`, so the pass there reads the file as an earlier turn's and skips it, correctly and
+    forever. A table that misses its own turn end misses every gate there will ever be.
+
+    The one Build ending that does NOT call this is a wedged turn, and that is a decision rather
+    than an oversight: a wedge means the session would not confirm it stopped, so Sage deliberately
+    touches nothing in the tree it may still be writing to (#39) and keeps the lock until a restart.
+    Writing this file there is the collision that rule exists to prevent. What it costs is that a
+    wedged turn's table reaches the next commit with its rows, and the restart it already needs is
+    the only way out of that state anyway.
+
+    A Live read is covered twice over and deliberately: it never lets its rows touch disk to begin
+    with (#254), and this pass is idempotent over the receipt it writes, so the two hold one shape
+    rather than two that look alike.
     """
     from . import table_shape
 

@@ -11070,6 +11070,20 @@ class Orchestrator:
             # client already reads them off either — see `_watchBuild` — and `done` is the one event
             # every ending here passes through, which is the same argument the records above make.
             if owns_turn and ev["type"] == "done" and live_read_before is not None:
+                # ADR-0045's third writer, and the one nothing was watching (#259). A Live read's
+                # rows never touch disk and a table the CHAT agent composes is rewritten at Chat's
+                # two turn ends — a table a BUILD turn's own agent composes passed no gate at all,
+                # and `examples/` is symlinked into every Built App (#251), so the convention is in
+                # front of it. The same call Chat makes, for the reason ADR-0045 gives for one rule
+                # over every writer: deciding by which agent wrote the file would need the audience
+                # fact Sage cannot obtain.
+                #
+                # Before the scan below rather than after it: both read the same `before`, so a
+                # rewritten table is still a file this turn wrote and still reaches the transcript —
+                # and the rewrite lands ahead of the `_save_to_git` that follows this `done`, which
+                # is the push this exists to keep rows out of.
+                withhold_table_rows(project.record.path, project.build_conversation,
+                                    live_read_before, kept_rows=project.record.kept_rows())
                 found = [
                     ThreadStore(project.record.path).record_artifact(
                         project.build_conversation, path=rel)
@@ -11368,6 +11382,14 @@ class Orchestrator:
 
         def handle_stop() -> dict:
             project.stop_requested = False
+            # Stop is not a way past ADR-0045 (#259). The revert below is rooted in the Built App
+            # and `examples/` is a symlink out of it, so a table this turn wrote survives the Stop —
+            # rightly, it is an answer someone can still use. Its ROWS are a separate question, and
+            # this is the last moment anyone can ask it: the next turn's `before` snapshot already
+            # holds these bytes, so the pass there reads the file as an earlier turn's and skips it.
+            if live_read_before is not None:
+                withhold_table_rows(project.record.path, project.build_conversation,
+                                    live_read_before, kept_rows=project.record.kept_rows())
             # A phase reverts nothing: discard_changes() resets to HEAD, which after per-phase
             # checkpoints is only the CURRENT phase — it would leave phases 1..n-1 on disk while
             # erasing the transcript that explains them. _phased_approve reverts the whole build to
@@ -12697,6 +12719,15 @@ class Orchestrator:
             # the tag has one writer.
             if ev["type"] == "app_change":
                 self._tag_conversation(project, ev)
+            # ADR-0045 over the phased build (#259). A phase runs `_build_stream` with `owns_turn`
+            # False, so it never reaches the turn end that gates there — and this function owns the
+            # commit those phases' writes go out on, so it owns the gate too. Both endings pass
+            # through here, not only the successful one: a failed phased build keeps its finished
+            # phases on disk deliberately, and a later save (before a stop, before a publish) would
+            # take the tree as it stands.
+            if ev["type"] == "done" and table_before is not None:
+                withhold_table_rows(project.record.path, project.build_conversation,
+                                    table_before, kept_rows=project.record.kept_rows())
             if ev["type"] in _PERSISTED_EVENTS:
                 project.app_for_turn().append_history(ev, project.build_conversation)
             return ev
@@ -12715,6 +12746,12 @@ class Orchestrator:
         # What the app's code looked like before any phase ran, so a build that dies halfway can
         # still say whether it changed anything — see the failure path below (#56).
         tree_before = project.snapshot.working_tree_hash()
+        # And what `examples/` held before any phase ran, for the Kept rows pass in persist(). One
+        # snapshot for the whole build rather than one per phase: `before` means "this turn's
+        # writes", and the phases are one turn — a per-phase baseline would also let phase 2 re-decide
+        # a table phase 1 wrote, which is the same re-deciding the Chat pass refuses.
+        table_before = (snapshot_files(project.record.path)
+                        if project.build_conversation else None)
         # Per-phase circuit breakers bound each phase, not the build: 6 × (15 iterations, 600s) is an
         # hour of wall clock that nobody asked for.
         deadline = time.monotonic() + _env_int("SAGE_PHASED_MAX_SECONDS", 1800)
@@ -12751,6 +12788,15 @@ class Orchestrator:
                 # The user rejected the whole build, so leaving three of six phases on disk would
                 # leave a state they never asked for and can't describe. Same semantics as Stop on a
                 # normal turn: the turn vanishes, files and transcript both.
+                #
+                # "Files" means the app's. This revert is rooted in the Built App and `examples/` is
+                # a symlink out of it, so an Artifact a phase wrote outlives the Stop — which is
+                # what Chat's Stop decides for the same file, and is not reopened here. Its rows are
+                # taken out first, for the reason handle_stop gives: this is the last turn end that
+                # will ever see this file as one of its own writes.
+                if table_before is not None:
+                    withhold_table_rows(project.record.path, project.build_conversation,
+                                        table_before, kept_rows=project.record.kept_rows())
                 project.snapshot.discard_to(base)
                 project.app_for_turn().truncate_history(history_baseline)
                 # Stop retires the plan, exactly as it does on an unphased build: the person said
