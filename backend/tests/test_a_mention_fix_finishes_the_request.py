@@ -148,6 +148,37 @@ def test_a_line_with_no_button_behind_it_keeps_every_word(tmp_path: Path):
     assert rows == []
 
 
+def test_several_refused_resources_take_a_plural_pronoun(tmp_path: Path):
+    """The list is as long as the prompt made it. Three Resources followed by "it" reads as a
+    sentence about the last one, and the reader then goes looking for what was wrong with that."""
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    proj.workspace.set_display_name("Sales dashboard")
+
+    said, _ = orch._unusable_mentions(
+        proj, None, [],
+        [{"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "Warehouse"},
+         {"kind": "model_api", "id": "ma1", "name": "churn-risk"}])
+
+    assert "Couldn't use @Warehouse, @churn-risk. Sales dashboard doesn't use them yet." in said
+
+
+def test_a_refused_table_names_the_store_the_button_would_bind(tmp_path: Path):
+    """The token quoted is the word that was typed, and for a table row that word is a TABLE while
+    the act underneath records the store it sits in. Naming the store is what keeps "Use in Sales
+    dashboard" from reading as an offer to bind a table."""
+    orch = _orch(tmp_path)
+    proj = orch.project(start_preview=False)
+    proj.workspace.set_display_name("Sales dashboard")
+
+    said, _ = orch._unusable_mentions(
+        proj, None, [],
+        [{"kind": KIND_DATA_SOURCE, "id": "ds1", "name": "DIM_ACCOUNT",
+          "table": "DIM_ACCOUNT", "sourceName": "Warehouse"}])
+
+    assert "Couldn't use @DIM_ACCOUNT. Sales dashboard doesn't use Warehouse yet." in said
+
+
 # ---- the click, and what follows it ------------------------------------------------------------
 
 _HARNESS = Path(__file__).resolve().parent / "js" / "build_header_harness.mjs"

@@ -5617,8 +5617,7 @@ class Orchestrator:
         # The tables of each bound Data Source, keyed by the Binding they belong to — so a table
         # mention is honored against the Resource it was offered under, and an app reading a
         # warehouse and an app database can be pointed at either one's tables (#33).
-        in_schema = {rid: {c.table for c in columns} for rid, columns
-                     in parse_schema(self._read_json(project.app_for_turn().path / SCHEMA_PATH)).items()}
+        in_schema = self._tables_in_schema(project)
         # Grouped by Binding, in the order they were mentioned: "@Snowflake-Data-Warehouse and
         # @FCT_USAGE_DAILY" names one Resource once, not twice, and the tables belong on that line.
         order: list[tuple[str, str]] = []
@@ -5636,6 +5635,17 @@ class Orchestrator:
             if table and table in in_schema.get(key[1], ()) and table not in tables[key]:
                 tables[key].append(table)
         return mention_note([Mention(known[k], tuple(tables[k])) for k in order], recorded)
+
+    def _tables_in_schema(self, project: Project) -> dict[str, set[str]]:
+        """Every table this app has columns for, per bound Data Source id.
+
+        Read through one function by both of the readers that care. `_resource_mention_note` decides
+        what a table mention is WORTH, and `_unusable_mentions` decides whether the turn says the
+        mention was dropped — and a table honored by neither and reported by neither is the silence
+        #135 exists to remove. Two copies of this comprehension is how that silence got in.
+        """
+        raw = self._read_json(project.app_for_turn().path / SCHEMA_PATH)
+        return {rid: {c.table for c in columns} for rid, columns in parse_schema(raw).items()}
 
     def _unusable_mentions(self, project: Project, resolved: list[dict] | None,
                            mentions: list[str] | None,
@@ -5665,10 +5675,17 @@ class Orchestrator:
         whatever is selected now. The id is what lets the card notice and stand down rather than bind
         the app it did not name.
 
+        Three things are reported, not two. A mention can also name a TABLE inside a Resource this
+        app really does hold, and still be dropped: the Scope decides which tables the turn has
+        columns for, and the `@` menu offers the ones pinned on the Project's row. Those rows carry
+        `table`, which is what sends the client to the Scope door rather than to the bind — the
+        Binding is already on disk and binding it again would write what is already there.
+
         Only a drop somebody can close in ONE act gets a row. A Chat file can — promoting it onto a
-        Dataset attaches it to the app — and so can an unbound Resource. A workspace path that
-        resolves to nothing cannot: there is no act to offer it, and a button that cannot complete is
-        the dead end this sentence exists to remove. That drop keeps the prose and gets no row.
+        Dataset attaches it to the app — and so can an unbound Resource, and so can a Scope that
+        stopped short. A workspace path that resolves to nothing cannot: there is no act to offer
+        it, and a button that cannot complete is the dead end this sentence exists to remove. That
+        drop keeps the prose and gets no row.
 
         Which is also why a line with a row carries no instruction any more (#213). It used to end
         "Choose Use in {app} in the list of what it ships, then ask again" — the five-step path the
@@ -5692,14 +5709,45 @@ class Orchestrator:
             return m in kept or any(p.startswith(m.rstrip("/") + "/") for p in kept)
 
         missing = [m for m in (mentions or []) if not used(m)]
-        bound = {b.key for b in parse_bindings(project.app_for_turn().read_bindings())}
+        bound = {b.key: b for b in parse_bindings(project.app_for_turn().read_bindings())}
         unbound = [r for r in (resources or []) if isinstance(r, dict)
                    and (str(r.get("kind") or ""), str(r.get("id") or "")) not in bound]
-        if not missing and not unbound:
+        # Bound, and STILL not what the mention named. The @ menu offers the tables pinned on the
+        # Project's own row (`pinRow` in `js/api.js`), while a turn honors the ones inside the
+        # selected app's Scope — two lists, and nothing said so. Mention a sibling of the bound
+        # table and the Resource passes the test above, `_resource_mention_note` drops the table
+        # clause on the way out, and the turn used to report nothing at all: the build answered
+        # from the app's own table and called itself clean, which is the very failure this sentence
+        # was written for, arriving through the one door it left open.
+        #
+        # Grouped per Binding rather than per mention, for the reason the rows below are: two
+        # tables of one store is one Scope to widen, and two identical buttons offer it twice.
+        in_schema = self._tables_in_schema(project)
+        off_scope: dict[tuple[str, str], list[str]] = {}
+        for r in (resources or []):
+            if not isinstance(r, dict):
+                continue
+            key = (str(r.get("kind") or ""), str(r.get("id") or ""))
+            table = str(r.get("table") or "")
+            if not table or key not in bound or table in in_schema.get(key[1], ()):
+                continue
+            if table not in off_scope.setdefault(key, []):
+                off_scope[key].append(table)
+        if not missing and not unbound and not off_scope:
             return "", []
 
         def named(paths: list[str]) -> str:
             return ", ".join("@" + PurePosix(p).name for p in paths)
+
+        def named_store(rows: list[dict]) -> str:
+            """The stores behind these rows, or "" unless every one of them names a store.
+
+            All or nothing on purpose. `sourceName` is set only on a table row (`collectTurnRefs`),
+            so a mixed list — a table and a Dataset — has no one noun to end the sentence with, and
+            the pronoun is right for it. Deduped, because two tables of one warehouse are one name.
+            """
+            names = [str(r.get("sourceName") or "") for r in rows]
+            return ", ".join(dict.fromkeys(names)) if all(names) else ""
 
         # Named, because a Project holds many apps (ADR-0008) and "this app" is the one word that
         # cannot say which of them is missing the Binding. Through `_app_display_name` and not
@@ -5750,7 +5798,19 @@ class Orchestrator:
             if aliases:
                 lines.append(f"{where} can't call {shown(aliases)} yet.")
             if rest:
-                lines.append(f"Couldn't use {shown(rest)}. {where} doesn't use it yet.")
+                # "it" for one, "them" for several. The list is as long as the person's prompt made
+                # it, and three Resources followed by a singular pronoun reads as a sentence about
+                # the last one.
+                #
+                # `named_store` for the same reason: the token quoted here is the word that was
+                # typed, and for a table row that word is a TABLE while the act underneath binds
+                # the store it sits in. Naming the store is what makes the button below legible —
+                # without it "@DIM_ACCOUNT … doesn't use it yet" sits over "Use in this app" and
+                # neither says that the warehouse is what gets recorded.
+                it = "it" if len(rest) == 1 else "them"
+                stores = named_store(rest)
+                lines.append(f"Couldn't use {shown(rest)}. {where} doesn't use "
+                             f"{stores or it} yet.")
             # One row per Resource, not per mention. "@Warehouse and @FCT_USAGE_DAILY" names one
             # Data Source at one table, and two identical buttons would offer the same bind twice.
             seen: set[tuple[str, str]] = set()
@@ -5762,6 +5822,26 @@ class Orchestrator:
                 entries.append({"kind": key[0], "id": key[1],
                                 "name": str(r.get("name") or r.get("id") or ""),
                                 "app": where, "appId": whose})
+        # Last, because it is the narrowest of the three and reads as the qualification it is: the
+        # app HAS this store, and the sentence is about which part of it. `scope_shown` and not
+        # `scope`, so a Scope that stopped above a table is not drawn as a table nobody picked
+        # (ADR-0037).
+        #
+        # A row each, carrying `table` — which is what tells the client's map to offer the Scope
+        # door rather than the bind. A bind is the wrong act here and it would answer nothing: the
+        # Binding it would write is already on disk.
+        for key, tables in off_scope.items():
+            b = bound[key]
+            store = b.display_name or b.name
+            # A Binding with no Scope at all is the common way in, not an edge: the header's picker
+            # binds a Data Source in one argument and leaves the Scope as a second act (#142), so
+            # every store bound that way sits here until somebody answers it. `scope_shown` is ""
+            # for that state, and "reads  inside Warehouse" is the sentence it would have made.
+            said = (f"{where} reads {b.scope_shown} inside {store}." if b.scope
+                    else f"{where} hasn't chosen what it reads inside {store}.")
+            lines.append(f"Couldn't use {', '.join('@' + t for t in tables)}. {said}")
+            entries.append({"kind": key[0], "id": key[1], "name": tables[0], "table": tables[0],
+                            "app": where, "appId": whose})
         return " ".join(lines), entries
 
     def _chat_context_note(self, project: Project) -> str:

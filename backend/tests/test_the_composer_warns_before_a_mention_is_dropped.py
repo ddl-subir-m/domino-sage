@@ -71,14 +71,20 @@ def test_the_two_lists_are_still_two_after_the_attachment_moved_scope():
 
 
 def test_an_unbound_resource_and_an_unattached_chat_file_are_the_two_rows():
-    """The same two the refusal reports, in the same shape, so one `mentionFixes` draws both."""
+    """The same two the refusal reports, in the same shape, so one `mentionFixes` draws both.
+
+    Three now: a table the app's Scope falls short of is the third, and it is the one that reads a
+    row the app DOES hold — see `test_the_composer_warns_before_a_table_is_dropped`. It sits inside
+    the `bound` branch below, which is why that branch stopped being a bare `return`."""
     guard = STORE[STORE.index("unusableMentions(text) {"):STORE.index("// Out of the selected Built App")]
 
     assert "if (attached.has(name) || !path.startsWith(SCRATCH_PREFIX)) return;" in guard
     assert "entries.push({ kind: 'file', id: path, name, app: app.name, appId: app.id });" in guard
-    assert "if (bound.has(key) || seen.has(key)) return;" in guard
+    assert "if (seen.has(key)) return;" in guard
+    assert "if (bound.has(key)) {" in guard
     # The row names the app the act lands in, because a Project holds many Built Apps (ADR-0008).
-    assert guard.count("app: app.name, appId: app.id });") == 2  # a file row and a Resource row
+    # Three rows: a Chat file, a table outside the app's Scope, and an unbound Resource.
+    assert guard.count("app: app.name, appId: app.id });") == 3
 
 
 def test_the_composer_reads_the_same_two_lists_the_refusal_reads():
@@ -116,7 +122,11 @@ def test_the_sentence_names_the_app_and_only_what_a_button_below_it_can_close():
     # An Alias is not a failed delivery, so it gets the other half of the sentence — the capability
     # a click buys, in the same words the server's refusal uses (#136).
     assert "`${app} can't call ${aliases.join(', ')} yet." in UI
-    assert "const aliases = shown.filter((e) => e.kind === 'llm_alias')" in UI
+    # Off `rest` and not off `shown`: a table the Scope falls short of is a row about a Resource the
+    # app HOLDS, so it takes a third clause of its own rather than joining a sentence that says the
+    # app does not use it. Its own suite owns the wording; this pins that it left this one.
+    assert "const rest = shown.filter((e) => !e.table);" in UI
+    assert "const aliases = rest.filter((e) => e.kind === 'llm_alias')" in UI
 
 
 def test_the_acts_are_the_store_s_and_the_chip_writes_no_second_copy():

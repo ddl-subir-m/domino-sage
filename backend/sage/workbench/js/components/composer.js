@@ -187,10 +187,16 @@ window.SW = window.SW || {};
     // quoted the name would send the reader looking for a word their prompt does not contain.
     const shown = entries
       .filter((e) => offered.has(`${e.kind}:${e.id}`))
-      .map((e) => ({ kind: e.kind,
+      .map((e) => ({ kind: e.kind, table: e.table, source: e.source, scope: e.scope,
         token: SW.util.mentionToken({ name: e.name, path: e.kind === 'file' ? e.id : '' }) }));
-    const aliases = shown.filter((e) => e.kind === 'llm_alias').map((e) => e.token);
-    const named = shown.filter((e) => e.kind !== 'llm_alias').map((e) => e.token);
+    // A table the Scope falls short of is split off first, because it is the one row here that is
+    // NOT about a record the app is missing — it has the Resource, and the gap is which part of it
+    // the app reads. Left in the line below, "doesn't use @DIM_ACCOUNT yet" would say the opposite
+    // of what the panel shows, and the button beside it says Choose rather than Use.
+    const offScope = shown.filter((e) => e.table);
+    const rest = shown.filter((e) => !e.table);
+    const aliases = rest.filter((e) => e.kind === 'llm_alias').map((e) => e.token);
+    const named = rest.filter((e) => e.kind !== 'llm_alias').map((e) => e.token);
     // Named in both halves, because a Project holds many Built Apps (ADR-0008), and every row
     // carries the same app.
     const app = entries[0].app;
@@ -204,9 +210,20 @@ window.SW = window.SW || {};
     // beside it describe the road it goes round. The Alias half is the refusal's own sentence word
     // for word, which is the point of the pair (#136); the other half says the same thing about the
     // same two lists, in the shape a warning takes rather than a report of a turn that ran.
+    //
+    // The third names the Scope, which is the whole of what the reader needs: "reads X, not @Y"
+    // says what will happen to the mention and why in one clause, and the store is named because
+    // two bound warehouses can each hold a table of that name. One line however many tables, since
+    // they share the Binding whose Scope the button opens.
     const guardLines = [
       aliases.length && `${app} can't call ${aliases.join(', ')} yet.`,
       named.length && `${app} doesn't use ${named.join(', ')} yet.`,
+      // `scope` is "" for a store bound with no Scope yet, which is the ordinary state of one bound
+      // from the header (#142) — and "reads  inside Warehouse" is the sentence that would make.
+      offScope.length && (offScope[0].scope
+        ? `${app} reads ${offScope[0].scope} inside ${offScope[0].source}, `
+          + `not ${offScope.map((e) => e.token).join(', ')}.`
+        : `${app} hasn't chosen what it reads inside ${offScope[0].source}.`),
     ].filter(Boolean);
     return h(
       'div',

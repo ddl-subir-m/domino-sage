@@ -1685,6 +1685,12 @@ window.SW = window.SW || {};
         if (row.bindingKey && row.bindingKey.length === 2) {
           const ref = { kind: row.bindingKey[0], id: row.bindingKey[1], name: row.name || '' };
           if (row.scope && row.scope.table) ref.table = row.scope.table;
+          // The store a table row sits inside, carried beside the token rather than instead of it.
+          // `name` is the word the person typed and every sentence quotes it back, so it stays the
+          // TABLE's — but "@DIM_ACCOUNT. This app doesn't use it yet" then named a table where the
+          // act below binds a warehouse, and the button beside it said neither. `pinRow` puts the
+          // parent's name on `subtitle`; this is the one reader that needs it.
+          if (ref.table && row.subtitle) ref.sourceName = row.subtitle;
           const key = `${ref.kind}:${ref.id}:${ref.table || ''}`;
           if (seen.has(key)) return;
           seen.add(key);
@@ -4191,8 +4197,17 @@ window.SW = window.SW || {};
         label: `${fix.label} and build`,
         act: () => Promise.resolve(fix.act()).then((ok) => (ok ? replay() : ok)),
       });
+      // A row carrying `table` is the app's Scope falling short, not its Bindings — the Binding is
+      // already recorded, and `bind` would rewrite it with the values it already holds and leave
+      // the gap exactly where it was. So the kind does not decide this one; the field does.
+      //
+      // Off `MENTION_FIX` rather than a fifth entry in it, because that map is keyed on the Binding
+      // kind and this is a second state of ONE of those kinds. Keyed in there, `data_source` would
+      // have to mean two acts at once.
+      const scope = (e) => ({ label: `Choose what ${e.app} reads`,
+                              act: () => store.openScopeForMention(e) });
       return (entries || []).map((entry) => {
-        const make = entry && MENTION_FIX[entry.kind];
+        const make = entry && (entry.table ? scope : MENTION_FIX[entry.kind]);
         if (!make || !entry.id || !entry.app) return null;
         if (!entry.appId || entry.appId !== activeAppId) return null;
         return { ...withReplay(make(entry)), key: `${entry.kind}:${entry.id}` };
@@ -4227,9 +4242,13 @@ window.SW = window.SW || {};
         model_api: ships,
         file: (e) => `Attach it to ${e.app}, then ask again.`,
       };
+      // The Scope's own hint, chosen by the field rather than the kind for the reason `mentionFixes`
+      // splits on the same one: the app HAS this Resource, so "Add it" would send the reader to a
+      // door that has nothing left to write.
+      const scoped = (e) => `Choose what ${e.app} reads under App dependencies, then ask again.`;
       const said = [];
       (entries || []).forEach((entry) => {
-        const make = entry && HINT[entry.kind];
+        const make = entry && (entry.table ? scoped : HINT[entry.kind]);
         if (!make || !entry.id || !entry.app) return;
         // One sentence per distinct instruction rather than per row: three unbound Resources on one
         // app are one thing to go and do, and saying it three times reads as three.
@@ -4285,6 +4304,27 @@ window.SW = window.SW || {};
         + 'request from its Overview page in {platformName}.',
         { name: entry.name || entry.id }
       ));
+      return true;
+    },
+
+    // A table the app's Scope does not reach. The Binding is already on disk — a bind here would
+    // rewrite the record with the values it already holds — so what is missing is the second act,
+    // and this opens the door that owns it (`openScopePick`, #142) on that Binding.
+    //
+    // It opens and stops, like the Model API's above and for the same reason: widening a Scope is a
+    // choice with a shape — schema, or this table instead of the bound one — and a card must not
+    // spend its one click guessing which. The app's screens read the bound table, and a button that
+    // silently moved the Scope off it would break them to satisfy one sentence in a prompt.
+    //
+    // Resolved out of `state.bindings` rather than sent: the row names a Binding, and the ladder
+    // this opens walks off the Project's row for the Resource anyway.
+    openScopeForMention(entry) {
+      if (!entry || !entry.id) return false;
+      const binding = (state.bindings || []).find(
+        (b) => b.kind === entry.kind && b.id === entry.id
+      );
+      if (!binding) return false;
+      store.openScopePick(binding);
       return true;
     },
 
@@ -4349,9 +4389,41 @@ window.SW = window.SW || {};
       // One row per Resource rather than per mention: "@Warehouse and @FCT_USAGE_DAILY" names one
       // Data Source at one table, and two identical buttons would offer the same bind twice.
       const seen = new Set();
+      // The Scope each bound Resource records, for the second question below. A Binding carries its
+      // levels (`_labelled_bindings` hands the manifest entry straight through), so the app's own
+      // answer is already here and nothing is fetched — the rule this warning lives by.
+      const scopeOf = {};
+      (state.bindings || []).forEach((b) => { scopeOf[SW.util.bindingId(b)] = b; });
       refs.resources.forEach((ref) => {
         const key = `${ref.kind}:${ref.id}`;
-        if (bound.has(key) || seen.has(key)) return;
+        if (seen.has(key)) return;
+        if (bound.has(key)) {
+          // Bound, and still not what the mention named. The @ menu offers the tables pinned on the
+          // PROJECT's row while a turn honors the ones inside this app's Scope, and a sibling of the
+          // bound table passes the test above and is dropped by the turn without a word.
+          //
+          // Asked of the Binding's own levels and not of a schema this surface has never read: that
+          // is the half of the server's question a browser can answer, and it is the half that
+          // matters. Two states of it, and the second is the ordinary one — the header's picker
+          // binds a Data Source in one argument and leaves the Scope as a second act (#142), so a
+          // store bound there reaches NO table until somebody answers it:
+          //
+          //   - a Scope narrowed to one table, and the mention names a sibling;
+          //   - no Scope at all, so it names nothing.
+          //
+          // A Scope that stopped at a database or a schema holds every table under it, so it stays
+          // quiet here and is left to the turn — the right way round for a warning that must never
+          // fire on a mention that worked.
+          const at = scopeOf[key];
+          if (!ref.table || !at) return;
+          const scoped = SW.util.scopeText(at);
+          if (scoped && (!at.table || at.table === ref.table)) return;
+          seen.add(key);
+          entries.push({ kind: ref.kind, id: ref.id, name: ref.table, table: ref.table,
+                         source: ref.sourceName || at.display_name || at.name,
+                         scope: SW.util.scopeShown(at), app: app.name, appId: app.id });
+          return;
+        }
         seen.add(key);
         entries.push({ kind: ref.kind, id: ref.id, name: ref.name || ref.id,
                        app: app.name, appId: app.id });
