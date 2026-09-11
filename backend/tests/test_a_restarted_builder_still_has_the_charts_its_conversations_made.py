@@ -132,9 +132,15 @@ def test_a_chat_artifact_reaches_git_after_the_repair(tmp_path: Path):
     """End to end, and the claim that actually matters: the charts are in the commit.
 
     A restart restores the working tree from that commit, so what is tracked here is exactly what
-    a reopened Conversation gets to show."""
+    a reopened Conversation gets to show.
+
+    **Kept rows** on, since #255. A chart is a picture of the rows, so ADR-0045 reopened this loss
+    deliberately for the charts drawn out of a data read, and the opt-in is what buys them back.
+    The half of this repair that is still unconditional is tested beside it: the table, the
+    statement and the manifest commit either way."""
     orch, root = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.record.set_kept_rows(True)
     (root / ".gitignore").write_text(f"node_modules\n{RULE}\n")
     _repo(root)
     git.commit_all(root, "a Project seeded before the fix")
@@ -160,6 +166,8 @@ def test_the_app_still_keeps_its_own_link_out_of_git(tmp_path: Path):
     test above while committing a symlink that dangles in the clone this whole issue is about."""
     orch, root = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.record.set_kept_rows(True)  # so the chart is the Artifact this can assert on (#255)
+    orch._unignore_chat_artifacts(project)
     app = project.workspace.path
     _repo(root)
     _chart(root)

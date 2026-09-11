@@ -1115,6 +1115,72 @@ _SCRATCH_PREFIX = ".sage/scratch/"
 # A Thread's Artifact folder as a handoff digest names it. The digest is prose around real paths
 # (`_write_crossing`), so this reads the id back out of one rather than parsing the document.
 _ARTIFACT_DIR_ID = re.compile(r"examples/(thr_[a-zA-Z0-9_-]+)/")
+# The Project root rule that keeps a Chat chart out of git while **Kept rows** is off (ADR-0045).
+# `**` rather than `examples/*.png`: a chart lives one folder down, under its Thread's id.
+_CHART_IGNORE = "examples/**/*.png"
+
+
+def _artifacts_with_absences(root: Path, items: list[dict], *, kept: bool = True) -> list[dict]:
+    """The same manifest, saying which of its files this clone does not have (#255, ADR-0045).
+
+    A chart drawn while **Kept rows** is off is written and rendered and never committed, so the
+    Builder that restarts pulls back a manifest describing a PNG that is not on disk. The card has
+    to say that, and it cannot say it from the manifest alone — the row is identical either way.
+    Answered here rather than by a probe from the browser: this is the request that restores the
+    transcript, the answer is a `stat`, and a card that finds out by letting an `<img>` fail is a
+    card that has already drawn a broken image.
+
+    `notKept` is the narrower claim, and it is separate because `missing` is only a `stat`: a file
+    can be gone for reasons this decision has nothing to do with — a Workspace that died before
+    its save, the orphan sweep, somebody deleting it. Only a PNG in a Project that did not opt in
+    is missing FOR THIS REASON, and only that one may be explained by a card that names the
+    setting. Everything else is missing without a cause attached.
+
+    Only the restore path asks. During the turn that drew it the file is there, and the manifest
+    the stream carries is about a file it just watched being written."""
+    out = []
+    for row in items:
+        rel = str(row.get("path") or "")
+        try:
+            missing = bool(rel) and not (root / rel).exists()
+        except OSError:  # a path the manifest holds that this filesystem will not even answer for
+            missing = True
+        if not missing:
+            out.append(row)
+            continue
+        marked = {**row, "missing": True}
+        if not kept and rel.lower().endswith(".png"):
+            marked["notKept"] = True
+        out.append(marked)
+    return out
+
+
+def _artifacts_present(root: Path, items: list[dict]) -> list[dict]:
+    """The rows whose file this clone actually has.
+
+    For the two surfaces that hand a path to something rather than to a reader: the handoff sheet,
+    and the digest that tells a Built App's agent where the Conversation's charts are. A card can
+    say a chart is not here; a digest naming a file that is not there is just a wrong instruction
+    (ADR-0006 — the digest is the only record of the link)."""
+    return [row for row in _artifacts_with_absences(root, items) if not row.get("missing")]
+
+
+def _history_with_absences(root: Path, history: list[dict], *, kept: bool = True) -> list[dict]:
+    """The same answer, on the rows a reopened transcript actually draws its cards from.
+
+    A restored Conversation is rebuilt from the event log, not from the manifest — the manifest
+    feeds the gallery. So the two frames that carry Artifact rows are decorated the same way the
+    manifest is. Named by event type rather than by looking for any list with paths in it: an
+    `items` key is on candidate frames too, and those rows name things that are not files."""
+    out = []
+    for ev in history:
+        key = "items" if ev.get("type") == "artifacts" else (
+            "artifacts" if ev.get("type") == "done" else "")
+        rows = ev.get(key) if key else None
+        if isinstance(rows, list) and all(isinstance(r, dict) for r in rows):
+            ev = {**ev, key: _artifacts_with_absences(root, rows, kept=kept)}
+        out.append(ev)
+    return out
 # Where a Dataset file fetched FOR A QUESTION lands. Not `public/data/`: that tree is the published
 # app's, and attach_file also writes the file into the committed manifest, so asking "what is in
 # this file?" enrolled the bytes in every later publish of an app that may never reference them.
@@ -6217,9 +6283,11 @@ class Orchestrator:
         handoffs = store.read_handoffs(thread_id)
         return {
             **row,
-            "history": store.read_history(thread_id),
+            "history": _history_with_absences(record.path, store.read_history(thread_id),
+                                              kept=record.kept_rows()),
             "context": store.read_context(thread_id),
-            "artifacts": store.read_artifacts(thread_id),
+            "artifacts": _artifacts_with_absences(record.path, store.read_artifacts(thread_id),
+                                                  kept=record.kept_rows()),
             "handoff": handoffs[-1] if handoffs else None,
             "planId": _thread_plan_id(record, thread_id),
         }
@@ -6990,7 +7058,7 @@ class Orchestrator:
             "title": chat_handoff.plan_title(plan_md) or thread.get("title") or "App",
             "handoff": handoff,
             "untitled": project.record.is_untitled(),
-            "artifacts": store.read_artifacts(thread_id),
+            "artifacts": _artifacts_present(project.record.path, store.read_artifacts(thread_id)),
             "context": store.read_context(thread_id).get("items") or [],
             # The apps this handoff could build into, so the sheet can offer them (#73). The rail's
             # `selected` flag is dropped on the way out: the only default is New app, and a payload
@@ -7031,7 +7099,7 @@ class Orchestrator:
         thread = store.get(thread_id) or {}
         history = store.read_history(thread_id)
         context = store.read_context(thread_id).get("items") or []
-        artifacts = store.read_artifacts(thread_id)
+        artifacts = _artifacts_present(project.record.path, store.read_artifacts(thread_id))
         digest = chat_handoff.draft_digest(
             title=thread.get("title") or "",
             asked=chat_handoff.user_texts(history),
@@ -7248,7 +7316,7 @@ class Orchestrator:
         include_artifacts = include.get("artifacts", True)
         include_transcript = include.get("transcript", False)
         context = store.read_context(thread_id).get("items") or []
-        artifacts = store.read_artifacts(thread_id)
+        artifacts = _artifacts_present(project.record.path, store.read_artifacts(thread_id))
         thread = store.get(thread_id) or {}
         digest = chat_handoff.confirm_digest(
             chat_handoff.draft_digest(
@@ -8338,6 +8406,12 @@ class Orchestrator:
                     "Do not guess the contents."
                 )
             lines.append("")
+        # Only the ones this clone has. A chart the Project never committed survives in the
+        # manifest and not on disk (#255), and the line below hands the model a path it is told it
+        # may read — a dead one costs a tool call and an answer written around a file that is not
+        # there. Filtered here rather than at the caller because every caller would have to
+        # remember, and this list is only ever rendered into a prompt.
+        artifacts = _artifacts_present(self._chat_project().record.path, artifacts or [])
         if artifacts:
             lines.append(
                 "Already written this Thread (on screen; change one only if asked):"
@@ -13877,7 +13951,12 @@ class Orchestrator:
         """Record the answer and commit it, so the next Builder in this Project reads this one's
         decision rather than asking again. Answers the same shape as `kept_rows`, so the dialog
         re-renders from the write."""
-        self.project(start_preview=False).record.set_kept_rows(on)
+        record = self.project(start_preview=False).record
+        record.set_kept_rows(on)
+        # Before the save, not after: the rule and the charts it stops ignoring belong in the same
+        # commit as the decision that changed them. Turning the opt-in on needs no `git add`
+        # beyond it — the charts were ignored, never tracked, so `commit_all` stages them.
+        self._apply_chart_ignore(record)
         self._save_project_record("kept rows")
         return self.kept_rows()
 
@@ -17224,13 +17303,77 @@ class Orchestrator:
         Best-effort, like the sweep beside it. `self._project` is assigned by the time this runs, so
         an exception here would 500 whichever request triggered the attach and then be cached away.
         A read-only volume is enough, and a Project that keeps its Artifacts out of git by hand is
-        a person's choice this should not turn into an outage."""
+        a person's choice this should not turn into an outage.
+
+        Conditional since #255, and only in its second half: `/examples` still comes out every
+        time, because the table, the statement and the manifest that makes the card exist still
+        commit. What the opt-in governs is the picture beside them."""
         try:
             if remove_ignore_line(project.record.path / ".gitignore", "/examples"):
                 log.info("artifacts: the Project root no longer ignores examples/ (#222)")
         except OSError:
             log.warning("artifacts: could not un-ignore examples/; leaving it for the next open",
                         exc_info=True)
+        self._apply_chart_ignore(project.record)
+
+    def _apply_chart_ignore(self, record: ProjectRecord) -> None:
+        """Keep Chat's charts out of git unless this Project said to keep its rows (ADR-0045).
+
+        A chart of the rows IS the rows — a bar per customer is a customer list — so the PNG
+        follows the `rows` array the shim strips out of the table beside it. An ignore rule rather
+        than either of the other two readings of "not committed": Chat's write gate reads write
+        tool NAMES, and a `savefig` from the agent's own shell never passes through it, while a
+        file merely left untracked is one `git add -A` away from going anyway. A rule matched on
+        path holds whoever wrote the file and however.
+
+        The rule is the Project root's, where Chat's Artifacts actually live; the app's copy of
+        this file owns `/examples`, the symlink, and is not touched here. Written on the way into
+        the Project as well as on the toggle: the decision lives in the committed settings file, so
+        the next Builder reads an answer it never gave and has to write its own working tree's rule
+        for it.
+
+        Only the line Sage wrote is removed when the opt-in goes on. A Project that keeps its
+        charts out of git by some rule of its own is answering a different question, and keeps it.
+
+        An ignore rule says nothing about a file git already tracks, so turning the opt-in back off
+        also takes the committed charts out of the index. Without that the sentence beside the
+        switch is false for the one Project it matters most to — the one that had it on, pushed
+        charts, and turned it off on finding out. The bytes stay on disk and stay in history
+        (ADR-0046 says so beside the switch); what stops is being committed again every turn.
+
+        Best-effort for the same reason as the un-ignore above: this runs with `self._project`
+        assigned, so a raise would 500 the attach and then be cached away."""
+        from ..workspace import git
+
+        try:
+            ignore = record.path / ".gitignore"
+            if record.kept_rows():
+                if remove_ignore_line(ignore, _CHART_IGNORE):
+                    log.info("artifacts: charts are committed — Kept rows is on (#255)")
+                return
+            ensure_ignore_line(ignore, _CHART_IGNORE)
+        except OSError:
+            log.warning("artifacts: could not set the chart ignore rule; leaving it for the next "
+                        "open", exc_info=True)
+            return
+        # `is_repo_root` first, for the local-dev lie (#20): a workspace sitting inside some other
+        # repo would otherwise have that repo answer about its index.
+        try:
+            if not git.is_repo_root(record.path):
+                return
+            # Case-sensitive, because `_CHART_IGNORE` is: git matches an ignore glob
+            # case-sensitively on Linux, so a `.PNG` this dropped from the index would be staged
+            # straight back by the next `git add -A` and the line above would have said otherwise.
+            # The writer is Sage's own Chat agent and `template/chat/AGENTS.md` names `.png`.
+            dropped = 0
+            for rel in git.tracked_under(record.path, "examples"):
+                if rel.endswith(".png") and git.untrack(record.path, rel):
+                    dropped += 1
+            if dropped:
+                log.info("artifacts: untracked %d committed chart(s) — Kept rows is off (#255)",
+                         dropped)
+        except Exception:  # git is a subprocess; every way it can fail is the same answer here
+            log.warning("artifacts: could not untrack the committed charts", exc_info=True)
 
     def _ensure_examples_link(self, project: Project) -> None:
         """Link the Project's Chat Artifacts into the app a turn runs in, and keep the link out of

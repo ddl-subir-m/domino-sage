@@ -69,6 +69,11 @@ def test_the_archive_is_written_but_never_tracked(tmp_path: Path):
     _repo(root)
 
     _turn(orch, project, "keep the date filter", "Added the filter.")
+    # A chart, so **Kept rows** decides whether it commits (#255, ADR-0045). On here: the claim is
+    # about what the archive costs the commit, and an Artifact held back for another reason would
+    # answer it by accident.
+    project.record.set_kept_rows(True)
+    orch._apply_chart_ignore(project.record)
     artifact = root / "examples" / "thr_a" / "revenue.png"
     artifact.parent.mkdir(parents=True)
     artifact.write_bytes(b"\x89PNG chart")

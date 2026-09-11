@@ -734,3 +734,13 @@ def test_the_word_invite_is_gone_from_the_workbench():
     js = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
     for path in [*js.glob("*.js"), *js.glob("components/*.js"), *js.glob("modes/*.js")]:
         assert "invite" not in path.read_text().lower(), path.name
+
+
+@needs_node
+def test_the_dialog_says_what_leaving_it_off_costs_the_charts():
+    """#255 reopens #222 on purpose, for exactly the charts drawn out of a data read. The opt-in is
+    what buys them back, so the sentence beside it has to be true about that — a person who reads
+    only "rows" would not expect a picture to go with them."""
+    said = " ".join(modal(connected=True)["said"])
+    assert "Charts follow the rows." in said
+    assert "shows its title and date with no image" in said

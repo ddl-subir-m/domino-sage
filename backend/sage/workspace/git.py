@@ -171,6 +171,19 @@ def untrack(path: Path, rel: str) -> bool:
     return True
 
 
+def tracked_under(path: Path, prefix: str) -> list[str]:
+    """Every path git tracks under `prefix`, repo-relative. Empty when it tracks none.
+
+    The companion `untrack` needs the names one at a time, and the caller that has them is asking
+    about a rule rather than a file — "what is in the index that this ignore line now covers?".
+    `-z`, because a filename is allowed to contain a newline and a chart's is derived from a
+    question somebody typed."""
+    r = _git(path, "ls-files", "-z", "--", prefix, check=False)
+    if r.returncode != 0:
+        return []
+    return [p for p in r.stdout.split("\0") if p]
+
+
 def push(path: Path) -> SaveResult:
     """Push HEAD. Returns pushed=False (not an error) when there's no remote or the push is
     rejected (e.g. a non-fast-forward — the caller should pull first)."""

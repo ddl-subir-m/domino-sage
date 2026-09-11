@@ -271,7 +271,10 @@ window.SW = window.SW || {};
 
     const close = () => SW.store.set({ graduationOpen: false });
     const files = (resourceGroups.file || []).filter((f) => f.sandbox);
-    const artifacts = (thread && thread.artifacts) || [];
+    // The charts this clone has. One the Project never committed is in the manifest and not
+    // on disk (#255), and the crossing drops it — so counting it here offers three charts
+    // to a handoff that carries one.
+    const artifacts = ((thread && thread.artifacts) || []).filter((a) => !a.missing);
 
     const save = async () => {
       setBusy(true);

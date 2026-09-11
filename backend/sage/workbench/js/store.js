@@ -1253,7 +1253,14 @@ window.SW = window.SW || {};
       const path = art.path || '';
       const lower = path.toLowerCase();
       if (art.kind === 'chart' || lower.endsWith('.png')) {
-        blocks.push({ type: 'image', title: art.title || art.name, src: fileUrl(path), path });
+        // `missing` and `producedAt` are what the card falls back to when the PNG is not in this
+        // clone. A chart follows the rows it draws (ADR-0045), so a Project with **Kept rows** off
+        // never commits one, and the Builder that restarts gets this row and no file. The server
+        // marks the absence on the restore — a card that found out by letting an `<img>` fail
+        // would have drawn the broken image first.
+        blocks.push({ type: 'image', title: art.title || art.name, src: fileUrl(path), path,
+                      producedAt: art.producedAt, missing: !!art.missing,
+                      notKept: !!art.notKept });
       } else if (art.kind === 'table' || lower.endsWith('.table.json')) {
         try {
           const res = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`);
