@@ -12,10 +12,13 @@ compacted yet.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..router import llm_router
 from ..router.models import ModelCatalog, SessionState
+
+log = logging.getLogger(__name__)
 
 # OpenCode 1.18.4: POST /api/session/{id}/summarize. The only provider Sage configures.
 PROVIDER_ID = "sage-gateway"
@@ -28,6 +31,22 @@ TOKEN_RATIO = 0.70
 # Used only when OpenCode messages carry no usage. Count is user turns since the last compaction
 # in that session (assistant-only lists, as in FakeOpenCode, count the same way).
 TURN_FALLBACK = 12
+
+# The ceiling a Chat conversation is summarised at whatever its model's window is. A fraction of a
+# window is the wrong shape of rule for this surface: what a person waits for is not "will it fit"
+# but "how long is the prefill", and prefill is paid per step on the WHOLE conversation, every step,
+# forever. Measured against the dogfood gateway on 2026-09-11, one step's time to first byte tracked
+# its payload and nothing else — 1.55s at 14KB, 1.6s at 43KB, 2.4s at 128KB, ~4s at 321KB, same
+# model and same box. At roughly four characters to the token, this number holds a step's request
+# near the top of that range rather than letting it run past it.
+#
+# PROVISIONAL, and deliberately one line to change. It is derived from the payload/first-byte curve
+# above, not from a reading of what a real conversation weighs — nothing could measure that until
+# `request_bytes` landed on the ledger (b724948). The first deployed turns that report their own
+# request sizes are what should set it: if ordinary two-turn conversations sit far under this, it is
+# too loose to be doing anything; if compaction fires inside a single working session, it is too
+# tight and is throwing away context somebody was still using.
+CHAT_MAX_TOKENS = 120_000
 
 # Matches opencode.json `provider.sage-gateway.models.*.limit.context`, and a test compares the two
 # as sets. Unknown aliases get the conservative default so we compact before a 32k window overflows
@@ -74,7 +93,16 @@ def bare_model_id(model: str) -> str:
 
 
 def context_limit(model: str) -> int:
-    return CONTEXT_LIMITS.get(bare_model_id(model), DEFAULT_CONTEXT)
+    bare = bare_model_id(model)
+    if bare not in CONTEXT_LIMITS:
+        # Said out loud rather than defaulted in silence. The docstring on CONTEXT_LIMITS explains
+        # why under-claiming is not the safe direction, and an alias the map has never heard of
+        # takes exactly that unsafe path — a 1M-window model summarised as if it held 128k. It is
+        # not an error (the default is a real policy and the turn runs), but it is a fact somebody
+        # has to be able to find, and until now nothing recorded it anywhere.
+        log.info("chat compact: %s is not in CONTEXT_LIMITS — assuming %d tokens", bare or "?",
+                 DEFAULT_CONTEXT)
+    return CONTEXT_LIMITS.get(bare, DEFAULT_CONTEXT)
 
 
 def compact_model(state: SessionState, catalog: ModelCatalog) -> tuple[str, str]:
@@ -112,10 +140,26 @@ def summarize_model_id(model: str) -> str:
     return bare if bare in CONTEXT_LIMITS else COMPACT_FALLBACK
 
 
+def compact_threshold(model: str) -> int:
+    """Tokens this conversation may carry before it is summarised between turns.
+
+    The lower of two rules, and they answer different questions. `TOKEN_RATIO` asks "will the next
+    prompt still FIT", which is about the model's window. `CHAT_MAX_TOKENS` asks "is the next step
+    still going to be quick", which is about the person waiting — and on a 1M-window alias those
+    two are half a million tokens apart. Sonnet's ratio alone puts the line at 700,000, so in
+    practice a Chat conversation was never compacted at all: it simply got heavier every turn until
+    someone opened a new one.
+
+    Taking the minimum keeps the ratio doing its real job on the small windows, where it is the
+    binding rule and must stay binding — qwen at 32k compacts at 22,937 and that must not move.
+    """
+    return min(int(context_limit(model) * TOKEN_RATIO), CHAT_MAX_TOKENS)
+
+
 def should_compact(messages: list[dict], model: str) -> bool:
     used = last_usage_tokens(messages)
     if used is not None:
-        return used >= int(context_limit(model) * TOKEN_RATIO)
+        return used >= compact_threshold(model)
     return turns_since_compact(messages) >= TURN_FALLBACK
 
 

@@ -246,3 +246,36 @@ def test_the_compaction_threshold_still_weighs_the_real_alias():
     msgs = [_asst(tokens={"input": over, "output": 0})]
     assert chat_compact.should_compact(msgs, "domino-gcp/claude-sonnet-5")
     assert not chat_compact.should_compact(msgs, chat_compact.COMPACT_FALLBACK)
+
+
+def test_a_wide_window_compacts_at_the_ceiling_not_at_a_fraction_of_a_million():
+    """A fraction of the window answers "will it fit". A person waiting answers "how long is the
+    prefill", and on a 1M alias those are half a million tokens apart.
+
+    Sonnet's ratio alone puts the line at 700,000 tokens, which no Chat conversation has ever
+    reached — so in practice compaction never fired and a conversation simply got heavier every
+    turn. Measured on 2026-09-11, a step's time to first byte tracked its payload (1.55s at 14KB,
+    ~4s at 321KB), and every step re-sends the whole conversation, so the weight is paid over and
+    over rather than once.
+    """
+    assert chat_compact.context_limit("sonnet") == 1_000_000
+    ratio_line = int(chat_compact.context_limit("sonnet") * chat_compact.TOKEN_RATIO)
+    assert ratio_line == 700_000, "the rule this ceiling exists to override has moved"
+    assert chat_compact.compact_threshold("sonnet") == chat_compact.CHAT_MAX_TOKENS
+    assert chat_compact.CHAT_MAX_TOKENS < ratio_line
+
+    over = chat_compact.CHAT_MAX_TOKENS + 1
+    assert chat_compact.should_compact([_asst(tokens={"input": over, "output": 0})], "sonnet")
+    # And still not a hair under it.
+    assert not chat_compact.should_compact(
+        [_asst(tokens={"input": chat_compact.CHAT_MAX_TOKENS - 1, "output": 0})], "sonnet")
+
+
+def test_a_narrow_window_still_compacts_on_its_own_ratio():
+    """The ceiling must not become the rule everywhere. On a small window the ratio is the binding
+    rule and has to stay binding: qwen at 32,768 compacts at 22,937, and a conversation that waited
+    for the ceiling there would overflow the window long before reaching it."""
+    assert chat_compact.context_limit("qwen-2-5") == 32_768
+    assert chat_compact.compact_threshold("qwen-2-5") == 22_937
+    assert chat_compact.compact_threshold("qwen-2-5") < chat_compact.CHAT_MAX_TOKENS
+    assert chat_compact.should_compact([_asst(tokens={"input": 22_937, "output": 0})], "qwen-2-5")
