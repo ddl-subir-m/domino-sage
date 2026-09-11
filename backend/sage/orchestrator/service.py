@@ -6732,7 +6732,11 @@ class Orchestrator:
             # Not re-armed on a wedge: the lock never comes back, so this would only queue a timer
             # per attempt against a workspace that has to be restarted anyway (see _on_chat_save_idle).
             if not self._turn_wedged:
-                self._arm_chat_idle_save()
+                # Carried, not dropped. `_on_chat_save_idle` already re-arms with the reason it
+                # holds, for the reason named there — a deferred commit is still the work of the
+                # act that asked for it, and a rail change deferred behind a build turn landed as
+                # `chat (idle)` with nothing in the log to say what it was.
+                self._arm_chat_idle_save(reason)
             return None
         self._chat_saving = True
         try:
@@ -13803,6 +13807,8 @@ class Orchestrator:
                 (r for r in self.list_project_resources() if r.get("id") == rid),
                 added["item"],
             )
+        if added["added"]:
+            self._save_working_set("project resources")
         return {"added": added["added"], "item": added["item"]}
 
     def remove_project_resource(self, resource_id: str) -> bool:
@@ -13848,7 +13854,27 @@ class Orchestrator:
             return kept
 
         self.project(start_preview=False).record.update_project_resources(change)
+        if found["ok"]:
+            self._save_working_set("project resources")
         return found["ok"]
+
+    def _save_working_set(self, reason: str) -> None:
+        """Commit a change to the Project's working set, the way `delete_thread` commits its own.
+
+        `update_project_resources` writes the file and nothing else, so until this existed the row
+        only reached git when some unrelated act saved afterwards — a chat turn, a handoff, a build,
+        a publish, a stop. A creator who removed a Resource and then deleted the Workspace lost the
+        removal: the next Workspace clones HEAD and the row is still in the rail.
+
+        Flushed rather than armed. The idle timer is right for chat, where the next keystroke is
+        seconds away and coalescing is the point; it is wrong here, because the window it leaves
+        open is exactly the one this was found in — a deliberate act followed by a Workspace going
+        away. `_flush_chat_save` still falls back to arming when the turn lock is busy, so a rail
+        change made mid-turn is deferred rather than dropped.
+        """
+        self._chat_dirty = True
+        self._chat_dirty_thread = None  # a working-set row belongs to no Thread
+        self._flush_chat_save(reason)
 
     def _refused_resource_name(self, rid: str, bound: list[tuple[Workspace, Binding]]) -> str:
         """What to call the Resource in a refusal.
