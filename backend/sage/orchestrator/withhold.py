@@ -149,14 +149,26 @@ def search(messages: list[dict], ask, *, cap: int = MAX_CALLS) -> Found:
     somebody just attached is the ordinary culprit, and ordering by it costs nothing when it is
     wrong.
 
-    Nothing here reads the payload to decide what a guardrail would object to. That is deliberate,
-    and it is not a claim that such a rule cannot be written — `shim/refusal_scan.py` has one, and
-    its rule is measured rather than assumed (digit windows of exactly 10-11 and exactly 16, on WORD
-    boundaries). The two answer different questions. `refusal_scan` says where in a request a match
-    probably is, with values masked, for somebody diagnosing a refusal. This says which messages the
-    gateway WILL refuse, proven one probe at a time, because a recovery that takes a person's file
-    away has to be right rather than probable — and the rule it would otherwise depend on belongs to
-    an administrator who can change it without telling Sage.
+    Nothing here reads the payload to decide what a guardrail would object to, and the reason is not
+    that such a rule is unknowable. It is that the rule is HARD, and being nearly right about it is
+    worse than not guessing. Re-measured live 2026-09-11, `Block PII`'s numeric half fences on a
+    WORD boundary, not a digit one:
+
+        1234567890 / 0908182187        GUARDRAIL   bare 10-digit runs, leading zero or not
+        a1234567890b / a0908182187b    OK          the same numbers fenced by letters
+        app_1a0908182187e6abddb1f      OK          a real Sage id, which holds one of them
+        555-123-4567                   GUARDRAIL   and a separator form exists as well
+        777777777777777 / 16 / 17      OK / GUARDRAIL / OK   cards are exactly 16, word-fenced
+
+    `shim/refusal_scan.py` locates matches for somebody DIAGNOSING a refusal, values masked, and is
+    the right tool for that. Its regex is a digit-boundary one with no separator form, so it
+    over-reports every run fenced by letters and misses `555-123-4567` entirely — which is why
+    nothing here may read it as an all-clear. It could reasonably ORDER the candidates below, as a
+    hint about where to look first; it must never decide the answer.
+
+    So: hint from a scanner if you like, verdict from the gateway always. A recovery that takes a
+    person's file away has to be right rather than probable, and the rule it would otherwise depend
+    on belongs to an administrator who can change it without telling Sage.
     """
     found = Found()
     all_carriers = carriers(messages)
