@@ -61,12 +61,37 @@ def new_id(prefix: str) -> str:
 
     Strictly increasing inside the process, because the random half is not an order. Two Threads
     made in the same millisecond would otherwise sort by coin flip, and which of them is the
-    OLDEST decides who inherits an upgraded Project's untagged Build history."""
+    OLDEST decides who inherits an upgraded Project's untagged Build history.
+
+    Broken into 7-char segments by a `z`, because hex digits 0-9 are also DECIMAL digits and a run
+    of them fenced by two hex letters is a bare decimal run — which Domino's `Block PII` guardrail
+    refuses at exactly 10-11 (a phone number) and 16 (a card). An id is not payload, so that is
+    worse than a leak rather than milder: the id IS the session directory, it rides every tool-call
+    path, and every record naming the app copies it. One unlucky id therefore refuses every request
+    that mentions it, in Chat and Build, in every conversation, for the life of the Project. Live on
+    2026-09-11 `app_1a0908182187e6abddb1f` did exactly that; 2.76% of the old shape did.
+
+    Three segments rather than two: the 21 hex chars need three to keep every run under 10, and
+    seven apiece is the even split. Seven, not nine, so the invariant does not sit on the boundary
+    of a rule we do not own.
+
+    `z` and not `-`, which is the obvious separator and the wrong one. Name order is age order
+    (`manager.list_app_ids`), and the only comparisons the separator can decide are between ids
+    sharing all seven leading epoch chars. `-` (0x2D) sorts BEFORE every hex char, so a new id would
+    sort before an older short one there; `z` (0x7A) sorts after every hex char (`f` is 0x66), and
+    the new-format id is always the younger. `_` splits the difference — after the hex digits,
+    before the hex letters — which is worse than either. `z` is also not a hex char, so it can never
+    be read as part of the timestamp, and it is inside `safe_id`'s charset.
+
+    Old ids keep their shape and stay valid. Nothing re-mints one: an `appId` never changes, so an
+    app already carrying a refused run needs a migration and does not get one here.
+    """
     global _last_id_ms
     with _ID_LOCK:
         ms = max(int(time.time() * 1000), _last_id_ms + 1)
         _last_id_ms = ms
-    return f"{prefix}_{ms:011x}{secrets.token_hex(5)}"
+    raw = f"{ms:011x}{secrets.token_hex(5)}"
+    return f"{prefix}_{raw[:7]}z{raw[7:14]}z{raw[14:]}"
 
 
 def _now() -> str:
