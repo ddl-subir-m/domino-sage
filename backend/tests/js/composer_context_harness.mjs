@@ -90,6 +90,14 @@ const sandbox = {
     Modal: { confirm() {} },
   },
   icons: new Proxy({}, { get: (_, name) => String(name) }),
+  // `router.js` is loaded below, so the sandbox owes it the three window surfaces it reads at load:
+  // the hash it parses, the listener it registers for `hashchange`, and the history it writes
+  // through. `replaceState` puts the value where `parse()` will read it, which is what makes
+  // `SW.router.replace` work here — `go` does not, because nothing in a vm fires a hashchange.
+  location: { hash: '#/chat' },
+  addEventListener() {},
+  removeEventListener() {},
+  history: { replaceState(_state, _title, next) { sandbox.location.hash = next; } },
   fetch: async (url, options) => {
     inflight += 1;
     try {
@@ -105,7 +113,11 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'components/composer.js']) {
+// `router.js` before `api.js`, which reads `SW.router.get().mode` to decide the `inBuild` flag on
+// an add (#74). Missing, that read threw inside the promise `onDrop` hands to `.catch(sayFailed)` —
+// so every drop in this harness failed silently and the three tests that drop saw an unchanged row.
+for (const f of ['util.js', 'router.js', 'api.js', 'store.js', 'prefs.js',
+                 'components/composer.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
@@ -163,6 +175,12 @@ await settle();
 
 const report = [{ step: 'opened', ...snapshot() }];
 for (const step of steps) {
+  // The route follows the composer the step drives. There is one router and two mounts here, and
+  // `addToConversation` reads the route rather than the mount to decide `inBuild` — so leaving it
+  // on chat would have this harness modelling an act in the Build composer while the URL says chat,
+  // which is a state the app never reaches.
+  const on = (step.drop || step.closeChip || {}).on;
+  if (on) SW.router.replace(`#/${on}`);
   if (step.drop) {
     // The composer's own drop target, in the named mode: the resource panel hands it an id and it
     // puts the resource into the conversation's context.
