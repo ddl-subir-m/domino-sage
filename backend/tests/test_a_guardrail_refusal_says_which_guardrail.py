@@ -51,7 +51,7 @@ def test_it_names_the_file_the_turn_read():
 
 def test_it_still_reads_as_a_sentence_with_no_attachment_to_name():
     said = _chat_error_text(LIVE)
-    assert "Take the matching values out, or ask your Domino administrator" in said
+    assert "Take the matching values out, or ask your administrator" in said
     assert "This turn read" not in said
 
 

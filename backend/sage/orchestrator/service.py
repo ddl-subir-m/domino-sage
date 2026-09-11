@@ -2165,7 +2165,7 @@ def _guardrail_sentence(text: str, attachments: list[dict] | None = None) -> str
             "turn carries, including the contents of files it opened, not only what you typed. "
             + (f"This turn read {read}. Take the matching values out of it, "
                if read else "Take the matching values out, ")
-            + "or ask your Domino administrator about the policy.")
+            + "or ask your administrator about the policy.")
 
 
 def _named_files(attachments: list[dict] | None) -> str:
