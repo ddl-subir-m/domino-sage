@@ -1471,14 +1471,22 @@ _A_LONG_TURN = [
 
 def test_a_turn_that_keeps_working_outlives_the_quiet_window(tmp_path: Path):
     """The wall clock could not tell a slow turn from a stuck one, so it killed both. This turn
-    runs for longer than the whole window and finishes, because it never stops saying so."""
+    runs for longer than the whole window and finishes, because it never stops saying so.
+
+    The window has to be LONGER than the loop's own wait, which is why it is not 0.6s. The last
+    frame here opens a `write` and the stream then goes quiet, so the turn's survival rests on one
+    full wait elapsing inside the window — and the loop waits up to a second. A window shorter than
+    that is not a slow turn being tolerated, it is a turn that cannot outlive a single poll. It
+    passed at 0.6s only while the loop's wait was a `time.sleep` this file patches away; the wait
+    is an event now and no patch reaches it, which is the same second of real time the deployed
+    loop always spent there."""
     orch, oc = _streamed(tmp_path, _A_LONG_TURN, text="Done.", gap=0.25)
     tid = orch.create_thread()["id"]
     started = time.monotonic()
-    out = list(orch.chat_stream(tid, "chart last quarter", timeout_s=0.6))
+    out = list(orch.chat_stream(tid, "chart last quarter", timeout_s=1.4))
     elapsed = time.monotonic() - started
 
-    assert elapsed > 0.6, "the turn ended too early to have outlived one quiet window"
+    assert elapsed > 1.4, "the turn ended too early to have outlived one quiet window"
     assert not [e for e in out if e["type"] == "error"]
     assert next(e for e in out if e["type"] == "done")["ok"] is True
     assert oc.interrupted == 0

@@ -1974,6 +1974,12 @@ class _EventTap:
         self._stream = opener(sid, directory=directory) if opener is not None else None
         self.ok = self._stream is not None
         self._q: queue.Queue = queue.Queue()
+        # Rung on every arrival, so a reader can block until there is something to drain WITHOUT
+        # taking it. `wait` below cannot do that job for Chat: it consumes what it wakes on and
+        # drops it, which is right for a loop reading the transcript and fatal for one whose live
+        # text comes off this queue. Never cleared by the pump — only by the waiter, after it has
+        # woken — so a frame that lands between a clear and the next drain still gets drained.
+        self.arrived = threading.Event()
         # Whether this stream has ever produced a frame. `ok` only says the socket is up, and a
         # stream that connects and stays silent is the failure that hides: the turn keeps the fast
         # path, never reads the transcript, and goes to the quiet cap blind to its own progress.
@@ -2042,6 +2048,41 @@ class _EventTap:
                     time.sleep(held)
                 return True
 
+    def wait_any(self, timeout: float, floor: float = 0.0) -> bool:
+        """Block until ANY frame has arrived, or until `timeout`. Takes nothing off the queue.
+
+        The doorbell for a loop that streams what it drains, which is Chat. `wait` above is for a
+        loop that re-reads the TRANSCRIPT: it wakes only on frames the transcript would render
+        differently, and it consumes them. Both of those are wrong here. Text deltas are exactly
+        what Chat is waiting for — they are the answer arriving — and a wait that ate them would
+        drop words on the floor.
+
+        Without this the loop slept a flat second between drains, so a model writing 946 chunks in
+        ten seconds had them delivered in ten clumps of ninety. The text was never late by more
+        than a second, but it arrived in steps rather than as writing, and the end of a turn was
+        noticed up to a second after it happened (measured: 1.2s, 2026-09-11).
+
+        `floor` is the same bound `wait` uses and exists for the same reason: deltas arrive dozens
+        a second, and waking on each one would spend the agent's own single-threaded Node server on
+        `is_running` calls to buy back Sage's latency. Held frames are not lost, only batched — the
+        drain after this call takes everything that landed during the floor.
+
+        A tap with no stream, or one whose stream has died, is never rung: this becomes exactly the
+        blind sleep it replaced, with no branch for the caller to take.
+        """
+        import time
+
+        started = time.monotonic()
+        if not self.arrived.wait(timeout):
+            return False
+        # Cleared before the floor, not after: a frame that lands while we are holding is the next
+        # wake, and clearing afterwards would swallow it.
+        self.arrived.clear()
+        held = floor - (time.monotonic() - started)
+        if held > 0:
+            time.sleep(held)
+        return True
+
     def close(self) -> None:
         self.ok = False
         if self._stream is not None:
@@ -2076,6 +2117,7 @@ def _pump(stream, q: queue.Queue, tap_ref) -> None:
             tap = tap_ref()
             if tap is not None:
                 tap.seen_any = True
+                tap.arrived.set()
             del tap
     except Exception as e:  # any failure means "poll instead", never "fail the turn"
         log.info("event stream unavailable (%s: %s) - polling the transcript instead",
@@ -8558,11 +8600,11 @@ class Orchestrator:
                         store.append_history(thread_id, ev)
                         yield ev
                     break
-                # Measured, not changed. Build waits on the tap and returns early when a frame
-                # lands (`tap.wait`); Chat still spends the whole second. That difference is worth
-                # a second look, but this step only puts a number on it.
+                # Woken by the stream rather than by a timer. NOT `tap.wait`, which Build uses:
+                # that one consumes the frame it wakes on and ignores text deltas, and here the
+                # deltas ARE the answer arriving. See `wait_any`.
                 _sleep_t0 = time.monotonic()
-                time.sleep(1.0)
+                tap.wait_any(1.0, floor=_POLL_FLOOR_S)
                 timing.observe("poll.sleep_ms", (time.monotonic() - _sleep_t0) * 1000)
 
             # Both halves under one span: the revert and the scan walk the same tree, and what a

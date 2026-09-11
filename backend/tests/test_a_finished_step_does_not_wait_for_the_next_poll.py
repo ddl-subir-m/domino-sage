@@ -301,3 +301,64 @@ def test_a_turn_without_a_stream_emits_what_it_always_did(tmp_path):
     polled = run(FakeOpenCode)
     assert [e.get("type") for e in streamed] == [e.get("type") for e in polled]
     assert [e.get("tool") for e in streamed] == [e.get("tool") for e in polled]
+
+
+# --- the Chat half: a wait that streams what it wakes on -----------------------------------------
+
+
+def test_a_delta_wakes_the_chat_wait():
+    """Chat streams what it drains, so a delta IS the thing worth waking for.
+
+    `wait` above deliberately sleeps through deltas because Build re-reads the transcript and a
+    half-written paragraph renders the same either way. Chat has no such luxury: those deltas are
+    the answer arriving on screen. Measured 2026-09-11 before this existed — a call producing 946
+    chunks over ten seconds delivered them in ten clumps of ninety, because the loop drained once
+    and then slept a flat second."""
+    tap = _EventTap(_Client([_delta("Hel"), _delta("lo")]), "s1")
+    t0 = time.monotonic()
+    woke = tap.wait_any(2.0)
+    elapsed = time.monotonic() - t0
+    tap.close()
+    assert woke is True
+    assert elapsed < 0.5, f"waited {elapsed:.2f}s for a delta that had already arrived"
+
+
+def test_the_chat_wait_takes_nothing_off_the_queue():
+    """The property that makes this a separate method rather than a flag on `wait`.
+
+    `wait` consumes the frame it wakes on and drops it, which is correct when the transcript is the
+    source of every card. Draining is Chat's ONLY source, so a wait that ate a frame would drop
+    words out of somebody's answer with nothing to recover them from."""
+    tap = _EventTap(_Client([_delta("Hel"), _delta("lo "), _delta("there")]), "s1")
+    assert tap.wait_any(2.0) is True
+    drained = tap.drain()
+    tap.close()
+    assert [e.payload.get("delta") for e in drained] == ["Hel", "lo ", "there"], \
+        "the wait swallowed a delta"
+
+
+def test_the_chat_wait_still_bounds_how_often_it_wakes():
+    """A delta storm must not become an `is_running` storm against the single-threaded server the
+    agent is working on — the same objection `_POLL_FLOOR_S` answers for Build."""
+    tap = _EventTap(_Client([_delta(str(i)) for i in range(200)]), "s1")
+    t0 = time.monotonic()
+    tap.wait_any(2.0, floor=0.2)
+    elapsed = time.monotonic() - t0
+    tap.close()
+    assert elapsed >= 0.2, f"woke after {elapsed:.2f}s; 200 deltas is 200 reads"
+
+
+def test_a_chat_turn_without_a_stream_waits_out_the_timeout():
+    """No stream means the doorbell is never rung, so this degrades to exactly the blind sleep it
+    replaced — no branch for the caller to take."""
+
+    class _NoStream:
+        pass
+
+    tap = _EventTap(_NoStream(), "s1")
+    t0 = time.monotonic()
+    woke = tap.wait_any(0.3)
+    elapsed = time.monotonic() - t0
+    tap.close()
+    assert woke is False
+    assert elapsed >= 0.3
