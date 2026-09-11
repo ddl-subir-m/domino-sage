@@ -13397,6 +13397,9 @@ class Orchestrator:
                 # Optional the same way: an adapter without the Taxonomy API still declares
                 # correctly off the old datasetrw tag map alone.
                 getattr(self._assets, "list_taxonomy_labels", None),
+                # The bulk read, for the rail's listing. Optional the same way, and for the same
+                # reason: an adapter without it still badges correctly, one call per row.
+                list_taxonomy_tags_for=getattr(self._assets, "list_taxonomy_labels_for", None),
             )
         return self._gate
 
@@ -14007,8 +14010,10 @@ class Orchestrator:
         """Every Dataset this caller can read. `mount_path` says which are also on this disk —
         useful for uploads, which need a writable mount, and no longer a condition of reading.
 
-        `declared` is the sensitivity declaration, answered HERE rather than derived from the `tags`
-        list beside it (ADR-0043). The tag names are configuration, any one of them declares, and
+        `declared` is the sensitivity declaration, asked of the GATE rather than derived from the
+        `tags` list beside it (ADR-0043) — that derivation read only the old datasetrw tag map,
+        so a Dataset tagged through its own Tags panel drew no chip while the lock behind it
+        fired (LIVE 2026-09-11). The tag names are configuration, any one of them declares, and
         the match is case-insensitive;
         and a second copy of both rules in JavaScript is how a badge and the lock behind it come to
         disagree about one Dataset. It is False for every row while the deployment has not opted in,
@@ -14018,7 +14023,12 @@ class Orchestrator:
         `project_owned` is the only Dataset the sensitivity tick may be offered on — see
         `_is_project_dataset`.
         """
-        tags = sensitivity_tags() if self._sensitivity_gate().enabled else frozenset()
+        assets = self._assets.list_datasets(self._domino_project_id)
+        # Asked of the gate rather than recomputed here, so the badge and the lock behind it answer
+        # the same question through the same rule. Recomputing it off `Asset.tags` alone is exactly
+        # how they came to disagree: a Dataset tagged through its own Tags panel writes Domino's
+        # Taxonomy API, which that map never carries, so the row drew no chip while the lock fired.
+        declared = self._sensitivity_gate().declares(assets)
         return [
             {
                 "id": a.id,
@@ -14027,10 +14037,10 @@ class Orchestrator:
                 "project": a.project,
                 "writable": bool(a.mount_path and os.access(a.mount_path, os.W_OK)),
                 "mount_path": a.mount_path,
-                "declared": bool(tags) and is_sensitive(a, tags),
+                "declared": a.id in declared,
                 "project_owned": self._is_project_dataset(a),
             }
-            for a in self._assets.list_datasets(self._domino_project_id)
+            for a in assets
         ]
 
     def _is_project_dataset(self, asset: Asset) -> bool:
