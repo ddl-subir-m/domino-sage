@@ -84,7 +84,16 @@ def test_a_name_this_cannot_read_goes_down_whole_to_be_refused(tmp_path):
 
 
 def test_the_card_is_named_for_the_table_and_not_for_the_path(tmp_path):
+    """The slug comes from the table's last level, so `DWH.MARTS.SALES` lands as `sales`.
+
+    Asserted on the file itself rather than through the sentence the assistant reads. It used to
+    be checked the other way, which worked only because that sentence named the path — and naming
+    it is the thing that let a `read` fetch the rows back out of the card (see
+    `test_a_live_read_reaches_the_person_end_to_end`). The slug is a property of the file; test it
+    where it lives.
+    """
     _, said = read(tmp_path, {"table": "DWH.MARTS.SALES"})
-    assert "examples/thr_a/sales.table.json" in said
+    assert (tmp_path / "examples" / "thr_a" / "sales.table.json").is_file()
+    assert "examples/thr_a" not in said and ".table.json" not in said
     card = json.loads((tmp_path / "examples" / "thr_a" / "sales.table.json").read_text())
     assert card["title"] == "SALES"

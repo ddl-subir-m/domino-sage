@@ -89,7 +89,14 @@ def test_a_chip_in_this_conversation_is_what_the_read_goes_through(tmp_path: Pat
     assert "NOT been shown the values" in said
     assert "Acme" not in said, "the row must not reach the assistant"
 
-    assert f"examples/{tid}/gong-calls.table.json" in said, "the receipt names where it landed"
+    assert f"examples/{tid}" not in said, (
+        "the card's path must not reach the assistant. It used to, one line above the sentence "
+        "saying the values had not been shown — so the tool said 'you may not see these rows' and "
+        "'they are in this file' together, and the file is an ordinary one `read` can open. "
+        "Caught live on 2026-09-11: a Chat turn ran live_read_files, then `read`, and the call "
+        "carrying that result was refused by the gateway's Block PII guardrail for an email, a "
+        "card number and an SSN sitting inside 67 bytes of one customer row.")
+    assert ".table.json" not in said, "nor the filename on its own, which is enough to glob for"
     card = json.loads((orch.project(start_preview=False).record.path / "examples" / tid
                        / "gong-calls.table.json").read_text())
     assert card["rows"] == [[7, "Acme <> Domino"]], "and it must reach the person"

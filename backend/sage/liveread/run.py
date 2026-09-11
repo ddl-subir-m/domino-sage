@@ -80,12 +80,24 @@ def _no_card(says: str) -> str:
 
 
 def _receipt_text(receipt: result.Receipt, what: str) -> str:
-    """What the assistant is told. The rows are on the person's card, not in this sentence."""
+    """What the assistant is told. The rows are on the person's card, not in this sentence.
+
+    The path is deliberately NOT in it. This sentence used to name the file the card was written
+    to, one line above the sentence saying the values had not been shown — so the tool answered
+    "you may not see these rows" and "they are in this file" in the same breath, and the file was
+    an ordinary one any `read` could open. ADR-0041 keeps rows out of the model's context; a
+    filename handed to the model is a way back in, and the assistant taking it would be doing what
+    it was told rather than reaching past anything.
+
+    Nothing downstream wanted the path either: `run.py` was its only reader, here and in the log
+    line below, which keeps it. The assistant still learns a card exists, its shape and its
+    columns, which is everything it needs to talk about the table without quoting it.
+    """
     shape = f"{receipt.rows} row{'' if receipt.rows == 1 else 's'}"
     if receipt.truncated:
         shape = f"the first {shape} (there are more)"
     lines = [
-        f"Read {what}: {shape}, written to {receipt.path} and now on screen as a table.",
+        f"Read {what}: {shape}, now on screen as a table.",
         f"Columns: {', '.join(receipt.columns) or '(none)'}.",
     ]
     if receipt.values is None:
