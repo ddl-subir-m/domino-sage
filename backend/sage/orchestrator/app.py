@@ -79,6 +79,7 @@ from ..resources.publish_guard import PublishRefused
 from ..resources.sensitivity import declared_turn_refusal_for_model
 from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
+from ..shim import refusal_scan
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     ThreadStore,
@@ -3594,6 +3595,20 @@ async def chat_completions(request: Request):
         call.done(ok=False, error=str(err))
         if isinstance(err, GatewayUpstreamError):
             log.error("gateway %s: %s", err.status, err.body)
+            # A guardrail names the policy and not the payload, and the payload is recorded nowhere,
+            # so the refusal alone cannot be acted on: every field Sage exposes read clean against a
+            # live `Block PII` refusal on 2026-09-11 because the rule is wider than it sounds (a
+            # bare ten-digit run — a seconds-precision timestamp, a row id — is a phone number).
+            # Said once, here, while the request that carried it is still in hand. Masked: see
+            # sage.shim.refusal_scan.
+            if "guardrail" in str(err.body).lower():
+                if found := refusal_scan.candidates(body):
+                    log.error("guardrail refusal — what in the request matches: %s",
+                              "; ".join(found))
+                else:
+                    log.error("guardrail refusal — nothing in the request matches a known rule; "
+                              "the gateway's rules are not ours, re-probe with "
+                              "scripts/guardrail-probe.py")
             project.last_gateway_error = {"message": str(err), "upstream_status": err.status}
             return JSONResponse(status_code=502, content={"error": {"message": str(err), "upstream_status": err.status}})
         log.error("shim upstream failure: %s", err)

@@ -141,3 +141,70 @@ def test_every_other_gateway_failure_still_reads_exactly_as_it_did(tmp_path: Pat
     said = _build_error(list(orch.approve_stream()))
 
     assert "model call failed: gateway returned 404: Model 'GLM-5.2' not found" in said
+
+
+
+# ---- Build's other two witnesses (#247) -----------------------------------------------------------
+#
+# Build reads `project.last_gateway_error` and, until now, nothing else. That witness is the shim's
+# own, so it sees a refusal only when the refusal came back through the shim. A failure OpenCode
+# classifies for itself never touches it, and `_build_stream` opens an `_EventTap` purely as a wake
+# signal and never drains it — so the transcript was the only path left, and Build was not reading
+# the message's own `error` off it. The turn closed `ok: True` with no `error` row, which is what
+# #247 was filed about: 148 rows, 11 user turns, every `done` ok, and a guardrail block on screen.
+
+
+def _guardrail_rows(events: list[dict]) -> list[dict]:
+    return [e for e in events
+            if e["type"] == "error" and "Blocked by guardrail" in str(e.get("message", ""))]
+
+
+def test_a_build_turn_refused_by_the_gateway_leaves_the_reason_behind(tmp_path: Path):
+    """The report's own shape: refused on screen, and the transcript said the build went fine."""
+    orch, _ = _build_orch(tmp_path, turns=[Turn(error=BLOCKED)])
+    out = list(orch.build_stream("add a chart"))
+
+    assert _guardrail_rows(out), "a refused build turn left no error row"
+    # The transport wrapper is not the gateway's sentence (ADR-0014), the same as Chat.
+    assert "502" not in _build_error(out)
+    assert _build_done(out)["ok"] is False
+
+
+def test_a_step_that_fails_and_then_recovers_is_not_a_failed_build(tmp_path: Path):
+    """The guard #247 asks for by name, and the reason it says not to fix this blind.
+
+    The turn in that report RECOVERED — the person pressed continue and the build carried on — so a
+    fix that fired on the first failed step would have turned a live turn into a dead end, kept a
+    plan nobody could build from, and set `_turn_gave_up` on a turn that gave up nothing.
+
+    What recovery looks like on the transcript is a later assistant message with no error on it, so
+    the failure is re-read on every poll and the last message wins. Asserted rather than reasoned
+    about, because it is the half of this change that can silently stop being true.
+    """
+    orch, oc = _build_orch(tmp_path, turns=[Turn(error=BLOCKED)])
+    running = oc.is_running
+
+    def retry_lands(session_id):
+        # What OpenCode does when it retries a step for itself: the refused message stays where it
+        # is, and a later one arrives above it.
+        msgs = oc._by_session.get(session_id) or []
+        if msgs and msgs[-1].get("error"):
+            msgs.append({"id": "m-retry", "type": "assistant", "content": []})
+        return running(session_id)
+
+    oc.is_running = retry_lands
+    out = list(orch.build_stream("add a chart"))
+
+    assert not _guardrail_rows(out), "a recovered step was reported as a refusal"
+    assert orch._turn_gave_up is False, "a turn that recovered was marked as having given up"
+
+
+def test_a_refused_build_turn_does_not_refuse_the_next_one(tmp_path: Path):
+    """The refused message stays in the session and comes back on the next turn's first poll. It has
+    no parts to be keyed by — it failed before it wrote any — so `_message_error_key` is what keeps
+    the previous turn's refusal from being read as this one's."""
+    orch, _ = _build_orch(tmp_path, turns=[Turn(error=BLOCKED), PLAN, BUILD])
+    list(orch.build_stream("add a chart"))
+    out = list(orch.build_stream("try again"))
+
+    assert not _guardrail_rows(out), "the previous turn's refusal was re-reported as this turn's"

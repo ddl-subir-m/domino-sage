@@ -11233,6 +11233,11 @@ class Orchestrator:
                 return
             yield {"type": "turn", "prompt": current[:120]}
             project.last_gateway_error = None
+            # The other two witnesses to a refused turn, reset with the first. `last_gateway_error`
+            # is the shim's own; this one is OpenCode's, and it is the one that carries the failures
+            # the shim never sees (ContextOverflowError, MessageOutputLengthError,
+            # MessageAbortedError, and a provider that refuses the REQUEST rather than a step).
+            turn_failure: dict | None = None
             # Reset per-turn model-call telemetry; the shim stream wrapper repopulates it as OpenCode
             # drives this turn's inferences (see Project.model_calls).
             project.model_calls = 0
@@ -11375,9 +11380,26 @@ class Orchestrator:
                 # until the state that closes it arrives. `in_flight` cannot answer instead; it
                 # only ever grows, because all it is asked is whether this poll added to it.
                 tool_open = False
+                # Re-read on every poll and let the LAST assistant message win: a step that failed
+                # and was retried has a later message after it, so a turn that recovered leaves this
+                # holding nothing. That is the whole of the recovery guard. #247 is explicit that
+                # firing Build's error branch on a step which later succeeded turns a live turn into
+                # a dead end — and the turn in that report DID recover — so the guard is the point
+                # of the change rather than a detail of it.
+                turn_failure = None
                 for m in msgs:
                     if m.get("type") != "assistant":
                         continue
+                    # Witnesses #1 and #2 of the three. A failed step and a refused REQUEST both
+                    # land on the message rather than on the shim, and `_build_stream` never drains
+                    # its tap — it opens one purely as a wake signal — so the transcript is the only
+                    # place either can reach it. Read here and not in the part walk below because a
+                    # message refused before it wrote anything has no parts at all.
+                    failure = m.get("error")
+                    turn_failure = failure or None
+                    if failure and _message_error_key(m) not in seen:
+                        seen.add(_message_error_key(m))
+                        log.warning("build: the turn failed — %s", failure)
                     for i, part in enumerate(m.get("content", [])):
                         if not isinstance(part, dict):
                             continue  # OpenCode can emit a bare string part; nothing to key or read
@@ -11516,9 +11538,11 @@ class Orchestrator:
                         if failed:
                             log.error("turn wedged: failed %d pending turn(s) — restart to clear",
                                       failed)
-                        # The same persisted card the clean give-up leaves, not an `error` frame:
-                        # `error` is not in _PERSISTED_EVENTS, and this is the one outcome
-                        # guaranteed to outlive the tab — it ends in a restart. No prompt rides
+                        # The same persisted card the clean give-up leaves, not an `error` frame.
+                        # Not because `error` would be lost — it is in _PERSISTED_EVENTS and has
+                        # been since that set was written, and the comment here said the opposite
+                        # for long enough to mislead #247's first reader. The reason is that this is
+                        # the one outcome guaranteed to outlive the tab — it ends in a restart. No prompt rides
                         # along, because there is nothing a retry could reach until then.
                         #
                         # No restore_mode() either, and that is the point rather than an omission:
@@ -11585,8 +11609,14 @@ class Orchestrator:
                             "blind. Check the session directory.", sid)
             tap.close()
 
-            if project.last_gateway_error is not None:
-                err = project.last_gateway_error
+            # Either witness, one branch. The wording, the recall key, the kept plan and the
+            # `_turn_gave_up` flag are all right for both — what differs is only who noticed, and a
+            # person reading the transcript is owed the same sentence either way. The shim's witness
+            # is preferred when both fired: it carries the gateway's own words, and OpenCode's
+            # classification of the same refusal is a paraphrase of them.
+            err = project.last_gateway_error or (
+                {"message": _error_raw(turn_failure)} if turn_failure is not None else None)
+            if err is not None:
                 # This turn gave up, exactly as a wedged one does: the gateway never answered, so
                 # whatever the turn was asked to do did not happen. Said here so an approve turn's
                 # `finally` keeps the plan instead of archiving one it never built from — otherwise
