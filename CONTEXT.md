@@ -269,7 +269,13 @@ _Avoid_: row consent, data toggle, opt-in, retention setting, sharing
 **Attachment**:
 A file bound into the Built App, reachable by the app's code. A file never becomes a Binding, so
 what one Built App carries is two named things and not one. A Binding may also produce an
-Attachment, but most do not. Removing an Attachment takes the declaration and the app's copy of the
+Attachment, but most do not. A [[Dataset]] file becomes one by an act on the app — attaching a
+folder or a file from the Dataset tree, or mentioning one in Build, where a mention is that act and
+the control says so. The same control in Chat writes a [[Session context]] chip and no Attachment.
+An [[Upload]] becomes one by a different crossing, at a confirmed handoff. An Attachment records who
+made it. See
+[ADR-0048](docs/adr/0048-in-build-a-mention-is-an-attachment-and-the-control-says-so.md).
+Removing an Attachment takes the declaration and the app's copy of the
 file. The source it was attached from is never touched, unless that source is a Dataset folder Sage
 wrote itself, which is the one case a person can ask to delete outright.
 A folder is the unit of the act and a file is the unit of the record, so attaching a folder
