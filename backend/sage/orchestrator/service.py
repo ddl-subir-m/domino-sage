@@ -2185,7 +2185,7 @@ _CHAT_ERROR_MAX = 300
 _GUARDRAIL = re.compile(r"Blocked by guardrail:\s*([^\"'}\\]+)")
 
 
-def _guardrail_sentence(text: str, attachments: list[dict] | None = None) -> str:
+def _guardrail_sentence(text: str) -> str:
     """A refusal by a gateway guardrail, said plainly — or "" when this is some other failure.
 
     A guardrail block is not a fault, and it is not Sage's: the gateway was asked to police what
@@ -2199,48 +2199,41 @@ def _guardrail_sentence(text: str, attachments: list[dict] | None = None) -> str
     the Conversation's Recall, and Recall is sent again on every turn — every later turn was refused
     too, on a value from an earlier one. Live, the next question attached a different file with
     nothing in it that could match, and it was refused; the same file in a new Conversation was
-    answered.
+    answered. That is why "what earlier turns read" is in the sentence: without it, someone who has
+    just swapped every file for a clean one reads this as a straight contradiction.
 
-    What this says is therefore only half the answer. It names the suspect, which is the half the
-    person can act on and the half that was missing: the file is theirs, the values are theirs, and
-    nobody could see which file had done it. The other half — the way out of a Conversation that
-    will now refuse everything — is an offer, not a sentence, and it is `recall.offer` that decides
-    when to make it. Naming a way out here as well would put it in front of someone whose first
-    refusal may have been a blip.
+    THIS NAMES NO FILE, and that is the whole point of it. It used to name the turn's Attachments,
+    under the reasoning that a suspect was better than nothing. Live 2026-09-11, a person met a
+    refusal in Chat, moved to Build, took the offending file OUT and attached three clean ones — and
+    was told "This turn read" those three, followed by "Take the matching values out of it". Three
+    files that may have had nothing to do with it, accused by name, with an instruction attached.
+    The gateway body is 93 bytes and byte-identical whatever matched (see withhold.py), so at the
+    moment this sentence is written Sage knows the guardrail's name and NOTHING else. Everything
+    beyond that was a guess in a sentence that did not read like one.
 
-    No resolution is offered beyond the file and the administrator, because Sage has no others: it
-    cannot edit the gateway's policy and it will not quietly redact someone's data to get past one.
+    `withhold.py` is where naming belongs now, and it keeps the rule this used to break: prove the
+    floor before blaming anything, because "the person takes away a file that was never the problem"
+    is a worse failure than saying nothing. It bisects against the live gateway and names carriers
+    it has proven, seconds after this sentence. Where no search runs — the Chat→Build handoff
+    planner — silence is still the honest answer, not a guess dressed as a finding.
+
+    The way out of a Conversation that will now refuse everything is an offer, not a sentence, and
+    it is `recall.offer` that decides when to make it. Naming a way out here as well would put it in
+    front of someone whose first refusal may have been a blip.
+
+    No resolution is offered beyond the administrator, because Sage has no others: it cannot edit
+    the gateway's policy and it will not quietly redact someone's data to get past one.
     """
     match = _GUARDRAIL.search(text)
     if not match:
         return ""
     name = " ".join(match.group(1).split()).strip(" .;:")
-    read = _named_files(attachments)
     # The gateway's sentence verbatim, ours around it (ADR-0014). What is dropped is the transport
     # wrapper it arrived in — three levels of quoted JSON — not a word the gateway wrote.
     return (f'the gateway refused it: "Blocked by guardrail: {name}". Guardrails read everything a '
-            "turn carries, including the contents of files it opened, not only what you typed. "
-            + (f"This turn read {read}. Take the matching values out of it, "
-               if read else "Take the matching values out, ")
-            + "or ask your administrator about the policy.")
-
-
-def _named_files(attachments: list[dict] | None) -> str:
-    """The turn's Attachments, said as prose — the suspects a refusal can point at.
-
-    Attachments rather than every file the turn read, for two reasons that agree. They are already
-    in the user's message, so the transcript already holds them and nothing new has to be recorded;
-    tool inputs are deliberately not kept (`chat_summary` calls them "transcript furniture"). And
-    they are the files the person CHOSE, so they are the ones they can go and change. A workspace
-    file the agent opened on its own is noise in a sentence asking someone to act.
-    """
-    names = [str(a.get("name") or "").strip() for a in (attachments or []) if a.get("name")]
-    names = [n for n in names if n]
-    if not names:
-        return ""
-    if len(names) == 1:
-        return names[0]
-    return ", ".join(names[:-1]) + f" and {names[-1]}"
+            "turn carries, including the contents of files it opened and what earlier turns read, "
+            "not only what you typed. The gateway does not say which part matched. Ask your "
+            "administrator about the policy.")
 
 
 def _error_raw(err: object) -> str:
@@ -2323,7 +2316,7 @@ def _last_rung_note(history: list[dict], reason: str) -> str:
             "names. Change that, or ask your Domino administrator about the policy.")
 
 
-def _chat_error_text(err: object, attachments: list[dict] | None = None) -> str:
+def _chat_error_text(err: object) -> str:
     """One plain line for a step that failed, or "" when the frame carries nothing to say.
 
     The frame carries whatever said no, in whatever shape it said it: a bare string, or a dict with
@@ -2335,7 +2328,7 @@ def _chat_error_text(err: object, attachments: list[dict] | None = None) -> str:
     # Before the clip, not after. The live nest put the name at character 200 of 302, so the clip
     # spared it — by 59 characters, on the shortest of the two gateway URL forms in use. A longer
     # host, app path or guardrail name eats that margin, and translating first costs nothing.
-    return _guardrail_sentence(text, attachments) or " ".join(text.split())[:_CHAT_ERROR_MAX]
+    return _guardrail_sentence(text) or " ".join(text.split())[:_CHAT_ERROR_MAX]
 
 
 _TOOL_DETAIL_MAX = 100
@@ -7031,12 +7024,7 @@ class Orchestrator:
         # that would fix it (a fresh session) went unoffered.
         try:
             plan_md = self._run_sage_plan(
-                project, prompt, self._ensure_thread_session(store, thread_id, project, client),
-                # Files and Artifacts only, the same kinds `_chat_mention_files` lets Chat name.
-                # A guardrail reads contents, and a Data Source chip has none to read — naming one
-                # under "this turn read" would send someone to look in the wrong place.
-                suspects=[i for i in context
-                          if str(i.get("kind") or "") in ("file", "artifact")])
+                project, prompt, self._ensure_thread_session(store, thread_id, project, client))
         except ValueError as e:
             self._record_plan_refusal(store, thread_id, project, str(e))
             raise
@@ -7083,17 +7071,18 @@ class Orchestrator:
         self._flush_chat_save("plan", holding_turn=True)
         return self._handoff_sheet_payload(store, thread_id, project, plan_md, handoff)
 
-    def _run_sage_plan(self, project: Project, prompt: str, session_id: str,
-                       suspects: list[dict] | None = None) -> str:
+    def _run_sage_plan(self, project: Project, prompt: str, session_id: str) -> str:
         """sage-plan on a session the caller picked. No typecheck. Read-only arming so src/ stays put.
 
         The session is the caller's because the two callers stand in different places: a gated build
         turn plans in the app, and a Chat handoff plans in the Thread — before an app exists, which
         is a directory OpenCode could not have opened.
 
-        `suspects` are the files a guardrail refusal should name, in the `{"name": ...}` shape
-        `_named_files` reads. The caller's, for the same reason the session is: what this turn
-        carried is a fact about where it was called from, and the planner cannot see it.
+        A guardrail refusal here names no file, and this is the one path where that costs
+        something: no withhold search runs after it (`_withhold_search` has two callers, Chat's
+        turn and Build's), so nothing names a carrier later either. It used to hand the Thread's own
+        context down as suspects. That was a guess, and a guess is what `_guardrail_sentence` exists
+        not to make — silence beats sending someone to look in the wrong file.
         """
         client = self._ensure_opencode()
         sid = session_id
@@ -7134,7 +7123,7 @@ class Orchestrator:
                 # card is on screen when the turn under it fails — and it was the one path that
                 # still handed over the transport nest whole. Every other failure keeps the wording
                 # it had, because "404 model not found" is already a sentence.
-                raise ValueError(_guardrail_sentence(raw, suspects)
+                raise ValueError(_guardrail_sentence(raw)
                                  or f"model call failed: {raw}")
             # The one number that separates "no inference reached us" from "the model answered with
             # nothing" — the same diagnostic the gated turn logs, on the path that logged nothing.
@@ -7710,9 +7699,9 @@ class Orchestrator:
         says a second try often lands.
 
         The row is keyed off the SHIM's raw record rather than the sentence above it, for the
-        reason `_error_raw` exists: the sentence names this turn's suspects, and the whole job of
-        `reason_key` is to connect two refusals whose suspects differ. Falling back to the sentence
-        keeps the row useful for every other failure, where the two are the same string anyway.
+        reason `_error_raw` exists: keying on rendered prose is what `reason_key` warns against.
+        Falling back to the sentence keeps the row useful for every other failure, where the two are
+        the same string anyway.
 
         The sentence is SHORT when the row above it already said the same thing, which on this path
         is the normal case rather than the exception: the click that fails is the one made straight
@@ -8761,7 +8750,7 @@ class Orchestrator:
                         # answer is what the Thread is for. Kept, so the end of the turn can say it,
                         # and logged, because nothing else in Sage records this frame at all.
                         raw = _error_raw(ev.payload.get("error"))
-                        said = _chat_error_text(ev.payload.get("error"), mentioned)
+                        said = _chat_error_text(ev.payload.get("error"))
                         if said:
                             step_error, step_reason = said, recall.reason_key(raw)
                             # Words that came BEFORE the failure are not an answer to it. `answered`
@@ -8857,7 +8846,7 @@ class Orchestrator:
                         seen.add(_message_error_key(m))
                         last_activity = time.monotonic()
                         raw = _error_raw(failure)
-                        if said := _chat_error_text(failure, mentioned):
+                        if said := _chat_error_text(failure):
                             step_error, step_reason = said, recall.reason_key(raw)
                         log.warning("chat: the turn failed — %s", failure)
                     for i, part in enumerate(m.get("content", [])):
@@ -8957,7 +8946,7 @@ class Orchestrator:
             # more than the note of a call that went wrong on the way to it.
             if not answered and not step_error and project.last_gateway_error is not None:
                 failed = project.last_gateway_error
-                if said := _chat_error_text(failed, mentioned):
+                if said := _chat_error_text(failed):
                     step_error = said
                     step_reason = recall.reason_key(_error_raw(failed))
                     log.warning("chat: the gateway refused a call this turn — %s", failed)
@@ -11401,10 +11390,6 @@ class Orchestrator:
         # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
         # it re-sends the same turn into a session that heard none of this — so it puts them back.
         first_send_extras = (mention_files, resource_note, chat_note, unusable_note, ambiguous_note)
-        # The files the person named, kept for the whole turn. `mention_files` is emptied after the
-        # first send — the block rides the user's turn and not the nudges — but a refusal can arrive
-        # on any send, and the suspects a guardrail refusal names are the same ones either way.
-        turn_mentions = mention_files
         # (b) Retry budget, measured. One pass of this loop is one send_prompt and everything the
         # agent does before Sage decides whether to nudge it again, so the spans it opens ARE the
         # answer to "how many model turns does a build spend, and where do they go". Named by what
@@ -11820,11 +11805,12 @@ class Orchestrator:
                 # Same translation, same wording as Chat — one refusal should not read as two
                 # different products depending on which half of the Workbench met it.
                 #
-                # The mentions are the suspects. A guardrail reads everything the turn carries, and
-                # in Build that is the files the person @-referenced — which is exactly what
-                # `_named_files` wants to name and what `turn_mentions` holds for the whole turn.
+                # No file is named here. A guardrail reads everything the turn carries, so the
+                # files the person @-referenced are only the visible part of it — and the gateway
+                # never says which part matched. `_withhold_search`, yielded a few lines below,
+                # names carriers it has proven instead.
                 reason_said = (refusal
-                               if (refusal := _guardrail_sentence(err["message"], turn_mentions))
+                               if (refusal := _guardrail_sentence(err["message"]))
                                else f"model call failed: {err['message']}")
                 # The Conversation's history, read before this refusal joins it, so the ladder and
                 # the sentence below agree about which rung this is.

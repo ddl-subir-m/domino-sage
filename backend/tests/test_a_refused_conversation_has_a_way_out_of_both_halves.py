@@ -40,11 +40,11 @@ from .test_the_lock_follows_the_conversation import _orch as _lock_orch
 
 NEST = BLOCKED["data"]["message"]
 KEY = "guardrail:Block phone numbers"
-# The rendered reason, as `_guardrail_sentence` builds it with no file to name.
+# The rendered reason, as `_guardrail_sentence` builds it. It names no file on any path.
 _SENTENCE = ('the gateway refused it: "Blocked by guardrail: Block phone numbers". '
              "Guardrails read everything a turn carries, including the contents of files "
-             "it opened, not only what you typed. Take the matching values out, or ask "
-             "your administrator about the policy.")
+             "it opened and what earlier turns read, not only what you typed. The gateway "
+             "does not say which part matched. Ask your administrator about the policy.")
 
 
 def _history(orch, tid: str) -> list[dict]:
@@ -109,27 +109,15 @@ def test_a_refused_handoff_plan_says_which_guardrail_refused_it(tmp_path: Path):
         assert noise not in said
 
 
-def test_a_refused_handoff_plan_names_the_files_the_conversation_carries(tmp_path: Path):
-    """The half a person can act on. The planner reads no files itself — it replays a session — so
-    the suspects are the Thread's own context, which is where the refused value came from."""
+def test_a_refused_handoff_plan_names_nothing_the_conversation_carries(tmp_path: Path):
+    """This path is the one that used to name the Thread's context as suspects, and it is the one
+    where no withhold search runs afterwards to correct it — so a guess here stood as the last word.
+    The planner reads no files itself; it replays a session whose refused value can be from any turn
+    in it. Naming what happens to be attached NOW sends someone to look in the wrong file."""
     orch, oc = _orch(tmp_path, client=_GuardrailRefusesPlanning)
     oc.project = orch.project(start_preview=False)
     tid = orch.create_thread()["id"]
     orch.add_thread_context(tid, {"kind": "file", "name": "claims.csv", "path": "claims.csv"})
-    list(orch.chat_stream(tid, "which desk is largest?"))
-
-    with pytest.raises(ValueError) as caught:
-        orch.draft_handoff_plan(tid)
-
-    assert "claims.csv" in str(caught.value)
-
-
-def test_a_data_source_is_not_named_as_a_file_the_turn_read(tmp_path: Path):
-    """A guardrail reads contents, and a Data Source chip has none — naming one under "this turn
-    read" sends someone to look in a place that cannot hold the value."""
-    orch, oc = _orch(tmp_path, client=_GuardrailRefusesPlanning)
-    oc.project = orch.project(start_preview=False)
-    tid = orch.create_thread()["id"]
     orch.add_thread_context(tid, {"kind": "data_source", "name": "Snowflake-Warehouse",
                                   "bindingKey": ["data_source", "ds-1"]})
     list(orch.chat_stream(tid, "which desk is largest?"))
@@ -137,7 +125,10 @@ def test_a_data_source_is_not_named_as_a_file_the_turn_read(tmp_path: Path):
     with pytest.raises(ValueError) as caught:
         orch.draft_handoff_plan(tid)
 
-    assert "Snowflake-Warehouse" not in str(caught.value)
+    said = str(caught.value)
+    assert "claims.csv" not in said
+    assert "Snowflake-Warehouse" not in said
+    assert '"Blocked by guardrail: Block phone numbers"' in said
 
 
 def test_a_refused_handoff_plan_is_written_on_the_thread(tmp_path: Path):
@@ -600,15 +591,21 @@ def test_the_short_row_still_counts_on_the_ladder(tmp_path: Path):
     assert [e["scope"] for e in rows if e.get("type") == recall.SUGGEST] == [recall.SUMMARY]
 
 
-def test_a_refusal_naming_a_different_file_is_still_said_in_full(tmp_path: Path):
-    """The pair ADR-0022's ladder exists to connect: same guardrail, different Attachment. Naming
-    the second file is the most useful thing the second row does, so it is not shortened away."""
+def test_a_second_refusal_on_a_different_file_is_still_shortened(tmp_path: Path):
+    """The pair ADR-0022's ladder exists to connect: the same guardrail, a different Attachment.
+
+    This used to be the one case where the full paragraph came back, because the paragraph named the
+    Attachment and the two names were the only thing that differed. Nothing names a file any more,
+    so the two paragraphs would be the same string twice — and repeating it says nothing the first
+    copy did not. The short row carries the part that IS new: it is the same refusal, and the value
+    is somewhere in the conversation rather than in what was just typed.
+    """
     orch, tid = _refused_thread(tmp_path, context={"kind": "file", "name": "forecasts.json",
                                                    "path": "forecasts.json"})
-
     second = [e["message"] for e in _history(orch, tid) if e.get("type") == "error"][-1]
-    assert "forecasts.json" in second
-    assert "Guardrails read everything a turn carries" in second
+    assert "forecasts.json" not in second
+    assert "the same refusal, on a different request" in second
+    assert "in this conversation, not in what you typed" in second
 
 
 def test_a_refusal_after_an_answer_is_said_in_full_again(tmp_path: Path):

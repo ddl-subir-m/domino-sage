@@ -41,25 +41,31 @@ def test_it_says_where_the_guardrail_looked():
     assert "administrator" in said
 
 
-def test_it_names_the_file_the_turn_read():
-    """The half the person can act on. The values are theirs and the file is theirs, but nothing on
-    screen said WHICH file — which is the whole reason this took an afternoon to find."""
-    said = _chat_error_text(LIVE, [{"name": "Narnia_LensLogic_20240801_224434.json"}])
-    assert "Narnia_LensLogic_20240801_224434.json" in said
-    assert "files it opened" in said
-
-
-def test_it_still_reads_as_a_sentence_with_no_attachment_to_name():
+def test_it_names_no_file_because_the_gateway_named_none():
+    """This used to name the turn's Attachments as suspects. Live 2026-09-11 that accused three
+    files a person had just swapped IN to replace a refused one, by name, with "Take the matching
+    values out of it" attached. The gateway's body is 93 bytes and byte-identical whatever matched,
+    so nothing here can know. `withhold.py` bisects and names carriers it has proven, seconds later;
+    this says only what the gateway said."""
     said = _chat_error_text(LIVE)
-    assert "Take the matching values out, or ask your administrator" in said
     assert "This turn read" not in said
+    assert "Take the matching values out" not in said
+    assert "does not say which part matched" in said
+    assert "ask your administrator about the policy" in said.lower()
+
+
+def test_it_says_a_refusal_can_come_from_an_earlier_turn():
+    """Without this clause, someone who has just taken the offending file out and attached clean
+    ones reads the whole sentence as a straight contradiction. Recall is re-sent every turn, so the
+    value that stopped this one can be from a turn they have already forgotten (ADR-0022)."""
+    assert "what earlier turns read" in _chat_error_text(LIVE)
 
 
 def test_the_way_out_is_not_named_here(caplog):
     """A first refusal may be a blip, and the exit costs the model everything it has been told. So
     the offer is `recall.offer`'s to make on the second identical refusal (ADR-0022), not a
     sentence shown to everyone whose turn failed once."""
-    said = _chat_error_text(LIVE, [{"name": "f.json"}])
+    said = _chat_error_text(LIVE)
     assert "Recall" not in said
     assert "new Conversation" not in said
 
