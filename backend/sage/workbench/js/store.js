@@ -1912,6 +1912,17 @@ window.SW = window.SW || {};
     fallback.blocks.push(block);
   }
 
+  // The spinner with no answer to put in its place — the same backstop `dropTableCard` is, for the
+  // same end. `withhold-found` is written even when the search throws, so the only way here is a
+  // stream that stopped between the two, and a card left saying "finding" over a finished turn is
+  // a state nobody can answer their way out of.
+  function dropWithholdCard(messages) {
+    for (const message of messages) {
+      const at = (message.blocks || []).findIndex((b) => b.type === 'withhold' && b.searching);
+      if (at >= 0) { message.blocks.splice(at, 1); return; }
+    }
+  }
+
   // Only ever the card still saying "reading". A settled card is the turn's answer and stays.
   // A null `sourceId` means every one of them, which is what the end of a turn says: whatever the
   // search was reading, it is not reading it now.
@@ -2051,6 +2062,7 @@ window.SW = window.SW || {};
         // "…is reading what X holds…" sit over a finished turn until the page is reloaded, which
         // is the one state on this card nobody can answer their way out of.
         dropTableCard(messages, null);
+        dropWithholdCard(messages);
         // Two questions, read off two different things. They used to be one list, which is why
         // asking a question took the plan card's buttons away for good (#178).
         //
@@ -2074,12 +2086,28 @@ window.SW = window.SW || {};
         // Same backstop as `done` above: a turn that failed is not still reading a warehouse.
         dropTableCard(messages, null);
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+      } else if (ev.type === 'withhold-search') {
+        // Build drew nothing for this frame, and Chat has drawn it since the search shipped. Live,
+        // that is how it read: the refusal went up instantly, then fourteen seconds of nothing, then
+        // a card naming files. Nothing on screen tied the second to the first, so the card read as
+        // the refusal's guess repeated rather than as the answer to it — and a person who looked
+        // away came back to a finding with no sign that anything had been checked.
+        //
+        // `live: false`, because a spinner has no buttons. It is replaced where it stands by the
+        // branch below (`putWithholdCard`), and a replay walks both rows in order, so a reload
+        // lands on the answer and never on the spinner.
+        putWithholdCard(messages, ensureAssistant(), {
+          type: 'withhold',
+          searching: true,
+          surface: 'build',
+          live: false,
+        });
       } else if (ev.type === 'withhold-found' && !isAnswered(ev, withheld)
                  && !dismissedWithholds.has(withholdCardKey(ev))) {
         // Build's half of the Chat branch above, and deliberately identical to it: the same block
         // type, the same component, the same live-vs-replay rule. Only `surface` differs, because
         // the click has to know which door to write through.
-        ensureAssistant().blocks.push({
+        putWithholdCard(messages, ensureAssistant(), {
           type: 'withhold',
           searching: false,
           carriers: ev.carriers || [],
@@ -2089,6 +2117,10 @@ window.SW = window.SW || {};
           surface: 'build',
           live: cardIsLive(ev),
         });
+      } else if (ev.type === 'withhold-found') {
+        // Found, but the card is not being drawn: already answered by a `recall-withheld` row, or
+        // dismissed. The spinner above it still has to go.
+        dropWithholdCard(messages);
       } else if (ev.type === 'recall-withheld') {
         // The receipt for a click, and the only thing on screen that says it worked. A divider for
         // the same reason the clear below is one: the transcript above it is still true and still

@@ -88,3 +88,43 @@ def test_dismiss_takes_the_card_away_and_it_stays_away():
     r = _click("dismiss")
     assert r["after"]["cards"] == []
     assert r["posted"] == [], "hiding a card is not an answer worth writing to the transcript"
+
+
+def _frames(events: list[dict]) -> dict:
+    out = subprocess.run(
+        ["node", str(_HARNESS)],
+        input=json.dumps({"history": [], "events": events, "act": ""}),
+        capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)
+
+
+REFUSED = {"type": "error", "message": 'Blocked by guardrail: "Block PII"'}
+
+
+def test_build_says_the_search_is_running_while_it_runs():
+    """Reported live 2026-09-11: "I never saw the proof run to say which of the files was the
+    offending file." Chat has drawn this frame since the search shipped and Build drew nothing for
+    it, so Build went refusal → fourteen silent seconds → a card naming files. Nothing tied the
+    card to the failure above it, and the refusal's own sentence had already named files by guess —
+    so the proven answer arrived looking exactly like the guess, with no sign a search had run."""
+    r = _frames([REFUSED, {"type": recall.SEARCH}])
+    assert [c["searching"] for c in r["before"]["cards"]] == [True]
+    assert r["before"]["cards"][0]["surface"] == "build"
+    assert r["before"]["cards"][0]["live"] is False, "a spinner has no buttons"
+
+
+def test_the_answer_replaces_the_spinner_rather_than_landing_under_it():
+    """One search, one card. Appended instead, the person reads the question and its answer as two
+    findings — and a replay would draw both, in that order, for good."""
+    r = _frames(_refused(RAW, 2))
+    assert r["before"]["cards"] == [{
+        "searching": False, "live": True, "labels": ["card_panel_transactions_RAW.csv"],
+        "surviving": 2, "surface": "build"}]
+
+
+def test_a_search_that_never_answers_does_not_spin_over_a_finished_turn():
+    """`withhold-found` is written even when the search throws, so the only way here is a stream cut
+    between the two frames. The same backstop `done` already is for the table search's card."""
+    r = _frames([REFUSED, {"type": recall.SEARCH},
+                 {"type": "done", "ok": False, "decision": "gateway error"}])
+    assert r["before"]["cards"] == []
