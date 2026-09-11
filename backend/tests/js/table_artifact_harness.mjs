@@ -79,8 +79,12 @@ for (const step of steps) {
   } else if (step.open) {
     await SW.store.openThread(step.open);
     const messages = SW.store.get().messages || [];
-    const tableBlocks = messages.flatMap((m) => m.blocks || []).filter((b) => b.type === 'table');
-    report.push({ step: `open ${step.open}`, tables: tableBlocks });
+    const blocks = messages.flatMap((m) => m.blocks || []);
+    // Charts too, since #255: what a restored transcript knows about a PNG this clone does not
+    // have is decided on the same walk, and this is the harness that walks it.
+    report.push({ step: `open ${step.open}`,
+                  tables: blocks.filter((b) => b.type === 'table'),
+                  images: blocks.filter((b) => b.type === 'image') });
   } else {
     throw new Error(`unknown step ${JSON.stringify(step)}`);
   }

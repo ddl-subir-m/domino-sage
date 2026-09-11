@@ -298,8 +298,13 @@ window.SW = window.SW || {};
     // folder rows are in it as well as the files: a folder row is given a token too, and two
     // partitions both called `2026` would otherwise both be offered as `@2026`.
     const mentionPeers = SW.util.attachmentPeers(appAttachments);
+    // Artifacts this clone actually has. A chart the Project never committed survives in the
+    // manifest and not on disk (#255), and mentioning one hands the turn a path that resolves to
+    // nothing — the same dead reference the card was changed to stop drawing, on the one surface
+    // where it degrades the answer silently instead of showing it.
+    const mentionArts = ((thread && thread.artifacts) || []).filter((a) => !a.missing);
     const suggestions = mention
-      ? mentionCandidates(attachments, resourceGroups, mention.query, thread && thread.artifacts,
+      ? mentionCandidates(attachments, resourceGroups, mention.query, mentionArts,
                           catalogueParents, appAttachments, showMode)
       : [];
     const catalogueIds = new Set((catalogueParents || []).map((r) => r.id));

@@ -300,6 +300,12 @@ window.SW = window.SW || {};
         }, SW.brand.text("Keep data rows in this {project}'s files"))
       ),
       h('div', { className: 'sw-caption' }, goes),
+      // What OFF costs, said beside what ON costs (#255). A chart of the rows is the rows, so the
+      // PNG follows them out of git — and this is the one effect a person notices without looking
+      // at a commit. Saying it here is what makes the opt-in an offer rather than a surprise.
+      h('div', { className: 'sw-caption' },
+        'Charts follow the rows. While this is off, a chart is drawn and shown but not kept, so a '
+        + 'Conversation reopened after a restart shows its title and date with no image.'),
       // ADR-0046's half sentence, said where the choice is made. The delete dialog is too late for
       // it: by then the rows are pushed, and saying it there explains a loss rather than offering
       // a choice.

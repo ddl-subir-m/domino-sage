@@ -947,7 +947,7 @@ window.SW = window.SW || {};
   function GraduationNudge({ onSave }) {
     const { thread, resourceGroups } = SW.store.get();
     const files = (resourceGroups.file || []).filter((f) => f.sandbox);
-    const artifacts = (thread && thread.artifacts) || [];
+    const artifacts = ((thread && thread.artifacts) || []).filter((a) => !a.missing);  // #255
     const parts = [];
     if (files.length) parts.push(files.map((f) => f.name).join(', '));
     if (artifacts.length) parts.push(`${artifacts.length} ${artifacts.length === 1 ? 'chart' : 'charts'}`);
@@ -1624,6 +1624,36 @@ window.SW = window.SW || {};
     const [failed, setFailed] = useState(false);
     const href = block.src || (block.path
       ? `./api/project/file/raw?path=${encodeURIComponent(block.path)}` : '');
+    // A chart that is not in this clone, in a Conversation reopened after a restart. The server
+    // said so from a `stat` on the restore, so nothing here waits for an `<img>` to fail and draw
+    // the broken image first (ADR-0045, #255). No link either: there is no file behind it.
+    //
+    // Two sentences, because `missing` is a `stat` and `notKept` is a reason. A chart can be gone
+    // for reasons this decision has nothing to do with, and a card that blamed the setting for
+    // those would contradict a switch the person just turned ON. Only the second names it.
+    //
+    // The date is the rest of what the card still knows, and it is what makes the loss readable:
+    // a chart drawn this morning reads differently from one drawn in March.
+    if (block.missing) {
+      return h(
+        'div',
+        { className: 'sw-block-card' },
+        block.title &&
+          h('div', { className: 'sw-block-head' },
+            h('div', { className: 'sw-block-title' }, block.title)),
+        h(
+          'div',
+          { className: 'sw-block-body' },
+          block.producedAt &&
+            h('div', { className: 'sw-block-sub' }, `Drawn ${SW.util.relativeTime(block.producedAt)}`),
+          h('div', { className: 'sw-block-sub' }, block.notKept
+            ? SW.brand.text("This {project} doesn't keep chart images in its files, so this one "
+                            + "didn't survive a restart. Ask for it again to see it.")
+            : SW.brand.text("This chart isn't in this {project}'s files. Ask for it again to see "
+                            + 'it.'))
+        )
+      );
+    }
     // Same floor as TableBlock: a missing or unreadable file used to be a broken-image icon
     // sitting on the alt text, which reads as a rendering fault rather than a file that did
     // not arrive. Offer the file when there is one.

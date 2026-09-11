@@ -278,6 +278,10 @@ def test_the_link_is_ignored_by_a_rule_that_actually_matches_a_symlink(tmp_path:
     _unlinked(app)
     _repo(root)
     _artifact(root)
+    # The Artifact here is a chart, and a chart commits only where the Project opted in (#255,
+    # ADR-0045). Turned on so the second half of the claim below has something to be about.
+    project.record.set_kept_rows(True)
+    orch._apply_chart_ignore(project.record)
     orch._ensure_examples_link(project)
 
     _git(root, "add", "-A")
