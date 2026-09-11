@@ -59,6 +59,28 @@ def _orch(tmp_path: Path, turns: list[Turn]) -> Orchestrator:
     return orch
 
 
+class _ScriptedGateway:
+    """Answers CHAT, so the post-turn classifier runs and stays quiet (as in test_chat_turn)."""
+
+    def route(self, request, labels):
+        import json as _json
+        body = _json.dumps({"choices": [{"delta": {"content": "CHAT"}}]})
+        yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
+
+
+def _chat_orch(tmp_path: Path, turns: list[Turn]) -> Orchestrator:
+    template = tmp_path / "template"
+    (template / "src").mkdir(parents=True, exist_ok=True)
+    (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
+    (template / "package.json").write_text("{}")
+    ws = tmp_path / "mnt" / "code"
+    orch = Orchestrator(workspace_dir=ws, template=template, gateway=_ScriptedGateway(),
+                        catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
+                        opencode_client=FakeOpenCode(ws, turns))
+    orch.project(start_preview=False)
+    return orch
+
+
 def _names(rec) -> list[str]:
     return [s.name for s in rec.spans]
 
@@ -111,3 +133,54 @@ def test_the_readout_renders_a_turn_that_is_still_running(tmp_path: Path):
     assert "RUNNING" in out and "(open)" in out and "gpt-5.4" in out
     timing.close_span(open_span)
     timing.finish_turn(ok=True, decision="typecheck clean")
+
+
+def test_a_chat_turn_records_where_it_went_too(tmp_path: Path):
+    """Chat recorded `turn.acquire` and nothing else, which is not the same as costing nothing.
+
+    A Chat turn that pays two seconds before its first inference and five after its last one used
+    to render as one unnamed gap at each end, and `scripts/turn-timing.py` reported its polling
+    bucket as a flat zero — not because the loop is free, but because no counter existed. The names
+    below are the ones that readout already parses: `setup.*` counts as pre-inference, and
+    `poll.read_ms`/`poll.sleep_ms` are summed by name.
+
+    Structure only, like every other case in this file. The durations are read off a real
+    deployment.
+    """
+    orch = _chat_orch(tmp_path, [Turn(text="the three biggest movers were …")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "what moved most this week?"))
+
+    rec = timing.recent(1)[0]
+    assert rec.kind == "chat"
+    assert rec.t1 is not None
+    names = _names(rec)
+    for name in ("turn.acquire", "setup.opencode", "setup.session", "setup.snapshot",
+                 "setup.baseline", "setup.mentions", "setup.prompt", "setup.dispatch"):
+        assert name in names, f"{name} missing from {names}"
+    # The other end of the turn: the stretch a person watches the turn bar for after reading the
+    # answer. It was the whole reason the tail looked like unexplained time.
+    for name in ("after.artifacts", "after.handoff", "after.compact", "after.save"):
+        assert name in names, f"{name} missing from {names}"
+    # A Chat record carried no decision at all until the wrapper recorded one: eight `done` sites,
+    # none of them telling the ledger how the turn ended.
+    assert rec.decision == "answered"
+    assert rec.ok is True
+    assert rec.counters["poll.iterations"] >= 1
+
+
+def test_the_chat_classifier_is_on_the_ledger_like_the_scope_one(tmp_path: Path):
+    """The post-turn classifier calls the gateway directly, so it bypassed the /v1 shim handler
+    that fills the ledger — the same gap already closed for the scope classifier in scope.py.
+
+    It runs after the answer is on screen, which is exactly the stretch that reads as time nothing
+    can account for."""
+    orch = _chat_orch(tmp_path, [Turn(text="here is the answer")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "which desk lost the most?"))
+
+    rec = timing.recent(1)[0]
+    handoff_calls = [c for c in rec.calls if c.phase == "handoff"]
+    assert len(handoff_calls) == 1, [(c.model, c.phase) for c in rec.calls]
+    assert handoff_calls[0].t1 is not None, "the entry was left open"
+    assert handoff_calls[0].model == "a"   # catalog.ask, what the classifier routes to

@@ -175,3 +175,38 @@ def test_the_give_up_does_not_ask_the_person_for_a_smaller_piece(tmp_path: Path)
     assert "Pick a different model" in message
     for claim in ("too big", "smaller"):
         assert claim not in message, f"the give-up still blames size: {claim!r}"
+
+
+def test_a_usage_frame_is_read_in_either_providers_spelling():
+    """One gateway, two vendors, two names for the same number.
+
+    OpenAI-shape sends `prompt_tokens` with `prompt_tokens_details.cached_tokens`; Anthropic-shape
+    sends `input_tokens` with `cache_read_input_tokens`. Reading only one spelling is how a real
+    number looks like an absence — which is the failure mode this parser exists to avoid, since a
+    caller is told to treat silence as normal.
+    """
+    openai_shape = (b'data: {"choices":[],"usage":{"prompt_tokens":48120,"completion_tokens":4,'
+                    b'"total_tokens":48124,"prompt_tokens_details":{"cached_tokens":32000}}}\n\n')
+    assert ka.usage_tokens(openai_shape) == (48120, 32000)
+
+    anthropic_shape = (b'data: {"choices":[],"usage":{"input_tokens":1200,'
+                       b'"cache_read_input_tokens":900}}\n\n')
+    assert ka.usage_tokens(anthropic_shape) == (1200, 900)
+
+
+def test_a_stream_that_reports_no_usage_reads_as_silence_not_as_zero():
+    """Measured against the dogfood gateway on 2026-09-11: gpt-5.4 emits a usage frame and sonnet
+    emits none, with or without `stream_options.include_usage`. Chat runs on sonnet, so silence is
+    the expected answer there and must not be recorded as a count of nothing."""
+    content = b'data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}\n\n'
+    assert ka.usage_tokens(content) is None
+    assert ka.usage_tokens(b"data: [DONE]\n\n") is None
+
+
+def test_the_null_usage_that_rides_along_is_not_a_reading():
+    """Every chunk of a gpt-5.4 stream carries `"usage": null` until the last one. The key being
+    present is not the same as a number being there, and a parser that keyed off the field name
+    alone would report the first chunk of every stream as a reading."""
+    rides_along = (b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+                   b'"usage":null,"obfuscation":"sJpN"}\n\n')
+    assert ka.usage_tokens(rides_along) is None

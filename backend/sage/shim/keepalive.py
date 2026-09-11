@@ -207,6 +207,56 @@ def terminal_finish_reason(chunk: bytes) -> str | None:
     return _finish_reason(chunk, TERMINAL_FINISH_REASONS)
 
 
+def usage_tokens(chunk: bytes) -> tuple[int | None, int | None] | None:
+    """`(input_tokens, cached_tokens)` off a `usage` frame, or None when this chunk carries none.
+
+    Not every provider sends one. Measured against the dogfood gateway on 2026-09-11: gpt-5.4 emits
+    a final `usage` frame (on a choices-empty chunk) and sonnet emits none at all, with or without
+    `stream_options.include_usage` on the request. So a caller must treat silence as normal rather
+    than as a fault — Chat runs on sonnet, and reading nothing there is the expected answer, not a
+    parse that went wrong.
+
+    Two spellings, because the field name differs by provider behind the one gateway: OpenAI-shape
+    `prompt_tokens` / `prompt_tokens_details.cached_tokens`, and Anthropic-shape `input_tokens` /
+    `cache_read_input_tokens`. Reading only one of them is how a real number looks like an absence.
+
+    Keyed off the field name rather than a value, unlike `_finish_reason` above: `usage` is a rare
+    word in a model's prose while "stop" and "length" are common, and the frame that carries it is
+    one chunk out of hundreds, so the substring rejects the whole hot path just as cheaply.
+    """
+    if b'"usage"' not in chunk:
+        return None
+    for line in chunk.split(b"\n"):
+        payload = line.strip()
+        if not payload.startswith(b"data:"):
+            continue
+        payload = payload[len(b"data:"):].strip()
+        if not payload.startswith(b"{"):  # skips [DONE] and SSE comments
+            continue
+        try:
+            obj = json.loads(payload)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        # `"usage": null` rides along on every chunk of a gpt-5.4 stream until the last one, so the
+        # key being present is not the same as a number being there.
+        usage = obj.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        read = usage.get("prompt_tokens")
+        if read is None:
+            read = usage.get("input_tokens")
+        details = usage.get("prompt_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if cached is None:
+            cached = usage.get("cache_read_input_tokens")
+        if read is None and cached is None:
+            continue
+        return (read, cached)
+    return None
+
+
 def cut_off_finish_reason(chunk: bytes) -> str | None:
     """The finish_reason on a chunk, when it says the answer was cut off rather than completed.
 

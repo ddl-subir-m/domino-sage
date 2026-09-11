@@ -3547,8 +3547,15 @@ async def build_project(request: Request) -> JSONResponse:
 
 @control_app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    import json
+
     project = orchestrator.project()
-    body = await request.json()
+    # Read as bytes and parse here, rather than `await request.json()`, so the ledger can record how
+    # big this step's request was without re-serialising it. The size is the whole point: a first
+    # byte that grew while the payload grew is a conversation getting heavier, and one that grew on
+    # a steady payload is the gateway. Seconds cannot tell those apart; this can.
+    raw = await request.body()
+    body = json.loads(raw)
     # Per-turn telemetry: every inference OpenCode runs this turn passes through here. Count it, and
     # (below) flag whether the model's response carried a tool call. build_stream reads these to explain
     # a no-edit turn. See Project.model_calls.
@@ -3556,6 +3563,7 @@ async def chat_completions(request: Request):
     # The turn's ledger of inferences (see sage.timing). No-op outside a turn, so the shim's own
     # standalone app and a stray request from a warm OpenCode cost nothing.
     call = timing.model_call()
+    call.request(len(raw))
     # The live session, so a phased build tags each phase with its OWN session id — that's what makes
     # per-phase spend separable in the gateway dashboard (group by tag:sage-session). Falling back to
     # the project session keeps normal turns tagged exactly as before.
@@ -3606,6 +3614,11 @@ async def chat_completions(request: Request):
             if not flagged and b"tool_calls" in chunk:
                 flagged = True
                 project.tool_call_responses += 1
+            # What the provider says it read, when it says anything. Most models here say nothing —
+            # sonnet sends no usage frame at all — so this is recorded when offered and never
+            # waited for. `request_bytes` above is the signal that is always there.
+            if (used := ka.usage_tokens(chunk)) is not None:
+                call.usage(used[0], used[1])
 
         # A provider error relayed as a 200 + one `data: {"error": …}` frame. Nothing raised, so
         # without this it forwards as-is and OpenCode dies on an unparseable event with no payload.

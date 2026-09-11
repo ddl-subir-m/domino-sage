@@ -23,6 +23,7 @@ from ..resources.bindings import (
     scope_label,
 )
 from ..router.models import ModelCatalog
+from ..timing import model_call
 from ..workspace import plan_doc
 from ..workspace.threads import handoff_unresolved
 from . import brand
@@ -233,16 +234,34 @@ def wants_an_app(
     labels = CostLabels(phase="ask", mode="auto", component="handoff",
                         session=session, version=version)
 
+    # On the turn's ledger, for the reason the scope classifier is (see scope.py): this call goes
+    # STRAIGHT to the gateway rather than through the /v1 shim handler, and the ledger is filled by
+    # that handler — so this inference has never appeared in /api/diag/timing. It runs in a Chat
+    # turn's post-answer tail, which is precisely the stretch that reads as unexplained time.
+    #
+    # Deliberately NOT added to `project.model_calls`, again as in scope.py: that counter means
+    # "inferences that reached the SHIM", and a by-design bypass inflating it would hide the broken
+    # wiring the counter exists to surface.
+    call = model_call(_model_for(catalog), "handoff")
+
     def _call() -> str:
-        return _extract(b"".join(gateway.route(request, labels)))
+        chunks = []
+        for chunk in gateway.route(request, labels):
+            call.first_byte()
+            call.chunk()
+            chunks.append(chunk)
+        return _extract(b"".join(chunks))
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-handoff")
     try:
         answer = pool.submit(_call).result(timeout=timeout_s)
+        call.done()
     except concurrent.futures.TimeoutError:
+        call.done(ok=False, error="timeout")
         log.warning("handoff: classify timed out after %.1fs — no suggestion", timeout_s)
         return False
     except Exception as e:
+        call.done(ok=False, error=f"{type(e).__name__}: {e}")
         log.warning("handoff: classify failed (%s: %s) — no suggestion", type(e).__name__, e)
         return False
     finally:

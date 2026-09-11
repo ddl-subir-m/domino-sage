@@ -69,6 +69,23 @@ class ModelCall:
     chunks: int = 0
     ok: bool = True
     error: str = ""
+    # How big the request was. This is the number that explains a slow first byte: measured against
+    # the dogfood gateway on 2026-09-11, a step's time to first byte tracked its payload — 1.55s at
+    # 14KB, 2.4s at 128KB, ~4s at 321KB, same model and same box. Seconds alone cannot tell a turn
+    # that got slower from a conversation that got bigger, and every step re-sends the whole
+    # conversation, so this is what says which one happened.
+    #
+    # The request as OpenCode sent it, not as the shim forwards it. The two differ by the tool
+    # definitions the read-only filter strips — kilobytes against a payload measured in hundreds of
+    # them — and the incoming side is the one a caller can record without reaching into the rewrite.
+    request_bytes: int = 0
+    # What the provider said it read, when it says anything at all. Optional rather than
+    # always-present on purpose: the gateway emits a `usage` frame for gpt-5.4 and NOT for sonnet,
+    # with or without `stream_options.include_usage` (verified 2026-09-11). Chat runs on sonnet
+    # today, so a token field alone would be empty exactly where the question is being asked, which
+    # is why `request_bytes` above is the primary signal and this one is the bonus.
+    input_tokens: int | None = None
+    cached_tokens: int | None = None
 
 
 @dataclass
@@ -258,6 +275,20 @@ class _CallHandle:
             self._call.model = name or self._call.model
             self._call.phase = phase or self._call.phase
 
+    def request(self, n_bytes: int) -> None:
+        """How many bytes of request this inference carried."""
+        if self._call is not None:
+            self._call.request_bytes = int(n_bytes)
+
+    def usage(self, input_tokens: int | None, cached_tokens: int | None = None) -> None:
+        """What the provider reported reading. Silent when it reported nothing."""
+        if self._call is None:
+            return
+        if input_tokens is not None:
+            self._call.input_tokens = int(input_tokens)
+        if cached_tokens is not None:
+            self._call.cached_tokens = int(cached_tokens)
+
     def done(self, ok: bool = True, error: str = "") -> None:
         if self._call is not None and self._call.t1 is None:
             self._call.t1 = time.monotonic()
@@ -320,7 +351,9 @@ def as_dict(rec: TurnRecord) -> dict:
                    "atMs": round((c.t0 - rec.t0) * 1000),
                    "ttfbMs": None if c.first_byte is None else round((c.first_byte - c.t0) * 1000),
                    "ms": None if c.t1 is None else round((c.t1 - c.t0) * 1000),
-                   "chunks": c.chunks, "ok": c.ok, "error": c.error} for c in rec.calls],
+                   "chunks": c.chunks, "reqBytes": c.request_bytes,
+                   "inTokens": c.input_tokens, "cachedTokens": c.cached_tokens,
+                   "ok": c.ok, "error": c.error} for c in rec.calls],
         "counters": {k: round(v, 1) for k, v in rec.counters.items()},
         "observations": {k: {"n": len(v), "p50": round(_pct(v, 0.5)), "p90": round(_pct(v, 0.9)),
                              "max": round(max(v)) if v else 0, "sum": round(sum(v))}
@@ -350,10 +383,15 @@ def render(rec: TurnRecord) -> str:
     for c in d["calls"]:
         ttfb = "-" if c["ttfbMs"] is None else f"{c['ttfbMs'] / 1000:.1f}s"
         total = "-" if c["ms"] is None else f"{c['ms'] / 1000:.1f}s"
+        # Beside ttfb, because they are read together: a first byte that grew while the request
+        # grew is a conversation getting heavier, and one that grew on a steady request is not.
+        req = f" req={c['reqBytes'] / 1024:.0f}KB" if c["reqBytes"] else ""
+        tok = f" in={c['inTokens']}tok" if c["inTokens"] is not None else ""
         rows.append((c["atMs"],
                      (f"  {c['atMs'] / 1000:7.1f}  {(c['ms'] or 0) / 1000:7.1f}s      "
                       f"· call {c['n']} {c['model'] or '?'}/{c['phase'] or '?'} "
                       f"ttfb={ttfb} total={total} chunks={c['chunks']}"
+                      f"{req} {tok}"
                       f"{'' if c['ok'] else '  FAILED ' + c['error']}")))
     rows.sort(key=lambda r: r[0])
     lines = [head, "      at    dur", *[r[1] for r in rows]]

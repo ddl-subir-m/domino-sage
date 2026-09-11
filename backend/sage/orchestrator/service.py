@@ -6483,6 +6483,13 @@ class Orchestrator:
                                         skip_dataset_gate=skip_dataset_gate,
                                         dismissed_dataset=dismissed_dataset,
                                         declined=declined):
+                if ev.get("type") == "done":
+                    # Every way this turn can end passes through a `done`, and there are eight of
+                    # them — the gates, the handoff short-circuit, the caps, a failed step, an
+                    # answer. Recording the outcome here rather than at each one is why a Chat
+                    # record used to carry no decision at all: eight sites is eight chances to add
+                    # a ninth and forget. Build does the same thing at its own event seam.
+                    timing.decide(ev.get("ok"), str(ev.get("decision") or ""))
                 if holding and ev.get("type") == "done":
                     # Released before the yield rather than after, so a client that hangs up on
                     # `done` still frees it here. Baseline first: it means "no turn running", and a
@@ -8090,7 +8097,8 @@ class Orchestrator:
             # pin from would meet every later question with the same card.
             self._dataset_dismissed.add((thread_id, dismissed_dataset))
         if not skip_dataset_gate:
-            offer = self._chat_dataset_offer(store, thread_id, prompt, items)
+            with timing.span("gate.dataset"):
+                offer = self._chat_dataset_offer(store, thread_id, prompt, items)
             if offer is not None:
                 yield from offer
                 return
@@ -8186,22 +8194,27 @@ class Orchestrator:
             )
         tap: _EventTap | None = None
         try:
-            client = self._ensure_opencode()
-            sid = self._ensure_thread_session(store, thread_id, project, client)
+            with timing.span("setup.opencode"):
+                client = self._ensure_opencode()
+            with timing.span("setup.session"):
+                sid = self._ensure_thread_session(store, thread_id, project, client)
             work = str((store.read_session(thread_id) or {}).get("directory")
                        or project.record.path)
             project.active_session_id = sid
-            before = snapshot_files(project.record.path)
+            with timing.span("setup.snapshot"):
+                before = snapshot_files(project.record.path)
             # Cleared here so what is read at the end of this turn belongs to this turn. Every build
             # entry point already does this; Chat never did, because Chat never read the field —
             # which is the gap, not the clearing. The turn lock means no other turn is running to
             # have its error wiped.
             project.last_gateway_error = None
-            seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
+            with timing.span("setup.baseline"):
+                seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
             # Resolved against the chat workdir, which is where the agent stands and the only place
             # every path in the prompt resolves: `examples/` and `.sage/scratch/` are the Project's
             # and `public/data/` is the app's, and all three are linked in there.
-            mentioned = self._chat_mention_files(prompt, items, Path(work))
+            with timing.span("setup.mentions"):
+                mentioned = self._chat_mention_files(prompt, items, Path(work))
             # Opened BEFORE the prompt: the stream has no `?after=`, so anything emitted before the
             # reader connects is gone. The window is a local connect and text.ended repairs whatever
             # falls in it, which is the whole reason the end event is treated as authoritative.
@@ -8213,16 +8226,19 @@ class Orchestrator:
             # open, and carried nothing. Build never saw it because Build's session directory IS the
             # workspace root; Chat inherited the value and not the reason for it.
             tap = _EventTap(client, sid, directory=work)
-            client.send_prompt(
-                sid, self._chat_prompt(thread_id, prompt, ctx, urls,
-                                       workspace=Path(work),
-                                       artifacts=store.read_artifacts(thread_id),
-                                       handoffs=store.read_handoffs(thread_id),
-                                       history=store.read_history(thread_id),
-                                       declined=declined),
-                agent="sage-chat",
-                attachments=mentioned,
-                chat=True)
+            # Built on its own line rather than inside the call below, so the two costs can be told
+            # apart: assembling the prompt reads the Thread's history, artifacts and handoffs off
+            # disk, while the dispatch is one HTTP POST. Folded together they were one unnamed gap.
+            with timing.span("setup.prompt"):
+                turn_prompt = self._chat_prompt(thread_id, prompt, ctx, urls,
+                                                workspace=Path(work),
+                                                artifacts=store.read_artifacts(thread_id),
+                                                handoffs=store.read_handoffs(thread_id),
+                                                history=store.read_history(thread_id),
+                                                declined=declined)
+            with timing.span("setup.dispatch"):
+                client.send_prompt(sid, turn_prompt, agent="sage-chat",
+                                   attachments=mentioned, chat=True)
             appeared = False
             poll_failures = 0
             started = time.monotonic()
@@ -8419,6 +8435,11 @@ class Orchestrator:
                 # that is going fine. One frame is enough to earn the fast path back.
                 streaming = tap.ok and tap.seen_any
                 try:
+                    # The same two numbers the build loop keeps, under the same names, because
+                    # scripts/turn-timing.py sums exactly `poll.read_ms` + `poll.sleep_ms` for its
+                    # polling bucket. Chat kept neither, so that bucket has always read 0 on a Chat
+                    # turn — not because the loop is free, but because nothing counted it.
+                    _poll_t0 = time.monotonic()
                     running = client.is_running(sid)
                     appeared = appeared or running
                     finished = appeared and not running
@@ -8429,6 +8450,8 @@ class Orchestrator:
                     msgs = (client.messages(sid, limit=_CHAT_POLL_MESSAGES)
                             if finished or not streaming else ())
                     poll_failures = 0
+                    timing.count("poll.iterations")
+                    timing.observe("poll.read_ms", (time.monotonic() - _poll_t0) * 1000)
                 except httpx.HTTPError as e:
                     poll_failures += 1
                     log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
@@ -8535,13 +8558,21 @@ class Orchestrator:
                         store.append_history(thread_id, ev)
                         yield ev
                     break
+                # Measured, not changed. Build waits on the tap and returns early when a frame
+                # lands (`tap.wait`); Chat still spends the whole second. That difference is worth
+                # a second look, but this step only puts a number on it.
+                _sleep_t0 = time.monotonic()
                 time.sleep(1.0)
+                timing.observe("poll.sleep_ms", (time.monotonic() - _sleep_t0) * 1000)
 
-            revert_denied_writes(project.record.path, thread_id, before)
-            artifacts = [
-                store.record_artifact(thread_id, path=rel)
-                for rel in new_artifact_paths(project.record.path, thread_id, before)
-            ]
+            # Both halves under one span: the revert and the scan walk the same tree, and what a
+            # reader wants to know is what the end of a turn costs, not which of the two walks it.
+            with timing.span("after.artifacts"):
+                revert_denied_writes(project.record.path, thread_id, before)
+                artifacts = [
+                    store.record_artifact(thread_id, path=rel)
+                    for rel in new_artifact_paths(project.record.path, thread_id, before)
+                ]
             if artifacts:
                 immediate = immediate or "artifacts"
                 art_ev = {"type": "artifacts", "items": artifacts}
@@ -8591,11 +8622,13 @@ class Orchestrator:
                 done["artifacts"] = artifacts
             store.append_history(thread_id, done)
             yield done
-            suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
+            with timing.span("after.handoff"):
+                suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
             if suggestion:
                 store.append_history(thread_id, suggestion)
                 yield suggestion
-            self._maybe_compact_chat(client, sid, project)
+            with timing.span("after.compact"):
+                self._maybe_compact_chat(client, sid, project)
         finally:
             if tap is not None:
                 tap.close()
@@ -8604,7 +8637,8 @@ class Orchestrator:
                 project.control.disarm_web(web_token)
             if chat_sens_token is not None:
                 project.control.disarm_sensitivity(chat_sens_token)
-            saved = self._after_chat_turn(thread_id, immediate=immediate)
+            with timing.span("after.save"):
+                saved = self._after_chat_turn(thread_id, immediate=immediate)
             if saved:
                 yield saved
 
