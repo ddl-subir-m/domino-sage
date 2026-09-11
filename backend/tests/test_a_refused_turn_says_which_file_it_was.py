@@ -36,13 +36,23 @@ def _payload() -> list[dict]:
 
 
 class _Guardrail:
-    """A gateway that refuses any payload still carrying the poison, and counts the probes."""
+    """A gateway that refuses any payload still carrying the poison, and counts the probes.
+
+    It counts the SEARCH's calls, not every call that reaches a gateway. A failed Chat turn also
+    runs the handoff classifier (`handoff.py`), which is an ordinary model call and has nothing to
+    do with this feature — counting it made "never searches" fail or pass depending on which other
+    tests ran first, because that classifier's arming is not this test's business.
+
+    The discriminator is the model. A probe re-asks the alias that refused, which the test itself
+    plants in `last_refused`; nothing else in a turn has a reason to speak to that alias.
+    """
 
     def __init__(self):
         self.probes = 0
 
     def route(self, request, labels):
-        self.probes += 1
+        if str(request.get("model") or "") == "gpt-5.4":
+            self.probes += 1
         blob = "\n".join(str(m.get("content") or "") for m in request.get("messages") or [])
         if POISON in blob:
             from sage.gateway.client import GatewayUpstreamError

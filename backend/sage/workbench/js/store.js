@@ -1349,6 +1349,39 @@ window.SW = window.SW || {};
     return dismissedRecallOffers.has(recallOfferKey(surface, pos)) ? -1 : live;
   }
 
+  // Which carriers this Conversation has already stopped sending (ADR-0022). Read off the
+  // transcript rather than held, for the reason the withhold itself is: the poison survives a
+  // restart and so must the answer to it.
+  //
+  // What it is FOR is retiring the card above it. A `withhold-found` row whose carriers have all
+  // been withheld is a question already answered, and redrawing it leaves a person looking at an
+  // offer to do the thing they just did. The `recall-withheld` row renders in its place and names
+  // the same file, so nothing is lost by dropping it — the same trade `recall-cleared` makes
+  // against the offer above it in `recallOfferIndex`.
+  //
+  // A later refusal in the same Conversation names DIFFERENT carriers, so its card is untouched.
+  // "Not now" for a search card, remembered rather than only filtered out of the drawn list. On
+  // Chat a filter would last until the next `openThread`; on Build only until the next two-second
+  // poll rebuilt the transcript. Same lesson, same cure, as `dismissedRecallOffers` above.
+  //
+  // Keyed by what the card FOUND, exactly as `liveCardKey` is: it is the only field telling two
+  // cards apart, and a dismissal must not silence a later refusal that names something else.
+  const dismissedWithholds = new Set();
+  const withholdCardKey = (ev) => (ev.carriers || []).map((c) => c && c.key).join(',');
+
+  function withheldKeys(history) {
+    const keys = new Set();
+    for (const ev of history || []) {
+      if (ev.type === 'recall-withheld') for (const k of ev.keys || []) keys.add(k);
+    }
+    return keys;
+  }
+
+  const isAnswered = (ev, keys) => {
+    const carriers = ev.carriers || [];
+    return carriers.length > 0 && carriers.every((c) => keys.has(c && c.key));
+  };
+
   async function historyToMessages(history, handoff) {
     const messages = [];
     let assistant = null;
@@ -1381,6 +1414,7 @@ window.SW = window.SW || {};
     // the card again, buttons and all — asking someone to start over from a session they had just
     // started over. The next refusal writes its own suggestion and lights that one instead.
     const liveRecall = recallOfferIndex(history, 'chat');
+    const withheld = withheldKeys(history);
     const shownArts = new Set();
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
@@ -1457,7 +1491,8 @@ window.SW = window.SW || {};
           truncated: !!ev.truncated,
           live: !!ev.live,
         });
-      } else if (ev.type === 'withhold-found') {
+      } else if (ev.type === 'withhold-found' && !isAnswered(ev, withheld)
+                 && !dismissedWithholds.has(withholdCardKey(ev))) {
         // Replayed settled, never searching. `live` is absent on a server row, so the buttons do
         // not come back — the house rule for every card that can run a turn. A `withhold-search`
         // row is skipped entirely here: replaying a spinner gives one that never stops.
@@ -1470,6 +1505,16 @@ window.SW = window.SW || {};
           stopped: ev.stopped || '',
           surface: 'chat',
           live: false,
+        });
+      } else if (ev.type === 'recall-withheld') {
+        // Chat's half of Build's branch, and the same block: what it says does not depend on which
+        // transcript it was read off, only where the click that wrote it had to go.
+        assistant = null;
+        messages.push({
+          id: `rw_${messages.length}`,
+          role: 'system',
+          order: pos,
+          blocks: [{ type: 'recall_withheld', labels: ev.labels || [], surface: 'chat' }],
         });
       } else if (ev.type === 'recall-cleared') {
         assistant = null;
@@ -1894,6 +1939,7 @@ window.SW = window.SW || {};
     // has been replaced since, and the rung it was offered at is no longer the rung this
     // Conversation is on.
     const liveRecall = recallOfferIndex(history, 'build');
+    const withheld = withheldKeys(history);
     const ensureAssistant = () => {
       if (!assistant) {
         assistant = { id: `ba_${messages.length}`, role: 'assistant', at: new Date().toISOString(),
@@ -2028,7 +2074,8 @@ window.SW = window.SW || {};
         // Same backstop as `done` above: a turn that failed is not still reading a warehouse.
         dropTableCard(messages, null);
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
-      } else if (ev.type === 'withhold-found') {
+      } else if (ev.type === 'withhold-found' && !isAnswered(ev, withheld)
+                 && !dismissedWithholds.has(withholdCardKey(ev))) {
         // Build's half of the Chat branch above, and deliberately identical to it: the same block
         // type, the same component, the same live-vs-replay rule. Only `surface` differs, because
         // the click has to know which door to write through.
@@ -2041,6 +2088,17 @@ window.SW = window.SW || {};
           stopped: ev.stopped || '',
           surface: 'build',
           live: cardIsLive(ev),
+        });
+      } else if (ev.type === 'recall-withheld') {
+        // The receipt for a click, and the only thing on screen that says it worked. A divider for
+        // the same reason the clear below is one: the transcript above it is still true and still
+        // says what it said — what changed is what leaves for the gateway from here on.
+        assistant = null;
+        messages.push({
+          id: `bw_${messages.length}`,
+          role: 'system',
+          order: pos,
+          blocks: [{ type: 'recall_withheld', labels: ev.labels || [], surface: 'build' }],
         });
       } else if (ev.type === 'recall-cleared') {
         // A divider, not a status line: the transcript above it is still true, and what changed is
@@ -6326,22 +6384,31 @@ window.SW = window.SW || {};
     // Local, like `dismissRecallOffer`: hiding a card is not an answer worth writing down. The
     // next refusal searches again and offers again, which is the behaviour a person expects from
     // something that only appears on a turn that has already failed.
-    dismissWithholdCard() {
+    dismissWithholdCard(block) {
+      dismissedWithholds.add(withholdCardKey(block || {}));
+      // Both lists, because the card is the same card on both surfaces and only one of them is
+      // being looked at. Build re-derives from `buildHistory`, where the remembered key is what
+      // keeps it gone; Chat's drawn list is filtered now and re-derived on the next read.
       state.messages = state.messages.filter((m) => !m.blocks.some((b) => b.type === 'withhold'));
+      applyBuildTranscript();
       notify();
     },
 
     async withholdContent(block) {
       const id = state.thread && state.thread.id;
       if (!id) return;
-      const again = (block.surviving || 0) > 0 ? lastUserPrompt(state.messages) : '';
+      const onBuild = block.surface === 'build';
+      // Every line below that names a transcript has to name the RIGHT one. The first version of
+      // this named Chat's on both surfaces, so on Build the door was called, the row was written,
+      // and the person watched a card that did not move: `state.messages` is not what Build draws,
+      // `lastUserPrompt` found nothing in it, and `sendMessage` is Chat's turn.
+      const drawn = onBuild ? state.buildMessages : state.messages;
+      const again = (block.surviving || 0) > 0 ? lastUserPrompt(drawn) : '';
       const keys = (block.carriers || []).map((c) => c.key);
       const labels = (block.carriers || []).map((c) => c.label);
       if (!keys.length) return;
-      state.messages = state.messages.filter((m) => !m.blocks.some((b) => b.type === 'withhold'));
-      notify();
       try {
-        if (block.surface === 'build') await SW.api.withholdBuildContent(id, keys, labels);
+        if (onBuild) await SW.api.withholdBuildContent(id, keys, labels);
         else await SW.api.withholdContent(id, keys, labels);
       } catch (e) {
         antd.message.error(e && e.message ? e.message : "Couldn't stop sending that.");
@@ -6349,15 +6416,26 @@ window.SW = window.SW || {};
       }
       // Re-read rather than push a receipt in from here: the server wrote the row and the
       // transcript is what renders it. One copy of the truth, as everywhere else on this object.
-      if (block.surface === 'build') {
+      // The card retires itself on the way through — `withheldKeys` reads the row that was just
+      // written and the derivation stops drawing the question it answered.
+      if (onBuild) {
+        // And the memory of it goes too (#209). `rememberLiveCard` holds a `withhold-found` key for
+        // the life of the Conversation, so without this a card answered once would come back
+        // answerable on any later poll that redrew it. Same reason `resetApp` forgets by hand: the
+        // path that starts no turn is the one `sendBuildPrompt` never gets to clean up after.
+        forgetLiveCards();
         await applyBuildRead(await readBuildTranscript(id));
         notify();
       } else {
         await store.openThread(id);
       }
-      // `echo: false` because the question is already on the transcript — this is the same turn
-      // running again with the refused content no longer in it, not a new thing the person asked.
-      if (again) await store.sendMessage(again, { echo: false });
+      if (!again) return;
+      // The same turn running again with the refused content no longer in it, not a new thing the
+      // person asked. Build echoes the request back into the transcript and Chat does not
+      // (`echo: false`), which is each surface's own convention for a card that re-runs a turn —
+      // see `resetAndBuild` and `chooseTableAndBuild` for the Build half of it.
+      if (onBuild) await store.sendBuildPrompt(again);
+      else await store.sendMessage(again, { echo: false });
     },
 
     // Build's half of `clearRecall` below. The conversation is `state.thread.id` here too — a Build

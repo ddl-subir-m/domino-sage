@@ -119,3 +119,31 @@ def test_several_carriers_are_all_named():
     said = _text(r)
     assert "card_panel_transactions_RAW.csv" in said and "export.csv" in said
     assert _buttons(r)[0]["act"] == "withhold:chat:file:raw.csv,file:export.csv"
+
+
+def _receipt(**over) -> dict:
+    block = {"type": "recall_withheld", "labels": ["card_panel_transactions_RAW.csv"],
+             "surface": "chat"}
+    block.update(over)
+    return _render(block)
+
+
+def test_the_receipt_names_what_stopped_and_swears_nothing_was_altered():
+    """The sentence that keeps this on the right side of ADR-0022. A person who reads "Sage removed
+    the values from your file" will go looking for a file that has been edited, and none has been —
+    Sage withheld it, and withholding and redacting are not the same act."""
+    said = _text(_receipt())
+    assert "card_panel_transactions_RAW.csv" in said
+    assert "Nothing was changed or deleted" in said
+    assert _buttons(_receipt()) == [], "a receipt records; it does not offer"
+
+
+def test_the_receipt_says_how_far_the_withhold_reaches():
+    """Same scope the card promised. There is no undo, so it has to keep saying where the reset is."""
+    assert "this conversation" in _text(_receipt())
+
+
+def test_several_withheld_things_read_as_plural():
+    said = _text(_receipt(labels=["raw.csv", "export.csv"]))
+    assert "raw.csv" in said and "export.csv" in said
+    assert "them" in said

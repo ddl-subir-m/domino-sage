@@ -73,6 +73,8 @@ await settle();
 
 const blocks = SW.store.get().messages.flatMap((m) => m.blocks || []);
 console.log(JSON.stringify({
+  withheld: blocks.filter((b) => b.type === 'recall_withheld')
+    .map((b) => ({ labels: b.labels, surface: b.surface })),
   cards: blocks.filter((b) => b.type === 'withhold').map((b) => ({
     searching: !!b.searching,
     live: !!b.live,

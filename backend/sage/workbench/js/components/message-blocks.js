@@ -422,6 +422,24 @@ window.SW = window.SW || {};
     );
   }
 
+  // The receipt for a withhold (ADR-0022), and the only thing on screen that says the click landed.
+  // A divider in the same family as `RecallCleared`, and deliberately quieter than it: clearing
+  // Recall throws work away and this throws nothing away at all.
+  //
+  // "Nothing was changed or deleted" is the load-bearing half. Sage STOPS SENDING content; it never
+  // alters it, and ADR-0022 refuses redaction in as many words. A person who read this as an edit
+  // would go looking for a file that has been rewritten, and would not find one.
+  function RecallWithheld({ block }) {
+    const labels = (block || {}).labels || [];
+    const many = labels.length > 1;
+    return h(
+      'div',
+      { className: 'sw-recall-cleared' },
+      `No longer sending ${labels.join(', ') || 'that content'}. Nothing was changed or deleted — `
+      + `this conversation stops sending ${many ? 'them' : 'it'}. A new conversation starts fresh.`
+    );
+  }
+
   // Who replaced this plan, in the words the person picked. A plan records the Conversation that
   // produced it (#54), so the newer one can be named rather than pointed at — and a Conversation
   // the rail has not loaded, or one since deleted, still leaves a sentence that reads.
@@ -863,7 +881,7 @@ window.SW = window.SW || {};
                     : (survives ? 'Continue without this file' : 'Stop sending this file')),
                 h(Button, {
                   type: 'text', size: 'small', disabled: !!busy,
-                  onClick: () => SW.store.dismissWithholdCard(),
+                  onClick: () => SW.store.dismissWithholdCard(block),
                 }, 'Dismiss')))
           : null));
   }
@@ -1658,6 +1676,8 @@ window.SW = window.SW || {};
         return h(RecallOffer, { block });
       case 'recall_cleared':
         return h(RecallCleared, { block });
+      case 'recall_withheld':
+        return h(RecallWithheld, { block });
       case 'graduation_nudge':
         return h(GraduationNudge, { onSave });
       default:
