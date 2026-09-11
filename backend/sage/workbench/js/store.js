@@ -1324,6 +1324,11 @@ window.SW = window.SW || {};
             keptRows: data.keptRows,
             rowCount: typeof data.rowCount === 'number' ? data.rowCount : null,
             readAt: data.readAt || null,
+            // Only a Live read knows this: it stopped at a LIMIT and there is more behind it
+            // (ADR-0029 — truncation is a fact the caller reads, not a silence). Without it a read
+            // cut at the cap renders "500 rows" and reads as the whole table, which is the wrong
+            // claim about exactly the tables somebody asks about. A table Chat wrote never sets it.
+            truncated: data.truncated === true,
             columns,
             rows: source.map((row) =>
               Array.isArray(row) ? row : columns.map((name) => tableRecordCell(row, name))),

@@ -37,8 +37,10 @@ def turn_for(tmp_path, **kw):
 
 
 def test_the_person_gets_the_row_and_the_assistant_gets_its_shape(tmp_path):
+    # `keep_rows`, because the claim here is the split between the two audiences. What the
+    # Artifact keeps of the row is ADR-0045's question and is held next door.
     said = run.perform("live_read_table", {"source": "DWH", "table": "GONG__CALLS", "limit": 1},
-                       turn_for(tmp_path))
+                       turn_for(tmp_path, keep_rows=True))
 
     assert "Columns: ID, TITLE" in said
     assert "NOT been shown the values" in said
@@ -100,7 +102,7 @@ def test_a_csv_below_a_dataset_is_read_as_rows_and_columns(tmp_path):
     (root / "calls.csv").write_text("ID,TITLE\n1,Acme\n2,Globex\n")
 
     said = run.perform("live_read_files", {"dataset": "gong-exports", "path": "calls.csv"},
-                       turn_for(tmp_path, dataset_root=lambda n: root))
+                       turn_for(tmp_path, keep_rows=True, dataset_root=lambda n: root))
 
     assert "Columns: ID, TITLE" in said
     assert "Acme" not in said, "a file's contents are data too"
@@ -166,12 +168,13 @@ def test_a_dataset_name_does_not_authorise_a_data_source_of_the_same_name(tmp_pa
     assert "Use it in this conversation" in said
 
 
-def test_the_assistant_is_told_when_it_saw_fewer_rows_than_the_person(tmp_path):
-    # Otherwise it reasons about "the data" from a slice it thinks is all of it.
+def test_the_assistant_is_told_when_it_saw_fewer_rows_than_were_read(tmp_path):
+    # Otherwise it reasons about "the data" from a slice it thinks is all of it. Counted against the
+    # read rather than against the card, which holds them only where the Project does (ADR-0045).
     wide = [[f"v{i}-{c}" for c in range(31)] for i in range(400)]
     said = run.perform(
         "live_read_table", {"source": "DWH", "table": "GONG__CALLS", "limit": 400},
         turn_for(tmp_path, shared=(("bnd_1", "GONG__CALLS"),),
                  sample_rows=lambda s, db, sc, t, lim: FakeRows([f"C{c}" for c in range(31)], wide)),
     )
-    assert "of the 400 on the card" in said
+    assert "of the 400 that were read" in said

@@ -239,7 +239,11 @@ window.SW = window.SW || {};
     if (block.columns.length) lines.push(block.columns.join(', '));
     // `longDate`, not `relativeTime`: this stamp is the age of the DATA, and the reasons it must
     // not drift with the clock or with the viewer's zone are written where that helper is.
-    const count = `${SW.util.number(block.rowCount)} ${block.rowCount === 1 ? 'row' : 'rows'}`;
+    const counted = `${SW.util.number(block.rowCount)} ${block.rowCount === 1 ? 'row' : 'rows'}`;
+    // "the first", where the read stopped at a LIMIT with more behind it. The plain count over a
+    // capped read claims the whole table, and the assistant beside this card was told otherwise —
+    // its receipt says "the first 500 rows (there are more)".
+    const count = block.truncated ? `the first ${counted}` : counted;
     const when = SW.util.longDate(block.readAt);
     lines.push(when ? `${count}, read ${when}` : `${count} read`);
     // Named as the switch is labelled, and where it is: a person reading this card is one setting

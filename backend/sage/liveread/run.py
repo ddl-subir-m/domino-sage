@@ -39,6 +39,9 @@ class Turn:
 
     thread_id: str
     examples_dir: Path
+    # Whether this Project commits real data rows into its own files (ADR-0045). Not a grant: it
+    # governs what the Artifact keeps, never what this turn may read or what the assistant is told.
+    keep_rows: bool = False
     # Keyed by kind, because names live in separate namespaces: a Dataset called DWH must not
     # authorise a read of a Data Source called DWH.
     bound: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -97,19 +100,43 @@ def _receipt_text(receipt: result.Receipt, what: str) -> str:
     if receipt.truncated:
         shape = f"the first {shape} (there are more)"
     lines = [
-        f"Read {what}: {shape}, now on screen as a table.",
+        # What is on screen, and it is not the same screen in both states. "Now on screen as a
+        # table" over a card that holds this table's shape puts the count of rows read and the
+        # count of rows visible in one sentence as though they were the same number, and the
+        # assistant resolves that however it likes.
+        f"Read {what}: {shape}, now on screen as a table." if receipt.kept else
+        f"Read {what}: {shape}, now on screen as a card giving this table's shape.",
         f"Columns: {', '.join(receipt.columns) or '(none)'}.",
     ]
     if receipt.values is None:
         # Said plainly, because an assistant that thinks it has the rows will quote rows it invented.
+        #
+        # And said DIFFERENTLY where the Project keeps no data rows in its files (ADR-0045), because
+        # "the person can see them on the card" is then untrue: the card carries the shape too, and
+        # an assistant sent to describe a screen nobody is looking at will talk about rows the person
+        # is not seeing. The reason travels with it for the same cause ADR-0041 opens with — an
+        # assistant left to invent why it cannot answer names a mechanism that does not exist.
         lines.append(
             "You have NOT been shown the values — the person can see them on the card. Answer about "
             "what the table holds and never quote a value."
+            if receipt.kept else
+            "NOBODY has been shown the values — not you, and not the card, which carries the shape "
+            "of this table because this Project does not keep data rows in its files. Answer about "
+            "what the table holds, never quote a value, and say that is why if asked."
         )
     else:
         shown = len(receipt.values)
-        of = "" if shown == receipt.rows else f" — {shown} of the {receipt.rows} on the card"
+        of = "" if shown == receipt.rows else f" — {shown} of the {receipt.rows} that were read"
         lines.append(f"Rows (the creator shared this table{of}): {receipt.values}")
+        if not receipt.kept:
+            # The one case where the model holds rows the person does not: the creator shared this
+            # table with the agent, and the Project keeps no rows in its files. An assistant that
+            # says "here they are, see the table below" is pointing at a card that has none.
+            lines.append(
+                "The person is NOT looking at these rows — the card carries this table's shape, "
+                "because this Project does not keep data rows in its files. Quote them in your "
+                "answer if they help, and do not send the person to the card to read them."
+            )
     # Every card passes through here, so this is the one place a read that WORKED can say so. The
     # shape, the column count and the path — never the values, which are the person's even on the
     # branch above where the creator shared them.
@@ -192,6 +219,7 @@ def _table(args: dict, turn: Turn) -> str:
         binding=turn.binding_for.get(name, ""),
         table=table,
         shared=turn.shared,
+        keep_rows=turn.keep_rows,
     )
     return _receipt_text(receipt, f"{table or name}")
 
@@ -215,6 +243,10 @@ def _files(args: dict, turn: Turn) -> str:
             ["File", "Bytes"],
             [[f.path, f.size] for f in listing.files],
             truncated=listing.truncated,
+            # The one writer this Project's answer does not reach. `[[path, size]]` is filenames,
+            # and a filename is not a row — withholding it would take away the read that answers
+            # "what does this Dataset hold" and give up nothing in exchange (ADR-0045).
+            keep_rows=True,
         )
         return _receipt_text(receipt, f"the files in {name}")
 
@@ -247,6 +279,7 @@ def _files(args: dict, turn: Turn) -> str:
         turn.examples_dir, _slug(name, Path(rel).stem), f"{Path(rel).name}",
         columns, [r for r in body if r],
         truncated=len(head.encode()) >= HEAD_BYTES,
+        keep_rows=turn.keep_rows,
     )
     return _receipt_text(receipt, rel)
 
