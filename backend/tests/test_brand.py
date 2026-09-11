@@ -801,7 +801,7 @@ def test_a_theme_brings_its_own_mark_and_gives_it_back():
     """A white wordmark drawn for the dark bar is invisible on the light one, so the mark travels
     with the look. Switching back has to restore it — a theme that could take the Domino logo away
     but not return it would make Appearance a one-way door."""
-    assert save_override({"theme": "google-cloud"})["logoUrl"] == "./img/google-cloud-logo.svg"
+    assert save_override({"theme": "google-cloud"})["logoUrl"] == "./img/google-bloom-logo.svg"
     assert save_override({"theme": "domino"})["logoUrl"] == "./img/domino-logo.svg"
 
 

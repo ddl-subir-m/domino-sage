@@ -536,9 +536,10 @@ window.SW = window.SW || {};
             // The platform's own look, named by the pack's word for the platform — so a partner
             // who rebranded Domino does not find it listed here under ours.
             { label: SW.brand.platform(), value: 'domino' },
-            // A literal, and it stays one. This is a third party's product, not our word for
-            // ourselves, and renaming it would misname somebody else's design.
-            { label: 'Google Cloud', value: 'google-cloud' },
+            // A literal, and it stays one. This is a third party's design, not our word for
+            // ourselves. The value stays `google-cloud` — it is the id of a stylesheet block and
+            // of a palette, and a codename on the label is not a reason to rename either.
+            { label: 'Google Bloom', value: 'google-cloud' },
           ],
         }),
         h(antd.Input, {

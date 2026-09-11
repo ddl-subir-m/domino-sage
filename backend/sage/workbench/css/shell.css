@@ -57,6 +57,11 @@
   font-weight: 500;
   cursor: pointer;
   font-family: var(--font-display);
+  /* As on .sw-topnav-link, and for the same reason. The chip is a fixed 28px tall, so a label
+     allowed to wrap does not make it taller — it spills out of the pill and over the bar. The
+     name in here is a person's to type and can be 40 characters, so a narrow window is not the
+     only way to reach it. */
+  white-space: nowrap;
 }
 .sw-topnav-product:hover { background: var(--nav-chip-hover); }
 
