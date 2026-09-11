@@ -6939,12 +6939,25 @@ class Orchestrator:
             self._record_plan_refusal(store, thread_id, project, str(e))
             raise
         if not plan_md:
-            # Said in words, because this sentence is the whole of what the person gets: the route
-            # answers 502 with it and the click puts it in a toast. "empty plan" was Sage's own
-            # name for the outcome, and it named nothing the reader could act on — the offer card
-            # is still on screen and a second try often lands, and neither fact was reachable from
-            # it. No button is named: four surfaces reach this call and they carry four labels
-            # ("Write a plan", "Build this", "Open in Build", and the conversation menu).
+            # Said in words, because this sentence is what the route answers 502 with and the click
+            # puts in a toast. "empty plan" was Sage's own name for the outcome, and it named
+            # nothing the reader could act on — the offer card is still on screen and a second try
+            # often lands, and neither fact was reachable from it. No button is named: four surfaces
+            # reach this call and they carry four labels ("Write a plan", "Build this", "Open in
+            # Build", and the conversation menu).
+            #
+            # AND written on the Thread, which the toast alone could not be. `_run_sage_plan` turns
+            # a failure into a sentence only when the shim recorded a gateway error, and that is one
+            # of three witnesses to a failed turn — a failed step and a session error set nothing,
+            # and the planner then comes back empty, exactly as it does when it simply wrote
+            # nothing. This raise sat outside the `except` above, so on every one of those the
+            # Conversation kept no record that a click had happened at all. A toast is gone on the
+            # next render; the row is what is still there afterwards.
+            self._record_plan_refusal(
+                store, thread_id, project,
+                "the planner came back with nothing this time. Try again, or say a bit more in the "
+                "conversation about what the app should show.",
+                offer=False)
             raise ValueError(
                 "Planning didn't produce a plan this time. Try again, or say a bit more in the "
                 "conversation about what the app should show and what someone should be able to "
@@ -7479,8 +7492,14 @@ class Orchestrator:
             yield ev
 
     def _record_plan_refusal(self, store: ThreadStore, thread_id: str, project: Project,
-                             said: str) -> None:
+                             said: str, *, offer: bool = True) -> None:
         """Put a failed handoff plan on the Thread, and advance the ladder if it earned a rung.
+
+        `offer` is False for a plan that came back empty with nothing refused. The row still goes
+        down — a click that fails must leave a mark, which is the whole reason this exists — but the
+        ladder does not move. Clearing Recall costs the model everything it has been told, and there
+        is nothing for it to reach here: no value was matched, and the code that raises an empty plan
+        says a second try often lands.
 
         The row is keyed off the SHIM's raw record rather than the sentence above it, for the
         reason `_error_raw` exists: the sentence names this turn's suspects, and the whole job of
@@ -7523,7 +7542,8 @@ class Orchestrator:
             # screen, and the planner runs in the Thread's own session — so it is a fact about the
             # Conversation. Waiting for a second one spends a click to learn what this one already
             # said (`recall.offer_now`).
-            self._record_recall_offer(store, thread_id, rule=recall.offer_now)
+            if offer:
+                self._record_recall_offer(store, thread_id, rule=recall.offer_now)
         except Exception:
             log.exception("handoff: couldn't record a refused plan on the thread")
 

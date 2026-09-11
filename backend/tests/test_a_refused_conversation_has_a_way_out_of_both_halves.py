@@ -282,6 +282,45 @@ def test_a_planner_that_wrote_nothing_still_reads_as_an_empty_plan(tmp_path: Pat
         orch.draft_handoff_plan(tid)
 
 
+def test_a_planner_that_wrote_nothing_is_still_written_on_the_thread(tmp_path: Path):
+    """The click that did nothing at all.
+
+    `_run_sage_plan` turns a failure into a sentence only when the shim recorded a gateway error
+    (`last_gateway_error`). That is one of three witnesses to a failed turn: a step that failed and
+    a session error set nothing, and the planner then returns no text — the same shape as a planner
+    that simply wrote nothing. `if not plan_md:` raised OUTSIDE the try/except that records a
+    refusal, so the Thread got no row; the route's 502 became a toast, and a toast is gone on the
+    next render. Live, a poisoned Thread's plan click was silence, every time, with nothing on the
+    Conversation afterwards to say a click had happened.
+    """
+    orch, _ = _orch(tmp_path, [Turn(text="Rates."), Turn(text="")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "which desk is largest?"))
+    before = len(_history(orch, tid))
+
+    with pytest.raises(ValueError):
+        orch.draft_handoff_plan(tid)
+
+    written = _history(orch, tid)[before:]
+    assert [e["type"] for e in written] == ["error"]
+    assert "couldn't write a plan" in written[0]["message"]
+
+
+def test_a_planner_that_wrote_nothing_offers_no_clear(tmp_path: Path):
+    """The row, and NOT the ladder. Nothing was refused, so there is nothing for clearing Recall to
+    reach — and the clear costs the model everything it has been told. `offer_now` opens on a single
+    refusal precisely because a refusal is a fact about the Conversation; an empty plan is not one,
+    and the code that raises it says a second try often lands."""
+    orch, _ = _orch(tmp_path, [Turn(text="Rates."), Turn(text="")])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "which desk is largest?"))
+
+    with pytest.raises(ValueError):
+        orch.draft_handoff_plan(tid)
+
+    assert not any(e.get("type") == recall.SUGGEST for e in _history(orch, tid))
+
+
 # ---- a refusal Sage makes itself is still a thing that happened ----------------------------------
 
 
