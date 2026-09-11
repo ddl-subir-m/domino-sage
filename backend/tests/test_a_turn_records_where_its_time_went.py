@@ -184,3 +184,68 @@ def test_the_chat_classifier_is_on_the_ledger_like_the_scope_one(tmp_path: Path)
     assert len(handoff_calls) == 1, [(c.model, c.phase) for c in rec.calls]
     assert handoff_calls[0].t1 is not None, "the entry was left open"
     assert handoff_calls[0].model == "a"   # catalog.ask, what the classifier routes to
+
+
+def test_a_slow_first_byte_says_whether_the_shim_or_the_gateway_spent_it(monkeypatch):
+    """A first byte that took 38.9 seconds names no suspect until the record splits it in two.
+
+    `ttfb` is measured from before the shim rewrites the request, so it covers Sage's own work on
+    the payload AND the gateway's answer. One live implement call reported ttfb=38.9s where its
+    seventeen neighbours reported ~2.4s, and nothing recorded could say which half spent it.
+
+    The risk this holds is placement, not arithmetic: `prepared` is marked at one line, and a line
+    either side of the real boundary still produces a plausible-looking number. So the two halves
+    are made slow one at a time, and each must show up on its own side.
+    """
+    import time as _time
+    import types
+
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as orchmod
+    from sage.shim import keepalive as ka
+
+    monkeypatch.setattr(ka, "FIRST_BYTE_BUDGET_S", 0.05)
+    monkeypatch.setattr(ka, "KEEPALIVE_INTERVAL_S", 0.05)
+
+    def spin(seconds: float) -> None:
+        """Burn real wall clock. The autouse `_no_waiting` fixture above makes `time.sleep` a no-op
+        for every test in this file, and this is the one test whose subject IS a duration."""
+        end = _time.monotonic() + seconds
+        while _time.monotonic() < end:
+            pass
+
+    def run(shim_delay: float, gateway_delay: float) -> tuple[float, float]:
+        def handle(body, project, session=None, on_resolved=None):
+            spin(shim_delay)                 # the rewrite: routing, tool filter, signing veto
+
+            def gen():
+                spin(gateway_delay)          # `route` is lazy: the HTTP starts on this first pull
+                yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+
+            return gen()
+
+        proj = types.SimpleNamespace(
+            id="p", session_id="s", active_session_id=None,
+            shim=types.SimpleNamespace(handle=handle),
+            model_calls=0, tool_call_responses=0, last_gateway_error=None,
+        )
+        monkeypatch.setattr(orchmod, "orchestrator", types.SimpleNamespace(project=lambda: proj))
+        timing.start_turn("build", "measure the first byte")
+        TestClient(orchmod.control_app).post("/v1/chat/completions",
+                                             json={"model": "gpt-5.4", "messages": []})
+        rec = timing.finish_turn(ok=True, decision="-") or timing.recent(1)[0]
+        call = timing.as_dict(rec)["calls"][0]
+        assert call["prepMs"] is not None, "the shim/gateway boundary was never marked"
+        assert call["ttfbMs"] is not None, "no first byte was recorded"
+        return call["prepMs"], call["ttfbMs"]
+
+    # Sage is slow, the gateway is instant -> the wait is on OUR side of the line.
+    prep, ttfb = run(shim_delay=0.30, gateway_delay=0.0)
+    assert prep >= 250, f"the shim's own 300ms did not land in prepMs ({prep}ms)"
+    assert ttfb - prep < 200, f"the gateway was idle but was charged {ttfb - prep}ms"
+
+    # The mirror: Sage is instant, the gateway is slow -> the wait is on the far side.
+    prep, ttfb = run(shim_delay=0.0, gateway_delay=0.30)
+    assert prep < 200, f"the gateway's 300ms leaked into the shim's half ({prep}ms)"
+    assert ttfb - prep >= 250, f"the gateway's 300ms is missing from its half ({ttfb - prep}ms)"

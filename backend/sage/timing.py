@@ -65,6 +65,13 @@ class ModelCall:
     model: str = ""
     phase: str = ""
     first_byte: float | None = None   # monotonic, not a duration — the waterfall needs the moment
+    # The moment the shim finished rewriting this request and handed back the generator that will
+    # make the call. `first_byte` is measured from `t0`, which starts BEFORE the shim runs, so a slow
+    # first byte has two possible causes and this is the line that separates them: everything before
+    # `prepared` is Sage's own work on the payload, everything after it is the gateway's. Measured
+    # 2026-09-11 against a live Builder, one implement call reported ttfb=38.9s where its seventeen
+    # neighbours reported ~2.4s, and nothing recorded could say which side of this line it sat on.
+    prepared: float | None = None
     t1: float | None = None
     chunks: int = 0
     ok: bool = True
@@ -266,6 +273,15 @@ class _CallHandle:
         if self._call is not None and self._call.first_byte is None:
             self._call.first_byte = time.monotonic()
 
+    def prepared(self) -> None:
+        """The shim is done with the request; everything after this belongs to the gateway.
+
+        Called once, from the one place that knows the boundary. Silent outside a turn, and silent
+        on a second call, so a caller may mark it without checking whether it already did.
+        """
+        if self._call is not None and self._call.prepared is None:
+            self._call.prepared = time.monotonic()
+
     def chunk(self) -> None:
         if self._call is not None:
             self._call.chunks += 1
@@ -350,6 +366,7 @@ def as_dict(rec: TurnRecord) -> dict:
         "calls": [{"n": c.n, "model": c.model, "phase": c.phase,
                    "atMs": round((c.t0 - rec.t0) * 1000),
                    "ttfbMs": None if c.first_byte is None else round((c.first_byte - c.t0) * 1000),
+                   "prepMs": None if c.prepared is None else round((c.prepared - c.t0) * 1000),
                    "ms": None if c.t1 is None else round((c.t1 - c.t0) * 1000),
                    "chunks": c.chunks, "reqBytes": c.request_bytes,
                    "inTokens": c.input_tokens, "cachedTokens": c.cached_tokens,
@@ -382,6 +399,10 @@ def render(rec: TurnRecord) -> str:
                       f"{'  (open)' if s['open'] else ''}{'  ' + extra if extra else ''}")))
     for c in d["calls"]:
         ttfb = "-" if c["ttfbMs"] is None else f"{c['ttfbMs'] / 1000:.1f}s"
+        # Beside ttfb and not instead of it: ttfb is what the step waited, `shim` is how much of that
+        # wait Sage caused. Read together they answer "was this the gateway or was it us", which is
+        # the first question a stalled call raises and the one the number alone could not answer.
+        shim = "" if c["prepMs"] is None else f" shim={c['prepMs'] / 1000:.1f}s"
         total = "-" if c["ms"] is None else f"{c['ms'] / 1000:.1f}s"
         # Beside ttfb, because they are read together: a first byte that grew while the request
         # grew is a conversation getting heavier, and one that grew on a steady request is not.
@@ -390,7 +411,7 @@ def render(rec: TurnRecord) -> str:
         rows.append((c["atMs"],
                      (f"  {c['atMs'] / 1000:7.1f}  {(c['ms'] or 0) / 1000:7.1f}s      "
                       f"· call {c['n']} {c['model'] or '?'}/{c['phase'] or '?'} "
-                      f"ttfb={ttfb} total={total} chunks={c['chunks']}"
+                      f"ttfb={ttfb}{shim} total={total} chunks={c['chunks']}"
                       f"{req} {tok}"
                       f"{'' if c['ok'] else '  FAILED ' + c['error']}")))
     rows.sort(key=lambda r: r[0])

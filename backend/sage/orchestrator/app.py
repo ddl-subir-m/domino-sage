@@ -3570,6 +3570,12 @@ async def chat_completions(request: Request):
     gen = project.shim.handle(body, project=project.id,
                               session=project.active_session_id or project.session_id,
                               on_resolved=call.model)
+    # The boundary between our time and the gateway's. `handle` is not a generator — it rewrites the
+    # request here and now (phase classification, the read-only tool filter, routing, the signing
+    # veto) and only the `route` it returns is lazy, so the HTTP call does not start until `ka.pump`
+    # pulls it on the thread below. Marked because `ttfb` is measured from before `handle` and so
+    # covers both halves; without this line a slow first byte names no suspect.
+    call.prepared()
 
     # Drain the (blocking) gateway generator on a worker thread so the response side can interleave SSE
     # keepalives during silent gaps. Without this, we'd have to withhold the whole HTTP response until
