@@ -3654,6 +3654,16 @@ async def chat_completions(request: Request):
             upstream_msg = ka.upstream_error(chunk)
             if upstream_msg:
                 log.error("gateway returned an error frame inside a 200 stream: %s", upstream_msg)
+                if ka.guardrail_frame(chunk):
+                    # A PROBE. Nothing branches on it — see `ka.guardrail_frame`. The capture that
+                    # feeds `refusal_scan` and the withhold search hangs off a RAISED error
+                    # (`shim.enforcement._capture_refusal`), and nothing raises here, so a guardrail
+                    # arriving on this path leaves `project.last_refused` None and `_withhold_search`
+                    # returns at its first line without a word. Whether that can happen at all has
+                    # never been measured; this says so out loud the first time it does. If it never
+                    # fires, the gap is theoretical and this line comes back out.
+                    log.error("guardrail refused inside a 200 stream — the payload was NOT captured, "
+                              "so no withhold search can run for it")
                 project.last_gateway_error = {"message": upstream_msg}
                 stopped = True
                 yield from ka.error_sse(f"\n\n⚠️ The model gateway rejected this request: {upstream_msg}")

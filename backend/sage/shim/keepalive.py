@@ -155,6 +155,31 @@ def upstream_error(chunk: bytes) -> str | None:
     return None
 
 
+def guardrail_frame(chunk: bytes) -> bool:
+    """Whether an error frame inside a 200 stream is a guardrail refusal. A PROBE, not a guard.
+
+    Nothing branches on this — `orchestrator.app.relay` logs it and carries on. It exists to answer
+    one open question from real traffic: can a guardrail refuse on this path at all? Every guardrail
+    refusal captured so far has been a RAISED `GatewayUpstreamError`, which is what
+    `shim.enforcement._capture_refusal` hangs off. If one can arrive as a frame instead, then on that
+    path the payload is never captured, `project.last_refused` stays None, and the withhold search
+    returns at its first line saying nothing (`service.py:7618`). If the log line never fires, the
+    gap is theoretical and nothing needs building.
+
+    Reads the marker off the RAW chunk, deliberately. `upstream_error` above returns `err["message"]`
+    alone, so a sibling `guardrail_blocked` — the gateway's machine field, and the one
+    `_capture_refusal` keys on — never reaches a caller. Asking the message would answer False for a
+    frame that IS a guardrail, and a probe that under-reports is worse than no probe: it would close
+    the question with the wrong answer.
+
+    Loose on the marker and strict on the frame. `guardrail` anywhere, because the shape this path
+    would carry has never been captured and matching a guessed one exactly would miss the real one;
+    but only inside something `upstream_error` already parsed as an error frame, so a model writing
+    the word in its own prose is not mistaken for a refusal.
+    """
+    return upstream_error(chunk) is not None and b"guardrail" in chunk.lower()
+
+
 # Finish reasons that mean the answer was cut off rather than finished. The healthy ones — "stop"
 # and "tool_calls" — are deliberately absent: this only ever reports a cut.
 CUT_OFF_FINISH_REASONS = ("length", "max_tokens", "content_filter")
