@@ -724,6 +724,143 @@ def test_a_stalled_approve_leaves_the_plan_to_be_approved_again(tmp_path: Path):
     assert plan.exists(), "the plan was archived for a build that never happened"
 
 
+# ---- a phase is not a turn ---------------------------------------------------------------------
+
+PHASED_PLAN = """A dashboard for exploring trades.
+
+## Plan
+
+### 1. Data module
+- Files — src/data.ts
+- Do — Export two hundred sample trade rows.
+- Done when — src/data.ts exports the rows and the app compiles.
+
+### 2. Trades table
+- Files — src/Table.tsx
+- Do — Render the rows in a sortable table.
+- Done when — The preview shows a sortable table.
+
+### 3. Currency filter
+- Files — src/Filter.tsx
+- Do — Add a currency dropdown above the table.
+- Done when — Picking a currency narrows the visible rows.
+"""
+
+
+class StallsOnOneSendOpenCode(FakeOpenCode):
+    """Healthy, except that one send hangs: the session it went to reports running for ever and
+    produces nothing, so the quiet exit gives up on it.
+
+    `stall_on` counts sends across the whole run, exactly as the scripted turns do, so a test names
+    the send it wants hung in the same terms it writes the script in. The hang is cleared by the
+    interrupt, which is what lets `_run_step` run the same phase again in a fresh session — the
+    case that matters here is a phase that stalled and then recovered.
+    """
+
+    def __init__(self, workspace: Path, turns: list[Turn] | None = None, *,
+                 stall_on: int = 0, poll_cap: int = 600) -> None:
+        super().__init__(workspace, turns)
+        self.stall_on = stall_on
+        self.hung: str | None = None
+        self.polls = 0
+        self.poll_cap = poll_cap
+
+    def send_prompt(self, session_id: str, text: str, model: dict | None = None,
+                    agent: str | None = None, attachments: list[dict] | None = None,
+                    chat: bool = False) -> None:
+        super().send_prompt(session_id, text, model, agent, attachments, chat)
+        if self._next == self.stall_on:
+            self.hung = session_id
+
+    def is_running(self, session_id: str) -> bool:
+        self.polls += 1
+        assert self.polls <= self.poll_cap, "the poll loop never gave up on a stalled phase"
+        if session_id == self.hung:
+            return True
+        return super().is_running(session_id)
+
+    def interrupt(self, session_id: str) -> None:
+        self.interrupted += 1
+        if session_id == self.hung:
+            self.hung = None
+
+
+def _phased_orch(tmp: Path, oc: FakeOpenCode) -> Orchestrator:
+    orch = _orch(tmp, oc)
+    orch.project(start_preview=False).record.write_settings(
+        {"skip_planning": False, "phased_build": True})
+    return orch
+
+
+def test_a_phase_that_stalled_and_recovered_still_consumes_its_plan(tmp_path: Path):
+    """The flag says "this TURN built nothing", and a phase has no standing to say it.
+
+    A phase runs `_build_stream` with `owns_turn` False, and `_phased_approve` owns the build's
+    outcome: it writes the resume point before every phase and clears it when the build finishes.
+    So a phase that stalls and then succeeds on `_run_step`'s retry is a build that WORKED — and a
+    give-up flag left set by that one dead session outlives it, reaches the approve turn's
+    `finally`, and re-arms the resume point on a plan that has just been built in full. The person
+    watches three phases land and is handed the plan card back.
+    """
+    ws = tmp_path / "mnt" / "code"
+    oc = StallsOnOneSendOpenCode(ws, [
+        Turn(text=PHASED_PLAN),                                  # 1. the planning turn
+        Turn(writes={"src/data.ts": "export const rows = [];\n"}),      # 2. phase 1
+        Turn(),                                                  # 3. phase 2, first attempt — hangs
+        Turn(writes={"src/Table.tsx": "// table\n"}),            # 4. phase 2, the retry — lands
+        Turn(writes={"src/Filter.tsx": "// filter\n"}),          # 5. phase 3
+    ], stall_on=3)
+    orch = _phased_orch(tmp_path, oc)
+
+    list(orch.build_stream("build me a trades dashboard"))
+    events = list(orch.approve_stream())
+
+    assert _of(events, "done")[-1]["ok"] is True
+    assert [e["n"] for e in _of(events, "step-done") if e["ok"]] == [1, 2, 3]
+
+    ws_rec = orch.project(start_preview=False).workspace
+    assert ws_rec.read_plan_retry_step() == 0, "a finished build was left owing a phase"
+    assert ws_rec.read_plan() is None, "the plan it built in full was kept as still owed"
+    assert orch._turn_gave_up is False, "a phase spoke for the turn it does not own"
+
+
+def test_a_phased_build_that_dies_in_a_phase_keeps_the_plan_however_the_flag_is_spelled(
+        tmp_path: Path):
+    """The other half of the same rule, and why gating the flag costs nothing here.
+
+    A phase that stalls twice fails the build, and the plan has to survive it. Nothing about that
+    rests on the give-up flag: `_phased_approve` wrote `set_plan_retry_step(2)` before the phase
+    ran, and the approve turn's `finally` archives a plan only when nothing is owed. The resume
+    point is what keeps this plan, which is exactly why the flag has no work to do in a phase.
+    """
+    ws = tmp_path / "mnt" / "code"
+    oc = StallsOnOneSendOpenCode(ws, [
+        Turn(text=PHASED_PLAN),                                  # 1. the planning turn
+        Turn(writes={"src/data.ts": "export const rows = [];\n"}),      # 2. phase 1
+        Turn(),                                                  # 3. phase 2, first attempt — hangs
+        Turn(),                                                  # 4. phase 2, the retry — hangs too
+    ], stall_on=3)
+    orch = _phased_orch(tmp_path, oc)
+    # Both attempts at phase 2 hang: the interrupt clears `hung`, so re-arm it for the retry.
+    real_interrupt = oc.interrupt
+
+    def hang_the_retry(session_id: str) -> None:
+        real_interrupt(session_id)
+        oc.stall_on = 4
+
+    oc.interrupt = hang_the_retry
+
+    list(orch.build_stream("build me a trades dashboard"))
+    events = list(orch.approve_stream())
+
+    assert _of(events, "done")[-1]["ok"] is False
+    ws_rec = orch.project(start_preview=False).workspace
+    assert ws_rec.read_plan_retry_step() == 2
+    assert ws_rec.read_plan() is not None
+    # Phase 1 is kept on disk on purpose: a retry resumes at 2 rather than redoing it.
+    assert (ws_rec.path / "src" / "data.ts").exists()
+
+
 def test_a_stuck_call_that_will_not_stop_names_the_step_too(tmp_path: Path):
     """The condemned-workspace card draws the same line the offer next door does (#98). Both
     failures can arrive out of either silence, and only the sentence tells the two apart: the action

@@ -12441,13 +12441,10 @@ class Orchestrator:
                     # having stopped. Releasing the tree on the strength of the call returning is
                     # how two turns end up writing it.
                     stopped = self._stop_wedged_session(client, sid)
-                    # Gated, which the quiet exit below is not, and the disagreement is left
-                    # standing rather than settled here. A phase of a phased build says nothing
-                    # about that build's outcome — `_phased_approve` owns it, and keeps a failed
-                    # phase on disk rather than retrying from the top — so a phase stopped for
-                    # looping leaves this alone, the way the gateway-error exit does. The quiet
-                    # exit sets it for a phase too; whether that is right is a question about the
-                    # wedged path, which this change has no business answering.
+                    # Gated, like every other writer of this flag (#269). A phase of a phased
+                    # build says nothing about that build's outcome — `_phased_approve` owns it,
+                    # writes the resume point before every phase and clears it when the build
+                    # finishes — so a phase stopped for looping leaves this alone.
                     if owns_turn:
                         self._turn_gave_up = True
                     if not stopped:
@@ -12484,7 +12481,18 @@ class Orchestrator:
                               quiet_for, "a call was still open" if tool_open else "nothing open")
                     stopped = self._stop_wedged_session(client, sid)
                     # Before the branch, because it is true of both: nothing was built either way.
-                    self._turn_gave_up = True
+                    #
+                    # And gated on `owns_turn` like the other three writers (#269). The flag means
+                    # "this TURN built nothing", and a phase has no standing to say it: a phase that
+                    # stalls is retried in a fresh session by `_run_step`, so the build the person
+                    # is watching may finish all three phases and still end with this set. It then
+                    # outlives the session that set it, reaches the approve turn's `finally`, and
+                    # re-arms the resume point on a plan that HAS just been built in full — the plan
+                    # card handed back after a build that worked. A phase that really did fail loses
+                    # nothing by the gate: `_phased_approve` wrote `set_plan_retry_step(step.n)`
+                    # before the phase ran, and that is what keeps the plan, flag or no flag.
+                    if owns_turn:
+                        self._turn_gave_up = True
                     if not stopped:
                         yield from refused_to_stop(
                             in_tool=tool_open, quiet_for=time.monotonic() - last_event)
