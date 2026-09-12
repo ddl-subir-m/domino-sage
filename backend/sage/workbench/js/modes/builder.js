@@ -1056,12 +1056,27 @@ window.SW = window.SW || {};
       data_source: 'datasource', llm_alias: 'model_llm', model_api: 'model_predictive',
     };
 
-    const row = (key, name, { kind, mark, declared, door, menu }) =>
+    const row = (key, name, { kind, mark, declared, door, menu, by }) =>
       h(
         'div',
         { key, className: 'sw-appdeps-row' },
         h('span', { className: 'sw-appdeps-icon' }, SW.util.iconFor(KIND_ICON[kind] || kind)),
-        h('span', { className: 'sw-appdeps-name' }, name),
+        // Who made this Attachment, under the name it qualifies (ADR-0048). A mention typed into a
+        // Build Conversation is the one act that reaches an app from off the app's own surface, so
+        // it is the one whose author cannot be recovered by standing here (ADR-0021).
+        //
+        // The column arrives WITH the line and not before it. Every row in this list goes through
+        // here — models, Data Sources, Bindings — and only a file can carry a provenance line, so
+        // wrapping them all would change the box model of rows this had no business touching. A
+        // row with nothing to say draws exactly the element it drew before.
+        by
+          ? h(
+              'div',
+              { className: 'sw-appdeps-text' },
+              h('span', { className: 'sw-appdeps-name' }, name),
+              h('span', { className: 'sw-appdeps-by' }, by)
+            )
+          : h('span', { className: 'sw-appdeps-name' }, name),
         // The declaration, on the Binding as well as on the rail row it came from (ADR-0043). This
         // list is what an app IS, so it is where somebody asks why a model went missing — and a
         // chip here answers that without them having to go back to the panel and match names.
@@ -1188,7 +1203,7 @@ window.SW = window.SW || {};
                 files.map((a) => row(
                   a.path,
                   SW.util.attachmentRow(a).name,
-                  { kind: 'file', menu: menuFor(null, a) }
+                  { kind: 'file', menu: menuFor(null, a), by: SW.util.attachmentAuthor(a) }
                 ))
               )
             ),

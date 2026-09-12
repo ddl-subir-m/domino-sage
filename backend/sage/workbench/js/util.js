@@ -473,6 +473,22 @@ window.SW = window.SW || {};
       };
     },
 
+    // Who made this Attachment, as the sentence under its row, or '' when the record does not say
+    // (#262, ADR-0048).
+    //
+    // Absence is the common case and it is not "you": every entry written before #262 records no
+    // author, and so does `_rehydrate_attached`'s symlink scan, which knows only what the
+    // filesystem told it. A row that read silence as the person would be the panel inventing
+    // provenance on the one surface somebody opens to find out who did what.
+    //
+    // Through `brand.text` for the assistant, bare for the person: the assistant's name is the
+    // pack's (ADR-0014) and "You" is nobody's.
+    attachmentAuthor(entry) {
+      const by = String((entry && entry.added_by) || '');
+      if (by === 'sage') return SW.brand.text('{assistantName} added this');
+      return by === 'user' ? 'You added this' : '';
+    },
+
     // The app's Attachments as the rows a person can PICK — the menu's question, and the turn's.
     // Not the same question as the panel's, which lists what the app RECORDS and so draws every
     // entry through the singular above.

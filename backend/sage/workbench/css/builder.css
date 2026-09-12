@@ -495,6 +495,20 @@
 .sw-appdeps-row:hover .sw-res-more, .sw-appdeps-row .sw-res-more:focus-visible { opacity: 1; }
 .sw-appdeps-icon { flex: none; width: 16px; text-align: center; font-size: var(--fs-13); }
 .sw-appdeps-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Only the rows that carry a provenance line become a column (ADR-0048), so a row with nothing to
+   say keeps the box it always had. The name gives its `flex` up to the column it is now inside —
+   growing it here would stretch it down the row rather than along it. */
+.sw-appdeps-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.sw-appdeps-text .sw-appdeps-name { flex: none; }
+/* Quieter than the name, and the same voice as the panel's own subtitles: this says who, and the
+   acts on this row are in the menu beside it. */
+.sw-appdeps-by {
+  font-size: var(--fs-11);
+  color: var(--gray-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sw-appdeps-row {
   display: flex;
   align-items: center;

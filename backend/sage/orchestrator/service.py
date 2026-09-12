@@ -831,7 +831,8 @@ def _link_attachment(dest: Path, src: Path) -> None:
 
 
 def _dataset_entry(dataset_id: str, dataset_name: str, file_path: str, rel: str,
-                   size: int) -> dict:
+                   size: int, *, added_by: str | None = None,
+                   conversation_id: str | None = None) -> dict:
     """The manifest record one Dataset file gets, whichever act put it there.
 
     The file is the unit of the record (ADR-0029), so the folder act writes exactly what the single
@@ -840,9 +841,31 @@ def _dataset_entry(dataset_id: str, dataset_name: str, file_path: str, rel: str,
 
     `source="dataset"`: the Dataset's own bytes are never Sage's to delete. Detach removes only what
     sits in the workspace — the symlink, or the copy downloaded in its place.
+
+    `added_by` and `conversation_id` are the author, and they are None wherever the caller cannot
+    say (ADR-0048). Written as keys either way, because ONE shape is this function's whole job: a
+    reader that has to tell a missing key from a null one is reading two records. None is the
+    answer every entry on disk before #262 gives, and the row that draws it says nothing rather
+    than guessing "you".
     """
     return {"dataset_id": dataset_id, "dataset": dataset_name, "file": file_path, "path": rel,
-            "size": size, "source": "dataset", "dataset_rel_path": file_path}
+            "size": size, "source": "dataset", "dataset_rel_path": file_path,
+            "added_by": added_by, "conversation_id": conversation_id}
+
+
+def _context_author(row: dict) -> str:
+    """Who a Conversation's context row says put it there, as the author an Attachment records.
+
+    `or "user"` is not a guess about an unknown: it is the same default `ThreadStore.add_context`
+    stamps onto the chip (`threads.py`), so the manifest entry and the chip a person is looking at
+    name one person rather than disagreeing about a row neither was told about. A chip the
+    assistant picked says so (`store.attach`), and that is the case this has to carry rather than
+    flatten.
+
+    One copy because both acts that attach from a Conversation ask it — the Build fork and the
+    handoff crossing — and the two must not come to disagree about what an unstamped row means.
+    """
+    return str(row.get("addedBy") or "user")
 
 
 # Above this many attached files, a folder is described once instead of file by file (ADR-0029).
@@ -6494,7 +6517,11 @@ class Orchestrator:
                 # same as a folder attach — and the bytes land in `public/data/`. Otherwise it's
                 # fetched for the question, not for the app.
                 if row.get("inBuild"):
-                    fetched = self.attach_file(str(dataset_id), str(rel))
+                    # The author, carried across the fork rather than dropped at it (ADR-0048).
+                    fetched = self.attach_file(
+                        str(dataset_id), str(rel),
+                        added_by=_context_author(row),
+                        conversation_id=thread_id or None)
                     # Which app took the bytes, recorded on the row rather than re-derived on
                     # read. The chip is the Conversation's and outlives both the selection and
                     # the mode, so a receipt read off whatever is selected NOW would relabel
@@ -7371,7 +7398,7 @@ class Orchestrator:
                 binding = chat_handoff.binding_from_context(item)
                 if binding is not None:
                     self._bind_from_handoff(binding)
-                self._promote_chat_file(item)
+                self._promote_chat_file(item, thread_id)
                 crossed = self._cross_chat_upload(item)
                 if crossed is not None:
                     uploads.append(crossed)
@@ -7435,7 +7462,7 @@ class Orchestrator:
             opened.workspace.set_display_name(title)
         return opened
 
-    def _promote_chat_file(self, item: dict) -> None:
+    def _promote_chat_file(self, item: dict, thread_id: str = "") -> None:
         """Move a Dataset file fetched for a question into the app's own data tree.
 
         Chat fetches into scratch because a question has no app to serve bytes to. A confirmed
@@ -7446,6 +7473,16 @@ class Orchestrator:
 
         The scratch bytes are handed over rather than fetched again, and stay where they are: the
         Thread's chip still names that path, and Chat goes on working after the handoff.
+
+        The author comes off the chip, for the Build fork's reason (ADR-0048): this is the other act
+        that makes an Attachment from a Conversation rather than on the app's own surface, so it is
+        the other one whose "who" nobody can recover by standing in front of the app. The chip
+        already holds it and the caller already holds the Conversation, so carrying them is the
+        whole of it.
+
+        `thread_id` keeps a default because this is called directly by tests that have no
+        Conversation to name, and an Attachment with no Conversation on it is a record short of a
+        field rather than a broken one. The one production caller always passes it.
         """
         if str(item.get("kind") or "") != "file":
             return
@@ -7460,7 +7497,9 @@ class Orchestrator:
             # A symlink there points at the mount, and attach_file makes that link itself.
             local = fetched if fetched.is_file() and not fetched.is_symlink() else None
         try:
-            self.attach_file(dataset_id, rel, local_source=local)
+            self.attach_file(dataset_id, rel, local_source=local,
+                             added_by=_context_author(item),
+                             conversation_id=thread_id or None)
         except (LookupError, FileNotFoundError, ValueError, AttachTooLarge, ResourceUnavailable):
             # The handoff is worth more than one file. The app is built from the plan either way,
             # and the Data panel still offers the attach by hand.
@@ -15741,7 +15780,8 @@ class Orchestrator:
         return size
 
     def attach_file(self, dataset_id: str, file_path: str, *,
-                    local_source: Path | None = None) -> dict:
+                    local_source: Path | None = None, added_by: str | None = None,
+                    conversation_id: str | None = None) -> dict:
         """Put one dataset file into the workspace under public/data/ so OpenCode can @mention it
         and the (static) preview/published app can fetch it.
 
@@ -15756,6 +15796,13 @@ class Orchestrator:
         of asking Domino for the same file twice. The cap does not apply to it: the link adds no
         disk, the bytes passed a cap when they were fetched, and refusing here would drop a file out
         of a handoff the person already confirmed.
+
+        `added_by` and `conversation_id` name who performed the act and where (ADR-0048). Only the
+        two callers that attach FROM A CONVERSATION pass them — the Build fork in
+        `add_thread_context` and the handoff crossing in `_promote_chat_file` — because those are
+        the acts that reach an app from somewhere other than the app's own surface, and so the ones
+        whose author a person cannot recover by standing there (ADR-0021). A door on the app's own
+        surface passes neither, the entry records no author, and the panel row says nothing.
         """
         project = self.project()
         asset = self._find_asset(dataset_id)
@@ -15781,7 +15828,8 @@ class Orchestrator:
                     raise AttachTooLarge(self._attach_max_bytes, total, size)
                 _link_attachment(dest, src)
             project.attached.append(
-                _dataset_entry(dataset_id, asset.name, file_path, rel, size))
+                _dataset_entry(dataset_id, asset.name, file_path, rel, size,
+                               added_by=added_by, conversation_id=conversation_id))
             self._ensure_gitignored(project.workspace.path, "public/data/")
             self._write_agents_data_block(project)
             project.workspace.write_attachments(project.attached)
