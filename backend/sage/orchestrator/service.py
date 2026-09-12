@@ -14320,7 +14320,18 @@ class Orchestrator:
             # transcript actually carries declared rows.
             items = ThreadStore(project.record.path).read_context(conversation).get("items") or []
             for item in items:
-                add(item.get("datasetId"), item.get("datasetName"))
+                # Through `binding_from_context` rather than off `datasetId` alone, because a
+                # Dataset arrives as a chip in TWO shapes and that field only carries one of them.
+                # A file Chat fetched is `kind: "file"` with `datasetId`; a Dataset pinned WHOLE
+                # keeps its id behind a `dataset:` prefix and has no `datasetId` at all. Reading
+                # the field alone saw only the first, so mentioning a declared Dataset itself in
+                # Chat armed no lock and the turn ran on whatever vendor model was picked — while
+                # the very same chip DID cross into Build as a Dataset Binding, because the handoff
+                # already reads both shapes (`_dataset_binding`). Two readers of one chip, one of
+                # them a leak; this is the same reader, so they cannot disagree again.
+                pinned = chat_handoff.binding_from_context(item)
+                if pinned is not None and pinned.kind == KIND_DATASET:
+                    add(pinned.id, pinned.name)
         return scope
 
     def _sensitivity_gate(self) -> SensitivityGate:

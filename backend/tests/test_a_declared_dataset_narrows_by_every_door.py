@@ -185,6 +185,53 @@ def test_a_chat_chip_locks_the_conversation_it_was_pinned_to(tmp_path, monkeypat
     assert orch.sensitivity_state(tid)["datasets"] == ["claims"]
 
 
+def test_a_whole_dataset_chip_locks_the_conversation_too(tmp_path, monkeypatch):
+    """The same door at the coarser grain, and it was open.
+
+    A Dataset reaches a Conversation as a chip in TWO shapes. A file Chat fetched is `kind: "file"`
+    carrying `datasetId`; the Dataset row mentioned WHOLE carries no such field at all, because the
+    resource id is the Dataset. This reader took `datasetId` alone and saw only the first, so
+    `@`-mentioning a declared Dataset itself in Chat armed nothing and the turn ran on whatever
+    vendor model was picked.
+
+    What makes it a hole rather than a gap is that the same chip DID cross into Build as a Dataset
+    Binding the whole time — `_dataset_binding` has read both shapes since it was written, and its
+    own docstring says the lock has to survive the crossing. Two readers of one chip, one of them a
+    leak. Now one reader, so they cannot disagree again.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    # Exactly what `addToConversation` posts for the catalogue row: no `datasetId` anywhere.
+    orch.add_thread_context(tid, {
+        "kind": "dataset",
+        "name": "claims",
+        "resourceId": "dataset:ds_claims",
+    })
+    assert orch.sensitivity_state(tid)["locked"] is True
+    assert orch.sensitivity_state(tid)["datasets"] == ["claims"]
+
+
+def test_a_whole_dataset_chip_for_an_undeclared_dataset_locks_nothing(tmp_path, monkeypatch):
+    """The other half of the same read. Matching the shape must not be matching every shape: a
+    reader that locked on any `dataset:` chip would narrow the picker for Datasets nobody declared,
+    which is the badge-disagrees-with-the-lock failure at the other end.
+
+    `ds_logs`, which the fixture defines and tags `curated`, rather than an id nothing holds. An
+    unknown id takes the not-found path and would stay green with the declared-ness check deleted
+    for every real Dataset — an assertion about the wrong half of the reader.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {
+        "kind": "dataset",
+        "name": "logs",
+        "resourceId": "dataset:ds_logs",
+    })
+    assert orch.sensitivity_state(tid)["locked"] is False
+
+
 def test_a_chip_does_not_lock_a_conversation_it_was_not_pinned_to(tmp_path, monkeypatch):
     """A chip is one Conversation's, and so is the lock it causes. Leaking it across Conversations
     would grey a picker out for a chat holding none of those rows — and the person would have no
