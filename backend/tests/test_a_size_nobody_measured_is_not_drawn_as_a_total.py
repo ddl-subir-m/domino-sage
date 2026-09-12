@@ -192,5 +192,5 @@ def test_the_next_dataset_does_not_inherit_this_ones_unmeasured_listing():
     unweighed, weighed = _walk({"files": _UNWEIGHED, "measured": False},
                                {"files": _WEIGHED, "measured": True})
 
-    assert all("size not measured" in m for m in _metas(unweighed))
-    assert all("6 B" in m for m in _metas(weighed))
+    assert _metas(unweighed) and all("size not measured" in m for m in _metas(unweighed))
+    assert _metas(weighed) and all("6 B" in m for m in _metas(weighed))

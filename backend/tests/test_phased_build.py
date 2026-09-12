@@ -128,6 +128,7 @@ def test_each_phase_runs_in_its_own_fresh_session(tmp_path: Path):
     # Same working tree, so a cold session can still read what earlier phases wrote.
     assert {s["directory"] for s in oc.sessions} == {str(project.workspace.path)}
     assert [e["n"] for e in _of(events, "step-start")] == [1, 2, 3]
+    assert [e["n"] for e in _of(events, "step-done")] == [1, 2, 3]
     assert all(e["ok"] for e in _of(events, "step-done"))
 
 

@@ -459,6 +459,19 @@ SW.store.subscribe(() => {
 
 const report = [];
 for (const step of steps) {
+  // An app tag written here rather than into THREADS, so the rest of the fixture's row text stays
+  // exactly what every other test of this harness reads. Without one tagged Conversation,
+  // `railAppFilter` matches nothing at all, and a claim about what the filtered rail does NOT draw
+  // is true of a rail that drew nothing (#267).
+  //
+  // Above the branch chain and not inside one of them, so a `touch` spelled on a step shape that
+  // does not expect it still lands. Dropped silently it would put the test back on an untagged
+  // fixture, which is the same silent pass this field exists to close. A bad id is named rather
+  // than left to throw on `undefined`, for the same reason.
+  if (step.touch) {
+    if (!THREADS[step.touch.id]) throw new Error(`touch names no thread: ${step.touch.id}`);
+    THREADS[step.touch.id].touched = [{ appId: step.touch.appId, appName: step.touch.appName }];
+  }
   if (step.pref) {
     // A viewer, because a preference is keyed by one and `prefs` refuses to write a record it
     // cannot key. Every control that sets this one lives behind a Workbench that has already booted,

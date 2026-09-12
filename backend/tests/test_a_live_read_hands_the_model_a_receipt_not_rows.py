@@ -47,7 +47,7 @@ def test_the_table_artifact_is_written_in_the_shape_the_workbench_reads(tmp_path
 
     assert sorted(on_disk) == ["columns", "rows", "title"]
     assert on_disk["title"] == "Sample conversation"
-    assert all(isinstance(row, list) for row in on_disk["rows"])
+    assert on_disk["rows"] and all(isinstance(row, list) for row in on_disk["rows"])
 
 
 def test_the_assistant_sees_values_only_where_the_creator_already_shared_that_table(tmp_path):

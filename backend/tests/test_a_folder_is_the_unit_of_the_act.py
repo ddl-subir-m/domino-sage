@@ -711,7 +711,7 @@ def test_a_folder_the_app_already_carries_whole_offers_nothing_to_press():
 
     rows = _tree(files=part, app="Desk margins")["rows"]
 
-    assert all(r["disabled"] for r in rows)
+    assert rows and all(r["disabled"] for r in rows)
     assert all("already carries" in r["reason"] for r in rows)
 
 

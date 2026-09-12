@@ -125,7 +125,7 @@ def test_the_answered_card_is_retired_and_says_which_store_was_picked():
     """
     out = _run()
 
-    assert all(card["live"] is False for card in out["cardsAfter"])
+    assert out["cardsAfter"] and all(card["live"] is False for card in out["cardsAfter"])
     assert out["bubbles"] == [PROMPT, "Use Snowflake-Data-Warehouse."]
 
 

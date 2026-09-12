@@ -117,9 +117,13 @@ def test_it_leaves_the_row_where_it_was_so_the_card_can_go_back_for_it(tmp_path:
     client = _client(tmp_path, monkeypatch)
     whole = client.get("/api/project/history").json()["history"]
 
-    for row in client.get("/api/project/history?detail=off").json()["history"]:
-        if "detailRow" not in row:
-            continue
+    folded = [r for r in client.get("/api/project/history?detail=off").json()["history"]
+              if "detailRow" in r]
+    # Which rows fold is the test above's fact. What this one needs is that any folded at all,
+    # since a listing that stopped carrying `detailRow` leaves the loop below reading nothing and
+    # asserting nothing (#267).
+    assert folded, "the folded listing carried no detailRow"
+    for row in folded:
         got = client.get(f"/api/project/history/row/{row['detailRow']}").json()["detail"]
         assert got == whole[row["detailRow"]]["detail"] == _WROTE
 

@@ -174,7 +174,7 @@ def test_answering_the_card_retires_it_rather_than_leaving_it_clickable():
     out = _run()
 
     assert any(r.startswith("api/project/history") for r in out["routes"])
-    assert all(card["live"] is False for card in out["cardsAfter"])
+    assert out["cardsAfter"] and all(card["live"] is False for card in out["cardsAfter"])
 
 
 @needs_node

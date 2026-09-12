@@ -312,7 +312,7 @@ def test_the_label_never_reaches_the_committed_manifest(tmp_path: Path):
     orch._record_resource_usage()
 
     recorded = json.loads(orch.project().workspace.bindings_path.read_text())
-    assert all("used" not in e for e in recorded)
+    assert recorded and all("used" not in e for e in recorded)
 
 
 def test_bind_and_unbind_hand_back_the_labels_too(tmp_path: Path):

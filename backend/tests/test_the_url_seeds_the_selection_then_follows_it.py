@@ -277,9 +277,10 @@ def test_the_conversation_is_never_drawn_beside_an_app_it_did_not_bind():
     either way and is exactly what a flicker hides behind."""
     (clicked,) = _acts({"click": "thr_bound"})
     assert clicked["trail"], "the click painted nothing at all"
-    for frame in clicked["trail"]:
-        if frame["thread"] == "thr_bound":
-            assert frame["app"] == "app_c", clicked["trail"]
+    bound = [f for f in clicked["trail"] if f["thread"] == "thr_bound"]
+    assert bound, "no frame ever showed the Conversation that was clicked"
+    for frame in bound:
+        assert frame["app"] == "app_c", clicked["trail"]
     # And the first thing the click asked the server for is the selection itself: a lookup ahead
     # of it would be the round trip the frame above is spent waiting for.
     assert clicked["calls"][0] == "t1 POST /apps/app_c/select", clicked["calls"]

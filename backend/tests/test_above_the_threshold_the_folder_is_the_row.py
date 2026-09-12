@@ -160,7 +160,8 @@ def test_the_threshold_is_read_and_not_copied(tmp_path: Path, monkeypatch):
 
     orch.attach_folder(ds, "raw")
 
-    assert all(e["menu_folder"] for e in orch.project().status()["attached"])
+    attached = orch.project().status()["attached"]
+    assert attached and all(e["menu_folder"] for e in attached)
 
 
 def test_every_attachment_is_told_how_big_its_folder_row_is(tmp_path: Path):
@@ -186,6 +187,7 @@ def test_the_manifest_never_learns_the_menus_folder(tmp_path: Path):
 
     record = json.loads((ws / ".sage" / "attachments.json").read_text())
     assert record and all("menu_folder" not in e for e in record)
+    assert orch.project().attached
     assert all("menu_folder" not in e for e in orch.project().attached)
 
 
@@ -515,6 +517,7 @@ def test_a_folder_token_that_now_names_files_says_what_it_matched(tmp_path: Path
     said = svc._ambiguous_mentions(out, "chart the trend from @2024")
 
     assert len(paths) == 8
+    assert len(project.status()["attached"]) == 8
     assert all(not e["menu_folder"] for e in project.status()["attached"])
     assert f"@2024 matches {len(paths)} files" in said
     assert all(p in said for p in paths)
@@ -638,7 +641,7 @@ def test_chat_keeps_its_file_rows(tmp_path: Path):
     can be honoured."""
     report = _run({"prompts": []})
 
-    assert all(row["name"].endswith(".csv") for row in report["menuChat"])
+    assert report["menuChat"] and all(row["name"].endswith(".csv") for row in report["menuChat"])
 
 
 @needs_node

@@ -402,7 +402,7 @@ def test_the_conversation_holders_are_never_written_into_the_membership_file(tmp
     on_disk = json.loads(
         orch.project(start_preview=False).record.project_resources_path.read_text())
 
-    assert all("heldBy" not in row for row in on_disk)
+    assert on_disk and all("heldBy" not in row for row in on_disk)
 
 
 # --- the two surfaces that read it, pinned at the source ---------------------------------------

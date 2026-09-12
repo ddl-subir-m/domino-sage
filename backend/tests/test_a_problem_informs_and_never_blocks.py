@@ -248,9 +248,10 @@ def test_the_boot_asks_twice_because_survival_is_counted_on_the_server():
 def test_nothing_polls_for_problems():
     """One gateway listing multiplied by every open Workbench, forever, to learn what the next turn
     reports for free. ADR-0027 rejects it by name."""
-    for line in STORE.splitlines():
-        if "refreshProblems" in line:
-            assert "setInterval" not in line, line
+    named = [line for line in STORE.splitlines() if "refreshProblems" in line]
+    assert named, "nothing in the store mentions refreshProblems, so the rule below reads no lines"
+    for line in named:
+        assert "setInterval" not in line, line
     # The one timer it does set is the boot's second ask, and it is a `setTimeout`.
     assert STORE.count("setTimeout(() => store.refreshProblems()") == 1
 

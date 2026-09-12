@@ -117,15 +117,21 @@ def test_the_row_does_not_outlive_the_conversation_it_became():
     step = _run([{"newConversation": True},
                  {"firstMessage": True},
                  {"clearConversation": True}])[2]
-    assert all("New conversation" not in r for r in step["rows"]), step["rows"]
+    assert step["rows"] and all("New conversation" not in r for r in step["rows"]), step["rows"]
 
 
 @needs_node
 def test_it_is_not_a_search_result():
     """Filtering asks about history. This row is not in it, and a conversation drawn above
     "No conversations have changed X yet" is the rail contradicting itself."""
+    # One Conversation is tagged with the app being filtered for, so the filtered rail has a row
+    # to be judged. Every thread in the fixture carries `touched: []`, and against those the
+    # filter keeps nothing — leaving the claim below true of an empty rail, which is a pass for
+    # the opposite reason (#267).
     step = _run([{"newConversation": True},
-                 {"railRows": "chat", "railAppFilter": "app_a"}])[1]
+                 {"railRows": "chat", "railAppFilter": "app_a",
+                  "touch": {"id": "thr_both", "appId": "app_a", "appName": "Desk dashboard"}}])[1]
+    assert any("Desks" in r for r in step["rows"]), step["rows"]
     assert all("New conversation" not in r for r in step["rows"]), step["rows"]
 
 
@@ -140,7 +146,7 @@ def test_the_row_does_not_offer_a_click_it_does_not_have():
 def test_the_first_message_hands_the_row_over_to_the_real_conversation():
     """Replaced, not joined. The placeholder stood in for exactly this Thread."""
     step = _run([{"newConversation": True}, {"firstMessage": True}])[1]
-    assert all("New conversation" not in r for r in step["rows"]), step["rows"]
+    assert step["rows"] and all("New conversation" not in r for r in step["rows"]), step["rows"]
     assert len(_active(step)) == 1, _active(step)
     assert step["writes"] == ["POST /threads"], step["writes"]
 
@@ -149,7 +155,7 @@ def test_the_first_message_hands_the_row_over_to_the_real_conversation():
 def test_clicking_another_conversation_discards_it():
     """"Discards" is the whole contract: there was never anything to keep."""
     step = _run([{"newConversation": True}, {"open": "thr_both"}, {"railRows": "chat"}])[2]
-    assert all("New conversation" not in r for r in step["rows"]), step["rows"]
+    assert step["rows"] and all("New conversation" not in r for r in step["rows"]), step["rows"]
     assert _active(step) and "Desks" in _active(step)[0]
 
 

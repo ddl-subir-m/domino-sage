@@ -207,8 +207,9 @@ def test_an_unlink_that_fails_leaves_the_record_describing_what_is_still_served(
 
     left = _paths(orch)
     assert left == {e["path"] for e in _manifest(ws)}          # the record follows the disk
-    assert all(not (ws / p).is_symlink() for p in set(doomed) - left)
-    assert all((ws / p).is_symlink() for p in left)
+    gone = set(doomed) - left
+    assert gone and all(not (ws / p).is_symlink() for p in gone)   # the two that went are gone
+    assert left and all((ws / p).is_symlink() for p in left)
 
 
 # --- The refusal is over the whole set, and it names the files ----------------------------------
@@ -579,8 +580,9 @@ def test_the_removal_acts_on_the_set_the_tree_offered_not_an_older_one(tmp_path:
     out = orch.detach_folder(ds, "raw")
 
     assert out["detached"] == 4
-    assert all(p.startswith("public/data/sales_2026/") for p in _paths(orch))   # the old set stays
-    assert not any(p.startswith("public/data/sales-2026/") for p in _paths(orch))
+    paths = _paths(orch)
+    assert paths and all(p.startswith("public/data/sales_2026/") for p in paths)  # the old set stays
+    assert not any(p.startswith("public/data/sales-2026/") for p in paths)
 
 
 def test_a_dataset_unshared_from_the_project_still_gives_its_files_back(tmp_path: Path):
@@ -993,7 +995,7 @@ def test_a_listing_that_carried_no_answer_withholds_the_attach():
     exactly the Datasets the route turns down, which is what that field exists to prevent."""
     rows = _tree(files=_MIXED, app="Desk margins", folder_act=False)["rows"]
 
-    assert all(r["disabled"] for r in rows)
+    assert rows and all(r["disabled"] for r in rows)
     assert all("could not tell" in r["reason"] for r in rows)
 
 

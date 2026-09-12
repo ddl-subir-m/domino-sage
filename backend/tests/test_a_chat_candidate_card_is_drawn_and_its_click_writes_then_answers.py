@@ -115,5 +115,5 @@ def test_the_answered_card_is_reloaded_away_and_the_question_is_not_asked_twice(
     """
     out = _run()
 
-    assert all(card["live"] is False for card in out["cardsAfter"])
+    assert out["cardsAfter"] and all(card["live"] is False for card in out["cardsAfter"])
     assert out["asked"] == [PROMPT]

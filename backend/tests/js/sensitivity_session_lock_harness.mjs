@@ -74,6 +74,10 @@ if (spec.wayOut) {
         // The DEFINITION, not the first call site — `store.newThread()` is called from inside this
         // same file, and anchoring on the bare name found that instead and read the wrong body.
         const at = src.search(DEF(name));
+        // The window is only evidence if it was found. A renamed or deleted method leaves
+        // `at === -1`, `src.slice(0)` scans the whole file, and every flag below answers about
+        // some other door's body — a wrong answer that reads exactly like a right one.
+        const found = at !== -1;
         // To the NEXT method rather than a fixed number of characters. It was `at + 3000`, and a
         // comment added inside one of these doors pushed `refreshSensitivity()` past the end of the
         // window — where `read === -1` is indistinguishable from the door that legitimately makes no
@@ -86,6 +90,7 @@ if (spec.wayOut) {
         const read = body.indexOf('refreshSensitivity()');
         return {
           name,
+          found,
           drops: drop !== -1,
           beforeRead: read === -1 || drop < read,
           // Whether this door reads the lock at all. `beforeRead` passes when it does not, which is
@@ -109,6 +114,9 @@ if (spec.wayOut) {
       const body = src.slice(at + 1, src.indexOf('\n  }', at));
       const load = body.indexOf('loadAppList(');
       return {
+        // Same reason as `found` above: renamed away, `at === -1` scans from the top of the file
+        // and every flag here answers about whatever happens to sit there.
+        found: at !== -1,
         loadsApp: load !== -1,
         gatedOnLock: /if \(SW\.util\.isLocked\(read\) && !state\.activeApp\) await loadAppList\(\)/
           .test(body),

@@ -862,7 +862,7 @@ def test_inbuild_is_a_routing_signal_and_is_never_persisted(tmp_path: Path):
     })
 
     stored = orch.thread_context(tid)["items"]
-    assert all("inBuild" not in i for i in stored)
+    assert stored and all("inBuild" not in i for i in stored)
 
 
 def test_the_stored_chip_records_which_app_took_the_bytes(tmp_path: Path):
@@ -897,6 +897,7 @@ def test_a_chat_mention_records_no_app_because_it_reached_none(tmp_path: Path):
     })
 
     assert "attachedApp" not in row
+    assert orch.thread_context(tid)["items"]
     assert all("attachedApp" not in i for i in orch.thread_context(tid)["items"])
 
 

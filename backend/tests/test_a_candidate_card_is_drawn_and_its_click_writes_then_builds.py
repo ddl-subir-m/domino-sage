@@ -140,7 +140,7 @@ def test_answering_the_card_retires_it_rather_than_leaving_it_clickable():
     assert "api/project/history" in " ".join(out["routes"])
     assert out["routes"].index("api/project/build/stream") > next(
         i for i, r in enumerate(out["routes"]) if r.startswith("api/project/history"))
-    assert all(card["live"] is False for card in out["cardsAfter"])
+    assert out["cardsAfter"] and all(card["live"] is False for card in out["cardsAfter"])
 
 
 @needs_node

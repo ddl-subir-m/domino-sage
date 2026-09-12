@@ -685,7 +685,7 @@ def test_a_clean_turn_still_routes_on_the_write_flip():
     sent, labels = _handled(ModelControl(mode=Mode.AUTO), clean)
     assert sent["model"] == "cheap-vendor"
     assert labels.route_reason is None
-    assert all(m.get("role") != "system" for m in sent["messages"])
+    assert sent["messages"] and all(m.get("role") != "system" for m in sent["messages"])
 
 
 # ---- the signing veto and the outgoing signature summary (#155, ADR-0032) -----------------------

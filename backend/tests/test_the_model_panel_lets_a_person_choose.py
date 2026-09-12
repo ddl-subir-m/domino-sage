@@ -102,7 +102,7 @@ def test_a_running_build_closes_the_rows_and_says_why():
     """Nothing pins the catalog for the duration of a turn, so a change accepted here would move the
     rest of that build onto another model. Closed, not hidden: the assignments stay readable."""
     (drawn,) = _drawn([{"running": True}])
-    assert all(r["disabled"] for r in drawn["rows"])
+    assert drawn["rows"] and all(r["disabled"] for r in drawn["rows"])
     assert drawn["labels"] == ["Plan", "Implement", "Ask and Chat"]
     (alert,) = [a for a in drawn["alerts"] if a["message"] == "A build is running"]
     assert "Wait for the turn to finish" in alert["description"]
@@ -117,7 +117,7 @@ def test_a_gateway_that_will_not_list_models_says_so_and_offers_a_retry():
     (alert,) = [a for a in drawn["alerts"] if a["type"] == "warning"]
     assert "not answering" in alert["description"]
     assert alert["hasAction"] is True
-    assert all(r["disabled"] for r in drawn["rows"])
+    assert drawn["rows"] and all(r["disabled"] for r in drawn["rows"])
     # The current assignments are still on screen — that is what "readable but closed" means.
     assert drawn["labels"] == ["Plan", "Implement", "Ask and Chat"]
 
@@ -134,7 +134,7 @@ def test_a_gateway_that_lists_no_models_at_all_still_explains_itself():
     # `tools/brand_lint.py` only reaches `SW.brand.*` call sites — a plain literal like this one is
     # exactly where the term drifts back in.
     assert "the gateway" not in alert["description"]
-    assert all(r["disabled"] for r in drawn["rows"])
+    assert drawn["rows"] and all(r["disabled"] for r in drawn["rows"])
 
 
 # ---- what the two review axes found untested --------------------------------------------------------
@@ -153,7 +153,7 @@ def test_a_read_that_never_lands_still_shows_what_each_mode_runs():
     assert plan["value"] == "gpt-5.4"
     assert plan["options"] == [{"value": "gpt-5.4", "label": "gpt-5.4", "disabled": False,
                                 "title": None}]
-    assert all(r["disabled"] for r in drawn["rows"])
+    assert drawn["rows"] and all(r["disabled"] for r in drawn["rows"])
 
 
 def test_a_listing_that_arrived_leaves_the_rows_open_and_says_what_went_unchecked():

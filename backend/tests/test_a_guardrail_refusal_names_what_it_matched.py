@@ -93,6 +93,7 @@ def test_sages_own_instructions_are_never_a_carrier():
     """An agent that loses its system prompt answers as a stranger — the failure ADR-0022 refused."""
     msgs = [{"role": "system", "content": f"You are Sage. Never say {POISON}."},
             {"role": "user", "content": "hello"}]
+    assert carriers(msgs), "nothing in the pair is a carrier, so neither assertion below tests it"
     assert all(c.label != "an earlier answer in this conversation" for c in carriers(msgs))
     assert not [c for c in carriers(msgs) if "system" in c.label]
     found = search(msgs, _asker()[0])

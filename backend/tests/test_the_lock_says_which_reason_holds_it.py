@@ -133,6 +133,7 @@ def test_every_door_out_of_a_conversation_drops_its_session_lock_before_reading(
     doors = _way_out(SESSION, DECLARED)["doors"]
 
     assert [d["name"] for d in doors] == ["newThread", "openThread", "clearConversation"]
+    assert all(d["found"] for d in doors), doors      # the window was located, so the flags mean something
     assert all(d["drops"] for d in doors)
     assert all(d["beforeRead"] for d in doors)
     # `beforeRead` passes when a door makes no read at all, which is true of `clearConversation` and
@@ -161,12 +162,17 @@ def test_an_armed_lock_loads_the_app_its_way_out_names():
     dismissal taken in that window would be undone by the arrival.
     """
     read = _way_out(SESSION, DECLARED)["lockRead"]
+    assert read["found"], "refreshSensitivity was not found, so nothing below is about it"
 
     assert read["loadsApp"], "an armed lock loads nothing, so the pointer has no app to name"
     assert read["gatedOnLock"], "the load is unconditional, which taxes every Chat open"
     assert read["beforeApply"]
-    # And no door does it, so the promise above cannot be broken from the other side.
-    assert [d["loadsApp"] for d in _way_out(SESSION, DECLARED)["doors"]] == [False, False, False]
+    # And no door does it, so the promise above cannot be broken from the other side. Read through
+    # `found` for the same reason as the doors test: a renamed method scans a wrong region of
+    # `store.js`, where `loadsApp` comes back False for a reason this line is not about.
+    doors = _way_out(SESSION, DECLARED)["doors"]
+    assert all(d["found"] for d in doors), doors
+    assert [d["loadsApp"] for d in doors] == [False, False, False]
 
 
 @needs_node

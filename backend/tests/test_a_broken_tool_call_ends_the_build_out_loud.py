@@ -125,7 +125,7 @@ def test_the_retry_note_rides_the_retry_only(tmp_path: Path):
 
     list(orch.build_stream("add a chart"))
 
-    assert all("did not parse" not in p["text"] for p in oc.prompts)
+    assert oc.prompts and all("did not parse" not in p["text"] for p in oc.prompts)
 
 
 def test_the_broken_arguments_are_described_for_the_log():
