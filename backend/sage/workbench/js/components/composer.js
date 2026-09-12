@@ -291,6 +291,20 @@ window.SW = window.SW || {};
     const modelLabel = SW.util.lockedLabel(sensitivity, effectiveModel, pickedLabel, true);
     const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
 
+    // What a chip's click actually did. In Build a mentioned Dataset file is an Attachment — the
+    // bytes are copied into the selected app and a committed manifest entry rehydrates them on
+    // publish (ADR-0048) — and the `@` menu has no label to say so, so the chip carries the
+    // receipt. Read off `attachedApp`, which the server wrote when the fork actually ran, rather
+    // than off the mode and the current selection: the chip is the Conversation's, so a
+    // re-derived mark relabels itself on the next app switch and marks a Chat mention the moment
+    // somebody opens Build. Neither is a receipt. Resolved through `apps` so a renamed app reads
+    // as its new name, and an app since deleted says nothing rather than an id. Not a toast: a
+    // toast is gone in eight seconds and the Attachment outlives the Conversation.
+    const attachMark = (att) => {
+      const inApp = att.attachedApp && (apps || []).find((a) => a.id === att.attachedApp);
+      return inApp ? h('span', { className: 'sw-chip-scope' }, `In ${inApp.name}`) : null;
+    };
+
     const attachedIds = new Set(attachments.map((a) => a.resourceId));
     // The list uniqueness is computed against, for the token this menu INSERTS and for the folder its
     // rows show (ADR-0030). One list for both, so the folder a person reads on a row and the token
@@ -756,7 +770,8 @@ window.SW = window.SW || {};
                     className: 'sw-chip',
                   },
                   h('span', null, SW.util.iconFor(att.resourceKind)),
-                  att.resourceName
+                  att.resourceName,
+                  attachMark(att)
                 )
               )
             )

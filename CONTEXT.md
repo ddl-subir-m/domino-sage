@@ -572,9 +572,12 @@ detach, a bare "Stop using" (it does not say where)
 **Attach folder**:
 Putting every file below one Dataset folder into a Built App in a single act, at any depth and
 including the Dataset's own root. It is the same word the app's single-file door already uses. The
-rail ink is the short half, "Attach" and "Remove", the way a file row says "Use here" for
-[[Use in this conversation]]; hover, aria-label, and the confirmation keep "Attach folder" and
-"Remove folder" and name the app, which is where the scope has to be said before anything moves.
+rail ink is the short half, "Attach" and "Remove", the way the file row beside it says "Attach"
+for [[Attach file]]; hover, aria-label, and the confirmation keep "Remove folder" and name the app,
+which is where the scope has to be said before anything moves. The attach's hover is "Attach to
+{app}" rather than "Attach this folder to {app}", because the leaf below it says "Attach file to
+{app}" and one act at two grains drifting into two phrasings is what
+[ADR-0030](docs/adr/0030-a-mention-names-one-file-or-says-what-else-it-matched.md) exists to stop.
 A full glossary phrase next to Chat's file-count column is what wrapped the folder name through
 the buttons. Both refuse whole rather than land half: over the size cap, or with any file still read by the app's code,
 nothing moves and the sentence names the numbers or the files. The attach is offered only on a
@@ -588,6 +591,19 @@ See
 _Kind_: word
 _Avoid_: "Attach all", "Add folder", import, sync, upload (that makes an [[Upload]]), "Attach
 dataset" (the root is a folder like any other, and the whole-Dataset chip is a different act)
+
+**Attach file**:
+Putting one Dataset file into a Built App: the bytes are copied into the app's `public/data/`, a
+committed manifest entry rehydrates them on publish, and the sensitivity lock arms. It is what a
+mention of a Dataset file does **in Build** — the same gesture that is [[Use in this conversation]]
+in Chat, which writes a Session context chip and moves nothing. So the control is mode-gated: the
+rail leaf reads "Attach" with "Attach file to {app}" on hover and aria-label, and the `@` menu,
+which has no label to rename, marks its composer chip "In {app}" instead. Four things happen on one
+click and none of them used to be said. See
+[ADR-0048](docs/adr/0048-in-build-a-mention-is-an-attachment-and-the-control-says-so.md).
+_Kind_: word
+_Avoid_: "Use here" in Build (true in Chat, false here), "Add file to app", import, copy, "Attach"
+with no grain (that is [[Attach folder]]'s ink, and the two pair on purpose)
 
 **Shared credential**:
 A Data Source credential belonging to a service account rather than a person, so every

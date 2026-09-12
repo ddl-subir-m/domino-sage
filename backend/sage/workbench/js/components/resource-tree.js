@@ -287,7 +287,15 @@ window.SW = window.SW || {};
   // so its door is on the app's own surface (ADR-0021), and this tree is the working set's — it
   // shows what a Data Source or a Dataset CONTAINS, which is orientation. What it keeps is the
   // Conversation's act and the pin, whose scopes it does own.
-  function LeafRow({ name, subtitle, pinned, onMention, onPin, onUnpin }) {
+  //
+  // `useLabel` / `useGlossary` are the words that act performs under, and they default to Chat's
+  // pair. In Build the same click is an Attachment — it copies the file into the selected app,
+  // commits a manifest entry that rehydrates it on publish, and arms the lock (ADR-0048) — so the
+  // Dataset file leaf hands its own pair down. The table leaf one branch over passes neither: it is
+  // `kind: "table"`, it never reaches that fork, and `Use here` stays true for it.
+  function LeafRow({ name, subtitle, pinned, useLabel, useGlossary, onMention, onPin, onUnpin }) {
+    const label = useLabel || 'Use here';
+    const glossary = useGlossary || 'Use in this conversation';
     return h(
       'div',
       { className: 'sw-tree-leaf' },
@@ -295,18 +303,24 @@ window.SW = window.SW || {};
       h(
         'span',
         { className: 'sw-tree-leaf-acts' },
-        // The glossary term is the title and the aria-label, not the ink. Twenty-four
+        // The glossary term is the hover and the aria-label, not the ink. Twenty-four
         // characters of "Use in this conversation" ate the table name in a 320px dock
         // and left `ADMI…` beside a sentence the row already sits inside. The visible
         // label is the short half of the pair Stop using here already uses; a hover
         // and a screen reader still say the same thing the menu and the drawer say.
-        h(Button, {
-          size: 'small',
-          type: 'link',
-          title: 'Use in this conversation',
-          'aria-label': 'Use in this conversation',
-          onClick: onMention,
-        }, 'Use here'),
+        // The hover is the `Tooltip` the folder row uses rather than a native `title`:
+        // one act drawn at two grains reads as two affordances when one waits for the
+        // browser and the other does not.
+        h(
+          Tooltip,
+          { title: glossary },
+          h(Button, {
+            size: 'small',
+            type: 'link',
+            'aria-label': glossary,
+            onClick: onMention,
+          }, label)
+        ),
         pinned
           ? h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin')
           // Pin only reorders the @ menu — it sends nothing. Sitting unlabelled beside the control
@@ -464,6 +478,21 @@ window.SW = window.SW || {};
       name: resource.name,
       path: resource.path,
     };
+    // The two facts both grains of the act read: the route, and which Built App is selected.
+    //
+    // ADR-0029 settles the folder grain: "Chat gains no folder act." The act ships bytes into a
+    // Built App and commits it to a publish-time rehydrate, and Chat draws no app rail — so in Chat
+    // it named an app the reader cannot see, picked by whatever Build last selected, on a
+    // Conversation that may have built nothing at all. Read off the route rather than off the app,
+    // because "no app selected" and "not a place this act belongs" are different answers and only
+    // one of them is a refusal worth drawing.
+    //
+    // The file grain reads the pair the way `api.js` reads it when it sets `inBuild` on the post:
+    // the route AND a selected app. With none selected the fork does not fire — the click falls
+    // back to the chat fetch — so the words that name an app would promise a copy nobody receives
+    // (ADR-0048).
+    const inBuild = SW.router.get().mode === 'build';
+    const app = inBuild ? SW.store.get().activeApp : null;
     const renderFile = (f) => {
       const leaf = {
         id: `dsfile:${datasetId}:${f.path}`,
@@ -480,24 +509,17 @@ window.SW = window.SW || {};
         name: leaf.name,
         subtitle: f.path,
         pinned: pins.files.has(f.path),
+        // `!f.attached` as well as the app: `add_thread_context` guards the fork on
+        // `not row.get("path")` and `leaf.path` above is set from `f.attached`, so on a file the
+        // app already carries the click is a pure mention and `Use here` is the true pair again.
+        useLabel: app && !f.attached ? 'Attach' : undefined,
+        useGlossary: app && !f.attached ? `Attach file to ${app.name}` : undefined,
         onMention: () => SW.store.addToContext(leaf, { quiet: true }),
         onPin: () => SW.store.pinLeaf(parent, { path: f.path, name: leaf.name }),
         onUnpin: () => SW.store.unpinLeaf(parent, { path: f.path }),
       });
     };
     const folders = Object.keys(tree.folders);
-    // One act, drawn on every folder row and on the Dataset's own. What withholds it is settled
-    // once, here: the server's answer about this listing, and the one thing only the client knows
-    // — which Built App the label would name (ADR-0008 makes that a question every surface has to
-    // answer, and a door promising "to this app" with none selected is a dead end).
-    // ADR-0029 settles this: "Chat gains no folder act." The act ships bytes into a Built App and
-    // commits it to a publish-time rehydrate, and Chat draws no app rail — so in Chat this named an
-    // app the reader cannot see, picked by whatever Build last selected, on a Conversation that may
-    // have built nothing at all. Read off the route rather than off the app, because "no app
-    // selected" and "not a place this act belongs" are different answers and only one of them is a
-    // refusal worth drawing.
-    const inBuild = SW.router.get().mode === 'build';
-    const app = inBuild ? SW.store.get().activeApp : null;
     // A cancelled confirmation changed nothing, so it costs no fetch. A removal that FAILED can
     // still have moved files — it commits what it unlinked — and answers `'stale'`, which is
     // truthy here for exactly that reason.
@@ -505,15 +527,21 @@ window.SW = window.SW || {};
       if (changed) setReread((n) => n + 1);
       return changed;
     };
+    // What withholds this act is settled once, here: the server's answer about this listing, and
+    // whether there is an app for the label to name (ADR-0008 makes that a question every surface
+    // has to answer, and a door promising "to this app" with none selected is a dead end).
     const act = !inBuild ? null : {
-      // The short half, in both directions, the way a file row says "Use here". `Attach folder
-      // to <app>` wrapped the row; `Attach folder` next to the count still shoved "All files"
-      // through the buttons. The glossary and the app stay on hover, aria-label, and confirmation.
+      // The short half, in both directions, the way the file row beside it says "Attach". `Attach
+      // folder to <app>` wrapped the row; `Attach folder` next to the count still shoved "All
+      // files" through the buttons. The glossary and the app stay on hover, aria-label, and
+      // confirmation.
       label: 'Attach',
       ariaLabel: 'Attach folder',
       // Only when there is an app to name. With none selected the act is unavailable anyway, and
-      // `reason` below is the sentence that row needs.
-      title: app ? `Attach this folder to ${app.name}` : '',
+      // `reason` below is the sentence that row needs. `Attach to <app>` rather than `Attach this
+      // folder to <app>`: the leaf below says `Attach file to <app>`, and one act at two grains
+      // drifting into two phrasings is what ADR-0030 exists to stop.
+      title: app ? `Attach to ${app.name}` : '',
       // Fails CLOSED on a listing that carried no answer. Reading a missing `folder_act` as
       // "available" would draw an enabled button on exactly the Datasets the route turns down,
       // which is the one arrangement this field exists to make impossible.

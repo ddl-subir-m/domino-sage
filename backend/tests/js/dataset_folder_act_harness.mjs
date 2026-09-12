@@ -329,6 +329,25 @@ function readRow(row) {
   };
 }
 
+// One file leaf, read the way a person reads it: the ink on the act, and the glossary term a
+// hover and a screen reader get. Which pair of words the row offers is the whole of ADR-0048 —
+// in Build the click copies the file into the app and commits a manifest entry, in Chat it does
+// not. `nativeTitle` is reported separately from `tooltip` because the words alone cannot tell
+// the `title` attribute apart from the `Tooltip` the folder row already uses.
+function readLeaf(row) {
+  const inner = flatten(row);
+  const nameNode = inner.find((n) => cls(n) === 'sw-tree-leaf-name');
+  const use = inner.filter((n) => n.t === 'Button')[0];
+  const tip = use && inner.find((n) => n.t === 'Tooltip' && n.c[0] === use);
+  return {
+    name: nameNode ? words(nameNode) : '',
+    act: use ? words(use) : '',
+    tooltip: tip ? String(tip.p.title || '') : '',
+    nativeTitle: use ? String(use.p.title || '') : '',
+    ariaLabel: use ? String(use.p['aria-label'] || '') : '',
+  };
+}
+
 await SW.store.setScope({ id: 'proj', name: 'Demo Project' }, { silent: true });
 await SW.store.loadApps();
 await settle();
@@ -371,4 +390,6 @@ const after = input.confirm
       .map(readRow)
   : rows;
 
-console.log(JSON.stringify({ rows, after, confirm, posted }));
+const leaves = painted.filter((n) => cls(n) === 'sw-tree-leaf').map(readLeaf);
+
+console.log(JSON.stringify({ rows, after, leaves, confirm, posted }));

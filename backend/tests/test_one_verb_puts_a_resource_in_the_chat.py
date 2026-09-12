@@ -64,12 +64,17 @@ def test_every_surface_that_attaches_a_resource_uses_the_same_words():
 
 def test_the_tree_row_shortens_the_act_so_the_name_can_be_read():
     """Twenty-four characters of the glossary term ate the table name in a 320px dock. The visible
-    label is the short half of the pair Stop using here already uses; the title keeps the name the
-    menu and the drawer still say out loud."""
+    label is the short half of the pair Stop using here already uses; the glossary keeps the name
+    the menu and the drawer still say out loud.
+
+    Both halves are DEFAULTS since ADR-0048 — a Build row hands its own pair down, because there
+    the same click is an Attachment — so the pair is asserted where it is declared. Which words
+    each mode actually draws is rendered in
+    `test_in_build_the_control_that_attaches_a_file_says_so.py`."""
     leaf = _flat(TREE.split("function LeafRow(")[1].split("\n  }")[0])
-    assert "}, 'Use here')" in leaf
-    assert "title: 'Use in this conversation'" in leaf
-    assert "'aria-label': 'Use in this conversation'" in leaf
+    assert "const label = useLabel || 'Use here';" in leaf
+    assert "const glossary = useGlossary || 'Use in this conversation';" in leaf
+    assert "'aria-label': glossary," in leaf
     assert "}, 'Use in this conversation')" not in leaf
 
 
@@ -135,9 +140,13 @@ def test_only_pin_carries_the_tooltip():
 
     Counted over `LeafRow`, which is the row this claim is about. The folder row beside it carries
     one too, for the opposite reason: its act is sometimes UNAVAILABLE, and a disabled control that
-    does not say why is the dead end (ADR-0029)."""
+    does not say why is the dead end (ADR-0029).
+
+    Two, not one, since ADR-0048: the act's own hover moved off the native `title` attribute onto
+    the same `Tooltip` the folder row uses, so one act drawn at two grains no longer reads as two
+    affordances. Unpin is still the bare Button `PIN_BRANCH` above pins it to."""
     leaf = _flat(TREE.split("function LeafRow(")[1].split("\n  }")[0])
-    assert leaf.count("h( Tooltip,") == 1
+    assert leaf.count("h( Tooltip,") == 2
 
 
 # Membership stopped being a gate in front of the verb ------------------------

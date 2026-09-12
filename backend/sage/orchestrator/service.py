@@ -6495,6 +6495,13 @@ class Orchestrator:
                 # fetched for the question, not for the app.
                 if row.get("inBuild"):
                     fetched = self.attach_file(str(dataset_id), str(rel))
+                    # Which app took the bytes, recorded on the row rather than re-derived on
+                    # read. The chip is the Conversation's and outlives both the selection and
+                    # the mode, so a receipt read off whatever is selected NOW would relabel
+                    # itself on the next app switch and would mark a CHAT mention the moment
+                    # somebody opened Build (ADR-0048). Set after the call, so a refused attach
+                    # keeps the chip and records no app it never reached.
+                    row["attachedApp"] = self.project().workspace.app_id
                 else:
                     fetched = self.fetch_dataset_file_for_chat(str(dataset_id), str(rel))
                 row["path"] = fetched.get("path")

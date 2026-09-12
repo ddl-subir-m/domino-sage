@@ -69,10 +69,10 @@ looks from the control that fires it.
 **The label, where there is one.** The fork fires only for a row that is `kind: "file"` carrying a
 `datasetId` and a `datasetRelPath` (`service.py:6410`), so exactly two controls reach it: the
 Dataset **file** leaf in the rail tree (`resource-tree.js:483`) and the composer `@`-menu
-(`composer.js:393`). Only the leaf has a label. In Build it reads `Attach`, aria `Attach file`,
-tooltip `Attach to {app}`; in Chat it keeps `Use here` / `Use in this conversation`, which is true
-there. The folder tooltip shortens to `Attach to {app}` so
-the pair reads identically at both grains — two phrasings for one act at two grains is the drift
+(`composer.js:393`). Only the leaf has a label. In Build it reads `Attach`, with `Attach file to
+{app}` as both its tooltip and its aria-label; in Chat it keeps `Use here` / `Use in this
+conversation`, which is true there. The folder tooltip shortens to `Attach to {app}` so
+the pair reads as one act at both grains — two phrasings for one act at two grains is the drift
 [ADR-0030](0030-a-mention-names-one-file-or-says-what-else-it-matched.md) exists to stop. The leaf's
 hover moves from the native `title` attribute to the `Tooltip` the folder row already uses.
 

@@ -865,6 +865,58 @@ def test_inbuild_is_a_routing_signal_and_is_never_persisted(tmp_path: Path):
     assert all("inBuild" not in i for i in stored)
 
 
+def test_the_stored_chip_records_which_app_took_the_bytes(tmp_path: Path):
+    """The receipt the composer chip draws (ADR-0048). `inBuild` says which route the mention took
+    and is then thrown away, so without this the only thing left to read is whatever app happens to
+    be selected when somebody next looks — which relabels the chip on the next app switch and marks
+    a Chat mention the moment Build is opened. Neither is a receipt."""
+    orch = _orch(tmp_path, assets=_UnmountedAssets())
+    project = orch.project(start_preview=False)
+    tid = orch.create_thread()["id"]
+
+    row = orch.add_thread_context(tid, {
+        "kind": "file", "name": "wells.csv",
+        "datasetId": "ds_shared", "datasetRelPath": "raw/wells.csv", "inBuild": True,
+    })
+
+    assert row["attachedApp"] == project.workspace.app_id
+    stored = orch.thread_context(tid)["items"]
+    assert [i["attachedApp"] for i in stored] == [project.workspace.app_id]
+
+
+def test_a_chat_mention_records_no_app_because_it_reached_none(tmp_path: Path):
+    """The same field, absent. It says "this chip is Session context", which is what a mention with
+    no `inBuild` is — the bytes went to scratch and no app carries them."""
+    orch = _orch(tmp_path, assets=_UnmountedAssets())
+    orch.project(start_preview=False)
+    tid = orch.create_thread()["id"]
+
+    row = orch.add_thread_context(tid, {
+        "kind": "file", "name": "wells.csv",
+        "datasetId": "ds_shared", "datasetRelPath": "raw/wells.csv",
+    })
+
+    assert "attachedApp" not in row
+    assert all("attachedApp" not in i for i in orch.thread_context(tid)["items"])
+
+
+def test_a_refused_attach_keeps_the_chip_and_names_no_app(tmp_path: Path, monkeypatch):
+    """The chip is worth keeping without a path — the turn prompt routes the agent at the Domino
+    data library instead. What it must not keep is a receipt for a copy that was refused."""
+    orch = _orch(tmp_path, assets=_UnmountedAssets())
+    orch.project(start_preview=False)
+    tid = orch.create_thread()["id"]
+    monkeypatch.setattr(orch, "_attach_max_bytes", 1)
+
+    row = orch.add_thread_context(tid, {
+        "kind": "file", "name": "wells.csv",
+        "datasetId": "ds_shared", "datasetRelPath": "raw/wells.csv", "inBuild": True,
+    })
+
+    assert not row.get("path")
+    assert "attachedApp" not in row
+
+
 def _chip(orch, thread_id: str) -> dict:
     return orch.add_thread_context(thread_id, {
         "kind": "file", "name": "wells.csv",

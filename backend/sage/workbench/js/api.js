@@ -496,6 +496,10 @@ SW.api = {
       parentId: item.parentId,
       datasetId: item.datasetId,
       datasetRelPath: item.datasetRelPath,
+      // Which Built App this chip's bytes went into, written by the server when the Build fork
+      // ran (ADR-0048). Absent on a Chat mention, on a refused attach, and on every chip written
+      // before the field existed — all three of which are "say nothing", not "guess".
+      attachedApp: item.attachedApp,
       scope: item.scope,
     }));
   },
@@ -555,6 +559,7 @@ SW.api = {
       parentId: row.parentId || resource.parentId,
       datasetId: row.datasetId || resource.datasetId,
       datasetRelPath: row.datasetRelPath || resource.datasetRelPath,
+      attachedApp: row.attachedApp,
       scope: row.scope || resource.scope,
       // Set only when THIS post is what made the resource a project member. The store refreshes
       // the Resource Browser off it, so dropping it here would leave the panel denying a join that

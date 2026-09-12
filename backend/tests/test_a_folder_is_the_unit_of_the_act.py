@@ -666,7 +666,10 @@ def test_every_folder_row_carries_its_count_its_size_and_the_act(tmp_path: Path)
     # The short half, like "Use here". The rail is one column wide beside the file names, so the
     # glossary and the app stay on hover, aria-label, and the confirmation.
     assert {r["act"] for r in rows} == {"Attach"}
-    assert {r["title"] for r in rows} == {"Attach this folder to Desk margins"}
+    # `Attach to <app>`, not `Attach this folder to <app>`: the file leaf below it says `Attach
+    # file to <app>`, and one act at two grains drifting into two phrasings is what ADR-0030
+    # exists to stop.
+    assert {r["title"] for r in rows} == {"Attach to Desk margins"}
     assert not [r for r in rows if r["disabled"]]
 
 

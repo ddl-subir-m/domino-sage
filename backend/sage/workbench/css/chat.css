@@ -805,6 +805,19 @@
 }
 .sw-chip .ant-tag-close-icon { color: var(--purple-600) !important; }
 
+/* The receipt on a chip whose click was an Attachment rather than Session context (ADR-0048).
+   Quieter than the file's name and after it, because the name is what a reader is scanning for
+   and the app is what they check once. It is the half that gives way: `.sw-chip` above caps the
+   chip at 240px and does not clip, so a long app name would otherwise spill past the border and
+   push nothing — here it shrinks and ellipsises, and the file's name keeps the width. */
+.sw-chip-scope {
+  color: var(--purple-600);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The first chip's one-time note (#137): a chip is Session context, this Conversation's only.
    It rides below the chips; dismissed, the viewer pref keeps it away for good. */
 .sw-chip-hint {

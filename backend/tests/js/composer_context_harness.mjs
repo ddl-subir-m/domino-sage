@@ -50,7 +50,18 @@ function serve(url, options = {}) {
   if ((m = path.match(/^\/threads\/([^/]+)\/context$/))) {
     if (method === 'GET') return json({ items: rows(m[1]) });
     if (method === 'POST') {
-      const row = { ...JSON.parse(options.body), id: `ctx_${++nextId}` };
+      const posted = JSON.parse(options.body);
+      const row = { ...posted, id: `ctx_${++nextId}` };
+      // What `add_thread_context` does with `inBuild` on a Dataset file: it runs `attach_file`
+      // and records WHICH app took the bytes, so the chip's receipt is a fact on the row rather
+      // than something re-derived from whatever is selected later (ADR-0048). Modelled here
+      // because the mark is unreadable without it, and because `inBuild` is a membership-only
+      // field the server never stores — the client must not be able to reconstruct it.
+      if (posted.inBuild && posted.datasetId) {
+        const selected = apps.find((a) => a.selected);
+        if (selected) row.attachedApp = selected.id;
+      }
+      delete row.inBuild;
       rows(m[1]).push(row);
       return json(row);
     }
@@ -142,6 +153,14 @@ const chipNodes = (tree) => [...walk(tree)].filter((n) => n.p && n.p.className =
 const chipName = (node) =>
   (node.c || []).flat(Infinity).filter((c) => typeof c === 'string').join('');
 const chips = (where) => chipNodes(mount(where)).map(chipName);
+// The mark ADR-0048 puts on a chip whose click was an Attachment rather than a Session context
+// row. Read off its own class rather than out of the chip's words, because `chipName` takes only
+// the direct string children and every other reader here names a chip by that.
+const chipMark = (node) => [...walk(node)]
+  .filter((n) => n.p && n.p.className === 'sw-chip-scope')
+  .map((n) => (n.c || []).flat(Infinity).filter((c) => typeof c === 'string').join(''))
+  .join('');
+const marks = (where) => chipNodes(mount(where)).map(chipMark);
 
 // Handlers fire and forget; the store writes to the server and reads back. Wait for the traffic to
 // stop rather than for a fixed number of ticks.
@@ -158,6 +177,8 @@ function snapshot() {
   return {
     chat: chips('chat'),
     build: chips('build'),
+    chatMarks: marks('chat'),
+    buildMarks: marks('build'),
     server: (contexts.get(CONVERSATION) || []).map((i) => i.name),
     activeApp: state.activeApp ? state.activeApp.id : null,
   };
