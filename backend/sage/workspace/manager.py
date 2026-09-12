@@ -177,6 +177,14 @@ _OWNED_SOURCES = (
 # question into an error page over a file that is optional by design.
 
 
+# Stamped beside every step number `set_plan_retry_step` writes, to say which numbering it speaks.
+# A number without it was written before #272 renumbered plan steps by position, and the two
+# numberings do not agree: a planner that counted 2, 3, 4 persisted 2 for its FIRST phase, which a
+# 1..N parse reads as "phase 1 is already done". Undated numbers are therefore not converted — they
+# are not believed. See read_plan_retry_step.
+_STEP_NUMBERING = "position"
+
+
 def _read_settings_file(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -747,7 +755,52 @@ class Workspace:
 
         Lives in settings.json beside `livePlanDocId`, whose two writers are also this one's: any
         new plan.md, and archiving the one that is live. Fails open on read — missing or corrupt
-        state reads as "owes nothing", the behaviour that predates this."""
+        state reads as "owes nothing", the behaviour that predates this.
+
+        0 carries two meanings here — "no step" and "owes none" — and they stay one meaning only
+        because no step can BE 0: `parse_steps` numbers steps by position from 1, so the only writer
+        of a step number cannot produce one (#272). That is an invariant held by the parser, not by
+        this encoding. A writer of a step number that does not come from `parse_steps` has to hold
+        it too, or take the overload apart properly.
+
+        Which is also why the number is dated. It survives on disk across a deploy, so a number the
+        OLD parser wrote outlives the numbering it was written in, and `write_plan` only clears the
+        step when the DOCUMENT changes — nothing clears it when the code does. An undated number
+        reads as 1 rather than as a position (see _STEP_NUMBERING)."""
+        step = self._stored_plan_retry_step()
+        if step and _read_settings_file(self._settings_path).get("planRetryNumbering") != _STEP_NUMBERING:
+            # A step number from before the renumbering, which names a phase in a numbering nothing
+            # reads any more. 1, not 0: 1 is "from the top", and 0 would say the plan owes no build
+            # at all — which archives it, the loss #272 exists to stop. The cost is a resumed build
+            # redoing phases already on disk, once, for one plan. The alternative is skipping a
+            # phase that never ran and reporting the app built.
+            return 1
+        return step
+
+    def _stored_plan_retry_step(self) -> int:
+        """The step number as stored, without the dating `read_plan_retry_step` applies to it.
+
+        Two readers ask two questions of this one field, and only one of them is about position.
+        "Where does a retry pick up" cannot trust a number written in a numbering nothing reads any
+        more, so that reader gets 1. "Did phases finish and leave their code on disk" can trust it:
+        a stored step above 1 means at least one phase ran to completion under WHATEVER numbering
+        wrote it, which is the whole of what `archive_plan` needs to know (#272).
+
+        Blunting that second question to 1 as well would file a plan three phases of which are
+        committed under `NNN-cancelled.md`, which `_newest_built_archive` skips — so the pin would
+        say "No plan yet" for an app that plan built, which is #173 and #175 put back.
+
+        `archive_plan` needs the CONVERSE too — that a step of 1 or less means nothing finished —
+        and for an UNDATED 1 that is unknowable rather than true. The old parser took both shapes,
+        and a plan headed 0, 1, 2 stored 1 once its first phase finished. Nothing on disk says which
+        numbering wrote it, so this is decided, not resolved, and it is decided by which way the
+        writers lean: of the three that can store a 1, two mean nothing finished — the give-up path
+        at service.py:13300, which covers every UNPHASED build as well, and a 1-based plan's first
+        phase — and only a 0-based plan's second phase means one did. Erring the other way would
+        mis-file the common case in the opposite direction, and the pin naming a plan that built
+        nothing displaces the earlier plan that really did build the app, which is the same harm as
+        the one it would prevent. So an undated 1 keeps reading as "nothing finished", and the cost
+        is a 0-numbered legacy plan exactly one phase deep that is cancelled rather than retried."""
         raw = _read_settings_file(self._settings_path).get("planRetryFromStep")
         return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
 
@@ -762,6 +815,7 @@ class Workspace:
             if self.read_plan_retry_step() == step:
                 return
             settings["planRetryFromStep"] = step
+            settings["planRetryNumbering"] = _STEP_NUMBERING
             _write_settings_file(self._settings_path, settings)
         except OSError:
             pass
@@ -821,7 +875,11 @@ class Workspace:
             return None
         # Read before the clear below, and at 1 rather than 0: step 1 means nothing finished, which
         # is also what a whole build that gave up writes (see _approve_locked).
-        if self.read_plan_retry_step() > 1:
+        #
+        # The STORED step, not `read_plan_retry_step`'s: the question here is "did phases finish",
+        # which an undated number answers perfectly well, and the dating exists for the other reader
+        # (see _stored_plan_retry_step).
+        if self._stored_plan_retry_step() > 1:
             # Both flags fall away for the one reason, so the same press cannot mean two things:
             # phases finished and their code is on disk, whichever door retired the plan.
             cancelled = False

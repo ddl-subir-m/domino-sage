@@ -13419,6 +13419,24 @@ class Orchestrator:
 
         client = self._ensure_opencode()
         steps = parse_steps(plan_md)
+        if start_step > len(steps):
+            # A resume point that no step in this plan answers to. Every phase would match the skip
+            # below, the loop would run nothing, and this function would fall through to its success
+            # path and report `ok` — a plan archived as built having built nothing this turn, which
+            # is the half-built app claiming to be whole that resuming exists to avoid.
+            #
+            # NOT the guard against a number written before #272 renumbered steps by position —
+            # that one is in range as often as not (a planner that counted 2, 3, 4 persisted 2 for
+            # its first phase), so it is caught by dating the number instead, at its writer. See
+            # `_STEP_NUMBERING`.
+            #
+            # What is left here is a resume point this parser wrote against a plan.md that has since
+            # changed under it: `write_plan` clears the step whenever the document changes, and the
+            # agent's own workdir contains `.sage/`, so a direct write is a route nothing clears.
+            # Starting from the top is the safe direction either way — re-running a phase costs the
+            # work the first attempt already did, skipping one ships an app nobody can tell is
+            # unfinished.
+            start_step = 0
 
         def persist(ev: dict) -> dict:
             # Same argument as _build_stream's persist(): the receipt has two yield sites here and
@@ -13539,7 +13557,7 @@ class Orchestrator:
             if project.snapshot.working_tree_hash() != tree_before:
                 yield persist(_app_change_event(project.app_for_turn()))
             yield persist({"type": "done", "ok": False,
-                           "decision": f"phase {step.n} of {len(steps)} failed — {why}"})
+                           "decision": f"phase {step.n} of {len(steps)}, {step.label}, failed — {why}"})
             return
 
         project.app_for_turn().set_last_turn_failed(False)

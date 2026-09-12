@@ -55,7 +55,7 @@ def _stuck_in_a_live_conversation(tmp_path: Path):
     thread_id = _conversation(orch)
     list(orch.build_stream("build me a trades dashboard", conversation=thread_id))
     events = list(orch.approve_stream(conversation=thread_id))
-    assert _done(events)["decision"].startswith("phase 2 of 3 failed")
+    assert _done(events)["decision"].startswith("phase 2 of 3, Trades table, failed")
     return orch, thread_id
 
 

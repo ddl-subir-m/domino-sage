@@ -182,3 +182,86 @@ def test_dont_touch_still_fences_files_the_step_does_not_own():
     step = parse_steps(plan)[0]
 
     assert step.dont_touch == ["src/types.ts", "src/components/FilterBar.tsx"]
+
+
+ZERO_NUMBERED = """A dashboard for exploring trade data.
+
+## Plan
+
+### 0. Scaffold
+- Files — src/data.ts
+- Do — Create the project shell and a typed Trade record.
+- Done when — The app compiles.
+
+### 1. Trades table
+- Files — src/Table.tsx
+- Do — Render the trades in a sortable table.
+- Done when — The preview shows a sortable table.
+
+### 2. Currency filter
+- Files — src/Filter.tsx
+- Do — Add a currency dropdown above the table.
+- Done when — Picking a currency narrows the visible rows.
+"""
+
+
+def test_a_plan_numbered_from_zero_is_renumbered_from_one():
+    """The prompt asks for 1, 2, 3 and `\\d{1,2}` accepts 0 — deliberately, because models drift off
+    the shape they are asked for. Downstream, 0 is the encoding of "this plan owes no build", so a
+    step numbered 0 that dies writes a resume point meaning "nothing owed" and the plan is archived
+    having never been built (#272). The parser owns the ordinal: what a model wrote is a label, and
+    the position in the list is the number."""
+    steps = parse_steps(ZERO_NUMBERED)
+
+    assert [s.n for s in steps] == [1, 2, 3]
+    assert [s.label for s in steps] == ["Scaffold", "Trades table", "Currency filter"]
+    # `raw` is what the executor is handed, and `step_index` is the map it reads beside it. A raw
+    # heading still saying "0." while the map said "1." would be the model's problem to reconcile.
+    assert steps[0].raw.startswith("### 1. Scaffold")
+    assert step_index(steps, 1).startswith("1. Scaffold (this step)")
+
+
+def test_a_bold_numbered_plan_from_zero_is_renumbered_too():
+    """There are two lenient regexes, not one: `_BOLD_HEADING` carries the same `\\d{1,2}` and feeds
+    the same parse, so a planner that half-remembers the non-phased shape reaches zero by the other
+    door."""
+    plan = """## Plan
+
+**0. Data module**
+- Files — src/data.ts
+- Do — Export sample rows.
+- Done when — The module compiles.
+
+**1. Table**
+- Files — src/Table.tsx
+- Do — Render the rows.
+- Done when — Rows appear.
+
+**2. Filter**
+- Files — src/Filter.tsx
+- Do — Add a dropdown.
+- Done when — Selecting narrows the rows.
+"""
+    assert [s.n for s in parse_steps(plan)] == [1, 2, 3]
+
+
+def test_numbering_counts_the_steps_that_survived_parsing():
+    """A dropped step used to leave a gap the executor then reported as "phase 4 of 3", because the
+    number came from the model's prose and the total came from the list. One source now."""
+    plan = WELL_FORMED.replace(
+        "- Do — Render the trades in a sortable table and mount it in App.\n", ""   # not a brief
+    )
+    steps = parse_steps(plan)
+
+    assert [s.n for s in steps] == [1, 2]
+    assert [s.label for s in steps] == ["Sample data module", "Currency filter"]
+
+
+def test_a_repeated_number_names_one_step_each():
+    """Two steps numbered 1 made `step_index` mark both "this step" and gave the resume point two
+    phases to mean. Models stutter on numbering exactly as they drift on shape."""
+    plan = WELL_FORMED.replace("### 2. Trades table", "### 1. Trades table")
+    steps = parse_steps(plan)
+
+    assert [s.n for s in steps] == [1, 2, 3]
+    assert step_index(steps, 2).count("(this step)") == 1

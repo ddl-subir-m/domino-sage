@@ -54,6 +54,12 @@ MIN_STEPS = 3
 
 @dataclass(frozen=True)
 class PlanStep:
+    # The step's position in the list, 1..len(steps) — NOT the number the model wrote. `parse_steps`
+    # renumbers, because everything downstream already reads this as a 1-based position: the "phase
+    # n of N" the person is shown, `step_index`'s current-step marker, and the resume point a failed
+    # phase writes. That last one is why 0 in particular cannot be allowed through — 0 is how
+    # `read_plan_retry_step` encodes "this plan owes no build", so a step numbered 0 that died
+    # archived its plan having built nothing (#272).
     n: int
     label: str
     files: list[str]
@@ -104,13 +110,19 @@ def parse_steps(plan_md: str) -> list[PlanStep]:
     """Every fully-formed step in the plan, in document order. Malformed steps are dropped, not
     repaired — is_phasable() then declines the whole plan rather than building a partial one."""
     steps: list[PlanStep] = []
-    n: int | None = None
+    in_step = False
     label = ""
     body: list[str] = []
 
     def flush() -> None:
-        if n is not None:
-            step = _build(n, label, body)
+        if in_step:
+            # Numbered by position among the steps that survived parsing, discarding the number the
+            # model wrote. The regexes are lenient about numbering on purpose (models drift off the
+            # shape the prompt pins), and every way they drift — starting at 0, repeating a number,
+            # leaving a gap where a malformed step was dropped — reached a consumer that assumed
+            # 1..N contiguous. Renumbering here is the single place that assumption can be made true
+            # for all of them at once.
+            step = _build(len(steps) + 1, label, body)
             if step is not None:
                 steps.append(step)
 
@@ -118,13 +130,15 @@ def parse_steps(plan_md: str) -> list[PlanStep]:
         m = _HEADING.match(line) or _BOLD_HEADING.match(line)
         if m:
             flush()
-            n, label, body = int(m.group(1)), m.group(2), []
+            # The number in the heading is what identifies the line AS a step. It is not the
+            # step's number — that comes from `flush` above.
+            in_step, label, body = True, m.group(2), []
             continue
         if line.startswith("#"):  # any other heading ends the current step ("## Open questions")
             flush()
-            n, label, body = None, "", []
+            in_step, label, body = False, "", []
             continue
-        if n is not None:
+        if in_step:
             body.append(line)
     flush()
     return steps

@@ -296,7 +296,7 @@ def test_a_phased_build_that_dies_keeps_the_plan_and_remembers_the_phase(tmp_pat
     list(orch.build_stream("build me a trades dashboard"))
     events = list(orch.approve_stream())
 
-    assert _done(events)["decision"].startswith("phase 2 of 3 failed")
+    assert _done(events)["decision"].startswith("phase 2 of 3, Trades table, failed")
     ws = _workspace(orch)
     assert "Trades table" in (ws.read_plan() or "")   # not archived: it still owes two phases
     assert ws.read_plan_retry_step() == 2
@@ -413,3 +413,183 @@ def test_a_phased_build_that_finishes_first_time_owes_nothing(tmp_path: Path):
     ws = _workspace(orch)
     assert ws.read_plan() is None
     assert ws.read_plan_retry_step() == 0
+
+
+# --- a plan the model numbered from zero (#272) ----------------------------------------------------
+
+ZERO_NUMBERED_PLAN = PHASED_PLAN.replace("### 1. Data", "### 0. Data") \
+                                .replace("### 2. Trades", "### 1. Trades") \
+                                .replace("### 3. Currency", "### 2. Currency")
+
+
+def _zero_numbered_run_that_dies_in_its_first_phase(tmp_path: Path):
+    """Send 1 plans; 2 and 3 are the first phase and the retry `_run_step` gives it, both broken;
+    4 to 6 are what the resumed build needs."""
+    return _build(tmp_path, [
+        Turn(text=ZERO_NUMBERED_PLAN),
+        _writes("src/data.ts"),               # 2. first phase, first attempt — gateway dies
+        _writes("src/data.ts"),               # 3. first phase, _run_step's own retry — dies too
+        _writes("src/data.ts"),               # 4. resumed build's first phase
+        _writes("src/Table.tsx"),             # 5. second phase
+        _writes("src/Filter.tsx"),            # 6. third phase
+    ], break_on={2, 3}, phased=True)
+
+
+def test_a_plan_numbered_from_zero_survives_the_death_of_its_first_phase(tmp_path: Path):
+    """The plan the parser accepts and the numbering the resume point speaks are now one thing.
+
+    A step numbered 0 wrote `set_plan_retry_step(0)` before running, and 0 is what "this plan owes
+    no build" is encoded as — so the `finally` in `_approve_locked` archived a plan that had never
+    been built at all. The person was handed a built-looking app and no plan to retry."""
+    orch, _oc = _zero_numbered_run_that_dies_in_its_first_phase(tmp_path)
+    list(orch.build_stream("build me a trades dashboard"))
+    events = list(orch.approve_stream())
+
+    assert _done(events)["decision"].startswith("phase 1 of 3, Data module, failed")
+    ws = _workspace(orch)
+    assert "Data module" in (ws.read_plan() or ""), "the plan was archived having built nothing"
+    # The phase that died, not one before or after it.
+    assert ws.read_plan_retry_step() == 1
+
+
+def test_the_resume_re_runs_the_phase_that_died_rather_than_skipping_it(tmp_path: Path):
+    """The criterion `max(step.n, 1)` fails. With steps 0, 1, 2 it writes a resume point of 1 for a
+    step numbered 0, and the resume loop's `if step.n < start_step: continue` then skips that step
+    and reports it `kept` — a half-built app claiming to be whole, which is worse than the lost plan
+    it trades away because nothing on screen says a phase never ran."""
+    orch, _oc = _zero_numbered_run_that_dies_in_its_first_phase(tmp_path)
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+
+    events = list(orch.build_stream("try again"))
+
+    assert "plan-proposed" not in _kinds(events), "a kept plan was re-planned instead of resumed"
+    assert [e["n"] for e in events if e["type"] == "step-start"] == [1, 2, 3]
+    assert [e["n"] for e in events if e.get("kept")] == [], "the failed phase was skipped"
+    ws = _workspace(orch)
+    assert ws.read_plan() is None            # built in full this time, so consumed
+    assert ws.read_plan_retry_step() == 0
+    assert (ws.path / "src" / "data.ts").exists()
+
+
+def _phased_run_with_a_resume_point_from_another_parse(tmp_path: Path):
+    """As above, but with enough turns for a resumed build that re-runs every phase."""
+    return _build(tmp_path, [
+        Turn(text=PHASED_PLAN),
+        _writes("src/data.ts"),               # 2. phase 1 — lands
+        _writes("src/Table.tsx"),             # 3. phase 2, first attempt — gateway dies
+        _writes("src/Table.tsx"),             # 4. phase 2, _run_step's own retry — dies too
+        _writes("src/data.ts"),               # 5. resumed phase 1
+        _writes("src/Table.tsx"),             # 6. resumed phase 2
+        _writes("src/Filter.tsx"),            # 7. resumed phase 3
+    ], break_on={3, 4}, phased=True)
+
+
+def test_a_resume_point_no_step_answers_to_starts_from_the_top(tmp_path: Path):
+    """A step number left by a parse that numbered differently from this one.
+
+    Numbering steps by position (#272) is the fix, but it is also a parser change, and a parser
+    change reaches workspaces that are mid-build — `write_plan` clears the resume point when the
+    DOCUMENT changes, and nothing clears it when the CODE does.
+
+    This is not a bug that predates the fix. Every writer of a nonzero step writes either a literal
+    1 or an `n` from the same parse that reads it back, so before #272 a plan that parsed to 1, 2, 4
+    persisted 4 and resumed against a step 4 that was still there. The gap was harmless because the
+    same prose fed both ends. It stops being harmless for exactly one plan: one persisted by the
+    older parser and read by this one.
+
+    Read against a contiguous parse, every phase matches `if step.n < start_step: continue`, the
+    loop runs nothing, and `_phased_approve` falls through to its success path: `ok: True`, the plan
+    archived, the app marked built. That is the half-built app claiming to be whole that AC2 exists
+    to refuse, arrived at from the other end — so the number is discarded rather than honoured."""
+    orch, _oc = _phased_run_with_a_resume_point_from_another_parse(tmp_path)
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+    ws = _workspace(orch)
+    assert ws.read_plan_retry_step() == 2
+    ws.set_plan_retry_step(9)                 # what the older parser could leave behind
+
+    events = list(orch.build_stream("try again"))
+
+    assert _done(events)["ok"] is True
+    assert [e["n"] for e in events if e["type"] == "step-start"] == [1, 2, 3]
+    assert [e["n"] for e in events if e.get("kept")] == [], "the whole build was skipped"
+
+
+def _legacy_resume_point(ws, step: int) -> None:
+    """The shape a build before #272 left on disk: a step number and nothing saying which numbering
+    it speaks. Written through the module's own helpers so the test pins the FILE, not a mock."""
+    from sage.workspace import manager as workspace_manager
+
+    settings = workspace_manager._read_settings_file(ws._settings_path)
+    settings["planRetryFromStep"] = step
+    settings.pop("planRetryNumbering", None)
+    workspace_manager._write_settings_file(ws._settings_path, settings)
+
+
+def test_a_resume_point_from_before_the_renumbering_starts_from_the_top(tmp_path: Path):
+    """An in-range step number is no more trustworthy across the change than an out-of-range one.
+
+    The out-of-range guard in `_phased_approve` catches a plan that parsed to 1, 2, 4 and persisted
+    4. It does not catch the same drift one notch down: a planner that numbered 2, 3, 4 and died in
+    its FIRST phase persisted 2, which is in range for a three-step plan. Reparsed as 1, 2, 3 that 2
+    skips step 1 — a phase that never ran, reported `kept: True`, "built by the attempt this one
+    resumes, still on disk", and the build reports ok.
+
+    So the number is not clamped, it is dated: `set_plan_retry_step` stamps the numbering it speaks,
+    and a step with no stamp is read as 1, "from the top". 1 rather than 0 because 0 means the plan
+    owes no build at all, which would archive it — the loss #272 is about."""
+    orch, _oc = _phased_run_with_a_resume_point_from_another_parse(tmp_path)
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+    ws = _workspace(orch)
+    _legacy_resume_point(ws, 2)
+
+    assert ws.read_plan_retry_step() == 1, "an undated step number was trusted as a position"
+
+    events = list(orch.build_stream("try again"))
+
+    assert _done(events)["ok"] is True
+    assert [e["n"] for e in events if e["type"] == "step-start"] == [1, 2, 3]
+    assert [e["n"] for e in events if e.get("kept")] == [], "a phase that never ran was kept"
+
+
+def test_a_resume_point_this_build_wrote_is_still_trusted(tmp_path: Path):
+    """The dating must not cost the feature it protects: a resume point written by THIS parser still
+    resumes where it says, rather than paying a session per phase to redo work already on disk."""
+    orch, _oc = _phased_run_that_dies_in_phase_two(tmp_path)
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+    ws = _workspace(orch)
+    assert ws.read_plan_retry_step() == 2
+
+    events = list(orch.build_stream("try again"))
+
+    assert [e["n"] for e in events if e["type"] == "step-start"] == [2, 3]
+    assert [e["n"] for e in events if e.get("kept")] == [1]
+
+
+def test_a_partly_built_plan_from_before_the_renumbering_is_still_named_as_what_built_the_app(
+        tmp_path: Path):
+    """Two readers, two questions, one field — the overload #272 is about, one layer up.
+
+    `read_plan_retry_step` blunts an undated number to 1 because the resume path cannot trust a
+    position written in a numbering nothing reads any more. `archive_plan` reads the same field to
+    ask something else: `> 1` means "phases finished and their code is on disk", and it archives
+    such a plan PLAIN so `read_archived_plan` can still name it (#173/#175). Blunt 4 to 1 for that
+    reader and a plan three phases of which are committed is filed under `NNN-cancelled.md`, which
+    `_newest_built_archive` skips — the pin says "No plan yet" for an app that plan built.
+
+    So the stored number answers that one, undated: a step above 1 means at least one phase ran to
+    completion under WHATEVER numbering wrote it, which is all this question needs."""
+    orch, _oc = _phased_run_that_dies_in_phase_two(tmp_path)
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+    ws = _workspace(orch)
+    _legacy_resume_point(ws, 2)               # undated: phase 1 finished and is on disk
+    assert ws.read_plan_retry_step() == 1     # and the resume path still refuses to trust it
+
+    orch.archive_plan_doc(ws.live_plan_doc_id(), True)
+
+    assert "Trades table" in (ws.read_archived_plan() or "")
+    assert orch.read_plan_pin()["status"] == "built"
