@@ -12490,7 +12490,11 @@ class Orchestrator:
                     # re-arms the resume point on a plan that HAS just been built in full — the plan
                     # card handed back after a build that worked. A phase that really did fail loses
                     # nothing by the gate: `_phased_approve` wrote `set_plan_retry_step(step.n)`
-                    # before the phase ran, and that is what keeps the plan, flag or no flag.
+                    # before the phase ran, and that — not this flag — is what keeps the plan. The
+                    # one shape that escapes is a plan a model numbered from zero, where that call
+                    # writes the 0 that means "nothing owed". The other three exits have always
+                    # archived such a plan, so it is the step numbering's problem and not this
+                    # flag's; `_PLAN_SHAPE_PHASED` asks for 1, 2, 3 and the parser is lenient.
                     if owns_turn:
                         self._turn_gave_up = True
                     if not stopped:

@@ -780,7 +780,7 @@ class StallsOnOneSendOpenCode(FakeOpenCode):
         return super().is_running(session_id)
 
     def interrupt(self, session_id: str) -> None:
-        self.interrupted += 1
+        super().interrupt(session_id)   # the base is what makes the session read idle afterwards
         if session_id == self.hung:
             self.hung = None
 
@@ -857,6 +857,9 @@ def test_a_phased_build_that_dies_in_a_phase_keeps_the_plan_however_the_flag_is_
     ws_rec = orch.project(start_preview=False).workspace
     assert ws_rec.read_plan_retry_step() == 2
     assert ws_rec.read_plan() is not None
+    # And the flag stayed out of it on this path too, which is what makes this a guard rather
+    # than a description: the plan above survives on the resume point alone.
+    assert orch._turn_gave_up is False
     # Phase 1 is kept on disk on purpose: a retry resumes at 2 rather than redoing it.
     assert (ws_rec.path / "src" / "data.ts").exists()
 
