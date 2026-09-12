@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -881,6 +882,144 @@ def test_a_button_waits_out_a_save_but_not_a_turn(tmp_path: Path):
     assert orch._acquire_for_door(wait=5.0) is False
     assert time.monotonic() - t0 < 1.0  # refused, not waited out
     orch._turn_lock.release()
+
+
+class _ParksTheSaveInsideTheWindow:
+    """A stand-in turn lock that stops the save at the one instant this test is about: it holds
+    the lock, and has not yet been able to say that a save is what holds it.
+
+    A wrapper is enough because `acquire`, `release` and `locked` are all anyone ever calls on the
+    turn lock. `_TurnQueue` keeps its own reference to the real lock and `_release_turn` goes
+    through the queue, so both sides still meet on the same lock — this only adds a door to park
+    the save behind on its way in.
+
+    Parks one NAMED thread rather than the first background one to arrive. An orchestrator has
+    other threads that take this lock — an armed idle save, the preview — and letting any of them
+    burn the single park would leave the save unparked, `_chat_saving` false for an innocent
+    reason, and the assertion below reading as a regression in the code under test.
+    """
+
+    PARKED = "the-save-under-test"
+
+    def __init__(self, real) -> None:
+        self._real = real
+        self.holding = threading.Event()   # the save is parked, inside the window
+        self.resume = threading.Event()    # the test has pressed the door; let the save carry on
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if threading.current_thread().name == self.PARKED and not self.holding.is_set():
+            got = self._real.acquire(blocking, timeout)
+            if got:
+                self.holding.set()
+                self.resume.wait(10)
+            return got
+        # Anyone else asking for the lock IS the door, and its asking is what lets the save go.
+        # A timer would have to be armed before the door is called and could fire first, leaving
+        # the door's fast path to succeed against a finished save — green, having tested nothing.
+        self.resume.set()
+        return self._real.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        self._real.release()
+
+    def locked(self) -> bool:
+        return self._real.locked()
+
+
+def test_a_door_pressed_while_the_save_is_taking_the_lock_still_waits_for_it(tmp_path: Path):
+    """`_chat_saving` has to be true for the WHOLE time the save holds the lock, not for most of
+    it. It was raised one step AFTER the acquire, so there was an instant where the lock was held
+    and nothing said a save held it — and a door landing there refused "a build is already
+    running" about a `git push` nobody can see. That is the one refusal `_acquire_for_door` exists
+    to prevent, so the window is the whole bug (#265).
+
+    The instant is a couple of bytecodes wide, which is why it is reached on purpose here rather
+    than waited for. It is not rare in the way its width suggests: `_chat_save_turn_s` is 0.0, so
+    the timer carrying the post-turn commit fires as the stream is drained — the two racers start
+    together, on the click most likely to follow a Chat answer. Under `-n auto` that lands as a
+    red in a file that never touched the turn lock.
+
+    The test before this one asserts the same waiting, but hand-raises `_chat_saving` itself. That
+    is the half that always worked; this drives the real save and asserts it can say what it is.
+    """
+
+    orch, _oc = _orch(tmp_path, [Turn(text="Rates.")])
+    _track_saves(orch)                     # the commit is not what this is about; the lock is
+    # What a finished Chat turn leaves behind for the timer to pick up (`_after_chat_turn`). Set
+    # here rather than run through `chat_stream`, because that arms a timer at delay 0 and this
+    # test has to own which thread does the saving.
+    orch._chat_dirty_thread = orch.create_thread()["id"]
+    orch._chat_dirty = True                # what a finished turn leaves; creating a Thread saves
+
+    park = _ParksTheSaveInsideTheWindow(orch._turn_lock)
+    orch._turn_lock = park
+    saver = threading.Thread(target=orch._flush_chat_save, args=("turn",), daemon=True,
+                             name=park.PARKED)
+    saver.start()
+    assert park.holding.wait(5) is True     # the save has the lock and has not left `acquire`
+
+    # The invariant `_acquire_for_door` is written against, stated where it used to be false.
+    assert orch._chat_saving is True
+    assert park.resume.is_set() is False   # the save is still parked when the door is pressed
+    assert orch._acquire_for_door(wait=5.0) is True
+
+    orch._release_turn()
+    saver.join(5)
+    assert saver.is_alive() is False
+
+
+def test_a_door_does_not_wait_out_a_save_that_never_got_the_lock(tmp_path: Path):
+    """The window the fix above opens, closed. `_chat_saving` now goes up just BEFORE the save
+    tries for the lock, so it can be up while a BUILD holds it — and a door that read the flag once
+    and then blocked would spend its whole wait on the one holder it is supposed to refuse on the
+    spot. "A build is running" after a ten-second pause is worse than saying it at once (#89).
+
+    So the door re-reads the flag while it waits. Here the save's attempt fails against a build and
+    lowers the flag, and the door has to notice rather than sit out the rest of its five seconds.
+    """
+    orch, _oc = _orch(tmp_path, [Turn(text="Rates.")])
+
+    orch._turn_lock.acquire()              # a real build, which a door refuses
+    orch._chat_saving = True               # a save has raised its flag and is about to miss
+    threading.Timer(0.2, setattr, (orch, "_chat_saving", False)).start()
+
+    t0 = time.monotonic()
+    assert orch._acquire_for_door(wait=5.0) is False
+    assert time.monotonic() - t0 < 2.0     # noticed the miss, did not wait out the build
+    orch._turn_lock.release()
+
+
+def test_a_second_save_that_misses_the_lock_does_not_unmark_the_one_holding_it(tmp_path: Path):
+    """Savers overlap, so the mark is counted rather than set. `_flush_chat_save` runs on the idle
+    timer AND on request threads — leaving Chat, switching Thread and deleting a Conversation all
+    flush — and the two meet whenever a click lands on a Conversation whose post-turn commit is
+    still pushing.
+
+    A plain flag let the LOSER clear it on its way out of the failed acquire, which put the door
+    back to answering "a build is already running" about that push for as long as it took. That is
+    the same wrong sentence the ordering above exists to prevent, lasting seconds rather than an
+    instant — so it has to survive the loser, not just the winner.
+    """
+    orch, _oc = _orch(tmp_path, [Turn(text="Rates.")])
+    orch._chat_dirty_thread = orch.create_thread()["id"]
+    orch._chat_dirty = True
+
+    holding = threading.Event()
+    let_go = threading.Event()
+    orch._save_to_git = lambda *_a, **_k: (holding.set(), let_go.wait(5), None)[2]
+
+    winner = threading.Thread(target=orch._flush_chat_save, args=("leave",), daemon=True)
+    winner.start()
+    assert holding.wait(5) is True         # the first save is inside the push, holding the lock
+    assert orch._chat_saving is True
+
+    assert orch._flush_chat_save("delete a conversation") is None   # the loser, on this thread
+    assert orch._chat_saving is True       # still true: the winner has not finished
+
+    let_go.set()
+    winner.join(5)
+    assert orch._chat_saving is False
+    orch._cancel_chat_idle_save()
 
 
 def test_chat_leave_thread_flushes(tmp_path: Path):

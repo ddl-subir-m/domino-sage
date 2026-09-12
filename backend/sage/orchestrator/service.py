@@ -484,6 +484,11 @@ class _TurnTicket:
         self.app = ""
 
 
+# How often `_acquire_for_door` re-reads `_chat_saving` while waiting out a save. Matches
+# `_TurnQueue`'s poll interval, and is there for the same reason: a release wakes nobody.
+_DOOR_POLL_S = 0.05
+
+
 class _TurnQueue:
     """FIFO admission to the turn lock, for the three streaming turn entry points (#79).
 
@@ -4347,8 +4352,14 @@ class Orchestrator:
         # idle one land in the same callback, and without this every commit a turn produced would
         # read `chat (idle)`.
         self._chat_save_reason = "idle"
-        # True only while a queued Chat save holds the turn lock. See `_acquire_for_door`.
+        # True while a queued Chat save holds the turn lock, or is about to ask for it. See
+        # `_acquire_for_door`, which reads it to tell a commit from a build.
         self._chat_saving = False
+        # How many savers are in flight. `_chat_saving` is the answer to "is one", kept as its own
+        # attribute because tests and `_acquire_for_door` read it on the hot path; this is what
+        # makes raising and lowering it safe when savers overlap (see `_enter_chat_saving`).
+        self._chat_savers = 0
+        self._chat_savers_lock = threading.Lock()
 
     def turn_busy(self) -> bool:
         """True while a build/approve turn holds the turn lock. The UI polls this to tell a dropped
@@ -7130,24 +7141,64 @@ class Orchestrator:
         # its half-written files committed. Testing left that window open, and the post-turn save
         # now runs off the lock (see chat_stream), so the window is the moment someone is most
         # likely to send the next thing. Losing the race only defers the commit.
-        if not self._turn_lock.acquire(blocking=False):
-            # Not re-armed on a wedge: the lock never comes back, so this would only queue a timer
-            # per attempt against a workspace that has to be restarted anyway (see _on_chat_save_idle).
-            if not self._turn_wedged:
-                # Carried, not dropped. `_on_chat_save_idle` already re-arms with the reason it
-                # holds, for the reason named there — a deferred commit is still the work of the
-                # act that asked for it, and a rail change deferred behind a build turn landed as
-                # `chat (idle)` with nothing in the log to say what it was.
-                self._arm_chat_idle_save(reason)
-            return None
-        self._chat_saving = True
+        # Marked BEFORE the acquire, not after it. A door that fails the lock reads `_chat_saving`
+        # to decide whether to wait, and marking it afterwards left an instant where this thread
+        # held the lock and nothing said a save held it — so a door landing there refused "a build
+        # is already running" about a `git push` nobody can see, which is the one refusal
+        # `_acquire_for_door` exists to prevent. Two bytecodes wide, but the racers start together:
+        # `_chat_save_turn_s` is 0.0, so the timer carrying the post-turn commit fires as the
+        # stream is drained, which is the moment the next click lands (#265).
+        #
+        # Which opens the mirror window: the mark is up while some OTHER holder has the lock, for
+        # as long as the failed acquire below takes. `_acquire_for_door` covers it by re-reading
+        # the mark rather than believing it once — see the poll there.
+        # One `try`, so the mark and the lock are both given back on every way out of here. The
+        # mark going up and never coming down would leave every later door press waiting out its
+        # whole ten seconds before refusing, which is a worse failure than the one being fixed.
+        self._enter_chat_saving()
+        held = False
         try:
+            held = self._turn_lock.acquire(blocking=False)
+            if not held:
+                # Not re-armed on a wedge: the lock never comes back, so this would only queue a
+                # timer per attempt against a workspace that has to be restarted anyway (see
+                # _on_chat_save_idle).
+                if not self._turn_wedged:
+                    # Carried, not dropped. `_on_chat_save_idle` already re-arms with the reason it
+                    # holds, for the reason named there — a deferred commit is still the work of the
+                    # act that asked for it, and a rail change deferred behind a build turn landed
+                    # as `chat (idle)` with nothing in the log to say what it was.
+                    self._arm_chat_idle_save(reason)
+                return None
             return self._chat_save_now(reason)
         finally:
             # Lowered before the release, so a door that takes the lock next does not read a save
             # that has already finished as a reason to wait for one.
-            self._chat_saving = False
-            self._release_turn()
+            self._leave_chat_saving()
+            if held:
+                self._release_turn()
+
+    def _enter_chat_saving(self) -> None:
+        """Say that a save holds the turn lock, or is about to ask for it.
+
+        Counted rather than set, because savers overlap: this runs on the idle timer's thread AND
+        on request threads — leaving Chat, switching Thread, deleting a Conversation all flush.
+        Two of them meet whenever a click lands on a Conversation whose post-turn commit is still
+        pushing. With a plain flag the LOSER lowered it on its way out of the failed acquire, which
+        put the door back to refusing for the whole length of the winner's push: the same wrong
+        sentence this ordering exists to prevent, and lasting seconds rather than an instant.
+        """
+        with self._chat_savers_lock:
+            self._chat_savers += 1
+            self._chat_saving = True
+
+    def _leave_chat_saving(self) -> None:
+        """One saver is done. The mark drops when the last one is."""
+        with self._chat_savers_lock:
+            self._chat_savers -= 1
+            if self._chat_savers <= 0:
+                self._chat_savers = 0
+                self._chat_saving = False
 
     def _chat_save_now(self, reason: str) -> dict | None:
         """The save itself. The caller owns the turn lock; this decides what to do with the result."""
@@ -9714,16 +9765,39 @@ class Orchestrator:
         press Write a plan. Refusing there says "a build is already running" about a `git push`
         nobody can see, and the button they pressed did nothing.
 
-        Bounded the way `_acquire_for_reset` is bounded, and for the same reason: `_chat_saving` is
-        true for exactly the window where the lock is about to free itself, so waiting is waiting
-        for a commit and a push, not for a build. Every other holder still refuses immediately —
+        Bounded the way `_acquire_for_reset` is bounded, and for the same reason: `_chat_saving`
+        covers the window where the lock is about to free itself, so waiting is waiting for a
+        commit and a push, not for a build. Every other holder still refuses immediately —
         a real turn is a wait nobody should be made to sit through silently.
+
+        Which makes WHERE that flag is raised part of this method rather than a detail of the save:
+        it goes up before the save takes the lock, not after, or there is an instant where the lock
+        is held and nothing can say a save holds it — and this reads False about a `git push` and
+        refuses the click it is here to wait out (#265, `_flush_chat_save`).
         """
         if self._turn_lock.acquire(blocking=False):
             return True
         if not self._chat_saving:
-            return False
-        return self._turn_lock.acquire(timeout=wait)
+            # One more attempt, on the same reasoning as the poll below: the mark is lowered just
+            # BEFORE the release, so reading it here catches a save that is one instruction from
+            # done and refuses a lock that is about to be free. A build is still refused on the
+            # spot — one poll interval is not a wait anybody sits through.
+            return self._turn_lock.acquire(timeout=_DOOR_POLL_S)
+        # Polled rather than one `acquire(timeout=wait)`, so the flag is believed for only as long
+        # as it is true. It goes up a moment BEFORE the save tries for the lock, so it can be up
+        # while a build holds it — and a single blocking acquire would then spend the whole wait on
+        # exactly the holder this method refuses at once. Same shape as `_TurnQueue`'s poll, and
+        # for the same reason: nothing here gets woken, so the state is re-read on a short timer.
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if self._turn_lock.acquire(timeout=_DOOR_POLL_S):
+                return True
+            if not self._chat_saving:
+                # The save either never got the lock or has finished. The flag is lowered just
+                # BEFORE the release, so one last attempt rather than refusing a lock that is
+                # about to be free.
+                return self._turn_lock.acquire(timeout=_DOOR_POLL_S)
+        return False
 
     def _acquire_for_reset(self, wait: float = 15.0) -> bool:
         """Take the turn lock for a reset, waiting only while a Stop is still unwinding the turn.

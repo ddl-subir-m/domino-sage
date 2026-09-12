@@ -75,6 +75,22 @@ Run tests less often, and never serially:
 - `-n auto` is the default in `pyproject.toml`. Do not remove it. Use `-n0` only to read
   interleaved output or to run one test under a debugger.
 
+**A red in a file your diff never opened: three checks, in this order.**
+
+`-n auto` is xdist's `--dist load`, which hands out individual TESTS, not files. Adding one test
+file re-deals the whole suite across workers, so a test that leaves shared state behind reddens
+whoever lands on its worker next — a file you never touched, pointing at your change. Before you
+read a line of that file:
+
+1. Run it alone. `uv run --extra dev pytest -q tests/test_the_red_one.py`
+2. Run it beside your new file under `-n0`, which takes the distribution out of it.
+3. Run the full suite with your new file `--deselect`ed.
+
+Passing all three means the red is pre-existing and is not yours. Say so, open an issue, move on.
+Do not go green by reordering or deleting tests. `backend/tests/conftest.py` already fails the test
+that leaks a turn lock rather than the test after it (#265); a new red of this shape is a new kind
+of shared state, and the fix is another check beside that one.
+
 ## 6. Scoped Reviews
 
 **Review only what changed. A whole-repo review costs ~13 minutes of turns and finds no more.**
