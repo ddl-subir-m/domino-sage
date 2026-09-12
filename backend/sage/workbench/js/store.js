@@ -822,6 +822,17 @@ window.SW = window.SW || {};
     notify();
   }
 
+  // Whether closing or opening this chip moves a Dataset in or out of the turn's scope, which is
+  // the only thing about a Conversation's context the lock cares about (ADR-0043). One reader for
+  // both doors, because a chip that arms the lock on the way in and does not lift it on the way out
+  // is the two-copies-drift this module keeps warning about — and the two grains are easy to get
+  // half right: a file chip names its Dataset in `datasetId`, while a whole-Dataset chip has no
+  // such field at all, because the resource id IS the Dataset.
+  function namesDataset(attachment) {
+    return Boolean(attachment && (attachment.datasetId
+      || String(attachment.resourceId || '').startsWith('dataset:')));
+  }
+
   function refreshSensitivity(gen) {
     const asked = (state.thread && state.thread.id) || '';
     return SW.api.sensitivity(asked).then(
@@ -4970,6 +4981,32 @@ window.SW = window.SW || {};
         }
       }
 
+      // The sensitivity lock, which this door can arm (ADR-0043). Pinning a Dataset — or one of
+      // its files — to a Conversation is the PINNED door of `_datasets_in_scope`, so the server is
+      // locked the moment the post above returns. `refreshSensitivity` ran nowhere near here: a
+      // scope load, a Binding change, a mode change and a Conversation open, and this is none of
+      // them. So Chat went on offering every vendor model for a conversation the router would
+      // refuse, until some unrelated read happened to land — in practice the trip to Build, whose
+      // `refreshBindings` re-asks, which is why the narrowing looked like it needed a tab change.
+      //
+      // Gated on `enabled` rather than on the Dataset row's own `declared`, which is what the
+      // promote in `addScratchToDataset` uses. That row is a working-set member and always in the
+      // rail; this one need not be — a Dataset mentioned straight out of the catalogue joins the
+      // project on the way in, and reading `declared` off a row that is not there yet would answer
+      // "not declared" for exactly the Dataset that is. `enabled` is the same shape of saving where
+      // it matters: the gate is OFF by default, so an opted-out deployment still pays nothing.
+      //
+      // A missing `state.sensitivity` re-asks rather than staying quiet. It is the one case the
+      // flag cannot answer, and the two directions are not symmetric — a stale "locked" costs an
+      // explanation that is a beat out of date, while a stale "unlocked" is a model somebody picks
+      // and the router then refuses under them.
+      //
+      // Unawaited, like every other caller: the chip is already drawn and a lock arriving a beat
+      // later is the same deferral a scope load makes.
+      if (namesDataset(attachment) && (!state.sensitivity || state.sensitivity.enabled)) {
+        refreshSensitivity();
+      }
+
       // The assistant acknowledges manual picks; this closes the loop between
       // the panel and the conversation.
       if (addedBy === 'user' && !options.silent) {
@@ -5000,6 +5037,29 @@ window.SW = window.SW || {};
       // here because this is the surface the person pressed remove on, and silence on it reads as
       // "the data went too" — which is what sent somebody looking for a guardrail bug after they
       // had removed the file from everywhere they could see.
+      // The other half of the lock this door can move (ADR-0043). Closing the chip takes the
+      // Dataset back out of the turn's scope, so the picker that was greyed for it has to un-grey —
+      // and until this read existed it did not, until the next trip to Build re-asked for its own
+      // reasons. Over-restrictive rather than leaky, which is why it is the quieter of the two
+      // halves, but a lock that will not come off teaches people that the way out does not work.
+      //
+      // The SAME gate as the attach, deliberately, and the tighter one it looked like it wanted is
+      // the bug. `isLocked(state.sensitivity)` asks whether a lock is on SCREEN, and the screen is
+      // exactly what an attach's unawaited read is in the middle of replacing: mention a declared
+      // Dataset, then close the chip before that read lands, and this reads "nothing is locked",
+      // fires nothing, and the locked answer arrives afterwards to grey the picker for a chip that
+      // is already gone. Mention-the-wrong-Dataset-then-undo is an ordinary gesture, and the state
+      // it leaves is the lock-that-will-not-come-off this whole half exists to prevent. `enabled`
+      // is a fact about the deployment rather than about this instant, so it cannot go stale under
+      // a read in flight, and it still costs an opted-out deployment nothing.
+      //
+      // The server decides what comes off, never this: the sticky half means a Conversation that
+      // has already run a turn under the lock stays locked after every chip is gone, and the way
+      // out is a new chat. Dropping it here instead would be the stale-unlocked direction — a model
+      // somebody picks and the router then refuses under them.
+      if (namesDataset(attachment) && (!state.sensitivity || state.sensitivity.enabled)) {
+        refreshSensitivity();
+      }
       const held = (result || {}).heldBy;
       const kept = held === 'app'
         ? ` ${(app && app.name) || 'The app'} still carries the file, so `
