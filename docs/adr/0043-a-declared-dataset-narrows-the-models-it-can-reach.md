@@ -42,8 +42,8 @@ that a running app is prevented from calling one. Those are different sentences 
 is true.
 
 **One of the two data surfaces can carry the declaration.** A Dataset has tags. A Data Source has no
-classification field at all — none exists to read. Because the gate is per-Project rather than
-per-file, a Snowflake source bound beside a tagged Dataset is protected incidentally, and the real
+classification field at all — none exists to read. Because the gate locks the whole turn rather than
+one file, a Snowflake source bound beside a tagged Dataset is protected incidentally, and the real
 gap is narrower than it first appears: a Project holding a sensitive Data Source and no Dataset gets
 no gate. That is the warehouse case, and it is the more sensitive half. It is stated wherever the
 promise is made rather than left for a reader to discover.
@@ -135,6 +135,44 @@ Chat's chip inlines `summary` only (`_describe_context_file`), which carries no 
 Build's `@mention` inlines `detail` (`_resolve_mentions`), which carries the rows.
 
 ## Which Datasets are in scope
+
+**The scope is the selected app's and the open Conversation's, not the Project's.** This document
+never said which, and an unstated scope is read as the widest one it mentions — `SensitivityGate` is
+described as "per Project" further down, which is true of the object and its caches and says nothing
+about what a turn can reach. So the scope is stated here rather than corrected: of the three doors
+below, two are the selected app's — `_datasets_in_scope` reads the Binding manifest plus
+`project.attached`, and `Project.attached` is the app on screen — and the third, a pinned chip, is
+the Conversation's.
+
+Narrow is also right, not merely what the code happens to do. The lock's job is to cover the read
+paths the turn actually has, and the lock and the reachability travel together: a Build turn's cwd
+is one app, and `ensure_chat_workdir` symlinks that same app's `public/data/` into the Chat cwd,
+with `_ensure_dir_link` re-pointing it when the selection changes — while the transcript the turn is
+answering in carries whatever that Conversation pinned. Widening it to every app under `apps/` would
+arm the lock over rows the turn cannot read, which refuses work on grounds that are not true.
+Changing the selected app does drop a `declared` lock — the sticky bit is what keeps that from being
+a hole, and it is the subject of its own section below.
+
+**The two halves are not interchangeable, and the notice is where that shows.** A chip is
+conversation-scoped and writes neither a Binding nor an Attachment, and the Conversation travels
+into Build through the handoff — so the mode says nothing about which door armed a lock. Hence
+`lockWayOut` points at App dependencies only when EVERY declared Dataset holding the lock is on the
+app's own list (`appHoldsEveryDeclaredDataset`). "Any" was the first rule and it was wrong in the
+case the three doors make ordinary: an app binding declared `claims` while the Conversation pins
+declared `members` satisfies "any", and the notice would then say "Remove them" of a pair only half
+of which is there — the creator removes one, comes back, and the lock has not moved. Under "every",
+the chip-only lock and the mixed lock are one case with one rule, and the pre-manifest Attachment
+that carries no `dataset_id` falls under it too rather than needing to be remembered separately.
+
+**The pointer crosses out of Chat, and names the surface when it does.** Withholding it there was
+decided against once, on the precedent that every other "under App dependencies" sentence is
+Build-only through the mention guard. The precedent does not transfer: a mention is an ACT and
+ADR-0021 keeps an act on the surface that owns it, while a pointer exists so a reader can be sent
+somewhere they are not standing, on ADR-0011's condition that it names the destination in the words
+they will see on arrival. Withholding it would have reproduced the last clause of the failure this
+whole feature answers — the lock on in Chat with its only removal control in Build — with the naming
+fixed and the route still missing. Build's sentence names no mode, because naming the surface already
+on screen reads as a correction.
 
 A Dataset reaches a turn three ways, and all three put its rows in front of a model. The gate read
 the Binding manifest alone, which is the door people use least — so the lock did not fire for either
@@ -428,7 +466,7 @@ existing arm-or-refuse path runs exactly as it did. Both harnesses set it, from 
 of them already armed from.
 
 **It is per conversation, and it is on disk.** Not on `SensitivityGate`, which is per Project and
-holds caches — this is a fact about one conversation's history, not about the Project's Datasets.
+holds caches — this is a fact about one conversation's history, not about the Datasets in scope.
 Not in memory either: a restart clears a flag while the history it is about comes back, and a lock a
 restart lifts is the hole with an extra step. It lives on `ProjectRecord` beside the session id and
 the transcript, under `.sage/threads/<id>/`, for the reason the session id lives there — one

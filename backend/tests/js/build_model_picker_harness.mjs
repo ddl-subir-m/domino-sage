@@ -147,7 +147,12 @@ const settle = async () => { for (let i = 0; i < 40; i += 1) await new Promise((
 // Build's props, as `builder.js` mounts them. `showMode` is the flag that says this is Build, and
 // it is already true there — the picker's absence was never about the flag.
 const BUILD = { onSend() {}, placeholder: 'Describe a change…', disabled: false, showMode: true };
-const mount = () => SW.Composer(BUILD);
+// `{ "chat": true }` on a step draws the CHAT composer instead — the same component with `showMode`
+// off, which is how `builder.js` and `chat.js` differ. Only the lock's notice is asked of it: the
+// model picker is Build's control and is absent there by design, so a Chat step reports `offered`
+// false and no label, and must not be given a `pick`.
+let chatMount = false;
+const mount = () => SW.Composer(chatMount ? { ...BUILD, showMode: false } : BUILD);
 
 // The control by the words a person reads on it, not by position: `aria-label` is the same in both
 // arms, so "is there a picker at all" and "can it be opened" stay separate questions.
@@ -200,6 +205,42 @@ for (const step of steps) {
   // After the mode, because `setBuildMode` goes through a real status write and this does not —
   // seeding first and settling after would leave the lock in place but the notify already spent.
   if ('sensitivity' in step) SW.store.set({ sensitivity: step.sensitivity });
+  // The app on screen and the dependency records it holds, which is what the lock's pointer turns
+  // on: it names the app (a Project holds many — ADR-0008) and it is only drawn when that app's own
+  // list has a declared Dataset to remove. `declaredIn` says which door put it there — a Binding, an
+  // Attachment, or a Chat `dsfile:` chip, which writes NEITHER record and so must draw no pointer.
+  //
+  // Set on every step rather than only where one asks, because the store is shared down the loop:
+  // `if ('app' in step)` left a previous step's app standing under every later row, and the next
+  // multi-step lock test would have passed for the wrong reason.
+  //
+  // Written through `set` even though these are the `APP_SCOPED` fields `store.js` says nothing
+  // assigns directly. That gate orders concurrent READS of one app's records; here there is no read
+  // and no second writer — this is the fixture saying which app is on screen.
+  //
+  // The rail carries a declared row for every Dataset the lock names, because that listing is where
+  // `declared` is read from. Which of them the APP holds is `appDatasets` (default: all of them) —
+  // that is the split the pointer turns on, and a step that seeds the lock with two names and the
+  // app with one is the mixed-door case.
+  chatMount = !!step.chat;
+  // What a Chat turn would run. Build reads its pinned slot or the override; Chat reads the picked
+  // Alias, and the notice only draws when the lock moved it — so a Chat step has to name one.
+  if (step.chat) SW.store.set({ model: step.chatModel || CATALOG.plan, catalogAsk: CATALOG.ask });
+  const locked = (step.sensitivity && step.sensitivity.datasets) || [];
+  const held = step.declaredIn === 'chip' ? [] : (step.appDatasets || locked);
+  const byName = (n) => ({ kind: 'dataset', id: `ds_${n}`, name: n });
+  SW.store.set({
+    activeApp: step.app ? { id: 'app_1', name: step.app } : null,
+    resourceGroups: step.declaredIn
+      ? { dataset: locked.map((n) => ({ id: `dataset:ds_${n}`, name: n, declared: true })) } : {},
+    bindings: step.declaredIn === 'binding' ? held.map(byName) : [],
+    appAttachments: step.declaredIn === 'attachment'
+      ? held.map((n) => ({ path: `public/data/${n}/rows.csv`, dataset_id: `ds_${n}` }))
+      // The pre-manifest workspace `_rehydrate_attached` rebuilds: an entry with a path and no
+      // `dataset_id` at all (ADR-0048), which is the one shape that can carry rows and answer no id.
+      : step.declaredIn === 'attachment-legacy'
+        ? held.map((n) => ({ path: `public/data/${n}/rows.csv` })) : [],
+  });
   // A build in flight. `pick` is read live out of ModelControl.snapshot — it has no per-turn pin
   // the way the mode does — so what this control offers mid-turn is its own claim.
   SW.store.set({ buildRunning: !!step.running });

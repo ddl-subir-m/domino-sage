@@ -307,16 +307,116 @@ def test_an_unlocked_project_closes_nothing_and_says_nothing():
 
 def test_the_session_moving_onto_an_approved_model_is_said_once():
     """Switch and tell them. Switching in silence fails the confidence the promise is meant to
-    build, and refusing the turn would stop somebody mid-task to teach what a sentence can teach.
-    The Dataset's id stays off the line — it is an identifier, and the kind is enough."""
+    build, and refusing the turn would stop somebody mid-task to teach what a sentence can teach."""
     (row,) = _drawn([{"mode": "plan", "sensitivity": _locked()}])
 
     assert row["lockNotice"], "the lock moved the session and drew no notice"
-    assert "claims" not in row["lockNotice"]
-    assert "Dataset" in row["lockNotice"]
     assert PLAN_MODEL in row["lockNotice"]      # what it moved off
     assert APPROVED in row["lockNotice"]        # what it moved to
     assert "Allowed models" in row["lockNotice"]
+
+
+def _pointed(**over):
+    """A locked step with the app on screen holding the declared Dataset as a Binding."""
+    step = {"mode": "plan", "sensitivity": _locked(), "app": "Claims Explorer",
+            "declaredIn": "binding"}
+    step.update(over)
+    return step
+
+
+def test_the_notice_names_the_dataset_in_the_picker_s_own_words():
+    """One promise, two surfaces (#264). The picker row has named the Dataset since it was
+    written and the notice named the KIND, so a creator who read both was told a declared Dataset
+    was the reason twice and which one once. Both now read `declaredPhrase`, which is the only way
+    they cannot drift: an anonymous notice beside a named row is the same defect as the chip that
+    named a model it would not run."""
+    (row,) = _drawn([_pointed()])
+    barred = next(i for i in _flat(row["items"]) if i["key"] == IMPLEMENT_MODEL)
+
+    assert "the Dataset claims" in row["lockNotice"]
+    assert "the Dataset claims" in barred["title"]
+
+
+def test_the_notice_points_at_the_list_that_owns_the_dataset():
+    """A pointer names its destination in the words the reader will see on arrival (ADR-0011), and
+    names the app because a Project holds many (ADR-0008). The lock's scope IS the selected app's,
+    so the list that can lift it is that app's own — not the Project rail beside it.
+
+    Drawn for either record that list holds and offers a removal for: a Binding and an Attachment
+    both put the rows in front of the model (ADR-0043) and both can be taken back out here."""
+    binding, attached = _drawn([_pointed(), _pointed(declaredIn="attachment")])
+
+    for row in (binding, attached):
+        assert "App dependencies" in row["lockNotice"]
+        assert "Remove it from Claims Explorer" in row["lockNotice"]
+
+    # Two declared Datasets arm the same lock, and the pointer is pronouning the pair the sentence
+    # above it just named. "Remove it" there is the one word in this notice a reader stops at.
+    (both,) = _drawn([_pointed(sensitivity=_locked(datasets=["claims", "members"]))])
+    assert "the Datasets claims and members" in both["lockNotice"]
+    assert "Remove them from Claims Explorer" in both["lockNotice"]
+
+
+def test_chat_gets_the_pointer_with_the_surface_named():
+    """Chat is where the failure this feature exists to fix was found — "the lock stayed on, in Chat,
+    naming no Dataset, with its only removal control in Build" (ADR-0048). Naming the Dataset and
+    then withholding the route fixes the middle clause and reproduces the last one, so Chat carries
+    the pointer and names the surface it is sending the reader to.
+
+    Not the same sentence as Build's: naming the mode already on screen reads as a correction, so
+    only the composer that has to cross says which way."""
+    chat, build = _drawn([_pointed(chat=True), _pointed()])
+
+    assert "In Build, remove it from Claims Explorer under App dependencies" in chat["lockNotice"]
+    assert "In Build" not in build["lockNotice"]
+    # The condition is the records, not the surface — so Chat withholds it on the same terms Build
+    # does rather than on easier ones.
+    (chip,) = _drawn([_pointed(chat=True, declaredIn="chip")])
+    assert "App dependencies" not in chip["lockNotice"]
+
+
+def test_a_lock_the_app_list_cannot_fully_release_is_pointed_nowhere():
+    """A pointer at a list that cannot release the lock is the dead end ADR-0011 closes, not a
+    weaker way of closing it. Four ways that happens, and the rule is one rule — EVERY declared
+    Dataset holding the lock has to be on the app's own list:
+
+      - a `dsfile:` chip, which arms the lock from the Conversation and writes neither a Binding nor
+        an Attachment (`confirm_thread_dataset_file`). The mode is no guide to this: the
+        Conversation travels into Build through the handoff.
+      - MIXED doors — the app binds `claims` while the Conversation pins `members`. "Any" would
+        answer yes here and the notice would say "Remove them" of a pair half of which is absent;
+        the creator removes one, comes back, and the lock has not moved.
+      - a pre-manifest Attachment carrying no `dataset_id`, which `_rehydrate_attached` still will
+        not write (ADR-0048), so nothing here can join it to the declaration.
+      - no app selected at all: no app, no list.
+
+    The switch is announced in every one of them. Only the destination is withheld."""
+    chip, mixed, legacy, none = _drawn([
+        _pointed(declaredIn="chip"),
+        _pointed(sensitivity=_locked(datasets=["claims", "members"]), appDatasets=["claims"]),
+        _pointed(declaredIn="attachment-legacy"),
+        _pointed(app=None),
+    ])
+
+    for row in (chip, mixed, legacy, none):
+        assert row["lockNotice"], "the switch is still announced"
+        assert "claims" in row["lockNotice"]
+        assert "App dependencies" not in row["lockNotice"]
+
+
+def test_the_sticky_lock_names_no_dataset_and_points_nowhere_near_the_data():
+    """The case ADR-0043 argued anonymity for, and it survives #264 unchanged. The rows are in the
+    transcript, the Dataset has already gone, and naming it would send somebody to remove something
+    that is not there — after which the lock has not moved. The only way out is a new chat, so that
+    is the only way out offered.
+
+    `datasets` is empty because that is the only shape the server sends with `reason: "session"` —
+    a live declaration wins the sentence while there is one. So the claim under test is the pair
+    that IS reachable: no pointer at the data, and the new chat in its place."""
+    (row,) = _drawn([_pointed(sensitivity=_locked(datasets=[], reason="session"))])
+
+    assert "App dependencies" not in row["lockNotice"]
+    assert "Start a new chat" in row["lockNotice"]
 
 
 def test_a_pick_that_was_already_approved_is_not_announced_as_a_switch():

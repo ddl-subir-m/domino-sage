@@ -69,15 +69,51 @@ if (spec.wayOut) {
     // it fails, and that is the whole failure this guards.
     doors: (() => {
       const src = fs.readFileSync(ROOT + 'store.js', 'utf8');
+      const DEF = (name) => new RegExp(`\\n {4}(?:async )?${name}\\(`);
       return ['newThread', 'openThread', 'clearConversation'].map((name) => {
         // The DEFINITION, not the first call site — `store.newThread()` is called from inside this
         // same file, and anchoring on the bare name found that instead and read the wrong body.
-        const at = src.search(new RegExp(`\\n {4}(?:async )?${name}\\(`));
-        const body = src.slice(at, at + 3000);
+        const at = src.search(DEF(name));
+        // To the NEXT method rather than a fixed number of characters. It was `at + 3000`, and a
+        // comment added inside one of these doors pushed `refreshSensitivity()` past the end of the
+        // window — where `read === -1` is indistinguishable from the door that legitimately makes no
+        // read, so the ordering assertion below passed without testing anything. A window measured
+        // in characters is a window that expires.
+        const rest = src.slice(at + 1);
+        const next = rest.search(DEF('[a-zA-Z_$][\\w$]*'));
+        const body = next === -1 ? rest : rest.slice(0, next);
         const drop = body.indexOf('dropSessionLock()');
         const read = body.indexOf('refreshSensitivity()');
-        return { name, drops: drop !== -1, beforeRead: read === -1 || drop < read };
+        return {
+          name,
+          drops: drop !== -1,
+          beforeRead: read === -1 || drop < read,
+          // Whether this door reads the lock at all. `beforeRead` passes when it does not, which is
+          // true of `clearConversation` — so without this, a read that moved out of the scanned body
+          // reads as a door in the clear. That happened once, to a character-counted window.
+          reads: read !== -1,
+          // No door loads the app scope itself (#264). It hangs off the lock read below instead, so
+          // that a Chat open with the gate off still reads nothing it never needed.
+          loadsApp: body.indexOf('loadAppList(') !== -1,
+        };
       });
+    })(),
+    // Where the app scope IS loaded, and on what condition. The notice's pointer needs the selected
+    // app's Bindings, and on the Chat route nothing else loads them — but an unconditional load in
+    // the doors broke the promise that opening a Chat reads no rail list it has never needed, which
+    // holds for every deployment with the gate off. Gated on the lock, and awaited before the state
+    // is applied so the notice arrives whole rather than sprouting its way out a beat later.
+    lockRead: (() => {
+      const src = fs.readFileSync(ROOT + 'store.js', 'utf8');
+      const at = src.search(/\n {2}function refreshSensitivity\(/);
+      const body = src.slice(at + 1, src.indexOf('\n  }', at));
+      const load = body.indexOf('loadAppList(');
+      return {
+        loadsApp: load !== -1,
+        gatedOnLock: /if \(SW\.util\.isLocked\(read\) && !state\.activeApp\) await loadAppList\(\)/
+          .test(body),
+        beforeApply: load !== -1 && load < body.indexOf('state.sensitivity = read'),
+      };
     })(),
   }));
 }

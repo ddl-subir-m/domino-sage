@@ -135,6 +135,38 @@ def test_every_door_out_of_a_conversation_drops_its_session_lock_before_reading(
     assert [d["name"] for d in doors] == ["newThread", "openThread", "clearConversation"]
     assert all(d["drops"] for d in doors)
     assert all(d["beforeRead"] for d in doors)
+    # `beforeRead` passes when a door makes no read at all, which is true of `clearConversation` and
+    # is why the clause is there. So the two that DO read are named: without this, a read that moved
+    # out of the harness's reach reads as a door in the clear. That happened — a comment grew and
+    # pushed the read past a character window — and every assertion above stayed green.
+    assert [d["reads"] for d in doors] == [True, True, False]
+
+
+@needs_node
+def test_an_armed_lock_loads_the_app_its_way_out_names():
+    """The Chat lock's way out is the selected app's dependency list, so the notice has to name that
+    app and find its Bindings. Neither was loaded on the Chat route: `init` reads `appAttachments`
+    through `loadScopeData`, while `activeApp` and `bindings` had only ever been written by Build's
+    own path. The notice drew, named the Dataset, and pointed nowhere.
+
+    Loaded off the LOCK and not off the doors that open a Conversation, which is where it went
+    first. Both doors read the lock, so either place worked for the pointer — but a door loads
+    unconditionally, and `test_split_leaves_chat_exactly_as_it_is_today` is a promise that opening a
+    Chat reads the Chat half and no rail list it has never needed. That promise holds for every
+    deployment with the gate off, which is nearly all of them, so the cost belongs on the one state
+    that has a use for the data.
+
+    Awaited before the state is applied, so the notice arrives whole. Applied first, it would draw
+    its sentence and sprout a way out a beat later — and `noticeKey` carries the app name, so a
+    dismissal taken in that window would be undone by the arrival.
+    """
+    read = _way_out(SESSION, DECLARED)["lockRead"]
+
+    assert read["loadsApp"], "an armed lock loads nothing, so the pointer has no app to name"
+    assert read["gatedOnLock"], "the load is unconditional, which taxes every Chat open"
+    assert read["beforeApply"]
+    # And no door does it, so the promise above cannot be broken from the other side.
+    assert [d["loadsApp"] for d in _way_out(SESSION, DECLARED)["doors"]] == [False, False, False]
 
 
 @needs_node

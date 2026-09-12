@@ -825,11 +825,36 @@ window.SW = window.SW || {};
   function refreshSensitivity(gen) {
     const asked = (state.thread && state.thread.id) || '';
     return SW.api.sensitivity(asked).then(
-      (read) => {
+      // `async` for the one await below. The callers that leave this unawaited are unaffected: they
+      // already treated it as a promise that lands whenever it lands.
+      async (read) => {
         if (gen !== undefined && gen !== scopeLoad) return;
         // The answer is about the Conversation that was open when it was asked. Opening B while A
         // is still in flight lands two of these in either order, and the older one carries A's
         // sticky lock — which is a picker greying rows out for a Conversation nobody is looking at.
+        if (((state.thread && state.thread.id) || '') !== asked) return;
+        // A lock that armed needs the selected app's records, and on the Chat route nothing has
+        // loaded them (#264). `init` reads `appAttachments` through `loadScopeData`, but `activeApp`
+        // and `bindings` have only ever been written by Build's own path — so the notice drew in
+        // Chat, named the Dataset, and pointed nowhere, because `lockWayOut` had no app to name and
+        // `appHoldsEveryDeclaredDataset` no Binding to find.
+        //
+        // Here rather than in the doors that open a Conversation, which is where it went first. Both
+        // of them read this, so either place works for the lock — but a door loads unconditionally,
+        // and `test_split_leaves_chat_exactly_as_it_is_today` is a promise that opening a Chat reads
+        // the Chat half "and no rail list it has never needed". That promise holds for every
+        // deployment with the gate off, which is nearly all of them; hanging the load off `locked`
+        // keeps it, and makes the cost fall on the one state that has a use for the data.
+        //
+        // `!state.activeApp` is the "nothing loaded it" signal, and Build never trips it. Cascading,
+        // because `loadAppList` alone gives the name and not the Bindings, and `cascade: false`
+        // would leave `appAttachments` describing whichever app was selected at boot — #95's wrong
+        // pairing, landing in the one sentence whose job is to say which list to open.
+        //
+        // AWAITED before the state is applied, so the notice arrives whole. Applied first, the
+        // notice would draw its sentence, then sprout a way out a beat later — and `noticeKey`
+        // carries the app name, so a dismissal taken in that window would be undone by the arrival.
+        if (SW.util.isLocked(read) && !state.activeApp) await loadAppList();
         if (((state.thread && state.thread.id) || '') !== asked) return;
         state.sensitivity = read;
         notify();

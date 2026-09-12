@@ -98,6 +98,46 @@ window.SW = window.SW || {};
         .some((row) => row.id === id && row.declared);
     },
 
+    // Whether EVERY declared Dataset holding the lock is one this app's own dependency list can
+    // release — a Binding or an Attachment, the two records that list holds and offers a removal
+    // for. "Every" and not "any", because the lock arms on all three doors at once
+    // (`_datasets_in_scope`): an app that binds declared `claims` while the Conversation pins
+    // declared `members` as a chip answers "any" yes, and the pointer would then say "Remove them"
+    // of a pair only half of which is there — the creator removes one, comes back, and the lock has
+    // not moved. Under "every" the mixed case withholds the pointer, and the chip-only case falls
+    // out of the same rule rather than needing one of its own.
+    //
+    // The app's records are matched on ids, and only the NAMES that survive that match are compared
+    // with the lock's — which is the one comparison `sensitivity` leaves possible, since it sends
+    // names and no ids. Two declared Datasets sharing a name are the residue, and the narrow one:
+    // both are declared, and the pointer is then drawn for a row that is there under the name of
+    // one that is not.
+    //
+    // An Attachment carrying no `dataset_id` contributes nothing, which is a decision rather than an
+    // oversight: `_rehydrate_attached`'s symlink scan rebuilds a pre-manifest workspace's entries
+    // without one and still will not write one (ADR-0048). The server's `_dataset_is_attached` falls
+    // back to the served root for exactly these, but it derives that root from the BINDING's name,
+    // which this has none to ask, and its docstring rejects the entry's recorded `dataset` field as
+    // a substitute — so the fallback here would be a slug rule the client does not own. In a
+    // workspace that old an Attachment lock draws no pointer, the same silence the chip case gets,
+    // and "Allowed models" still stands beside it.
+    appHoldsEveryDeclaredDataset(sensitivity) {
+      const names = (sensitivity && sensitivity.datasets) || [];
+      if (!names.length) return false;
+      const { bindings, appAttachments, resourceGroups, catalogueParents } = SW.store.get();
+      const ids = new Set();
+      (bindings || []).forEach((b) => {
+        if (b && b.kind === 'dataset') ids.add(SW.util.bindingId(b));
+      });
+      (appAttachments || []).forEach((a) => {
+        if (a && a.dataset_id) ids.add(`dataset:${a.dataset_id}`);
+      });
+      const held = new Set(((resourceGroups || {}).dataset || []).concat(catalogueParents || [])
+        .filter((row) => row.declared && ids.has(row.id))
+        .map((row) => row.name));
+      return names.every((name) => held.has(name));
+    },
+
     // Whether the lock is on and holding. Null is not `enabled: false` — it is a read that has not
     // landed — and both answer "no lock" here, which is what nearly every deployment is. Asked by
     // every picker, so the null and the off case are decided once.
@@ -213,6 +253,57 @@ window.SW = window.SW || {};
       return SW.brand.text(
         "Removing the {dataset} won't unlock this chat. Start a new chat to use any model."
       );
+    },
+
+    // The way out the composer's notice offers, whichever reason is holding the lock. One slot and
+    // one function filling it, because the two reasons have two different ways out and a notice
+    // that offered both would offer a wrong one every time.
+    //
+    // Under the Bindings lock this is a POINTER and takes ADR-0011's shape: it names the
+    // destination in the words the reader will see on arrival — "App dependencies" is the header
+    // menu item they click and the modal title they land on — and it names the app, because a
+    // Project holds many Built Apps (ADR-0008) and the lock's scope is the SELECTED app's. The
+    // Project rail beside it is the wrong destination: it lists the Project's Datasets, and the
+    // list that can lift this lock is the one the app owns.
+    //
+    // One condition, and it is about the records rather than the surface: every declared Dataset
+    // holding the lock has to be on this app's own list (`appHoldsEveryDeclaredDataset`), or the
+    // reader is sent to remove something that is not all of it. That is the dead end ADR-0011 exists
+    // to close, and the silence when it fails is not a gap — "Allowed models" sits beside this line,
+    // and asking for the model to be approved is the other way out of every lock.
+    //
+    // It points OUT of Chat, and `chat` names the surface when it does. That was decided against
+    // once, on the precedent that every other "under App dependencies" sentence is Build-only
+    // through the mention guard — and the precedent does not transfer. A mention is an ACT, and
+    // ADR-0021 keeps an act on the surface that owns it, so gating that one on the mode is that rule
+    // working. A pointer is not an act: ADR-0011 blesses it precisely so a reader can be sent
+    // somewhere they are not standing, on the condition that it names the destination in the words
+    // they will see on arrival. Withholding it in Chat would have reproduced the last clause of the
+    // failure this feature exists to fix — "the lock stayed on, in Chat, naming no Dataset, with its
+    // only removal control in Build" (ADR-0048) — with the naming fixed and the route still missing.
+    //
+    // Prose rather than a button, as `store.js` already points here from a bind receipt and a
+    // refusal: the sentence is what has to be right, and a link would make the notice the only
+    // surface that opens a modal it does not own.
+    //
+    // It pronouns the Datasets the sentence above it just named, so it agrees with their number:
+    // the lock arms on as many as are declared, and "Remove it" under two of them is the one word
+    // in this notice a reader would stop at.
+    lockWayOut(sensitivity, app, chat) {
+      if (SW.util.lockedBySession(sensitivity)) return SW.util.sessionWayOut(sensitivity);
+      if (!SW.util.isLocked(sensitivity) || !app) return '';
+      if (!SW.util.appHoldsEveryDeclaredDataset(sensitivity)) return '';
+      const them = ((sensitivity && sensitivity.datasets) || []).length > 1 ? 'them' : 'it';
+      // Plain strings and not `brand.text`, because "Build" is a name CONTEXT.md marks as one and
+      // the brand lint refuses an unkeyed name inside a substituted string — rightly, since a
+      // rebrand cannot reach it there. `stillBoundNotice` below already says "in Build" this way,
+      // and neither sentence carries a brand noun, so the substitution had nothing else to do.
+      //
+      // The surface comes first in Chat, because it is the part of the instruction that has to
+      // happen first. Build names no mode: naming the one already on screen reads as a correction.
+      return chat
+        ? `In Build, remove ${them} from ${app} under App dependencies to use any model.`
+        : `Remove ${them} from ${app} under App dependencies to use any model.`;
     },
 
     // Why one Alias is greyed out, on the row that is greyed out. A disabled control that does not

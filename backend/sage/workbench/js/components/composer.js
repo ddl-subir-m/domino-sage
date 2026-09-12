@@ -123,23 +123,23 @@ window.SW = window.SW || {};
   //
   // Under the box beside the mention guard, and for the same reason: the box is what you are
   // writing, and this is what will happen to it.
-  function LockNotice({ sensitivity, picked, chat, onDismiss }) {
+  function LockNotice({ sensitivity, picked, chat, app, onDismiss }) {
     const runsOn = SW.util.lockedRunsOn(sensitivity, chat);
     const using = runsOn
       ? SW.brand.text('Using {name}', { name: runsOn })
       : SW.brand.text('Using an approved model');
-    // The kind, never the row's name. A Dataset id is the longest, least useful word in this
-    // sentence, and after an unbind it would name a panel row that is already gone (ADR-0043).
-    const several = ((sensitivity && sensitivity.datasets) || []).length > 1;
+    // `declaredPhrase`, which is what the picker row's own sentence is built from (#264). This said
+    // the KIND — "this Dataset" — while the greyed row beside it named the Dataset, so a creator
+    // who read both learned that a declared Dataset was the reason twice and which one once. The
+    // shared helper is the only thing that keeps the two from drifting again, and it is also where
+    // the sticky lock's anonymity lives: under `session` there is no row left to name, and naming
+    // one that has been unbound sends somebody to remove something already gone (ADR-0043).
+    const datasets = SW.util.declaredPhrase(sensitivity);
     const why = SW.util.lockedBySession(sensitivity)
-      ? SW.brand.text(
-        "this chat already used sensitive data, so {picked} isn't allowed.",
-        { picked }
-      )
-      : several
-        ? SW.brand.text("{picked} isn't approved for these {datasetPlural}.", { picked })
-        : SW.brand.text("{picked} isn't approved for this {dataset}.", { picked });
-    const wayOut = SW.util.sessionWayOut(sensitivity);
+      ? SW.brand.text("this chat already used {datasets}, so {picked} isn't allowed.",
+        { datasets, picked })
+      : SW.brand.text("{picked} isn't approved for {datasets}.", { datasets, picked });
+    const wayOut = SW.util.lockWayOut(sensitivity, app, chat);
     return h(
       'div',
       // Same place as the mention guard — under the box — and deliberately not the same shape.
@@ -151,9 +151,10 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-lock-notice-body' },
         h('div', { className: 'sw-lock-notice-text' }, `${using} — ${why}`),
-        // The way out, only when there is one to give. Under the Bindings lock the creator
-        // already has a better one — unbind the Dataset — and it is not offered here because
-        // the notice is about the model, not about the data.
+        // The way out, and there is one under either reason (#264). It used to be drawn for the
+        // sticky lock alone, on the grounds that the notice is about the model and not about the
+        // data — but the sentence above now names a Dataset, and naming something without saying
+        // where it can be acted on is the dead end ADR-0011 exists to close.
         wayOut ? h('div', { className: 'sw-lock-notice-way' }, wayOut) : null
       ),
       h(Button, {
@@ -671,9 +672,22 @@ window.SW = window.SW || {};
     // that order, ADR-0043); the reason catches the creator unbinding the Dataset, after which the
     // notice says something it has never said — that unbinding did not work, and what does. Either
     // way the notice already read was never an answer to the new fact, so it comes back.
+    //
+    // The Datasets and the app are in it since the notice began naming them (#264): the sentence
+    // now changes when a second Dataset is declared ("the Dataset claims" becomes "the Datasets
+    // claims and members", and "Remove it" becomes "Remove them") and when the selection moves to
+    // another app whose lock happens to match on every other field. A dismissal that outlived
+    // either would hide a sentence naming a different row in a different list.
     const noticeKey = String([(sensitivity && sensitivity.approved) || [],
                              SW.util.lockedRunsOn(sensitivity, !showMode),
-                             (sensitivity && sensitivity.reason) || '']);
+                             (sensitivity && sensitivity.reason) || '',
+                             (sensitivity && sensitivity.datasets) || [],
+                             // Both halves of the app: the id because two Built Apps can be renamed
+                             // to one name and their dependency lists are still different lists,
+                             // and the name because it is the word the sentence prints, so a rename
+                             // alone changes what the reader is being told.
+                             (activeApp && activeApp.id) || '',
+                             (activeApp && activeApp.name) || '']);
 
     return h(
       'div',
@@ -1185,6 +1199,15 @@ window.SW = window.SW || {};
           sensitivity,
           picked: movedFrom,
           chat: !showMode,
+          // The app whose dependency list can lift this lock — the same `activeApp` the mention
+          // guard beside it acts on, because the lock's scope is the selected app's (ADR-0043).
+          //
+          // Passed in BOTH modes. Whether the app's list can release the lock is a question about
+          // the records and `appHoldsEveryDeclaredDataset` asks it of them; the mode cannot answer
+          // it, since a chip arms the lock from the Conversation and the Conversation travels into
+          // Build through the handoff. Chat gets the pointer with the mode named in it, because a
+          // pointer exists to send a reader somewhere they are not standing — see `lockWayOut`.
+          app: activeApp && activeApp.name,
           onDismiss: () => SW.store.dismissSensitivityNotice(noticeKey),
         })
     );
