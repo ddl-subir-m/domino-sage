@@ -1016,11 +1016,28 @@ window.SW = window.SW || {};
     // Every label names the scope it acts on, which is ADR-0011's rule and the only thing telling
     // this Remove apart from the Project's. `Delete from {dataset}` is the door onto Sage's own
     // bytes and never onto a Dataset file somebody already had (ADR-0023).
+    //
+    // The Dataset is named by the word the Project holds for it TODAY, never the `dataset` the
+    // entry recorded, which is the name it had at ATTACH time (#273). A rename leaves the entry
+    // matching by id while its recorded name goes stale, and this is the label on a door with no
+    // undo. Through the lookup the row, the receipt and the refusal already share (#271), so one
+    // Dataset is not spelled two ways in one gesture.
+    //
+    // The fallback is that recorded name, plainly — unlike the receipt, which took a third
+    // sentence rather than fall back. Neither reason it had reaches here: `_rehydrate_attached`,
+    // the one writer whose `dataset` can be a served slug path, records neither `dataset_rel_path`
+    // nor `source: 'upload'`, so `isSageUpload` never opens this door on its entries, and the
+    // writers that do reach it set `dataset` from a real Dataset's `.name`.
     const menuFor = (record, attachment) => ({
       items: [
         { key: 'remove', label: `Remove from ${activeApp.name}`, danger: true },
         ...(attachment && SW.util.isSageUpload(attachment)
-          ? [{ key: 'delete', label: `Delete from ${attachment.dataset}`, danger: true }]
+          ? [{
+              key: 'delete',
+              label: `Delete from ${SW.util.datasetNameNow(attachment.dataset_id)
+                || attachment.dataset}`,
+              danger: true,
+            }]
           : []),
       ],
       onClick: ({ key }) => {

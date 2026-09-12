@@ -4868,7 +4868,14 @@ window.SW = window.SW || {};
       const name = (attachment.file || attachment.path || '').split('/').pop();
       return new Promise((resolve) => {
         antd.Modal.confirm({
-          title: `Delete ${name} from ${attachment.dataset}?`,
+          // The Dataset the Project holds under this id TODAY, and the recorded `dataset` — the
+          // name it had at ATTACH time — only when no current one can be had (#273). Same lookup
+          // and same fallback as the menu item that opened this confirm, one gesture earlier, so
+          // the two cannot name one Dataset two ways. A title cannot afford the receipt's third
+          // sentence, and does not need it: `isSageUpload` keeps out the one entry whose recorded
+          // name is a served path.
+          title: `Delete ${name} from ${SW.util.datasetNameNow(attachment.dataset_id)
+            || attachment.dataset}?`,
           content: 'This deletes the file, and there is no undo.',
           okText: 'Delete',
           okButtonProps: { danger: true },
