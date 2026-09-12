@@ -6,7 +6,7 @@
 // the notice as the function it is, against a stubbed `createElement`, so the test reads the
 // groups and rows a person would see rather than grepping the source for a join.
 //
-// Nothing is mounted. Input on stdin: `{ apps, refs, conversations, scopeName }`.
+// Nothing is mounted. Input on stdin: `{ apps, refs, conversations, carriers, scopeName }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -55,6 +55,7 @@ const notice = sandbox.SW.util.stillBoundNotice({
   apps: spec.apps || [],
   refs: spec.refs || [],
   conversations: spec.conversations || [],
+  carriers: spec.carriers || [],
   scopeName: spec.scopeName || 'Default',
 });
 

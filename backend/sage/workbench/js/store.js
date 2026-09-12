@@ -3873,13 +3873,18 @@ window.SW = window.SW || {};
               // has no app source behind it — so `refs` is empty and the conversation titles are
               // the only thing standing between the reader and a sentence they cannot act on.
               const held = (err.payload && err.payload.conversations) || [];
-              if (apps.length || held.length) {
+              // A Built App that carries FILES from a Dataset refuses it too (ADR-0048). Its app
+              // name is already in `apps` — one app is one place to go — and this is the other
+              // half: which served folders it holds, and so which of the app's own controls
+              // releases it. The words for those controls live in the glossary, not here.
+              const carriers = (err.payload && err.payload.carriers) || [];
+              if (apps.length || held.length || carriers.length) {
                 // Lists, not the server sentence: err.message already concatenates the same
                 // names, and reprinting them under Held in is how untitled chats become a wall.
                 // Both ways out of a chip stay on the conversation group: closing it keeps the
                 // history, deleting the conversation does not, and only the reader knows which.
                 const notice = SW.util.stillBoundNotice({
-                  apps, refs, conversations: held, scopeName,
+                  apps, refs, conversations: held, carriers, scopeName,
                 });
                 antd.Modal.info({
                   title: notice.title,

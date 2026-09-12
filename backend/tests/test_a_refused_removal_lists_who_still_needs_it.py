@@ -118,6 +118,64 @@ def test_a_chip_only_refusal_does_not_draw_an_app_group():
     assert "1 conversation" in said
 
 
+def test_an_app_that_carries_files_says_what_it_holds_and_not_only_that_it_refused():
+    """The third holder (ADR-0048). Its app name is already a row — one app is one place to go —
+    so what the notice owes is the other half: which folders it carries.
+
+    And the how-to underneath has to match, which is where this first went wrong. A carrying app
+    holds no Binding, so it has no "uses" to remove; sending the reader to Build to remove one is
+    the dead end the whole change exists to close."""
+    rendered = _notice({
+        "apps": ["Support Pulse"],
+        "refs": [],
+        "conversations": [],
+        "carriers": ["sales_2026"],
+        "scopeName": "Default",
+    })
+    said = _text(rendered)
+    assert [row["text"] for row in _rows(rendered)] == ["Support Pulse"]
+    assert "Carries data in sales_2026" in said
+    assert "Remove those files in Build." in said
+    assert "Remove those uses in Build." not in said
+
+
+def test_an_app_that_both_binds_and_carries_is_told_to_do_both():
+    """`refs` and `carriers` are not alternatives. One app can bind a Dataset and carry its files,
+    and `_resource_usage` matches a Dataset binding on its NAME — which the served path of its own
+    attachment contains — so this is the ordinary case rather than a corner. Naming only the uses
+    sends the reader to remove them and straight back into the same 409."""
+    rendered = _notice({
+        "apps": ["Support Pulse"],
+        "refs": ["src/App.tsx"],
+        "conversations": [],
+        "carriers": ["sales_2026"],
+        "scopeName": "Default",
+    })
+    said = _text(rendered)
+    assert "Used in src/App.tsx" in said
+    assert "Carries data in sales_2026" in said
+    assert "Remove those uses and those files in Build." in said
+
+
+def test_two_carrying_apps_keep_their_folders_apart():
+    """Each entry already joins one app's folders with ", ". Joining the entries at the same
+    separator makes one flat list, and nobody can then say which folder belongs to which app."""
+    rendered = _notice({
+        "apps": ["Support Pulse", "Churn model"],
+        "refs": [],
+        "conversations": [],
+        "carriers": ["Support Pulse — sales_2026/raw, sales_2026/curated",
+                     "Churn model — sales_2026"],
+        "scopeName": "Default",
+    })
+    lines = [n["text"] for n in rendered["nodes"] if n["className"] == "sw-still-bound-meta"]
+
+    assert lines == [
+        "Carries data in Support Pulse — sales_2026/raw, sales_2026/curated",
+        "Carries data in Churn model — sales_2026",
+    ]
+
+
 def test_two_apps_take_the_plural():
     rendered = _notice({
         "apps": ["Support Pulse", "Churn model"],

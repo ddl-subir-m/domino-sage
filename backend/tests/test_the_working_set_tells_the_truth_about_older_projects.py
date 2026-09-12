@@ -315,6 +315,10 @@ def test_nothing_outside_the_rail_reads_the_working_set(tmp_path: Path) -> None:
         ("orchestrator/service.py", "list_project_resources"),
         # The one-shot backfill, which reads to find what is missing (#140).
         ("orchestrator/service.py", "_backfill_membership_from_bindings"),
+        # The removal's third holder question (ADR-0048). A guard, not a prompt: it reads one row
+        # to learn the NAME `_attach_root` needs before it can ask whether any Built App carries
+        # that Dataset's files, and nothing it returns is written anywhere an agent reads.
+        ("orchestrator/service.py", "_apps_that_carry"),
         # Its own writer, reading before it republishes.
         ("workspace/manager.py", "update_project_resources"),
     }

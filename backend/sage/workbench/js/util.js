@@ -1117,20 +1117,39 @@ window.SW = window.SW || {};
     // (the server line AND "Held in") and turns untitled chats — first message as title — into
     // a wall of @mentions (#168). The payload already has the lists; this is the lists as lists,
     // and the how-to under each group rather than in the names.
-    stillBoundNotice({ apps, refs, conversations, scopeName }) {
+    stillBoundNotice({ apps, refs, conversations, carriers, scopeName }) {
       const appList = apps || [];
       const chatList = conversations || [];
       const files = refs || [];
+      // The served folders a Built App carries files from (ADR-0048). A third class of holder,
+      // not a third list of names: the app is already a row above, and this says what it holds,
+      // which is what tells the reader which of that app's controls clears it — it may hold no
+      // Binding at all. The words for those controls live in the glossary, not here.
+      // Already rolled up to the folder by the server, because one folder attach writes one
+      // entry per file and a hundred paths here is a notice nobody reads.
+      const carried = carriers || [];
       const row = (name, key) => h(
         'div',
         { key, className: 'sw-still-bound-row', title: name },
         name
       );
-      const appHint = files.length
-        ? 'Remove those uses in Build.'
-        : appList.length > 1
-          ? 'Remove it from those apps in Build.'
-          : 'Remove it from that app in Build.';
+      // A carrying app holds no Binding, so it has no "uses" to remove and the App dependencies
+      // modal offers it a different control — the one under "Files it carries". Sending a reader
+      // there to remove a use they do not have is the dead end this whole change exists to close.
+      //
+      // BOTH when there are both, which is the ordinary case rather than the corner: one app can
+      // bind a Dataset and carry its files, and `_resource_usage` matches a Dataset binding on its
+      // NAME — which the served path of its own attachment contains. Naming only the uses sends
+      // the reader to remove them and straight back into the same 409.
+      const appHint = files.length && carried.length
+        ? 'Remove those uses and those files in Build.'
+        : files.length
+          ? 'Remove those uses in Build.'
+          : carried.length
+            ? 'Remove those files in Build.'
+            : appList.length > 1
+              ? 'Remove it from those apps in Build.'
+              : 'Remove it from that app in Build.';
       const appSection = appList.length
         ? h(
             'div',
@@ -1153,6 +1172,21 @@ window.SW = window.SW || {};
                   `Used in ${files.join(', ')}`
                 )
               : null,
+            // One line per carrying app, never one joined line. The server already joins this
+            // app's folders with ", " inside its own entry, so a second join at the same
+            // separator would read as one flat list and leave nobody able to say which folder
+            // belongs to which app. `refs` gets away with a single line only because each of its
+            // entries is one path.
+            //
+            // Uncapped, unlike the folders inside each entry: there is exactly one of these per
+            // app row drawn above, so they cannot outgrow the list they annotate.
+            ...carried.map((held, i) =>
+              h(
+                'div',
+                { key: `carry-${i}`, className: 'sw-still-bound-meta', title: held },
+                `Carries data in ${held}`
+              )
+            ),
             h('p', { className: 'sw-caption' }, appHint)
           )
         : null;

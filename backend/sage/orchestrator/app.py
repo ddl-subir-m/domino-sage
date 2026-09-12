@@ -1586,10 +1586,12 @@ def remove_project_resource(id: str = "") -> JSONResponse:
         # than only that it refused — the same cleanup affordance `unbind` gives. `apps` names the
         # Built Apps that still bind it, because the one refusing is often not the one on screen.
         # `conversations` names the Chat Threads holding a context chip on it (#168), the one holder
-        # with no app source behind it and so nothing in `refs` to stand in for it.
+        # with no app source behind it and so nothing in `refs` to stand in for it. `carriers` names
+        # the served folders a Built App carries files from (ADR-0048) — the third holder, whose
+        # way out is Detach rather than unbind, and which `refs` would otherwise mislabel.
         return JSONResponse(status_code=409,
                             content={"error": str(e), "apps": e.apps, "refs": e.refs,
-                                     "conversations": e.conversations})
+                                     "conversations": e.conversations, "carriers": e.carriers})
     if not ok:
         return JSONResponse(status_code=404, content={"error": "not in this project"})
     return JSONResponse(content={"removed": True})

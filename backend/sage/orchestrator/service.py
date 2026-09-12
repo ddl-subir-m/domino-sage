@@ -713,18 +713,36 @@ class ResourceStillBound(Exception):
     Carries the `apps` for the same reason one level up. A Project holds many Built Apps (ADR-0008),
     so the app that refuses is often not the one on screen, and "which app" is the first thing the
     creator has to know before the files mean anything.
+
+    Three classes of holder in one sentence (ADR-0048): an app that BINDS it, a live conversation
+    holding a CHIP on it, and an app that carries FILES from it. All three are asked before any of
+    them refuses, because reporting one at a time sends a person off to fix it and straight back
+    into a second refusal they were never warned about.
     """
 
     def __init__(self, name: str, apps: list[str], refs: list[str] | None = None,
-                 conversations: list[str] | None = None) -> None:
+                 conversations: list[str] | None = None,
+                 carriers: list[str] | None = None) -> None:
         self.name = name
+        # Every Built App that still needs it — by Binding, by carried files, or by both. One app
+        # is one place to go, and `bind_dataset` and `attach_file` are two records of two different
+        # things about it (ADR-0039), so an app that does both is named once here and its two kinds
+        # of evidence are told apart below.
         self.apps = list(apps)
         self.refs = list(refs or [])
-        # Carries `conversations` for the third holder a Resource can have: a Chat Thread with a
+        # Carries `conversations` for the second holder a Resource can have: a Chat Thread with a
         # context chip on it (#168). A chip has no app source behind it and so no `refs` to offer,
         # which is precisely why it needs naming — a holder with no files to point at would
         # otherwise be the one holder the refusal stayed silent about.
         self.conversations = list(conversations or [])
+        # Carries `carriers` for the third, the one ADR-0048 was written for: a Built App whose
+        # tree carries FILES from this Dataset. It binds nothing, so `refs` has nothing to say
+        # about it, and the removal used to go straight through — leaving a sensitivity lock armed
+        # over a Dataset with no working-set row left to release it from.
+        #
+        # Served folders rather than files, already rolled up: a folder attach writes one entry per
+        # file (ADR-0029), and a hundred of them is what this refusal has to survive.
+        self.carriers = list(carriers or [])
         holders = self.apps + self.conversations
         # Plural verb for a plural subject: the panel puts this sentence in front of the reader as
         # it stands, so the agreement has to be right here rather than in the markup.
@@ -878,6 +896,23 @@ def _context_author(row: dict) -> str:
 # Per-file lines are right for five files and ruinous for two hundred — the prompt would then grow
 # with the file count, on every turn, forever.
 FOLDER_COLLAPSE_THRESHOLD = 10
+
+
+def _named_with_rest(names: list[str], quote: str = "") -> str:
+    """The first `FOLDER_COLLAPSE_THRESHOLD` names, then a count of the ones left out.
+
+    One cut, two readers: the folder sentence a Dataset chip puts in front of the agent every turn,
+    and the removal refusal's roll-up of the folders a Built App carries (ADR-0048). Either can be
+    handed a hundred names by one folder attach (ADR-0029), and a second copy of the cut is how the
+    two come to disagree about where it falls — the drift `FOLDER_COLLAPSE_THRESHOLD` itself exists
+    to stop.
+
+    `quote` because the prompt reader wraps each name in backticks and the panel reader does not: a
+    refusal is read by a person in a modal, where backticks are punctuation nobody typed.
+    """
+    shown = ", ".join(f"{quote}{n}{quote}" for n in names[:FOLDER_COLLAPSE_THRESHOLD])
+    rest = len(names) - FOLDER_COLLAPSE_THRESHOLD
+    return f"{shown}, and {rest} more" if rest > 0 else shown
 
 
 def _by_folder(entries: list[dict]) -> dict[str, list[dict]]:
@@ -1077,6 +1112,46 @@ def _attach_root(dataset_name: str) -> str:
     return PurePosix("public/data", _slug(dataset_name)).as_posix() + "/"
 
 
+def _dataset_folder_name(folder: str, dataset_name: str, served_as: str = "") -> str:
+    """One attached folder as a person reads it: the Dataset's own name, then the part below it.
+
+    A pointer names its destination in the words the reader will see on arrival (ADR-0011), and the
+    destination here is the App dependencies modal, whose "Files it carries" rows draw a basename
+    over the DATASET NAME as their subtitle (`attachmentRow`). `public/data/<slug>/` appears there
+    not once — it is the served root, the one form of this path nobody ever typed and the only one
+    that cannot be recognised on arrival. So the root comes off and the Dataset's name goes on.
+
+    The name rather than the slug that is actually in the path: `_slug` collapses punctuation, so a
+    Dataset called `My Data` is served from `my-data/` and named `My Data` everywhere a person
+    looks. Printing the slug would hand them a second spelling to reconcile.
+
+    A folder rolled up to the Dataset root is the Dataset itself, and says so with no trailing
+    separator to suggest a subfolder that was cut off.
+
+    `served_as` is the name the path was WRITTEN under — `_dataset_entry` records it on every
+    entry — and it is tried when the current name does not fit. A rename is what makes them
+    differ: the files go on being served from the old slug, the entry goes on matching by
+    `dataset_id`, and a strip that only knew today's name would fail and print the raw
+    `public/data/<old-slug>/raw` this function exists to keep out. The name on the front is
+    today's either way, because that is what the refusal's own sentence calls this Dataset.
+
+    A folder that fits NEITHER root is left exactly as it is. Prefixing a name onto a path it does
+    not own would produce a place that exists nowhere, and an honest path beats an invented one.
+    """
+    # Each root without its trailing separator, because a roll-up's key is a folder path and the
+    # Dataset root itself is one of the keys it can settle on — with the separator left on, that
+    # key matches nothing and the whole served path rides through under the name.
+    for candidate in (dataset_name, served_as):
+        if not candidate:
+            continue
+        root = _attach_root(candidate).rstrip("/")
+        if folder == root:
+            return dataset_name
+        if folder.startswith(f"{root}/"):
+            return f"{dataset_name}/{folder[len(root) + 1:]}"
+    return folder
+
+
 def _dataset_is_attached(attached: list[dict], binding: Binding) -> bool:
     """Whether anything in the app's tree came from one bound Dataset.
 
@@ -1090,11 +1165,37 @@ def _dataset_is_attached(attached: list[dict], binding: Binding) -> bool:
     reading the id alone would report a Dataset whose files are already sitting in the tree. Not by
     the recorded NAME for the same reason: that scan fills `dataset` from the symlink's parent
     directory, which is a slug carrying whatever subfolders `attach_folder` nested under it.
+
+    The yes/no half of `_dataset_attached_entries`, which is the same question asked for a count.
+    Split rather than copied, for the reason above: a third spelling of one fact is how the two
+    that already exist came to disagree.
+    """
+    return bool(_dataset_attached_entries(attached, binding))
+
+
+def _dataset_attached_entries(attached: list[dict], binding: Binding) -> list[dict]:
+    """WHICH entries in the app's tree came from one bound Dataset — `_dataset_is_attached`'s own
+    match, for the caller that needs the files rather than the answer.
+
+    The removal refusal is that caller (ADR-0048): "an app carries this Dataset" is a refusal a
+    person cannot act on, and the folders those entries roll up to are what turn it into a next
+    step. A second scan written for it would be the third spelling of this match, and the two that
+    exist already cost this feature a day.
+
+    EXACTLY the bool's match and not a narrower one. The temptation is to require a `path` here,
+    since the one caller that needs these entries groups them by it — but this match already has
+    two readers that only ask yes or no, and an entry they called attached and this called nothing
+    would set them nagging about a Dataset the app does hold. The caller that needs paths asks for
+    them itself.
+
+    `_rehydrate_attached`'s symlink scan writes `dataset_id` as an explicit `None` rather than
+    leaving the key out, which is why the id is read by VALUE. `"dataset_id" in entry` would call a
+    pre-manifest entry a modern one and match it against a Dataset id it never recorded.
     """
     root = _attach_root(binding.name)
-    return any(str(e.get("dataset_id") or "") == binding.id
-               or str(e.get("path") or "").startswith(root)
-               for e in attached)
+    return [e for e in attached
+            if str(e.get("dataset_id") or "") == binding.id
+            or str(e.get("path") or "").startswith(root)]
 
 
 # Subfolders Sage writes uploaded bytes into. `uploads/` is current; `sensitive/` is kept so a
@@ -1452,11 +1553,10 @@ def _context_folder_state(workspace: Path, item: dict) -> str:
             n=str(len(entries)),
         )
     names = [e.relative_to(root).as_posix() for e in readable]
-    shown = ", ".join(f"`{n}`" for n in names[:FOLDER_COLLAPSE_THRESHOLD])
-    rest = len(names) - FOLDER_COLLAPSE_THRESHOLD
-    if rest > 0:
-        return f"Read these files: {shown}, and {rest} more in that folder — list it for the rest."
-    return f"Read these files: {shown}."
+    listed = _named_with_rest(names, quote="`")
+    if len(names) > FOLDER_COLLAPSE_THRESHOLD:
+        return f"Read these files: {listed} in that folder — list it for the rest."
+    return f"Read these files: {listed}."
 
 
 def _safe_join(root: Path, rel: str) -> Path:
@@ -13907,8 +14007,15 @@ class Orchestrator:
         Computed on read, never written to the membership file. Both answers live somewhere else —
         the apps' own manifests (ADR-0010), the Threads' own `context.json` — and a copy here would
         go stale the moment any app bound or unbound, or any conversation dropped a chip, including
-        one nobody was looking at. Together they are the scan `remove_project_resource` refuses on,
-        so the drawer names exactly the apps and conversations the refusal would.
+        one nobody was looking at. Together they are two of the three scans
+        `remove_project_resource` refuses on, so the drawer names exactly the apps and conversations
+        the refusal would.
+
+        TWO of three: the removal's third question — which Built Apps carry FILES from a Dataset
+        (ADR-0048) — is deliberately not asked here. This listing is polled, and answering it means
+        reading every app's Attachment manifest on every poll, roughly doubling the `_app_bindings`
+        half above for a class of holder the 409 already teaches. So a carried Dataset's row still
+        offers a Remove that will be refused, and the refusal is the only teacher for it.
 
         The cost, because the panel polls this (#169). Measured over a project holding 50 Built
         Apps and 20 membership rows, each Thread carrying a chip, median of 25 warm calls:
@@ -14061,27 +14168,58 @@ class Orchestrator:
         turns that already happened, and rewriting a conversation to tidy the rail is the quiet
         history-rewrite Sage declines everywhere else. Both ways out are real acts the creator can
         take: close the chip, or delete the conversation.
+
+        Refuses for a Built App that carries FILES from it as well (ADR-0048). That is the third
+        question, and until it was asked a Dataset a Build mention had attached left the working set
+        without a word: the sensitivity lock stayed armed over Attachments whose Dataset had no row
+        left to release it from, showing in Chat, naming nothing. The way out is Detach, in Build.
         """
         rid = str(resource_id or "").strip()
         if not rid:
             return False
+        project = self.project(start_preview=False)
         bound = self._apps_that_bind(rid)
         held = self._threads_that_hold(rid)
-        if bound or held:
-            # Both questions asked before either refuses, so two holders produce one refusal naming
-            # both. Reporting the app and going quiet about the conversation would send the creator
-            # off to unbind, and straight back into a second refusal they were never warned about.
-            apps = [_app_display_name(ws) for ws, _ in bound]
-            # Each file is named with its app once more than one app binds. Every Built App is
-            # seeded from the same template, so `src/App.tsx` in two of them is two files and two
-            # edits — a bare path would say neither which one nor how many. With a single app the
-            # sentence above already says which, and repeating it on every line is noise.
-            many = len(bound) > 1
-            refs = [f"{app} — {ref}" if many else ref
-                    for (workspace, binding), app in zip(bound, apps)
-                    for ref in self._resource_usage(workspace, binding)]
+        carried_name, carried = self._apps_that_carry(rid, project)
+        if bound or held or carried:
+            # All three questions asked before any of them refuses, so two holders produce one
+            # refusal naming both. Reporting the app and going quiet about the conversation would
+            # send the creator off to unbind, and straight back into a second refusal they were
+            # never warned about.
+            #
+            # One app list for the two app-shaped answers, in the order the apps were made. An app
+            # that binds the Dataset AND carries its files is one place to go and visit, and naming
+            # it twice would read as two.
+            holders = {ws.app_id: ws for ws, _ in bound} | {ws.app_id: ws for ws, _ in carried}
+            apps = [_app_display_name(holders[app_id])
+                    for app_id in self._wm.app_ids() if app_id in holders]
+            # Each file is named with its app once more than one app is in the refusal. Every Built
+            # App is seeded from the same template, so `src/App.tsx` in two of them is two files and
+            # two edits — a bare path would say neither which one nor how many. With a single app
+            # the sentence above already says which, and repeating it on every line is noise.
+            many = len(apps) > 1
+            refs: list[str] = []
+            carriers: list[str] = []
+            for workspace, binding in bound:
+                app = _app_display_name(workspace)
+                refs += [f"{app} — {ref}" if many else ref
+                         for ref in self._resource_usage(workspace, binding)]
+            for workspace, entries in carried:
+                app = _app_display_name(workspace)
+                # Folders rather than files, through the roll-up the managed block and the `@` menu
+                # already group by (ADR-0029, ADR-0030) — one folder act writes a hundred entries,
+                # and a refusal that listed them is one nobody reads. The served root is the same
+                # string in every app that carries it, which is why the app name matters here even
+                # more than it does on a `refs` line.
+                # Grouped rather than keyed, so each folder is named through an entry that actually
+                # landed in it: the name the path was written under lives on the entry, and after a
+                # rename it is the only one the strip can use.
+                folders = _named_with_rest(sorted(
+                    _dataset_folder_name(folder, carried_name, str(held[0].get("dataset") or ""))
+                    for folder, held in _by_folder(entries).items()))
+                carriers.append(f"{app} — {folders}" if many else folders)
             raise ResourceStillBound(self._refused_resource_name(rid, bound), apps, refs,
-                                     [h["title"] for h in held])
+                                     [h["title"] for h in held], carriers)
         found = {"ok": False}
 
         def change(items: list[dict]) -> list[dict]:
@@ -14089,7 +14227,7 @@ class Orchestrator:
             found["ok"] = len(kept) != len(items)
             return kept
 
-        self.project(start_preview=False).record.update_project_resources(change)
+        project.record.update_project_resources(change)
         if found["ok"]:
             self._save_project_record("project resources")
         return found["ok"]
@@ -14261,6 +14399,75 @@ class Orchestrator:
                     out.append((workspace, b))
                     break
         return out
+
+    def _apps_that_carry(
+        self,
+        resource_id: str,
+        project: Project,
+    ) -> tuple[str, list[tuple[Workspace, list[dict]]]]:
+        """Every Built App whose tree carries files from this Dataset, oldest app first, paired with
+        the Attachment entries that say so.
+
+        The third holder question (ADR-0048). `bind_dataset` and `attach_file` are two records of
+        two different things (ADR-0039), so an app can carry a Dataset's files and bind nothing —
+        and that is exactly the app the other two questions walk past. In Build a mention of a
+        Dataset file IS an attachment, so this is the common way an app comes to hold one.
+
+        Every app rather than the selected one, for `_apps_that_bind`'s reason: `project.attached`
+        is one app's tree, and a guard that reads the tree in front of you lets a tidy-up strand an
+        app nobody was looking at. `_attached_per_app` is the walk that answers for all of them, and
+        it prefers the two lists held in memory over their manifests so an attach made this session
+        counts before anything commits it.
+
+        `_dataset_attached_entries` decides, rather than a third spelling of what "carries" means:
+        it is `_dataset_is_attached`'s own match asked for the files instead of the answer, so the
+        managed block, the Dataset card and this guard cannot come to disagree about which files an
+        app holds. It inherits that match whole, including the collision named in ADR-0048 — an
+        entry that records no Dataset id matches on the served root, so two Datasets that slugify
+        alike meet there.
+
+        ONLY a Dataset is asked about, and the kind is what says so. Half that match is the served
+        root `public/data/<slug>/`, so a Data Source whose name slugifies the same way as an
+        attached Dataset would otherwise refuse a removal it has nothing to do with — a second
+        collision, of a different shape from the one the ADR names, and this is where it is closed.
+
+        The row is found through the same alias set the other two guards join on, and its NAME is
+        what `_attach_root` needs. The Binding is a probe built from that row rather than a record
+        that exists: a Dataset an app carries and binds nothing of is the whole point of the
+        question, so there is no Binding to read.
+        """
+        rid = str(resource_id or "").strip()
+        if not rid:
+            return "", []
+        aliases = self._resource_aliases(rid)
+        row = next((r for r in project.record.read_project_resources()
+                    if str(r.get("id") or "") in aliases), None)
+        if not row or str(row.get("kind") or "") != KIND_DATASET:
+            return "", []
+        name = str(row.get("name") or "")
+        if not name:
+            # `_attach_root("")` is `public/data/`, and EVERY Dataset attachment in the project
+            # sits under it — so a nameless row's probe would match on the served-root half
+            # against other Datasets' files and refuse its own removal by naming their folders.
+            # `add_project_resource` will not write a row without a name; this is the floor under
+            # that, not a case anyone reaches.
+            return "", []
+        probe = Binding(KIND_DATASET, _bare_kind_id(str(row.get("id") or ""), KIND_DATASET),
+                        name, name)
+        # A path is what makes an entry an Attachment: it is where the bytes landed, what the
+        # roll-up groups by, and what the release act takes. Narrowed HERE rather than in the
+        # shared match, so the two readers that only ask yes or no keep the answer they had. Both
+        # writers set one — `_dataset_entry` unconditionally, `_rehydrate_attached`'s symlink scan
+        # from the link's own position — so this drops nothing that exists today.
+        # The name travels back with the answer, because the caller has to strip the served root
+        # off these folders and that root is built from this exact string. Recovering it a second
+        # time is a second chance to recover a different one — and where the two differ the strip
+        # silently fails and the raw `public/data/<slug>/` path reaches the modal, which is the one
+        # thing `_dataset_folder_name` exists to prevent.
+        return name, [(app, carried)
+                      for app, attached in self._attached_per_app(project)
+                      if (carried := [e for e in _dataset_attached_entries(attached, probe)
+                                      if e.get("path")])]
 
     def pin_project_resource(self, resource_id: str, pin: dict) -> dict:
         """Pin one file or table on a membership parent. Parent must already be in the project."""
