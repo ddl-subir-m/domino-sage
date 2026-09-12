@@ -583,11 +583,26 @@ window.SW = window.SW || {};
     // draws neither line, and a store read per entry is what that loop's own comments exist to
     // keep out. One reader draws this, and it asks here.
     //
+    // The lookup is `datasetNameNow`, and the decision about its silence is the part that lives
+    // here: an entry with no id is asked nothing, and an id that names no Dataset draws no line.
+    attachmentSource(entry) {
+      return SW.util.datasetNameNow(String((entry && entry.dataset_id) || ''));
+    },
+
+    // What the Project calls the Dataset with this id TODAY, or '' when no Dataset the client can
+    // see carries it. The FACT, with no sentence attached — which is the split #271 needed: the row
+    // above draws it as a subtitle and falls silent on '', while a removal receipt puts it inside a
+    // promise and must say something either way. Sharing the lookup keeps the two spellings one
+    // (ADR-0011); sharing the sentence would have made one of them wrong.
+    //
     // Read off the same two lists `appHoldsEveryDeclaredDataset` reads, and for its reason: a
     // Dataset the working set has not pulled in is still one Dataset with one name, and reading
-    // only the Project's own group would print two answers depending on which list had loaded.
-    attachmentSource(entry) {
-      const id = String((entry && entry.dataset_id) || '');
+    // only the Project's own group would answer differently depending on which list had loaded.
+    //
+    // The tradeoff to know about: an unloaded `resourceGroups` is indistinguishable here from a
+    // Dataset with no name. Accepted for the reason #261 argued — both readers are in Build, where
+    // those lists are loaded — and both callers' fallbacks are safe rather than merely quiet.
+    datasetNameNow(id) {
       if (!id) return '';
       const { resourceGroups, catalogueParents } = SW.store.get();
       const rows = ((resourceGroups || {}).dataset || []).concat(catalogueParents || []);

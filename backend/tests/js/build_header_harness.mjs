@@ -1589,6 +1589,11 @@ for (const step of steps) {
       chips: SW.store.get().attachments.map((a) => a.id),
       bindings: (SW.store.get().bindings || []).map((b) => b.display_name || b.name),
       attachments: (SW.store.get().appAttachments || []).map((a) => a.file),
+      // Which Datasets the working set holds while the act runs. An attachment removal's receipt
+      // names its Dataset by the word the Project holds for it TODAY and draws a different sentence
+      // when there is no such word (#271), so which of the two lands is decided HERE — and a claim
+      // about that sentence that did not say so would read as a claim about the product.
+      datasetsHeld: ((SW.store.get().resourceGroups || {}).dataset || []).map((r) => r.id),
     });
     continue;
   }

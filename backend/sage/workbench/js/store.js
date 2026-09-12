@@ -4795,11 +4795,46 @@ window.SW = window.SW || {};
       // those it is a path fragment that merely looks like a Dataset name. `dataset_id` is the only
       // field that says a real Dataset was recorded, and naming a directory as the source the bytes
       // are safe in is exactly the invention ADR-0011 forbids.
-      const source = attachment.dataset_id
-        ? `The app's copy is gone and the file stays in ${attachment.dataset}.`
-        : SW.brand.text(
+      //
+      // The NAME is the one the Project holds for that id today, never the `dataset` the entry
+      // recorded, which is the name it had at attach time (#271). A rename leaves the files served
+      // from the old slug while the entry goes on matching by id, so the recorded name is the stale
+      // half — and this sentence is where the reader is told where their bytes went, so it is the
+      // worst place to spell that Dataset a second way. Same word as the row the modal draws above
+      // it and as the refusal `_attach_root` writes, through the lookup all three share.
+      //
+      // Three sentences, not one with a hole in it. This is a PROMISE — it says bytes are safe
+      // somewhere — so it cannot fall silent the way the row does when there is no name to give:
+      // "the file stays in ." is a worse receipt than a stale name, and the served path is the one
+      // form ADR-0011 rules out. So when the current name cannot be had, the promise is kept and
+      // the missing half is named as missing, which leaves nothing for the reader to misread.
+      //
+      // That third case arrives, and #263 does not keep it out. The holder question it added runs
+      // inside `remove_project_resource` and nowhere else, so a Dataset deleted in Domino outright
+      // is never asked who carries it and simply leaves the Project's list — and an Attachment older
+      // than that question could always have had its Dataset taken cleanly, the same legacy class
+      // ADR-0048's Consequences names for a missing author. A carried Dataset cannot leave QUIETLY
+      // through Sage's own door; it can still be gone by the time somebody detaches the file.
+      //
+      // It says the name is not to hand and never what the record holds, which is the one claim it
+      // is in no position to make: `datasetNameNow` answers '' for a Dataset nobody lists AND for a
+      // listing read that failed, and `SW.api.resources` swallows that failure into an empty list
+      // (`api.js`) rather than an error anybody could branch on. A sentence reading "only the
+      // attach-time name is on record" would therefore tell somebody their manifest is thin on the
+      // one occasion the Project's list merely did not arrive. Distinguishing the two would mean
+      // this act awaiting a working-set read before it could compose a sentence, which is a round
+      // trip on every removal to sharpen a clause that is right either way as written.
+      const held = SW.util.datasetNameNow(attachment.dataset_id);
+      const source = !attachment.dataset_id
+        ? SW.brand.text(
           "The app's copy is gone. This file records no {dataset}, so there is no source to name."
-        );
+        )
+        : held
+          ? `The app's copy is gone and the file stays in ${held}.`
+          : SW.brand.text(
+            "The app's copy is gone and the {dataset} it came from keeps the file. Its current "
+            + 'name is not to hand, so it is not named here.'
+          );
       const leaked = result.removed_copies || [];
       const copies = leaked.length ? ` A copy left in ${leaked.join(', ')} went with it.` : '';
       // What could not be proven to be the data, so was left where it is. Said out loud because the

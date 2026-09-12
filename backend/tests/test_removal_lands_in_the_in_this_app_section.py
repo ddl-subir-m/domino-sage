@@ -339,13 +339,31 @@ def test_a_removal_nothing_refers_to_says_so_rather_than_nothing():
 
 
 @needs_node
-def test_the_attachment_report_names_the_dataset_the_file_stays_in():
+def test_the_attachment_report_promises_the_data_stays_without_naming_it_stale():
     """`detach_file` takes the symlink, the manifest entry, the AGENTS.md block and any raw copy the
-    agent leaked into the app tree. It keeps the Dataset bytes — which is the half worth saying."""
+    agent leaked into the app tree. It keeps the Dataset bytes — which is the half worth saying.
+
+    The name of the Dataset those bytes stay in is the Project's word for it TODAY, and this
+    fixture's working set lists no Dataset for `as_desks` at all — so the sentence written for that
+    case lands, and the entry's recorded `desks` must not stand in for it (#271).
+
+    That is the legacy shape rather than a fixture needing correction, which is why it stayed: #263's
+    holder question runs inside `remove_project_resource` alone, so a Dataset deleted in Domino
+    outright leaves the Project's list without ever being asked who carries its files, and an
+    Attachment older than that question could always have had its Dataset taken cleanly. The named
+    branch is driven in `test_a_removal_receipt_names_the_dataset_the_project_names` over a fixture
+    whose Dataset is listed; the promise is the half asserted here, because the leaked-copy and
+    still-used clauses hang off it and only this fixture carries those."""
     step = _remove("margins.csv")
+    # Which sentence lands is decided by the working set, so the claim below says which working set
+    # it is about. Complete this fixture and the named branch fires — correctly — and this test has
+    # to be told, rather than reddening as though the receipt had broken.
+    assert "dataset:as_desks" not in step["datasetsHeld"]
     notice = " ".join(_texts(step, "sw-appdeps-notice-text"))
     assert "margins.csv is out of Desk dashboard." in notice
-    assert "desks" in notice
+    assert "it came from keeps the file" in notice
+    assert "Its current name is not to hand, so it is not named here." in notice
+    assert "desks" not in notice
     assert "src/data/margins.csv" in notice  # the leaked copy that went with it
     assert "src/load.py" in notice  # the inlined use that did not
 
