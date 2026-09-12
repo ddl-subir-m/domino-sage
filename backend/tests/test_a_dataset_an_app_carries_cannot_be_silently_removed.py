@@ -312,17 +312,11 @@ def test_a_dataset_renamed_after_the_attach_is_still_named_not_pathed(tmp_path: 
     `dataset_id`, so a strip that only knew today's name would fail and print the raw
     `public/data/<old-slug>/raw` — the one form ADR-0011 says must not reach the reader.
 
-    HALF THE PROPERTY, and the half that is missing is named here so this test is not read as
-    guaranteeing the whole. ADR-0011 wants the pointer and its destination to print the same
-    string. This pins the POINTER. The destination — the App dependencies modal's "Files it
-    carries" rows — draws its subtitle through `attachmentRow` (`util.js`), which shows the
-    ATTACH-TIME `entry.dataset` when the entry kept a Dataset id and the served path when it kept
-    none. So a renamed Dataset still reads `Sales 2026 EMEA/raw` in the refusal and `sales 2026`
-    in the modal.
-
-    Deliberately not fixed here: `attachmentRow` is shared by three readers — that list, the `@`
-    menu and `collectTurnRefs` — and changing what all of them see is not this ticket's to do.
-    Tracked separately."""
+    HALF THE PROPERTY: this pins the POINTER. ADR-0011 wants the pointer and its destination to
+    print the same string, and the destination — the App dependencies modal's "Files it carries"
+    rows — is `attachmentRow`'s, pinned by
+    `test_the_two_surfaces_name_the_dataset_the_same_way` (#266), which drives this same rename
+    across both halves."""
     orch = _orch(tmp_path)
     orch.add_project_resource({"id": "dataset:ds-3", "kind": "dataset", "name": "sales 2026"})
     first = _selected(orch).app_id

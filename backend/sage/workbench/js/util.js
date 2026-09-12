@@ -546,11 +546,6 @@ window.SW = window.SW || {};
         name: String((entry && entry.file) || path).split('/').pop(),
         kind: 'file',
         path,
-        // Where the bytes actually live. Keyed on `dataset_id` for the reason
-        // `removeAttachmentFromApp` gives: a rehydrated entry still carries a `dataset`, filled
-        // from the symlink's parent directory, and printing that as a Dataset name would name a
-        // source the entry does not have.
-        subtitle: entry && entry.dataset_id ? entry.dataset : path,
         // The row this file collapses into once there are more attachments than a menu of eight
         // can honestly show, or "" while the menu still shows files one by one (ADR-0030). The
         // SERVER decides it, by the function the `AGENTS.md` block already groups with: the
@@ -562,6 +557,42 @@ window.SW = window.SW || {};
         // a row whose pick carries twelve.
         menuFolderCount: Number((entry && entry.menu_folder_count) || 0),
       };
+    },
+
+    // Which Dataset an Attachment came from, as the sentence under its row, in the word the
+    // Project holds for that Dataset TODAY — or '' when this record cannot say which Dataset it
+    // is (#266, ADR-0011).
+    //
+    // The refusal a removal draws names it the same way (`_attach_root`), and this row is where
+    // that refusal sends the reader, so the two spellings are one or the pointer lands somewhere
+    // that calls its subject something else. Never the entry's own `dataset`, which is the name
+    // it had at ATTACH time: a rename leaves the files served from the old slug and the entry
+    // matching by id, so the recorded name is exactly the stale half `_attach_root` exists to
+    // keep out of the sentence. An id that names no Dataset the client can see gets '' for the
+    // same reason — an unverified name is the stale half again, and #263 is what keeps a carried
+    // Dataset in the Project's own list to be seen.
+    //
+    // Never the served path either: `_rehydrate_attached`'s symlink scan fills `dataset` from the
+    // link's PARENT DIRECTORY, so a pre-manifest entry's field holds `<slug>/<folder>` — a slug,
+    // under a rule the client does not own (`_slug` collapses punctuation), and a second spelling
+    // of a Dataset named everywhere else the reader looks. The row already names the file; the
+    // line under it is worth drawing only when it can say something the path cannot.
+    //
+    // Beside the row derivation rather than a field inside it, exactly as `attachmentAuthor` sits
+    // (#262): `attachmentRow` is walked per entry on every composer keystroke, for a menu that
+    // draws neither line, and a store read per entry is what that loop's own comments exist to
+    // keep out. One reader draws this, and it asks here.
+    //
+    // Read off the same two lists `appHoldsEveryDeclaredDataset` reads, and for its reason: a
+    // Dataset the working set has not pulled in is still one Dataset with one name, and reading
+    // only the Project's own group would print two answers depending on which list had loaded.
+    attachmentSource(entry) {
+      const id = String((entry && entry.dataset_id) || '');
+      if (!id) return '';
+      const { resourceGroups, catalogueParents } = SW.store.get();
+      const rows = ((resourceGroups || {}).dataset || []).concat(catalogueParents || []);
+      const held = rows.find((row) => row && row.id === `dataset:${id}`);
+      return String((held && held.name) || '');
     },
 
     // Who made this Attachment, as the sentence under its row, or '' when the record does not say

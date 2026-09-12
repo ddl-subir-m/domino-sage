@@ -1203,7 +1203,20 @@ window.SW = window.SW || {};
                 files.map((a) => row(
                   a.path,
                   SW.util.attachmentRow(a).name,
-                  { kind: 'file', menu: menuFor(null, a), by: SW.util.attachmentAuthor(a) }
+                  // WHERE it came from and WHO brought it, on the one quiet line this row has, in
+                  // the panel's own separator (#266, #262). Two facts about a file, and neither
+                  // worth a line of its own: the Dataset is what the refusal for its removal
+                  // names, and a reader holding that sentence is here to find this row by it.
+                  //
+                  // Either half can be absent — an entry that records no Dataset, an entry
+                  // written before an author was kept — so the join is over what is there rather
+                  // than a fixed shape with a gap in it.
+                  {
+                    kind: 'file',
+                    menu: menuFor(null, a),
+                    by: [SW.util.attachmentSource(a), SW.util.attachmentAuthor(a)]
+                      .filter(Boolean).join(' · '),
+                  }
                 ))
               )
             ),

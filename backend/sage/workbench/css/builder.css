@@ -500,8 +500,8 @@
    growing it here would stretch it down the row rather than along it. */
 .sw-appdeps-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .sw-appdeps-text .sw-appdeps-name { flex: none; }
-/* Quieter than the name, and the same voice as the panel's own subtitles: this says who, and the
-   acts on this row are in the menu beside it. */
+/* Quieter than the name, and the same voice as the panel's own subtitles: this says where the file
+   came from and who brought it (#266, #262), and the acts on this row are in the menu beside it. */
 .sw-appdeps-by {
   font-size: var(--fs-11);
   color: var(--gray-500);
