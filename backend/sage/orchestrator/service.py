@@ -13,6 +13,7 @@ import base64
 import concurrent.futures
 import contextlib
 import filecmp
+import hashlib
 import json
 import logging
 import os
@@ -2636,6 +2637,193 @@ def _tool_label(payload: dict) -> str:
         head = _TOOL_DETAIL_MAX // 3 if is_path else _TOOL_DETAIL_MAX - 1
         detail = detail[:head] + "…" + detail[len(detail) - (_TOOL_DETAIL_MAX - head - 1):]
     return f"{tool} ({detail})" if detail else tool
+
+
+# ---- The repeat brake (#246) -------------------------------------------------------------------
+#
+# A turn that repeats one call is never quiet, so none of the three silence windows can reach it:
+# every tool event refreshes the clock, and a turn that shells out every few seconds stays alive
+# until the wall-clock ceiling. Live, that is what happened — `ls -R` on a folder that was not there,
+# five times over — and the person waited ten minutes to be told the turn "took too long", which is
+# the one thing that was not wrong with it. 7c77ab0 (ADR-0047) removed the causes of that loop; this
+# is the brake for the ones it does not cover.
+#
+# Three is a starting number, not a measured one.
+_REPEAT_LIMIT = 3
+
+# How much of a repeated call's answer goes into the sentence.
+_REPEAT_ANSWER_MAX = 200
+
+# Tools whose failure is a sentence rather than a print-out — the only ones `_repeat_answer` will
+# quote. `bash` is deliberately absent and so is everything unlisted: a shell reports failure by
+# printing, so its error field carries whatever the program wrote, and an unknown tool has made no
+# promise either way. Erring towards silence here costs a diagnostic; erring the other way puts
+# somebody's rows in a committed file.
+#
+# Each of these has been read, not assumed. `read` was checked against OpenCode 1.18.4's own store
+# ("File not found: <path>"); `edit`'s shape is quoted in phase_classifier.py; `write`, `glob`,
+# `grep` and `list` fail with the same class of sentence about a path. `patch` was on this list and
+# came off it: a patch tool that reports a failed hunk by echoing the rejected context would put
+# the file's own lines in the sentence, and nobody here has read one to say it does not.
+_REPEAT_ANSWER_TOOLS = frozenset({"read", "write", "edit", "glob", "grep", "list"})
+
+
+def _call_fingerprint(tool: str, inp: object) -> str:
+    """An opaque key for "this exact call again" — the tool and the WHOLE of its arguments.
+
+    The whole of them, unlike `_tool_label`, which reads a named subset because it is written to be
+    read by a person. A label cannot key this: two `write`s to one file carry the same label and
+    differ in the only thing that separates them, so a brake keyed on labels would stop a turn for
+    rewriting a file it had just written — a brake on work rather than on a loop.
+
+    Hashed rather than kept, so a `write`'s input — the file's contents — never sits in a counter
+    that a later sentence or log line could reach. Nothing ever reads this value back; it is only
+    compared with another one.
+
+    `{}` keys like any other input: a tool that takes no arguments is still a call, and a run that
+    an argument-less call could not break would let `bash X` / `todoread` / `bash X` / `todoread` /
+    `bash X` read as three in a row. Only `null` — no `input` field at all — returns "", and
+    `_RepeatBrake` then neither counts nor clears. That shape is Chat's: a bash call opens twice,
+    once as `tool.called` carrying its input and once as `shell.started` carrying none, and a key
+    that counted the second would fire the brake at one and a half repeats while one that cleared
+    on it would never fire at all.
+
+    Which leaves `{}` ambiguous at the one site that cannot tell the two apart. Build keys on the
+    COMPLETED call, where `{}` can only mean a call with no arguments. Chat keys on the open, where
+    a large call's arguments stream in and `{}` is usually a call whose input has not arrived yet —
+    so Chat passes an empty dict through as if it were `null`, and keeps the gap this closes for
+    Build. Guessing the other way would mis-key every big call in the Thread.
+    """
+    tool = str(tool or "").strip()
+    if not tool:
+        return ""
+    try:
+        body = json.dumps(inp, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return ""
+    if body == "null":
+        return ""
+    return hashlib.sha1(f"{tool}\0{body}".encode()).hexdigest()
+
+
+class _RepeatBrake:
+    """Identical tool calls IN A ROW, within one turn.
+
+    In a row, rather than three times anywhere in the turn, because the second reading has a
+    legitimate shape and this one does not. A Build turn re-reads a file it has just edited, and the
+    read's arguments are identical every time — counting those would put a brake on the ordinary way
+    an agent checks its own work.
+
+    A run is broken by ANOTHER TOOL CALL, and by nothing else. Narration does not break it: the
+    model saying what it is about to do next is not something that happened, and a brake that a
+    sentence could clear would never fire on a model that talks between its steps — which is most
+    of them, and may well have been true of the turn that prompted this.
+
+    The shape that pays for that, said out loud because `_REPEAT_LIMIT` is a starting number and
+    this is what will show up against it first: a genuine poll. `sleep 2 && curl -s localhost:5173`
+    three times while a dev server warms up is the same call three times running, and this stops it.
+    The person is told which call and gets the turn back, which is the trade against a loop that
+    otherwise burns to the wall-clock ceiling in silence. Watch for it before raising the number.
+
+    A call whose arguments never arrived (fingerprint "") is neither counted nor treated as
+    something happening in between — see `_call_fingerprint` for why an empty key cannot do either.
+    """
+
+    def __init__(self) -> None:
+        self.fingerprint = ""
+        self.n = 0
+        self.label = ""
+
+    def saw(self, fingerprint: str, label: str) -> bool:
+        """True when this call is the `_REPEAT_LIMIT`-th identical one in a row."""
+        if not fingerprint:
+            return False
+        if fingerprint == self.fingerprint:
+            self.n += 1
+        else:
+            self.fingerprint, self.n = fingerprint, 1
+        self.label = label or self.label
+        return self.n >= _REPEAT_LIMIT
+
+
+def _repeat_answer(msgs: object, fingerprint: str) -> str:
+    """What the repeated call answered, read back off the transcript — or "" when it cannot be said.
+
+    The answer is most of the value of stopping. "It ran the same step three times" tells somebody
+    that Sage noticed; `ls: .../uploads: No such file or directory` tells them the folder is not
+    there, which is the whole of what the turn was failing to say.
+
+    AN AUTHORED SENTENCE ONLY, and "authored" is a property of the TOOL rather than of the field.
+    A file tool reports failure in words somebody wrote to be read — "File not found: …", "Could
+    not find oldString in the file" — so its `error` is a sentence about the data and never the
+    data. A shell reports failure by PRINTING, so `bash`'s error is whatever the program put on
+    stderr, which is the person's rows as surely as its output would be. Hence the allowlist, and
+    hence `output` is never read at all: it is the answer itself in every case.
+
+    This matters because of where the sentence goes. It is persisted into the Thread's
+    `history.jsonl`, which is committed and pushed and travels to anyone who pulls the Project, so
+    a slice of a failing query's traceback here is rows at rest in the repo — the leak class of
+    ADR-0045 and #251, arriving through a diagnostic.
+
+    Clipped rather than dropped when it runs long, the way `_chat_error_text` clips a provider's
+    refusal: an error that embeds a path plus a nested body routinely runs past the cap, and those
+    are the noisy cases where the first two hundred characters are most worth having.
+
+    THE COST, said plainly because #246's own example pays it: that turn looped on `ls -R` through
+    bash, so this quotes nothing for it and the sentence names the call alone. A path the person
+    can check is most of that diagnosis, and it is the half that cannot leak. Widening the
+    allowlist to bash is not the way to get the other half — teaching Sage to reach the folder is.
+
+    Verified against OpenCode 1.18.4's own store on 2026-09-11: `output` and `error` both exist,
+    and a failed `read` carries `error` with no `output` at all.
+    """
+    for m in reversed(list(msgs) if isinstance(msgs, (list, tuple)) else []):
+        if not isinstance(m, dict) or m.get("type") != "assistant":
+            continue
+        for part in reversed(m.get("content") or []):
+            pt = str(part.get("type") or "") if isinstance(part, dict) else ""
+            if "tool" not in pt:
+                continue
+            state = part.get("state")
+            if not isinstance(state, dict):
+                continue
+            if str(state.get("status") or "") in ("pending", "running", "in_progress"):
+                continue    # this one has not answered yet; an earlier repeat has
+            # The same expression the Build loop keys its own fingerprint with, down to the
+            # fallback: a part that carries no tool name keys on its type in one place and on ""
+            # in the other, and a brake that trips while the answer silently drops is the shape
+            # this whole function exists to avoid.
+            tool = str(part.get("tool") or part.get("name") or pt)
+            if _call_fingerprint(tool, state.get("input")) != fingerprint:
+                continue
+            said = state.get("error") if tool in _REPEAT_ANSWER_TOOLS else ""
+            if isinstance(said, str) and said.strip():
+                said = " ".join(said.split())
+                return said if len(said) <= _REPEAT_ANSWER_MAX else (
+                    said[:_REPEAT_ANSWER_MAX - 1] + "…")
+            # Nothing on this one — a call interrupted before it answered, or one OpenCode
+            # recorded without an answer. Walk back rather than give up: the whole premise of
+            # stopping is that the earlier repeats are the same call, so they have the answer.
+    return ""
+
+
+def _repeat_message(label: str, answer: str) -> str:
+    """What to tell somebody whose turn was stopped for repeating itself.
+
+    It names the call because the previous sentence for a turn that ended without finishing —
+    "stopped making progress" — sent somebody after a question that was never too big. What
+    repeated is a fact the person cannot see and Sage can.
+    """
+    step = label or "a step"
+    if answer:
+        return brand.text(
+            '{assistantName} ran the same step {n} times, so it stopped. {step} answered: "{answer}". '
+            "Ask a different way, or point it at what it should read.",
+            n=_REPEAT_LIMIT, step=step, answer=answer)
+    return brand.text(
+        "{assistantName} ran the same step {n} times, so it stopped: {step}. "
+        "Ask a different way, or point it at what it should read.",
+        n=_REPEAT_LIMIT, step=step)
 
 
 def _chat_live_event(ev) -> dict | None:
@@ -8953,6 +9141,21 @@ class Orchestrator:
             # The FILE each open call is against, when it has one. Only used when a turn dies with
             # a call still open, and only to ask whether that file opens — see `_mount_probe`.
             running_paths: dict[str, str] = {}
+            # Identical calls in a row (#246). None of the three windows above can reach a turn
+            # that repeats itself, because every repeat is activity: the loop that prompted this
+            # ran the same `ls` five times and was still counted alive each time.
+            brake = _RepeatBrake()
+            # The fingerprint of each open call, by call id, waiting for the close that counts it.
+            # Beside `running_tools` rather than in it: that one holds a label written to be read
+            # by a person, and a label cannot key a repeat (see `_call_fingerprint`).
+            pending_calls: dict[str, str] = {}
+            # Which of the two counters owns the brake. Set by the first tool frame the stream
+            # delivers and never unset — `tap.seen_any` cannot stand in for it, because a drain
+            # can come back empty at the top of a poll whose transcript read then counts a call
+            # whose own close frame is still in the queue. The stream would count that call a
+            # second time when it arrived, and a healthy turn would stop after two repeats.
+            stream_owned = False
+            looped = ""
             while True:
                 if project.stop_requested:
                     # Cleared by the turn that consumes it. Build clears it in its own handle_stop;
@@ -8978,10 +9181,11 @@ class Orchestrator:
                 now = time.monotonic()
                 quiet_limit = tool_quiet if running_tools else idle_quiet
                 quiet = now - last_activity >= quiet_limit
-                if quiet or now - started >= _CHAT_TURN_MAX_S:
+                if quiet or looped or now - started >= _CHAT_TURN_MAX_S:
                     open_now = ", ".join(sorted(set(running_tools.values())))
                     log.warning("chat: turn stopped after %.0fs — %s%s", now - started,
-                                f"quiet for {now - last_activity:.0f}s" if quiet
+                                f"repeated {brake.label} {_REPEAT_LIMIT} times" if looped
+                                else f"quiet for {now - last_activity:.0f}s" if quiet
                                 else f"hit the {_CHAT_TURN_MAX_S:.0f}s ceiling",
                                 f"; still open: {open_now}" if open_now else "; nothing open")
                     # Which of the two it was. A turn that stops with a read open has said nothing
@@ -8990,15 +9194,47 @@ class Orchestrator:
                     # is Sage's. The file is right here and opening it costs a second, so ask.
                     for stuck in sorted(set(running_paths.values())):
                         log.warning("chat: %s — %s", stuck, _mount_probe(stuck))
-                    try:
-                        client.interrupt(sid)
-                    except Exception:
-                        log.exception("chat: interrupt after timeout failed")
+                    if looped:
+                        # Confirmed, not posted. Every other way into this block arrives on a QUIET
+                        # turn, where the session has already stopped saying anything and an
+                        # unverified interrupt costs nothing. The brake is the first one that
+                        # arrives on a BUSY turn — it fired because a call had just come back — and
+                        # `interrupt` returning is not the session having stopped. The three calls
+                        # below rewrite the working tree, so running them under a session that may
+                        # still be writing is the race, not the cure. Build makes the same argument
+                        # at its own exit and reaches it through the same helper.
+                        stopped = self._stop_wedged_session(client, sid)
+                    else:
+                        stopped = True
+                        try:
+                            client.interrupt(sid)
+                        except Exception:
+                            log.exception("chat: interrupt after timeout failed")
                     # The turn stopped, but the charts and tables it already wrote are on disk and
                     # are still an answer someone can use. Only the end-of-turn path recorded them,
                     # so a timed-out turn left them unlisted in the Thread — and `examples/` crosses
                     # into Build by that list (handoff.md §1), which made the nudge below an offer to
                     # start again with none of the work the person had just waited minutes for.
+                    if looped:
+                        # The same flag Build's looped exit clears, and the window here is wider:
+                        # the stop above polls for a grace period, and somebody watching Chat
+                        # repeat itself has all of it to press Stop. `stop_build` sets the flag
+                        # after this iteration's top-of-loop check, and the turn that would have
+                        # consumed it is this one — so left standing it meets the NEXT question,
+                        # which answers "Stopped" without running a step.
+                        project.stop_requested = False
+                    if not stopped:
+                        # Loud, and then everything below runs anyway. Skipping the two cleanups
+                        # here was worse than the race it avoided: this turn's `finally` commits
+                        # and pushes the tree regardless, so a withhold that does not run is not a
+                        # withhold deferred — it is table rows committed into the Project repo,
+                        # which is the leak ADR-0045 exists to stop. Racing a session that may
+                        # still be writing risks missing a LATE write; not running loses every
+                        # write there is. The lock going back under a session that would not
+                        # confirm is Chat's own older gap — the wall-clock ceiling has always
+                        # ended a busy turn this way — and it is not this brake's to close.
+                        log.error("chat: the session would not confirm it stopped; cleaning up "
+                                  "under it anyway — the next turn may meet a live writer")
                     revert_denied_writes(project.record.path, thread_id, before)
                     withhold_table_rows(project.record.path, thread_id, before,
                                         kept_rows=project.record.kept_rows())
@@ -9013,7 +9249,14 @@ class Orchestrator:
                     # the turn the person most needs the nudge on is the one that never reaches the
                     # end of this loop. Without it the timeout is a dead end they retype into.
                     suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
-                    if suggestion:
+                    if looped:
+                        # First, because it is the only branch below that knows WHAT the turn was
+                        # doing. Every other one reasons from silence; this one was written where
+                        # the call closed, with the call in hand. The suggestion card, if there is
+                        # one, still rides out at the end — it is an offer, and a turn that looped
+                        # may want it as much as any other.
+                        message = looped
+                    elif suggestion:
                         message = (
                             "This took too long, so it was stopped. Building an app is a job for "
                             "Build."
@@ -9051,7 +9294,8 @@ class Orchestrator:
                             "This took too long. Ask a smaller question, or one step at a time."
                         )
                     err = {"type": "error", "message": message}
-                    done = {"type": "done", "ok": False, "decision": "timeout"}
+                    done = {"type": "done", "ok": False,
+                            "decision": "repeated" if looped else "timeout"}
                     # Before the error, as on the path that finishes: what the turn produced, then
                     # why it stopped. `done` still carries them, so a client that reads only the
                     # terminal event sees them too.
@@ -9095,15 +9339,56 @@ class Orchestrator:
                         appeared = True
                         continue
                     if ev.kind == "tool_run":
+                        if not stream_owned:
+                            # The handover. The stream starts its own run clean rather than
+                            # inheriting one the transcript may have counted the first half of.
+                            stream_owned = True
+                            brake = _RepeatBrake()
                         # `shell.started` repeats the call id of the bash `tool.called`, so a set
                         # makes the second one a no-op. An event with no id falls back to one
                         # shared key, which a completion with no id then clears.
                         call = str(ev.payload.get("call_id") or "") or "?"
                         if str(ev.payload.get("status") or "") == "called":
+                            # Taken on the open, where the arguments are, and counted on the close
+                            # below. A bash call opens TWICE — as `tool.called` carrying OpenCode's
+                            # whole `input`, and as `shell.started` carrying only a top-level
+                            # command — and the two hash differently. The richer shape wins
+                            # whichever order they land in, because it is the one the transcript
+                            # keeps.
+                            #
+                            # When only the thin shape ever arrives, the key cannot match the
+                            # transcript and the answer comes back empty. That costs nothing here:
+                            # the thin shape is `shell.started`, only bash sends it, and bash is
+                            # not a tool `_repeat_answer` will quote. Counting is unaffected — it
+                            # compares these keys with each other, never with the transcript's.
+                            args = ev.payload.get("input")
+                            tool = str(ev.payload.get("tool") or "")
+                            if isinstance(args, dict) and args:
+                                pending_calls[call] = _call_fingerprint(tool, args)
+                            elif not pending_calls.get(call) and ev.payload.get("command"):
+                                pending_calls[call] = _call_fingerprint(
+                                    tool, {"command": str(ev.payload["command"])})
                             running_tools[call] = _tool_label(ev.payload)
                             if path := _tool_path(ev.payload):
                                 running_paths[call] = path
                         else:
+                            # The CLOSE, so the calls the brake stops on are calls that ANSWERED.
+                            # Counting the open killed the third one in flight, and a turn stopped
+                            # before its third answer has no third answer to read back — which lost
+                            # the half of the sentence that says what the step kept replying.
+                            if not looped and brake.saw(pending_calls.pop(call, ""),
+                                                        running_tools.get(call, "")):
+                                # Read BEFORE the stop below interrupts the session. An interrupt
+                                # lands on any call still open as an aborted tool part, and a
+                                # fourth repeat aborted that way reads back as what the step
+                                # answered — Sage's own stop, quoted as the tool's reply.
+                                try:
+                                    said = client.messages(sid, limit=_CHAT_POLL_MESSAGES)
+                                except Exception:
+                                    log.exception("chat: reading the repeated answer failed")
+                                    said = []
+                                looped = _repeat_message(
+                                    brake.label, _repeat_answer(said, brake.fingerprint))
                             running_tools.pop(call, None)
                             running_paths.pop(call, None)
                     live = _chat_live_event(ev)
@@ -9196,6 +9481,24 @@ class Orchestrator:
                             seen.add(key)
                             last_activity = time.monotonic()
                             tool = part.get("tool") or part.get("name") or pt
+                            if not stream_owned and not looped and brake.saw(
+                                    _call_fingerprint(str(tool),
+                                                      (part.get("state") or {}).get("input")),
+                                    _tool_label({"tool": tool,
+                                                 "input": (part.get("state") or {}).get("input")})):
+                                # The same brake as the stream's, on the turns the stream never
+                                # reached — which are exactly the turns Chat can already see least
+                                # of, and so the ones most able to ride to the ceiling unreported.
+                                #
+                                # `stream_owned` and not `tap.ok`, because a tap that OPENS and
+                                # then delivers nothing all turn is the blindest case of the three
+                                # and reads as `ok` for ever (it is how a wrong session directory
+                                # shows up at all). It is also what keeps the two counters apart:
+                                # the moment the stream delivers a tool frame it owns the counting
+                                # and starts a fresh run, and a call counted from both would have
+                                # halved the threshold.
+                                looped = _repeat_message(brake.label,
+                                                         _repeat_answer(msgs, brake.fingerprint))
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
                                   "detail": _tool_detail(tool, part)}
                             if str(tool).lower() in _CHAT_SHOWN_TOOLS:
@@ -11547,8 +11850,72 @@ class Orchestrator:
             restore_mode()
             return {"type": "stopped"}
 
-        def stalled_offer(quiet_for: float, *, in_tool: bool):
+        def refused_to_stop(*, in_tool: bool, quiet_for: float):
+            """Sage gave up on a turn, and the session would not confirm that it stopped (#39).
+
+            Lifted out of the quiet exit so the repeat brake (#246) reaches the same answer rather
+            than a second one written beside it. A turn stopped for looping is not a wedged turn —
+            the session is answering, it is only answering the same thing — but a stop that will not
+            confirm is the same danger whatever asked for it. A lock released under a session that
+            may still be writing gives two turns one working tree, which is what the lock exists to
+            prevent, so the lock stays held and the sentence says why.
+            """
+            # We cannot show that the session let go of the working tree, so the turn lock stays
+            # held and this workspace takes no more turns until it is restarted. Saying that is the
+            # whole of what is left to do for the person.
+            self._turn_wedged = True
+
+            # Everything queued behind this turn is waiting on a release that is never
+            # coming, so fail it here rather than leave held connections and spinners
+            # (#79). Loudly: each one answers with the restart sentence of its own.
+            failed = self._turns.fail_pending()
+            if failed:
+                log.error("turn wedged: failed %d pending turn(s) — restart to clear",
+                          failed)
+            # The same persisted card the clean give-up leaves, not an `error` frame.
+            # Not because `error` would be lost — it is in _PERSISTED_EVENTS and has
+            # been since that set was written, and the comment here said the opposite
+            # for long enough to mislead #247's first reader. The reason is that this is
+            # the one outcome guaranteed to outlive the tab — it ends in a restart. No prompt rides
+            # along, because there is nothing a retry could reach until then.
+            #
+            # No restore_mode() either, and that is the point rather than an omission:
+            # the read-only and web pins are what the shim strips a request against, so
+            # leaving them armed is the last thing still standing between a session
+            # that would not stop and the working tree. The user's model pick rides
+            # along with them, unrestored — in memory only, so the restart clears it.
+            # The two persists below still append history and set the failure flag;
+            # what is skipped is everything that reverts or rewrites the app's code.
+            yield persist({
+                "type": "build-stalled", "stuck": True, "prompt": "",
+                "quietForS": round(quiet_for), "kept": True,
+                # Which silence it was, on the same line the offer next door draws
+                # (#98). The action is the same either way — restart — but the sentence
+                # is what someone reads to know whether their build command was the
+                # thing that hung, and a card that says "stopped responding" over a
+                # step that ran the whole time sends them to look at the model.
+                "message": (
+                    (brand.text(
+                        "A step wouldn't stop. ") if in_tool else
+                     brand.text(
+                        "The build wouldn't stop. "))
+                    + "Restart the workspace to continue. Your app is still there.")})
+            yield persist({"type": "done", "ok": False, "decision": "wedged"})
+            # By hand, unlike the other two exits: this one propagates, and a live
+            # traceback holds the frame — and so the tap — for as long as anything up
+            # the stack keeps the exception. The workspace is already unusable; a
+            # parked reader on top of that helps nobody.
+            tap.close()
+            raise TurnWedged()
+
+        def stalled_offer(quiet_for: float, *, in_tool: bool, looped: str = ""):
             """The transcript's half of giving up on a wedged turn (#39).
+
+            `looped` is the other way a turn is given up on (#246): not silence, but the same call
+            over and over. It comes through here rather than beside here because everything below
+            the message is the same either way — a read-only turn that wrote still has those edits
+            reverted, and whatever a writing turn left on disk is still kept and still owed the
+            receipt that says so. Only the sentence and the decision differ.
 
             An offer, not a bare error row, on the precedent of the reset offer (#36) and the
             incoming-changes offer (#78): something needs the person's decision, and here the only
@@ -11605,13 +11972,16 @@ class Orchestrator:
                     # at the model when the thing that hung was their build command, and a step
                     # that never returns is the one case where asking again unchanged may not be
                     # the move. Chat draws the same line for the same reason.
-                    "message": (brand.text(
+                    "message": (f"{looped} {fate}" if looped else brand.text(
                         "A step didn't finish after {waited}, so {assistantName} stopped. {fate}",
                         waited=waited, fate=fate) if in_tool else
                         brand.text(
                         "The build went quiet for {waited}, so {assistantName} stopped it. {fate}",
                         waited=waited, fate=fate)),
-                    "prompt": "" if is_approval else prompt,
+                    # No button on a looped turn. The sentence above it says to ask a different
+                    # way, and Try again replays the prompt VERBATIM — one control, doing the one
+                    # thing the card has just said will not work, most likely back into the loop.
+                    "prompt": "" if is_approval or looped else prompt,
                     "quietForS": round(quiet_for),
                     "kept": kept,
                 })
@@ -11619,7 +11989,8 @@ class Orchestrator:
                     # The app really did change, so it owes the same receipt every other turn that
                     # changes it leaves — without one, "you can see how far it got" points at nothing.
                     yield persist(_app_change_event(project.app_for_turn()))
-            yield persist({"type": "done", "ok": False, "decision": "stalled"})
+            yield persist({"type": "done", "ok": False,
+                           "decision": "repeated" if looped else "stalled"})
 
         # client.messages(sid) returns the ENTIRE session's messages on every poll, and `seen` starts
         # empty for each user turn (this is a fresh _build_stream call). So without a baseline, this
@@ -11854,6 +12225,18 @@ class Orchestrator:
             # the detection site because that site runs on every poll while the part is in flight,
             # and the same broken call would print a dozen times.
             broken_evidence = ""
+            # Identical calls in a row (#246). Neither quiet window can reach a turn that repeats
+            # itself: every repeat is a new part, so the turn reads as moving right up to the
+            # wall-clock ceiling. Counted on the completion rather than on the open, because that
+            # is where this loop already visits a call exactly once.
+            #
+            # INSIDE the nudge loop, unlike `seen`, and on purpose. A nudge is a new instruction,
+            # and a call that was a loop under the old one may be the right first step under the
+            # new one — so the run starts again with it. The cost is that two repeats either side
+            # of a nudge never reach three; the alternative charges an agent for what it did
+            # before it was told something different.
+            brake = _RepeatBrake()
+            looped = ""
             poll_failures = 0
             while True:
                 if project.stop_requested:
@@ -11976,6 +12359,15 @@ class Orchestrator:
                             broken_evidence = ""
                             last_active = None  # completed: let the next running tool re-announce
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
+                            args = (part.get("state") or {}).get("input") \
+                                if isinstance(part.get("state"), dict) else None
+                            if not looped and brake.saw(_call_fingerprint(tool, args),
+                                                        _tool_label({"tool": tool, "input": args})):
+                                # The answer is already in `msgs`, so unlike Chat this costs no
+                                # read. Taken now rather than at the exit below because the exit
+                                # runs after the walk that would mark the part seen.
+                                looped = _repeat_message(
+                                    brake.label, _repeat_answer(msgs, brake.fingerprint))
                             if tool in ("edit", "write"):
                                 made_edits = True
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
@@ -12034,6 +12426,49 @@ class Orchestrator:
                     break
                 if appeared and not running:
                     break
+                # AFTER that break, and the placement is the rule rather than a tidy-up. The poll
+                # that ends a turn is also the one that delivers the last of its parts, so a
+                # finished turn whose final batch happens to hold three identical calls would be
+                # stopped here and reported as having failed — a turn OpenCode had already
+                # finished, told it was looping. A turn that is still running is the only one
+                # there is anything left to stop. Chat draws the same line for the same reason.
+                if looped:
+                    log.warning("build: the turn repeated %s %d times — stopping",
+                                brake.label, _REPEAT_LIMIT)
+                    # The same stop the wedged exit uses, and for the same reason it exists: a
+                    # looping session is a BUSY session, so it is the one least likely to honour a
+                    # posted interrupt promptly, and `interrupt` returning is not the session
+                    # having stopped. Releasing the tree on the strength of the call returning is
+                    # how two turns end up writing it.
+                    stopped = self._stop_wedged_session(client, sid)
+                    # Gated, which the quiet exit below is not, and the disagreement is left
+                    # standing rather than settled here. A phase of a phased build says nothing
+                    # about that build's outcome — `_phased_approve` owns it, and keeps a failed
+                    # phase on disk rather than retrying from the top — so a phase stopped for
+                    # looping leaves this alone, the way the gateway-error exit does. The quiet
+                    # exit sets it for a phase too; whether that is right is a question about the
+                    # wedged path, which this change has no business answering.
+                    if owns_turn:
+                        self._turn_gave_up = True
+                    if not stopped:
+                        # `in_tool`, because the brake fires precisely when a tool call has just
+                        # come back and the next one is on its way. "The build went quiet" would
+                        # send the reader to look at the model over a turn whose steps never
+                        # stopped running.
+                        yield from refused_to_stop(in_tool=True, quiet_for=0.0)
+                    # It stopped, so the tree is ours again: the pins go back and the person gets
+                    # an offer rather than a workspace they have to restart.
+                    #
+                    # The stop flag goes with them, exactly as at the quiet exit below. Somebody
+                    # watching a build repeat itself presses Stop, `stop_build` sets this after
+                    # this iteration's top-of-loop check, and the turn that would have consumed it
+                    # in `handle_stop` is the one being ended here — so the flag would sit there
+                    # for the NEXT turn to trip over and answer "stopped" without running a step.
+                    project.stop_requested = False
+                    tap.close()
+                    restore_mode()
+                    yield from stalled_offer(0.0, in_tool=False, looped=looped)
+                    return
                 if not appeared and time.monotonic() - start > 12:
                     break
                 # Last of the exits, and only once the turn has appeared. A turn that never
@@ -12051,53 +12486,8 @@ class Orchestrator:
                     # Before the branch, because it is true of both: nothing was built either way.
                     self._turn_gave_up = True
                     if not stopped:
-                        # Two failures, and the second is the one that decides what happens next. We
-                        # cannot show that the session let go of the working tree, so the turn lock
-                        # stays held and this workspace takes no more turns until it is restarted.
-                        # Saying that is the whole of what is left to do for the person.
-                        self._turn_wedged = True
-                        # Everything queued behind this turn is waiting on a release that is never
-                        # coming, so fail it here rather than leave held connections and spinners
-                        # (#79). Loudly: each one answers with the restart sentence of its own.
-                        failed = self._turns.fail_pending()
-                        if failed:
-                            log.error("turn wedged: failed %d pending turn(s) — restart to clear",
-                                      failed)
-                        # The same persisted card the clean give-up leaves, not an `error` frame.
-                        # Not because `error` would be lost — it is in _PERSISTED_EVENTS and has
-                        # been since that set was written, and the comment here said the opposite
-                        # for long enough to mislead #247's first reader. The reason is that this is
-                        # the one outcome guaranteed to outlive the tab — it ends in a restart. No prompt rides
-                        # along, because there is nothing a retry could reach until then.
-                        #
-                        # No restore_mode() either, and that is the point rather than an omission:
-                        # the read-only and web pins are what the shim strips a request against, so
-                        # leaving them armed is the last thing still standing between a session
-                        # that would not stop and the working tree. The user's model pick rides
-                        # along with them, unrestored — in memory only, so the restart clears it.
-                        # The two persists below still append history and set the failure flag;
-                        # what is skipped is everything that reverts or rewrites the app's code.
-                        yield persist({
-                            "type": "build-stalled", "stuck": True, "prompt": "",
-                            "quietForS": round(time.monotonic() - last_event), "kept": True,
-                            # Which silence it was, on the same line the offer next door draws
-                            # (#98). The action is the same either way — restart — but the sentence
-                            # is what someone reads to know whether their build command was the
-                            # thing that hung, and a card that says "stopped responding" over a
-                            # step that ran the whole time sends them to look at the model.
-                            "message": (
-                                (brand.text(
-                                    "A step wouldn't stop. ") if tool_open else
-                                 brand.text(
-                                    "The build wouldn't stop. "))
-                                + "Restart the workspace to continue. Your app is still there.")})
-                        yield persist({"type": "done", "ok": False, "decision": "wedged"})
-                        # By hand, unlike the other two exits: this one propagates, and a live
-                        # traceback holds the frame — and so the tap — for as long as anything up
-                        # the stack keeps the exception. The workspace is already unusable; a
-                        # parked reader on top of that helps nobody.
-                        tap.close()
-                        raise TurnWedged()
+                        yield from refused_to_stop(
+                            in_tool=tool_open, quiet_for=time.monotonic() - last_event)
                     # It stopped, so the tree is ours again: put the mode pins back and hand the
                     # person an offer they can act on rather than an error row they cannot.
                     #

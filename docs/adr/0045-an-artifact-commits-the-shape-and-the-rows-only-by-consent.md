@@ -244,6 +244,35 @@ That is the general shape to watch for when a control gets a route: a check size
 had. Both sides are resolved now, so a symlink planted inside the mount fails it too — `examples` is
 linked into every app, so planted symlinks are not hypothetical here.
 
+## A diagnostic that quotes a tool is a data path (#246)
+
+Amended while building the repeated-call brake. That change writes a sentence naming a tool call
+and what it answered; five review rounds found this same leak class in it three separate times,
+always in the diagnostic and never in a data path anybody was watching. The rule the third one
+produced:
+
+> "Authored text" is a property of the TOOL, not of the field.
+
+A tool part carries `input`, `output` and `error`. It is tempting to read the first two as the
+person's data and `error` as a sentence somebody wrote about it, and for a file tool that holds —
+`read` fails with `File not found: <path>`, `edit` with `Could not find oldString in the file`.
+It does not hold for a shell. **A shell reports failure by printing**, so `bash`'s `error` is
+whatever the program put on stderr. A turn looping on a query that raises inside pandas puts the
+traceback — and the rows it printed on the way — into that sentence, and the sentence is persisted
+into `history.jsonl`, which is committed and pushed and travels to whoever pulls the Project. The
+same leak as the `.table.json` above, arriving through a diagnostic nobody classed as a writer.
+
+So `_repeat_answer` quotes an **allowlist** — `read`, `write`, `edit`, `glob`, `grep`, `list` —
+and never `output`. `bash` is deliberately outside it, and so is everything unlisted: an unknown
+tool has made no promise about what its error carries. `patch` was on the list and came off it,
+because a patch tool that reports a failed hunk by echoing the rejected context would put the
+file's own lines in the sentence and nobody here has read one to say it does not.
+
+An allowlist for the same reason `table_shape._KEYS` is one: a blacklist has to name every shape
+that can carry rows and it misses the next one. The cost of a wrong allowlist entry is somebody's
+data in a commit; the cost of a missing one is a diagnostic that names the call without quoting
+its answer, which #246's own example now pays — it looped through `bash`.
+
 ## Considered options
 
 **Keep committing, and tell the person.** Rejected as the whole answer, kept as the opt-in. It is
