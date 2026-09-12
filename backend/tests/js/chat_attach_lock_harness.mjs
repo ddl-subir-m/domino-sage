@@ -19,8 +19,9 @@
 // requests a store method issues — the same seam `working_set_refresh_harness` uses for #162.
 //
 // Input on stdin: `{ "act": "attach" | "attach-gate-off" | "attach-whole-dataset"
-//                          | "remove" | "remove-whole-dataset" | "remove-gate-off"
-//                          | "remove-sticky" }`.
+//                          | "attach-new-chat" | "remove" | "remove-whole-dataset"
+//                          | "remove-gate-off" | "remove-sticky" | "remove-after-attach"
+//                          | "attach-then-failed-read" }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -62,6 +63,21 @@ function sensitivityRead() {
     datasets: declared ? ['claims'] : [], group: GROUP,
     reason: declared ? 'declared' : 'session',
   };
+}
+
+// Both races hold back the FIRST sensitivity read, and they are the same race seen from each end.
+// In `attach-new-chat` that read is the one `newThread` fires on the way in — asked before the chip
+// exists, so it answers unlocked, and landing last it used to overwrite the locked answer the
+// attach then read. In `remove-after-attach` it is the attach's own read, still in flight and about
+// to answer LOCKED, while the person closes the chip again: a removal that gated on what was on
+// screen saw "nothing locked", asked nobody, and let that answer land over a chip already gone.
+let sensitivityReads = 0;
+function delayFor(path) {
+  if (!path.endsWith('/api/project/sensitivity')) return 0;
+  if (act !== 'attach-new-chat' && act !== 'remove-after-attach'
+    && act !== 'attach-then-failed-read') return 0;
+  sensitivityReads += 1;
+  return sensitivityReads === 1 ? 150 : 0;
 }
 
 const requests = [];
@@ -106,7 +122,15 @@ const sandbox = {
       headers: { get: () => 'application/json' },
       json: () => Promise.resolve(body),
     };
-    return Promise.resolve(res);
+    const wait = delayFor(path);
+    // The read that 5xx's while an older, slower one is still out. A guard that dropped the older
+    // answer because a NEWER read existed left both on the floor and the stale one on screen —
+    // worse than no guard, because the answer it dropped is the locked one.
+    if (act === 'attach-then-failed-read' && path.endsWith('/api/project/sensitivity')
+      && sensitivityReads === 2) {
+      return Promise.reject(new Error('the gateway listing failed'));
+    }
+    return wait ? new Promise((r) => setTimeout(() => r(res), wait)) : Promise.resolve(res);
   },
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   document: {
@@ -132,7 +156,9 @@ for (const f of ['util.js', 'prefs.js', 'router.js', 'store.js', 'api.js']) {
 const SW = sandbox.SW;
 
 const settle = async () => {
-  await new Promise((r) => setTimeout(r, 50));
+  // Long enough for the held-back read to land, because the write that must NOT happen rides in
+  // with it. A settle that only drained microtasks would report the race as won.
+  await new Promise((r) => setTimeout(r, 300));
   for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 0));
 };
 
@@ -154,7 +180,8 @@ const LEAF = {
   parentId: DATASET_ROW.id,
 };
 
-const removing = act.startsWith('remove');
+// `remove-after-attach` is not seeded: it performs the attach itself, then closes what it attached.
+const removing = act.startsWith('remove') && act !== 'remove-after-attach';
 // The chip already in the Conversation, in whichever of the two shapes this act is about. The
 // whole-Dataset row is here because `namesDataset` reads it through a different branch, and a
 // regression that dropped that branch from the removal path alone would leave a whole-Dataset
@@ -167,7 +194,8 @@ if (removing) context = [act === 'remove-whole-dataset'
 SW.store.set({
   scope: { id: 'p1', name: 'quick-start' },
   ready: true,
-  thread: { id: 'thr_a' },
+  // `attach-new-chat` starts with no Conversation, so `attach` opens one on the way in.
+  thread: act === 'attach-new-chat' ? null : { id: 'thr_a' },
   messages: [],
   attachments: removing
     ? [{ id: 'att_1', resourceId: context[0].resourceId, resourceName: context[0].name,
@@ -184,6 +212,15 @@ if (removing) {
 } else {
   await SW.store.addToContext(act === 'attach-whole-dataset' ? DATASET_ROW : LEAF, { quiet: true });
 }
+// The undo, taken while the attach's own read is still out. Deliberately NOT settled in between —
+// the whole point is that the screen has not caught up yet.
+if (act === 'remove-after-attach') {
+  await SW.store.removeFromConversation(SW.store.get().attachments[0]);
+}
+// A second read, issued while the attach's own is still in flight, that fails. Any of the doors
+// that re-ask for their own reasons — the assignments drawer, a mode change, a Binding change —
+// is this call.
+if (act === 'attach-then-failed-read') await SW.store.reloadSensitivity();
 await settle();
 
 const after = SW.store.get().sensitivity || {};

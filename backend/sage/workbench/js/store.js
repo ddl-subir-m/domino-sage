@@ -833,13 +833,35 @@ window.SW = window.SW || {};
       || String(attachment.resourceId || '').startsWith('dataset:')));
   }
 
+  // Ordering for the sensitivity reads. The thread-id guard below cannot stand in for it, because
+  // the two reads that race hardest are about the SAME Conversation: `attach` opens one when none
+  // is open, and `newThread` fires its own read on the way through — asked before the chip exists,
+  // so it answers UNLOCKED — while the read after the post answers LOCKED. Same `asked`, no `gen`,
+  // and the locked one is the slower of the two because it awaits `loadAppList` first. Whichever
+  // landed last won, and the direction that loses is the dangerous one: every vendor model back in
+  // the picker for a conversation the router will refuse. An `@`-mention of a declared Dataset as
+  // the first thing typed into a new chat is the whole gesture.
+  //
+  // Two counters rather than one, and the second is what makes this safe to fail. A guard that only
+  // asked "is a newer read out?" discards this answer on the promise that the newer one will write
+  // — and the rejection handler below writes nothing, so a newer read that 5xx'd left BOTH answers
+  // on the floor and the stale one on screen. Which is worse than no guard at all, because the
+  // answer it drops is the locked one. Comparing against what has actually been APPLIED needs no
+  // rollback and no rejection path: a read that never lands simply never moves the mark.
+  let sensitivityAsked = 0;
+  let sensitivityApplied = 0;
+
   function refreshSensitivity(gen) {
     const asked = (state.thread && state.thread.id) || '';
+    const seq = (sensitivityAsked += 1);
     return SW.api.sensitivity(asked).then(
       // `async` for the one await below. The callers that leave this unawaited are unaffected: they
       // already treated it as a promise that lands whenever it lands.
       async (read) => {
         if (gen !== undefined && gen !== scopeLoad) return;
+        // A newer answer is already on screen, so this one is history whatever it says. Checked
+        // again after the await below, for the same reason the thread-id guard is.
+        if (seq <= sensitivityApplied) return;
         // The answer is about the Conversation that was open when it was asked. Opening B while A
         // is still in flight lands two of these in either order, and the older one carries A's
         // sticky lock — which is a picker greying rows out for a Conversation nobody is looking at.
@@ -867,6 +889,8 @@ window.SW = window.SW || {};
         // carries the app name, so a dismissal taken in that window would be undone by the arrival.
         if (SW.util.isLocked(read) && !state.activeApp) await loadAppList();
         if (((state.thread && state.thread.id) || '') !== asked) return;
+        if (seq <= sensitivityApplied) return;
+        sensitivityApplied = seq;
         state.sensitivity = read;
         notify();
       },

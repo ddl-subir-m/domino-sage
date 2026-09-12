@@ -80,6 +80,35 @@ def test_an_opted_out_deployment_pays_no_round_trip_for_an_attach():
 
 
 @needs_node
+def test_the_first_chip_in_a_new_chat_does_not_lose_to_the_read_that_opened_it():
+    """Two reads for ONE conversation, which the thread-id guard cannot tell apart.
+
+    `attach` opens a conversation when none is open, and `newThread` fires its own read on the way
+    through — asked before the chip exists, so it answers unlocked — while the read after the post
+    answers locked. Same thread, no generation, and the locked one is the slower of the two because
+    it awaits `loadAppList` first. Whichever landed last won, and losing puts every vendor model
+    back in the picker for a conversation the router will refuse.
+    """
+    got = _run("attach-new-chat")
+    assert got["locked"] is True
+
+
+@needs_node
+def test_a_newer_read_that_failed_does_not_take_the_older_answer_with_it():
+    """Why the ordering compares against what has been APPLIED rather than what has been ASKED.
+
+    A guard that discarded this answer because a newer read existed was making a promise the
+    rejection path does not keep: it writes nothing. A newer read that 5xx'd left both answers on
+    the floor and the stale one on screen — and the answer it dropped is the locked one, which makes
+    that guard worse than no guard at all.
+    """
+    got = _run("attach-then-failed-read")
+    assert got["locked"] is True
+
+
+# --- The removal door -----------------------------------------------------------------------------
+
+@needs_node
 def test_closing_the_last_declared_chip_lifts_the_lock_without_leaving_chat():
     got = _run("remove")
     assert got["locked"] is False
@@ -97,6 +126,19 @@ def test_closing_a_whole_dataset_chip_lifts_it_too():
 def test_an_opted_out_deployment_pays_no_round_trip_for_a_removal_either():
     got = _run("remove-gate-off")
     assert got["sensitivityReads"] == 0
+
+
+@needs_node
+def test_an_undo_taken_before_the_attachs_read_lands_does_not_leave_the_lock_on():
+    """Mention a declared Dataset, then close the chip again before the attach's read comes back.
+
+    A removal gated on whether a lock is DRAWN reads the screen, and the screen is one read out of
+    date here — it says nothing is locked, so nothing is asked, and the attach's locked answer lands
+    afterwards to grey the picker for a chip that is already gone. That is the lock-that-will-not-
+    come-off this half exists to prevent, reached by the ordinary gesture of undoing a mistake.
+    """
+    got = _run("remove-after-attach")
+    assert got["locked"] is False
 
 
 @needs_node
