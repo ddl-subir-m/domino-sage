@@ -254,7 +254,7 @@ def test_a_pending_turn_whose_chips_moved_does_not_run_and_hands_the_text_back(t
     assert orch._turn_lock.acquire(blocking=False)
     events, finished = _stream(orch.chat_stream(tid, "how many rows in @clickstream?"))
     _pending(events)
-    assert orch.remove_thread_context(tid, chip["id"]) is True   # the chip goes while it waits
+    assert orch.remove_thread_context(tid, chip["id"])            # the chip goes while it waits
     orch._release_turn()
 
     assert finished.wait(20) is True

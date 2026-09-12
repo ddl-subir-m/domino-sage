@@ -3139,10 +3139,12 @@ def add_thread_context(thread_id: str, body: dict) -> JSONResponse:
 
 @control_app.delete("/api/threads/{thread_id}/context/{item_id}")
 def remove_thread_context(thread_id: str, item_id: str) -> JSONResponse:
-    ok = orchestrator.remove_thread_context(thread_id, item_id)
-    if not ok:
+    row = orchestrator.remove_thread_context(thread_id, item_id)
+    if not row:
         return JSONResponse({"error": "unknown context item"}, status_code=404)
-    return JSONResponse({"ok": True})
+    # `heldBy` rides along so the chip can say the fetched copy stayed and what is holding it — the
+    # chip is one of two doors onto the same file, and the other one is in Build (#249).
+    return JSONResponse({"ok": True, **row})
 
 
 @control_app.post("/api/threads/{thread_id}/chat/stream")

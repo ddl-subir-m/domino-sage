@@ -4845,12 +4845,29 @@ window.SW = window.SW || {};
         ? ` ${left.join(', ')} shares its name and was left in place — check it is yours before `
           + 'saving.'
         : '';
+      // A file that reached this app through a handoff was FETCHED for a question first, and the
+      // app's link stood on those very bytes. Removing it here is normally the last door that can
+      // give them back, and this is the one case where it cannot: a live conversation still names
+      // the fetch, so the copy stays until that chip is closed (#249). The promise above says the
+      // app's copy is gone, so leaving this unsaid would be the sentence doing the harm.
+      // `kept_fetch` is the same word the chip door gets as `heldBy`, so the two surfaces name one
+      // holder one way. It is never "app" today — the entry that could have been it just left the
+      // record — but it is read rather than assumed, because a receipt that hardcoded the likelier
+      // half would point somebody at a chip that does not exist.
+      const fetched = result.kept_fetch === 'conversation'
+        ? ` A copy ${SW.brand.assistant()} fetched for a conversation stays until you close the `
+          + 'chip there.'
+        : result.kept_fetch
+          ? ` A copy ${SW.brand.assistant()} fetched stays — another file in this app is standing `
+            + 'on the same data.'
+          : '';
       // The route hands back no manifest, so the list is the one on screen minus what just went —
       // filtered HERE, off whatever the newest read left, and installed under the act's own ticket
       // so a `/project` read that started before the detach cannot put the file back (#101).
       applyAppScope(appScopeTicket(gen), {
         appAttachments: (state.appAttachments || []).filter((a) => a.path !== attachment.path),
-        appRemoval: removalNotice(where, name, result.refs || [], `${source}${copies}${kept}`),
+        appRemoval: removalNotice(where, name, result.refs || [],
+          `${source}${copies}${kept}${fetched}`),
       });
       notify();
       return true;
@@ -4968,7 +4985,7 @@ window.SW = window.SW || {};
     // also the backend's word for removing an app Attachment — one word over the two scopes #84
     // and the glossary's **Session context** entry exist to keep apart (ADR-0011).
     async removeFromConversation(attachment) {
-      await SW.api.removeFromConversation(conversationId(), attachment.id);
+      const result = await SW.api.removeFromConversation(conversationId(), attachment.id);
       state.attachments = state.attachments.filter((a) => a.id !== attachment.id);
       notify();
       // The one moment the two scopes visibly disagree, said out loud so it does not read as a
@@ -4977,10 +4994,24 @@ window.SW = window.SW || {};
       const app = state.activeApp;
       const stillNeeded = app
         && (state.bindings || []).some((b) => SW.util.bindingId(b) === attachment.resourceId);
+      // The sentence above is about REACH, and this one is about BYTES. A file Sage fetched to
+      // answer a question is a copy on disk rather than a Binding, so the join cannot see it and
+      // the server is the only thing that can say whether closing the chip took it (#249). Said
+      // here because this is the surface the person pressed remove on, and silence on it reads as
+      // "the data went too" — which is what sent somebody looking for a guardrail bug after they
+      // had removed the file from everywhere they could see.
+      const held = (result || {}).heldBy;
+      const kept = held === 'app'
+        ? ` ${(app && app.name) || 'The app'} still carries the file, so `
+          + `${SW.brand.assistant()}'s copy stays until you remove it there.`
+        : held === 'conversation'
+          ? ` Another conversation still has the file, so ${SW.brand.assistant()}'s copy stays.`
+          : '';
       antd.message.info(
-        stillNeeded
+        (stillNeeded
           ? `${attachment.resourceName} is out of this conversation. ${app.name} still needs it.`
           : `${attachment.resourceName} is out of this conversation — still in ${state.scope.name}.`
+        ) + kept
       );
     },
 

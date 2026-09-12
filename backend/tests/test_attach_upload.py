@@ -935,7 +935,7 @@ def test_closing_the_last_chip_releases_the_bytes_it_fetched(tmp_path: Path):
     fetched = root / row["path"]
     assert fetched.is_file()
 
-    assert orch.remove_thread_context(tid, row["id"]) is True
+    assert orch.remove_thread_context(tid, row["id"]) == {"removed": True, "heldBy": ""}
 
     assert not fetched.exists()
     assert not fetched.parent.exists()          # and no empty folders left standing

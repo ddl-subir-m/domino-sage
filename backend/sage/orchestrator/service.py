@@ -1352,6 +1352,28 @@ def _links_at(workspace: Path, rel: str, target: Path) -> bool:
         return False
 
 
+def _fetch_behind(record_root: Path, link: Path) -> str:
+    """The project-relative scratch path an attachment's link is standing on, or "" for a link that
+    is standing on anything else. The inverse of `_links_at`.
+
+    Read off the DISK rather than rebuilt from the entry, because the entry cannot answer it. A
+    confirmed handoff promotes a fetched Dataset file by HANDING THE SCRATCH BYTES OVER
+    (`_promote_chat_file`) rather than fetching them a second time, so the link is the only record
+    of which scratch file — and a path rebuilt from the entry's Dataset name would be the name that
+    Dataset had at attach time, which a rename moves the served slug out from under (#271).
+
+    A mounted Dataset resolves outside scratch and answers "", which is the right answer: those
+    bytes are the Dataset's own and were never Sage's to delete (ADR-0011).
+    """
+    if not link.is_symlink():
+        return ""
+    try:
+        rel = link.resolve().relative_to((record_root / _SCRATCH_PREFIX.rstrip("/")).resolve())
+    except (OSError, ValueError):
+        return ""
+    return PurePosix(_SCRATCH_PREFIX.rstrip("/"), *rel.parts).as_posix()
+
+
 def _copied_bytes(root: Path) -> int:
     """Disk actually used under `root`. A symlink into a mount costs nothing and is not counted:
     the cap is about what Sage copied here, not about how large the Dataset is."""
@@ -6938,15 +6960,82 @@ class Orchestrator:
             return []
         return [{"name": c.name, "type": c.type, "table": c.table} for c in columns]
 
-    def remove_thread_context(self, thread_id: str, item_id: str) -> bool:
+    def remove_thread_context(self, thread_id: str, item_id: str) -> dict | None:
+        """Close one chip, and give back the file it fetched unless something else still holds it.
+
+        None for an item that is not there, which the route answers 404 on. Otherwise `heldBy`
+        names WHAT kept the bytes — see `_fetch_holder` — and is empty when they went or when the
+        chip named no fetch at all. Said out loud because this door is one of two that remove the
+        same file (#249): the person who presses remove and is told nothing reads the silence as
+        "the data went with it", and on this path it did not.
+        """
         project = self._chat_project()
         store = ThreadStore(project.record.path)
         row = next((i for i in store.read_context(thread_id).get("items") or []
                     if i.get("id") == item_id), None)
-        removed = store.remove_context(thread_id, item_id)
-        if removed and row is not None:
-            self._release_chat_file(project, str(row.get("path") or ""))
-        return removed
+        if not store.remove_context(thread_id, item_id):
+            return None
+        path = str((row or {}).get("path") or "")
+        if not path or self._release_chat_file(project, path):
+            return {"removed": True, "heldBy": ""}
+        return {"removed": True, "heldBy": self._fetch_holder(project, path)}
+
+    def _fetch_holder(self, project: Project, path: str) -> str:
+        """What is still holding a scratch fetch back, as one word the doors can say out loud.
+
+        `"conversation"` when a live Thread still names the path: a fetch is shared, and the person
+        closing one chip is not speaking for the other conversation. `"app"` when an Attachment's
+        link stands on these very bytes, which is the shape a handoff leaves behind — deleting them
+        would leave the app pointing at nothing. `""` when nothing holds it.
+
+        One question asked from every door (#249). `_release_chat_file` needs only the ANSWER, since
+        it refuses on either; the surfaces that remove a file need the REASON, because a removal
+        that quietly leaves the bytes on disk is the whole of what that ticket is about.
+
+        Asked only of a SCRATCH path. A chip added in Build carries the app's own
+        `public/data/<slug>/<name>` (`add_thread_context`'s fork), and that path is not a fetch at
+        all — asked about it, the loop below would find the same chip on a second Conversation and
+        answer "conversation" about a copy that never existed.
+        """
+        if not path.startswith(_SCRATCH_PREFIX):
+            return ""
+        for _, item in self._live_thread_context(project):
+            if str(item.get("path") or "") == path:
+                return "conversation"
+        try:
+            dest = _safe_join(project.record.path, path)
+        except ValueError:
+            return ""
+        # A scratch entry that is ITSELF a link holds nothing back. That is the mounted Dataset's
+        # shape: Chat links scratch at the mount, the handoff sees a symlink and lets `attach_file`
+        # link the app at the mount too (`_promote_chat_file`), so the app is standing on the
+        # Dataset rather than on this. `_links_at` resolves both sides and so cannot tell the two
+        # apart — and answering "app" here refused a release that costs the app nothing, then
+        # promised a Build door that has no scratch path to find and could never keep it.
+        if dest.is_symlink():
+            return ""
+        if any(_links_at(project.workspace.path, e["path"], dest) for e in project.attached):
+            return "app"
+        return ""
+
+    def _release_fetch_behind(self, project: Project, path: str) -> str:
+        """Give back the scratch fetch a removed Attachment's link was standing on. Returns what
+        still holds it — `_fetch_holder`'s word — or "" when the bytes went or there were none.
+
+        Every door that drops an Attachment needs this, and this is why: the ENTRY is what held the
+        fetch back. `_fetch_holder` refuses to release bytes an Attachment's link stands on, so for
+        as long as the app carried the file the chip could not release them either — and the moment
+        the entry goes, no surface names those bytes at all. Scratch is at the PROJECT root and
+        gitignored, so deleting the app, committing, cloning and reverting all leave them exactly
+        where they are. `detach_file` is the door #249 was filed against; `detach_folder` and
+        `delete_file` drop the same record by other routes and leaked the same way.
+        """
+        if not path:
+            return ""
+        holder = self._fetch_holder(project, path)
+        if not holder:
+            self._release_chat_file(project, path)
+        return holder
 
     def _release_chat_file(self, project: Project, path: str) -> bool:
         """Delete a file fetched for a chip that is gone. True when the bytes were released.
@@ -6956,11 +7045,9 @@ class Orchestrator:
         then quietly refuses new fetches, falling back to the data-library route with nothing on
         screen to say why.
 
-        Two things hold a file back. Another Thread still naming it: a fetch is shared, and the
-        person closing one chip is not speaking for the other conversation. And a handoff that
-        linked the app's data path at these very bytes: deleting them would leave the app pointing
-        at nothing. Only what Sage fetched is deleted — a mounted Dataset is a symlink here, so the
-        Dataset's own bytes are never what goes.
+        Two things hold a file back, and `_fetch_holder` is the one place that names them. Only what
+        Sage fetched is deleted — a mounted Dataset is a symlink here, so the Dataset's own bytes are
+        never what goes.
 
         Both kinds of scratch file, which is the whole of the fix here. An UPLOAD lands at
         `.sage/scratch/<name>` and a fetched Dataset file one level down, under
@@ -6973,16 +7060,13 @@ class Orchestrator:
         """
         if not path.startswith(_SCRATCH_PREFIX):
             return False
-        for _, item in self._live_thread_context(project):
-            if str(item.get("path") or "") == path:
-                return False
+        if self._fetch_holder(project, path):
+            return False
         try:
             dest = _safe_join(project.record.path, path)
         except ValueError:
             return False
         if not dest.is_symlink() and not dest.is_file():
-            return False
-        if any(_links_at(project.workspace.path, e["path"], dest) for e in project.attached):
             return False
         try:
             dest.unlink()
@@ -16685,7 +16769,10 @@ class Orchestrator:
         would otherwise get staged into the next save — pushing the bytes into git.
         Inlined-into-code copies are left in place (deleting the source file would nuke app logic) and
         reported, alongside code that fetches the served path, as `refs` so the UI can warn and offer an
-        agent cleanup. Keeps the dataset bytes."""
+        agent cleanup. Keeps the dataset bytes.
+        Also gives back the copy Chat fetched, when this link was standing on one — see the comment
+        at the release below for why this door is the last one that can (#249). `kept_fetch` says it
+        could not, so the surface the person pressed remove on can say the data is still here."""
         project = self.project()
         if not path.startswith("public/data/"):
             raise ValueError(path)
@@ -16711,16 +16798,23 @@ class Orchestrator:
                 cp.unlink()
                 removed.append(rel)
         dest = _safe_join(project.workspace.path, path)
+        # Read BEFORE the unlink, because the link is the only thing that knows.
+        fetched = _fetch_behind(project.record.path, dest)
         if dest.is_symlink() or dest.exists():
             dest.unlink()
         _prune_empty_dirs(dest.parent, project.workspace.path / "public" / "data")
         project.attached[:] = [e for e in project.attached if e["path"] != path]
         self._write_agents_data_block(project)
         project.workspace.write_attachments(project.attached)
+        # The copy Chat fetched, released here or nowhere (#249). Reported rather than left for the
+        # person to discover as a guardrail refusal on data they removed from the only place they
+        # could see it — and reported as the holder's WORD, so the sentence drawn over it names the
+        # surface that is actually holding on rather than guessing at the likelier one.
+        kept_fetch = self._release_fetch_behind(project, fetched)
         still_used = sorted(set(usage["refs"] + [r for r in usage["copies"] if PurePosix(r).name != name]))
         return {"detached": path, "removed_copies": removed,
                 "kept_copies": sorted(set(kept) - set(removed)), "refs": still_used,
-                "status": project.status()}
+                "kept_fetch": kept_fetch, "status": project.status()}
 
     def detach_folder(self, dataset_id: str, folder: str) -> dict:
         """Remove every file the app carries below one Dataset folder, at any depth including the
@@ -16849,6 +16943,7 @@ class Orchestrator:
         data_root = project.workspace.path / "public" / "data"
         removed: list[str] = []
         done: list[dict] = []
+        fetches: list[str] = []
         try:
             for entry, raw_copies in leaked:
                 # The attachment FIRST, then the copies it justifies removing. The other way round,
@@ -16856,6 +16951,8 @@ class Orchestrator:
                 # full — a refusal reading "Nothing was removed" that then listed the files it had
                 # just deleted, with the manifest still claiming to carry them.
                 dest = _safe_join(project.workspace.path, entry["path"])
+                # Read BEFORE the unlink, because the link is the only thing that knows (#249).
+                fetches.append(_fetch_behind(project.record.path, dest))
                 if dest.is_symlink() or dest.exists():
                     dest.unlink()
                 # Recorded the moment the link is gone, and BEFORE the prune. A directory left
@@ -16900,6 +16997,12 @@ class Orchestrator:
                     raise DetachStopped(len(done), sorted(set(removed)),
                                         sorted(set(kept) - set(removed)), e,
                                         recorded=False) from e
+        # After the record, and only on the way out clean: a removal that stopped part way raised
+        # above, and bytes are not given back on the strength of a removal that did not finish.
+        # Nothing is said about a fetch that stayed, unlike `detach_file`'s receipt — the folder
+        # act's own report is a count, and the one hold left is a chip the person can still see.
+        for fetched in fetches:
+            self._release_fetch_behind(project, fetched)
         # `.get`, because this runs AFTER the removal has committed: a record written before sizes
         # were kept would otherwise raise `KeyError` — a `LookupError`, which the route answers with
         # "{dataset} not found", hiding a removal that actually happened.
@@ -17071,6 +17174,10 @@ class Orchestrator:
             if usage["refs"] or usage["copies"]:
                 raise DataReferenced(path, usage["refs"], usage["copies"])
         link = _safe_join(project.workspace.path, path)
+        # Read BEFORE the unlink, because the link is the only thing that knows (#249). This door
+        # destroys rather than detaches, so leaving a fetched copy behind here would be the same
+        # promise broken twice over.
+        fetched = _fetch_behind(project.record.path, link)
         if link.is_symlink() or link.exists():
             link.unlink()
         _prune_empty_dirs(link.parent, project.workspace.path / "public" / "data")
@@ -17079,6 +17186,7 @@ class Orchestrator:
         project.attached[:] = [e for e in project.attached if e["path"] != path]
         self._write_agents_data_block(project)
         project.workspace.write_attachments(project.attached)
+        self._release_fetch_behind(project, fetched)
         return {"deleted": path, "status": project.status()}
 
     def _delete_upload_bytes(self, entry: dict) -> None:
