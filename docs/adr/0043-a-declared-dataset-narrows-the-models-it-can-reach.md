@@ -589,7 +589,9 @@ model only runs in Chat"), and Build's account is complete two controls over. An
 Build instead and Chat is contradicted with nothing on screen to correct it. It costs nothing where
 no pin holds: `_lock_preferences` prefers `sovereign_ask` for an Ask turn and a Chat turn alike.
 
-**Two edges left open, named rather than fixed.** Neither is new here; both are decidable now in a
+**Two edges left open, named rather than fixed.** *The first is now decided — see `## Amendment: the row predicts, so it reads the pick (#286)` at the end. The paragraph is kept as written rather than corrected: its argument held where it was made and failed only where it was inherited, which is the part worth recognising.*
+
+**Two edges, as they stood.** Neither is new here; both are decidable now in a
 way they were not before, which is why they are written down.
 
 The pick still outranks the pin one layer below the lock, and this answer drops the pick. So while a
@@ -606,3 +608,80 @@ session" — is the one the drawer drops on that row. The discriminator is wheth
 is approved, and the panel is not told which model that is; `model_assignments` sends `shadowed` as a
 bare boolean and does not read the lock at all. Fixing it is a field, not a rule, and it belongs with
 the gate it feeds rather than with the router.
+
+## Amendment: the row predicts, so it reads the pick (#286)
+
+This closes the first of the two edges left open above. The second is untouched and still open.
+
+**The row is a control, not a sentence, so it must predict.** The paragraph above weighs "a sentence a
+beat behind on a row nobody is acting from" — and the row is the closed state of the assignment
+`Select` (`model-assignments.js`, `value: runs || …`), which is the control a person came here to
+change. #285 had already settled which question that control answers: it substituted `runs` for a
+barred assignment precisely because a closed state reading "`gpt-5.4` — not allowed" answered the
+wrong one. That reasoning only works if the closed state names what the mode runs **now**. So the row
+promises a prediction, and #285 is what spent the alternative.
+
+**The trade above was sound where it was made and wrong only where it was inherited.** It is kept
+above as written rather than corrected, because the mechanism is the part worth recognising.
+`store.js` argues the pick out of the re-read list for `model`/`chat_model` — an answer the composer
+reads, where a stale one puts a barred model under a person's hand — and then opens a second
+paragraph for `slot_models` and carries the same conclusion across without re-deriving it. The two
+fields have disjoint readers: `slot_models` is read only by the drawer's rows, and the composer's
+chip reads `sensitivity.model` off `nearest_approved`, which `_locked_model` documents as already
+pick-correct. Neither half of the trade was about the field it ended up governing. A conclusion
+outliving its argument by one paragraph is the failure here, not the conclusion.
+
+**All three pick cases, not just the barred one.** `_pin_signing` returns a `PLAN_OVERRIDE` or
+`IMPLEMENT_OVERRIDE` untouched, so *any* live pick defeats the pin: no pick runs the pin's model, a
+barred pick runs where the lock moves it, an approved pick runs the pick itself. Fixing only the
+barred case — the one #286 reports — would leave the row wrong in the case where the person has
+stated their intent most explicitly. The split is created by dropping the pick, so restoring it
+closes all three at once.
+
+**The trigger does not widen.** The row substitutes only while a lock holds and its own assigned
+model is barred. Everywhere else the `Select` shows the assignment plainly: with no lock it is an
+assignment editor, and a transient pick in its closed state would make the control lie about the
+thing it edits.
+
+**The "Ask and Chat" row reads the Chat pick.** It is answered as Chat (`chat_thread_id="unarmed"`)
+for the reason two amendments above, and `_resolve_chat` reads `chat_model` — a different field from
+`picked_model`. So the fork already there for the pin carries the pick too, and no new one is added.
+
+**The re-read decision above stands, and its reason no longer covers this field.** "The Workbench
+re-reads on a mode change and not on a model change" is unchanged — no call site is added. But the
+reason given for it, that the pick is not an input to the answer, is now true only of
+`model`/`chat_model`. `slot_models` reads the pick and stays outside the re-read list on a different
+guarantee: the drawer cannot be looked at and the pick changed at the same time. It is masked
+(`model-assignments.js`), and it re-reads on open (`store.js`, `openAssignments`), and saving any row
+clears the pick outright (`set_catalog`, `project.control.pick(None)`).
+
+**That is a UI invariant standing in for a data invariant, and it is the weaker of the two.** The old
+guarantee was that the answer held no pick, so it could not go stale. The new one is that nobody can
+change the pick while looking at the answer. The first cannot be broken by an unrelated edit; the
+second breaks silently the moment anyone passes `mask: false`. So the mask stops being an antd
+default doing unnamed work: it is passed explicitly, commented with what depends on it, and asserted
+in `model_assignments_harness.mjs`. A default nobody knows is load-bearing is the same defect as a
+guard with no recorded expiry.
+
+**One window the mask does not close, accepted rather than fixed: #294.** A status poll writes the
+pick from the server on every read (`store.js`), and the orchestrator installs one of its own when a
+build turn escalates. So a pick can change behind the open drawer with no human act. It is left open
+because all three conditions must coincide — a lock holding, the row's assigned model barred, and an
+escalation pick that is itself unapproved — and because the fix belongs with the poll rather than
+here. If it is worth closing, the narrow move is to re-read when a poll changes the pick and the
+drawer is open, not to put the pick in the general re-read list.
+
+**`locked_runs_on` survives, for its name rather than its body.** With the pick restored it is
+`resolve` plus the empty-approved normalisation, and the reason it was not `resolve` in the first
+place is exactly the reason that dissolved. It is kept because three names for three questions is the
+guardrail this router keeps needing: `nearest_approved` is where the lock MOVES a barred turn,
+`locked_runs_on` is what a slot RUNS, `resolve` is what this turn runs. `_locked_slot_models` calling
+`resolve` directly would put the forced mode and phase one tidy-up away from being lost. Its
+docstring is rewritten rather than edited — the old one argues the pick-drop at length, and the right
+function carrying the wrong explanation is a defect this repo has logged more than once.
+
+**The second edge above is still open, and this one comes first.** The panel still cannot tell whether
+the pin survived the lock, so a row's prose can name the right model for the wrong cause. That is a
+field (`model_assignments` sends `shadowed` as a bare boolean), not a rule, and it belongs with the
+gate it feeds. Taken in the other order it would give a confident wrong cause on a row whose model is
+also wrong.
