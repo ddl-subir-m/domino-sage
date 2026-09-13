@@ -397,6 +397,40 @@ def test_a_row_that_carries_no_narrow_list_refuses_nothing():
     assert "doesn't accept" not in (row["why"] or "")
 
 
+def test_the_listing_mapper_passes_an_absent_narrow_list_through_untouched():
+    """The membership leg's contract, asserted on the OTHER leg and through the real mapper.
+
+    Both legs feed `model_llm`, and the composer prefers `gatewayAliases` whenever it is non-empty,
+    so a gateway listing whose rows lack the narrow field is never rescued by the membership rows
+    behind it. A `|| []` here alone would give one absence two opposite answers decided by which
+    listing happened to reply: unanswered on one leg, "refuses every level" on the other.
+
+    Driven through `SW.api.resourceListing` rather than by seeding the store, because the mapper is
+    the thing under test — seeding steps over the only line that can get this wrong, and a test that
+    steps over its subject stays green when the subject breaks.
+
+    `undefined` means nobody said; `[]` means the alias said none. The key is therefore ABSENT here,
+    not empty — JSON drops an undefined value, which is exactly the distinction being kept.
+    """
+    (row,) = _drawn([{"listingRoute": True}])
+    mapped = row["row"]
+
+    assert mapped["reasoning_efforts"] == ["low", "high"]
+    assert "reasoning_efforts_with_tools" not in mapped
+
+
+def test_the_gateway_leg_reads_an_absent_narrow_list_as_no_evidence():
+    """And what the menu does with such a row: nothing. No refusal, no dropped level.
+
+    The composer's half of the same contract, on the leg it prefers.
+    """
+    (row,) = _drawn([{"mode": "plan", "listing": "legacy",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "high"}}])
+
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+    assert not any("not accepted" in (r.get("label") or "") for r in _every_row(row))
+
+
 def test_a_missing_alias_listing_is_not_read_as_a_refusal():
     """The listing absent and the alias advertising nothing read identically off
     `reasoning_efforts` — both are `[]` — and they are opposite facts. `gatewayAliases` starts empty
@@ -549,6 +583,11 @@ def test_a_pick_that_collapses_still_names_the_level_it_runs_at():
     _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::high"}, {"mode": "plan"}])
     assert row["label"] == f"{PLAN_MODEL} · High"
     assert row["selectedKeys"] == ["__pinned__"]
+    # And the tooltip accounts for it, because the menu cannot: the way-back row is marked and
+    # carries no submenu (#310), so this is the only place the level can be explained or its exit
+    # named. The stranded twin had a sentence from the start; this, the commoner case, had none.
+    assert "at High, not at the assignment's level" in row["why"]
+    assert "clears it" in row["why"]
 
 
 def test_a_collapsed_pick_whose_level_is_stranded_claims_no_default():

@@ -696,10 +696,19 @@ window.SW = window.SW || {};
       // publish this field would otherwise strand every level it holds.
       if (!alias || !alias.reasoning_efforts_with_tools) return '';
       if (id !== buildModel || !buildEffort) return '';
-      // Judged against the TOOL-carrying list, the same one the submenu offers and the same one the
-      // send path enforces. Against the enum, a level this alias drops beside tools reads as
-      // perfectly fine — `gpt-5.4` at `high` is in the enum and dropped on every Build turn — and
-      // the chip would name it over a turn running at the alias default (#295).
+      // Judged against the TOOL-carrying list, the same one the submenu offers. Against the enum, a
+      // level this alias drops beside tools reads as perfectly fine — `gpt-5.4` at `high` is in the
+      // enum and dropped on every Build turn — and the chip would name it over a turn running at the
+      // alias default (#295).
+      //
+      // NOT identical to what the send path accepts, and the gap is worth naming rather than
+      // implying: for an alias the gateway publishes an enum for but nobody has probed,
+      // `alias_efforts_with_tools` returns that enum untouched while `enforcement.py` asks
+      // `reasoning_efforts_with_tools`, which falls through to the empty measured row and drops
+      // every level. The published list is then wider than the accepted one. Latent while the
+      // gateway reports `inference_params: {}` for every alias (#284), pre-existing on the Chat
+      // chip for the same reason, and tracked on #298 — the surface that can close it is the
+      // provider, not this menu.
       return (alias.reasoning_efforts_with_tools || []).includes(buildEffort) ? '' : buildEffort;
     };
     // The level the live pick is running at, where there is one the alias will take. Empty for no
@@ -1387,7 +1396,15 @@ window.SW = window.SW || {};
                       ? `${pinnedModel} doesn't accept ${effortLabel(collapsedStranded)}, so this `
                         + 'turn runs at the model default. The row below clears the pick and puts '
                         + 'the mode back on its assignment.'
-                      : ''));
+                      // The accepted-level twin, which had no sentence at all. Both are the collapse
+                      // — a pick naming the mode's own model — and in both the menu marks the
+                      // way-back row and offers no submenu (#310), so the tooltip is the only place
+                      // either can be accounted for. Giving one an explanation and not the other
+                      // left the commoner case silent.
+                      : (!override && pickedLevel
+                        ? `This pick runs ${pinnedModel} at ${effortLabel(pickedLevel)}, not at `
+                          + "the assignment's level. The row below clears it."
+                        : '')));
                     return why ? h(Tooltip, { title: why }, control) : control;
                   })()
                 // Ask and Auto honour no override — Ask is pinned to its slot and Auto follows the

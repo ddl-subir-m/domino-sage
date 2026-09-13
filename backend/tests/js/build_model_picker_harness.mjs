@@ -153,6 +153,21 @@ function serve(url, options = {}) {
     if ('pick' in body) pickedEffort = body.pick ? (body.pick_effort || null) : null;
     return json(status());
   }
+  // The REAL listing route, so `SW.api.fetchDominoListing`'s own mapper runs rather than being
+  // stepped over. Rows shaped as the server sends them and deliberately WITHOUT
+  // `reasoning_efforts_with_tools`, which is the shape whose handling the mapper decides: passed
+  // through it stays `undefined` ("nobody answered"); defaulted it becomes `[]` ("refuses every
+  // level"), and the menu cannot tell those apart afterwards.
+  if (path === '/resources') {
+    return json({
+      data_sources: [], model_apis: [], errors: {},
+      llm_aliases: [{
+        id: 'id-deepseek', name: 'deepseek/deepseek-v3', display_name: 'DeepSeek v3',
+        capabilities: ['chat'], reasoning_efforts: ['low', 'high'],
+      }],
+    });
+  }
+  if (path === '/assets') return json({ assets: [] });
   return json({});
 }
 
@@ -262,6 +277,13 @@ SW.store.set({
 
 const report = [];
 for (const step of steps) {
+  if (step.listingRoute) {
+    // Through `fetchDominoListing`, not around it: the mapper is the thing under test.
+    const read = await SW.api.resourceListing();
+    report.push({ step: 'listingRoute', row: (read.groups.model_llm || [])[0] });
+    continue;
+  }
+
   if (step.health) {
     // Where the open-weight list comes from. Its own step because /healthz is the one route the
     // Workbench reads off `BASE` — a path that quietly became `./api/healthz` would 404 and leave
@@ -286,7 +308,14 @@ for (const step of steps) {
     // levels — `gatewayAliases` starts empty and a gateway leg that 40x's at boot leaves it that
     // way. Its own step because the menu has to tell the two apart: one is knowledge, the other is
     // the absence of it, and `reasoning_efforts` reads `[]` for both.
-    SW.store.set({ gatewayAliases: step.listing ? ALIAS_ROWS() : [] });
+    // `'legacy'` is the gateway leg answering with rows that predate the narrow field — the same
+    // shape the membership leg can hold. Its own value because the two legs are read by DIFFERENT
+    // branches of the composer's source pick, and a contract honoured on one and not the other gives
+    // one absence two opposite answers.
+    SW.store.set({
+      gatewayAliases: step.listing === 'legacy' ? LEGACY_MEMBER_ROWS()
+        : step.listing ? ALIAS_ROWS() : [],
+    });
   }
 
   if ('narrow' in step) {
