@@ -340,17 +340,16 @@ def test_the_promise_not_to_alter_anything_holds_at_every_size_of_a_set_with_no_
         said = _text(_render(_card(carriers=carriers, surviving=0)))
         assert promise in said, carriers
 
-    # An ALL-file set bounds the widening: every carrier there is nameable, so the clause's first
-    # half is false of every one of them and its absence is the thing to hold.
+    # An ALL-file set bounds the widening, and one clause is the whole bound: every carrier there is
+    # nameable, so "no file Sage can name" is false of every one of them.
     #
-    # A MIXED set is deliberately not a member. The clause is false of the file and the promise is
-    # true of the message, so asserting the whole clause absent would pin the promise's absence as
-    # correct on the one payload where the person's own words are at stake — and the receipt for
-    # that same click says "Nothing was changed or deleted" whatever was withheld. That gap is
-    # #337, filed rather than fixed: separating the promise from the file clause rewrites prose
-    # #292 landed, which this ticket is barred from re-deriving. Left unpinned so #337 has nothing
-    # green to overturn.
+    # Whether such a card should promise not to ALTER what it matched is not asserted either way —
+    # nor is it for a mixed set, which is why neither is a member here. The promise is true of a
+    # named file, `RecallWithheld` says "Nothing was changed or deleted" for that same click
+    # whatever was withheld, and the card is silent. That gap is #337, filed rather than fixed:
+    # separating the promise from the file clause rewrites prose #292 landed, which this ticket is
+    # barred from re-deriving. Pinning the silence would mean #337 could not land without first
+    # overturning a green assertion in the test that recorded the gap.
     for carriers in ([FILE], [FILE, EXPORT]):
         said = _text(_render(_card(carriers=carriers, surviving=0)))
         assert "not in a file Sage can name" not in said, carriers
-        assert "Sage won't change" not in said, carriers

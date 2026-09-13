@@ -993,7 +993,7 @@ window.SW = window.SW || {};
     //
     // Still one condition narrow, and that is a recorded GAP rather than a decision: a named file
     // BESIDE a typed message withholds the promise, because the clause is gated on what a carrier
-    // arrives next to. `RecallWithheld` below says "Nothing was changed or deleted" for that same
+    // arrives next to. `RecallWithheld` above says "Nothing was changed or deleted" for that same
     // click unconditionally, so the card is quieter before the click than the receipt is after it.
     // Not widened here: "not in a file Sage can name" is false of the file, so the promise has to
     // come apart from the file clause first, and that prose is #292's. Filed as #337.
