@@ -265,24 +265,33 @@ window.SW = window.SW || {};
       const picked = locked && (served === undefined ? Boolean(mirror) : Boolean(served));
       const moved = barredNow || Boolean(current.shadowed) || picked;
       const runs = moved && answer !== current.model ? answer : '';
+      const savedModel = current.assigned_model || '';
+      // The file and the catalog are two reads. When they disagree, the file names the assignment
+      // the next turn will use, while `current.model` is the old catalog still in this Builder.
+      const staleAssignment = assigned && savedModel && savedModel !== current.model;
       // The levels this row may be saved with (ADR-0049). Read off the alias the row's OWN model
       // names, never off `runs`: `_merge_assignment` validates an effort against the model the
       // assignment holds — its own, or the deployment default it falls back to, which is what
       // `current.model` already is on an unassigned row — so offering the substitute's levels would
       // offer levels this row cannot save. The lock moves what RUNS; it does not move what is
-      // being edited here.
+      // being edited here. A stale assignment is different: the file's model is now the row's model,
+      // but the payload carries no file-side effort, so the level control waits for the catalog to
+      // catch up rather than offering levels for the old model.
       //
       // Server-computed, not a rule restated here: `alias_reasoning_efforts` narrows the gateway's
       // published enum by the measured table before it is sent (#280), which is the one narrowing
       // ADR-0049 says must not be copied to this side. This reads its answer.
-      const efforts = (listed.find((a) => a.name === current.model) || {}).reasoning_efforts || [];
+      const efforts = staleAssignment
+        ? []
+        : (listed.find((a) => a.name === current.model) || {}).reasoning_efforts || [];
       // A level on disk that this row's model does not offer. Reachable without anyone having done
       // anything wrong: the deployment default can move under a stored level long after it was
       // saved and nothing re-validates it (`service._effective_catalog` says so in as many words),
       // and the measured table can narrow under one when an alias is probed (#280). The control has
       // to survive it — otherwise the setting is invisible, still saved, and the only way to clear
       // it is to give up the row's model assignment as well.
-      const stranded = current.effort && !efforts.includes(current.effort) ? current.effort : '';
+      const stranded = !staleAssignment && current.effort && !efforts.includes(current.effort)
+        ? current.effort : '';
       // Nothing is drawn where the model offers none. Five of the eight Aliases on the gateway
       // discard `reasoning_effort` silently, so a 200 there means "thrown away" rather than
       // "accepted" — a control that appears where the setting changes nothing is worse than no
@@ -304,7 +313,8 @@ window.SW = window.SW || {};
           'aria-label': `${spec.label} model`,
           style: { width: '100%' },
           disabled: readOnly,
-          value: runs || (assigned || !current.default ? current.model : DEFAULT_KEY),
+          value: runs || (staleAssignment ? savedModel
+            : (assigned || !current.default ? current.model : DEFAULT_KEY)),
           options: options(current),
           onChange: (value) =>
             SW.store.setAssignment(spec.slot, value === DEFAULT_KEY ? null : value),
@@ -356,6 +366,9 @@ window.SW = window.SW || {};
         runs
           ? h('div', { className: 'sw-assignment-detail' },
               `This runs ${runs}, not ${current.model}.`)
+          : staleAssignment
+          ? h('div', { className: 'sw-assignment-detail' },
+              `Saved as ${savedModel}. This Builder still has old details for ${current.model}.`)
           // Only on an ASSIGNED row, which is not the same gate as "differs from the default" and
           // was drawing the wrong sentence where the two part company (#299). An untouched row
           // stays silent, because repeating "gpt-5.4 (default)" under a select that already says
@@ -379,9 +392,9 @@ window.SW = window.SW || {};
               // assigning `coder` while the catalog still holds `gpt-5.4` — print a confident pin
               // to a model the file no longer names, both halves of it false.
               //
-              // So the claim is made only where all three agree, and every skew falls through to
-              // the older line, which names the default and asserts nothing about the pin. Vague
-              // and true beats specific and false, on the one row this sentence exists for.
+              // So the pin claim is made only where all three agree. A skew is handled above by
+              // naming the saved model and the old catalog, so the select does not name a model the
+              // next turn will not run.
               //
               // TRUTHY as well as agreeing, which is not the same requirement and does not come
               // free from the gate one line up. Three ABSENT names agree — a payload predating
