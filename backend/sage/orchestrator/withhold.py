@@ -65,21 +65,62 @@ class Carrier:
     key: str        # what `apply_withheld` matches on: "file:<path>" or "text:<hash>"
     label: str      # what the card says: a file name, or "the message you sent"
     is_file: bool
+    # Whether this arrived as a tool result — data the turn fetched, rather than prose somebody
+    # wrote. NOT the same question as `is_file`, which is narrower on purpose: `is_file` needs a
+    # path to put on the card and only `read`-shaped calls carry one, so a `bash cat`, a `grep` or
+    # a live-read's rows are data with no filename. `surviving` counts these; the card names the
+    # ones with a name. Defaulted so the older three-argument construction still reads.
+    is_data: bool = False
 
 
 @dataclass
 class Found:
     carriers: list[Carrier] = field(default_factory=list)
     calls: int = 0
-    # Everything that COULD have been withheld. `total - len(carriers)` is what decides whether
-    # re-running the turn is worth anything: withhold the only thing it read and there is nothing
-    # left to answer from, so the card must offer to stop sending rather than to carry on.
+    # Everything that COULD have been withheld, and how much of that was data. Both are counted
+    # because `surviving` below is a question about DATA, and a payload is mostly prose.
     total: int = 0
+    total_data: int = 0
     # A verify probe came back CLEAN with these withheld. False means the refusal survives and the
     # caller must NOT claim it has fixed anything.
     complete: bool = False
     # "" when the search ran to an answer; otherwise why it stopped, for the log and the card.
     stopped: str = ""
+
+    @property
+    def surviving(self) -> int:
+        """How much of this turn is left to answer FROM once the carriers stop being sent.
+
+        Counted over DATA. A carrier is any withholdable message, and most of a payload is prose —
+        the question, Sage's earlier answers. Prose is not material a question is answered from, so
+        counting it told a one-file conversation that two things survived the loss of its only
+        file, and the card offered to carry on over nothing (#288).
+
+        Data is `is_data`, not `is_file`: a turn can fetch rows through `bash cat`, `grep` or a
+        live read, and `is_file` is set only where `read_path_from_tool_call` finds a path to put
+        on the card, so none of those are files. Counting files would get the mirror case WRONG —
+        one `read` file refused while a `cat` of a clean one survives reads as zero, and suppresses
+        a re-run that would have worked. That is a new wrong answer in the opposite direction from
+        the bug, which is worse than the bug.
+
+        A conversation that fetched no data at all falls back to counting carriers, because there
+        the prose IS the material: an earlier answer refused leaves the question standing, and
+        re-running it is worth the call.
+
+        Read that fallback as the population it is for — a turn that fetched NOTHING — and not as
+        a general rule. A turn whose only data is an @-mention's inlined sample rows also lands in
+        it, because those rows ride in a *user* message (see `carriers`) and so are not `is_data`.
+        That turn gets the pre-#288 answer: prose counted as material, and an offer to carry on
+        over nothing. Not a regression — the fallback leaves it exactly where it was — but not
+        fixed either. Tracked in #290.
+
+        Says nothing about whether the QUESTION is one of the things going — that is
+        `prompt_withheld`, the other half of "is re-running this worth a call", and the two come
+        apart in the case a person meets most.
+        """
+        if self.total_data:
+            return max(self.total_data - sum(1 for c in self.carriers if c.is_data), 0)
+        return max(self.total - len(self.carriers), 0)
 
 
 def carriers(messages: list[dict]) -> list[Carrier]:
@@ -142,11 +183,12 @@ def _walk(messages: list[dict]):
         if not isinstance(m, dict) or m.get("role") in _NEVER:
             continue
         cid = str(m.get("tool_call_id") or "")
-        if m.get("role") == "tool" and cid in paths:
+        is_data = m.get("role") == "tool"
+        if is_data and cid in paths:
             path = paths[cid]
-            yield Carrier(file_key(path), os.path.basename(path) or path, True), m
+            yield Carrier(file_key(path), os.path.basename(path) or path, True, True), m
         elif _has_text(m):
-            yield Carrier(text_key(m), _text_label(m), False), m
+            yield Carrier(text_key(m), _text_label(m), False, is_data), m
 
 
 def suspects(messages: list[dict]) -> set[str]:
@@ -241,6 +283,7 @@ def search(messages: list[dict], ask, *, cap: int = MAX_CALLS, hint=()) -> Found
     found = Found()
     all_carriers = carriers(messages)
     found.total = len(all_carriers)
+    found.total_data = sum(1 for c in all_carriers if c.is_data)
     if not all_carriers:
         found.stopped = "nothing to search"
         return found

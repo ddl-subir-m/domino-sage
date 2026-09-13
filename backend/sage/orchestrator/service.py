@@ -8374,9 +8374,9 @@ class Orchestrator:
             # Whether withholding these actually clears the refusal, proven by a probe rather than
             # assumed. False means the caller must not claim anything has been fixed.
             "complete": found.complete,
-            # What the turn would still have to answer from. Zero means re-running it is pointless,
-            # and the card offers to stop sending rather than to carry on.
-            "surviving": max(found.total - len(found.carriers), 0),
+            # What the turn would still have to answer from — files, not prose (#288). Zero means
+            # re-running it is pointless, and the card offers to stop sending rather than carry on.
+            "surviving": found.surviving,
             # Whether the question itself is one of the things going. `surviving` cannot say: it
             # counts what is left to answer FROM, and the common case has a typed message matched
             # while every file it read survives. Re-running that asks nothing — the same words hash
