@@ -260,7 +260,16 @@ for (const step of steps) {
   for (const [slot, entry] of Object.entries(step.seed || {})) overrides[slot] = entry;
   sensitivity = step.sensitivity || null;
   signingSlot = step.signing || null;
-  SW.store.set({ buildRunning: !!step.running, catalog: status().model.catalog });
+  SW.store.set({
+    buildRunning: !!step.running,
+    catalog: status().model.catalog,
+    // The pick, in the two fields `applyModelStatus` writes it to: `buildModel` is `picked_model`
+    // and `model` is `chat_model`. Set on the store rather than served, because the panel never
+    // reads the status route — it reads the state the poll fills. Since #286 a pick is an input to
+    // what each row says its mode RUNS, so a step that leaves both empty is the no-pick case.
+    buildModel: step.pick || '',
+    model: step.chatPick || '',
+  });
   await SW.store.openAssignments(true);
   await settle();
   calls.length = 0;
@@ -277,6 +286,10 @@ for (const step of steps) {
   }));
   const row = {
     step: JSON.stringify(step),
+    // Load-bearing since #286, so asserted rather than left to antd's default. Nothing re-reads the
+    // per-slot answer while the drawer is open, so the rows are only right because the mask puts
+    // the picker out of reach for as long as they are on screen.
+    drawerMask: (find(tree, (n) => n.t === 'Drawer') || { p: {} }).p.mask,
     // The labels a person reads down the panel, in order.
     labels: text(tree, 'sw-assignment-label'),
     rows,

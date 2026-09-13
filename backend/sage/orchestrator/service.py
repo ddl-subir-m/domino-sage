@@ -15684,17 +15684,52 @@ class Orchestrator:
         row's shown model only where this names one, and a key holding null would make "the router
         could not answer" and "the router said nothing moves" the same read.
 
-        The pick is not forced here because `locked_runs_on` drops it itself, and that is deliberate
-        rather than an oversight to tidy up: this answer is held in the browser across pick changes
-        (`store.js` re-reads on a mode, Binding or Conversation change and NOT on a pick), so an
-        answer that could be the pick would go stale the moment somebody picked a barred model.
+        The pick is read rather than dropped, since #286, WHERE THE STANDING MODE HONOURS ONE — see
+        `honours_pick` below, which is half the rule and belongs in this sentence rather than ten
+        lines under it. An in-session act outranks the signing pin one layer below the lock, so a
+        pick-free answer named the pin's model on every row while the pick was the thing deciding the
+        turn — in all three pick cases, not only the barred one that was reported. It needs no fork of its own: `_resolve_chat` reads `chat_model` and
+        `_resolve_build` reads `picked_model`, so the `chat_thread_id` fork two paragraphs up already
+        puts each row on the pick its own turn reads.
+
+        The browser still does not re-read on a pick (`store.js` re-reads on a mode, Binding or
+        Conversation change), and what makes holding this answer across one safe is the drawer rather
+        than the answer: its rows are the only reader, it re-reads on open, its mask puts the picker
+        out of reach for as long as it is open, and `set_catalog` clears the Build pick on every save.
+        Two windows that leaves rather than one, both of the same shape: #294, where the orchestrator
+        moves the pick itself when a build turn escalates and there is no human act to block; and a
+        second Workbench on the same Project, which one tab's mask cannot reach.
+
+        #294 is NARROWER than its own write-up since the gate above. The escalation pins the turn
+        with `set_turn_mode`, which deliberately leaves the standing choice alone — so a session
+        standing in Auto, the commonest way to reach an escalation at all, now has `selected_mode`
+        Auto and these rows drop the escalated pick unread. What is left is a session standing in
+        Plan or Implement. Whoever takes #294 should scope it from that and not from here.
         """
         if approved is None:
             return {}
+        # A pick the standing mode will not honour is not an input to any row. `_resolve_build` reads
+        # `picked_model` in Plan and Implement modes only, and `set_mode` does not clear a pick — so
+        # one made in Plan survives a switch to Auto and goes inert. The rows force the mode PER SLOT
+        # and would otherwise report that dead pick on both Build rows while every Auto turn ran the
+        # assignments: the #285 defect again, with the pick in the pin's place.
+        #
+        # `selected_mode` rather than the snapshot's `mode`, which is pinned while a turn runs. These
+        # rows predict the NEXT turn, and a pick made mid-turn is live for the one after it.
+        #
+        # The same set is written down once more, at `preflight.shadowed_slots` — which is the other
+        # surface that has to know when a pick defeats the pin. Two readings of one rule, named here
+        # so a fourth mode that honours a pick is two edits rather than one edit and a silence.
+        #
+        # The Chat pick is not gated with it. Chat has no modes to make one inert, which is the same
+        # asymmetry `set_catalog` has: it clears `picked_model` and leaves `chat_model` standing.
+        honours_pick = project.control.selected_mode in (Mode.PLAN, Mode.IMPLEMENT)
+        pick = project.control.snapshot().picked_model if honours_pick else None
         out: dict[str, str] = {}
         for slot in ASSIGNABLE_SLOTS:
             try:
                 state = replace(project.control.snapshot(),
+                                picked_model=pick,
                                 # The `ask` row is the one with two turns behind it — `SLOTS` labels
                                 # it "Ask and Chat" and `_resolve_chat` returns `catalog.ask` — and
                                 # the pin takes only the Build one. Answered as Build it read "so
