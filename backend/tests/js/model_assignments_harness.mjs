@@ -7,7 +7,9 @@
 // control, the one that carries a reasoning effort (ADR-0049); `{ "sensitivity": {...} }`
 // opens it with the sensitivity lock holding, served from the route the panel actually reads;
 // `{ "signing": "implement" }` opens it with that slot holding a model that signs, so the other
-// rows arrive carrying the shadow the pin casts over them (#276).
+// rows arrive carrying the shadow the pin casts over them (#276); `{ "unreadable": ["plan"] }`
+// opens it with that slot's `model_overrides.json` row dropped as unreadable, which is the one
+// state where a row draws a sentence while still following the deployment default (#289).
 //
 // Nothing is mounted. `createElement` is stubbed to a plain object, so calling the component returns
 // the tree it would draw — which is where a Select's options and disabled state are settled.
@@ -85,6 +87,11 @@ let failSave = false;
 // never derived here: the server owns `signing_slot` (ADR-0032) and a copy of that rule in this file
 // would let the panel agree with a fixture rather than with the product (#276).
 let signingSlot = null;
+// The slots whose `model_overrides.json` row the server could not read and dropped (#289). Served,
+// never derived from `overrides` above: the drop happens inside `read_catalog_overrides`, so by the
+// time anything panel-shaped sees the file it holds only the rows that parsed. A fixture that tried
+// to infer this from a bad value in `overrides` would be inventing a state the product never sends.
+let unreadableSlots = [];
 // The lock, exactly as `/api/project/sensitivity` answers it. Served rather than written into the
 // store, because opening the drawer re-reads it (`openAssignments`) — a value set by hand would be
 // overwritten by that read before the panel drew a single row.
@@ -134,7 +141,19 @@ const panel = () => ({
     shadowed: shadow(slot) !== null,
     // Preflight's verdict, which the server recomputes on every read — so a slot assigned to a
     // model that will not answer reports it the moment the panel re-reads after the save.
+    // A dropped row ranks between them, which is the server's own order and not this file's
+    // arrangement of it: below the shadow, because while the pin holds, fixing the file changes
+    // nothing this row can show; above the verdict, because on a row that could not be read the
+    // model that verdict names is the deployment default, which the reader never chose.
+    //
+    // The longer of the two forms the server sends. It drops the "following the default" clause on
+    // a row whose catalog has not been rebuilt since the file broke, and the panel draws whichever
+    // string arrives without branching on it — so the short form needs no step of its own here, and
+    // a JS test asserting one exact sentence is asserting about this fixture, not about that rule.
     problem: shadow(slot)
+      || (unreadableSlots.includes(slot)
+        ? `The ${slot} row in .sage/model_overrides.json couldn't be read, so this slot is following the default. Fix that row, or remove it.`
+        : null)
       || ((ALIASES.find((a) => a.name === model(slot)) || {}).serving === false
         ? `The ${slot} model (${model(slot)}) is Stopped. Turns that use it will fail. Start that endpoint, or pick a different model.`
         : null),
@@ -260,6 +279,7 @@ for (const step of steps) {
   for (const [slot, entry] of Object.entries(step.seed || {})) overrides[slot] = entry;
   sensitivity = step.sensitivity || null;
   signingSlot = step.signing || null;
+  unreadableSlots = step.unreadable || [];
   SW.store.set({ buildRunning: !!step.running, catalog: status().model.catalog });
   await SW.store.openAssignments(true);
   await settle();
