@@ -758,13 +758,24 @@ window.SW = window.SW || {};
     // One rule rather than a case per shape. The collapse that empties `override` is about the
     // MODEL being the slot's, and says nothing whatever about the level.
     const livePick = overridable && buildModel ? buildModel : '';
-    const collapsedStranded = livePick && !override ? strandedLevel(livePick) : '';
-    // Declared HERE rather than beside its first reader, because both chips need it: the open one
-    // and the running one, and the running branch draws a disabled Button with no submenu behind it
-    // — so mid-turn this sentence is the only account of a stranded level there is.
+    // The level standing on the live pick that its alias will not take, WHATEVER shape the pick is.
+    // `collapsedStranded` below narrows it to the collapsed case; this one does not, because the two
+    // readers want different scopes and gating once for both is how the override half went unheard.
+    const strandedNow = livePick ? strandedLevel(livePick) : '';
+    const collapsedStranded = !override ? strandedNow : '';
+    // The FACT, with no exit in it. `buildPick` rather than `pinnedModel`, so it names the model on
+    // a real override too — that is the half the collapse gate silently excluded.
+    const strandedFact = strandedNow
+      ? `${override || pinnedModel} doesn't accept ${effortLabel(strandedNow)}, so this turn runs `
+        + 'at the model default.'
+      : '';
+    // The fact PLUS the way out, for the open menu only. "The row below" is a real instruction
+    // there and a false one on the running chip, which draws a disabled Button with no menu behind
+    // it — pointing at a row nobody can reach and then saying to wait before changing anything, in
+    // consecutive sentences. Only the collapsed case needs it: on a real override the submenu marks
+    // the level itself, which is a better account than a sentence.
     const strandedWhy = collapsedStranded
-      ? `${pinnedModel} doesn't accept ${effortLabel(collapsedStranded)}, so this turn runs at the `
-        + 'model default. The row below clears the pick and puts the mode back on its assignment.'
+      ? `${strandedFact} The row below clears the pick and puts the mode back on its assignment.`
       : '';
     const buildChipLabel = override
       ? (pickedLevel ? `${override} · ${effortLabel(pickedLevel)}` : override)
@@ -1377,7 +1388,7 @@ window.SW = window.SW || {};
                     // loses `· High` and says only which model is running.
                     title: [
                       buildBarred ? lockNote(buildPick) : pinWhy,
-                      buildBarred ? '' : strandedWhy,
+                      buildBarred ? '' : strandedFact,
                       `This turn is running on ${buildLabel}. Wait for it to finish to change the model.`,
                     ].filter(Boolean).join(' '),
                   },
@@ -1448,9 +1459,19 @@ window.SW = window.SW || {};
                     // the paragraphs above do not cover, because it is a claim about the ASSIGNMENT
                     // rather than about the pick.
                     const pinnedEffort = (catalog && catalog[`${pinnedSlot}_effort`]) || null;
-                    const levelWhy = !override && pickedLevel && pickedLevel !== pinnedEffort
-                      ? `This pick runs ${pinnedModel} at ${effortLabel(pickedLevel)}, not at `
-                        + "the assignment's level. The row below clears it."
+                    // Compared as EFFECTIVE levels, not on whether a level was chosen. A collapsed
+                    // pick that names NO level still overrides — the router answers
+                    // `plan-override … effort=None` where the slot would have answered its assigned
+                    // level — and that is the commoner shape of all: pick a model, leave levels
+                    // alone. Gating on `pickedLevel` covered only the half where somebody had
+                    // touched a level, which is the rarer one.
+                    //
+                    // Not while stranded: that has its own sentence, and both would name the same
+                    // gap twice with different causes.
+                    const levelWhy = !override && livePick && !collapsedStranded
+                      && (pickedLevel || null) !== pinnedEffort
+                      ? `This pick runs ${pinnedModel} at ${effortLabel(pickedLevel || null)}, not `
+                        + `at the assignment's ${effortLabel(pinnedEffort)}. The row below clears it.`
                       : '';
                     // All three joined rather than any of them winning. Behind a `||` the pin
                     // suppressed whichever level sentence applied — and it was the COMMONER one,

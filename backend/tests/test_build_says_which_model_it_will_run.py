@@ -538,7 +538,7 @@ def test_a_pick_matching_the_assignments_own_level_claims_no_difference():
     _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::medium"}, {"mode": "plan"}])
 
     assert row["label"] == f"{PLAN_MODEL} · Medium"
-    assert "not at the assignment's level" not in (row["why"] or "")
+    assert "not at the assignment's" not in (row["why"] or "")
 
 
 def test_a_pick_differing_from_the_assignment_still_says_so():
@@ -547,7 +547,7 @@ def test_a_pick_differing_from_the_assignment_still_says_so():
     _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::high"}, {"mode": "plan"}])
 
     assert row["label"] == f"{PLAN_MODEL} · High"
-    assert "not at the assignment's level" in row["why"]
+    assert "not at the assignment's Medium" in row["why"]
 
 
 def test_a_stranded_level_is_still_accounted_for_while_a_turn_runs():
@@ -566,6 +566,58 @@ def test_a_stranded_level_is_still_accounted_for_while_a_turn_runs():
     assert row["disabled"] is True
     assert "doesn't accept High" in row["why"]
     assert "This turn is running on" in row["why"]
+
+
+def test_a_stranded_level_on_a_real_override_is_accounted_for_mid_turn_too():
+    """The override half of the running-turn sentence, which the collapse gate silently excluded.
+
+    `collapsedStranded` is `!override`-gated, so the sentence existed only for a pick naming the
+    mode's own model. A stranded level on an ordinary override got nothing mid-turn: no receipt on
+    the label, no submenu (the running branch draws a disabled Button), no sentence.
+
+    Its twin passes because ITS fixture is the collapsed case. Fixing one side of a pair and leaving
+    the other is the third time on this ticket — so this asserts the side that was unwitnessed.
+    """
+    *_, row = _drawn([{"mode": "implement",
+                       "seedPick": {"model": PLAN_MODEL, "effort": "high"}},
+                      {"mode": "implement", "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]},
+                       "running": True}])
+
+    assert row["disabled"] is True
+    assert f"{PLAN_MODEL} doesn't accept High" in row["why"]
+
+
+def test_the_running_tooltip_points_at_no_row_it_cannot_reach():
+    """The running chip has no menu behind it, so the open menu's exit sentence is false there.
+
+    Joined verbatim it produced two consecutive sentences telling the person to use a row they
+    cannot reach and then to wait before changing anything. The FACT travels to both chips; the way
+    out belongs only where there is one.
+    """
+    *_, row = _drawn([{"mode": "plan", "seedPick": {"model": PLAN_MODEL, "effort": "high"}},
+                      {"mode": "plan", "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]},
+                       "running": True}])
+
+    assert "doesn't accept High" in row["why"]
+    assert "The row below" not in row["why"]
+    # And the open menu still carries it, because there the row is real.
+    (open_row,) = _drawn([{"mode": "plan", "seedPick": {"model": PLAN_MODEL, "effort": "high"},
+                           "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]}}])
+    assert "The row below clears the pick" in open_row["why"]
+
+
+def test_a_collapsed_pick_with_no_level_still_differs_from_an_assignment_that_has_one():
+    """The commoner shape of all — pick a model, leave levels alone — and it had no sentence.
+
+    A collapsed pick that names NO level still overrides: the router answers
+    `plan-override … effort=None` where the slot would have answered its assigned `medium`. Gating
+    the sentence on a level having been CHOSEN covered only the rarer half, where somebody had
+    touched one.
+    """
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::default"}, {"mode": "plan"}])
+
+    assert row["label"] == PLAN_MODEL
+    assert "at Model default, not at the assignment's Medium" in row["why"]
 
 
 def test_none_is_a_level_and_survives_the_whole_write_path():
@@ -756,7 +808,9 @@ def test_a_pick_that_collapses_still_names_the_level_it_runs_at():
     # And the tooltip accounts for it, because the menu cannot: the way-back row is marked and
     # carries no submenu (#310), so this is the only place the level can be explained or its exit
     # named. The stranded twin had a sentence from the start; this, the commoner case, had none.
-    assert "at High, not at the assignment's level" in row["why"]
+    # Names the assignment's actual level, not a generic "the assignment's level" — the person
+    # comparing two numbers should not have to open the drawer to learn the second one.
+    assert "at High, not at the assignment's Medium" in row["why"]
     assert "clears it" in row["why"]
 
 
