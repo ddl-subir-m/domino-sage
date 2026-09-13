@@ -93,15 +93,17 @@ for, what you proposed, which steps ran.
   wrong one: `tsc -p tsconfig.json` points at a solution file that lists no inputs, so it compiles
   zero files and passes whatever you wrote — run it and you will tell the user the app is clean
   while it is broken. Write the code and end the turn; the real result comes back to you.
-- **Read git history with `--oneline`; never print a commit header.** Use `git log --oneline`,
-  `git log --format="%h %s"`, or — for the files one commit touched — `git show --stat --format=`.
-  Plain `git log`, `git show` and `git blame -e` print the commit header, whose
-  author line carries an email address. Everything a command prints is sent back up on the step
-  after it, and a step carrying an email address is refused outright: the turn stops there,
-  whatever you had not written yet is lost, and the person is told only that a tool read
-  something. It is the header that does this and not one command, so reaching for
-  another way to print one fails the same way.
-  `git status --short`, `git diff`, and `git blame` without `-e` carry no header and are fine.
+- **Read git history without printing an email address.** Everything a command prints is sent back
+  up on the step after it, and a step carrying an email address is refused outright: the turn stops
+  there, whatever you had not written yet is lost, and the person is told only that a tool read
+  something. What you are avoiding is the ADDRESS — not one command and not one flag — so before
+  you run anything that reads history, work out what it will actually print.
+  These print none, and answer most questions: `git log --oneline`, `git log --format="%h %s"`,
+  `git show --stat --format=` for the files one commit touched, `git status --short`, `git diff`.
+  Two routes put an address there, and they are different routes. Plain `git log` and `git show`
+  print the commit header, whose author line carries one. `git blame` prints no header, but every
+  flag that asks it for the author's address — `-e`, its long form `--show-email`, `--porcelain`,
+  `--line-porcelain` — puts one on every line it emits.
 - **Do not touch `src/appLlm.ts` or `src/appLlm.config.ts` either.** {assistantName} owns both and
   rewrites them: they hold which language model this app calls, which is chosen in {assistantName}
   rather than in code. Import from them, never edit them. If no model has been chosen,
