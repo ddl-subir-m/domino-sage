@@ -15254,6 +15254,15 @@ class Orchestrator:
                 "effort": getattr(live, f"{slot}_effort"),
                 "default_effort": getattr(defaults, f"{slot}_effort"),
                 "assigned": bool((overrides.get(slot) or {}).get("model")),
+                # The model the FILE names, beside the boolean drawn from it. The panel needs it to
+                # say "assigned to the model that is also the default" without inferring that pin
+                # from `model` and `default` being equal — those two are not read from the same
+                # place. `assigned` is fresh out of `saved.rows`; `model` is `live`, which the
+                # comment on `_unreadable` below says is rebuilt at boot and on save and not when
+                # the file moves underneath it. In that gap a bad merge assigning `coder` reports
+                # `assigned: true` with a stale `model` still equal to `default`, and a panel
+                # reading the equality alone would state a pin to the wrong model (#299).
+                "assigned_model": (overrides.get(slot) or {}).get("model"),
                 # Ranked here and in the loop below; the precedence comment on that loop is where
                 # all four kinds are placed against each other.
                 "problem": shadowed.get(slot) or unreadable.get(slot),

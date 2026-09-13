@@ -23,6 +23,8 @@ const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
 // Three slots, and `ask` deliberately holding the same model as `plan`: the panel lists SLOTS, not
 // models, so unlike the override menu it must draw that as two rows rather than collapsing them.
 const DEFAULTS = { plan: 'gpt-5.4', implement: 'coder', ask: 'gpt-5.4' };
+// Kept so a step that takes a slot's default away can put it back for the next one.
+const BASE_DEFAULTS = { ...DEFAULTS };
 // The deployment's own effort per slot. All null, as every deployment's are today: nothing outside
 // `model_overrides.json` writes a `<slot>_effort`, so "Use the default" on this control means no
 // field at all. Named anyway, because the panel reports `default_effort` beside `effort` and a
@@ -109,7 +111,16 @@ const json = (body, status = 200) => ({
   text: async () => JSON.stringify(body),
 });
 
-const model = (slot) => (overrides[slot] || {}).model || DEFAULTS[slot];
+// The shim's catalog, which is NOT a view of the file. `service.model_assignments` reads `live`
+// here and `saved.rows` for `assigned`, and the catalog is rebuilt at boot and on save and not when
+// the file moves underneath it — so a committed `model_overrides.json` arriving in an open Builder
+// puts the two out of step. `stale` is the only way to express that here: without it `model` and
+// `assigned` are both derived from `overrides`, the two agree by construction, and the one state
+// where a row can claim a pin the file does not hold has no expression in this file at all (#299).
+const staleModels = {};
+const model = (slot) => staleModels[slot] || (overrides[slot] || {}).model || DEFAULTS[slot];
+// What the FILE names, read fresh, which is the half `assigned` has always been the boolean of.
+const assignedModel = (slot) => (overrides[slot] || {}).model || null;
 const effort = (slot) => (overrides[slot] || {}).effort || DEFAULT_EFFORTS[slot];
 const status = () => ({
   model: {
@@ -137,7 +148,10 @@ const panel = () => ({
     effort: effort(slot), default_effort: DEFAULT_EFFORTS[slot],
     // The MODEL inside the entry, not the entry's presence: since ADR-0049 a row can exist carrying
     // a level alone, with its model still following the deployment default.
-    assigned: Boolean((overrides[slot] || {}).model),
+    assigned: Boolean(assignedModel(slot)),
+    // Beside the boolean since #299: the panel may not infer the pin from `model` and `default`
+    // being equal, because those two can be equal only because `model` is stale.
+    assigned_model: assignedModel(slot),
     shadowed: shadow(slot) !== null,
     // Preflight's verdict, which the server recomputes on every read — so a slot assigned to a
     // model that will not answer reports it the moment the panel re-reads after the save.
@@ -277,6 +291,19 @@ for (const step of steps) {
   // saved legally, under a model that stopped accepting it afterwards, because the deployment
   // default moved or that alias was probed (`service._effective_catalog` names both).
   for (const [slot, entry] of Object.entries(step.seed || {})) overrides[slot] = entry;
+  // `{ "stale": { "plan": "gpt-5.4" } }` — the catalog still holding an older model for that slot
+  // while `seed` has already moved the file. Set per step rather than accumulated, so a later step
+  // in the same run is the re-read that closes the gap.
+  for (const slot of Object.keys(staleModels)) delete staleModels[slot];
+  Object.assign(staleModels, step.stale || {});
+  // `{ "noDefault": ["plan"] }` — a slot the deployment catalog names no default for. No deployment
+  // produces it today, which is the reason it is expressible here: the detail line's claim about a
+  // pin is only safe because the gate above it already requires a default, and a rule holding for a
+  // reason stated in a DIFFERENT conjunct is the shape that breaks when somebody widens that
+  // conjunct (#287 was two gates that were equal conditions until one moved). This lets a test hold
+  // the neighbour still.
+  for (const slot of Object.keys(DEFAULTS)) DEFAULTS[slot] = BASE_DEFAULTS[slot];
+  for (const slot of step.noDefault || []) DEFAULTS[slot] = null;
   sensitivity = step.sensitivity || null;
   signingSlot = step.signing || null;
   unreadableSlots = step.unreadable || [];
