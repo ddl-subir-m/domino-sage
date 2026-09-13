@@ -926,17 +926,20 @@ def test_a_row_assigned_away_from_the_default_still_names_what_it_left():
     assert drawn["details"] == ["Default is coder."]
 
 
-def test_a_row_whose_file_moved_under_a_stale_catalog_claims_no_pin():
-    """The skew the server cannot rule out, so the sentence has to. `assigned` is a fresh read of
+def test_a_row_whose_file_moved_under_a_stale_catalog_names_the_file_model_and_the_gap():
+    """The skew the server cannot rule out, so the row has to. `assigned` is a fresh read of
     `model_overrides.json` while `model` is the shim catalog, which is rebuilt at boot and on save
     and not when the file moves underneath it — so a committed file arriving in an open Builder
-    assigns `coder` while the catalog still holds `gpt-5.4`, and `model` equals `default` for a
-    reason that has nothing to do with a pin. Reading that equality alone drew "Assigned to gpt-5.4,
-    which is also the current default", of which both halves are false. The row falls back to the
-    older line instead: it names the default and claims nothing about the assignment."""
+    assigns `coder` while the catalog still holds `gpt-5.4`. Reading `current.model` made the select
+    name `gpt-5.4`, which is the model the next turn will not run. Silently switching the select
+    would leave the row unexplained, so the select shows the file model and the line names the stale
+    catalog. The level control also cannot keep offering levels for `gpt-5.4` under a select that
+    now reads `coder`."""
     (drawn,) = _drawn([{"seed": {"plan": {"model": "coder"}}, "stale": {"plan": "gpt-5.4"}}])
-    assert _row(drawn, "Plan")["value"] == "gpt-5.4"
-    assert drawn["details"] == ["Default is gpt-5.4."]
+    assert _row(drawn, "Plan")["value"] == "coder"
+    assert drawn["details"] == [
+        "Saved as coder. This Builder still has old details for gpt-5.4."]
+    assert _effort_row(drawn, "Plan") is None
 
 
 def test_the_re_read_that_closes_the_gap_gets_the_sentence_back():
@@ -947,6 +950,7 @@ def test_the_re_read_that_closes_the_gap_gets_the_sentence_back():
         {"seed": {"plan": {"model": "gpt-5.4"}}, "stale": {"plan": "coder"}},
         {"seed": {"plan": {"model": "gpt-5.4"}}},
     ])
+    assert _row(caught_up, "Plan")["value"] == "gpt-5.4"
     assert caught_up["details"] == [
         ("Assigned to gpt-5.4, which is also the current default. "
          "This slot stays on it if the default changes."),
