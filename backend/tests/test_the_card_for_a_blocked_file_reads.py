@@ -340,11 +340,17 @@ def test_the_promise_not_to_alter_anything_holds_at_every_size_of_a_set_with_no_
         said = _text(_render(_card(carriers=carriers, surviving=0)))
         assert promise in said, carriers
 
-    # A set with a file in it is #292's arm, and this pins the boundary rather than blessing that
-    # arm: the clause says Sage can name no file for what it matched, which is the one thing a
-    # named file makes false. What that arm should say instead is not this ticket's to decide, so
-    # what is checked here is that it was not quietly re-derived on the way past.
-    for carriers in ([FILE], [FILE, TEXT], [FILE, EXPORT]):
+    # An ALL-file set bounds the widening: every carrier there is nameable, so the clause's first
+    # half is false of every one of them and its absence is the thing to hold.
+    #
+    # A MIXED set is deliberately not a member. The clause is false of the file and the promise is
+    # true of the message, so asserting the whole clause absent would pin the promise's absence as
+    # correct on the one payload where the person's own words are at stake — and the receipt for
+    # that same click says "Nothing was changed or deleted" whatever was withheld. That gap is
+    # #337, filed rather than fixed: separating the promise from the file clause rewrites prose
+    # #292 landed, which this ticket is barred from re-deriving. Left unpinned so #337 has nothing
+    # green to overturn.
+    for carriers in ([FILE], [FILE, EXPORT]):
         said = _text(_render(_card(carriers=carriers, surviving=0)))
         assert "not in a file Sage can name" not in said, carriers
         assert "Sage won't change" not in said, carriers

@@ -990,6 +990,13 @@ window.SW = window.SW || {};
     // never what the clause is about: "no file Sage can name" is as true of five non-file carriers
     // as of one, and every population `withhold.py`'s `_text_label` names — a typed message, an
     // earlier answer, `bash cat`'s pathless rows — satisfies it whatever it arrives beside.
+    //
+    // Still one condition narrow, and that is a recorded GAP rather than a decision: a named file
+    // BESIDE a typed message withholds the promise, because the clause is gated on what a carrier
+    // arrives next to. `RecallWithheld` below says "Nothing was changed or deleted" for that same
+    // click unconditionally, so the card is quieter before the click than the receipt is after it.
+    // Not widened here: "not in a file Sage can name" is false of the file, so the promise has to
+    // come apart from the file clause first, and that prose is #292's. Filed as #337.
     const noFileToName = !carriers.some((c) => c.is_file);
     // What the button acts on, read off the carriers rather than counted. Counting them and
     // calling whatever turned up "files" is what put "Stop sending these files" under a set
