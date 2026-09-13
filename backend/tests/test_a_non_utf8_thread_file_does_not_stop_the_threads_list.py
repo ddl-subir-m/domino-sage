@@ -16,6 +16,8 @@ The bytes here are real, not a mocked exception. A mock proves the handler runs;
 """
 from __future__ import annotations
 
+import ast
+import collections
 import json
 from pathlib import Path
 
@@ -188,11 +190,14 @@ def test_a_non_utf8_legacy_index_is_left_alone_rather_than_read_as_empty(
 def test_a_non_utf8_samples_file_reads_as_nothing_shared(tmp_path: Path):
     """The site #326 sent this pass to visit, aimed at the reader that actually runs.
 
-    `service.py:9321`'s `_shared_samples` does carry the narrow pair over `SAMPLES_PATH`, but that
-    definition is unreachable: a SECOND `_shared_samples` further down the same class shadows it,
-    so widening its catch would have been theatre. `_shared` is what reads that file, through
-    `_read_json`, which already takes `ValueError` — so this asserts the behaviour rather than
-    claiming the site was fixed. The shadowing itself is a live defect and is filed separately.
+    #326 found `_shared_samples` carrying the narrow pair over `SAMPLES_PATH` and left it, because a
+    second `_shared_samples` shadowed it and widening dead code is theatre. #330 removed the
+    shadowing — the name now resolves to that definition — so the gap the canary below was watching
+    for opened, and this asserts BOTH readers of that one file rather than only the one that ran.
+
+    `_shared_samples` is on the Live read path. An escaping `UnicodeDecodeError` there takes out the
+    turn, where the same bytes cost `_shared` one answer, so the two readers are not equally
+    forgiving and both are checked.
     """
     _needs_utf8_locale(tmp_path)
     from sage.orchestrator.service import SAMPLES_PATH
@@ -201,22 +206,246 @@ def test_a_non_utf8_samples_file_reads_as_nothing_shared(tmp_path: Path):
     project = orch.project(start_preview=False)
     samples = project.workspace.path / SAMPLES_PATH
     samples.parent.mkdir(parents=True, exist_ok=True)
+
+    # A positive control first. Every assertion below is the FAIL-CLOSED value, which is also what
+    # both readers answer if `SAMPLES_PATH` moved, if these bytes landed in the wrong directory, or if
+    # they stopped reading the file at all. So the readers are shown a file they must react to before
+    # they are shown one they must survive.
+    samples.write_text(json.dumps({"tables": [{"name": "DWH.MARTS.ORDERS", "columns": ["ID"],
+                                               "rows": [[1]]}]}))
+    assert [s.rows.table for s in orch._shared(project)] == ["DWH.MARTS.ORDERS"]
+    assert [t for _, t in orch._shared_samples(project)] == ["DWH.MARTS.ORDERS"]
+
     samples.write_bytes(NOT_UTF8)
 
     assert orch._shared(project) == []
+    assert orch._shared_samples(project) == ()
 
 
-def test_the_dead_shared_samples_is_still_shadowed(tmp_path: Path):
-    """Pins the reason the site above was not edited. The day this reddens, `service.py:9321` is
-    reachable again and its narrow catch is a real gap — fix it then, not before."""
-    import inspect
+def test_a_non_utf8_samples_file_does_not_stop_a_live_read_turn(tmp_path: Path):
+    """The cost of the same bytes at the seam that decides, rather than at the reader alone.
 
-    from sage.orchestrator.service import Orchestrator
+    `_live_read_turn_for` calls `_shared_samples` while building the Turn, so a reader that lets
+    `UnicodeDecodeError` out does not degrade one grant — it fails the whole turn before the person's
+    read is even attempted. Driven through the Turn, because that is the caller whose failure is not
+    recoverable.
+    """
+    _needs_utf8_locale(tmp_path)
+    from sage.orchestrator.service import SAMPLES_PATH
+    from sage.workspace.threads import ThreadStore
 
-    _, line = inspect.getsourcelines(Orchestrator._shared_samples)
-    # On the resolved LINE, not on the docstring: prose is reworded by people who have not changed
-    # anything, and a real un-shadowing that happened to keep the same opening sentence would slip
-    # through. The number is the fact — the dead definition sits above it, near 9321.
-    assert line > 10000, (
-        f"_shared_samples now resolves to line {line}; if that is the definition near 9321, its "
-        "narrow catch over SAMPLES_PATH is reachable again and is a real gap (#330)")
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    samples = project.workspace.path / SAMPLES_PATH
+    samples.parent.mkdir(parents=True, exist_ok=True)
+    thread = str(ThreadStore(project.record.path).create("A conversation")["id"])
+
+    # The same positive control, for the same reason: `shared == ()` is what an empty Turn carries too,
+    # so the Turn is shown a readable record first. Named, not just non-empty — `!= ()` passes for an
+    # empty list, or for some other table left behind in the record, neither of which shows that the
+    # bytes written here are what the Turn read.
+    samples.write_text(json.dumps({"tables": [{"name": "DWH.MARTS.ORDERS", "columns": ["ID"],
+                                               "rows": [[1]]}]}))
+    assert [t for _, t in orch._live_read_turn_for(thread).shared] == ["DWH.MARTS.ORDERS"]
+
+    samples.write_bytes(NOT_UTF8)
+
+    assert orch._live_read_turn_for(thread).shared == ()
+
+
+def _extends_the_previous(node: ast.AST, name: str) -> bool:
+    """Whether a decorator reaches THROUGH the previous binding — `@v.setter`, `@f.register`.
+
+    An attribute access rooted at the name is the descriptor and dispatch pattern: `v.setter` asks the
+    property object built by the earlier `def` for its setter, so that `def` is alive and the pair is
+    deliberate.
+
+    MENTIONING the name is not enough, which is where a looser version of this rule was wrong.
+    `@functools.wraps(f)` passes the earlier function as an ARGUMENT and rebinds the name to a new
+    one; the earlier body is then unreachable, which is the defect this sweep is for. So the name has
+    to be the root of an attribute access, not merely somewhere in the decorator expression.
+
+    Asking what the decorator reaches for beats an allowlist of decorator names, which leaked twice
+    under review — `property`/`setter`/`deleter`, `overload`, `singledispatch`, `cached_property`, and
+    whatever arrives next.
+    """
+    for dec in getattr(node, "decorator_list", []):
+        while isinstance(dec, ast.Call):
+            dec = dec.func
+        if not isinstance(dec, ast.Attribute):
+            continue
+        root = dec
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if isinstance(root, ast.Name) and root.id == name:
+            return True
+    return False
+
+
+def _is_overload(node: ast.AST) -> bool:
+    """`@overload`, whose stubs are consumed by the typing system rather than by later code.
+
+    `typing.overload` and a bare `overload` both count.
+    """
+    for dec in getattr(node, "decorator_list", []):
+        while isinstance(dec, ast.Call):
+            dec = dec.func
+        if (dec.attr if isinstance(dec, ast.Attribute) else getattr(dec, "id", "")) == "overload":
+            return True
+    return False
+
+
+def _shadowed_in(body: list, where: str) -> list[str]:
+    """Names defined more than once in ONE statement list, where a later definition kills an earlier.
+
+    Judged over ALL of a name's definitions rather than by dropping one as it is read: a plain
+    `def value` followed by `@property def value` leaves the plain one dead, and skipping the decorated
+    one would hide #330's own shape behind a decorator.
+
+    Overload STUBS are removed and the rule is applied to what is left, rather than the name being
+    exempted because a stub exists. Exempting the name hides a third `def f` sitting after a legitimate
+    overload group — a dead duplicate, exactly this sweep's subject, behind an exemption meant for
+    something else.
+    """
+    defs: dict[str, list[ast.AST]] = collections.defaultdict(list)
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defs[node.name].append(node)
+    out = []
+    for name, found in defs.items():
+        real = [n for n in found if not _is_overload(n)]
+        if len(real) < 2:
+            continue
+        # Every definition after the first has to reach through what came before it. One that does not
+        # is the point where an earlier definition stopped being reachable.
+        if all(_extends_the_previous(n, name) for n in real[1:]):
+            continue
+        out.append(f"{where}: {name} at {[n.lineno for n in real]}")
+    return out
+
+
+def _statement_lists(tree: ast.AST):
+    """Every statement list in the file, so nesting is swept and not just the two outermost scopes.
+
+    A duplicate inside ONE list is always a shadow. Separate lists are never compared, which is what
+    keeps a legitimate conditional definition — the same name under `if` and under `else`, or under
+    `try` and `except ImportError` — from reading as one. That is also this sweep's stated limit: two
+    definitions in DIFFERENT lists, such as one under `if TYPE_CHECKING:` and one at module level, are
+    not compared and are not found. What nesting buys is the duplicate WITHIN a nested body — inside a
+    function, or inside a `TYPE_CHECKING` block — which the outermost two scopes miss entirely.
+    """
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            value = getattr(node, field, None)
+            if isinstance(value, list) and any(isinstance(v, ast.stmt) for v in value):
+                yield value
+
+
+# One source carrying a case per CONDITION: three shadows that must be reported, and three
+# deliberate patterns beside them that must not be. A probe holding only one shadow proves the
+# exemptions do not over-fire and says nothing about whether one of them is too WIDE.
+_DETECTOR_PROBE = """
+import functools
+from typing import overload
+
+class C:
+    @property
+    def kept(self): return 1
+    @kept.setter
+    def kept(self, v): self._v = v
+
+    @functools.singledispatchmethod
+    def dispatched(self, x): return x
+    @dispatched.register
+    def dispatched(self, x: int): return x + 1
+
+    @overload
+    def stubbed(self, x: int) -> int: ...
+    @overload
+    def stubbed(self, x: str) -> str: ...
+    def stubbed(self, x): return x
+
+    def plain_pair(self): return 1
+    def plain_pair(self): return 2
+
+    def then_property(self): return 1
+    @property
+    def then_property(self): return 2
+
+    @overload
+    def after_overload(self, x: int) -> int: ...
+    def after_overload(self, x): return x
+    def after_overload(self, x): return 0
+"""
+
+
+def test_the_shadowing_detector_still_detects():
+    """A plant per condition, kept in the file rather than run once by hand (#330).
+
+    The sweep below asserts that a list is empty. Empty is also what the detector returns when its
+    `isinstance` tuple loses a member, when the statement-list field names go stale, or when an
+    exemption grows too wide — and the test then goes on being green under a name saying nothing in the
+    backend is shadowed. So the detector is asked a question whose answer is known.
+
+    Asserted as an exact set, not a count, because three of these conditions are shadows and three are
+    deliberate: a count alone cannot tell a missed shadow from a newly false accusation.
+
+    `after_overload` is the one a per-NAME overload exemption misses. Two real definitions sit after
+    the stub, the second killing the first, and exempting the whole name because a stub exists hides it.
+    """
+    found = []
+    for body in _statement_lists(ast.parse(_DETECTOR_PROBE)):
+        found += _shadowed_in(body, "probe")
+
+    assert sorted(f.split(": ")[1].split(" at ")[0] for f in found) == [
+        "after_overload", "plain_pair", "then_property"], f"the detector reported {found}"
+
+
+def test_no_definition_in_the_backend_is_shadowed_by_a_later_one():
+    """Replaces the canary that pinned the shadowing, and widens it (#330, criterion 5).
+
+    That canary asserted `_shared_samples` still resolved BELOW line 10000 — it pinned the defect in
+    place so the dead site would not be widened for nothing, and it did its job: it reddened the
+    moment the shadowing was removed. Pinning it any longer would pin the bug.
+
+    What replaces it asks the general question, because one shadowed definition that nothing reports
+    is unlikely to be the only one. `ruff --select F811` is NOT that report: measured on this very
+    file, it catches a duplicate method five lines apart, a duplicate at either end of a 6,000-method
+    class, and a `turn_busy` injected deliberately — and it misses a `_shared_samples` planted inside
+    `class Orchestrator`, for a reason nobody has found. So the evidence comes from the AST, where a
+    duplicate name in one statement list is a fact and not a heuristic.
+
+    `tests/` is swept beside `sage/`, because a test function shadowed by a later one of the same name
+    is a test that silently never runs — the same defect, and harder to notice.
+
+    Names bound twice by an `Assign` are not flagged: rebinding a name is ordinary Python. Two `def`s
+    of one name in one statement list, the later one building on nothing, is the defect class.
+    """
+    root = Path(__file__).resolve().parent.parent
+    shadowed: list[str] = []
+    scanned: dict[str, int] = {}
+    for sub in ("sage", "tests"):
+        for path in sorted((root / sub).rglob("*.py")):
+            # Bytes, not `read_text()`. This file's whole subject is that `read_text()` decodes in the
+            # LOCALE's encoding, and `ast.parse` honours a source encoding declaration itself.
+            try:
+                tree = ast.parse(path.read_bytes())
+            except SyntaxError as e:
+                # Named, or an unparseable file reds a test about encodings with no hint of which file
+                # is at fault. Raised rather than skipped: nothing in here should fail to parse.
+                raise AssertionError(f"{path.relative_to(root)} does not parse: {e}") from e
+            scanned[sub] = scanned.get(sub, 0) + 1
+            # Relative to the backend root, because basenames repeat in here — `service.py` alone is
+            # two files — and a duplicate reported by basename does not say which one to open.
+            for body in _statement_lists(tree):
+                shadowed += _shadowed_in(body, str(path.relative_to(root)))
+
+    # A floor PER ROOT, because `shadowed == []` over nothing at all passes, and a sweep that reached
+    # no files reads exactly like a sweep that found nothing wrong. Per root rather than on the total:
+    # `tests/` is four times the size of `sage/`, so a single total floor is cleared by `tests/` alone
+    # and would say nothing about whether `sage/` — the tree this ticket is about — was opened.
+    assert scanned.get("sage", 0) > 50 and scanned.get("tests", 0) > 200, (
+        f"this swept {scanned}; it is not reaching the trees it names")
+    assert shadowed == [], (
+        "a definition is shadowed by a later one of the same name in the same statement list; the "
+        f"second wins and the first is dead, exactly as #330's `_shared_samples` was — {shadowed}")

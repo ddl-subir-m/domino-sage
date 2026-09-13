@@ -9395,12 +9395,25 @@ class Orchestrator:
 
         Fails closed on anything unreadable, exactly as `parse_samples` does: no shared tables means
         the assistant is shown nothing it was not certainly given.
+
+        Read through `_shared` rather than off the file, for BOTH of the things `_shared` adds (#330).
+
+        It attributes an entry that names no Binding — one written before #33 — to the first Data
+        Source, "the one the picker read from when there was no other". `values_allowed` is tolerant
+        on the Binding, so an unattributed entry matches whatever store it is asked about: read raw,
+        a table shared out of the warehouse before #33 grants its rows in the app database too, out
+        of a store the creator never shared from. Attribution is what makes that tolerance safe, and
+        it belongs on both readers of this file or only one of them is right.
+
+        And it reads through `_read_json`, which takes `ValueError`, where this site had a narrow
+        `(OSError, json.JSONDecodeError)` of its own (#303, #326). A samples file that is not UTF-8
+        raises `UnicodeDecodeError`, a SIBLING of `JSONDecodeError` under `ValueError`, and escaped
+        that pair. #326 found this site and left it deliberately, because a second `_shared_samples`
+        shadowed this one and widening dead code is theatre; un-shadowing is what made both gaps real.
+        `_live_read_turn_for` calls this while building the Turn, so an escaping error would fail the
+        turn rather than cost the grant one answer.
         """
-        try:
-            raw = json.loads((project.workspace.path / SAMPLES_PATH).read_text())
-        except (OSError, json.JSONDecodeError):
-            return ()
-        return tuple((s.binding, s.rows.table) for s in parse_samples(raw))
+        return tuple((s.binding, s.rows.table) for s in self._shared(project))
 
     def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
         """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`.
@@ -17069,11 +17082,18 @@ class Orchestrator:
             return shared
         return [s if s.binding else replace(s, binding=first.id) for s in shared]
 
-    def _shared_samples(self, project: Project) -> list[tuple[str, list[str]]]:
+    def _shared_samples_by_store(self, project: Project) -> list[tuple[str, list[str]]]:
         """The shared tables per store, for the AGENTS.md region.
 
         Grouped in Binding order rather than in file order, so the section reads in the same order as
         the store sections above it.
+
+        Named apart from `_shared_samples` rather than beside it (#330). This was a SECOND
+        `_shared_samples` on this class, and it shadowed the Live read grant's one — same name, two
+        different questions, and the grant was handed `(store, [tables])` where it unpacks
+        `(binding, table)`. Nothing reported it: `ruff --select F811` catches a duplicate method
+        elsewhere in this very file and misses this pair, for a reason nobody has found. So the
+        names have to differ, and a reader has to be able to tell which answer they are asking for.
         """
         shared = self._shared(project)
         bindings = [b for b in parse_bindings(project.workspace.read_bindings())
@@ -19209,7 +19229,7 @@ class Orchestrator:
             # next turn (#203). `catalog_problems` above is the static half — a catalog that does
             # not hold together — and this is the half only running the query can find.
             failing=self._query_failures(project),
-            samples=self._shared_samples(project),
+            samples=self._shared_samples_by_store(project),
             names=project.workspace.helpers,
             # Only asked when nothing is bound, which is the only case it changes.
             reaching=not bindings and self._reaches_for_a_store(project, module),
