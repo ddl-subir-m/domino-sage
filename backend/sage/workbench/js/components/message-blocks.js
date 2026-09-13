@@ -979,6 +979,30 @@ window.SW = window.SW || {};
 
     const survives = (block.surviving || 0) > 0;
     const onlyText = carriers.length === 1 && !carriers[0].is_file;
+    // What the button acts on, read off the carriers rather than counted. Counting them and
+    // calling whatever turned up "files" is what put "Stop sending these files" under a set
+    // holding none, in this arm and in the `survives` one alike (#292).
+    //
+    // Three label populations arrive here, not two: `withhold.py`'s `_text_label` names a non-file
+    // carrier "the message you sent", "an earlier answer in this conversation", OR "something a
+    // tool read" — rows a turn fetched through `bash cat` or `grep`, which carry no path and so no
+    // `is_file`. "These messages" would therefore be this same bug one word over. The card cannot
+    // separate the two on its own: the distinction is `Carrier.is_data`, and the row it is sent
+    // holds `key`, `label` and `is_file` only. So the bare demonstrative is not a shorthand for a
+    // better word — it is the only noun that is true of every set this branch can draw, which is
+    // the reason not to "improve" it into one of the three later.
+    //
+    // "Them" rather than "these" because the sentence above already ends "Stop sending them and
+    // this conversation will work again": the button and the prose become the same string, which
+    // is what the singular/plural note up there is asking for. The list of names renders directly
+    // above, so nothing is lost by the button not repeating them.
+    const noun = carriers.every((c) => c.is_file)
+      ? (carriers.length > 1 ? 'these files' : 'this file')
+      // The singular arm is unreachable while `onlyText` catches every one-carrier non-file set
+      // above. Written correct rather than left merely unreachable: this reads as the one rule for
+      // the button now, so folding `onlyText` into it is an edit someone will make, and the
+      // version that says "them" about a single thing would survive it silently.
+      : (carriers.length > 1 ? 'them' : 'it');
     return h('div', { className: 'sw-nudge' },
       h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
       h('div', { className: 'sw-nudge-main' },
@@ -996,9 +1020,9 @@ window.SW = window.SW || {};
                   // person reads a dead question and a button with no stated benefit (#288).
                   : "That was everything this turn read, so this question can't be answered "
                     + "from what's left. Stop sending "
-                    // Singular or plural with the button beneath, which counts carriers the same
-                    // way. Its NOUN is a separate, older question: it says "files" for a set that
-                    // holds none, in this arm and in the `survives` one alike (#292).
+                    // Singular or plural with the button beneath, which counts carriers the
+                    // same way — and, since #292, says the same word: any set that is not all
+                    // files puts this exact "them" on the button.
                     + (carriers.length > 1 ? 'them' : 'it')
                     + ' and this conversation will work again — ask something else'
                     // Only offer the attachment when a file is what went. The same branch draws
@@ -1014,13 +1038,15 @@ window.SW = window.SW || {};
                   type: 'primary', size: 'small',
                   loading: busy === 'withhold', disabled: !!busy,
                   onClick: run('withhold', () => SW.store.withholdContent(block)),
-                  // Names the thing, never "it": a destructive-sounding button that does not say
-                  // what it acts on is the one people refuse to press. "Continue without" is only
-                  // honest while something survives to continue WITH.
-                }, onlyText ? 'Stop sending that message'
-                  : carriers.length > 1
-                    ? (survives ? 'Continue without these files' : 'Stop sending these files')
-                    : (survives ? 'Continue without this file' : 'Stop sending this file')),
+                  // Names the thing: a destructive-sounding button that does not say what it
+                  // acts on is the one people refuse to press. The plural "them" is not an
+                  // exception to that — `...list` sets out the names two lines above it, and the
+                  // rule this was written against is a button standing alone with nothing on
+                  // screen to resolve it. "Continue without" is only honest while something
+                  // survives to continue WITH.
+                }, onlyText
+                  ? 'Stop sending that message'
+                  : (survives ? 'Continue without ' : 'Stop sending ') + noun),
                 h(Button, {
                   type: 'text', size: 'small', disabled: !!busy,
                   onClick: () => SW.store.dismissWithholdCard(block),

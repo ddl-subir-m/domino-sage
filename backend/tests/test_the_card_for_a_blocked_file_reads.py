@@ -19,6 +19,13 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is no
 
 FILE = {"key": "file:raw.csv", "label": "card_panel_transactions_RAW.csv", "is_file": True}
 TEXT = {"key": "text:abc123", "label": "the message you sent", "is_file": False}
+EXPORT = {"key": "file:export.csv", "label": "export.csv", "is_file": True}
+OLDER = {"key": "text:xyz789", "label": "an earlier answer in this conversation",
+         "is_file": False}
+# A turn that fetched rows through `bash cat` or `grep` leaves a carrier with no path, so no
+# `is_file` — and it is not a message either. The label population that rules out "messages"
+# as the word for a set holding no file.
+TOOL = {"key": "text:def456", "label": "something a tool read", "is_file": False}
 
 
 def _render(block: dict) -> dict:
@@ -119,6 +126,66 @@ def test_several_carriers_are_all_named():
     said = _text(r)
     assert "card_panel_transactions_RAW.csv" in said and "export.csv" in said
     assert _buttons(r)[0]["act"] == "withhold:chat:file:raw.csv,file:export.csv"
+
+
+def _button_label(carriers: list[dict], surviving: int) -> str:
+    buttons = _buttons(_render(_card(carriers=carriers, surviving=surviving)))
+    assert buttons, "a label only means anything if the button is drawn at all"
+    return buttons[0]["text"]
+
+
+def test_the_button_takes_its_noun_from_the_carriers_not_from_how_many():
+    """#292. The label counted carriers and called whatever it found "files", so a set holding no
+    file at all read "Stop sending these files" — and "Continue without these files" in the other
+    arm, which counts the same way.
+
+    All three sets through the one button, in both arms, in one test. Three tests each asserting a
+    single label would all pass with the button never drawn, and that is how this breaks.
+    """
+    files, texts, mixed = [FILE, EXPORT], [TEXT, OLDER], [FILE, TEXT]
+
+    assert _button_label(files, 0) == "Stop sending these files"
+    assert _button_label(texts, 0) == "Stop sending them"
+    assert _button_label(mixed, 0) == "Stop sending them"
+
+    assert _button_label(files, 2) == "Continue without these files"
+    assert _button_label(texts, 2) == "Continue without them"
+    assert _button_label(mixed, 2) == "Continue without them"
+
+    for carriers in (texts, mixed):
+        for surviving in (0, 2):
+            assert "file" not in _button_label(carriers, surviving)
+
+
+def test_a_tool_s_rows_are_not_messages_either():
+    """Why the word is the bare "them" and not "these messages". `withhold.py`'s `_text_label`
+    names a non-file carrier three ways, and "something a tool read" is neither a file nor anything
+    a person would call a message. Naming this set "messages" would be #292 one word over.
+
+    The card cannot tell the two apart on its own: the row carries `is_file`, and the distinction
+    lives in `Carrier.is_data`, which is not sent to it.
+    """
+    assert _button_label([TOOL, OLDER], 0) == "Stop sending them"
+    assert _button_label([TOOL, FILE], 2) == "Continue without them"
+
+
+def test_the_button_and_the_sentence_above_it_never_disagree():
+    """The note above the pronoun asks the two to count the same way. On a plural set they now go
+    further and match word for word, so nobody is handed a second name for one set of things.
+
+    The singular pair agrees on number only — prose "it", button "this file" — and that is the
+    deliberate half: a lone carrier is worth naming, and the plural set has its names listed
+    immediately above the button instead.
+    """
+    said = _text(_render(_card(carriers=[FILE, TEXT], surviving=0)))
+    assert "Stop sending them and this conversation will work again" in said
+    assert _button_label([FILE, TEXT], 0) == "Stop sending them"
+
+    # And the singular arm, which nobody looks at: the prose drops to "it", so the button has to
+    # drop with it rather than keep a plural the sentence has already let go of.
+    one = _text(_render(_card(carriers=[FILE], surviving=0)))
+    assert "Stop sending it and this conversation will work again" in one
+    assert _button_label([FILE], 0) == "Stop sending this file"
 
 
 def _receipt(**over) -> dict:
