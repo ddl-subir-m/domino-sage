@@ -706,6 +706,18 @@ window.SW = window.SW || {};
     const scope = state.scope;
     const gen = ++scopeLoad;
     const projectGen = ++projectRead;
+    // A lock belongs to a PROJECT, so a switch does not inherit one. Dropped synchronously here,
+    // before the read that replaces it, for the same reason `dropSessionLock` drops a Conversation's
+    // — leaving the old answer standing is right when the read is about the SAME scope and wrong
+    // when it is about a different one, and nothing downstream can tell those apart.
+    //
+    // FOUND IN REVIEW of #294, where refusing to install the route's never-500 payload removed the
+    // one path that had been clearing this by accident: B's read failing would install A's absence,
+    // which cleared A's lock as a side effect of being wrong. With that gone, A's lock, A's approved
+    // whitelist and A's Dataset name would draw over B for as long as B's reads kept failing — and
+    // an approved list from another Project is the stale-"unlocked" direction wearing a lock, since
+    // a model B bars may be one A allows. The reject path had the same hole and always did.
+    state.sensitivity = null;
 
     const [resources, activity] = await Promise.all([
       SW.api.resources(scope.id),
@@ -3453,7 +3465,7 @@ window.SW = window.SW || {};
       // Beside the panel read, because this drawer is the one surface that draws every closed row
       // at once (ADR-0043): an administrator who has just added a model to the group is most likely
       // to be looking here, and a lock read on the last scope load would still be showing it out.
-      if (open) refreshSensitivity();
+      if (open) refreshSensitivity(scopeLoad);
       // And then keeps reading it, for as long as this stays open (#294). See `_watchAssignments`.
       if (open) store._watchAssignments();
       else stopAssignmentsWatch();
@@ -3548,7 +3560,11 @@ window.SW = window.SW || {};
         if (reading) return;
         reading = true;
         const done = () => { reading = false; };
-        refreshSensitivity(scopeLoad, { repairAppScope: !seen }).then(done, done);
+        // Returned, which `setInterval` ignores and the harness does not: `fire()` calls this
+        // function directly and awaits it to keep one tick's reads from overlapping the next's.
+        // Without the return it awaited an undefined and the serialisation its comment promised
+        // was silently absent (found in review).
+        return refreshSensitivity(scopeLoad, { repairAppScope: !seen }).then(done, done);
       }, 2000);
     },
 

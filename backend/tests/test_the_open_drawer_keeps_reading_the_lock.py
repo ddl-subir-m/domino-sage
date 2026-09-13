@@ -185,20 +185,30 @@ def test_a_pick_the_person_did_not_make_reaches_the_drawn_row():
     orchestrator with no human act, so the mirror stayed empty, `moved` stayed false, and the row
     went on drawing the pre-escalation model however fresh the store was.
 
-    The two rows below differ in nothing but who made the pick. That is the measurement: same lock,
-    same `slot_models`, same cadence, same ticks.
+    The two arms below differ in which CARRIER brings the pick, which since served-first is the only
+    difference there is left to make. The first version of this test set `pick` on the second arm and
+    changed nothing else — and because the fixture serves the flag off the escalation either way, the
+    two arms came back byte-identical and the docstring described a measurement that did not run.
+
+    They come back byte-identical STILL, and here that is the claim rather than a vacuum: both
+    carriers must reach the row, so identical output is what passing looks like. The difference is
+    in the path, not the answer, so it cannot be read off the report — it is shown by planting
+    instead. Removing the served branch reds this test; removing the mirror fallback reds it too.
+    Neither arm is along for the ride.
     """
-    orchestrator, person = _ticked([
+    served, mirror_only = _ticked([
+        # The orchestrator's, and #294 whole: the flag on the payload, nothing in the browser's
+        # mirror, because no human act ever wrote one.
         {"watch": "stream", "locked": True, "open": True, "ticks": 3},
-        {"watch": "stream", "locked": True, "open": True, "ticks": 3, "pick": "gpt-5.4"},
+        # The other carrier: a payload with no flag at all, and a pick the person made through the
+        # composer sitting in the mirror. The only state the fallback still answers for.
+        {"watch": "stream", "locked": True, "open": True, "ticks": 3,
+         "pick": "gpt-5.4", "servesPick": "absent"},
     ])
-    # The control: a pick the person made themselves has always reached the row, and this is the
-    # cadence carrying it — `__default__` when the drawer opened, the escalated model three ticks on.
-    assert person["drawnOnOpen"] == "__default__"
-    assert person["drawnAfterTicks"] == "gpt-5.4"
-    # And the case the ticket is about, which the store alone cannot tell apart from it.
-    assert orchestrator["runsAfterTicks"] == "gpt-5.4", "the premise: the store did learn"
-    assert orchestrator["drawnAfterTicks"] == "gpt-5.4"
+    assert served["runsAfterTicks"] == "gpt-5.4", "the premise: the store did learn"
+    assert served["drawnOnOpen"] == "__default__", "and the row did not, until the cadence ran"
+    assert served["drawnAfterTicks"] == "gpt-5.4"
+    assert mirror_only["drawnAfterTicks"] == "gpt-5.4"
 
 
 def test_the_ask_row_reads_the_chat_pick_and_the_build_rows_read_the_build_one():
