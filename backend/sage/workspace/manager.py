@@ -279,7 +279,7 @@ class ProjectRecord:
 
     def create_plan_doc(self, markdown: str, *, title: str, author: str = "",
                         origin_thread_id: str = "", status: str = "draft",
-                        app_id: str = "") -> dict:
+                        app_id: str = "", previous_plan_id: str = "") -> dict:
         """Store a plan's markdown as version 1 of a new document, and return the whole document."""
         self.plan_docs_dir.mkdir(parents=True, exist_ok=True)
         n = len([p for p in self.plan_docs_dir.iterdir() if p.is_dir()]) + 1
@@ -297,6 +297,24 @@ class ProjectRecord:
             # yet, and the reference is stamped on when the handoff confirms. A plan the BUILD gate
             # writes already stands in an app, and names it here.
             "createdAt": now, "updatedAt": now, "originThreadId": origin_thread_id, "appId": app_id,
+            # The plan this app was last BUILT from when this one was written, so the chain between
+            # two plans for one app is on disk (#277). Deliberately not `supersededBy`, which the
+            # caller writes on the OTHER document and which means something else: that plan lost its
+            # live copy before anybody built it (#59). A plan that follows a built one is not
+            # replacing it — that plan shipped, and its record stays frozen as the account of what
+            # shipped. So the edge is carried by the newer document, pointing back.
+            #
+            # Empty for the first plan in an app, for an app that has never finished a build, and
+            # for a plan drafted in Chat — that one has no app yet and gains this at the confirm,
+            # alongside `appId`, for the same reason.
+            #
+            # Non-empty is a name, not a promise that the name still resolves: the plan it points at
+            # can be put away afterwards (#167) or deleted, and nothing rewrites this when it is —
+            # the edge is a record of what happened, and the plan it names really was what shipped.
+            # So a reader has to handle `read_plan_doc` coming back None for it, exactly as the plan
+            # pin does for `read_archived_plan_doc_id` (see `read_plan_pin`), and a dangling id
+            # looks no different from a live one until it is read.
+            "previousPlanId": previous_plan_id,
             # Put away, not thrown away (#167). A flag beside the status rather than a value inside
             # it: status is single-valued, so archiving an approved plan AS a status would spend
             # the review outcome to tidy a list, and hand back a document that had forgotten three
@@ -323,7 +341,13 @@ class ProjectRecord:
         # `archived` is answered rather than passed through. Every document written before #167 has
         # no such key, and a reader that left it absent would hand the panel's filter and the plan
         # page's own button an `undefined` to decide on — two surfaces guessing at the same fact.
+        # `previousPlanId` is answered here for the same reason, and it is the same shape of hole:
+        # every document written before #277 has no such key, and an absent one would leave the
+        # panel's chain and the plan page's own back-link an `undefined` to tell apart from "follows
+        # nothing". A string either way, so one comparison answers both.
+        previous = meta.get("previousPlanId")
         return {**meta, "archived": bool(meta.get("archived")),
+                "previousPlanId": previous.strip() if isinstance(previous, str) else "",
                 "summary": parsed["summary"], "sections": parsed["sections"],
                 "markdown": markdown}
 

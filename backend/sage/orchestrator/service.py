@@ -7733,6 +7733,11 @@ class Orchestrator:
         # handoff the implement turn consumes and archives; the plan card is what Build opens on.
         # An existing app may already hold a plan awaiting approval, which the sheet warns about
         # and this steps aside rather than overwrites (#59).
+        # What this plan follows, read before anything below touches the archive — same reason as
+        # the gate's own call, and this door has two writers to get in front of rather than one
+        # (#277). Kept here and spent at the bottom, with `appId`: they are the same fact arriving
+        # at the same moment, because a plan drafted in Chat has no app to ask until now.
+        previous_plan_id = project.workspace.read_archived_plan_doc_id()
         self._supersede_live_plan(project, project.workspace,
                                   str(handoff_row.get("planId") or ""), thread_id)
         project.workspace.write_plan(plan_md, str(handoff_row.get("planId") or ""))
@@ -7758,7 +7763,39 @@ class Orchestrator:
         # (ADR-0008). This is what lets the plan page offer "Open in Builder" instead of "Build this".
         plan_id = str((handoff or {}).get("planId") or "")
         if plan_id:
-            project.record.patch_plan_doc_meta(plan_id, appId=project.workspace.app_id)
+            # `appId` is written every time, because a confirm is what binds a plan to an app and a
+            # later confirm of the same sheet may bind it somewhere else. `previousPlanId` is about
+            # the same moment but is NOT rewritten with it, and the reason is that a non-empty one
+            # may only ever be written at a FIRST binding. That rule is what keeps the chain acyclic,
+            # and it is the whole rule:
+            #
+            #   a plan names only a plan already BUILT in that app when the name is stamped, and a
+            #   plan cannot be built before it is stamped — so if X names Y, Y was stamped first, and
+            #   Y can never come to name X.
+            #
+            # Re-stamping breaks that, and the breakage is reachable: confirming one sheet twice is
+            # a supported act (`mark_handoff_bound`'s docstring: "a re-confirm of the same sheet is
+            # one handoff"), the card stays on screen, and by the second press the app has been
+            # built. So a re-stamp asks "what was this app last built from" and is answered with
+            # this very plan — a self-loop over the true edge — or, one plan further on, with a plan
+            # written AFTER this one: 002 → 003 → 002, which no reader walking back one step at a
+            # time can finish.
+            #
+            # A re-confirm into a DIFFERENT app clears it instead of keeping it: the old app's
+            # history is not this app's, and "" — "no predecessor claimed here" — is the honest
+            # answer and the only other one that cannot close a loop.
+            #
+            # Read off the handoff row rather than the document's own `appId`, because the row is
+            # this flow's to write and the document's is not: `patch_plan_doc` lets any client set
+            # `appId`, and a client that set it to the app about to be confirmed would look exactly
+            # like a re-confirm and cost the plan the only stamp it ever gets.
+            already_bound = str(handoff_row.get("status") or "") == "bound"
+            meta = {"appId": project.workspace.app_id}
+            if not already_bound:
+                meta["previousPlanId"] = previous_plan_id
+            elif str(handoff_row.get("appId") or "") != project.workspace.app_id:
+                meta["previousPlanId"] = ""
+            project.record.patch_plan_doc_meta(plan_id, **meta)
         self._flush_chat_save("handoff", holding_turn=True)
         return {
             "ok": True,
@@ -12928,6 +12965,18 @@ class Orchestrator:
                         # turn driven with no conversation at all — a caller the Workbench does
                         # not have, since typing in Build opens one first.
                         origin_thread_id=str(project.build_conversation or ""),
+                        # And what this plan follows: the document the app's live plan.md was last
+                        # BUILT from (#277). Read off the app, the way the plan pin reads it, rather
+                        # than guessed from the document list — "the newest document naming this
+                        # app" is a different question with a different answer, and on this very
+                        # line it would answer with the plan being written.
+                        #
+                        # Read BEFORE the supersede below, which can turn a partly-built plan into a
+                        # plain archive and change this answer. That plan is the one stepping aside,
+                        # and what became of it is already recorded on it, as `supersededBy`; naming
+                        # it here too would record one event twice and point the chain at a plan the
+                        # app was never finished from.
+                        previous_plan_id=project.app_for_turn().read_archived_plan_doc_id(),
                     )["id"]
                     # A plan another Conversation left awaiting approval in this same app steps
                     # aside rather than being written over (#59).
