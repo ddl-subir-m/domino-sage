@@ -430,3 +430,33 @@ def test_an_answer_that_no_rule_on_this_row_explains_is_not_drawn():
     _, drawn = _drawn([{"set": ["plan", "opus"]}, {"sensitivity": _PIN_MOVED}])
     assert _row(drawn, "Plan")["value"] == "opus"
     assert not any("not opus." in d for d in drawn["details"])
+
+
+# The fallback rows — `assignments` null, so the panel builds rows from the status poll's catalog —
+# carry no `shadowed` key, so `moved` falls back to `barredNow` there and the widened gate cannot
+# invent a move. That is a true argument and it is the reason the path is safe, but an argument is
+# not a guard. Adding `shadowed` to the fallback-row shape is a reasonable thing to want, since the
+# pin's sentence needs no gateway and is already computed without one; the day somebody does, the
+# two reads behind the comparison stop being comparable — `catalog` is kept current by the status
+# poll, and `sensitivity` is refreshed on open, save and mode change and by nothing else. This is
+# what fails then.
+#
+# One step, and the throw has to be in the FIRST one: a read that fails after a read that landed
+# leaves the earlier answer standing, so the panel still holds real rows and never reaches this
+# path. The approved set is the deployment defaults for the same reason the rows cannot be assigned
+# here — with no read there is nothing to save against, so `barredNow` has to be made false by
+# approving what the catalog already holds.
+_STALE_FALLBACK = [{"listing": "throw", "sensitivity": _lock(
+    approved=["gpt-5.4", "coder"], model="coder", chat_model="coder",
+    slot_models={"plan": "coder", "implement": "gpt-5.4", "ask": "coder"})}]
+
+
+def test_a_fallback_row_cannot_invent_a_move_it_was_never_told_about():
+    """A row built from the catalog poll carries no verdict of its own, so a difference between it
+    and the lock's per-slot answer is two reads disagreeing rather than a move. Saying "This runs
+    coder, not gpt-5.4." there would name a substitution nothing on the server performed, on the one
+    read that already has the least to say."""
+    (drawn,) = _drawn(_STALE_FALLBACK)
+    assert drawn["labels"] == ["Plan", "Implement", "Ask and Chat"], "the rows are drawn at all"
+    assert [r["value"] for r in drawn["rows"]] == ["gpt-5.4", "coder", "gpt-5.4"]
+    assert drawn["details"] == []
