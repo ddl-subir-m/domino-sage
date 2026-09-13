@@ -3734,6 +3734,12 @@ async def chat_completions(request: Request):
         waterfall and the Project holds the turn's last one for its terminal row. Wired apart, the
         obvious failure is the one that already happened twice here — a second reader added later
         and left reading the pick, agreeing with nothing and looking right.
+
+        They are one fact INSIDE a turn, which is the only place either is read. Their scopes differ
+        outside one: the ledger no-ops when no turn is open or `SAGE_TIMING` is off, and the Project
+        records regardless. That asymmetry is deliberate — a record the product shows a person must
+        not switch off with a performance flag — and it is harmless because the next granted turn
+        clears the Project's copy before any row is written from it.
         """
         call.model(model, phase, reason)
         project.note_resolved(model, phase, reason)

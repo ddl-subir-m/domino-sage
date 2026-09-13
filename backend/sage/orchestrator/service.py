@@ -4029,9 +4029,17 @@ class Project:
     tool_call_responses: int = 0
     # The same wrapper's third record: what the router resolved on the LAST inference of this turn
     # (#316). Separate from the counters above because it answers a different question — those say
-    # whether a model was reached, this says WHICH, and which rule chose it. Cleared when a turn
-    # takes the lock, never when one ends: a turn that reaches no model must name none rather than
-    # inherit the previous turn's, which on a transcript reads exactly like a turn that ran on it.
+    # whether a model was reached, this says WHICH, and which rule chose it. Cleared when a turn is
+    # granted through `_acquire_turn`, never when one ends: a turn that reaches no model must name
+    # none rather than inherit the previous turn's, which on a transcript reads exactly like a turn
+    # that ran on it.
+    #
+    # `_acquire_turn` and not "whenever the lock is taken": `build()`, `_maybe_compact_chat` and the
+    # door's own acquirers take `_turn_lock` directly and clear nothing. Compaction is the one that
+    # writes here — its `summarize` goes through the shim — and it is harmless only because it runs
+    # in aftercare, after the row it could have corrupted is already on disk, and because the next
+    # granted turn clears before writing. Anything that starts reading this OFF a streaming turn
+    # inherits that, and would need its own clear.
     resolved_model: ResolvedModel | None = None
     # Working-tree hash the running turn compares against to tell whether anything on disk changed
     # (the ground-truth half of "did the agent write", alongside its edit-tool calls). Lives on the
@@ -4073,8 +4081,16 @@ class Project:
 
         An empty dict rather than a filled one with blank fields, so `**` splices it away: a turn
         refused at the door or wedged before it prompted has no answer to give, and absence is that
-        answer. A reader must take a missing key as "nothing ran" and never as a standing value —
-        a blank model would read as one, and a stale one would be a lie in the product's voice.
+        answer. A reader must never take a missing key as a standing value — a blank model would
+        read as one, and a stale one would be a lie in the product's voice.
+
+        But absence has THREE causes and only one of them is "no model ran". A row written before
+        #316 shipped carries no key either, and so does a row whose `on_resolved` raised and was
+        swallowed at the shim. So a reader may say "no model ran" only where it knows the row is
+        recent — on a live turn it watched — and over history it must say nothing rather than
+        assert. `persist()`'s sibling record a few lines up makes the same admission about its own
+        backfill gap, for the same reason: nothing can be done about old rows without rewriting
+        history, which is a worse trade than one quiet transcript.
         """
         r = self.resolved_model
         return {} if r is None else {

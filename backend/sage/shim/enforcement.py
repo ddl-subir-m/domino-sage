@@ -237,6 +237,8 @@ class EnforcementShim:
         AS REBOUND below — the veto's rebind included — for the reason that rebind exists: the
         router's `resolve_unsigned` returns the reason of the path it fell back to, which is the
         path an ordinary turn with no pick at all takes.
+
+        `phase` is empty for a Chat turn, which has none — see the call site.
         """
         requested = request.get("model")
         state = self._control.snapshot()
@@ -484,9 +486,23 @@ class EnforcementShim:
         )
         if on_resolved is not None:
             try:
-                on_resolved(request["model"], state.phase.value, decision.reason.value)
+                # No phase for a Chat turn, and that is not a tidy-up: the classifier above only
+                # runs for Build (`chat_thread_id is None`), so `state.phase` on a Chat request is
+                # whatever the last Build turn left in `ModelControl` — measured, a Chat turn after
+                # an Implement turn reports `implement`. Chat has no phases at all, so the honest
+                # value is none, and a stale one would put a Build fact on a Chat row.
+                on_resolved(request["model"],
+                            "" if state.chat_thread_id else state.phase.value,
+                            decision.reason.value)
             except Exception:
-                log.debug("timing: on_resolved failed", exc_info=True)
+                # Swallowed, because a recorder must never be able to fail an inference — but said
+                # at `warning` and named for what it is. This callback stopped being telemetry when
+                # it started feeding the turn's terminal row (#316): a failure here does not merely
+                # lose a waterfall line, it drops the `resolved` key from a row whose readers are
+                # told to take a missing key as "no model ran". That is a false statement in the
+                # product's voice, and it used to be reported at `debug` under the word "timing".
+                log.warning("model policy: on_resolved failed — this turn's record will name no "
+                            "model although one ran", exc_info=True)
         if dropped:
             log.info(
                 "model policy: dropped %d image part(s) — %s cannot process images",

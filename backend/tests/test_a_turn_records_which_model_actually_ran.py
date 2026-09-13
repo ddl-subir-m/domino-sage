@@ -106,6 +106,23 @@ def test_the_shim_says_which_model_ran_and_which_rule_chose_it(case, setup, cata
     assert got_reason == reason, f"{case}: reason was {got_reason!r}, expected {reason!r}"
 
 
+def test_a_chat_turn_carries_no_phase_even_after_a_build_turn_left_one(monkeypatch):
+    """Chat has no phases, and the shim only recomputes one for Build.
+
+    So `ModelControl.phase` on a Chat request is whatever the last Build turn left behind, and the
+    row would carry a Build fact — measured before the fix: a Chat turn following an Implement turn
+    reported `implement`. The trap this test exists for is that a fresh `ModelControl` defaults to
+    PLAN, so a Chat assertion written against a fresh one pins the DEFAULT and passes either way.
+    This one hands it IMPLEMENT first, which is the only setup where the bug can appear.
+    """
+    c = ModelControl(mode=Mode.AUTO, phase=Phase.IMPLEMENT)
+    c.arm_chat("t1")
+    c.pick_chat("sonnet")
+    model, phase, _reason = _resolved(c, _catalog())
+    assert model == "sonnet"
+    assert phase == "", f"a Chat turn reported a Build phase: {phase!r}"
+
+
 def test_the_veto_is_told_apart_from_the_fallback_it_lands_on():
     """#317 writes "your pick of X can't run on this conversation" off this one value.
 
@@ -250,19 +267,19 @@ def test_a_chat_turn_ends_on_a_row_that_names_the_model_that_ran(tmp_path: Path)
     the second is a record that exists only while the page stays open.
     """
     orch, oc = _orch(tmp_path, [Turn(text="an answer")])
-    oc.resolve_to = ("gpt-5.4", "plan", "signing-veto")
+    oc.resolve_to = ("gpt-5.4", "", "signing-veto")
     thread = orch.create_thread()["id"]
 
     live = [ev for ev in orch.chat_stream(thread, "why is it slow?") if ev["type"] == "done"]
     assert live and live[-1].get("resolved") == {
-        "model": "gpt-5.4", "reason": "signing-veto", "phase": "plan"}
+        "model": "gpt-5.4", "reason": "signing-veto", "phase": ""}
 
     from sage.workspace.threads import ThreadStore
     rows = [r for r in ThreadStore(orch.project().record.path).read_history(thread)
             if r["type"] == "done"]
     assert rows, "the Chat turn wrote no terminal row"
     assert rows[-1].get("resolved") == {
-        "model": "gpt-5.4", "reason": "signing-veto", "phase": "plan"}, (
+        "model": "gpt-5.4", "reason": "signing-veto", "phase": ""}, (
         f"a reload shows no model: {rows[-1]!r}")
 
 
