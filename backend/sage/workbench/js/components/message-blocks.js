@@ -978,6 +978,16 @@ window.SW = window.SW || {};
     }
 
     const survives = (block.surviving || 0) > 0;
+    // The lone non-file carrier. Gates one CLAUSE, not a sentence and a button: there is no file
+    // to name, and withholding is not redaction (ADR-0022's one hard promise). Everything after it
+    // — what survives, what the button says — is the single rule below. While this arm kept its own
+    // copy of that ending it drew byte-identical cards at `surviving: 0` and `surviving: 2`, and
+    // said "what you wrote" over rows a `bash cat` fetched (#297).
+    //
+    // One carrier wide, and that is an open GAP rather than a decision: two matched messages with
+    // no file between them draw a destructive-sounding button and no promise at all. Widening this
+    // gate is the fix and nothing here has made it — #297 was scoped to the singular arm, and the
+    // plural prose is #292's. Filed as #309; this line is the gap recorded, not the gap handled.
     const onlyText = carriers.length === 1 && !carriers[0].is_file;
     // What the button acts on, read off the carriers rather than counted. Counting them and
     // calling whatever turned up "files" is what put "Stop sending these files" under a set
@@ -987,10 +997,15 @@ window.SW = window.SW || {};
     // carrier "the message you sent", "an earlier answer in this conversation", OR "something a
     // tool read" — rows a turn fetched through `bash cat` or `grep`, which carry no path and so no
     // `is_file`. "These messages" would therefore be this same bug one word over. The card cannot
-    // separate the two on its own: the distinction is `Carrier.is_data`, and the row it is sent
-    // holds `key`, `label` and `is_file` only. So the bare demonstrative is not a shorthand for a
-    // better word — it is the only noun that is true of every set this branch can draw, which is
-    // the reason not to "improve" it into one of the three later.
+    // separate the three on its own, and sending it more would not fix that: `Carrier.is_data` is
+    // the field that looks like the distinction and is not one. Since #290 it reads
+    // `is_tool || _carries_mention`, so an @mention's rows make a carrier labelled "the message you
+    // sent" arrive as data — a card that trusted it would name the wrong author in the other
+    // direction. (`withhold.py` belongs to #290 and #307 rather than to this branch, which is the
+    // second and weaker reason: the field would be the wrong answer even if it were free to edit.)
+    // So the bare demonstrative is not a shorthand for a better word — it is the only noun that is
+    // true of every set this branch can draw, which is the reason not to "improve" it into one of
+    // the three later.
     //
     // "Them" rather than "these" because the sentence above already ends "Stop sending them and
     // this conversation will work again": the button and the prose become the same string, which
@@ -998,37 +1013,98 @@ window.SW = window.SW || {};
     // above, so nothing is lost by the button not repeating them.
     const noun = carriers.every((c) => c.is_file)
       ? (carriers.length > 1 ? 'these files' : 'this file')
-      // The singular arm is unreachable while `onlyText` catches every one-carrier non-file set
-      // above. Written correct rather than left merely unreachable: this reads as the one rule for
-      // the button now, so folding `onlyText` into it is an edit someone will make, and the
-      // version that says "them" about a single thing would survive it silently.
+      // The singular arm is reachable since #297, which folded the button's `onlyText` case into
+      // this one rule. It needed no new word because it was written correct while it was still
+      // unreachable — the reason to keep writing an unreachable arm as though someone will run it.
       : (carriers.length > 1 ? 'them' : 'it');
+    // Whether the click actually carries on, which is the store's question and not this card's:
+    // `withholdContent` re-runs the turn on `surviving > 0 && !prompt` and returns without one
+    // otherwise (`store.js`, `const again`). `survives` alone is half of that pair, and the half it
+    // drops is the case the store's own comment calls the one a person meets most — the guardrail
+    // matched the words they typed, every file the turn read survives. Drawn from `survives` alone
+    // that card reads "Continue without it", the click withholds and stops, and the receipt that
+    // replaces it tells them to ask again in different words. The button said the conversation
+    // carries on and nothing carried on.
+    //
+    // Read by the button and by the prose's last sentence, which are the two places that describe
+    // the ACT. The prose's other sentences read one field each, because each states one fact:
+    // what is left reads `survives`, and whether the question is going reads `prompt`. Two
+    // questions, two fields — and the pair only where the subject is what the click does.
+    const carriesOn = survives && !block.prompt;
     return h('div', { className: 'sw-nudge' },
       h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
       h('div', { className: 'sw-nudge-main' },
         h('div', null,
-          onlyText
-            ? h(React.Fragment, null,
-                'It matched something in ', ...list, ", not in a file. Sage won't change what you "
-                + 'wrote — it can stop sending it, and this conversation will work again.')
-            : h(React.Fragment, null, 'It matched values in ', ...list, '. ',
-                survives
-                  ? 'Nothing else this turn read is affected.'
-                  // What the button buys, said out loud. Nothing survives this turn, so the offer
-                  // is not about this question at all — it is ADR-0022's premise, that the refusal
-                  // outlives the turn and would refuse every later one. Without this line the
-                  // person reads a dead question and a button with no stated benefit (#288).
-                  : "That was everything this turn read, so this question can't be answered "
-                    + "from what's left. Stop sending "
-                    // Singular or plural with the button beneath, which counts carriers the
-                    // same way — and, since #292, says the same word: any set that is not all
-                    // files puts this exact "them" on the button.
-                    + (carriers.length > 1 ? 'them' : 'it')
-                    + ' and this conversation will work again — ask something else'
-                    // Only offer the attachment when a file is what went. The same branch draws
-                    // several matched messages with no file anywhere, and telling that person to
-                    // attach a different one names something their conversation never had.
-                    + (carriers.some((c) => c.is_file) ? ', or attach a different file.' : '.'))),
+          h(React.Fragment, null, 'It matched values in ', ...list,
+            // Author-neutral on purpose. The promise is that withholding is not redaction, and
+            // that is true whoever wrote the thing; "what you wrote" was said over a tool's
+            // rows (#297). Nothing is lost by not naming the author — the label two words
+            // earlier already does, which is #292's argument for the bare noun on the button.
+            //
+            // The promise and nothing else. Naming the act here too ("— only stop sending it")
+            // read as a third "stop sending" beside the ending's and the button's, and in the
+            // `survives` arm it gave one act two names — prose "stop sending", button "Continue
+            // without" — which is what the note under the button forbids. The ending below names
+            // the act once, in whichever of its two arms is drawn.
+            // "Sage can name" is doing real work: a `bash cat transactions.csv` DID read a file,
+            // and lands here only because no path came with it (`withhold.py` — "rows are data
+            // with no filename"). The bare "not in a file" told that person something false in
+            // the same sentence that used to tell them they wrote it. True of the other two
+            // populations too, which is what lets one string serve all three.
+            //
+            // "what it matched" rather than "it": the nearest noun to a bare "it" here is the FILE
+            // the clause has just said is not involved, so the promise read as being about a file.
+            // Dropping the author to serve the `bash cat` population dropped the referent with it;
+            // this names the subject again without naming who wrote it. "It" is the policy, the
+            // same "It" this sentence opens with.
+            onlyText ? ", not in a file Sage can name. Sage won't change what it matched. " : '. ',
+            // Three facts, each drawn when its own is true, joined rather than branched between.
+            // They co-occur in every combination — a turn can have nothing left to answer from AND
+            // lose its question, or keep every file AND lose its question. Each earlier shape here
+            // was a ternary over the COMBINATION, and each silently dropped whichever fact it had
+            // not branched on: the button lagged the store, then the prose lagged the button, then
+            // the co-occurring card said only the first of two true things (#297). One clause per
+            // fact is what stops that recurring, and `filter(Boolean)` is why no arm needs to
+            // carry a space for the arm beside it.
+            [
+              survives
+                ? 'Nothing else this turn read is affected.'
+                // ADR-0022's premise, that the refusal outlives the turn and would refuse every
+                // later one. Without this line the person reads a dead question and a button with
+                // no stated benefit (#288).
+                : "That was everything this turn read, so this question can't be answered "
+                  + "from what's left.",
+              // The question goes, the files stay. Re-running would ask nothing: the same words
+              // hash to the same key and are stopped before they are sent, so the benefit on offer
+              // is the NEXT turn rather than this one. Said before the click rather than only on
+              // the receipt underneath it, which is where a person met it first (#297).
+              block.prompt
+                ? 'Your question is one of the things that matched, so asking it again in the '
+                  + 'same words would be stopped before it is sent.'
+                : '',
+              // Only where the click does NOT re-run the turn, which is the store's pair and the
+              // button's word. Promising the conversation will work again beside a button that
+              // re-runs this one would describe the wrong act.
+              carriesOn
+                ? ''
+                : 'Stop sending '
+                  // Singular or plural with the button beneath, which counts carriers the
+                  // same way — and, since #292, says the same word: any set that is not all
+                  // files puts this exact "them" on the button.
+                  + (carriers.length > 1 ? 'them' : 'it')
+                  + ' and this conversation will work again — ask something else'
+                  // Only offer the attachment when a file is what went — where "a file" means one
+                  // `is_file` could name. The same branch draws several matched messages with no
+                  // file anywhere, and telling that person to attach a different one names
+                  // something their conversation never had.
+                  //
+                  // Read against THAT population only. It also drops the offer for the person it
+                  // fits best: a `bash cat transactions.csv` did read a file and carries no path,
+                  // so `is_file` is false and this ends with no remedy for the one case a
+                  // different file would actually fix. Filed as #312, which needs a distinction
+                  // the payload does not carry — this line is the gap recorded, not handled.
+                  + (carriers.some((c) => c.is_file) ? ', or attach a different file.' : '.'),
+            ].filter(Boolean).join(' '))),
         h('div', { className: 'sw-withhold-scope' },
           'Applies to this conversation. A new conversation starts fresh.'),
         block.live
@@ -1044,9 +1120,7 @@ window.SW = window.SW || {};
                   // rule this was written against is a button standing alone with nothing on
                   // screen to resolve it. "Continue without" is only honest while something
                   // survives to continue WITH.
-                }, onlyText
-                  ? 'Stop sending that message'
-                  : (survives ? 'Continue without ' : 'Stop sending ') + noun),
+                }, (carriesOn ? 'Continue without ' : 'Stop sending ') + noun),
                 h(Button, {
                   type: 'text', size: 'small', disabled: !!busy,
                   onClick: () => SW.store.dismissWithholdCard(block),
