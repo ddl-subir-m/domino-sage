@@ -158,6 +158,21 @@ class ModelCatalog:
     plan: ModelId             # stronger model for the plan phase
     implement: ModelId        # cheaper model for the implement phase
     ask: ModelId               # read-only ask mode model
+    # An effort is half of an assignment, carried beside the model it belongs to (ADR-0049) — never
+    # one Build-wide level, which cannot say "think hard while planning, cheaply while implementing"
+    # and so gives up the split the slots exist for. `None` means no effort: the alias answers at its
+    # own default, which is what every assignment did before this field existed.
+    #
+    # Only the three ASSIGNABLE_SLOTS carry one. The sovereign slots are persisted and preflighted
+    # but the router reads none of them, so an effort there would be a value nothing ever sends —
+    # `set_catalog` refuses it rather than saving a setting that visibly does nothing.
+    #
+    # Named `<slot>_effort` so that `replace(catalog, **fields)` and `getattr(catalog, slot)` both
+    # keep working as they are written today; a nested `{model, effort}` on the dataclass would
+    # rewrite every reader of a model id to buy nothing.
+    plan_effort: str | None = None
+    implement_effort: str | None = None
+    ask_effort: str | None = None
 
 
 # The slots a person may assign in the model panel (ADR-0017). The panel lays out its own rows,
