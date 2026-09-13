@@ -14984,12 +14984,101 @@ class Orchestrator:
         # carrying an effort alone, with its model still following the default (ADR-0049). So the
         # question moved one level in — to the MODEL inside the entry — while the argument above it
         # did not, because `assigned` has only ever been the model's word.
-        overrides = project.record.read_catalog_overrides()
+        # Both halves from ONE parse. Not `read_catalog_overrides()` here and a second call for the
+        # faults: the panel polls without the turn lock, so a save landing between two reads makes
+        # them two different files and draws a row as assigned and unreadable at once. The atomic
+        # write closes the TORN read; it does not close this one.
+        saved = project.record.read_catalog_overrides_and_faults()
+        overrides = saved.rows
         # The one verdict that needs no gateway, so it is settled before one is asked (#276). A
         # shadowed slot is shadowed whether or not the Alias listing lands, and reading it below the
         # `except` would hide the pin from the drawer on exactly the read that already has the least
         # to say.
         shadowed = {p.slot: p.message for p in shadowed_slots(live)}
+        # A row the file could not hand over, said on the row it belongs to (#289). #281 made a
+        # malformed row drop with a log warning and the slot follow the deployment default — right,
+        # and not changed here — which left the fault with no witness a person can reach: a dropped
+        # row draws exactly like a slot nobody ever assigned. Names the file as well as the slot,
+        # because the panel is where this is READ and the file is the only place it can be fixed.
+        # Relative to the Project, not the absolute path, which is a volume mount nobody types.
+        #
+        # "Or remove it" is not a courtesy: `set_catalog` reads the whole file and writes the whole
+        # dict back, so the next save of ANY slot takes the unreadable row with it. The sentence
+        # describes something the product does by itself, and
+        # `test_saving_any_slot_takes_the_unreadable_row_with_it` is what holds that true.
+        #
+        # Reaches only the rows the panel draws, which is `ASSIGNABLE_SLOTS` below: a malformed
+        # `sovereign_plan` row is still dropped silently, because the panel has no row to say it on.
+        # Closing that needs a surface for those slots, not a fourth sentence here.
+        #
+        # The second clause is CONDITIONAL, and the condition is not decoration. `faults` is a fresh
+        # read of the file; `live` is the shim's catalog, which is rebuilt at boot and on save and
+        # not when the file moves underneath it. A bad merge arriving in an open Builder sits exactly
+        # in that gap — and that is this ticket's own scenario, since a committed shared file is the
+        # whole reason the row deserves a sentence — leaving the slot still running what the row said
+        # before it broke. Saying "following the default" there would be the panel making up a
+        # consequence, on the one screen whose job is to report what each mode actually runs.
+        #
+        # BOTH halves of the assignment decide it, not the model alone. An effort is a full half
+        # under ADR-0049 and `_effective_catalog` sets `<slot>_effort` from a row carrying one with
+        # no model, so a row that breaks after `{"effort": "high"}` leaves the models equal and the
+        # LEVEL stale — and the row would claim "following the default" with a non-default level
+        # drawn in the effort control an inch away.
+        #
+        # Where they differ the sentence NAMES what is still running rather than stopping after
+        # "couldn't be read". A dropped row is absent from `overrides`, so `assigned` is False and
+        # the Select closes on "Use default (<model>)" while the slot is really still on the old
+        # one. A sentence that merely declined to claim the default would leave that control
+        # unanswered; this is the row's only line, so it has to be the one that says what runs.
+        def _unreadable(slot: str) -> str:
+            where = project.record.catalog_overrides_path.relative_to(project.record.path)
+            # A row can be in BOTH `rows` and `unreadable` since the reader stopped letting one bad
+            # half cost the good one, and neither sentence below is true of it: the slot is not
+            # following the default, and it is not running something stale — it runs exactly what
+            # the readable part of the row says, and the next save writes that part BACK rather
+            # than dropping it. So "until the next save" would be false, and "or remove it" would
+            # tell somebody to delete an assignment that is in effect.
+            #
+            # Does not name which half survived, because the row's own two controls are already
+            # showing that an inch away. A second account of the same state is the one that goes
+            # stale first.
+            if slot in overrides:
+                return brand.text(
+                    "Part of the {slot} row in {file} couldn't be read and was ignored. The rest "
+                    "of the row is in effect. Fix that row.", slot=slot, file=where)
+            following = (getattr(live, slot, None) == getattr(defaults, slot, None)
+                         and getattr(live, f"{slot}_effort", None)
+                         == getattr(defaults, f"{slot}_effort", None))
+            # Whether the ROW or the FILE is the fault changes which sentence is true, and which
+            # remedy exists. On a file nothing could parse there may be no `plan` row at all, so
+            # "fix that row" sends the reader looking for something that is not there — and "remove
+            # it" is advice this path does not even accept, since a save over an unparseable file is
+            # refused rather than written.
+            if saved.whole_file:
+                # No "until the next save" on this branch: a save over a file that would not parse
+                # is refused, so there is no next save to wait for until the file itself is fixed.
+                template = (
+                    "{file} couldn't be read, so the {slot} assignment in it was not applied and "
+                    "this slot is following the default. Fix that file."
+                    if following else
+                    "{file} couldn't be read, so the {slot} assignment in it was not applied. This "
+                    "slot is still running {model}. Fix that file.")
+            else:
+                template = (
+                    "The {slot} row in {file} couldn't be read, so this slot is following the "
+                    "default. Fix that row, or remove it."
+                    if following else
+                    "The {slot} row in {file} couldn't be read. This slot still runs {model} until "
+                    "the next save. Fix that row, or remove it.")
+            return brand.text(template, slot=slot, file=where,
+                              model=getattr(live, slot, None))
+
+        # Narrowed to the rows that exist. `unreadable` carries raw JSON keys, so a fault under a
+        # garbage key or a sovereign slot would otherwise have a sentence built for it that no
+        # lookup below can ever reach — wasted, and a trap for whoever next reads this and concludes
+        # those slots are covered.
+        unreadable = {slot: _unreadable(slot) for slot in saved.unreadable
+                      if slot in ASSIGNABLE_SLOTS}
         slots = [
             {
                 "slot": slot,
@@ -15003,7 +15092,9 @@ class Orchestrator:
                 "effort": getattr(live, f"{slot}_effort"),
                 "default_effort": getattr(defaults, f"{slot}_effort"),
                 "assigned": bool((overrides.get(slot) or {}).get("model")),
-                "problem": shadowed.get(slot),
+                # Ranked here and in the loop below; the precedence comment on that loop is where
+                # all four kinds are placed against each other.
+                "problem": shadowed.get(slot) or unreadable.get(slot),
                 # Which KIND of verdict `problem` is carrying, for the one reader that has to tell
                 # them apart: the sensitivity lock outranks the signing pin
                 # (`llm_router._lock_sensitivity` wraps `_pin_signing`), so on a row the lock has
@@ -15033,6 +15124,53 @@ class Orchestrator:
             # subject and its remedy sends the reader to start an endpoint this session was never
             # going to call. Release the pin and the slot's own verdict comes back on the next read,
             # which is when it starts being true.
+            #
+            # The unreadable row (#289) is the fourth kind, and it says something categorically
+            # different from the three above: not "turns using this model will fail" but "the model
+            # you asked for was not read." It sits BELOW the shadow and ABOVE these two.
+            #
+            # Above these two on the rule this comment already turns on. On a row that could not be
+            # read, the model they name is the DEPLOYMENT DEFAULT, which the reader never chose, so
+            # "pick a different model" and "start that endpoint" are remedies for somebody else's
+            # slot. Not false — those two stay true of the model the slot now holds — but false in
+            # the SUBJECT the reader brought here, which is their own assignment.
+            #
+            # Below the shadow on a rule this comment did NOT need until now, because that rule is
+            # silent here: a shadow and an unreadable row are BOTH true at once, so nothing is false
+            # in its subject and nothing drops on that ground. What settles it is which remedy the
+            # reader can reach. While the pin holds, fixing the file changes nothing they can see —
+            # the slot still does not run — and the sentence comes back on the next read once the
+            # pin is released, which is the shape this comment already ends on.
+            #
+            # The cost, so the next reader is not discovering it, and it is TWO costs because the
+            # panel's own gate compounds the ranking. Both measured through the harness rather than
+            # read off the gate:
+            #
+            #   pin alone   — the row shows the shadow's sentence and nothing about the typo, which
+            #                 is what this ranking chose and is the common case.
+            #   pin + LOCK  — the row shows NOTHING. `model-assignments.js:288` drops `problem`
+            #                 whenever `shadowed && (barredNow || runs)`, and both of those need the
+            #                 sensitivity lock, not merely the pin. That gate is written to drop the
+            #                 PIN's sentence, which it believes is what `problem` holds; under this
+            #                 ranking it is right about that, and the typo goes with it.
+            #
+            # The second is the #289 fault surviving in a reachable corner, and this ranking cannot
+            # fix it: reversing it puts the unreadable sentence into `problem` and the same gate
+            # drops that instead, because the gate keys on `shadowed` and not on what `problem`
+            # carries. Closing it needs the row to say which KIND of sentence `problem` is — a field
+            # that does not exist — and then `:288` keying on that. A new payload field and a change
+            # to a gate #285 and #287 tuned, which is a ticket and not a line.
+            #
+            # Two things would justify reversing this. If the wait ever stops being
+            # bounded by an action the reader can take, the "reachable remedy" rule stops applying.
+            # And if the row ever gains somewhere to put a second sentence, the ranking is moot for
+            # this pair — `problem` holding one string is the whole reason there is a contest.
+            #
+            # Not reversible by flipping the `shadowed` flag to spare this sentence from the
+            # panel's gate. That flag has two readers asking different questions
+            # (`model-assignments.js:288` asks which KIND `problem` carries; `:215` takes it as one
+            # input to what the row reports as RUNNING, beside the others that move a turn), so
+            # moving it would change a shadowed row's answer to a question this ticket is not about.
             row["problem"] = row["problem"] or verdicts.get(row["slot"])
         return {
             "slots": slots,
@@ -15201,7 +15339,27 @@ class Orchestrator:
         if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "change the model")
         try:
-            overrides = project.record.read_catalog_overrides()
+            saved = project.record.read_catalog_overrides_and_faults()
+            overrides = saved.rows
+            if saved.whole_file:
+                # Refused rather than written over. Every other path here reads the whole dict and
+                # writes the whole dict back, which is harmless when the rows that are missing are
+                # the ones nothing could honour anyway — but on a file that would not PARSE, what
+                # comes back is `{}`, and writing that back replaces every assignment the file held.
+                # The sovereign slots are the reason this is a refusal and not a warning: no panel
+                # draws them, so they would go without a word. The model panel is already saying the
+                # file cannot be read, which makes this the same sentence at the moment it bites.
+                #
+                # It covers the WHOLE-FILE case only, and deliberately. A single malformed sovereign
+                # row still leaves the file parseable, so the read honours every other row and the
+                # next save drops that one with nothing said anywhere — the same silence, one row
+                # wide. Refusing there would strand every model change in the Project behind a row
+                # no surface shows and no message names, which is a worse trade than the one it
+                # would fix. It is the sovereign-slot gap recorded above, reached through the save
+                # instead of through the panel, and it closes when those slots get a surface.
+                raise ValueError(
+                    f"{project.record.catalog_overrides_path.relative_to(project.record.path)} "
+                    "couldn't be read. Fix that file before changing a model assignment.")
             for slot, value in fields.items():
                 assignment = self._merge_assignment(slot, overrides.get(slot), value)
                 if assignment:

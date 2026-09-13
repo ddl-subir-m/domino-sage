@@ -825,3 +825,64 @@ def test_a_stranded_level_beside_levels_the_model_does_offer():
     # The levels it does offer are all still there, and so is the way back.
     assert [o["value"] for o in control["options"][:-1]] == [
         "__model_default__", "none", "low", "medium", "high", "xhigh"]
+
+
+# ---- a row the file could not hand over (#289) ---------------------------------------------
+
+
+def test_a_dropped_row_draws_its_sentence_where_an_unassigned_row_draws_none():
+    """Both states through the SAME row, rendered, because the fault is that they look identical.
+    A slot whose committed row is malformed follows the deployment default, which is pixel-for-pixel
+    what a slot nobody assigned does — so a pair of tests each asserting one of these would both
+    pass with the sentence never drawn at all.
+
+    Rendered rather than read off the gate at `model-assignments.js:288`: that gate drops a
+    `problem` it believes is the pin's, and reading the condition says it spares this one. Drawing
+    it is what proves it."""
+    clean, dropped = _drawn([{}, {"unreadable": ["plan"]}])
+    assert clean["problems"] == []
+    assert dropped["problems"] == [
+        ("The plan row in .sage/model_overrides.json couldn't be read, so this slot is following "
+         "the default. Fix that row, or remove it."),
+    ]
+    # Still the default in the closed Select, and still offering the way back to it by name: the
+    # sentence is the only thing that changes. A row that had also moved its value would be the
+    # panel claiming an assignment the catalog does not hold.
+    assert _row(dropped, "Plan")["value"] == "__default__"
+
+
+def test_the_pin_still_takes_the_row_from_a_dropped_one():
+    """The ranking, drawn. Under the shadow this row shows only the pin's sentence — the cost the
+    server's precedence comment writes down — and the moment the pin is gone the row's own sentence
+    is back. Two steps, because one asserting either half alone cannot tell an order from a gate
+    that ate both."""
+    shadowed, released = _drawn([
+        {"unreadable": ["ask"], "signing": "implement"},
+        {"unreadable": ["ask"]},
+    ])
+    assert not any("couldn't be read" in p for p in shadowed["problems"])
+    assert any("couldn't be read" in p for p in released["problems"])
+    # The shadow's own sentence IS drawn here, which is what the ranking traded the typo for. The
+    # test below is the case where that stops being true and nothing is drawn at all.
+    assert any("runs every Turn in this session" in p for p in shadowed["problems"])
+
+
+def test_a_pinned_and_locked_row_draws_no_sentence_at_all():
+    """The corner this ranking cannot reach, caught rather than assumed. `model-assignments.js:288`
+    drops `problem` on `shadowed && (barredNow || runs)`, and both of those need the sensitivity
+    LOCK rather than the pin alone — so pin plus lock plus a malformed row is a row that says
+    nothing, which is the #289 fault itself surviving in a corner.
+
+    Here so that it is a measured, named residual with a failing test the day somebody fixes it,
+    instead of a silence nobody knows about. Reversing the ranking does not close it: the gate keys
+    on `shadowed`, not on what `problem` holds, so it would drop the other sentence instead. It
+    needs a field saying which KIND `problem` is, and `:288` keying on that.
+
+    The step beside it is the control: take the pin away and the same lock draws the sentence, so
+    this is the two rules compounding and not the lock alone."""
+    pinned_and_locked, locked_only = _drawn([
+        {"unreadable": ["ask"], "signing": "implement", "sensitivity": _lock()},
+        {"unreadable": ["ask"], "sensitivity": _lock()},
+    ])
+    assert pinned_and_locked["problems"] == []
+    assert any("couldn't be read" in p for p in locked_only["problems"])

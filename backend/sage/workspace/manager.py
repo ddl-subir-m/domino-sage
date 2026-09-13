@@ -22,9 +22,11 @@ node_modules is symlinked from the template rather than copied so each workspace
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import threading
 import time
@@ -35,6 +37,7 @@ from pathlib import Path
 
 from ..orchestrator.brand import apply_voice
 from ..resources.app_helpers import TEMPLATE, HelperNames, helpers_for
+from ..router.models import ASSIGNABLE_SLOTS
 from . import plan_doc
 from .threads import CHAT_WORK, new_id, safe_id
 
@@ -44,8 +47,83 @@ log = logging.getLogger(__name__)
 # malformed row is said once per process instead of on every catalog resolve. Bounded by the slots
 # of the Projects this Builder has opened, and deliberately never cleared — re-reporting the same
 # row after a poll is the noise this exists to stop, and a row that gets FIXED stops being read
-# here at all. Retire it with #289, which gives the fault a witness a person can actually see.
+# here at all.
+#
+# This used to end "retire it with #289", written when that ticket was expected to be wider than it
+# turned out to be. It is not the thing to retire: #289 puts the fault on the row's own `problem`
+# field, which is a SECOND audience — somebody who will never open a log — and its own acceptance
+# list keeps this one ("the log warning stays"). The set is not the warning either, it is the
+# once-per-process dedupe, and dropping it would put a line in the log every few seconds for as
+# long as the Builder is open. A sentence on screen is no reason to make the log worse.
 _warned_bad_slots: set[tuple[str, str]] = set()
+
+
+
+# Not `frozen=True`, which would be a promise these fields cannot keep: a dict and a set are
+# mutable whatever the wrapper says, and `set_catalog` does mutate `rows` in place on its way to
+# writing it back. Worse, freezing generates a `__hash__` from the fields, so the first person to
+# put one in a set or a cache would get `TypeError: unhashable type: 'dict'` from a class whose
+# whole point is to be easy to pass around. A plain dataclass is unhashable and says so.
+@dataclass
+class CatalogOverrides:
+    """What one read of `model_overrides.json` found: the rows it could honour, and the two
+    separate ways it could fail.
+
+    `unreadable` and `whole_file` are separate FIELDS and not one set with a sentinel in it. They
+    answer different questions for different callers — the panel needs both and says a different
+    sentence for each, `set_catalog` needs only the second, and every catalog resolve needs neither
+    — and folding the second into the first was wrong twice: a JSON object key can be `""`, and the
+    population of this file is hand-edits and bad merges, so a row literally spelled `""` would have
+    read as "the whole file is broken" and locked every save while drawing no sentence anywhere.
+    """
+
+    rows: dict
+    unreadable: set[str]  # slots whose own row could not be read
+    whole_file: bool  # the file itself would not parse, so nothing in it could be read
+
+
+def _half(row: dict, key: str) -> str | None:
+    """One half of a `model_overrides.json` row — its model or its effort — or None where it holds
+    nothing usable.
+
+    Text and non-empty or it is nothing, which is `set_catalog`'s own rule for the same value
+    ("a model assignment's halves are text or they are absent", and `""` is what it treats as
+    clearing the slot). Read at the FILE door on purpose: the route's check guards the route, and a
+    committed file is a second door it never stood in."""
+    value = row.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _row_fault(row: dict) -> bool:
+    """Whether a dict row in `model_overrides.json` holds something this reader could not read.
+
+    A FAULT, not a verdict on the whole row, and that distinction is the point. `set_catalog`
+    answers the same question by refusing the entire assignment — but its refusal costs nothing,
+    because nothing was written and the person simply picks again. Refusing here would DESTROY an
+    assignment already in effect: the slot reverts to the deployment default, and on a sovereign
+    slot no surface says so, because no panel draws those rows. Same verdict, opposite consequence,
+    so this reports the fault and still honours whichever half is usable. The witness is what makes
+    that safe — without it, keeping the good half would just be a quieter drop of the bad one
+    (#305).
+
+    Three ways a row carries a fault, and the distinction the middle one turns on is the subtlety:
+
+    * a key that is not `model` or `effort` — `set_catalog` refuses to write one, so it is a
+      hand-edit or a bad merge every time, and `{"modell": "opus"}` is the commonest typo there is;
+    * a half that is present and is not TEXT, such as `{"model": 123}`. Null is the opposite case
+      and is legal: saving an effort alone writes literally `{"model": null, "effort": "high"}`, so
+      testing mere presence would call the product's own output malformed. `""` is legal for the
+      same reason one step on — the route normalises it to null, so `{"model": "", "effort": "high"}`
+      and `{"model": null, "effort": "high"}` are one assignment written two ways and have to reach
+      one answer. It is the TYPE that is checked here, never the emptiness;
+    * neither half usable, which is `{}` — a row that names nothing at all.
+    """
+    if set(row) - {"model", "effort"}:
+        return True
+    if any(not isinstance(row[k], str) for k in ("model", "effort")
+           if k in row and row[k] is not None):
+        return True
+    return not (_half(row, "model") or _half(row, "effort"))
 
 
 def _now() -> str:
@@ -653,13 +731,106 @@ class ProjectRecord:
         legacy row in the file along with it. Worth knowing before reaching for the old shape as
         evidence of anything: it survives until the first save of any slot, not of that slot.
         """
-        if not self.catalog_overrides_path.exists():
-            return {}
-        raw = json.loads(self.catalog_overrides_path.read_text())
-        out = {}
+        return self.read_catalog_overrides_and_faults().rows
+
+    def read_catalog_overrides_and_faults(self) -> CatalogOverrides:
+        """The file, split into the rows that carry an assignment and the slots whose row could not
+        be read, from ONE parse of it.
+
+        `unreadable` is what lets the model panel say so on the row it happened to (#289). The
+        drop itself is right and this does not undo it — see the fault branch below for why a raise would
+        be worse. What it undoes is the drop being SILENT: a skipped row leaves the slot following
+        the deployment default, which is pixel-for-pixel what a slot nobody ever assigned looks
+        like, so the person with a typo in a committed file reads the panel agreeing with them that
+        they never made an assignment.
+
+        One read, and this is the entry point the panel calls — not two methods it calls in turn.
+        Two reads are two different sets of bytes: the panel polls without the turn
+        lock and a `set_catalog` can land between them, so the second read can be of a file the
+        first one had never seen — a row reported as assigned AND unreadable at once. The atomic
+        write below removes the TORN read, not this one: two whole reads either side of an
+        `os.replace` are still two different files. One parse cannot disagree with itself.
+
+        `read_catalog_overrides` stays as the one-line way in for everything else, because every
+        catalog resolve in the product calls it and none of them want a tuple they discard.
+        """
+        # Caught, like every other JSON read in this file (`read_bindings`, `read_plan_doc` and the
+        # rest all catch exactly this pair). This one was the outlier, and the shape it let through
+        # is the LIKELIEST one: a real `git merge` conflict writes `<<<<<<<` markers into the file,
+        # and the raise came out of `_effective_catalog`, `set_catalog` and `model_assignments`
+        # alike — the panel 500s and nobody gets a witness at all, which is the outcome #289 exists
+        # to remove, arrived at through the file's commonest fault. `isinstance` beside it because a
+        # top-level `[]` or `"x"` parses fine and then dies on `.items()`.
+        #
+        # Every assignable slot is the fault, not one of them: when the file will not parse there is
+        # no way to know which rows it held, and each of those rows really could not be read. The
+        # sentence names the file, so three of them point at the one place to go and look.
+        try:
+            raw = json.loads(self.catalog_overrides_path.read_text())
+        except FileNotFoundError:
+            # No file is not an unreadable file: it is a Project that has assigned nothing, which is
+            # the ordinary case and carries no fault at all. Separated from the catch below because
+            # `FileNotFoundError` IS an `OSError`, so folding them together reported "your file
+            # couldn't be read" and refused every save for a file that simply is not there.
+            #
+            # And asked by CATCHING rather than by `exists()` first, which is what made this
+            # reachable: between an `exists()` and the read, a `git checkout` to a branch without
+            # the file, or a person deleting it, lands the missing file in the unreadable branch.
+            # The witness is only worth having if it cannot be provoked by the file being fine.
+            return CatalogOverrides({}, set(), whole_file=False)
+        except (ValueError, OSError):
+            # `OSError` as well as the parse error, and they are not the same fault: a permission
+            # or I/O failure means the file is THERE and could not be opened. The sentence stays
+            # true of it ("couldn't be read") and the refusal below is if anything more important —
+            # writing the whole dict back over a file you could not open is how you discover what
+            # was in it. What it costs is precision in the remedy, since "fix that file" points at
+            # contents when the answer may be permissions. Left as one branch because a third state
+            # buys a better sentence for the rarest fault here and another pair of callers to keep
+            # in step; split it the day a person actually arrives with this one.
+            #
+            # And it gates the WRITE, not only the wording: `set_catalog` refuses on `whole_file`,
+            # so a transient I/O error blocks a save until it clears. Deliberate — a volume that
+            # cannot be read is not one to write the whole dict back over, and a genuinely transient
+            # fault lets the next save through. Refusing is the direction that loses nothing.
+            #
+            # And it gates the WRITE, not only the wording: `set_catalog` refuses on `whole_file`,
+            # so a transient I/O error blocks a save until it clears. Deliberate — a volume that
+            # cannot be read is not one to write the whole dict back over, and a genuinely transient
+            # fault lets the next save through. Refusing is the direction that loses nothing.
+            # `ValueError` and not `json.JSONDecodeError`, which is one of its subclasses: a file
+            # whose bytes are not UTF-8 raises `UnicodeDecodeError` out of `read_text()` instead,
+            # and that is a `ValueError` too. Catching only the JSON one left the brick standing for
+            # exactly the merge that goes binary, which is the one a person is least able to read.
+            raw = None
+        if not isinstance(raw, dict):
+            # Keyed on the empty slot name. A row genuinely spelled `""` would share this key and
+            # so lose one log line to the dedupe — harmless here, where the only cost is a warning
+            # said once, and deliberately NOT how the two faults are told apart: that distinction is
+            # `whole_file`, a field, because getting it from a sentinel is what broke.
+            if (key := (str(self.catalog_overrides_path), "")) not in _warned_bad_slots:
+                _warned_bad_slots.add(key)
+                log.warning("model assignments: ignoring %s, which is not a readable JSON object",
+                            self.catalog_overrides_path)
+            return CatalogOverrides({}, set(ASSIGNABLE_SLOTS), whole_file=True)
+        out: dict = {}
+        bad: set[str] = set()
         for slot, value in raw.items():
-            if isinstance(value, str):
+            # Reporting the fault and honouring the row are two decisions, not one. A row can be
+            # both — `{"model": "opus", "efort": "high"}` names a model this reader can use AND a
+            # key it cannot, and the answer is to keep the model and say so. Collapsing them was a
+            # regression I shipped two rounds ago: it reverted a working assignment to the
+            # deployment default, and on a sovereign slot with no panel row that happened in total
+            # silence. `set_catalog` collapses them the other way and is right to — its refusal
+            # writes nothing, so it costs a retry; this one would cost the assignment.
+            fault = True
+            # Non-empty, on the same test `_half` applies to the dict form. `""` is what
+            # `set_catalog` treats as clearing the slot, so as a stored row it names no model — and
+            # the two spellings of that, `""` and `{"model": ""}`, have to reach the same answer.
+            # Guarding one and not the other is how a row gets a witness under one spelling and
+            # vanishes in silence under the other.
+            if isinstance(value, str) and value:
                 out[slot] = {"model": value, "effort": None}
+                fault = False
             elif isinstance(value, dict):
                 # Both halves named, never `dict(value)`. The docstring above promises callers one
                 # shape, and a pass-through breaks that promise for the most natural thing a person
@@ -667,27 +838,78 @@ class ProjectRecord:
                 # `_merge_assignment` copies what it is given and then subscripts both halves, so a
                 # missing key is a KeyError — a 500 out of the save route that is written to answer
                 # 400. Filling them here is what makes "callers never see two shapes" true.
-                out[slot] = {"model": value.get("model"), "effort": value.get("effort")}
-            else:
-                # Neither shape, so not an assignment: the slot follows the deployment default,
-                # which is what no assignment has always meant. Dropped rather than raised because
-                # this file is committed and shared with everyone in the Project — a hand-edit or a
-                # bad merge is reachable, and a read that raises takes out every resolve of this
+                #
+                # `_half`, not `value.get(...)`: a non-text model reaches `slot_alias`, which calls
+                # `.rsplit` on it, and the AttributeError comes out of EVERY resolve of this
+                # project's catalog — the durable brick in a committed file that the fault branch below
+                # argues against, and the one shape that got past this branch by being a dict.
+                # `set_catalog` refuses it on the route ("must be text"), which is exactly why the
+                # file is a second door: the route is not the only way a value gets in here. So the
+                # half is nulled rather than carried, and the row is still reported below.
+                model, effort = _half(value, "model"), _half(value, "effort")
+                if model or effort:
+                    out[slot] = {"model": model, "effort": effort}
+                fault = _row_fault(value)
+            if fault:
+                # Neither shape, or the right shape carrying something unreadable — a misspelled key
+                # (`{"modell": ...}`), a half that is present and not text, or `{}` once the typo is
+                # deleted. Those used to pass the `isinstance` check and then contribute nothing in
+                # silence, which is the same invisible drop reached by the likelier hand-edit.
+                #
+                # Whatever the row could not say, the slot follows the deployment default for, which
+                # is what no assignment has always meant. Dropped rather than raised because this
+                # file is committed and shared with everyone in the Project — a hand-edit or a bad
+                # merge is reachable, and a read that raises takes out every resolve of this
                 # project's catalog rather than the one row that is wrong.
                 #
                 # Said once per row per process, not once per read: this runs on every catalog
                 # resolve and every draw of the panel, which polls, so an un-deduplicated warning
-                # is a line every few seconds for as long as the Builder is open. The person-facing
-                # witness for this fault is #289's, on the row's own `problem` field.
+                # is a line every few seconds for as long as the Builder is open. The dedupe is why
+                # the slot is collected into `bad` on the line below and not off the back of the
+                # warning: the panel needs the answer on every draw, and the log needs it once.
                 if (key := (str(self.catalog_overrides_path), slot)) not in _warned_bad_slots:
                     _warned_bad_slots.add(key)
-                    log.warning("model assignments: ignoring the %s slot, which holds no model",
-                                slot)
-        return out
+                    log.warning("model assignments: the %s row holds something unreadable", slot)
+                bad.add(slot)
+        return CatalogOverrides(out, bad, whole_file=False)
 
     def write_catalog_overrides(self, overrides: dict) -> None:
+        """Written whole, and atomically.
+
+        `os.replace` rather than `write_text` because the read above no longer raises on a file it
+        cannot parse — it reports one. A plain write is briefly truncated on disk, and the panel
+        polls this path without the turn lock, so a draw landing in that window would read the
+        half-written bytes, tell the reader their file could not be read and refuse their next save,
+        for a file that is perfectly fine a millisecond later. Worse silently: a catalog rebuild in
+        that window would resolve every slot to the deployment default and keep it until the next
+        one. The raise used to make that window loud; a witness makes it plausible, so the window
+        has to go rather than be explained."""
         self.catalog_overrides_path.parent.mkdir(parents=True, exist_ok=True)
-        self.catalog_overrides_path.write_text(json.dumps(overrides))
+        # Unique, which is `threads.py`'s spelling for the same job and not a style preference: a
+        # SHARED name means two writers on one volume take turns promoting each other's half-written
+        # bytes, which is the torn read this exists to stop, arrived at from the other side. The
+        # leading dot is only convention — `git status` and `git add -A` both include dotfiles, so it
+        # buys nothing against a commit-all and is not the reason for the `finally`.
+        #
+        # The `finally` is. Uniqueness is what makes a failed write ACCUMULATE rather than overwrite,
+        # so ENOSPC or EACCES would drop a fresh file into `.sage/` on every attempt, in the one
+        # directory this whole change keeps calling committed and shared.
+        tmp = self.catalog_overrides_path.with_name(
+            f".{self.catalog_overrides_path.name}.{secrets.token_hex(4)}.tmp")
+        try:
+            tmp.write_text(json.dumps(overrides))
+            # `os.replace` swaps the INODE, so the new file carries the temp file's mode rather than
+            # the one it replaces — and a fresh file gets whatever the umask says. On the shared
+            # Project volume this whole change keeps calling committed and shared, that silently
+            # drops group-write on the first save by any Builder, and the next collaborator's save
+            # fails EACCES — which this same reader then reports as "couldn't be read. Fix that
+            # file", sending them to edit contents that are fine. Carried over where there is a file
+            # to carry it from; a brand new one keeps the default it would have had anyway.
+            with contextlib.suppress(OSError):
+                os.chmod(tmp, self.catalog_overrides_path.stat().st_mode)
+            os.replace(tmp, self.catalog_overrides_path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     @property
     def instructions_path(self) -> Path:
