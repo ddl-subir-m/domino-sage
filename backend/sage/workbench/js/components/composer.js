@@ -1360,7 +1360,16 @@ window.SW = window.SW || {};
                   // becomes the silence it was written to prevent.
                   h('span', { style: { display: 'inline-block' } },
                     h(Button, { size: 'small', disabled: true, 'aria-label': 'Build model' },
-                      chipLabel(buildLabel)))
+                      // The level rides on the RUNNING chip too. This is the one screen state where
+                      // the turn is demonstrably running AT that level, so dropping the receipt here
+                      // is the "a setting with no receipt reads as a setting that was dropped"
+                      // failure the open chip cites as its own reason to exist, reintroduced exactly
+                      // where it is least true. Not under the lock: there `buildLabel` is the model
+                      // the lock moved the turn ONTO, and a level picked for the model it moved off
+                      // is not what that turn runs at.
+                      chipLabel(!buildBarred && pickedLevel
+                        ? `${buildLabel} · ${effortLabel(pickedLevel)}`
+                        : buildLabel)))
                 )
               : overridable
                 ? (() => {
@@ -1392,10 +1401,21 @@ window.SW = window.SW || {};
                     // is the only account of a level the collapsed row cannot draw — the menu shows
                     // no submenu on the way-back row (#310), so without this the person is told
                     // nothing at all about a level they set and the turn is not running.
-                    const why = buildBarred ? lockNote(buildPick) : (pinWhy || (collapsedStranded
+                    // The pin and a stranded level are about DIFFERENT things — which model runs,
+                    // and which level it runs at — so they join rather than one winning. Ordered
+                    // pin-first because it is the bigger fact, and joined for the reason #276 joined
+                    // the lock and the running turn: both are true at once, and letting one replace
+                    // the other left the moment somebody looks with no account of the second at all.
+                    // The LOCK still wins outright: under it the pin did not move this model and the
+                    // level was never sent, so both sentences would name wrong causes.
+                    const strandedWhy = collapsedStranded
                       ? `${pinnedModel} doesn't accept ${effortLabel(collapsedStranded)}, so this `
                         + 'turn runs at the model default. The row below clears the pick and puts '
                         + 'the mode back on its assignment.'
+                      : '';
+                    const why = buildBarred ? lockNote(buildPick)
+                      : [pinWhy, strandedWhy].filter(Boolean).join(' ') || ((collapsedStranded
+                      ? ''
                       // The accepted-level twin, which had no sentence at all. Both are the collapse
                       // — a pick naming the mode's own model — and in both the menu marks the
                       // way-back row and offers no submenu (#310), so the tooltip is the only place

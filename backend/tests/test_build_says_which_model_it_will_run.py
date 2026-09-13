@@ -78,7 +78,7 @@ def test_the_open_weight_catalog_is_offered_as_extra_options():
     (group,) = [i for i in row["items"] if "group" in i]
     assert group["group"] == "Open-weight"
     keys = [c["key"] for c in group["children"]]
-    assert keys == ["deepseek/deepseek-v3", "qwen/qwen-2-5", "openai/gpt-5.4"]
+    assert keys == ["deepseek/deepseek-v3", "qwen/qwen-2-5", "openai/gpt-5.4", "weird/a::low"]
     assert PLAN_MODEL not in keys  # it is already a slot, one row up
 
 
@@ -338,6 +338,71 @@ def test_a_model_nobody_is_standing_on_gets_no_stranded_row():
     assert [c["label"] for c in _children(row, PLAN_MODEL)][-1] == "High — not accepted"
     # ...and a model nobody picked is a plain row, because it advertises none of its own.
     assert _children(row, "qwen/qwen-2-5") is None
+
+
+def test_an_override_whose_row_has_no_submenu_is_marked_by_its_own_key():
+    """`selectedPick` asks whether the override's row actually HAS children before composing a child
+    key, and that guard had no witness: dropping it kept every test green while making the menu mark
+    nothing at all for any override whose row is plain — a legacy row, or an alias advertising no
+    levels.
+
+    `weird/a::low` advertises none, so its row stays plain and its own key is what must be marked.
+    """
+    (row,) = _drawn([{"mode": "plan", "pick": "weird/a::low"}])
+
+    assert row["afterSelected"] == ["weird/a::low"]
+    assert _children(row, "weird/a::low") is None
+
+
+def test_a_bare_id_carrying_the_separator_is_sent_whole():
+    """The reason `onClick` looks the key up among the rows it built instead of parsing it.
+
+    A row with no levels fires with its OWN key, and `splitEffortKey` cannot tell `a::low` the model
+    from `a` at level `low` — no reader of a flat key space can. The lookup asks the rows rather than
+    the string, so the promise "no alias contains a colon pair" is not needed anywhere.
+
+    The fixture's `weird/a::low` is deliberately unreal, and that is the point: every id WITHOUT a
+    separator makes the lookup and the parse return the same answer, so a fixture without one cannot
+    tell them apart. Deleting the lookup left all 74 tests green before this existed.
+    """
+    (row,) = _drawn([{"mode": "plan", "pick": "weird/a::low"}])
+
+    assert row["wrote"] == [{"pick": "weird/a::low", "pick_effort": None}]
+    assert row["serverPick"] == "weird/a::low"
+    assert row["serverEffort"] is None
+
+
+def test_the_running_chip_still_names_the_level_the_turn_is_running_at():
+    """The one screen state where the turn is demonstrably running at that level.
+
+    The closed chip used to fall back to a bare model name, so the receipt vanished for the duration
+    of the turn and came back when it ended — "a setting with no receipt reads as a setting that was
+    dropped", which is the open chip's own stated reason to exist, reintroduced exactly where it is
+    least true.
+    """
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                     {"mode": "plan", "running": True}])
+
+    assert row["disabled"] is True
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+
+
+def test_a_pin_and_a_stranded_level_are_both_accounted_for():
+    """Two different subjects — which model runs, and which level it runs at — so the sentences join
+    rather than one replacing the other.
+
+    Under a signing pin, a pick naming the pin's own model collapses, and a level that alias has
+    stopped accepting then had NO surface at all: the chip shows a bare name, the way-back row
+    carries no submenu (#310), and the tooltip said only that the session requires the model. Same
+    join, and the same reason, as #276's lock-and-running-turn pair.
+    """
+    *_, row = _drawn([{"mode": "plan", "signing": "implement",
+                       "seedPick": {"model": SIGNING_MODEL, "effort": "max"}},
+                      {"mode": "plan", "signing": "implement",
+                       "narrow": {"alias": SIGNING_MODEL, "efforts": ["low"]}}])
+
+    assert "required for this session" in row["why"]
+    assert "doesn't accept Max" in row["why"]
 
 
 def test_a_row_with_no_levels_still_writes_the_pick_on_its_own():

@@ -51,6 +51,11 @@ const OPEN_WEIGHT = [
   // Offered so the two effort lists can be told apart through the menu: this is the one alias whose
   // advertised levels and tool-carrying levels differ.
   { id: 'openai/gpt-5.4', provider: 'OpenAI' },
+  // Deliberately unreal. No alias on any probed deployment carries a colon pair — and that promise
+  // about DATA is exactly what `onClick`'s row lookup exists so nobody has to make. A fixture with
+  // no such id cannot tell the lookup from the parse, because `splitEffortKey` returns the same
+  // answer for every id without one.
+  { id: 'weird/a::low', provider: 'Odd' },
   { id: 'anthropic/claude-planner', provider: 'Anthropic' },
 ];
 
@@ -63,6 +68,8 @@ const ALIAS_EFFORTS = {
   'anthropic/claude-builder': [],
   // Advertises five, keeps one beside tools. The pair that makes the two lists tell each other apart.
   'openai/gpt-5.4': ['none', 'low', 'medium', 'high', 'xhigh'],
+  // No levels, so its row stays plain and its own key is what `onClick` receives — the bare branch.
+  'weird/a::low': [],
   // A SECOND alias that advertises none, so the empty-enum case is covered by a row that exists.
   // Leaving qwen out of this table entirely made its rows test the MISSING-LISTING path instead —
   // no row at all — which this menu deliberately treats as the opposite fact (see
@@ -80,11 +87,9 @@ const ALIAS_WITH_TOOLS = {
 };
 
 // What a MEMBERSHIP row looks like — `api.js`'s `rowFromMember`, which builds `model_llm` from the
-// project's own membership file rather than from the Domino listing. It carries `reasoning_efforts`
-// and NOT `reasoning_efforts_with_tools`, and that asymmetry is the point: stamping both fields on
-// both sources made the fallback test pass on a shape no deployment produces.
-// Membership rows carry BOTH lists since #295 — `_MEMBERSHIP_ONLY_FIELDS`, the `keep` tuple and
-// `bind_llm_alias` all pass the narrow one through now. The row shape is otherwise `rowFromMember`'s.
+// project's own membership file rather than from the Domino listing. It carries BOTH effort lists
+// since #295: `_MEMBERSHIP_ONLY_FIELDS`, the `keep` tuple and `bind_llm_alias` all pass the narrow
+// one through, so the shape is the listing's.
 const MEMBER_ROWS = () => ALIAS_ROWS();
 // And the shape written BEFORE that field existed, which `rowFromMember` still has to survive: the
 // row exists, the narrow list does not. The menu must read that as no evidence, never as a refusal.
@@ -324,6 +329,14 @@ for (const step of steps) {
     // measured table narrows when an alias is probed — #280), and there is no other way to reach it
     // from here, because the fixture's listing is otherwise fixed for the whole run.
     ALIAS_EFFORTS[step.narrow.alias] = step.narrow.efforts;
+    // BOTH lists, because the Build menu reads the narrow one. Moving only the enum would leave a
+    // narrowing aimed at `gpt-5.4` — the one alias whose two lists differ, and so the only one
+    // worth aiming at — changing nothing the menu looks at, and the test would pass over an
+    // untouched control.
+    if (step.narrow.alias in ALIAS_WITH_TOOLS) {
+      ALIAS_WITH_TOOLS[step.narrow.alias] = step.narrow.efforts.filter(
+        (e) => ALIAS_WITH_TOOLS[step.narrow.alias].includes(e));
+    }
     SW.store.set({ gatewayAliases: ALIAS_ROWS() });
   }
 
