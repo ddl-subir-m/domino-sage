@@ -141,10 +141,10 @@ window.SW = window.SW || {};
       const current = rows.find((r) => r.slot === spec.slot);
       if (!current) return null;
       const assigned = Boolean(current.assigned);
-      // What this slot's turn RUNS, when the assignment the row shows IS barred. Drawn as the
-      // row's value rather than left showing the barred one, because a select whose closed state
-      // reads "gpt-5.4 — not allowed" has answered the wrong question: the row is there to say what
-      // this mode runs, and under a lock that is never the barred model (ADR-0043).
+      // What the slot's turn RUNS, when that is not the model the row shows. Drawn as the row's
+      // value rather than leaving the assignment showing, because a select whose closed state
+      // names a model no turn will use has answered the wrong question: the row is there to say
+      // what this mode runs (ADR-0043).
       //
       // The server's answer, per slot, not a rule re-derived here. `llm_router.locked_runs_on` reads
       // the sovereign slots, the administrator's group ordering AND the signing pin, and a second
@@ -156,8 +156,41 @@ window.SW = window.SW || {};
       // already barred, and the pin has been folded into that question before it is asked. Here the
       // pin sits BETWEEN the slot and the lock, so all three rows named the sovereign slot while
       // every Build turn ran the signing model.
+      //
+      // The gate is that COMPARISON and not `barredNow`, since #287. "Is this row's own model
+      // unapproved" is a narrower question than the one the sentence answers, and the gap between
+      // them is silent: the pin takes every Build turn to whichever slot signs, so a row holding
+      // an APPROVED model still moves when the holder is barred and the lock moves the turn on
+      // from there. Gated on the row's own model, that row named one model, ran another, and said
+      // nothing at all — the one edge of this surface that gives the reader no claim to doubt.
       const barredNow = locked && !SW.util.isApproved(sensitivity, current.model);
-      const runs = (barredNow && ((sensitivity.slot_models || {})[spec.slot])) || '';
+      // `answer` is what the server says this slot runs; `runs` is that answer only where it is
+      // something the row does not already say. Equal means nothing moved: substituting there would
+      // replace a real assignment with a name the router never chose, and it would also take the way
+      // back off an untouched row, since the select falls through to `Use default` only while this
+      // is empty.
+      const answer = (locked && ((sensitivity.slot_models || {})[spec.slot])) || '';
+      // The comparison is not the whole gate, because its two halves come from two reads that are
+      // not kept in step: `setAssignment` patches the row and notifies BEFORE the lock's re-read
+      // lands, and that read is fire-and-forget precisely so a failed one leaves the last answer
+      // standing. Swapping one approved model for another would otherwise draw the PRE-save model
+      // back into the select under "This runs <old>, not <new>" — the drawer telling the reader
+      // their save was refused, which is the exact failure the patch above it exists to prevent.
+      //
+      // So the difference is drawn only where a rule that could have caused it is on this row.
+      // There are two, and between them they are every way the SERVER'S ANSWER can leave the model
+      // the row holds: the lock bars that model (`barredNow`), or the pin has shadowed the row and
+      // taken its turn to the holder (`shadowed`, which is #287's case — the row's own model
+      // approved and moved all the same). A difference neither one explains is a stale read.
+      //
+      // Not every way a TURN moves, and the gap is named rather than closed: `resolve_unsigned`
+      // routes a session whose history already carries unsigned tool calls to the first non-signing
+      // slot, and neither `slot_models` nor `shadowed` can see it, because it is a property of one
+      // transcript and no catalog can be asked about it — the same limit `shadowed_slots` records
+      // for its own sentence. Such a row is still silent. Closing it needs the session, not a
+      // fourth reading of the catalog.
+      const moved = barredNow || Boolean(current.shadowed);
+      const runs = moved && answer !== current.model ? answer : '';
       return h(
         'div',
         { key: spec.slot, className: 'sw-assignment-row' },
@@ -189,12 +222,17 @@ window.SW = window.SW || {};
         // naming one model, with two different remedies, is worse on this row than the one that
         // starts from the thing the reader came here to change.
         //
-        // `barredNow` and NOT `runs`: `runs` is the narrower fact that the lock moved this row AND
-        // the panel was told where to. `_locked_slot_models` returns nothing at all when the
-        // approved set resolves to none — the lock that closes every model — and reading `runs`
-        // there would let the pin's sentence back in at exactly the moment the reader can act on it
-        // least.
-        current.problem && !(current.shadowed && barredNow)
+        // `barredNow` OR `runs`, which is the rule this paragraph always meant: drop the pin's
+        // sentence wherever the line below names what the row runs. The two were the same condition
+        // until #287 widened `runs`, and separating them is what that widening cost. On a row the
+        // pin moved PAST an approved model, `barredNow` is false and the pin's sentence survived
+        // beside the new one — two adjacent sentences naming two different models as what runs, and
+        // the pin's is the false one, because a barred holder means the lock moved the turn on
+        // again. `barredNow` still carries the case with no line below it at all:
+        // `_locked_slot_models` returns nothing when the approved set resolves to none, and gating
+        // on `runs` alone would let the pin's sentence back in at exactly the moment the reader can
+        // act on it least.
+        current.problem && !(current.shadowed && (barredNow || runs))
           ? h('div', { className: 'sw-assignment-problem' }, current.problem)
           : null,
         // What the row would say if the lock were not holding. Not optional once the value above is
@@ -205,9 +243,15 @@ window.SW = window.SW || {};
         //
         // Says neither "assigned" nor "the default", because `current.model` is whichever of the two
         // this slot holds and one sentence has to be true of both.
+        // No CAUSE in it, since #287. "<model> isn't approved" was true only while the gate was
+        // the row's own model, and it is false on the row the wider gate reaches: approving a
+        // model that is already approved changes nothing. The two names are the part this row can
+        // state truthfully whatever moved the turn, and the causes are left to the controls that
+        // know which one it was — the lock's own notice, and `ShadowedSlot`'s sentence above.
+        //
         runs
           ? h('div', { className: 'sw-assignment-detail' },
-              `${current.model} isn't approved, so this runs ${runs}.`)
+              `This runs ${runs}, not ${current.model}.`)
           // Only when it differs from the default: repeating "gpt-5.4 (default)" under a select that
           // already says exactly that is noise on every row nobody has touched.
           : assigned && current.default
