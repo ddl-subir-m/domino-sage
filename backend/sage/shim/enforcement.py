@@ -225,10 +225,19 @@ class EnforcementShim:
         as a first-class column, so it's not tagged (a `project` tag would be dropped). `session` is
         the OpenCode session id, tagged as sage-session for per-build cost rollup.
 
-        `on_resolved(model, phase)` is called once the router has decided, so the caller's timing
+        `on_resolved(model, phase, reason)` is called once the router has decided, so the caller's
         record names the model the request actually ran on rather than the one OpenCode asked for —
         every request asks for the same placeholder, and the override is the whole point of the
-        shim. Optional and swallowed: a recorder must never be able to fail an inference."""
+        shim. Optional and swallowed: a recorder must never be able to fail an inference.
+
+        `reason` is `Reason`'s own value, and it is handed over rather than left to be re-derived
+        because it cannot be re-derived: four rules move a request off the picked model and three of
+        them land on the same alias, so "ran on gpt-5.4" alone does not say whether the person's
+        pick was honoured, overruled by the Ask pin, or dropped by the veto (#316). It is the reason
+        AS REBOUND below — the veto's rebind included — for the reason that rebind exists: the
+        router's `resolve_unsigned` returns the reason of the path it fell back to, which is the
+        path an ordinary turn with no pick at all takes.
+        """
         requested = request.get("model")
         state = self._control.snapshot()
 
@@ -475,7 +484,7 @@ class EnforcementShim:
         )
         if on_resolved is not None:
             try:
-                on_resolved(request["model"], state.phase.value)
+                on_resolved(request["model"], state.phase.value, decision.reason.value)
             except Exception:
                 log.debug("timing: on_resolved failed", exc_info=True)
         if dropped:

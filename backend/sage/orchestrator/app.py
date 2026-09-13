@@ -3727,9 +3727,20 @@ async def chat_completions(request: Request):
         """
         project.last_refused = (model, messages)
 
+    def _resolved(model: str, phase: str, reason: str) -> None:
+        """Which model the router put this inference on, to both readers that ask (#316).
+
+        One callback and not two, because they are one fact: the ledger renders it per call in the
+        waterfall and the Project holds the turn's last one for its terminal row. Wired apart, the
+        obvious failure is the one that already happened twice here — a second reader added later
+        and left reading the pick, agreeing with nothing and looking right.
+        """
+        call.model(model, phase, reason)
+        project.note_resolved(model, phase, reason)
+
     gen = project.shim.handle(body, project=project.id,
                               session=project.active_session_id or project.session_id,
-                              on_resolved=call.model, on_refused=_refused)
+                              on_resolved=_resolved, on_refused=_refused)
     # The boundary between our time and the gateway's. `handle` is not a generator — it rewrites the
     # request here and now (phase classification, the read-only tool filter, routing, the signing
     # veto) and only the `route` it returns is lazy, so the HTTP call does not start until `ka.pump`
