@@ -210,7 +210,8 @@ class ThreadStore:
             return None
         try:
             data = json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_meta`.
             return None
         return data if isinstance(data, dict) else None
 
@@ -260,7 +261,8 @@ class ThreadStore:
             return {"items": []}
         try:
             data = json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_meta`.
             return {"items": []}
         items = data.get("items") if isinstance(data, dict) else None
         if not isinstance(items, list):
@@ -489,7 +491,8 @@ class ThreadStore:
             return []
         try:
             data = json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_meta`.
             return []
         items = data.get("items") if isinstance(data, dict) else None
         return items if isinstance(items, list) else []
@@ -522,7 +525,8 @@ class ThreadStore:
             return []
         try:
             data = json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_meta`.
             return []
         if not isinstance(data, dict):
             return []
@@ -616,7 +620,20 @@ class ThreadStore:
             return None
         try:
             data = json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError`, not `json.JSONDecodeError`: a file whose bytes are not UTF-8 raises
+            # `UnicodeDecodeError` out of `read_text()`, and that is a SIBLING of `JSONDecodeError`
+            # under `ValueError` — the narrow pair missed it entirely (#326). This is the reader
+            # `list()` runs over EVERY Thread, so one mis-encoded record took out the whole rail,
+            # not the Conversation that owns it. `OSError` stays for the file that is THERE and
+            # could not be opened. `_read_settings_file` in `workspace/manager.py` is the canonical
+            # wording (#303); `withhold_table_rows` below has caught this pair explicitly all along.
+            #
+            # `safe_id` still raises past this: `meta_path` calls it BEFORE the `try`. That is
+            # deliberate — a directory name nothing minted is a different fault from a file that
+            # will not decode — but read it as a limit, NOT as a reassurance. `tombstoned_ids`
+            # catches that `ValueError`; `list()` does not, so a stray folder here still stops the
+            # rail this guard is about. Different fault, same headline, filed as #332.
             return None
         return data if isinstance(data, dict) else None
 
@@ -655,7 +672,8 @@ class ThreadStore:
         # them below and then delete the only evidence. Leave it and read it again next time.
         try:
             rows = json.loads(self._legacy_index_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_meta`.
             return
         if not isinstance(rows, list):
             return

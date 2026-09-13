@@ -356,10 +356,54 @@ window.SW = window.SW || {};
         runs
           ? h('div', { className: 'sw-assignment-detail' },
               `This runs ${runs}, not ${current.model}.`)
-          // Only when it differs from the default: repeating "gpt-5.4 (default)" under a select that
-          // already says exactly that is noise on every row nobody has touched.
+          // Only on an ASSIGNED row, which is not the same gate as "differs from the default" and
+          // was drawing the wrong sentence where the two part company (#299). An untouched row
+          // stays silent, because repeating "gpt-5.4 (default)" under a select that already says
+          // exactly that is noise on every row nobody has chosen.
+          //
+          // A row assigned to the model that is ALSO the default is the state the select cannot
+          // show: closed, it reads identically to a row nobody ever touched, and the two behave
+          // differently the day the deployment default moves. So that row gets the fact the screen
+          // is missing — that it is pinned — rather than the default's name, which it already has
+          // in the select and did not come here to read. `assigned` is the server's own flag for
+          // it (`service` reads the MODEL out of `model_overrides.json`, not the row's presence),
+          // so this branch is reading a distinction the payload already pays to carry rather than
+          // guessing one from the two names being equal.
           : assigned && current.default
-          ? h('div', { className: 'sw-assignment-detail' }, `Default is ${current.default}.`)
+          ? h('div', { className: 'sw-assignment-detail' },
+              // Three names, not two. `assigned_model` is what the FILE says and `current.model`
+              // is what the shim catalog says, and the server reads those from two places it does
+              // not keep in step (`service.model_assignments`, and the comment on `_unreadable`
+              // that first named the gap). Asking only whether `model` equals `default` would let
+              // a bad merge — a committed `model_overrides.json` arriving in an open Builder,
+              // assigning `coder` while the catalog still holds `gpt-5.4` — print a confident pin
+              // to a model the file no longer names, both halves of it false.
+              //
+              // So the claim is made only where all three agree, and every skew falls through to
+              // the older line, which names the default and asserts nothing about the pin. Vague
+              // and true beats specific and false, on the one row this sentence exists for.
+              //
+              // TRUTHY as well as agreeing, which is not the same requirement and does not come
+              // free from the gate one line up. Three ABSENT names agree — a payload predating
+              // `assigned_model` on a slot the catalog names no default for would read
+              // `undefined === undefined === undefined` and draw "Assigned to undefined, which is
+              // also the current default". The `current.default` conjunct above happens to stop
+              // that today, which is the problem: it makes this sentence's safety a property of a
+              // condition written for another reason, and #287 is this repo's record of what
+              // happens when somebody widens one of those. Asked here, it holds on its own.
+              //
+              // No test holds this conjunct, and a plant on it stays green: the server builds
+              // `assigned` and `assigned_model` out of one expression, so `assigned` true with no
+              // `assigned_model` is a payload no deployment can currently send. It is here for the
+              // shape rather than for a live fault, and it retires the day `assigned` stops being
+              // `bool(assigned_model)` on the server — at which point the case becomes reachable
+              // and wants a test instead of this paragraph.
+              current.assigned_model
+                && current.assigned_model === current.default
+                && current.model === current.default
+                ? `Assigned to ${current.model}, which is also the current default. `
+                  + 'This slot stays on it if the default changes.'
+                : `Default is ${current.default}.`)
           : null,
         // The effort half of the assignment, as a second group under the model and the model's own
         // two sentences rather than beside the select (ADR-0049). Below, because it is a property

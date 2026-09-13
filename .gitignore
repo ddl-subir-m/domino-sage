@@ -52,3 +52,8 @@ spikes/domino-probes/dogfood-swagger.json
 .sage/scratch/
 .sage/chat-work/
 .sage/threads/*/.*.tmp
+
+# Codex CLI's per-machine config. It carries an ANTHROPIC_BASE_URL pointing at a
+# localhost proxy port, so it is one machine's setting and not the repo's. Written
+# alongside AGENTS.md by the same tool, into every worktree.
+/.codex/

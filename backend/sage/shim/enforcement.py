@@ -225,10 +225,21 @@ class EnforcementShim:
         as a first-class column, so it's not tagged (a `project` tag would be dropped). `session` is
         the OpenCode session id, tagged as sage-session for per-build cost rollup.
 
-        `on_resolved(model, phase)` is called once the router has decided, so the caller's timing
+        `on_resolved(model, phase, reason)` is called once the router has decided, so the caller's
         record names the model the request actually ran on rather than the one OpenCode asked for —
         every request asks for the same placeholder, and the override is the whole point of the
-        shim. Optional and swallowed: a recorder must never be able to fail an inference."""
+        shim. Optional and swallowed: a recorder must never be able to fail an inference.
+
+        `reason` is `Reason`'s own value, and it is handed over rather than left to be re-derived
+        because it cannot be re-derived: four rules move a request off the picked model and three of
+        them land on the same alias, so "ran on gpt-5.4" alone does not say whether the person's
+        pick was honoured, overruled by the Ask pin, or dropped by the veto (#316). It is the reason
+        AS REBOUND below — the veto's rebind included — for the reason that rebind exists: the
+        router's `resolve_unsigned` returns the reason of the path it fell back to, which is the
+        path an ordinary turn with no pick at all takes.
+
+        `phase` is empty for the turns that have none — Chat and Ask; see the call site.
+        """
         requested = request.get("model")
         state = self._control.snapshot()
 
@@ -475,9 +486,33 @@ class EnforcementShim:
         )
         if on_resolved is not None:
             try:
-                on_resolved(request["model"], state.phase.value)
+                # No phase for the two kinds of turn that have none, and that is not a tidy-up:
+                # `state.phase` is only a fact about THIS turn where something set it for this turn.
+                # Measured against a control left in IMPLEMENT by an Auto build:
+                #
+                #   Chat        -> phase=implement   (the classifier above skips Chat entirely)
+                #   Ask mode    -> phase=implement   (it skips non-Auto too, and `_sync_phase` has
+                #                                     no branch for ASK)
+                #   Plan mode   -> phase=plan        (`ModelControl._sync_phase` set it)
+                #   Implement   -> phase=implement   (likewise)
+                #   Auto        -> phase=plan        (the classifier reclassified it)
+                #
+                # So only the first two are stale, and only they are blanked. Blanking the pinned
+                # modes as well would throw away a phase their own `set_mode` just made true — the
+                # over-wide fix, and the one that looks more consistent.
+                on_resolved(request["model"],
+                            "" if (state.chat_thread_id or state.mode is Mode.ASK)
+                            else state.phase.value,
+                            decision.reason.value)
             except Exception:
-                log.debug("timing: on_resolved failed", exc_info=True)
+                # Swallowed, because a recorder must never be able to fail an inference — but said
+                # at `warning` and named for what it is. This callback stopped being telemetry when
+                # it started feeding the turn's terminal row (#316): a failure here does not merely
+                # lose a waterfall line, it drops the `resolved` key from a row whose readers are
+                # told to take a missing key as "no model ran". That is a false statement in the
+                # product's voice, and it used to be reported at `debug` under the word "timing".
+                log.warning("model policy: on_resolved failed — this turn's record will name no "
+                            "model although one ran", exc_info=True)
         if dropped:
             log.info(
                 "model policy: dropped %d image part(s) — %s cannot process images",

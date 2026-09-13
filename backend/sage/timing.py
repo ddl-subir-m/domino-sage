@@ -64,6 +64,12 @@ class ModelCall:
     t0: float
     model: str = ""
     phase: str = ""
+    # WHICH RULE put this call on that model (`Reason`'s own value, #316). Recorded beside the model
+    # and not derived from it: four rules move a request off the picked model and three of them land
+    # on gpt-5.4, so the alias alone cannot say whether the pick was honoured, overruled by the Ask
+    # pin, or dropped by the signing veto — which is the question a waterfall gets read for when a
+    # step ran somewhere nobody expected.
+    reason: str = ""
     first_byte: float | None = None   # monotonic, not a duration — the waterfall needs the moment
     # The moment the shim finished rewriting this request and handed back the generator that will
     # make the call. `first_byte` is measured from `t0`, which starts BEFORE the shim runs, so a slow
@@ -301,10 +307,13 @@ class _CallHandle:
         if self._call is not None:
             self._call.chunks += 1
 
-    def model(self, name: str, phase: str = "") -> None:
+    def model(self, name: str, phase: str = "", reason: str = "") -> None:
+        """What the shim resolved, as `on_resolved` hands it over. Each field keeps what it had when
+        the caller supplies nothing, so a caller that knows only the model does not blank the rest."""
         if self._call is not None:
             self._call.model = name or self._call.model
             self._call.phase = phase or self._call.phase
+            self._call.reason = reason or self._call.reason
 
     def request(self, n_bytes: int) -> None:
         """How many bytes of request this inference carried."""
@@ -378,7 +387,7 @@ def as_dict(rec: TurnRecord) -> dict:
         "running": rec.t1 is None,
         "spans": [{"name": s.name, "depth": s.depth, "atMs": round((s.t0 - rec.t0) * 1000),
                    "ms": round(s.ms), "open": s.t1 is None, **s.fields} for s in rec.spans],
-        "calls": [{"n": c.n, "model": c.model, "phase": c.phase,
+        "calls": [{"n": c.n, "model": c.model, "phase": c.phase, "reason": c.reason,
                    "atMs": round((c.t0 - rec.t0) * 1000),
                    "ttfbMs": None if c.first_byte is None else round((c.first_byte - c.t0) * 1000),
                    "prepMs": None if c.prepared is None else round((c.prepared - c.t0) * 1000),
@@ -428,7 +437,8 @@ def render(rec: TurnRecord) -> str:
         tools = f" tools={','.join(c['tools'])}" if c.get("tools") else ""
         rows.append((c["atMs"],
                      (f"  {c['atMs'] / 1000:7.1f}  {(c['ms'] or 0) / 1000:7.1f}s      "
-                      f"· call {c['n']} {c['model'] or '?'}/{c['phase'] or '?'} "
+                      f"· call {c['n']} {c['model'] or '?'}/{c['phase'] or '?'}"
+                      f"{' (' + c['reason'] + ')' if c.get('reason') else ''} "
                       f"ttfb={ttfb}{shim} total={total} chunks={c['chunks']}"
                       f"{req} {tok}{tools}"
                       f"{'' if c['ok'] else '  FAILED ' + c['error']}")))

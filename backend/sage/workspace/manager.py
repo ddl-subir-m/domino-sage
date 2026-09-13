@@ -134,11 +134,22 @@ def ensure_ignore_line(path: Path, line: str) -> None:
     """Append one rule to an ignore file, once. Shared because both surfaces have one: the app
     carries the template's .gitignore, the Project keeps its own at the volume root, and the
     orchestrator adds lines to both plus the `.ignore` ripgrep reads."""
-    existing = path.read_text() if path.exists() else ""
-    if line in existing.split():
+    # Bytes, not text, and the rule line encoded to match. A `.gitignore` is a file in the person's
+    # own repo that they and the agent both edit, and one that is not UTF-8 raised
+    # `UnicodeDecodeError` out of `read_text()` here — not an `OSError`, so it escaped every caller
+    # and stopped the Project opening from the first line of `ensure()` (#303). Guarding the callers
+    # would have traded the crash for a rule that silently stops being applied, which is how data
+    # reaches git. Comparing and appending bytes needs no encoding to be true of the file at all,
+    # so the rule still lands and the bytes already in the file are left exactly as they were. The
+    # cost, stated because it is real: in a file that is not UTF-8 the comparison cannot recognise a
+    # rule already written in the file's OWN encoding, so an ASCII copy is appended beside it. A
+    # duplicate git ignores is the cheaper half of that trade — the other half is data reaching git.
+    existing = path.read_bytes() if path.exists() else b""
+    want = line.encode()
+    if want in existing.split():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(existing + ("" if existing.endswith("\n") or not existing else "\n") + line + "\n")
+    path.write_bytes(existing + (b"" if existing.endswith(b"\n") or not existing else b"\n") + want + b"\n")
 
 
 def remove_ignore_line(path: Path, line: str) -> bool:
@@ -152,11 +163,18 @@ def remove_ignore_line(path: Path, line: str) -> bool:
     even once the rule is gone, and this is a repair that runs over a file people also edit."""
     if not path.exists():
         return False
-    existing = path.read_text()
-    kept = [ln for ln in existing.splitlines() if ln.strip() != line]
-    if len(kept) == len(existing.splitlines()):
+    existing = path.read_bytes()          # bytes for the reason `ensure_ignore_line` gives above
+    want = line.encode()
+    # `split(b"\n")`, NOT `splitlines()`. `splitlines` also breaks on a lone `\r` — and in UTF-16 a
+    # `\r` is the two bytes `0D 00`, so it would split mid-character and come back joined as a bare
+    # `0A`, quietly altering bytes this function was never asked to touch. Splitting on `\n` alone
+    # keeps every other byte, including a `\r\n` ending and the absence of a final newline, so the
+    # only change to the file is the line that was asked for.
+    lines = existing.split(b"\n")
+    kept = [ln for ln in lines if ln.strip() != want]
+    if len(kept) == len(lines):
         return False
-    path.write_text("".join(ln + "\n" for ln in kept))
+    path.write_bytes(b"\n".join(kept))
     return True
 
 # Source dirs never copied into a workspace (heavy / regenerated / linked separately). __pycache__
@@ -281,7 +299,12 @@ def _read_settings_file(path: Path) -> dict:
         return {}
     try:
         data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
+        # `ValueError`, not `json.JSONDecodeError`: a file whose bytes are not UTF-8 raises
+        # `UnicodeDecodeError` out of `read_text()`, and that is a SIBLING of `JSONDecodeError`
+        # under `ValueError` — the narrow pair missed it entirely, so an unreadable sidecar became
+        # a crash where every other fault in it is a shrug (#303). `OSError` stays for the file
+        # that is THERE and could not be opened. Same shape as `read_catalog_overrides`.
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -359,7 +382,8 @@ class ProjectRecord:
             return None
         try:
             data = json.loads(meta_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_settings_file`.
             return None
         return data if isinstance(data, dict) else None
 
@@ -565,7 +589,8 @@ class ProjectRecord:
             return []
         try:
             data = json.loads(self.project_resources_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_settings_file`.
             return []
         if isinstance(data, dict):
             items = data.get("items")
@@ -624,7 +649,8 @@ class ProjectRecord:
             return None
         try:
             return json.loads(p.read_text()).get("session_id")
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_settings_file`.
             return None
 
     def write_session_id(self, session_id: str, conversation: str | None = None,
@@ -923,10 +949,30 @@ class ProjectRecord:
         """
         return self.path / ".sage" / "instructions.md"
 
-    def read_instructions(self) -> str:
+    def read_instructions(self, *, strict: bool = False) -> str:
+        """`strict` for the caller that REWRITES something from this file. An unreadable sidecar and
+        an empty one both come back as `""`, and for a caller that only displays the text that is
+        the right shrug — but `_splice_instructions` treats `""` as "the person has no instructions"
+        and strips the rendered block out of AGENTS.md, so for that one the shrug quietly destroys
+        the very text it could not read. Same split, and the same word, as `_read_uploads_ledger`.
+        """
         try:
             return self.instructions_path.read_text().strip()
-        except OSError:
+        except FileNotFoundError:
+            # No file is not an unreadable file, and `strict` must not confuse them: clearing your
+            # instructions is stored by `write_instructions` UNLINKING the file, so absence is the
+            # ordinary way to have none. Refusing on it would leave the block standing in AGENTS.md
+            # forever and say "could not be read" about a file nobody wrote. Asked by CATCHING
+            # rather than by `exists()` first, so a delete racing this read lands here and not in
+            # the unreadable branch below — the same reason `read_catalog_overrides` splits them.
+            return ""
+        except (ValueError, OSError):
+            # `ValueError` for the same reason the JSON readers take it (#303): bytes that are not
+            # UTF-8 come out of `read_text()` as `UnicodeDecodeError`, which is neither an `OSError`
+            # nor anything the caller expects. `_splice_instructions` runs this on every `project()`,
+            # so the narrow catch made one mis-encoded file stop the Project opening.
+            if strict:
+                raise
             return ""
 
     def write_instructions(self, text: str) -> None:
@@ -1675,7 +1721,8 @@ class Workspace:
             return []
         try:
             data = json.loads(self.attachments_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_settings_file`.
             return []
         return data if isinstance(data, list) else []
 
@@ -1698,7 +1745,8 @@ class Workspace:
             return []
         try:
             data = json.loads(self.bindings_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_settings_file`.
             return []
         return data if isinstance(data, list) else []
 
@@ -2035,8 +2083,13 @@ class WorkspaceManager:
         path = self._dir / "AGENTS.md"
         try:
             body = path.read_text()
-        except OSError:
-            return          # absent on every Project seeded since; unreadable is not ours to fix
+        except (ValueError, OSError):
+            # Absent on every Project seeded since, and an unreadable one is not ours to fix. Takes
+            # `ValueError` as well because `ensure()` calls this unconditionally: a legacy root
+            # AGENTS.md whose bytes are not UTF-8 raised `UnicodeDecodeError` out of the FIRST step
+            # of opening a Project (#303). This file is exactly the old artefact most likely to be
+            # encoding-damaged, so shrugging at it is the whole point of the method.
+            return
         voiced = apply_voice(body)
         if voiced == body:
             return
