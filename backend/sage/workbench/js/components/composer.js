@@ -755,6 +755,13 @@ window.SW = window.SW || {};
       // gateway reports `inference_params: {}` for every alias (#284), pre-existing on the Chat
       // chip for the same reason, and tracked on #298 — the surface that can close it is the
       // provider, not this menu.
+      //
+      // The OTHER direction is latent for the same reason and is named so the next reader does not
+      // assume there is only one: the browser reads `reasoning_efforts ∩ EFFORTS_WITH_TOOLS[alias]`
+      // while `enforcement.py` reads the tool table UN-intersected. Were the gateway ever to publish
+      // an enum excluding a level the measured table holds, this menu would refuse one the send path
+      // accepts — over-refusing rather than over-offering. Both collapse while `inference_params` is
+      // empty, which is why the two lists coincide today.
       return (alias.reasoning_efforts_with_tools || []).includes(buildEffort) ? '' : buildEffort;
     };
     // The level the live pick is running at, where there is one the alias will take. Empty for no
@@ -799,9 +806,13 @@ window.SW = window.SW || {};
     const collapsedStranded = !override ? strandedNow : '';
     // The FACT, with no exit in it. `buildPick` rather than `pinnedModel`, so it names the model on
     // a real override too — that is the half the collapse gate silently excluded.
+    // "Turns run", not "this turn runs": the same sentence reaches the RUNNING chip and the idle
+    // dropdown, and idle there is no turn for a present-tense claim to be about. On the running chip
+    // it would be wrong the other way anyway — a table that narrowed mid-flight leaves the in-flight
+    // turn having already sent the level.
     const strandedFact = strandedNow
-      ? `${override || pinnedModel} doesn't accept ${effortLabel(strandedNow)}, so this turn runs `
-        + 'at the model default.'
+      ? `${override || pinnedModel} doesn't accept ${effortLabel(strandedNow)}. Turns run at the `
+        + 'model default instead.'
       : '';
     // The fact PLUS the way out, for the open menu only. "The row below" is a real instruction
     // there and a false one on the running chip, which draws a disabled Button with no menu behind
@@ -1519,7 +1530,27 @@ window.SW = window.SW || {};
                     const pinMoves = Boolean(signingSlot && catalog
                       && catalog[signingSlot] !== catalog[modeSlot]);
                     const effortSlot = pinMoves ? signingSlot : modeSlot;
-                    const pinnedEffort = (catalog && catalog[`${effortSlot}_effort`]) || null;
+                    // Narrowed the SAME way the pick's level is, because the two are about to be
+                    // compared. The pick goes through `buildEffortsFor` before it may appear; the
+                    // assignment was read raw off the catalog — and the drawer validates a slot's
+                    // level against the WIDE enum (`service.py`'s `alias.get("reasoning_efforts")`),
+                    // so a slot can legitimately hold a level the alias drops beside tools.
+                    //
+                    // `plan_effort="high"` on `gpt-5.4` is exactly that: the send path drops it, so
+                    // the unpicked slot and a pick carrying no level BOTH run at the model default —
+                    // and comparing a narrowed value against an un-narrowed one reported a
+                    // difference that does not exist. Same falsehood cf75c76 closed, reached through
+                    // the assignment half rather than the pick half.
+                    //
+                    // No evidence still PERMITS: with no alias row, or a row not carrying the narrow
+                    // list, the level stands rather than being narrowed away.
+                    const pinnedEffortSaved = (catalog && catalog[`${effortSlot}_effort`]) || null;
+                    const pinnedEffortRow = aliasRow((catalog && catalog[effortSlot]) || '');
+                    const pinnedEffort = pinnedEffortSaved && pinnedEffortRow
+                      && pinnedEffortRow.reasoning_efforts_with_tools
+                      && !pinnedEffortRow.reasoning_efforts_with_tools.includes(pinnedEffortSaved)
+                      ? null
+                      : pinnedEffortSaved;
                     // Compared as EFFECTIVE levels, not on whether a level was chosen. A collapsed
                     // pick that names NO level still overrides — the router answers
                     // `plan-override … effort=None` where the slot would have answered its assigned

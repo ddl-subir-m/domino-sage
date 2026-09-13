@@ -376,8 +376,19 @@ for (const step of steps) {
     // Without a step that can put one model in two slots with different efforts, nothing here could
     // tell "the pin supplies the effort" from "the mode slot does".
     if (step.alsoSigning) CATALOG[step.alsoSigning] = SIGNING_MODEL;
-    if (step.efforts) Object.assign(CATALOG, step.efforts);
   }
+
+  // OUTSIDE the signing block, deliberately: these describe the catalog and have nothing to do with
+  // a pin. Nested under `signing` they applied only to steps that also set one — which made a test
+  // that asserted "no difference is claimed" pass VACUOUSLY, because the state it was about was
+  // never built.
+  //
+  // `slots` points a slot at another alias, which nothing could do before. Every `<slot>_effort`
+  // assertion otherwise lands on `claude-planner`, whose two effort lists are equal — so a slot
+  // holding a level the alias DROPS beside tools, which the drawer permits because it validates
+  // against the wide enum, could not be expressed here at all.
+  if (step.slots) Object.assign(CATALOG, step.slots);
+  if (step.efforts) Object.assign(CATALOG, step.efforts);
   await SW.store.setBuildMode(step.mode);
   await settle();
   // After the mode, because `setBuildMode` goes through a real status write and this does not —

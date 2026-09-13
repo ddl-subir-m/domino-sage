@@ -587,6 +587,35 @@ def test_a_stranded_level_on_a_real_override_is_accounted_for_mid_turn_too():
     assert f"{PLAN_MODEL} doesn't accept High" in row["why"]
 
 
+def test_an_assignment_level_the_alias_drops_beside_tools_is_no_difference():
+    """The assignment half of the comparison, narrowed the same way the pick half already was.
+
+    The drawer validates a slot's level against the WIDE enum (`alias.get("reasoning_efforts")`), so
+    a slot may legitimately hold a level the alias drops beside tools — `plan_effort="high"` on
+    `gpt-5.4`, whose measured enum carries `high` and whose tool-carrying list is `["none"]`.
+
+    Then the unpicked slot and a pick carrying no level BOTH run at the model default, and comparing
+    a narrowed value against an un-narrowed one reports a difference that does not exist. Same
+    falsehood cf75c76 closed, reached through the assignment half rather than the pick half.
+    """
+    _, row = _drawn([{"mode": "implement", "pick": "openai/gpt-5.4::"},
+                     {"mode": "plan", "slots": {"plan": "openai/gpt-5.4"},
+                      "efforts": {"plan_effort": "high"}}])
+
+    assert row["label"] == "openai/gpt-5.4"
+    assert "not at the assignment's" not in (row["why"] or "")
+
+
+def test_an_assignment_level_the_alias_keeps_is_still_a_difference():
+    """The other side, so the narrowing is not simply silencing the comparison: `low` survives
+    beside tools on the fixture's deepseek, so a pick carrying no level really does differ."""
+    _, row = _drawn([{"mode": "implement", "pick": "deepseek/deepseek-v3::"},
+                     {"mode": "plan", "slots": {"plan": "deepseek/deepseek-v3"},
+                      "efforts": {"plan_effort": "low"}}])
+
+    assert "at Model default, not at the assignment's Low" in row["why"]
+
+
 def test_the_pin_supplies_the_effort_only_where_it_moves_the_model():
     """`pinnedSlot` is the signing slot when one exists — right for the MODEL, wrong for the EFFORT.
 
@@ -957,7 +986,9 @@ def test_a_collapsed_pick_whose_level_is_stranded_claims_no_default():
     assert row["label"] == PLAN_MODEL
     assert "(default)" not in row["label"]
     assert "doesn't accept High" in row["why"]
-    assert "runs at the model default" in row["why"]
+    # "Turns run", not "this turn runs" — the same sentence reaches the idle dropdown, where there
+    # is no turn for a present-tense claim to be about.
+    assert "Turns run at the model default" in row["why"]
 
 
 def test_only_an_unpicked_slot_is_allowed_to_call_itself_the_default():
