@@ -898,3 +898,29 @@ def test_a_pinned_and_locked_row_draws_no_sentence_at_all():
     ])
     assert pinned_and_locked["problems"] == []
     assert any("couldn't be read" in p for p in locked_only["problems"])
+
+
+# ---- the line under an assigned row (#299) ---------------------------------------------------------
+
+
+def test_a_row_assigned_to_the_model_that_is_also_the_default_says_which_it_is():
+    """The one state the select cannot show. `plan` holds `gpt-5.4` and the deployment default IS
+    `gpt-5.4`, so a closed select naming it is true of a row that was pinned and of a row that was
+    never touched — and the two behave differently the day the default moves. Naming the default
+    here ("Default is gpt-5.4.") answers a question nobody asked and leaves the reader unable to
+    tell the two apart, so the sentence names the assignment and what it costs instead."""
+    (drawn,) = _drawn([{"seed": {"plan": {"model": "gpt-5.4"}}}])
+    assert _row(drawn, "Plan")["value"] == "gpt-5.4"
+    assert drawn["details"] == [
+        ("Assigned to gpt-5.4, which is also the current default. "
+         "This slot stays on it if the default changes."),
+    ]
+
+
+def test_a_row_assigned_away_from_the_default_still_names_what_it_left():
+    """The other side of the same fork, asserted beside it rather than left to the pick tests: where
+    the two differ the select already shows the assignment, so the thing the row cannot show is what
+    it went back to — and that sentence is unchanged."""
+    (drawn,) = _drawn([{"seed": {"implement": {"model": "gpt-5.4"}}}])
+    assert _row(drawn, "Implement")["value"] == "gpt-5.4"
+    assert drawn["details"] == ["Default is coder."]

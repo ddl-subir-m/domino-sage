@@ -356,10 +356,25 @@ window.SW = window.SW || {};
         runs
           ? h('div', { className: 'sw-assignment-detail' },
               `This runs ${runs}, not ${current.model}.`)
-          // Only when it differs from the default: repeating "gpt-5.4 (default)" under a select that
-          // already says exactly that is noise on every row nobody has touched.
+          // Only on an ASSIGNED row, which is not the same gate as "differs from the default" and
+          // was drawing the wrong sentence where the two part company (#299). An untouched row
+          // stays silent, because repeating "gpt-5.4 (default)" under a select that already says
+          // exactly that is noise on every row nobody has chosen.
+          //
+          // A row assigned to the model that is ALSO the default is the state the select cannot
+          // show: closed, it reads identically to a row nobody ever touched, and the two behave
+          // differently the day the deployment default moves. So that row gets the fact the screen
+          // is missing — that it is pinned — rather than the default's name, which it already has
+          // in the select and did not come here to read. `assigned` is the server's own flag for
+          // it (`service` reads the MODEL out of `model_overrides.json`, not the row's presence),
+          // so this branch is reading a distinction the payload already pays to carry rather than
+          // guessing one from the two names being equal.
           : assigned && current.default
-          ? h('div', { className: 'sw-assignment-detail' }, `Default is ${current.default}.`)
+          ? h('div', { className: 'sw-assignment-detail' },
+              current.model === current.default
+                ? `Assigned to ${current.model}, which is also the current default. `
+                  + 'This slot stays on it if the default changes.'
+                : `Default is ${current.default}.`)
           : null,
         // The effort half of the assignment, as a second group under the model and the model's own
         // two sentences rather than beside the select (ADR-0049). Below, because it is a property
