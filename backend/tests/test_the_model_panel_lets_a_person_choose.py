@@ -485,7 +485,12 @@ def test_a_fallback_row_cannot_invent_a_move_it_was_never_told_about():
 _PICKED = {
     "seed": {"ask": {"model": "coder"}},
     "pick": "opus",
-    "sensitivity": {**_LOCK, "slot_models": {"plan": "opus", "implement": "opus", "ask": "coder"}},
+    # `picked` beside the moved `slot_models`, because that is what the server sends: one
+    # `control.snapshot()` decides both (#294). Without it this fixture describes a payload no
+    # deployment produces, and since the row asks the SERVED flag before the browser's mirror it
+    # would also send every assertion below down the legacy fallback instead of the live path.
+    "sensitivity": {**_LOCK, "picked": True,
+                    "slot_models": {"plan": "opus", "implement": "opus", "ask": "coder"}},
 }
 
 
@@ -521,7 +526,8 @@ def test_a_chat_pick_moves_that_row_and_leaves_the_build_rows_alone():
     (drawn,) = _drawn([{
         "seed": {"ask": {"model": "coder"}},
         "chatPick": "opus",
-        "sensitivity": _lock(slot_models={"plan": "opus", "implement": "coder", "ask": "opus"}),
+        "sensitivity": _lock(chat_picked=True,
+                             slot_models={"plan": "opus", "implement": "coder", "ask": "opus"}),
     }])
     assert _row(drawn, "Ask and Chat")["value"] == "opus"
     assert _row(drawn, "Implement")["value"] == "__default__"

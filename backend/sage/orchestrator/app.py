@@ -2060,11 +2060,20 @@ def sensitivity_state(conversation: str = "") -> JSONResponse:
         # reads `picked`/`chat_picked` to decide whether a row draws the per-slot answer at all, and
         # a payload missing them makes "no pick" and "this read failed" the same answer. Falsy here
         # for the same reason `locked` is — a read that threw claims nothing.
+        #
+        # `unavailable` is what says WHICH of those two this is, and it exists for one caller: the
+        # drawer's 2s cadence stops on a landed answer that says the lock is off, because that is a
+        # settled fact about the deployment. This answer is not that fact and is not settled — it is
+        # one exception on one read — so without the flag a single transient Domino failure would
+        # stop the cadence for the life of the drawer, which is the outcome the gate exists to
+        # prevent. It deliberately does NOT change what anyone else does with this payload: the
+        # picker failing OPEN here is the documented trade above, and the lock still holds in the
+        # router and at publish whatever this answers.
         return JSONResponse(content={"enabled": False, "locked": False, "group": "",
                                      "approved": [], "datasets": [], "refusal": None,
                                      "model": None, "chat_model": None, "slot_models": {},
                                      "picked": False, "chat_picked": False,
-                                     "reason": ""})
+                                     "unavailable": True, "reason": ""})
 
 
 @control_app.post("/api/project/assets/{dataset_id}/sensitive")

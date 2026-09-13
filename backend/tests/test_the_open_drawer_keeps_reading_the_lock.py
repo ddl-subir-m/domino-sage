@@ -248,3 +248,26 @@ def test_an_unchanged_answer_does_not_redraw_the_shell():
     (run,) = _ticked([{"watch": "stream", "locked": True, "open": True, "ticks": 4}])
     assert run["readsWhileOpen"] == 4, "the premise: it did keep asking"
     assert run["notifiesWhileOpen"] == 1, "and told the shell only about the answer that moved"
+
+
+def test_a_read_the_server_could_not_answer_does_not_read_as_a_deployment_with_no_lock():
+    """FOUND IN REVIEW, and it is the earlier gap one layer out.
+
+    The gate learned to tell a LANDED answer from a `null` that never landed. But the route never
+    500s: it answers a thrown read with a 200 carrying the unlocked shape, so an exception inside
+    `sensitivity_state` landed as "this deployment has no lock" — which stopped the cadence for the
+    life of the drawer and never retried. The stale-"unlocked" outcome the gate exists to prevent,
+    reached through the one shape it could not read.
+
+    `unavailable` is the server saying which of the two this is. Everything else about that payload
+    is deliberately unchanged: the picker failing open on a failed read is that route's own
+    documented trade, and the lock still holds in the router and at publish whatever it answers.
+    """
+    broke, really_unlocked = _ticked([
+        {"watch": "stream", "locked": True, "open": True, "ticks": 4, "unavailableFor": 2},
+        {"watch": "stream", "locked": False, "open": True, "ticks": 4},
+    ])
+    assert broke["readsWhileOpen"] == 4, "two failures, and it was still asking on the fourth tick"
+    assert broke["lockedOnOpen"] is True and broke["drawnAfterTicks"] == "gpt-5.4"
+    # And the settled fact still stops it, or the gate would just be gone.
+    assert really_unlocked["readsWhileOpen"] == 0

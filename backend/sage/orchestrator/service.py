@@ -154,7 +154,15 @@ from ..resources.sensitivity import (
 from ..resources.table_search import Candidate
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, reasoning_efforts_for, signing_slot
+from ..router.models import (
+    ASSIGNABLE_SLOTS,
+    Mode,
+    ModelCatalog,
+    Phase,
+    SessionState,
+    reasoning_efforts_for,
+    signing_slot,
+)
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
 from ..workspace.manager import (
@@ -16028,7 +16036,7 @@ class Orchestrator:
         gate = self._sensitivity_gate()
         off = {"enabled": False, "locked": False, "group": "", "approved": [], "datasets": [],
                "refusal": None, "model": None, "chat_model": None, "slot_models": {},
-               "picked": False, "chat_picked": False, "reason": ""}
+               "picked": False, "chat_picked": False, "unavailable": False, "reason": ""}
         if not gate.enabled:
             return off
         project = self.project()
@@ -16086,6 +16094,10 @@ class Orchestrator:
             # photograph of it, not three glances.
             "picked": bool(pick_now.picked_model),
             "chat_picked": bool(pick_now.chat_model),
+            # Always False on an answer this function returned at all — it is the route's own
+            # never-500 handler that sets it. Present here and in `off` because a key that appears
+            # in one of three shapes is a key some reader will find missing.
+            "unavailable": False,
         }
 
     def _locked_model(

@@ -50,6 +50,10 @@ const owners = new Map();
 // equals its own model" the same read, and the fork below could not be wrong in a visible way.
 const BEFORE = { plan: 'coder', implement: 'coder', ask: 'gpt-5.4' };
 const AFTER = { plan: 'gpt-5.4', implement: 'gpt-5.4', ask: 'coder' };
+// How many reads answer with the route's never-500 payload: a 200 carrying the UNLOCKED shape,
+// which is what `app.py` sends when `sensitivity_state` throws. Distinct from `failFromBoot`, where
+// the fetch itself rejects and nothing lands at all — that is the whole point of the pair.
+let unavailableFor = 0;
 let locked = true;
 let escalated = false;
 // Which half of the pick the server reports. The `ask` row reads the Chat one and the two Build
@@ -63,7 +67,16 @@ let servesPick = true;
 let sensitivityReads = 0;
 const lock = () => {
   sensitivityReads += 1;
-  if (!locked) return { enabled: false, locked: false, approved: [], datasets: [], refusal: null };
+  if (unavailableFor > 0) {
+    unavailableFor -= 1;
+    return { enabled: false, locked: false, group: '', approved: [], datasets: [], refusal: null,
+             model: null, chat_model: null, slot_models: {},
+             picked: false, chat_picked: false, unavailable: true, reason: '' };
+  }
+  if (!locked) {
+    return { enabled: false, locked: false, approved: [], datasets: [], refusal: null,
+             unavailable: false };
+  }
   const answer = {
     enabled: true, locked: true, reason: 'dataset', group: 'restricted',
     approved: ['coder', 'gpt-5.4'], datasets: [{ id: 'd1', name: 'Claims' }], refusal: null,
@@ -253,6 +266,7 @@ for (const step of steps) {
   chatPicked = !!step.chatPicked;
   servesPick = step.servesPick === undefined ? true : step.servesPick;
   failSensitivityFor = step.failFromBoot || 0;
+  unavailableFor = 0;
   buildStateRunning = false;
 
   SW.store.set({
@@ -301,6 +315,11 @@ for (const step of steps) {
 
   // The escalation, fired with the drawer already open and no human act behind it.
   escalated = true;
+  // Armed HERE and not with the other step state, so the failures land on the TICKS. Set during
+  // setup they were spent on `loadBuild`'s own read before the drawer opened, and a plant on the
+  // gate they exist to test stayed green — the fixture answered every tick correctly, so there was
+  // nothing for the assertion to see.
+  unavailableFor = step.unavailableFor || 0;
   sensitivityReads = 0;
   appReads = 0;
   notifies = 0;

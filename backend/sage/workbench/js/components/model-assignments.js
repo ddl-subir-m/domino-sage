@@ -248,12 +248,20 @@ window.SW = window.SW || {};
         ? (sensitivity || {}).chat_picked
         : (sensitivity || {}).picked;
       const mirror = (spec.slot === 'ask' ? chatPick : buildModel) || '';
-      // ASKED FIRST, not OR'd — FOUND IN REVIEW, where the comment said one and the code did the
-      // other. An OR cannot be closed by a fresher answer: `set_catalog` clears the Build pick
-      // server-side on save, the next read lands `picked: false`, and a mirror still holding the old
-      // pick would keep this gate open on a pick the server has already dropped. `undefined` is the
-      // only reading of the fallback: a deployment whose payload predates the field, not one
-      // answering false.
+      // ASKED FIRST, not OR'd — the comment used to say one and the code did the other. The reason
+      // is NOT the one review offered, which was that a save clears the pick server-side and leaves
+      // the mirror holding it: measured, `set_model` answers the save with `project.status()` and
+      // `setAssignment` puts that through `applyModelStatus`, so the mirror clears on the same round
+      // trip. The reason is pairing. `served` was taken from the SAME snapshot as the `slot_models`
+      // beside it — the server takes one and hands it down for exactly this — while the mirror comes
+      // from a different read at a different moment, so an OR can pair a mirror saying "a pick is
+      // live" with an answer that has no pick folded into it. That skew is the defect this ticket
+      // has now been fixed for twice, once in the browser and once inside the payload.
+      //
+      // `undefined` is the only state the mirror answers for: a payload predating the field. It is
+      // kept rather than deleted because a server that stopped sending the flag would otherwise go
+      // silent on every row at once, and its expiry is that condition rather than a date — when
+      // something else makes an absent flag loud, this goes.
       const picked = locked && (served === undefined ? Boolean(mirror) : Boolean(served));
       const moved = barredNow || Boolean(current.shadowed) || picked;
       const runs = moved && answer !== current.model ? answer : '';
