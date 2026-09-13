@@ -34,8 +34,9 @@ Three modes:
     guardrail-probe.py file data.csv        header + 3 sample rows, then per COLUMN
     guardrail-probe.py scan ./app           prescan a tree locally, confirm candidates
 
-`file` sends what Sage inlines for an @mentioned file — the header and three sample rows
-(`describe._describe_tabular`), not the whole file. A column whose matching value sits in row 900
+`file` sends the header and three sample rows (`describe._describe_tabular`), not the whole file.
+It is NOT what an @mention inlines — that was true when this was written and #250 changed it: a
+mention now hands over `shape`, which drops the rows and keeps the per-column vocabulary. A column whose matching value sits in row 900
 therefore reads OK here and still refuses a turn that reads the file. A clean verdict from this
 tool is evidence, not proof.
 

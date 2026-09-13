@@ -214,6 +214,62 @@ This is written down because the two decisions read as if they must meet. A late
 "sensitive" and "reads a Dataset" in one sentence will reach for the gate — and gating a Live read
 would break the one path built to keep rows away from the model in the first place.
 
+## A card is not something the guardrail vouches for (#321)
+
+Two lanes can put rows in front of a person that no model ever read, and both are this decision
+working. A Live read hands the card its rows while the assistant gets columns, a row count and a
+path. Chat's Python lane reads the file with pandas and writes the `*.table.json` — the prompt
+tells the agent to do exactly that — and where the script writes the file, the rows never enter the
+turn. So the gateway's guardrails, which run over what a turn **carries** to a vendor model, need
+never have run over what is on screen. Somebody who has watched a turn refused over an email
+address will eventually ask whether the card bypassed something. It did not. A guardrail is an
+administrator's rule about what reaches vendor models; it is not a promise about what a person may
+see of their own data, and the two questions only look like one.
+
+Stated as *can* and *need never*, because the inverse also happens and the honest claim is about
+what the guardrail **covers** rather than where any one card's rows came from. A model that reads a
+CSV and then composes the `*.table.json` in a `write` call is putting rows it already read into a
+file, and those rows did cross the gateway on the way in. `withhold_table_rows` knows that shape
+and deliberately declines to sort by it — it takes every table the turn left behind "and not only
+the ones the model composed, because ADR-0045 is one rule over every writer" — which is the right
+call for a consent rule and no help at all to somebody asking where one card's rows have been.
+Both readings end in the same place: a card is not something the guardrail vouches for.
+
+It follows that a clean card is no verdict on the file behind it. `Block PII`, measured on
+`sage.gcp.cs.domino.tech` on 2026-09-11, matches four shapes of **value** — an email address, a
+phone number, a card number, an SSN — and `shim/refusal_scan.py` mirrors them in five patterns,
+because a separated `555-123-4567` carries no long digit run and needs its own. Names, addresses
+and dates of birth pass however obviously personal they are, and the column names alone never trip
+it. Which **aliases** a guardrail runs over is the administrator's too, and it moves faster than
+the patterns do: coverage was measured as `gpt-5.4` alone on 2026-09-11 and over further aliases on
+2026-09-13, with no change to any code in this repo in between (#315). Nothing above or below this
+paragraph rests on that — the claim this section makes is that rows can reach a card without
+reaching a model at all, which is a property of Sage's own data path — but a sentence naming a
+covered alias would be wrong within days of being written, so there is none. The patterns are the
+administrator's
+and another gateway's will differ, so to ask what a given file would do to a *turn* rather than to
+a card, run `scripts/guardrail-probe.py file <path>`: it sends the header and the first three
+rows, and breaks the answer down per column only when that sample is refused.
+
+A clean verdict there is evidence and not proof, and depth is only the first reason — the matching
+value can sit in row 900. The second is that those three rows are not what a turn carries for an
+@mentioned file. Since #250 that is `shape`: column names, inferred types, and the verbatim
+vocabulary of any column with few enough distinct values (`describe._vocabulary_suffix`), which is
+held to these same four patterns and therefore passes a column of four hundred customer names
+through intact. The prompt then tells the agent to `read` the path anyway, so the rows follow by
+the ordinary route.
+
+No note is drawn on the card. A sentence on every table would teach the wrong model of the product
+— that a card is a thing the gateway vouches for — and would be noise by the second table. The
+[[Kept rows]] setting says the short form of this once, in the one place somebody is already
+weighing where these rows go (`workbench/js/components/collab.js`). That sentence names what the
+checks cover and not where the rows came from, for the reason above and for one more: provenance is
+what that switch decides. With it off the rows are taken back out of the committed file at turn end
+and nothing puts them back — **Read again** is a person pressing it, and only on a card with a
+Binding behind it — so a sentence about the Project's files would be false in the state the switch
+defaults to.
+
+
 ## Revised by
 
 [ADR-0045](0045-an-artifact-commits-the-shape-and-the-rows-only-by-consent.md) keeps the decision
