@@ -232,6 +232,9 @@ def test_a_slot_says_what_it_would_revert_to(tmp_path):
 def test_an_untouched_slot_is_not_reported_as_assigned(tmp_path):
     plan = next(r for r in _orch(tmp_path).model_assignments()["slots"] if r["slot"] == "plan")
     assert (plan["model"], plan["assigned"]) == ("gpt-5.4", False)
+    # `None`, not the model it is following: the field answers what the file assigns, and a slot
+    # following the default has no assignment to report.
+    assert plan["assigned_model"] is None
 
 
 def test_an_alias_with_nothing_on_domino_behind_it_is_offered_as_serving(tmp_path):
@@ -288,6 +291,11 @@ def test_a_slot_assigned_to_the_model_that_is_already_the_default_still_reads_as
     orch.set_catalog(plan="gpt-5.4")  # CATALOG.plan is already "gpt-5.4"
     plan = next(r for r in orch.model_assignments()["slots"] if r["slot"] == "plan")
     assert plan["assigned"] is True
+    # The model the FILE names, beside the boolean drawn from it. The panel cannot recover this by
+    # comparing `model` with `default`, because on this row they are equal and `model` is read from
+    # the shim catalog rather than from the file — so the one state where those two are equal for a
+    # reason other than a pin would be indistinguishable from this one (#299).
+    assert plan["assigned_model"] == "gpt-5.4"
     # `{model, effort}` since ADR-0049: an assignment is a pair, and a slot with no effort carries
     # the same `None` a slot that never had one does.
     assert orch.project().record.read_catalog_overrides() == {
