@@ -135,8 +135,9 @@ External PRs are **not** a triage surface. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Canonical vocabulary, unchanged: `needs-triage`, `needs-info`, `ready-for-agent`,
-`ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+Canonical vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`,
+`wontfix`, plus `later` — ours, for a real issue with no live symptom. Before you FILE one,
+read "When to file" in `docs/agents/issue-tracker.md`. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 

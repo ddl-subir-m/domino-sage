@@ -13,6 +13,36 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
+## When to file
+
+**A ticket needs a symptom: something a person could hit, and notice.**
+
+That bar exists because the reviews here work. They find real things, and filing every one of them
+produced 34 issues in a single day — at which point `ready-for-agent` stopped meaning "pick this
+up" and started meaning "was filed", which is the failure this rule is for. The cost of a ticket is
+not writing it. It is that every future reader has to re-read it and decide again.
+
+File it when you can finish this sentence: *a person doing X sees Y, and Y is wrong.*
+
+Do NOT file when the finding is one of these. Each has a better home:
+
+- **A limit you decided to accept.** Write it where the code is, with the condition that would
+  retire it. The next reader asks "may I delete this?", and a ticket cannot answer that.
+- **A fact you learned that the code does not state.** A comment on the line that surprised you.
+  A ticket is the wrong shape for knowledge — it gets closed, and the knowledge goes with it.
+- **A latent fault with no reachable path.** Say so in the code and name what would make it
+  reachable. If the path arrives, THAT is the ticket.
+- **Work you simply did not do.** Say it in the report, not the tracker. "Not covered: the browser
+  check, which cannot run from a worktree" belongs in what you hand back.
+
+When a finding is real but nobody is hurt today, `later` is the honest label. It is not a softer
+`wontfix` — it says the work is right and the moment is not now. Reach for it rather than not
+filing at all, and rather than filing as `ready-for-agent` and hoping.
+
+**One thing that is always worth a ticket, regardless:** a fix you rejected, with the reason. A
+plausible wrong fix will be re-derived by the next person in about ten minutes. Writing down why it
+fails is the single highest-value paragraph in most issues here.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
