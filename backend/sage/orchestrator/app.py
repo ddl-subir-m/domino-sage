@@ -3727,9 +3727,30 @@ async def chat_completions(request: Request):
         """
         project.last_refused = (model, messages)
 
+    def _resolved(model: str, phase: str, reason: str) -> None:
+        """Which model the router put this inference on, to both readers that ask (#316).
+
+        One callback and not two, because they are one fact: the ledger renders it per call in the
+        waterfall and the Project holds the turn's last one for its terminal row. Wired apart, the
+        obvious failure is the one that already happened twice here — a second reader added later
+        and left reading the pick, agreeing with nothing and looking right.
+
+        They are one fact INSIDE a turn, which is the only place either is read. Their scopes differ
+        outside one: the ledger no-ops when no turn is open or `SAGE_TIMING` is off, and the Project
+        records regardless. That asymmetry is deliberate — a record the product shows a person must
+        not switch off with a performance flag — and it is harmless because the next granted turn
+        clears the Project's copy before any row is written from it.
+        """
+        # The row first, the waterfall second. The shim swallows whatever this raises, so whichever
+        # call goes last is the one a failure in the first can cost — and these two are not worth
+        # the same: the ledger is a diagnostic nobody is shown, the Project's copy is what a person
+        # reads on the transcript, and the shim's own warning about losing it says as much.
+        project.note_resolved(model, phase, reason)
+        call.model(model, phase, reason)
+
     gen = project.shim.handle(body, project=project.id,
                               session=project.active_session_id or project.session_id,
-                              on_resolved=call.model, on_refused=_refused)
+                              on_resolved=_resolved, on_refused=_refused)
     # The boundary between our time and the gateway's. `handle` is not a generator — it rewrites the
     # request here and now (phase classification, the read-only tool filter, routing, the signing
     # veto) and only the `route` it returns is lazy, so the HTTP call does not start until `ka.pump`
