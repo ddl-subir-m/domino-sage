@@ -53,6 +53,43 @@ def _slot_state(slot: str, approved: frozenset[str] = APPROVED, **over) -> Sessi
     )
 
 
+# The three pick cases (#286). Dropping the pick made all three the first one, and the panel then
+# named the pin's model on a session the pick was deciding.
+_BARRED_PICK = "gpt-5.4"        # a real alias, and not in APPROVED
+# One per slot, because no single approved alias tells all three cases apart on every row: the
+# barred case moves to the sovereign slot OF THE MODE, so an approved pick equal to that slot's
+# sovereign is the barred answer wearing a different reason.
+_APPROVED_PICK = {"plan": "sov-imp", "implement": "sov-plan", "ask": "sov-imp"}
+
+# Every (slot, pick) the panel can draw, with the model that slot's turn actually runs. Read off
+# CATALOG by hand: `plan` and `implement` are pinned to the signing model with no pick, both move to
+# their own mode's sovereign slot under a barred one, and an approved pick runs itself.
+#
+# `ask` answers the same for no pick and for a barred one, and that is a property rather than a gap:
+# `catalog.ask` is barred too, so the move follows the mode either way.
+_PANEL = {
+    ("plan", None): SIGNING,
+    ("plan", _BARRED_PICK): "sov-plan",
+    ("plan", "sov-imp"): "sov-imp",
+    ("implement", None): SIGNING,
+    ("implement", _BARRED_PICK): "sov-imp",
+    ("implement", "sov-plan"): "sov-plan",
+    ("ask", None): "sov-ask",
+    ("ask", _BARRED_PICK): "sov-ask",
+    ("ask", "sov-imp"): "sov-imp",
+}
+
+
+def _panel_state(slot: str, pick: str | None, approved: frozenset[str] = APPROVED) -> SessionState:
+    """`_slot_state` with the `ask` fork `_locked_slot_models` forces, and the pick on the side of it
+    the router reads. The Chat fork is where the pick's own field forks too — `_resolve_chat` reads
+    `chat_model` and `_resolve_build` reads `picked_model` — which is why the "Ask and Chat" row
+    needs no fork of its own."""
+    if slot == "ask":
+        return _slot_state(slot, approved=approved, chat_thread_id="unarmed", chat_model=pick)
+    return _slot_state(slot, approved=approved, picked_model=pick)
+
+
 # --- the router's own answer -----------------------------------------------------------------
 
 def test_the_pin_decides_every_row_while_its_own_model_is_approved():
@@ -76,16 +113,49 @@ def test_the_lock_still_outranks_the_pin_when_the_signing_model_is_barred():
         assert locked_runs_on(state, CATALOG) == resolve(state, CATALOG).model
 
 
-def test_it_reads_no_pick_so_one_answer_can_be_held_across_one():
-    """The hazard `nearest_approved`'s docstring names, and the reason this is not simply `resolve`:
-    the browser holds this answer across pick changes (`store.js` does not re-read on one), so an
-    answer that could BE the pick would go stale the moment somebody picked a barred model."""
+def test_it_reads_the_pick_because_the_drawer_cannot_change_one_behind_it():
+    """The inverse of what this file asserted until #286, and the rename carries the new invariant.
+
+    The old version held that a pick-free answer was the safe one, because the browser keeps this
+    answer across pick changes. It bought that by being wrong: an in-session act outranks the signing
+    pin one layer below the lock (`_pin_signing` returns an OVERRIDE untouched), so while a pick was
+    live the panel named the pin's model and the turn ran somewhere else.
+
+    What makes holding the answer safe now is the drawer rather than the answer. It is the only
+    reader, it re-reads on open, its mask puts the picker out of reach while it is open, and
+    `set_catalog` clears the pick on every save. #294 is the window that leaves.
+    """
     for slot in ASSIGNABLE_SLOTS:
-        answer = locked_runs_on(_slot_state(slot), CATALOG)
-        for pick in (None, "sov-ask", "gpt-5.4", SIGNING):
-            assert locked_runs_on(_slot_state(slot, picked_model=pick), CATALOG) == answer
-            assert locked_runs_on(
-                _slot_state(slot, chat_model=pick), CATALOG) == answer
+        # One answer per row across the three pick cases is the old invariant exactly. More than one
+        # is the new one, and it is read as a set rather than pair by pair because `ask` genuinely
+        # answers the same with no pick and a barred one — see `_PANEL`.
+        answers = {locked_runs_on(_panel_state(slot, pick), CATALOG)
+                   for pick in (None, _BARRED_PICK, _APPROVED_PICK[slot])}
+        assert len(answers) > 1, (slot, answers)
+
+
+def test_the_panel_answer_is_the_turn_the_slot_would_actually_run():
+    """The identity, over the whole matrix: three pick cases, three slots, both sides of the Chat
+    fork, and an approved set with and without the signing model in it.
+
+    This is the assertion that would have caught #285 and #286 both. `locked_runs_on` is `resolve`
+    asked of a slot rather than a turn, so once the caller has forced the mode there is nothing left
+    for the two to disagree about — and every defect this file records has been the router quietly
+    answering a narrower question than the panel was asking.
+    """
+    for approved in (APPROVED, APPROVED - {SIGNING}):
+        for slot in ASSIGNABLE_SLOTS:
+            for pick in (None, _BARRED_PICK, _APPROVED_PICK[slot]):
+                state = _panel_state(slot, pick, approved=approved)
+                assert locked_runs_on(state, CATALOG) == resolve(state, CATALOG).model, (slot, pick)
+
+
+def test_each_of_the_three_pick_cases_names_its_own_model():
+    """Beside the identity rather than folded into it: the identity alone passes when both sides are
+    wrong together, which is exactly the shape #285 had — one function copied into the other's
+    caller. These are the literal models, read off the catalog by hand."""
+    for (slot, pick), expected in _PANEL.items():
+        assert locked_runs_on(_panel_state(slot, pick), CATALOG) == expected, (slot, pick)
 
 
 def test_a_chat_turn_has_no_pin_to_apply():
@@ -177,6 +247,87 @@ def test_the_ask_row_is_answered_for_chat_because_the_pin_never_reaches_it(tmp_p
     assert state["slot_models"]["ask"] == state["chat_model"] == "sov-ask"
     # And the two rows the pin really does take are unaffected by the exception made for this one.
     assert state["slot_models"]["plan"] == state["slot_models"]["implement"] == SIGNING
+
+
+def _bind_sensitive(orch: Orchestrator) -> None:
+    orch.project(start_preview=False).workspace.update_bindings(
+        lambda _: [{"kind": "dataset", "id": "ds_claims", "name": "claims",
+                    "display_name": "claims"}])
+
+
+def test_a_pick_the_standing_mode_will_not_honour_is_not_reported_on_any_row(tmp_path, monkeypatch):
+    """FOUND IN REVIEW of #286. `_resolve_build` reads `picked_model` in Plan and Implement modes
+    only, and `ModelControl.set_mode` does not clear a pick — so one made in Plan survives a switch
+    to Auto and goes inert. These rows force the mode PER SLOT, so a pick-reading answer reported
+    that dead pick on both Build rows while every Auto turn ran the assignments.
+
+    Which is #285's defect wearing the pick instead of the pin: a row naming a model no turn of that
+    mode will use. Gated on `selected_mode` at the caller, where the standing mode is known, rather
+    than inside `locked_runs_on` — the router answers the question it is asked, and the slot is what
+    the caller forced.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    control = orch.project(start_preview=False).control
+
+    # Both modes that honour a pick, because half an allow-set is the half that rots: a gate written
+    # `is Mode.PLAN` passes every test that only ever stands in Plan.
+    for mode in (Mode.PLAN, Mode.IMPLEMENT):
+        control.set_mode(mode)
+        control.pick("sov-imp")
+        live = orch.sensitivity_state()["slot_models"]
+        assert live["plan"] == live["implement"] == "sov-imp", mode
+
+    # The pick is still set — nothing clears it — but no turn of this mode will honour it.
+    for mode in (Mode.AUTO, Mode.ASK):
+        control.set_mode(mode)
+        assert control.snapshot().picked_model == "sov-imp", "the premise: the pick survives"
+        inert = orch.sensitivity_state()["slot_models"]
+        assert inert["plan"] == inert["implement"] == SIGNING, mode
+
+
+def test_the_standing_choice_decides_not_the_mode_the_running_turn_is_pinned_to(tmp_path,
+                                                                               monkeypatch):
+    """`arm_turn_mode` pins `snapshot().mode` to whatever the RUNNING turn routes as, and a mode
+    changed mid-turn is recorded against the next one. These rows predict the next turn, so the gate
+    reads `selected_mode`.
+
+    Without this the two fields agree everywhere the suite goes and the choice is documentation:
+    swapping the gate to `snapshot().mode` passes every other test in this file. The scenario that
+    separates them is a person switching to Auto while a Plan turn streams — the rows would go on
+    naming a pick the mode they have just left was the only one to honour.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    control = orch.project(start_preview=False).control
+
+    control.set_mode(Mode.PLAN)
+    control.pick("sov-imp")
+    token = control.arm_turn_mode(Mode.PLAN)
+    control.set_mode(Mode.AUTO)
+
+    assert control.snapshot().mode is Mode.PLAN, "the premise: the running turn is still pinned"
+    assert control.selected_mode is Mode.AUTO, "and the standing choice has already moved"
+    assert orch.sensitivity_state()["slot_models"]["plan"] == SIGNING
+
+    control.disarm_turn_mode(token)
+
+
+def test_the_chat_pick_is_not_gated_with_the_build_one(tmp_path, monkeypatch):
+    """Chat has no modes to make a pick inert, so the gate above would be a rule with no case behind
+    it — and applied to `chat_model` it would blank the "Ask and Chat" row for anyone whose standing
+    Build mode happened to be Auto. The same asymmetry `set_catalog` already has: it clears
+    `picked_model` on a save and leaves `chat_model` standing."""
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    control = orch.project(start_preview=False).control
+
+    control.set_mode(Mode.AUTO)
+    control.pick_chat("sov-imp")
+    assert orch.sensitivity_state()["slot_models"]["ask"] == "sov-imp"
 
 
 def test_the_panel_is_told_the_model_the_pin_will_run_on_every_row(tmp_path, monkeypatch):

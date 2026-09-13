@@ -811,15 +811,29 @@ window.SW = window.SW || {};
   // `resolve`'s answer instead and this comment becomes false — that answer IS the pick when the
   // pick is approved, so it would go stale the moment somebody picked a barred model next.
   //
-  // `slot_models` is a pick-free answer too, and reads one more input for it: since #285 it applies
-  // the signing pin (`llm_router.locked_runs_on`), whose input is an assignment. So an assignment
-  // joins the list, and `setAssignment` is where it is read from — the drawer is the only surface
-  // that can change one. What stays outside the list is the one rule dropping the pick drops with
-  // it: an in-session act outranks the pin, so while a barred pick is live a turn goes where the
-  // lock MOVES it and these rows still name the pin's model. Bounded twice over — the trade is the
-  // one above, a sentence a beat behind on a row nobody is acting from against an answer that goes
-  // stale on the surface they ARE acting from; and `set_catalog` clears the pick on every save
-  // (`project.control.pick(None)`), so at the moment the read below is taken there is never one.
+  // `slot_models` is a different field and the paragraph above does not reach it. It reads one more
+  // input since #285 — the signing pin (`llm_router.locked_runs_on`), whose input is an assignment
+  // — so an assignment joins the list, and `setAssignment` is where it is read from, the drawer
+  // being the only surface that can change one.
+  //
+  // And it READS THE PICK, since #286, which is where it parts from `model`/`chat_model` above. The
+  // rule the pick-free answer dropped with it was the one that outranks the signing pin: an
+  // in-session act, so while a pick was live these rows named the pin's model and the turn ran
+  // somewhere else. The trade above never governed this field — its two halves are about the
+  // composer's chip, which reads `sensitivity.model`, and nothing in the drawer reads that.
+  //
+  // It stays outside the re-read list all the same, on a different guarantee: nobody at this
+  // keyboard can change a pick while looking at this answer. The drawer re-reads on open
+  // (`openAssignments`), its mask puts the picker out of reach for as long as it is open, and
+  // `set_catalog` clears the Build pick on every save (`project.control.pick(None)` — the Chat pick
+  // it leaves, and no save can move one). That is a UI invariant standing in for a data one and the
+  // weaker of the two — the old one could not go stale, this one breaks the moment anyone passes
+  // `mask: false` — which is why that prop is now passed explicitly, commented where it is passed,
+  // and asserted in `model_assignments_harness.mjs`.
+  //
+  // "At this keyboard" is the whole of its reach, so it leaves two windows rather than one: #294,
+  // where the orchestrator moves the pick itself on a build escalation with no human act to block;
+  // and a second Workbench open on the same Project, whose picker this tab's mask never sees.
   //
   // A failed read leaves the last answer standing rather than clearing it, and the asymmetry is
   // deliberate in one direction: dropping a lock the UI is drawing would put non-approved models
