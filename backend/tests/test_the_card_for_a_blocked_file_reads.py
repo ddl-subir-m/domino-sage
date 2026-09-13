@@ -321,3 +321,30 @@ def test_the_receipt_says_to_ask_again_in_different_words():
 
 def test_a_withheld_file_is_not_a_reason_to_rewrite_the_question():
     assert "different words" not in _text(_receipt())
+
+
+def test_the_promise_not_to_alter_anything_holds_at_every_size_of_a_set_with_no_file():
+    """ADR-0022's one hard promise: Sage stops sending material and never changes what a person
+    wrote. The clause carrying it hung off a gate that also COUNTED the carriers, so two matched
+    messages drew the destructive-sounding button with the promise nowhere on the card (#309).
+
+    Both sizes go through one render, asserting the SAME string. Two tests each pinning one size
+    would both still pass with the promise dropped from the other — which is the width #297 left
+    open and the reason it stayed open. The em dash is part of the assertion, not punctuation
+    taste: the list above it is comma-joined, so a comma here reads as one more thing the policy
+    matched rather than the break before the promise, and that misreading is only reachable once
+    the set is allowed to be plural.
+    """
+    promise = " — not in a file Sage can name. Sage won't change what it matched"
+    for carriers in ([TEXT], [TEXT, OLDER], [TOOL, TEXT, OLDER]):
+        said = _text(_render(_card(carriers=carriers, surviving=0)))
+        assert promise in said, carriers
+
+    # A set with a file in it is #292's arm, and this pins the boundary rather than blessing that
+    # arm: the clause says Sage can name no file for what it matched, which is the one thing a
+    # named file makes false. What that arm should say instead is not this ticket's to decide, so
+    # what is checked here is that it was not quietly re-derived on the way past.
+    for carriers in ([FILE], [FILE, TEXT], [FILE, EXPORT]):
+        said = _text(_render(_card(carriers=carriers, surviving=0)))
+        assert "not in a file Sage can name" not in said, carriers
+        assert "Sage won't change" not in said, carriers
