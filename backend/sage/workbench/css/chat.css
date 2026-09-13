@@ -818,6 +818,36 @@
   white-space: nowrap;
 }
 
+/* A chip the selected Built App does not hold (#275). Muted rather than struck through or
+   error-inked: the chip is still this Conversation's context and still arms the sensitivity lock, so
+   nothing about it has gone wrong — it is the app that is missing something. Kept above the contrast
+   floor for the same reason the close button stays live. */
+.sw-chip.is-not-in-app {
+  background: var(--gray-100) !important;
+  border-color: var(--gray-300) !important;
+  color: var(--gray-600) !important;
+}
+.sw-chip.is-not-in-app .ant-tag-close-icon { color: var(--gray-500) !important; }
+.sw-chip.is-not-in-app .sw-chip-scope { color: var(--gray-500); }
+
+/* The offer over those chips: what the app is missing, and the click that moves it. Shaped like the
+   mention guard below the box, because it is the same kind of thing — a gap named before it costs
+   anybody a turn — and separated from the chip row it counts by the row's own gap. */
+.sw-crossing-offer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin: var(--s2) var(--s3) 0;
+  padding: 6px var(--s3);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+  font-size: var(--fs-12);
+  color: var(--warning-text);
+}
+.sw-crossing-offer-text { flex: 1; min-width: 180px; line-height: 1.5; }
+
 /* The first chip's one-time note (#137): a chip is Session context, this Conversation's only.
    It rides below the chips; dismissed, the viewer pref keeps it away for good. */
 .sw-chip-hint {

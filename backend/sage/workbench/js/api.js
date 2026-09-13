@@ -480,6 +480,10 @@ SW.api = {
   // Deletes an Upload's bytes from .sage/scratch/ — the Project-scope door (ADR-0023).
   deleteScratchFile: (path) => post('/project/scratch/delete', { path }),
 
+  // The Build tab's crossing door (#275): moves this Conversation's chips into the selected app.
+  // Answers per chip, because a crossing can be half refused.
+  crossChatContext: (id) => post(`/threads/${id}/crossing`),
+
   conversationContext: async (id) => {
     const ctx = await request(`/threads/${id}/context`);
     return (ctx.items || []).map((item) => ({
