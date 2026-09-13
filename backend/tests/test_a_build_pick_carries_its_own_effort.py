@@ -256,7 +256,7 @@ def test_a_membership_row_carries_the_narrow_list_too(tmp_path: Path, monkeypatc
     alias actually takes. Three sites carry a membership row's fields, and all three had to learn
     this one.
     """
-    client, orch = _client(tmp_path, monkeypatch)
+    _, orch = _client(tmp_path, monkeypatch)
     orch.add_project_resource({
         "id": "llm_alias:id-gemini", "kind": "model_llm", "name": "Gemini 3.7 Flash",
         "alias": "gemini-3.7-flash",
@@ -277,7 +277,7 @@ def test_binding_an_alias_joins_it_with_both_effort_lists(tmp_path: Path, monkey
     value is the BINDING list, which deliberately carries none of these fields; the membership row
     is where they land, so that is what this reads.
     """
-    client, orch = _client(tmp_path, monkeypatch)
+    _, orch = _client(tmp_path, monkeypatch)
 
     orch.bind_llm_alias("id-gemini")
 
@@ -295,7 +295,7 @@ def test_a_mentioned_alias_joins_with_both_effort_lists_too(tmp_path: Path, monk
     the other two doors had — a row that exists without the field, read by the menu as a refusal of
     every level.
     """
-    client, orch = _client(tmp_path, monkeypatch)
+    _, orch = _client(tmp_path, monkeypatch)
     listed = {a["name"]: a for a in orch.list_llm_aliases()}["gemini-3.7-flash"]
 
     joined = orch._join_project_on_mention({
