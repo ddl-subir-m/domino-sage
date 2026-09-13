@@ -924,3 +924,41 @@ def test_a_row_assigned_away_from_the_default_still_names_what_it_left():
     (drawn,) = _drawn([{"seed": {"implement": {"model": "gpt-5.4"}}}])
     assert _row(drawn, "Implement")["value"] == "gpt-5.4"
     assert drawn["details"] == ["Default is coder."]
+
+
+def test_a_row_whose_file_moved_under_a_stale_catalog_claims_no_pin():
+    """The skew the server cannot rule out, so the sentence has to. `assigned` is a fresh read of
+    `model_overrides.json` while `model` is the shim catalog, which is rebuilt at boot and on save
+    and not when the file moves underneath it — so a committed file arriving in an open Builder
+    assigns `coder` while the catalog still holds `gpt-5.4`, and `model` equals `default` for a
+    reason that has nothing to do with a pin. Reading that equality alone drew "Assigned to gpt-5.4,
+    which is also the current default", of which both halves are false. The row falls back to the
+    older line instead: it names the default and claims nothing about the assignment."""
+    (drawn,) = _drawn([{"seed": {"plan": {"model": "coder"}}, "stale": {"plan": "gpt-5.4"}}])
+    assert _row(drawn, "Plan")["value"] == "gpt-5.4"
+    assert drawn["details"] == ["Default is gpt-5.4."]
+
+
+def test_the_re_read_that_closes_the_gap_gets_the_sentence_back():
+    """The control on the test above, and the reason it is not just a way of never drawing the line:
+    the same two steps, with the catalog caught up, and the row says what it holds. Without this a
+    sentence that had simply stopped being drawn would pass the test beside it."""
+    _, caught_up = _drawn([
+        {"seed": {"plan": {"model": "gpt-5.4"}}, "stale": {"plan": "coder"}},
+        {"seed": {"plan": {"model": "gpt-5.4"}}},
+    ])
+    assert caught_up["details"] == [
+        ("Assigned to gpt-5.4, which is also the current default. "
+         "This slot stays on it if the default changes."),
+    ]
+
+
+def test_a_slot_with_no_default_at_all_claims_nothing_rather_than_naming_nothing():
+    """Holding the neighbour still. The pin sentence is drawn on three names agreeing, and the only
+    reason three ABSENT names cannot agree their way into "Assigned to undefined, which is also the
+    current default" is a separate conjunct one line up — the gate already requires a default. That
+    is a rule holding for a reason stated somewhere else, which is exactly what stops holding when
+    someone widens the other conjunct (#287). No deployment sends a slot without a default today, so
+    this is the guard and not the report of a live fault."""
+    (drawn,) = _drawn([{"seed": {"plan": {"model": "gpt-5.4"}}, "noDefault": ["plan"]}])
+    assert drawn["details"] == []
