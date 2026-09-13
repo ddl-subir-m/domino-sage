@@ -34,6 +34,8 @@ needs_node = pytest.mark.skipif(
 
 _RENAMED = "public/data/sales_2026/uploads/margins.csv"
 _GONE = "public/data/archive/uploads/old.csv"
+_REATTACHED = "public/data/sales_2026/uploads/reattached.csv"
+_THEIRS = "public/data/sales_2026/uploads/budget.csv"
 
 
 def _report() -> dict:
@@ -92,3 +94,22 @@ def test_the_two_doors_say_one_word():
         assert len(labels) == 1, path
         named = labels[0][len("Delete from ") :]
         assert report["titles"][file]["title"] == f"Delete {file} from {named}?"
+
+
+@needs_node
+def test_the_door_opens_on_the_record_and_not_on_the_folder_name():
+    """Who gets this door at all (#274), asked of two entries that differ in one field only.
+
+    reattached.csv is a Sage upload attached again from the Dataset browser; budget.csv is the
+    person's own file in a folder they happened to call `uploads/`. Both are `source: "dataset"`,
+    both sit under `uploads/`, both name the same Dataset — so the only thing that can tell them
+    apart is `sage_upload`, the fact the upload wrote down.
+
+    One test over both, because two asserting one half each would both pass on a door that is never
+    drawn on anything. The rows are asserted drawn first so that the absent item is an absent item
+    and not an absent row (`backend/tests/README.md`).
+    """
+    rows = _report()["rows"]
+    assert rows[_REATTACHED]["drawn"] and rows[_THEIRS]["drawn"]
+    assert "Delete from Sales 2026 EMEA" in rows[_REATTACHED]["labels"]
+    assert not [x for x in rows[_THEIRS]["labels"] if x.startswith("Delete from ")]

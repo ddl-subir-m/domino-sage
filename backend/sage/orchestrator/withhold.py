@@ -36,7 +36,10 @@ Two rules this module exists to keep:
    reported rather than papered over, and the caller falls back to ADR-0022's ladder.
 
 Pure: no gateway, no I/O, no OpenCode. The caller passes `ask`, which is the only thing that talks
-to anything.
+to anything. `MENTION_MARK` is shared with the prompt that writes it rather than copied here, so a
+reword cannot leave this file reading for words nothing produces — and it is read from `chat_paths`
+rather than from the driver that writes it, because importing a string out of the driver costs this
+module httpx and 148 more modules (MEASURED). That comment lives with the constant.
 """
 from __future__ import annotations
 
@@ -44,7 +47,15 @@ import os
 from dataclasses import dataclass, field
 
 from ..shim import refusal_scan
-from ..shim.chat_paths import apply_withheld, file_key, read_path_from_tool_call, text_key
+from ..shim.chat_paths import (
+    MENTION_MARK,
+    MENTION_PATH_LINE,
+    apply_withheld,
+    content_text,
+    file_key,
+    read_path_from_tool_call,
+    text_key,
+)
 
 BLOCKED = "blocked"   # the gateway refused this payload
 CLEAN = "clean"       # the gateway accepted it
@@ -65,11 +76,16 @@ class Carrier:
     key: str        # what `apply_withheld` matches on: "file:<path>" or "text:<hash>"
     label: str      # what the card says: a file name, or "the message you sent"
     is_file: bool
-    # Whether this arrived as a tool result — data the turn fetched, rather than prose somebody
-    # wrote. NOT the same question as `is_file`, which is narrower on purpose: `is_file` needs a
-    # path to put on the card and only `read`-shaped calls carry one, so a `bash cat`, a `grep` or
-    # a live-read's rows are data with no filename. `surviving` counts these; the card names the
-    # ones with a name. Defaulted so the older three-argument construction still reads.
+    # Whether this carrier is data the turn fetched, rather than prose somebody wrote. NOT the
+    # same question as `is_file`, which is narrower on purpose: `is_file` needs a path to put on
+    # the card and only `read`-shaped calls carry one, so a `bash cat`, a `grep` or a live-read's
+    # rows are data with no filename. `surviving` counts these; the card names the ones with a
+    # name. Defaulted so the older three-argument construction still reads.
+    #
+    # Usually a tool result, but not always: an @mention inlines its file's descriptor into the
+    # PROMPT, so those rows arrive in a *user* message that also holds the person's typed words
+    # (#290, `_carries_mention`). Data is about where the material came from, not which role
+    # carried it.
     is_data: bool = False
 
 
@@ -108,11 +124,11 @@ class Found:
         re-running it is worth the call.
 
         Read that fallback as the population it is for — a turn that fetched NOTHING — and not as
-        a general rule. A turn whose only data is an @-mention's inlined sample rows also lands in
-        it, because those rows ride in a *user* message (see `carriers`) and so are not `is_data`.
-        That turn gets the pre-#288 answer: prose counted as material, and an offer to carry on
-        over nothing. Not a regression — the fallback leaves it exactly where it was — but not
-        fixed either. Tracked in #290.
+        a general rule. A turn whose only data is an @mention used to land in it and get the
+        pre-#288 answer, because an @mention's descriptor rides in a *user* message and a user
+        message was prose by definition. It no longer does: `_carries_mention` marks that message
+        `is_data`, so one @mention and nothing else counts as one piece of data, and losing it
+        leaves zero (#290). The fallback now covers only what its name says.
 
         Says nothing about whether the QUESTION is one of the things going — that is
         `prompt_withheld`, the other half of "is re-running this worth a call", and the two come
@@ -128,9 +144,10 @@ def carriers(messages: list[dict]) -> list[Carrier]:
 
     Two kinds, because a guardrail does not care which one carried the value. A tool result is named
     by the file its `tool_call` opened, which is the name a person recognises. Everything else is
-    named by content fingerprint — that is what covers pasted text, an @-mention's inlined sample
-    rows (which ride in a *user* message, not a tool result) and a compaction summary that copied a
-    value out of a file before any of this ran.
+    named by content fingerprint — that is what covers pasted text, an @mention's inlined descriptor
+    (which rides in a *user* message, not a tool result, and is counted as data all the same: see
+    `_carries_mention`) and a compaction summary that copied a value out of a file before any of
+    this ran.
 
     Deduped by key on purpose: the same file read in three turns is ONE carrier, and withholding it
     reaches all three messages. That is also what makes the bisect converge when a paged read put
@@ -183,8 +200,13 @@ def _walk(messages: list[dict]):
         if not isinstance(m, dict) or m.get("role") in _NEVER:
             continue
         cid = str(m.get("tool_call_id") or "")
-        is_data = m.get("role") == "tool"
-        if is_data and cid in paths:
+        # Two conditions that used to be one. Naming a carrier by its file is about being a TOOL
+        # RESULT, while counting it as data is about where the material came from — and `is_data`
+        # is now the wider of the two (#290). A user message has no `tool_call_id` so the file
+        # branch could not fire on one anyway; it says `is_tool` because that is what it means.
+        is_tool = m.get("role") == "tool"
+        is_data = is_tool or _carries_mention(m)
+        if is_tool and cid in paths:
             path = paths[cid]
             yield Carrier(file_key(path), os.path.basename(path) or path, True, True), m
         elif _has_text(m):
@@ -212,6 +234,40 @@ def suspects(messages: list[dict]) -> set[str]:
         except Exception:  # pragma: no cover - a hint must never replace the failure it explains
             return hit
     return hit
+
+
+def _carries_mention(message: dict) -> bool:
+    """Does this user message carry an @mention's inlined descriptor, and not only prose?
+
+    A file a person @mentions is not read by a tool. `describe` inlines its shape — column names,
+    inferred types, and the vocabulary of any column that has a small one — into the PROMPT, so the
+    material arrives as text in a user message and `surviving` counted it as prose (#290).
+
+    Scoped to the user roles on purpose, which is the same population `prompt_withheld` reads. Those
+    two ask DIFFERENT questions of one message — this one asks what the turn has to answer FROM, that
+    one asks whether the turn's own question is going away — and a mention-bearing message is
+    routinely both at once, because the descriptor is appended to the words the person typed. They
+    agree by construction rather than by accident: withholding that message takes away the rows AND
+    the question, so both say so, and the card neither re-runs nor claims a survivor.
+
+    The person's prose stays prose, and it takes BOTH constants to say so. `MENTION_MARK` alone is
+    not rare: `resources/bindings.py`'s `mention_note` opens with the same phrase and rides the
+    same prompt text, so the unanchored form marked every Build turn that @mentioned a RESOURCE as
+    data — a live case, not a hypothetical one, and the reason the pair exists. That note is
+    correctly prose: it carries identities, and the rows a Resource yields arrive later as a live
+    read's tool result, counted there. A turn that only typed is still counted the way #288 left it.
+
+    What the pair rules out is a phrase produced INCIDENTALLY. It does not rule out a whole
+    rendered prompt pasted back — "why did it say this?" carries the preamble and a `path:` entry
+    together — and that message is marked data. Irreducible here: any marker a producer can write,
+    a person can paste, and this layer sees only text. The harm is bounded and in the known
+    direction (one card declines a re-run), so it is recorded rather than guessed at. Fixing it
+    needs a signal that is not in the payload — the turn knowing what IT appended.
+    """
+    if message.get("role") not in ("user", "human"):
+        return False
+    text = content_text(message.get("content"))
+    return MENTION_MARK in text and MENTION_PATH_LINE in text
 
 
 def _has_text(message: dict) -> bool:

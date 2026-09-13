@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import weakref
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from pathlib import PurePosixPath as PurePosix
@@ -856,7 +856,7 @@ def _link_attachment(dest: Path, src: Path) -> None:
 
 def _dataset_entry(dataset_id: str, dataset_name: str, file_path: str, rel: str,
                    size: int, *, added_by: str | None = None,
-                   conversation_id: str | None = None) -> dict:
+                   conversation_id: str | None = None, sage_upload: bool = False) -> dict:
     """The manifest record one Dataset file gets, whichever act put it there.
 
     The file is the unit of the record (ADR-0029), so the folder act writes exactly what the single
@@ -871,10 +871,16 @@ def _dataset_entry(dataset_id: str, dataset_name: str, file_path: str, rel: str,
     reader that has to tell a missing key from a null one is reading two records. None is the
     answer every entry on disk before #262 gives, and the row that draws it says nothing rather
     than guessing "you".
+
+    `sage_upload` says whether SAGE wrote these Dataset bytes, and it is the only thing that opens
+    the destroy door on them (#274). `source` cannot answer it: a Sage upload re-attached from the
+    Dataset browser arrives here as any other Dataset file does. The caller reads it off the
+    project's upload ledger, which outlives the entry the upload wrote. Written as a key either
+    way, for the reason above — False is what every entry on disk before #274 means.
     """
     return {"dataset_id": dataset_id, "dataset": dataset_name, "file": file_path, "path": rel,
             "size": size, "source": "dataset", "dataset_rel_path": file_path,
-            "added_by": added_by, "conversation_id": conversation_id}
+            "added_by": added_by, "conversation_id": conversation_id, "sage_upload": sage_upload}
 
 
 def _context_author(row: dict) -> str:
@@ -1204,13 +1210,14 @@ def _dataset_attached_entries(attached: list[dict], binding: Binding) -> list[di
             or str(e.get("path") or "").startswith(root)]
 
 
-# Subfolders Sage writes uploaded bytes into. `uploads/` is current; `sensitive/` is kept so a
-# file written by an older Sage can still be deleted as a Sage-managed upload. Both are
-# Sage-created, so both are safe to delete; a genuine pre-existing dataset file is neither.
 # How long a Live read token stays good (ADR-0041). Long enough to outlast a slow turn, short
 # enough that a token left in an abandoned session's prompt is worthless by the time anyone finds it.
 _LIVE_READ_TTL_S = 30 * 60
 
+# Subfolders Sage writes uploaded bytes into. `uploads/` is current; `sensitive/` is kept because an
+# older Sage wrote there. This is where Sage writes, and it is NOT who wrote: a Dataset can already
+# hold a folder of either name, put there by the person, full of their own files (#274). So these
+# bound the reach of `_delete_upload_bytes` and settle nothing about standing.
 _SAGE_UPLOAD_PREFIXES = ("uploads/", "sensitive/")
 
 # What a descriptor says instead of its `detail`, which is never written down (#237). `detail`
@@ -1235,12 +1242,284 @@ _WITHHELD_UNCACHED = "uncached"
 
 
 def _is_sage_upload(entry: dict) -> bool:
-    """A Sage-managed upload: bytes Sage wrote under a dataset's `uploads/` or `sensitive/` folder.
-    True for `source=='upload'` and for such a file later re-attached from the dataset browser
-    (source becomes 'dataset' but its dataset_rel_path still lives under one of those folders).
-    These are safe to delete; a genuine pre-existing dataset file is not."""
-    rel = str(entry.get("dataset_rel_path") or "")
-    return entry.get("source") == "upload" or rel.startswith(_SAGE_UPLOAD_PREFIXES)
+    """A Sage-managed upload: bytes SAGE wrote into a Dataset, and so the only Dataset bytes this
+    door may destroy (ADR-0023).
+
+    One field, because there is one authority: the project's upload ledger. Every entry that reaches
+    here carries its answer — `upload_file` and `_dataset_entry` stamp it as they write, and
+    `_restamp_uploads` brings every entry already on disk back into line with the ledger each time a
+    manifest is read. `source == "upload"` is NOT consulted, though it is the pre-#274 spelling of
+    the same fact: an entry is a per-APP copy of a claim about SHARED Dataset bytes, and a copy that
+    can answer on its own is a copy that goes on answering after the bytes have gone. Delete an
+    upload in one app and a second app's entry would still open the door — onto whatever the person
+    wrote at that path since. The migration reads that spelling exactly once, in
+    `_backfill_uploads_ledger`, and turns it into a ledger line.
+
+    It used to also answer True for any `dataset_rel_path` under `_SAGE_UPLOAD_PREFIXES`, which is
+    the folder Sage writes into and not the folder Sage owns. A person whose Dataset already held
+    an `uploads/` folder was offered a no-undo destroy door on their own files (#274).
+
+    An entry written before #274 and re-attached as `source: "dataset"` therefore gets no door,
+    whoever wrote its bytes. There is no line naming it and none can be invented, so it says
+    nothing rather than guessing — the answer ADR-0048 already gave for `added_by`.
+    """
+    return entry.get("sage_upload") is True
+
+
+# One project's record of the Dataset bytes Sage itself wrote, which is the fact `_is_sage_upload`
+# needs and the manifest cannot keep. `.sage/attachments.json` is per-app (`Workspace.path` is
+# `apps/<id>`) and detach deletes the entry outright, so both ways a Sage upload comes back as
+# `source: "dataset"` — attached from the browser in a second app, or detached and attached again in
+# one — arrive with nothing left to read. This file sits beside the Thread store at the PROJECT
+# root, committed, for that reason.
+#
+# Sage's own territory on purpose. A marker beside the bytes in the Dataset would follow them across
+# Projects, which is the truer fact; it buys that by writing a new file into a store Sage does not
+# own, in the very folder this ticket says may be the person's. The cost taken instead: a Sage
+# upload re-attached from a DIFFERENT Project gets no door there.
+_UPLOADS_LEDGER_LOCK = threading.Lock()
+
+
+def _uploads_ledger_path(root: Path) -> Path:
+    return root / ".sage" / "uploads.json"
+
+
+def _uploads_ledger(root: Path, *, strict: bool = False) -> list[dict]:
+    """Every line this project holds. Absent is empty; UNREADABLE is only empty for a reader.
+
+    A reader that degrades to empty loses a door, which is this change's safe direction. A WRITER
+    that degrades to empty republishes a one-line ledger over one it could not parse, and takes
+    every other file's door with it — silently, permanently, and nowhere near the upload that did
+    it. The file is committed at the Project root, so a merge can leave conflict markers in it in
+    the ordinary course of two Builders uploading; that is the case `strict` is for.
+    """
+    path = _uploads_ledger_path(root)
+    if not path.exists():
+        return []
+    try:
+        rows = json.loads(path.read_text())
+    except (ValueError, OSError):
+        # `ValueError`, not `JSONDecodeError`: `read_text` raises `UnicodeDecodeError` on bytes that
+        # are not UTF-8 at all, which is neither an OSError nor a JSON error. Named narrowly, the
+        # lenient path re-raised it out of `_restamp_uploads` and a ledger nobody could decode
+        # stopped the Project opening, instead of costing a door.
+        if strict:
+            raise
+        return []
+    if not isinstance(rows, list):
+        if strict:
+            raise ValueError(f"{path} is not a list")
+        return []
+    return rows
+
+
+def _uploads_ledger_line(dataset_id: str | None, rel: str) -> dict:
+    return {"dataset_id": str(dataset_id or ""), "path": str(rel or "")}
+
+
+def _ledger_names(rows: list[dict], dataset_id: str | None, rel: str) -> bool:
+    """Does this set of ledger rows name these Dataset bytes?
+
+    The one place the comparison lives, because it had grown into SIX and they were asking different
+    questions of one encoding — four on whole-dict equality, one on a two-key set, and the folder
+    attach on its own. They agree only while `_uploads_ledger_line` writes exactly two keys, and
+    step 1 of ADR-0050's own retirement adds a third. On that day whole-dict equality answers False
+    for every row, and each reader fails its own way:
+
+    - `_forget_sage_upload` MISSES the line it is deleting, so a destroy leaves a record of bytes
+      that are gone and hands their door to whoever writes at that path next. That is #274 in
+      miniature, produced by the function whose docstring says it exists to prevent it.
+    - `_restamp_uploads` stamps every entry False, so every destroy door in the Project disappears
+      at once. Latent until a schema change, and it will look like anything except a comparison —
+      nobody connects a field nobody reads to a control that stopped being drawn.
+    - `_note_sage_upload` re-adds rows it already holds. Harmless, and the only one that is.
+
+    Found by grepping the literal rather than by re-reading the diff. Two of the six were unified
+    here in review; the other three had not CHANGED, only changed meaning, which is precisely what
+    a review of a diff cannot see.
+    """
+    want = _uploads_ledger_line(dataset_id, rel)
+    return any(isinstance(r, dict)
+               and str(r.get("dataset_id") or "") == want["dataset_id"]
+               and str(r.get("path") or "") == want["path"]
+               for r in rows)
+
+
+def _sage_wrote(root: Path, dataset_id: str | None, rel: str) -> bool:
+    """Does this project's ledger say Sage wrote these Dataset bytes?"""
+    return _ledger_names(_uploads_ledger(root), dataset_id, rel)
+
+
+def _edit_uploads_ledger(root: Path, change: Callable[[list[dict]], list[dict]]) -> None:
+    """Read, change and republish the ledger as one step. Raises rather than write over a ledger it
+    could not read — see `_uploads_ledger`.
+
+    Read-modify-write under a lock, then os.replace, the way `update_bindings` does and
+    `write_attachments` deliberately does not: a line dropped by two uploads landing together is a
+    destroy door that silently never appears again for that file.
+
+    The temp file is named per writer, because the lock only reaches this process and the Project
+    volume can carry two Workspaces — the very premise `_uploads_ledger` cites. Two of them sharing
+    one `uploads.json.tmp` interleave into it and `os.replace` publishes the mixture, which the next
+    strict read then refuses, costing every file in the Project its door. Per writer, the worst two
+    can do is lose one of two updates, which is `write_attachments`'s own bargain. Closing that too
+    needs a lockfile on the volume, and is worth it when a second Workspace is a supported shape
+    rather than a possible one.
+    """
+    with _UPLOADS_LEDGER_LOCK:
+        path = _uploads_ledger_path(root)
+        current = _uploads_ledger(root, strict=True)
+        rows = change(current)
+        if rows == current and path.exists():
+            return          # a note already held, or a line already gone: no commit, no churn
+        # `path.exists()`, because the FILE is the migration's once-only mark. A project whose apps
+        # hold no upload backfills to an empty list, and without the file the backfill stays armed
+        # and can run again after a delete — which is the one ordering that resurrects a line.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        try:
+            tmp.write_text(json.dumps(rows, indent=2))
+            os.replace(tmp, path)
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink()        # only ever reached when the replace did not happen
+
+
+def _note_sage_upload(root: Path, dataset_id: str | None, rel: str) -> bool:
+    """Record that Sage wrote these Dataset bytes. Best effort, loudly, and it says which it was.
+
+    This is bookkeeping for a door, and it must not be able to fail the act it describes: a Project
+    root that is read-only or out of quota while the Dataset mount is writable would otherwise turn
+    a good upload into a rolled-back one. Degrades to no door, never to no upload.
+
+    The caller needs the answer, because the answer is what stamps the entry. Stamped True whatever
+    happened, an upload onto an unwritable ledger draws a destroy door that the unlink then refuses
+    — a control with no undo that quietly does half of what it offers.
+
+    The migration runs first wherever it has not yet, so that this file — which is ALSO the mark
+    retiring that migration — can never come into being as the write that skipped it.
+    """
+    _backfill_uploads_ledger(root)
+    line = _uploads_ledger_line(dataset_id, rel)
+    try:
+        _edit_uploads_ledger(
+            root, lambda rows: rows if _ledger_names(rows, dataset_id, rel) else [*rows, line])
+    except (OSError, ValueError):
+        log.exception("uploads ledger: could not note %s in %s", rel, _uploads_ledger_path(root))
+        return False
+    return True
+
+
+def _attachment_bytes_gone(workspace: Path, entry: dict) -> bool:
+    """Does this entry's symlink PROVE its Dataset bytes are gone? Only a dangling link does.
+
+    The three states are not two. A link that resolves says the bytes are there; a link that dangles
+    says they were destroyed under it; NOTHING AT THAT PATH says only that this checkout has not
+    built its links — `public/data/` is gitignored and nothing rebuilds it here, so that is the
+    ordinary state of a fresh clone, which is the very case the committed manifest exists to serve.
+    Reading absence as proof would answer "gone" for every file in a clone and, since this feeds a
+    migration that runs once, would retire every pre-#274 upload's door for good.
+    """
+    try:
+        link = _safe_join(workspace, str(entry.get("path") or ""))
+        return link.is_symlink() and not link.exists()
+    except (ValueError, OSError):
+        return False
+
+
+def _backfill_uploads_ledger(root: Path) -> None:
+    """Take the pre-#274 spelling at its word, ONCE for the project, across every app.
+
+    An entry that says `source: "upload"` IS a record that Sage wrote those bytes — the same fact
+    this ledger keeps, in the only place the old build kept it. Nothing is invented, which is what
+    separates this from the pre-#274 `source: "dataset"` entry `_is_sage_upload` refuses to guess
+    about: there, no record exists; here, the record is in hand and is merely somewhere that does
+    not survive a detach. Without it an upgrade turns a recoverable door into a dead end — detach
+    such a file, attach it again from the Dataset browser, and the new entry records no upload,
+    leaving Sage's own bytes in the Dataset with nothing in Sage able to remove them.
+
+    Once, and the ledger FILE is the mark: run again later it would answer the same question with
+    newer bytes. Upload a name in two apps, destroy it in the first — which forgets the line — and
+    let the person write their own file at that path; the second app's manifest still spells
+    `source: "upload"` and its symlink now resolves to THEIR file. A backfill on that app switch
+    writes the line back and hands their file a no-undo destroy door. The `is_file()` check below
+    cannot see that, because the two files differ in nothing it can read. Only never asking twice
+    does. Written even when there is nothing to backfill, so the mark exists from the first read.
+
+    Every app, not the one on screen, because this is the only pass there will be and an entry not
+    read here is a door lost for good. Skipped only where an app's own symlink PROVES the bytes were
+    destroyed under it — a record naming a path nothing holds any more is a record for the next
+    writer there. Absence does not prove that; see `_attachment_bytes_gone`.
+    """
+    if _uploads_ledger_path(root).exists():
+        return
+    want: list[dict] = []
+    for manifest in sorted((root / "apps").glob("*/.sage/attachments.json")):
+        app = manifest.parent.parent
+        try:
+            entries = json.loads(manifest.read_text())
+        except (ValueError, OSError):
+            # `ValueError`, for `_uploads_ledger`'s reason and with a wider blast radius. This loop
+            # reads EVERY app and runs from `_rehydrate_attached`, which `project()` and
+            # `select_app` call unguarded — so a `UnicodeDecodeError` escaping here would stop the
+            # whole Project opening over one app's manifest, where before this change a bad manifest
+            # in one app was invisible from another.
+            continue                                  # one unreadable app costs only its own lines
+        if not isinstance(entries, list):
+            continue
+        for e in entries:
+            if not isinstance(e, dict) or e.get("source") != "upload":
+                continue
+            if not e.get("dataset_id") or not e.get("dataset_rel_path"):
+                continue
+            if _attachment_bytes_gone(app, e):
+                continue
+            line = _uploads_ledger_line(e["dataset_id"], str(e["dataset_rel_path"]))
+            if line not in want:
+                want.append(line)
+    try:
+        _edit_uploads_ledger(root, lambda rows: [*rows, *[w for w in want if w not in rows]])
+    except (OSError, ValueError, json.JSONDecodeError):
+        log.exception("uploads ledger: could not backfill %d upload(s) into %s",
+                      len(want), _uploads_ledger_path(root))
+
+
+def _restamp_uploads(root: Path, entries: list[dict]) -> None:
+    """Bring every entry's `sage_upload` back to what the project's ledger says, in place.
+
+    The entry is a per-APP copy of a claim about SHARED Dataset bytes, so it goes stale the moment
+    another app's delete empties the path — and `_is_sage_upload` reads the copy, because the
+    browser has no ledger to ask. This is where the copy is corrected: the manifest is read on load
+    and on every app switch, which is the last moment before anybody can press that app's door.
+
+    In memory only. The correction rides along with the next write of the manifest, and a read that
+    wrote would put a commit in the path of merely looking at an app.
+    """
+    rows = _uploads_ledger(root)
+    for e in entries:
+        e["sage_upload"] = _ledger_names(rows, e.get("dataset_id"),
+                                         str(e.get("dataset_rel_path") or ""))
+
+
+def _forget_sage_upload(root: Path, dataset_id: str | None, rel: str) -> None:
+    """Drop the line once the bytes it names are gone. Best effort, for the reason above: this runs
+    after an unlink that cannot be taken back.
+
+    Left standing it would re-open #274 in miniature: a person who later writes their own file at
+    exactly the path Sage once wrote and destroyed would inherit its door.
+
+    It covers the ways SAGE empties a path. Bytes that leave the Dataset another way — deleted from
+    the Dataset browser, from a Workspace, a mount re-provisioned — leave the line standing, and the
+    next attach of a file written there by hand is stamped as Sage's. Narrower than the bug this
+    fixes (one exact path Sage wrote and lost, rather than a whole folder), and not closed: telling
+    Sage's original bytes from a new file at the same path needs a content hash, which is a bigger
+    record than the door is worth until somebody meets this.
+    """
+    try:
+        _edit_uploads_ledger(
+            root, lambda rows: [r for r in rows if not _ledger_names([r], dataset_id, rel)])
+    except (OSError, ValueError, json.JSONDecodeError):
+        log.exception("uploads ledger: could not forget %s", rel)
 
 
 _SCRATCH_PREFIX = ".sage/scratch/"
@@ -5634,9 +5913,17 @@ class Orchestrator:
         truth — it's committed, so it survives clones and orchestrator restarts (the in-memory list
         does not). Fall back to scanning public/data/ symlinks for older workspaces written before
         the manifest existed."""
+        # Before the manifest is even looked at, because the migration is the PROJECT's and this app
+        # may hold nothing. Run inside the branch below, it would be skipped for an empty app — and
+        # the first upload into that app writes the ledger, which is the mark that retires the
+        # migration, so every other app's pre-#274 uploads would lose their door unread (#274).
+        _backfill_uploads_ledger(project.record.path)
         entries = project.workspace.read_attachments()
         if entries:
             project.attached[:] = entries
+            # Then agree with the result: the restamp is what stops this app's copy of the answer
+            # from outliving another app's delete.
+            _restamp_uploads(project.record.path, entries)
             return
         data_root = project.workspace.path / "public" / "data"
         if not data_root.is_dir():
@@ -15842,17 +16129,52 @@ class Orchestrator:
         row's shown model only where this names one, and a key holding null would make "the router
         could not answer" and "the router said nothing moves" the same read.
 
-        The pick is not forced here because `locked_runs_on` drops it itself, and that is deliberate
-        rather than an oversight to tidy up: this answer is held in the browser across pick changes
-        (`store.js` re-reads on a mode, Binding or Conversation change and NOT on a pick), so an
-        answer that could be the pick would go stale the moment somebody picked a barred model.
+        The pick is read rather than dropped, since #286, WHERE THE STANDING MODE HONOURS ONE — see
+        `honours_pick` below, which is half the rule and belongs in this sentence rather than ten
+        lines under it. An in-session act outranks the signing pin one layer below the lock, so a
+        pick-free answer named the pin's model on every row while the pick was the thing deciding the
+        turn — in all three pick cases, not only the barred one that was reported. It needs no fork of its own: `_resolve_chat` reads `chat_model` and
+        `_resolve_build` reads `picked_model`, so the `chat_thread_id` fork two paragraphs up already
+        puts each row on the pick its own turn reads.
+
+        The browser still does not re-read on a pick (`store.js` re-reads on a mode, Binding or
+        Conversation change), and what makes holding this answer across one safe is the drawer rather
+        than the answer: its rows are the only reader, it re-reads on open, its mask puts the picker
+        out of reach for as long as it is open, and `set_catalog` clears the Build pick on every save.
+        Two windows that leaves rather than one, both of the same shape: #294, where the orchestrator
+        moves the pick itself when a build turn escalates and there is no human act to block; and a
+        second Workbench on the same Project, which one tab's mask cannot reach.
+
+        #294 is NARROWER than its own write-up since the gate above. The escalation pins the turn
+        with `set_turn_mode`, which deliberately leaves the standing choice alone — so a session
+        standing in Auto, the commonest way to reach an escalation at all, now has `selected_mode`
+        Auto and these rows drop the escalated pick unread. What is left is a session standing in
+        Plan or Implement. Whoever takes #294 should scope it from that and not from here.
         """
         if approved is None:
             return {}
+        # A pick the standing mode will not honour is not an input to any row. `_resolve_build` reads
+        # `picked_model` in Plan and Implement modes only, and `set_mode` does not clear a pick — so
+        # one made in Plan survives a switch to Auto and goes inert. The rows force the mode PER SLOT
+        # and would otherwise report that dead pick on both Build rows while every Auto turn ran the
+        # assignments: the #285 defect again, with the pick in the pin's place.
+        #
+        # `selected_mode` rather than the snapshot's `mode`, which is pinned while a turn runs. These
+        # rows predict the NEXT turn, and a pick made mid-turn is live for the one after it.
+        #
+        # The same set is written down once more, at `preflight.shadowed_slots` — which is the other
+        # surface that has to know when a pick defeats the pin. Two readings of one rule, named here
+        # so a fourth mode that honours a pick is two edits rather than one edit and a silence.
+        #
+        # The Chat pick is not gated with it. Chat has no modes to make one inert, which is the same
+        # asymmetry `set_catalog` has: it clears `picked_model` and leaves `chat_model` standing.
+        honours_pick = project.control.selected_mode in (Mode.PLAN, Mode.IMPLEMENT)
+        pick = project.control.snapshot().picked_model if honours_pick else None
         out: dict[str, str] = {}
         for slot in ASSIGNABLE_SLOTS:
             try:
                 state = replace(project.control.snapshot(),
+                                picked_model=pick,
                                 # The `ask` row is the one with two turns behind it — `SLOTS` labels
                                 # it "Ask and Chat" and `_resolve_chat` returns `catalog.ask` — and
                                 # the pin takes only the Build one. Answered as Build it read "so
@@ -17199,7 +17521,8 @@ class Orchestrator:
                 _link_attachment(dest, src)
             project.attached.append(
                 _dataset_entry(dataset_id, asset.name, file_path, rel, size,
-                               added_by=added_by, conversation_id=conversation_id))
+                               added_by=added_by, conversation_id=conversation_id,
+                               sage_upload=_sage_wrote(project.record.path, dataset_id, file_path)))
             self._ensure_gitignored(project.workspace.path, "public/data/")
             self._write_agents_data_block(project)
             project.workspace.write_attachments(project.attached)
@@ -17287,6 +17610,9 @@ class Orchestrator:
         made: list[Path] = []
         entries: list[dict] = []
         described = False
+        # Read once, not per file: the folder act runs to two hundred of them (ADR-0029). The
+        # comparison itself is `_ledger_names`, the same one the single-file path uses.
+        rows = _uploads_ledger(project.record.path)
         try:
             for f in wanted:
                 rel = _attach_dest(asset.name, f.path)
@@ -17296,7 +17622,9 @@ class Orchestrator:
                 dest = _safe_join(project.workspace.path, rel)
                 _link_attachment(dest, src)
                 made.append(dest)
-                entries.append(_dataset_entry(dataset_id, asset.name, f.path, rel, f.size))
+                entries.append(_dataset_entry(
+                    dataset_id, asset.name, f.path, rel, f.size,
+                    sage_upload=_ledger_names(rows, dataset_id, f.path)))
             # The record is inside the same try the links are. A write that failed after `extend`
             # used to leave the files in the preview and answer "Nothing was attached" — the lie
             # detach cannot unwind (the bytes are gone) and attach still can. The sentence the
@@ -17652,6 +17980,14 @@ class Orchestrator:
         created = not dest_bytes.exists()
         dest_bytes.write_bytes(data)
         try:
+            # The one moment Sage knows it wrote these bytes. Noted where it outlives the entry
+            # below, which detach deletes, so the file keeps its destroy door when it comes back as
+            # any other Dataset file (#274). Inside the try, and undone with the bytes.
+            #
+            # The entry is stamped from whether that landed, not from the fact that Sage wrote the
+            # file: the ledger is what the unlink will ask, so a stamp it does not back is a destroy
+            # door that detaches and says it deleted.
+            noted = _note_sage_upload(project.record.path, target.id, rel_in_dataset)
             link.parent.mkdir(parents=True, exist_ok=True)
             if link.is_symlink() or link.exists():
                 link.unlink()
@@ -17659,7 +17995,7 @@ class Orchestrator:
             project.attached[:] = [e for e in project.attached if e["path"] != rel]
             project.attached.append(
                 {"dataset_id": target.id, "dataset": target.name, "file": rel_in_dataset, "path": rel,
-                 "size": size, "source": "upload",
+                 "size": size, "source": "upload", "sage_upload": noted,
                  "dataset_rel_path": rel_in_dataset}
             )
             self._ensure_gitignored(project.workspace.path, "public/data/")
@@ -17667,10 +18003,25 @@ class Orchestrator:
             project.workspace.write_attachments(project.attached)
         except Exception:
             project.attached[:] = [e for e in project.attached if e["path"] != rel]
+            # One step, so the note goes only where the bytes went — `delete_file`'s rule, which
+            # this used to break by gating both on `created` alone: an unlink that failed (a mount
+            # gone read-only, EBUSY) left the bytes in the Dataset and still dropped the one record
+            # granting their door. A raise here is caught below and the forget never runs.
+            #
+            # `created is False` keeps the line on purpose, and the early return is where. Those
+            # bytes were OVERWRITTEN, so they are not given back and what stands at that path is
+            # Sage's however this act ends. A record of that is unearned by a rolled-back upload and
+            # still true, and dropping it would leave Sage's own bytes there with no door.
+            def _undo_bytes() -> None:
+                if not created:
+                    return
+                dest_bytes.unlink()
+                _forget_sage_upload(project.record.path, target.id, rel_in_dataset)
+
             for undo in (lambda: link.unlink() if link.is_symlink() or link.exists() else None,
                          lambda: _prune_empty_dirs(link.parent,
                                                    project.workspace.path / "public" / "data"),
-                         lambda: dest_bytes.unlink() if created else None,
+                         _undo_bytes,
                          lambda: project.workspace.write_attachments(project.attached)):
                 try:
                     undo()
@@ -17760,11 +18111,9 @@ class Orchestrator:
 
     def delete_file(self, path: str) -> dict:
         """Delete an UPLOADED file: remove its workspace symlink AND its bytes from the dataset mount,
-        then forget it. Bytes are deleted only for Sage-managed uploads — files under a dataset's
-        `uploads/` folder, which Sage always created (whether attached as source=='upload' or later
-        re-attached from the dataset browser as source=='dataset'). A genuine pre-existing dataset
-        file (not under uploads/) is detach-only here; its bytes are the user's data and never
-        removed."""
+        then forget it. Bytes are deleted only for bytes Sage itself wrote, which `_is_sage_upload`
+        answers off the record rather than off the folder the file sits in (#274). Any other
+        Dataset file is detach-only here; its bytes are the person's data and never removed."""
         project = self.project()
         if not path.startswith("public/data/"):
             raise ValueError(path)
@@ -17784,35 +18133,110 @@ class Orchestrator:
         if link.is_symlink() or link.exists():
             link.unlink()
         _prune_empty_dirs(link.parent, project.workspace.path / "public" / "data")
-        if entry and _is_sage_upload(entry):
-            self._delete_upload_bytes(entry)
+        # The stamp DREW the door; the ledger AUTHORIZES the unlink, and it is asked again here.
+        # `sage_upload` is a per-app copy refreshed when a manifest is read, and one Project volume
+        # can carry two Workspaces: the other one can have destroyed this file and forgotten its
+        # line since this app was last opened, leaving a copy that still says yes over whatever the
+        # person has written at that path since. Nothing on this side can notice that; the ledger
+        # on disk is the one thing both sides share, so it is what the irreversible act reads.
+        #
+        # The line then goes only where the bytes did. `_delete_upload_bytes` gives up quietly on an
+        # unmounted Dataset, and forgetting a file it could not reach would leave Sage's own bytes
+        # standing in the Dataset with the one record that grants their door thrown away.
+        rel_in_dataset = str(entry.get("dataset_rel_path") or "") if entry else ""
+        standing = bool(entry and _is_sage_upload(entry)
+                        and _sage_wrote(project.record.path, entry.get("dataset_id"),
+                                        rel_in_dataset))
+        destroyed = standing and self._delete_upload_bytes(entry)
+        if destroyed:
+            _forget_sage_upload(project.record.path, entry.get("dataset_id"), rel_in_dataset)
         project.attached[:] = [e for e in project.attached if e["path"] != path]
         self._write_agents_data_block(project)
         project.workspace.write_attachments(project.attached)
         self._release_fetch_behind(project, fetched)
-        return {"deleted": path, "status": project.status()}
+        # What the door OFFERED, answered. The gate above is an authority the browser cannot see —
+        # it reads the entry, and the entry can be a stale copy of what the ledger now says — so
+        # without this the one case the gate exists for reports as the destroy it refused to do.
+        #
+        # WHY it was kept, not just that it was, because the two reasons are different situations
+        # and a sentence naming the wrong one is worse than a sentence naming none. `no-record`:
+        # nothing says Sage wrote these bytes, and nothing ever will — the person removes them on
+        # the platform. `unreachable`: Sage holds the record and deliberately kept it, because the
+        # Dataset is not listed, not mounted here, or would not give the file up. That one comes
+        # back when the Dataset does.
+        #
+        # Neither, with no entry at all. `no-record` is a claim ABOUT THE BYTES and this path has
+        # not got as far as the bytes: there is simply no manifest row here — the symlink-scan
+        # rehydrate leaves none, and a row can go stale between the panel drawing it and the click.
+        # Saying "Sage has no record of writing those bytes" would state as permanent a thing this
+        # never looked at.
+        return {"deleted": path, "bytes_removed": destroyed,
+                "bytes_kept": None if destroyed or not entry
+                              else ("unreachable" if standing else "no-record"),
+                "status": project.status()}
 
-    def _delete_upload_bytes(self, entry: dict) -> None:
-        """Remove an uploaded file's bytes from its dataset mount. Guarded to only ever touch a path
-        under a Sage upload folder (uploads/ or sensitive/) resolved within the dataset mount — so
-        it can never delete pre-existing data."""
+    def _delete_upload_bytes(self, entry: dict) -> bool:
+        """Remove an uploaded file's bytes from its dataset mount. Answers whether they are gone.
+
+        What the guard here enforces is REACH: the unlink lands under a Sage upload folder
+        (`_SAGE_UPLOAD_PREFIXES`) resolved inside that mount, and nowhere else in the Dataset.
+        It does not establish STANDING, and used to be read as if it did — a person's own file
+        under their own `uploads/` folder passes it (#274). Standing is `_is_sage_upload`'s answer,
+        asked by the one caller before this runs.
+
+        Retire it if a Sage upload ever writes outside those folders, or fold it into the call above
+        if the two ever need to agree on one path; until then it is belt to that caller's braces.
+
+        False for every way this gives up — a Dataset that is not mounted here, a path it will not
+        resolve, a failed unlink — so the caller can tell a Dataset it emptied from one it never
+        reached. It is not a report to the person: the symlink goes either way, and this door's
+        promise is about the workspace. What it decides is whether the upload ledger may forget.
+
+        REACHABILITY IS ASKED OF THE PROVIDER, NEVER INFERRED FROM ABSENCE. `mount_path` is set only
+        where the provider found that directory (`_mount_path_for`), and `mount.is_dir()` re-asks
+        that same claim now rather than trusting a listing that may be cached. Everything below the
+        mount root describes the FILE and must not feed this answer — absence there is equally the
+        bytes being gone and the Dataset not being here, and a probe that reads one as the other
+        just moves the lie.
+
+        An earlier revision also required the file's own folder, to catch a mount point a container
+        pre-created and a mount that then failed. It was removed: Sage prunes an emptied
+        `uploads/` itself, so that probe reported REACHED AS UNREACHABLE for a path Sage had already
+        cleaned up — keeping a dead ledger line and telling the person their data was still in the
+        Dataset when it was not. What survives is the residue the other way: a mount point with no
+        Dataset behind it reads as a Dataset whose file is gone. That direction is the right one to
+        fail in, because its cost is a destroy door that disappears, and the other's is a destroy
+        door that appears over somebody's file."""
         rel = entry.get("dataset_rel_path") or ""
         if not rel.startswith(_SAGE_UPLOAD_PREFIXES):
-            return
+            return False
         asset = next((a for a in self._assets.list_datasets(self._domino_project_id)
                       if a.id == entry.get("dataset_id")), None)
         if asset is None or not asset.mount_path:
-            return
+            return False
+        mount = Path(asset.mount_path)
+        if not mount.is_dir():
+            return False
         try:
-            target = _safe_join(Path(asset.mount_path), rel)
+            target = _safe_join(mount, rel)
         except ValueError:
-            return
+            return False
+        removed = False
         try:
             if target.is_file():
                 target.unlink()
-                _prune_empty_dirs(target.parent, Path(asset.mount_path))
+                removed = True
         except OSError:
             log.exception("delete_upload_bytes: failed to remove %s", rel)
+            return False
+        # After the answer is settled, not inside it: sharing the unlink's `try` let a `resolve()`
+        # on a sick mount turn a file that IS gone into False, leaving the ledger naming a destroyed
+        # path. And only where this act did the emptying — a folder Sage neither created nor emptied
+        # is not Sage's to tidy away, even one inside `_SAGE_UPLOAD_PREFIXES`.
+        if removed:
+            with contextlib.suppress(OSError):
+                _prune_empty_dirs(target.parent, mount)
+        return True
 
     def delete_scratch(self, path: str) -> dict:
         """Delete an Upload's bytes from `.sage/scratch/`. No `DataReferenced` guard and no turn

@@ -5,6 +5,8 @@ default), customer_pii, app_logs. Uploads land under uploads/."""
 from __future__ import annotations
 
 import json
+import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -45,6 +47,21 @@ def _dataset(orch: Orchestrator, name: str) -> str:
 
 def _manifest(ws: Path) -> list[dict]:
     return json.loads((ws / ".sage" / "attachments.json").read_text())
+
+
+def _wind_back_to_pre_274(root: Path) -> None:
+    """What the build before #274 left on a volume: entries spelling `source`, and no ledger."""
+    for manifest in (root / "apps").glob("*/.sage/attachments.json"):
+        rows = json.loads(manifest.read_text())
+        for e in rows:
+            e.pop("sage_upload", None)
+        manifest.write_text(json.dumps(rows, indent=2))
+    (root / ".sage" / "uploads.json").unlink(missing_ok=True)
+
+
+def _door(orch: Orchestrator, rel: str) -> bool:
+    attached = orch.project(start_preview=False).attached
+    return next(e for e in attached if e.get("dataset_rel_path") == rel)["sage_upload"]
 
 
 def test_upload_writes_to_default_dataset_mount_and_attaches(tmp_path: Path):
@@ -116,8 +133,8 @@ def test_delete_never_removes_a_pre_existing_dataset_files_bytes(tmp_path: Path)
 
 def test_delete_removes_bytes_for_an_uploads_file_reattached_as_dataset(tmp_path: Path):
     # A Sage upload that later shows up as a dataset-browser attachment (source flips to
-    # 'dataset', e.g. rehydrated that way) still lives under a Sage folder, so it's Sage-managed
-    # and delete must remove its bytes.
+    # 'dataset') is still Sage's to delete, because the upload wrote that fact down (#274) and the
+    # entry carries it. The folder it sits in says nothing either way.
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
     res = orch.upload_file("d.csv", b"x")
@@ -130,6 +147,385 @@ def test_delete_removes_bytes_for_an_uploads_file_reattached_as_dataset(tmp_path
 
     assert not (ws / res["path"]).exists() and not src.exists()  # symlink AND dataset bytes gone
     assert _manifest(ws) == []
+
+
+def test_the_unlink_asks_the_ledger_again_rather_than_the_apps_copy(tmp_path: Path):
+    """The stamp draws the door; the ledger authorizes the unlink, and is asked at that moment.
+
+    `sage_upload` is a per-app copy refreshed only when a manifest is read, and one Project volume
+    can carry two Workspaces (#274). The other one can destroy this file and forget its line while
+    this app sits open, and nothing on this side can notice — so a copy that still says yes would
+    take the person's replacement file with no undo. The ledger on disk is what both sides share,
+    which is why the irreversible half reads it rather than the stamp that drew the control.
+
+    Driven by editing the ledger behind this orchestrator's back, which is precisely what the other
+    Workspace is: a writer this process shares a file with and nothing else.
+    """
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    res = orch.upload_file("d.csv", b"sage")
+    ds = _dataset(orch, "sales_2026")
+    mount = Path(next(a for a in orch._assets.list_datasets("Sage") if a.id == ds).mount_path)
+    assert next(e for e in orch.project().attached
+                if e["path"] == res["path"])["sage_upload"] is True
+
+    (project.record.path / ".sage" / "uploads.json").write_text("[]")   # the other Workspace forgot
+    (mount / "uploads" / "d.csv").write_bytes(b"theirs")                # the person wrote their own
+
+    done = orch.delete_file(res["path"])
+    assert done["bytes_removed"] is False                              # and it says so
+    assert done["bytes_kept"] == "no-record"                           # for the other reason
+
+    assert (mount / "uploads" / "d.csv").read_bytes() == b"theirs"      # their file stays
+    assert not (project.workspace.path / res["path"]).exists()          # the detach still happens
+
+
+def test_a_delete_that_found_nothing_leaves_the_folder_alone(tmp_path: Path):
+    """Sage tidies away the folder it emptied, and only that one (#274).
+
+    The prune walks up inside the Dataset removing empty directories, which is right after this act
+    took the last file out of one. It is not right when the file had already gone some other way:
+    the folder is then one Sage neither created nor emptied, and removing it is a write into the
+    person's store on a path where this found nothing at all.
+    """
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    res = orch.upload_file("d.csv", b"x")
+    (ws / res["path"]).resolve().unlink()                    # the bytes leave some other way
+
+    orch.delete_file(res["path"])
+
+    ds = _dataset(orch, "sales_2026")
+    mount = Path(next(a for a in orch._assets.list_datasets("Sage") if a.id == ds).mount_path)
+    assert (mount / "uploads").is_dir()
+
+
+def test_an_upload_into_an_empty_app_does_not_retire_the_migration(tmp_path: Path):
+    """The one backfill a project gets belongs to the PROJECT, not to the app on screen (#274).
+
+    The ledger file is what marks the migration done, and an ordinary upload writes that file. Open
+    an upgraded project on an app holding nothing, upload one thing there, and a migration that ran
+    off the selected app's manifest would never have run at all — while its mark is now set, so no
+    later open can. Every pre-#274 upload in every other app loses its door for good, which is the
+    dead end the backfill exists to prevent.
+    """
+    orch = _orch(tmp_path)
+    first = orch.project(start_preview=False).workspace.app_id
+    orch.upload_file("d.csv", b"sage")
+    orch.create_app()                                        # empty, and minting selects it
+    _wind_back_to_pre_274(orch.project(start_preview=False).record.path)
+
+    upgraded = _orch(tmp_path, assets=orch._assets)
+    upgraded.project(start_preview=False)                    # the one open this project gets
+    upgraded.upload_file("e.csv", b"other")                  # writes the ledger, i.e. the mark
+    upgraded.select_app(first)
+
+    assert _door(upgraded, "uploads/d.csv") is True
+
+
+def test_a_clone_that_has_not_built_its_links_keeps_its_doors(tmp_path: Path):
+    """Absence of a symlink is not proof the bytes are gone (#274).
+
+    `public/data/` is gitignored and nothing rebuilds it at rehydrate, so a fresh clone of the
+    Project has the manifest — which is exactly what it is committed for — and no links at all. A
+    migration that read that as "destroyed" would write an empty ledger, set its mark, and retire
+    every pre-#274 upload's door on the one shape the manifest exists to survive.
+    """
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    orch.upload_file("d.csv", b"sage")
+    root = orch.project(start_preview=False).record.path
+    _wind_back_to_pre_274(root)
+    shutil.rmtree(ws / "public" / "data")                    # the clone never built them
+
+    upgraded = _orch(tmp_path, assets=orch._assets)
+
+    assert _door(upgraded, "uploads/d.csv") is True
+
+
+def test_a_ledger_nobody_can_decode_costs_doors_and_not_the_project(tmp_path: Path):
+    """An unreadable ledger is answered, never raised (#274).
+
+    A reader that degrades to empty loses a door, which is the safe direction. Raising instead puts
+    the failure in the path of merely OPENING the Project — and the read runs on every app switch,
+    so nothing would open at all. Bytes that are not UTF-8 are the case that got past a catch named
+    for JSON and OS errors only.
+    """
+    orch = _orch(tmp_path)
+    root = orch.project(start_preview=False).record.path
+    orch.upload_file("d.csv", b"sage")
+    (root / ".sage" / "uploads.json").write_bytes(b"\xff\xfe not utf-8 at all")
+
+    upgraded = _orch(tmp_path, assets=orch._assets)
+
+    assert _door(upgraded, "uploads/d.csv") is False         # the door goes...
+    assert upgraded.project(start_preview=False).attached     # ...and the Project still opens
+
+
+def test_a_second_apps_door_closes_when_another_app_destroys_the_bytes(tmp_path: Path):
+    """One app's delete reaches the other app's door, because neither app is the authority (#274).
+
+    An entry is a per-app copy of a claim about bytes both apps share. Attach a Sage upload in a
+    second app and its entry records the upload honestly; destroy it from the first and that copy is
+    the only thing still saying so. Left to answer on its own it offers a no-undo destroy door onto
+    whatever the person has written at that path since — the folder-name bug with the folder swapped
+    for a path, and a delete in one app cannot reach into another's manifest to stop it.
+
+    So the copy is not the authority: the ledger is, and the manifest read on every app switch is
+    where the copy is brought back into line. Asserted through the door and then through the delete
+    behind it, because a closed door that still destroys on the API is the half that matters.
+    """
+    orch = _orch(tmp_path)
+    first = orch.project(start_preview=False).workspace.app_id
+    orch.upload_file("d.csv", b"sage")
+    ds = _dataset(orch, "sales_2026")
+    mount = Path(next(a for a in orch._assets.list_datasets("Sage") if a.id == ds).mount_path)
+    second = orch.create_app()["id"]                         # minting selects it
+    in_second = orch.attach_file(ds, "uploads/d.csv")["path"]
+    assert next(e for e in orch.project().attached
+                if e["path"] == in_second)["sage_upload"] is True
+
+    orch.select_app(first)
+    orch.delete_file(next(e["path"] for e in orch.project().attached
+                          if e.get("dataset_rel_path") == "uploads/d.csv"))
+    (mount / "uploads").mkdir(parents=True, exist_ok=True)   # the delete pruned the empty folder
+    (mount / "uploads" / "d.csv").write_bytes(b"theirs")     # the person writes their own, later
+    orch.select_app(second)
+
+    entry = next(e for e in orch.project().attached if e["path"] == in_second)
+    assert entry["sage_upload"] is False                     # the door closes...
+    orch.delete_file(entry["path"])
+    assert (mount / "uploads" / "d.csv").read_bytes() == b"theirs"   # ...and their file stays
+
+
+def test_a_second_apps_record_does_not_bring_back_a_forgotten_upload(tmp_path: Path):
+    """A destroyed upload stays forgotten, even though a second app still spells it (#274).
+
+    The record of who wrote the bytes is per PROJECT and the manifest that feeds it is per APP, so
+    the two do not converge on their own: uploading one name in two apps writes `source: "upload"`
+    in both manifests, and the delete in one can only reach its own. Rehydrate runs on every app
+    switch, so a backfill that believed the second manifest would write the line back for bytes
+    nothing holds any more — and hand their door to whoever writes at that path next, which is #274
+    with the folder swapped for a path.
+
+    Only never asking twice settles it, which is what the ledger FILE marks. The obvious guard —
+    backfill only what the app's symlink still resolves — cannot, and this is the ordering that
+    shows why: by the time the second app is opened, the person has written their own file at that
+    path and the symlink resolves perfectly. The two files differ in nothing the check can read.
+
+    Driven over an upgraded project, because that is the only shape where the backfill runs at all.
+    """
+    orch = _orch(tmp_path)
+    first = orch.project(start_preview=False).workspace.app_id
+    orch.upload_file("d.csv", b"sage")
+    second = orch.create_app()["id"]                         # minting selects it
+    orch.upload_file("d.csv", b"sage")                       # same Dataset path, second manifest
+    ds = _dataset(orch, "sales_2026")
+    mount = Path(next(a for a in orch._assets.list_datasets("Sage") if a.id == ds).mount_path)
+
+    # Wind the volume back to what the old build left: entries spelling `source`, and no ledger.
+    root = orch.project(start_preview=False).record.path
+    for manifest in (root / "apps").glob("*/.sage/attachments.json"):
+        rows = json.loads(manifest.read_text())
+        for e in rows:
+            e.pop("sage_upload", None)
+        manifest.write_text(json.dumps(rows, indent=2))
+    (root / ".sage" / "uploads.json").unlink()
+
+    orch = _orch(tmp_path, assets=orch._assets)
+    orch.select_app(first)                                   # the one backfill this project gets
+    orch.delete_file(next(e["path"] for e in orch.project().attached
+                          if e.get("dataset_rel_path") == "uploads/d.csv"))
+    assert not (mount / "uploads" / "d.csv").exists()        # destroyed, and forgotten with it
+    (mount / "uploads").mkdir(parents=True, exist_ok=True)   # the delete pruned the empty folder
+    (mount / "uploads" / "d.csv").write_bytes(b"theirs")     # the person writes their own, later
+
+    orch.select_app(second)                                  # rehydrates the manifest that still says it
+
+    entry = next(e for e in orch.project().attached
+                 if e.get("dataset_rel_path") == "uploads/d.csv")
+    assert entry["sage_upload"] is False                     # no door on a file Sage did not write
+    orch.delete_file(entry["path"])
+    assert (mount / "uploads" / "d.csv").read_bytes() == b"theirs"
+
+
+def test_an_upgrade_keeps_the_door_on_an_upload_it_can_still_read(tmp_path: Path):
+    """A project that predates #274 has no ledger, and one kind of entry can still rebuild it.
+
+    `source: "upload"` on a live entry IS a record that Sage wrote those bytes — the same fact the
+    ledger keeps, in the only place the old build kept it. Read at rehydrate it survives the detach
+    that deletes the entry; unread, an upgrade would turn a recoverable door into a dead end, with
+    Sage's own bytes in the Dataset and nothing in Sage able to remove them.
+
+    Paired against the two entries that must NOT be rebuilt. The person's own file under their own
+    `uploads/` records no upload, which is exactly what #274 is about. And `gone.csv` DOES spell the
+    upload, but its bytes left the Dataset before the upgrade — a record naming a path nothing holds
+    is a record waiting for the next writer there, so the pass takes only what the app's own symlink
+    still resolves. Nothing is invented for any of the three.
+    """
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    ws = project.workspace.path
+    ds = _dataset(orch, "sales_2026")
+    orch.upload_file("d.csv", b"x")
+    orch.upload_file("gone.csv", b"x")
+    mount = Path(next(a for a in orch._assets.list_datasets("Sage") if a.id == ds).mount_path)
+    (mount / "uploads" / "gone.csv").unlink()                # it left the Dataset some other way
+    (mount / "uploads" / "budget.csv").write_bytes(b"theirs")
+    orch.attach_file(ds, "uploads/budget.csv")
+
+    # Wind the volume back to what the old build left: entries spelling `source`, and no ledger.
+    manifest = _manifest(ws)
+    for e in manifest:
+        e.pop("sage_upload", None)
+    (ws / ".sage" / "attachments.json").write_text(json.dumps(manifest, indent=2))
+    (project.record.path / ".sage" / "uploads.json").unlink()
+
+    upgraded = _orch(tmp_path, assets=orch._assets)
+    upgraded.project(start_preview=False)                    # rehydrates, and reads the old record
+
+    # `gone.csv` never leaves its entry, because there is nothing on the mount to attach again; the
+    # restamp is what answers for it, which is the same record the other two are re-read against.
+    doors = {"uploads/gone.csv": next(e for e in upgraded.project().attached
+                                      if e.get("dataset_rel_path") == "uploads/gone.csv")["sage_upload"]}
+    for rel in ("uploads/d.csv", "uploads/budget.csv"):
+        upgraded.detach_file(next(e["path"] for e in upgraded.project().attached
+                                  if e.get("dataset_rel_path") == rel))
+        entry = upgraded.attach_file(ds, rel)
+        doors[rel] = next(e for e in upgraded.project().attached
+                          if e["path"] == entry["path"])["sage_upload"]
+    assert doors == {"uploads/d.csv": True,
+                     "uploads/budget.csv": False, "uploads/gone.csv": False}
+
+
+def test_an_unreadable_ledger_costs_one_door_and_not_every_door(tmp_path: Path):
+    """A ledger Sage cannot parse is never written over, and never fails the upload (#274).
+
+    It is committed at the Project root, so two Builders uploading can leave conflict markers in it
+    in the ordinary course. Read as empty and republished, one upload would take every other file's
+    destroy door with it — silently, permanently, and nowhere near the act that did it. So the note
+    is refused, and refused quietly: bookkeeping for a door must not turn a good upload into a
+    rolled-back one when the Dataset mount was writable all along.
+    """
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    ledger = project.record.path / ".sage" / "uploads.json"
+    orch.upload_file("a.csv", b"a")
+    orch.upload_file("b.csv", b"b")
+    good = ledger.read_text()
+    ledger.write_text("<<<<<<< HEAD\n" + good)               # what a merge leaves behind
+
+    res = orch.upload_file("c.csv", b"c")                    # the upload still lands
+
+    assert (project.workspace.path / res["path"]).is_symlink()
+    # And draws no destroy door, because the ledger the unlink will ask does not name it. Stamped
+    # True on the strength of Sage having written the bytes, this would offer a no-undo control
+    # that detaches and reports a delete.
+    assert _door(orch, "uploads/c.csv") is False
+    assert ledger.read_text().startswith("<<<<<<< HEAD")     # and takes nothing else down with it
+    ledger.write_text(good)
+
+    # The pair, over one fixture: c.csv paid the cost this test is named for, a.csv and b.csv did
+    # not. Asserting only the survivors would pass on a build that quietly rewrote the ledger past
+    # the conflict markers, which is the failure being guarded against. Driven on this orchestrator
+    # rather than a fresh one on purpose — a reload rehydrates the manifest, and `c.csv` is still
+    # spelled `source: "upload"` there, so the backfill would hand its door back.
+    ds = _dataset(orch, "sales_2026")
+    doors = {}
+    for name in ("a.csv", "b.csv", "c.csv"):
+        rel = f"uploads/{name}"
+        orch.detach_file(next(e["path"] for e in orch.project().attached
+                              if e.get("dataset_rel_path") == rel))
+        entry = orch.attach_file(ds, rel)
+        doors[name] = next(e for e in orch.project().attached
+                           if e["path"] == entry["path"])["sage_upload"]
+    assert doors == {"a.csv": True, "b.csv": True, "c.csv": False}
+
+
+@pytest.mark.parametrize("unreachable", ["unlisted", "unmounted"])
+def test_a_delete_that_could_not_reach_the_bytes_keeps_their_door(tmp_path: Path, unreachable: str):
+    """A Dataset that is not there to be emptied leaves its file's door standing (#274).
+
+    `_delete_upload_bytes` gives up quietly on a Dataset it cannot reach, and the symlink goes
+    either way. What must not go with it is the ledger line: Sage's bytes are still in that Dataset,
+    and forgetting them here would throw away the only record that grants their door — a loss
+    nothing afterwards can see, which is why it is pinned rather than left to the docstring.
+
+    Both shapes of unreachable, because they fail different checks and only one is obvious. A
+    Dataset the platform still LISTS, carrying a `mount_path` this container never mounted, gets
+    past the listing check and arrives at a path where no file is found — which is indistinguishable
+    from bytes that are genuinely gone unless the MOUNT is what gets asked. `is_file()` on the file
+    answers the same for both; `is_dir()` on the mount root separates them.
+
+    The third shape, a mount point that exists with no Dataset behind it, is NOT here. It reads as
+    a Dataset whose file is gone, deliberately — see the test below.
+    """
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    res = orch.upload_file("d.csv", b"x")
+    src = (ws / res["path"]).resolve()
+    ds = _dataset(orch, "sales_2026")
+    listed = orch._assets.assets
+    if unreachable == "unlisted":
+        orch._assets.assets = [a for a in listed if a.id != ds]
+    else:
+        orch._assets.assets = [replace(a, mount_path=str(tmp_path / "not-mounted")) if a.id == ds
+                               else a for a in listed]
+
+    done = orch.delete_file(res["path"])
+    assert done["bytes_removed"] is False
+    # And says WHY it kept them. Sage holds the record here and kept it on purpose; told "no record"
+    # the person would go looking for a door that is coming back the moment the Dataset does.
+    assert done["bytes_kept"] == "unreachable"
+
+    assert not (ws / res["path"]).exists()                   # the symlink goes
+    assert src.is_file()                                     # the bytes it could not reach do not
+    orch._assets.assets = listed
+    reattached = orch.attach_file(ds, "uploads/d.csv")
+    assert next(e for e in orch.project().attached
+                if e["path"] == reattached["path"])["sage_upload"] is True
+
+
+def test_the_destroy_door_reads_the_record_not_the_folder_name(tmp_path: Path):
+    """Two files under one Dataset's `uploads/` — one Sage wrote, one the person did — through one
+    door, which must answer them opposite ways (#274).
+
+    Both arrive as `source: "dataset"` with a `dataset_rel_path` under `uploads/`, so the folder
+    name cannot separate them. What can is the note `upload_file` leaves behind: the real
+    detach-then-re-attach is driven here rather than simulated, because it is the round trip that
+    has to carry that note across a manifest entry being deleted and rewritten.
+
+    Asserted as one pair over one fixture. Two tests each asserting one half would both pass on a
+    door that is never drawn at all (`backend/tests/README.md`).
+
+    budget.csv is also the shape every entry written before #274 has — `source: "dataset"`, under
+    `uploads/`, recording no upload — so the answer asserted for it is the stated answer for those
+    too: no door, whoever wrote the bytes.
+    """
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    ds = _dataset(orch, "sales_2026")
+    mount = Path(next(a for a in orch._assets.list_datasets("Sage") if a.id == ds).mount_path)
+
+    theirs = mount / "uploads" / "budget.csv"                 # a folder they happened to name that
+    theirs.parent.mkdir(parents=True, exist_ok=True)
+    theirs.write_bytes(b"theirs")
+
+    ours = Path(orch.upload_file("margins.csv", b"ours").get("path"))
+    ours_bytes = (ws / ours).resolve()
+    orch.detach_file(ours.as_posix())                         # the entry that recorded the upload
+    reattached = orch.attach_file(ds, "uploads/margins.csv")  # ...is gone, and written again here
+    attached_theirs = orch.attach_file(ds, "uploads/budget.csv")
+
+    entries = {e["path"]: e for e in orch.project().attached}
+    assert entries[reattached["path"]]["source"] == "dataset"        # same shape at the door
+    assert entries[attached_theirs["path"]]["source"] == "dataset"
+
+    orch.delete_file(reattached["path"])
+    orch.delete_file(attached_theirs["path"])
+
+    assert not ours_bytes.exists()                            # Sage's own bytes: destroyed
+    assert theirs.read_bytes() == b"theirs"                   # theirs: never touched
 
 
 def test_delete_blocked_while_app_fetches_the_file(tmp_path: Path):
@@ -1150,3 +1546,114 @@ def test_a_crossed_upload_shows_up_in_the_confirm_receipts_uploads_list(tmp_path
 
     assert crossed["uploads"] == [{"name": "note.csv", "crossed": True, "dataset": "sales_2026"}]
     assert (project.record.path / scratch["path"]).exists()
+
+
+def test_one_apps_unreadable_manifest_does_not_shut_the_project(tmp_path: Path):
+    """The migration reads every app, so one app's bad file must cost only that app (#274).
+
+    `_rehydrate_attached` is called unguarded by `project()` and by `select_app`, so anything the
+    backfill lets escape stops the Project opening — and before the migration existed, a manifest
+    nobody could read in one app was invisible from every other. Bytes that are not UTF-8 at all are
+    the shape that gets past a catch named for JSON and OS errors, which is the same trap the ledger
+    read carries a comment about one function away.
+
+    The bad manifest belongs to an app nobody is looking at, which is the whole point: the migration
+    is what reaches it. `Workspace.read_attachments` carries its own narrow catch for the SELECTED
+    app's manifest and predates all of this — a separate bug, and deliberately not what this drives.
+    """
+    orch = _orch(tmp_path)
+    first = orch.project(start_preview=False).workspace.app_id
+    orch.create_app()                                        # minting selects it, so it is the one
+    orch.upload_file("d.csv", b"sage")                       # the upgrade will open on
+    root = orch.project(start_preview=False).record.path
+    _wind_back_to_pre_274(root)
+    unread = root / "apps" / first / ".sage" / "attachments.json"
+    unread.parent.mkdir(parents=True, exist_ok=True)
+    unread.write_bytes(b"\xff\xfe not utf-8")
+
+    upgraded = _orch(tmp_path, assets=orch._assets)
+
+    assert _door(upgraded, "uploads/d.csv") is True          # the readable app migrated anyway
+
+
+def test_a_mount_point_with_nothing_behind_it_costs_the_door_not_the_data(tmp_path: Path):
+    """The residue of asking the mount and not the file, chosen rather than overlooked (#274).
+
+    A container can pre-create a mount point and the mount then fail, leaving a real empty directory
+    where a Dataset should be. Sage cannot tell that from a mounted Dataset whose file is gone, and
+    it does not try: probing below the mount root for a second opinion is what it used to do, and
+    that probe read Sage's OWN pruned `uploads/` as an unreachable Dataset — keeping a dead ledger
+    line and telling the person their data was still there when it was not.
+
+    So this direction is taken on purpose. The cost is a destroy door that disappears; the cost the
+    other way is a destroy door that appears over somebody else's file, and only one of those two
+    reaches their data. Asserted so that a future reader restoring that probe meets this first.
+    """
+    orch = _orch(tmp_path)
+    ws = orch.project(start_preview=False).workspace.path
+    res = orch.upload_file("d.csv", b"sage")
+    src = (ws / res["path"]).resolve()
+    ds = _dataset(orch, "sales_2026")
+    hollow = tmp_path / "mount-point-with-no-dataset"
+    hollow.mkdir()
+    orch._assets.assets = [replace(a, mount_path=str(hollow)) if a.id == ds else a
+                           for a in orch._assets.assets]
+
+    done = orch.delete_file(res["path"])
+
+    assert done["bytes_removed"] is True                      # read as "the file is already gone"
+    assert src.is_file()                                      # though the real bytes are untouched
+
+
+def test_a_row_with_a_field_nobody_reads_yet_still_names_its_bytes(tmp_path: Path):
+    """One comparison, so a ledger row can gain a field without a door quietly vanishing (#274).
+
+    Six readers had grown around this record asking different questions of it. They agree only while
+    the writer emits exactly two keys — and ADR-0050's own retirement adds a third as its first step.
+    On that day each fails differently, so all of them are driven here: the stamp (both the
+    single-file and the folder path), the destroy door's second gate, and the FORGET, which is the
+    dangerous one — a miss there leaves a record of bytes that have just been destroyed, waiting for
+    whoever writes at that path next.
+    """
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    ds = _dataset(orch, "sales_2026")
+    mount = Path(next(a for a in orch._assets.list_datasets("Sage") if a.id == ds).mount_path)
+    (mount / "uploads").mkdir(parents=True, exist_ok=True)
+    for name in ("one.csv", "two.csv"):
+        (mount / "uploads" / name).write_bytes(b"sage")
+    ledger = project.record.path / ".sage" / "uploads.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps(                            # what a later build writes
+        [{"dataset_id": ds, "path": f"uploads/{n}", "sha256": "not-read-yet"}
+         for n in ("one.csv", "two.csv")], indent=2))
+
+    single = orch.attach_file(ds, "uploads/one.csv")
+    orch.attach_folder(ds, "uploads")
+
+    assert _door(orch, "uploads/one.csv") is True            # the single-file path reads it...
+    assert _door(orch, "uploads/two.csv") is True            # ...and the folder path agrees
+
+    done = orch.delete_file(single["path"])                  # the door's second gate reads it too
+    assert done["bytes_removed"] is True
+    assert not (mount / "uploads" / "one.csv").exists()
+    # And the forget reached the row it was deleting. Left standing, it names bytes that are gone
+    # and hands their door to whoever writes at that path next.
+    assert [r["path"] for r in json.loads(ledger.read_text())] == ["uploads/two.csv"]
+
+
+def test_a_path_with_no_record_says_nothing_about_its_bytes(tmp_path: Path):
+    """`no-record` is a claim about the BYTES, and this path never reached them (#274).
+
+    A `public/data/` path with no manifest row — the symlink-scan rehydrate writes none, and a panel
+    row can go stale between being drawn and being clicked — has not been asked who wrote anything.
+    Answering `no-record` would state as permanent ("nothing will ever remove these for you") a
+    thing that was never looked at.
+    """
+    orch = _orch(tmp_path)
+    orch.project(start_preview=False)
+
+    done = orch.delete_file("public/data/sales_2026/uploads/never-recorded.csv")
+
+    assert done["bytes_removed"] is False
+    assert done["bytes_kept"] is None

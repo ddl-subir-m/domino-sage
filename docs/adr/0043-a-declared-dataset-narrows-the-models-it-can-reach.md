@@ -643,9 +643,12 @@ closes all three at once.
 **The trigger does not widen.** The row substitutes only while a lock holds and its own assigned
 model is barred. Everywhere else the `Select` shows the assignment plainly: with no lock it is an
 assignment editor, and a transient pick in its closed state would make the control lie about the
-thing it edits. *Amended below — it widened, for a different reason: #287 substitutes where the
-SERVER has already moved the slot, which is settled rather than transient, so the concern this
-paragraph protects is untouched.*
+thing it edits. *Amended below — it widened twice, and neither time for the reason this paragraph
+refuses. #287 substitutes where the SERVER has already moved the slot, which is settled rather than
+transient. #286's own code then added the pick as a third mover, and the concern above still holds
+because every one of the three is gated on the lock: with no lock the `Select` is an assignment
+editor and shows the assignment, exactly as this paragraph asks. Under the lock its closed state had
+already stopped naming what it edits, and the line below it names the assignment instead.*
 
 **The "Ask and Chat" row reads the Chat pick.** It is answered as Chat (`chat_thread_id="unarmed"`)
 for the reason two amendments above, and `_resolve_chat` reads `chat_model` — a different field from
@@ -698,6 +701,73 @@ field (`model_assignments` sends `shadowed` as a bare boolean), not a rule, and 
 gate it feeds. Taken in the other order it would give a confident wrong cause on a row whose model is
 also wrong. *Amended below — the prose no longer names a cause, so this is now about the missing
 CURE alone. The field is still needed, for the remedy rather than for the sentence.*
+
+**What shipping this cost in the browser, which the amendment below predicted.** #287 landed first
+and narrowed the drawer's substitution gate to `moved = barredNow || shadowed` — the two rules that
+could separate the server's per-slot answer from the model a row holds, drawn only there so that a
+stale read is never mistaken for a move. A live pick is now a third such rule, so `moved` gained a
+third conjunct and the row reads the pick from the status poll (`buildModel` for the Build rows,
+`model` for the "Ask and Chat" one, which is the same `chat_thread_id` fork the server resolves on).
+Without it the server would answer correctly and the row would throw the answer away in exactly the
+case this ticket names: an approved pick on a row whose own model is approved opens neither of the
+other two conjuncts. `picked` carries the same one-round-trip residue `barredNow` already does — a
+save clears the pick server-side before its re-read lands — and no more, because a pick-free answer
+equals the row's own model and the comparison goes quiet on its own.
+
+**What this hands to the second edge, measured rather than reasoned.** `shadowed` is catalog-derived
+and pick-blind (`preflight.shadowed_slots`), and a pick defeats the pin outright, so on a shadowed
+row holding an approved model that a pick has just re-selected, the pin's sentence — "this model
+won't run" — is false and the row now keeps it. It used to be suppressed, but only as a side effect
+of the row being wrong: the drop gate reads `runs`, and before the pick was restored `runs` named
+the holder's model, which was itself the defect. Measured on the panel harness with `plan` assigned
+an approved model, `implement` signing and a live approved pick: the substitution line goes and the
+pin's sentence stays.
+
+**Two corrections the implementation forced on the paragraphs above.** The mask paragraph says the
+one window it does not close is #294. A mask bounds the hands at one keyboard, not every client, so
+a second Workbench open on the same Project is a second window of the same shape — same cause, and
+#294's decided fix covers both. And "saving any row clears the pick outright" is true of the BUILD
+pick only: `set_catalog` calls `project.control.pick(None)`, which leaves `chat_model` standing. The
+"Ask and Chat" row does not need it, because no save can move a Chat pick either, but the blanket
+sentence was the kind a later reader leans on.
+
+**A pick the standing mode will not honour is not reported, and that gate lives at the caller.**
+`_resolve_build` reads `picked_model` in Plan and Implement modes only, and `ModelControl.set_mode`
+does not clear a pick, so one made in Plan survives a switch to Auto and goes inert. `slot_models`
+forces the mode PER SLOT, which is what made it blind to this: measured, the Plan row read the pick
+while every Auto plan-phase turn ran the assignment — #285's defect again with the pick in the pin's
+place. `_locked_slot_models` drops the pick when `selected_mode` is not one that honours it, rather
+than `locked_runs_on` learning a fourth rule: the router answers the question it is asked, and the
+slot is what the caller forced. `selected_mode` and not the snapshot's `mode`: `arm_turn_mode`
+pins the latter to whatever the RUNNING turn routes as, so a mode changed mid-turn is recorded and
+takes effect on the next one. These rows predict the next turn, so the standing choice is the one
+they read — otherwise a switch made while a turn streams would leave the rows answering for the mode
+the person has just left, for as long as it ran. The Chat pick is not gated with it, because Chat has no modes to make
+one inert — the same asymmetry `set_catalog` has. The same Plan/Implement set is written down once
+more, at `preflight.shadowed_slots`, and the two now name each other: a fourth mode that honours a
+pick is two edits, not one edit and a silence.
+
+**The gate shrinks #294 rather than leaving it as written.** The escalation pins the turn with
+`set_turn_mode`, which deliberately leaves the standing choice alone, so a session standing in Auto —
+the commonest way to reach an escalation at all — now has `selected_mode` Auto and these rows drop
+the escalated pick unread. #294 survives for a session standing in Plan or Implement. It should be
+scoped from that rather than from the paragraph above, which was written before the gate existed.
+
+**And `locked_runs_on` kept its name by giving up its body.** The amendment above said it survives
+"for its name rather than its body", and with the pick restored that turned out to be literal: the
+mirrored chain had no difference left to carry and was only a second place to drift from — which is
+what #285 was, a rule added on one side of a duplicated fork and not the other. It now delegates to
+`resolve` and adds one thing, the empty-approved normalisation. That stays here rather than at the
+caller because it is about the ANSWER this name promises: "what a slot runs under the lock" has no
+meaning without a lock. The caller's own preconditions — the forced mode, the forced
+`chat_thread_id`, a pick the standing mode will honour — are about the QUESTION and stay with it.
+
+So one wrongness is traded for another, and deliberately in that direction — #287 settled that a
+wrong model with no sentence gives the reader nothing to doubt, while a wrong explanation beside a
+visible warning at least can be doubted. The row now names the right model. The stale sentence is
+the second edge left open above, reached in one more case rather than in a new way: the fix is still
+the discriminator field, not a fourth conjunct on the drop gate, and it still belongs with the gate
+it feeds rather than here.
 
 ## Amendment: a moved row says so, without claiming a cause (#287)
 

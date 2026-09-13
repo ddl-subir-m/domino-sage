@@ -48,7 +48,7 @@ window.SW = window.SW || {};
   SW.ModelAssignmentsDrawer = function ModelAssignmentsDrawer() {
     const {
       assignmentsOpen, assignments, assignmentsLoading, assignmentsError, buildRunning, catalog,
-      sensitivity, assignmentEffortDropped,
+      sensitivity, assignmentEffortDropped, buildModel, model: chatPick,
     } = SW.store.get();
 
     const close = () => SW.store.openAssignments(false);
@@ -201,10 +201,31 @@ window.SW = window.SW || {};
       // their save was refused, which is the exact failure the patch above it exists to prevent.
       //
       // So the difference is drawn only where a rule that could have caused it is on this row.
-      // There are two, and between them they are every way the SERVER'S ANSWER can leave the model
-      // the row holds: the lock bars that model (`barredNow`), or the pin has shadowed the row and
-      // taken its turn to the holder (`shadowed`, which is #287's case — the row's own model
-      // approved and moved all the same). A difference neither one explains is a stale read.
+      // There are three, and between them they are every way the SERVER'S ANSWER can leave the
+      // model the row holds: the lock bars that model (`barredNow`), the pin has shadowed the row
+      // and taken its turn to the holder (`shadowed`, which is #287's case — the row's own model
+      // approved and moved all the same), or a pick is live (`picked`, #286 — an in-session act
+      // outranks the pin, so this row's turn runs the pick and not what the row holds). A
+      // difference none of the three explains is a stale read.
+      //
+      // The pick is read from the status poll rather than from `sensitivity`, which carries no pick
+      // field, and the two agree for the reason the whole of #286 rests on: the drawer is masked, so
+      // nobody can move the picker while these rows are on screen. It is the SAME pick the server
+      // resolved with — the `ask` row is answered as Chat (`_locked_slot_models` forces
+      // `chat_thread_id`), so it reads the Chat pick and the other two read the Build one, which is
+      // the existing fork rather than a second one.
+      //
+      // `picked` carries the same one-round-trip residue `barredNow` does, and no more: between a
+      // save and its re-read landing, `answer` is the pre-save one while `set_catalog` has already
+      // cleared the pick server-side. The re-read closes it, because a pick-free answer equals the
+      // row's own model and the comparison below goes quiet.
+      //
+      // Deliberately blind to the MODE, which `_locked_slot_models` reads before it reports a pick
+      // at all: a pick made in Plan and left standing through a switch to Auto is inert, and the
+      // server drops it. Copying that rule here would be the second copy this whole file refuses,
+      // and it buys nothing — with an inert pick `answer` comes back pick-free, so it equals the
+      // row's own model unless the lock or the pin moved it, and those are the other two conjuncts.
+      // The gate opens on nothing and the comparison below shuts it.
       //
       // Not every way a TURN moves, and the gap is named rather than closed: `resolve_unsigned`
       // routes a session whose history already carries unsigned tool calls to the first non-signing
@@ -212,7 +233,9 @@ window.SW = window.SW || {};
       // transcript and no catalog can be asked about it — the same limit `shadowed_slots` records
       // for its own sentence. Such a row is still silent. Closing it needs the session, not a
       // fourth reading of the catalog.
-      const moved = barredNow || Boolean(current.shadowed);
+      const pick = (spec.slot === 'ask' ? chatPick : buildModel) || '';
+      const picked = locked && Boolean(pick);
+      const moved = barredNow || Boolean(current.shadowed) || picked;
       const runs = moved && answer !== current.model ? answer : '';
       // The levels this row may be saved with (ADR-0049). Read off the alias the row's OWN model
       // names, never off `runs`: `_merge_assignment` validates an effort against the model the
@@ -404,6 +427,15 @@ window.SW = window.SW || {};
         width: 420,
         open: assignmentsOpen,
         onClose: close,
+        // antd's own default, passed out loud because every row above depends on it (#286). Each
+        // row names what its mode RUNS, that answer reads the composer's pick, and `store.js` keeps
+        // the pick out of the re-read list — so the row is only ever right because the mask puts
+        // the picker out of reach for as long as this is open. `mask: false` would leave the rows
+        // going stale under a hand that can still move them. Load-bearing, with no expiry: it stops
+        // being a default doing unnamed work and becomes the thing `model_assignments_harness.mjs`
+        // asserts. It reaches this tab's hands and no further — `store.js` names the two windows
+        // that leaves.
+        mask: true,
       },
       h(
         Space,

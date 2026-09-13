@@ -475,6 +475,67 @@ def test_a_fallback_row_cannot_invent_a_move_it_was_never_told_about():
     assert drawn["details"] == []
 
 
+# ---- the row reads the pick (#286) -----------------------------------------------------------
+
+# The lock with a live Build pick under it, as the server answers once `locked_runs_on` reads one:
+# `opus` is picked and approved, so both Build rows run it, while the "Ask and Chat" row is answered
+# as Chat and keeps its own approved model. The Ask row is assigned that model rather than left on
+# the deployment default, because the default is `gpt-5.4` and a barred row moves for a reason that
+# has nothing to do with the pick.
+_PICKED = {
+    "seed": {"ask": {"model": "coder"}},
+    "pick": "opus",
+    "sensitivity": {**_LOCK, "slot_models": {"plan": "opus", "implement": "opus", "ask": "coder"}},
+}
+
+
+def test_a_live_pick_moves_the_rows_it_reaches_even_where_their_own_model_is_allowed():
+    """An in-session act outranks the signing pin one layer below the lock, so a row that says what
+    its mode RUNS has to read the pick. The Implement row is the one that carries this: it holds
+    `coder`, which is approved and unshadowed, so nothing else on the row would open the gate — and
+    before #286 it went on naming its own model while every Implement turn ran `opus`."""
+    (drawn,) = _drawn([_PICKED])
+    assert _row(drawn, "Plan")["value"] == "opus"
+    assert _row(drawn, "Implement")["value"] == "opus"
+    assert "This runs opus, not coder." in drawn["details"]
+
+
+def test_the_build_pick_does_not_reach_the_row_that_answers_for_chat():
+    """`_locked_slot_models` forces `chat_thread_id` on the `ask` row, so the router reads
+    `chat_model` there and `picked_model` on the other two. The browser reads the same fork, and a
+    single pick field for all three rows would substitute a Build pick into the one row no Build
+    pick can move."""
+    (drawn,) = _drawn([_PICKED])
+    assert _row(drawn, "Ask and Chat")["value"] == "coder"
+    # The whole list, in the order a person reads down the panel: two substituted rows and then the
+    # Ask row's plain default line. A substring check would pass on the Implement row's own sentence.
+    assert drawn["details"] == [
+        "This runs opus, not gpt-5.4.", "This runs opus, not coder.", "Default is gpt-5.4.",
+    ]
+
+
+def test_a_chat_pick_moves_that_row_and_leaves_the_build_rows_alone():
+    """The other side of the same fork, and the one that shows it is a fork rather than an exclusion:
+    the Chat pick moves the row the Build pick could not, and the Implement row — approved, holding
+    its own model, no pick of its own — stays on the way back to the default."""
+    (drawn,) = _drawn([{
+        "seed": {"ask": {"model": "coder"}},
+        "chatPick": "opus",
+        "sensitivity": _lock(slot_models={"plan": "opus", "implement": "coder", "ask": "opus"}),
+    }])
+    assert _row(drawn, "Ask and Chat")["value"] == "opus"
+    assert _row(drawn, "Implement")["value"] == "__default__"
+
+
+def test_the_drawer_is_masked_because_nothing_re_reads_these_rows_behind_it():
+    """Load-bearing since #286 and asserted rather than left to antd's default. The rows read the
+    pick and `store.js` keeps the pick out of the re-read list, so they are only right for as long
+    as nobody can reach the picker — which is what the mask, and only the mask, provides. See #294
+    for the one mover the mask cannot block."""
+    (drawn,) = _drawn([{"sensitivity": _lock()}])
+    assert drawn["drawerMask"] is True
+
+
 # ---- the effort beside the model (ADR-0049, #283) --------------------------------------------
 #
 # The row's second control. It is the drawer's and not the Build menu's because an effort is half an

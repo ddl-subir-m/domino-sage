@@ -101,42 +101,54 @@ def nearest_approved(state: SessionState, catalog: ModelCatalog) -> str:
 
 
 def locked_runs_on(state: SessionState, catalog: ModelCatalog) -> str:
-    """What a turn under the lock RUNS, for a label with no turn in hand (ADR-0043, #285).
+    """What a turn in this SLOT runs under the lock, for a label with no turn in hand (ADR-0043).
 
-    `resolve`'s own chain with the pick dropped out of it, which is the whole difference between
-    this and its two neighbours. `nearest_approved` answers where the lock MOVES a barred turn and
-    never applies the signing pin — right for a chip consulted only once the turn's own model is
-    already barred, wrong for the model panel, which draws all three slots with no turn in hand and
-    has to say what each one will run. Under a held pin that is the signing model, on every row
-    (ADR-0032), and the panel named the sovereign slot instead.
+    Three names for three questions, which is a guardrail this router keeps needing and #285 is what
+    losing it costs. `nearest_approved` is where the lock MOVES a barred turn: right for a chip
+    consulted only once the turn's own model is already barred, wrong here, because it never applies
+    the signing pin and so named the sovereign slot on a session the pin held on one model
+    (ADR-0032). `resolve` is what THIS turn runs, with the mode and phase the session armed. This
+    one asks `resolve`'s question of a slot rather than a turn — the caller forces the mode — and
+    normalises an absent approved set to an empty one so that the lock below refuses rather than
+    passing an unlocked state through to a label that only makes sense under a lock.
 
-    Not `resolve` itself, for the reason `nearest_approved` records: `resolve` reads the pick, and
-    the browser holds this answer across pick changes, so an answer that could BE the pick goes
-    stale the moment somebody picks a barred model. Dropped HERE rather than by each caller, so
-    there is one copy of what the label is allowed to read.
+    It reads the pick, and since #286 that is the whole of the difference from the answer this used
+    to give. An in-session act outranks the signing pin one layer below the lock (`_pin_signing`
+    returns a PLAN_OVERRIDE or an IMPLEMENT_OVERRIDE untouched), so a pick-free answer named the
+    pin's model while the pick was the thing deciding the turn. Wrong in all three pick cases, not
+    only the barred one it was reported for: no pick runs the pin's model, a barred pick runs where
+    the lock moves it, and an approved pick runs itself.
 
-    Dropping the pick also drops the one rule that outranks the pin below the lock: an in-session
-    act (`_pin_signing` returns a PLAN_OVERRIDE or IMPLEMENT_OVERRIDE untouched). So while a pick is
-    live and barred, a turn goes where the lock MOVES it and this still names the pin's model. That
-    is the same trade the pick-free answer has always made, one rule further down; closing it would
-    put the pick in the browser's re-read list, which `store.js` keeps out on purpose.
+    The browser may hold this answer across a pick change, and what makes that safe is the drawer
+    rather than anything here. The panel's rows are the only reader; it re-reads on open, its mask
+    puts the picker out of reach for as long as it is open, and `set_catalog` clears the Build pick
+    on every save (the Chat pick it leaves standing, and no save can move one either). That is a UI
+    invariant standing in for a data one, and the weaker of the two — it breaks the moment anyone
+    passes `mask: false`, which is why that prop is now passed explicitly and asserted.
+
+    A mask bounds one pair of hands, not every client, so it leaves two windows rather than one:
+    #294, where the orchestrator moves the pick itself on a build escalation with no human act to
+    block; and a second Workbench open on the same Project, whose picker this tab's mask cannot
+    reach. Both are the same shape and #294 carries the decided fix.
+
+    A NAME over `resolve`, and since #286 nothing else. The body used to mirror `resolve`'s chain
+    with the pick dropped out of it; with the pick back, the copy had no difference left to carry and
+    was only a second place for the chain to drift from — which is precisely what #285 was, a rule
+    (`_pin_signing`) added on one side of a duplicated fork and not the other. So it delegates, and
+    the guardrail is the three names rather than three bodies.
 
     Raises on an empty or absent approved set, exactly as `nearest_approved` does.
     """
-    # An absent approved set becomes an empty one, so the refusal below is the one
-    # `nearest_approved` makes: `_lock_sensitivity` passes an unlocked state straight through, and a
-    # label asking what a lock runs when there is no lock is a caller bug, not a model.
-    state = replace(state, picked_model=None, chat_model=None,
-                    approved_models=state.approved_models or frozenset())
-    # `resolve`'s own fork, mirrored rather than flattened: the pin is a Build rule, because Chat has
-    # no phases to hold still. Flattened, Chat's row would name a signing model it never runs.
-    if state.chat_thread_id:
-        decision = _resolve_chat(state, catalog)
-    else:
-        decision = _pin_signing(_resolve_build(state, catalog), catalog)
-    # And the lock itself, not its two lines restated here — which would be this very defect told
-    # about the rule one layer up.
-    return _lock_sensitivity(decision, state, catalog).model
+    # The one thing this adds. An absent approved set becomes an empty one, so the refusal below is
+    # the one `nearest_approved` makes: `_lock_sensitivity` passes an unlocked state straight
+    # through, and a label asking what a lock runs when there is no lock is a caller bug, not a
+    # model. Here rather than at the caller, because it is about the ANSWER this name promises —
+    # "what a slot runs under the lock" has no meaning without one — where the caller's own
+    # preconditions (the forced mode, the forced `chat_thread_id`, a pick the standing mode will
+    # honour) are about the QUESTION and stay with it. #298's seam rule, said the way this function
+    # needs it: the caller knows what it is asking, and only the answer's own meaning lives here.
+    state = replace(state, approved_models=state.approved_models or frozenset())
+    return resolve(state, catalog).model
 
 
 def _nearest_approved(

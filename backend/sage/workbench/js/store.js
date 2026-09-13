@@ -811,15 +811,29 @@ window.SW = window.SW || {};
   // `resolve`'s answer instead and this comment becomes false — that answer IS the pick when the
   // pick is approved, so it would go stale the moment somebody picked a barred model next.
   //
-  // `slot_models` is a pick-free answer too, and reads one more input for it: since #285 it applies
-  // the signing pin (`llm_router.locked_runs_on`), whose input is an assignment. So an assignment
-  // joins the list, and `setAssignment` is where it is read from — the drawer is the only surface
-  // that can change one. What stays outside the list is the one rule dropping the pick drops with
-  // it: an in-session act outranks the pin, so while a barred pick is live a turn goes where the
-  // lock MOVES it and these rows still name the pin's model. Bounded twice over — the trade is the
-  // one above, a sentence a beat behind on a row nobody is acting from against an answer that goes
-  // stale on the surface they ARE acting from; and `set_catalog` clears the pick on every save
-  // (`project.control.pick(None)`), so at the moment the read below is taken there is never one.
+  // `slot_models` is a different field and the paragraph above does not reach it. It reads one more
+  // input since #285 — the signing pin (`llm_router.locked_runs_on`), whose input is an assignment
+  // — so an assignment joins the list, and `setAssignment` is where it is read from, the drawer
+  // being the only surface that can change one.
+  //
+  // And it READS THE PICK, since #286, which is where it parts from `model`/`chat_model` above. The
+  // rule the pick-free answer dropped with it was the one that outranks the signing pin: an
+  // in-session act, so while a pick was live these rows named the pin's model and the turn ran
+  // somewhere else. The trade above never governed this field — its two halves are about the
+  // composer's chip, which reads `sensitivity.model`, and nothing in the drawer reads that.
+  //
+  // It stays outside the re-read list all the same, on a different guarantee: nobody at this
+  // keyboard can change a pick while looking at this answer. The drawer re-reads on open
+  // (`openAssignments`), its mask puts the picker out of reach for as long as it is open, and
+  // `set_catalog` clears the Build pick on every save (`project.control.pick(None)` — the Chat pick
+  // it leaves, and no save can move one). That is a UI invariant standing in for a data one and the
+  // weaker of the two — the old one could not go stale, this one breaks the moment anyone passes
+  // `mask: false` — which is why that prop is now passed explicitly, commented where it is passed,
+  // and asserted in `model_assignments_harness.mjs`.
+  //
+  // "At this keyboard" is the whole of its reach, so it leaves two windows rather than one: #294,
+  // where the orchestrator moves the pick itself on a build escalation with no human act to block;
+  // and a second Workbench open on the same Project, whose picker this tab's mask never sees.
   //
   // A failed read leaves the last answer standing rather than clearing it, and the asymmetry is
   // deliberate in one direction: dropping a lock the UI is drawing would put non-approved models
@@ -5194,8 +5208,10 @@ window.SW = window.SW || {};
     // `removeAttachmentFromApp` above, which only drops the app's symlink and keeps the data: this
     // destroys it, so — unlike that one — it confirms first and carries the same race guard as
     // `removeBindingFromApp`, since the window a confirm leaves open is exactly the length that
-    // guard answers. The menu only ever offers this on a Sage-managed upload (`isSageUpload`);
-    // a genuine pre-existing Dataset file has no door here to delete it.
+    // guard answers. The menu only ever offers this where `isSageUpload` says the record shows Sage
+    // wrote the bytes — a Dataset file that records no upload is never given this door, which since
+    // #274 is a claim about what the entry says rather than about the folder the file sits in. This
+    // call itself is not a second gate and does not re-ask: `delete_file` re-asks on the server.
     async deleteAttachmentFromApp(attachment) {
       const asked = state.activeApp;
       const where = appScopeName();
@@ -5223,16 +5239,40 @@ window.SW = window.SW || {};
               resolve(false);
               return;
             }
+            let done;
             try {
-              await SW.api.deleteFile(attachment.path);
+              done = await SW.api.deleteFile(attachment.path);
             } catch (err) {
               antd.message.error(err.message);
               resolve(false);
               return;
             }
+            // The server asks the upload ledger again before it unlinks, and that ledger is shared
+            // — another Workspace on this volume can have destroyed the file and forgotten it since
+            // this app was last read (#274). So the sentence follows what came BACK, not what the
+            // control offered: the row this menu drew from can be a stale copy, and reporting the
+            // destroy anyway would tell somebody their Dataset is short a file that is still in it.
+            // And WHICH reason, because the two are different situations and a sentence naming the
+            // wrong one is worse than one naming none. `no-record` is permanent and the person acts
+            // on the platform; `unreachable` is the Dataset being absent right now and comes back.
+            const inDataset = SW.util.datasetNameNow(attachment.dataset_id) || attachment.dataset;
+            // Only an explicit `true` earns the sentence that claims the data is gone. Read the
+            // other way round — anything that is not `false` means gone — a response that is empty,
+            // or from a build that predates the field, produces exactly the over-claim this whole
+            // change exists to prevent. Unknown says nothing about the bytes instead.
+            const kept = done && done.bytes_removed === true ? null : (done && done.bytes_kept) || '';
+            const alsoDid = done && done.bytes_removed === true
+              ? "The file's data is gone too."
+              : kept === 'no-record'
+                ? `Its data is still in ${inDataset}. Sage has no record of writing those bytes, so `
+                  + 'it left them alone.'
+                : kept === 'unreachable'
+                  ? `Its data is still in ${inDataset}. Sage could not reach it just now, so it `
+                    + 'left them alone.'
+                  : '';
             applyAppScope(appScopeTicket(gen), {
               appAttachments: (state.appAttachments || []).filter((a) => a.path !== attachment.path),
-              appRemoval: removalNotice(where, name, [], "The file's data is gone too."),
+              appRemoval: removalNotice(where, name, [], alsoDid),
             });
             notify();
             resolve(true);

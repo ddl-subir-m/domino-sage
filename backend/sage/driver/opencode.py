@@ -18,6 +18,11 @@ import httpx
 
 from ..feedback.circuit_breaker import CircuitBreaker, Decision
 from ..feedback.runner import FeedbackReport
+
+# The preambles and the descriptor's `path:` line below are built from these two rather than spelt
+# out, so a reword here cannot leave the counter that reads them (#290) looking for words nothing
+# writes. Both must appear for a message to count as data; the reasoning is with the constants.
+from ..shim.chat_paths import MENTION_MARK, MENTION_PATH_LINE
 from .agent_driver import AgentEvent
 
 log = logging.getLogger("sage.driver")  # "sage.*" -> surfaced by /api/diag's log tail
@@ -29,7 +34,7 @@ def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: 
         return text
 
     def _entry(a: dict) -> str:
-        s = f"- {a['name']} — {a['summary']}\n  path: {a['path']}"
+        s = f"- {a['name']} — {a['summary']}{MENTION_PATH_LINE}{a['path']}"
         if "image_uri" in a and not a["image_uri"]:
             s += ("\n  NOTE: this image was NOT shown to you — it is too large to inline. "
                   "You cannot see its contents and reading the file will not help. "
@@ -41,12 +46,12 @@ def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: 
     listing = "\n\n".join(_entry(a) for a in attachments)
     if chat:
         return (
-            f"{text}\n\nThe user @mentioned these files. Paths are relative to this Chat working "
+            f"{text}\n\nThe {MENTION_MARK} files. Paths are relative to this Chat working "
             f"directory (examples/ and .sage/scratch/ are linked here). The lines below are shape, "
             f"not the rows — read the file at the path shown when you need the data:\n\n{listing}"
         )
     return (
-        f"{text}\n\nAttached data files (the user @mentioned these). Below is a DESCRIPTION "
+        f"{text}\n\nAttached data files (the {MENTION_MARK}). Below is a DESCRIPTION "
         f"OF SHAPE (schema/structure) for each — it is NOT the data. You MAY read a file at "
         f"the workspace-relative path shown if you genuinely need more than the descriptor, "
         f"but do not do so routinely, and do NOT read a large file: it bloats the context and "

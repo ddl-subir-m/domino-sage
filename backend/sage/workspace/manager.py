@@ -202,7 +202,13 @@ _APPS = "apps"
 # nothing seeds a file at the root to carry their rules. Chat's scratch and its OpenCode workdir
 # are builder-local, and a half-written Thread record is a file `git add -A` would otherwise
 # commit (ThreadStore._write_json renames the real one into place, so a .tmp is never read).
-_PROJECT_IGNORE = (".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/*/.*.tmp")
+_PROJECT_IGNORE = (".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/*/.*.tmp",
+                   # The upload ledger's half-written twin, for the same reason (#274). Its name
+                   # carries a pid and a random suffix so two Workspaces on one volume cannot write
+                   # into each other's, which also means a killed writer leaves a NEW file each
+                   # time rather than overwriting the last — they accumulate, and `git add -A`
+                   # would commit every one. `.sage/uploads.json` itself is committed, as intended.
+                   ".sage/uploads.json.*.tmp")
 # Sage metadata that belongs to the APP, so it goes when the app does. queries.json is the app's SQL;
 # plan.md and architecture.md both describe the code being removed, and AGENTS.md tells the agent
 # plan.md is the live plan — a stale one would aim the next turn at an app that is gone.
