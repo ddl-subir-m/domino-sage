@@ -122,16 +122,19 @@ def test_capabilities_survive_a_shape_that_is_not_a_list():
     assert parse_capabilities(None) == []
 
 
-def test_gpt54_advertises_reasoning_effort_when_the_alias_record_is_silent():
+def test_a_silent_alias_record_falls_back_to_the_measured_table():
     (a,) = join_aliases({"gpt-5.4"}, [])
-    assert a.reasoning_efforts == ["low", "medium", "high"]
+    assert a.reasoning_efforts == ["none", "low", "medium", "high", "xhigh"]
+    # gpt-5.4-nano shares a name with a measured alias and was never itself probed, so it is
+    # offered nothing (#280). The name is not evidence — see
+    # test_which_efforts_an_alias_accepts_is_measured.
     (nano,) = join_aliases({"gpt-5.4-nano"}, REGISTERED)
-    assert nano.reasoning_efforts == ["low", "medium", "high"]
+    assert nano.reasoning_efforts == []
     (sonnet,) = join_aliases({"sonnet"}, REGISTERED)
     assert sonnet.reasoning_efforts == []
 
 
-def test_inference_params_win_over_the_name_heuristic():
+def test_inference_params_win_over_the_measured_table():
     rec = {
         "id": "x", "name": "gpt-5.4", "display_name": "GPT",
         "inference_params": {"reasoning_effort": ["low", "high"]},
@@ -930,7 +933,7 @@ def test_the_default_provider_is_the_fake_so_a_local_run_lists_something(tmp_pat
     rows = _orch(tmp_path).list_llm_aliases()
     assert rows and all(r["display_name"] and r["capabilities"] for r in rows)
     gpt = next(r for r in rows if r["name"] == "gpt-5.4")
-    assert gpt["reasoning_efforts"] == ["low", "medium", "high"]
+    assert gpt["reasoning_efforts"] == ["none", "low", "medium", "high", "xhigh"]
     embed = next(r for r in rows if "embed" in r["name"])
     assert embed["reasoning_efforts"] == []
 
