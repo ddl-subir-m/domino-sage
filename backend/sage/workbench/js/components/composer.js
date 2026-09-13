@@ -41,14 +41,21 @@ window.SW = window.SW || {};
   // which it has rather than the string being asked to confess: `onClick` looks the key up among
   // the rows it just built, and splits only one that is not a row of its own.
   const EFFORT_SEP = '::';
-  const effortKey = (model, effort) => `${model}${EFFORT_SEP}${effort || 'default'}`;
+  // The no-level row keys as an EMPTY suffix rather than the word `default`. `default` read well and
+  // rested on an invariant nobody enforces: the route deliberately does not validate `pick_effort`
+  // (`ModelControl.pick` stores an unrecognised level and lets the send path drop it), so a stored
+  // level of literally `"default"` would emit two children with one key — the enabled no-level row
+  // and the disabled stranded one — and the menu would mark the wrong one.
+  //
+  // An empty level cannot collide because it is not a level anywhere: `_EFFORT_VALUES` holds none,
+  // and `ModelControl.pick` already normalises `""` to no effort. That is a property of the
+  // encoding rather than a promise about what somebody might store.
+  const effortKey = (model, effort) => `${model}${EFFORT_SEP}${effort || ''}`;
   function splitEffortKey(key) {
     const at = key.lastIndexOf(EFFORT_SEP);
     if (at < 0) return [key, null];
     const level = key.slice(at + EFFORT_SEP.length);
-    // 'default' is a level nobody offers — `_EFFORT_VALUES` has never held it — so it can stand for
-    // the row that sends none without shadowing one somebody could have picked.
-    return [key.slice(0, at), level === 'default' ? null : level];
+    return [key.slice(0, at), level || null];
   }
 
   // Session context, then this Thread's artifacts, then project Resources, then the Project's
@@ -634,11 +641,27 @@ window.SW = window.SW || {};
     // every phase (ADR-0032). This copy of the precedence could not see that rule, and every line
     // below reads `pinnedModel` — so the label, the `(default)` marker and the override comparison
     // were all naming a model the turn would not run on.
-    const pinnedSlot = signingSlot || (chipModeId === 'ask'
+    // One derivation, called with whichever mode the READER is asking about. The chip asks about
+    // the turn; the lock notice asks about the next turn, which is the selector's. Scoping this
+    // once and letting every reader inherit it is what leaked a turn-scoped answer into a notice
+    // that renders mid-turn — the justification "while a turn is pinned no menu is drawn" was true
+    // of the MENU and applied to consumers that are not the menu.
+    const slotOf = (modeId) => signingSlot || (modeId === 'ask'
       ? 'ask'
-      : chipModeId === 'auto'
+      : modeId === 'auto'
         ? (buildPhase === 'implement' ? 'implement' : 'plan')
-        : chipModeId);
+        : modeId);
+    const runsFor = (modeId) => {
+      const slot = slotOf(modeId);
+      const model = (catalog && catalog[slot]) || '';
+      const canOverride = modeId === 'plan' || modeId === 'implement';
+      return {
+        slot,
+        model,
+        override: canOverride && buildModel && buildModel !== model ? buildModel : '',
+      };
+    };
+    const pinnedSlot = slotOf(chipModeId);
     const pinnedModel = (catalog && catalog[pinnedSlot]) || '';
     // The sensitivity lock, read once for both pickers below (ADR-0043). Chat is gated exactly as
     // Build is — `llm_router` applies the lock OUTSIDE their fork — so both menus have to say so,
@@ -999,7 +1022,14 @@ window.SW = window.SW || {};
     // pin has already been through the signing rule, so it is the model the router starts from),
     // Chat's picked Alias. Empty unless the lock really moved it — an approved pick is not a switch
     // and has nothing to announce.
-    const pickedModel = showMode ? (override || pinnedModel) : effectiveModel;
+    // The SELECTOR's mode, not the running turn's: this is what the composer would run NEXT, which
+    // is the question the notice answers. Mid-turn the two differ, and reading the turn's here
+    // announced a lock switch for the slot the running turn used — or, with a barred pick standing
+    // and the selector on Auto, named a pick Auto will never honour.
+    const selectedRuns = runsFor(activeBuildMode.id);
+    const pickedModel = showMode
+      ? (selectedRuns.override || selectedRuns.model)
+      : effectiveModel;
     const movedFrom = pickedModel && barredModel(pickedModel) ? pickedModel : '';
     // What "once" is counted against: what the notice SAYS, which is the approved set, the model
     // it moved to, and which of the two reasons is holding the lock. None of them alone. The set

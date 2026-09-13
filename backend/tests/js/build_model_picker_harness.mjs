@@ -444,6 +444,17 @@ for (const step of steps) {
   const button = pickerButton(before);
   const row = {
     step: step.pick ? `${step.mode} → pick ${step.pick}` : step.mode,
+    // Every child key drawn anywhere in the menu, so a DUPLICATE is visible. Two items sharing a
+    // key is something no `selectedKeys` assertion can see — Ant marks one of them and the other is
+    // simply unreachable — so the only way to witness it is to count.
+    childKeys: (() => {
+      const menu = pickerMenu(before);
+      if (!menu) return null;
+      return menu.p.menu.items
+        .flatMap((i) => (i.type === 'group' ? i.children : [i]))
+        .flatMap((i) => (i.children || []))
+        .map((c) => c.key);
+    })(),
     mode: step.mode,
     // Whether an override is OFFERED, which is the Ask claim. A disabled button is not an offer.
     offered: !!menu,

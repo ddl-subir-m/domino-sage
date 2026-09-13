@@ -85,7 +85,7 @@ def test_the_open_weight_catalog_is_offered_as_extra_options():
 def test_the_pick_reaches_set_model():
     """The whole point of restoring the control. `pick` alone, with no `mode` beside it: the mode
     is a standing choice the picker never touched, and ModelControl.pick does not need it."""
-    (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::default"}])
+    (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::"}])
     assert row["wrote"] == [{"pick": "deepseek/deepseek-v3", "pick_effort": None}]
     assert row["serverPick"] == "deepseek/deepseek-v3"
     # And the control now reads back the override rather than the pin it replaced.
@@ -95,7 +95,7 @@ def test_the_pick_reaches_set_model():
 def test_the_default_row_clears_the_override_rather_than_setting_it():
     """`(default)` is the way BACK. Sending the pinned model's id would look identical on screen
     and leave a standing override behind that survives an edit to the deployment's slots."""
-    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::default"},
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::"},
                      {"mode": "implement", "pick": "__pinned__"}])
     assert row["wrote"] == [{"pick": None, "pick_effort": None}]
     assert row["serverPick"] is None
@@ -196,8 +196,8 @@ def test_running_the_alias_at_its_own_default_is_the_first_thing_offered():
     model without choosing a level is still the common case."""
     (row,) = _drawn([{"mode": "implement"}])
     first, *rest = _children(row, PLAN_MODEL)
-    assert first == {"key": f"{PLAN_MODEL}::default", "label": "Model default"}
-    assert all(c["key"] != f"{PLAN_MODEL}::default" for c in rest)
+    assert first == {"key": f"{PLAN_MODEL}::", "label": "Model default"}
+    assert all(c["key"] != f"{PLAN_MODEL}::" for c in rest)
 
 
 def test_a_model_that_advertises_no_levels_offers_no_submenu():
@@ -277,9 +277,9 @@ def test_a_pick_left_on_the_model_default_says_nothing_extra_on_the_chip():
     """The level is only worth chip space when somebody chose one. `Model default` is what every
     pick did before this existed, so a chip that announced it would put new words on screen for a
     behaviour that has not changed."""
-    (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::default"}])
+    (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::"}])
     assert row["afterLabel"] == "deepseek/deepseek-v3"
-    assert row["afterSelected"] == ["deepseek/deepseek-v3::default"]
+    assert row["afterSelected"] == ["deepseek/deepseek-v3::"]
 
 
 def test_a_level_the_model_stopped_offering_is_still_shown_and_still_escapable():
@@ -634,6 +634,52 @@ def test_a_stranded_level_on_a_real_override_is_accounted_for_when_idle_too():
     assert "The row below" not in row["why"]
 
 
+def test_a_stored_level_can_never_collide_with_the_no_level_row():
+    """The no-level row's key rests on the ENCODING, not on a promise about what can be stored.
+
+    `POST /project/model` deliberately does not validate `pick_effort` — `ModelControl.pick` stores
+    an unrecognised level and lets the send path drop it — so a level of literally `"default"` was
+    storable out of band, and the menu then emitted two children with one key: the enabled no-level
+    row and the disabled stranded one. An empty suffix cannot collide, because an empty level is not
+    a level anywhere and `pick` already normalises `""` to none.
+
+    Counted rather than inspected: two items sharing a key is something no `selectedKeys` assertion
+    can see, since Ant marks one and the other is simply unreachable.
+    """
+    (row,) = _drawn([{"mode": "plan",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "default"}}])
+
+    keys = row["childKeys"]
+    assert len(keys) == len(set(keys)), keys
+    # And the out-of-band level is still shown for what it is, rather than silently swallowed.
+    assert "Default — not accepted" in [c["label"] for c in _children(row, "deepseek/deepseek-v3")]
+
+
+def test_the_lock_notice_reads_the_selector_not_the_running_turn():
+    """The notice answers "what would this composer run if the lock were not on" — a question about
+    the NEXT turn, so it is the selector's mode. The chip answers what the running turn is on.
+
+    Scoping the chip to the turn leaked into here, because `pickedModel` is not a menu value and the
+    notice renders regardless of `buildRunning`. Mid-turn it then announced a lock switch for the
+    slot the RUNNING turn used, while the next turn needs no switch at all.
+
+    The justification for the chip's change was "while a turn is pinned no menu is drawn" — true of
+    the menu, and applied to a consumer that is not the menu.
+    """
+    (row,) = _drawn([{
+        "mode": "plan", "turnMode": "implement", "running": True,
+        "sensitivity": {"enabled": True, "locked": True, "group": "approved-for-sensitive",
+                        "approved": [PLAN_MODEL], "datasets": ["claims"], "refusal": None,
+                        "model": PLAN_MODEL, "chat_model": None, "slot_models": {},
+                        "reason": "claims is sensitive"},
+        "app": "Claims app", "declaredIn": "binding",
+    }])
+
+    # Plan's own model is the approved one, so the next turn moves nothing and there is nothing to
+    # announce — even though the turn currently running is pinned to Implement, whose model is not.
+    assert row["lockNotice"] is None
+
+
 def test_the_running_chip_describes_the_turn_not_the_picker():
     """The mode selector stays live mid-turn, so the selected mode and the running one disagree the
     moment somebody switches during a build — `modeQueued` exists to say exactly that.
@@ -691,7 +737,7 @@ def test_a_collapsed_pick_with_no_level_still_differs_from_an_assignment_that_ha
     the sentence on a level having been CHOSEN covered only the rarer half, where somebody had
     touched one.
     """
-    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::default"}, {"mode": "plan"}])
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::"}, {"mode": "plan"}])
 
     assert row["label"] == PLAN_MODEL
     assert "at Model default, not at the assignment's Medium" in row["why"]
@@ -702,7 +748,7 @@ def test_none_is_a_level_and_survives_the_whole_write_path():
     the alias reason as it likes, versus send the field and turn reasoning off. `effortLabel`'s
     header exists for that distinction.
 
-    Every other pick step in this file clicks `::default`, `::high` or a bare id, so a regression
+    Every other pick step in this file clicks `::`, `::high` or a bare id, so a regression
     collapsing `none` into `null` at any of the three hops — `splitEffortKey`, `store.setBuildModel`,
     `api.setBuildModel` — would send "reason as you like" where the person asked for reasoning OFF,
     and nothing would redden.
@@ -820,7 +866,7 @@ def test_a_pick_made_in_implement_does_not_leak_into_auto():
     it: `_resolve_build` only reads `picked_model` in Plan and Implement (ADR-0017's own words,
     "Auto follows phase"). The picker's `override` must forget it too, or the chip goes on naming a
     model nobody assigned to this phase and the assignments drawer never mentions."""
-    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::default"}, {"mode": "auto"}])
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::"}, {"mode": "auto"}])
     assert row["offered"] is False
     assert row["label"] == f"{IMPLEMENT_MODEL} · building"
 
@@ -861,7 +907,7 @@ def test_an_override_naming_the_pinned_model_is_not_mis_marked_in_the_menu():
     `plan-pinned` with `effort=catalog.plan_effort`. Same model, different level, one label. What
     the chip says now is two tests down.
     """
-    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::default"}, {"mode": "plan"}])
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::"}, {"mode": "plan"}])
     assert row["selectedKeys"] == ["__pinned__"]
 
 
@@ -926,7 +972,7 @@ def test_only_an_unpicked_slot_is_allowed_to_call_itself_the_default():
     So a collapsed pick reads as a bare name — true, and silent about a level it does not have —
     and only a slot nobody has picked keeps the suffix.
     """
-    implement, collapsed = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::default"},
+    implement, collapsed = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::"},
                                    {"mode": "plan"}])
     # Implement's own row is untouched by a pick that has not happened yet.
     assert implement["label"] == f"{IMPLEMENT_MODEL} (default)"
@@ -972,7 +1018,7 @@ def test_a_pinned_session_still_offers_the_override_that_beats_the_pin():
     """Precedence is in-session act > pin, so taking the menu away would be a lie in the other
     direction — the pick really does win."""
     (row,) = _drawn([{"mode": "plan", "signing": "implement",
-                      "pick": "deepseek/deepseek-v3::default"}])
+                      "pick": "deepseek/deepseek-v3::"}])
     assert row["offered"] is True
     assert row["wrote"] == [{"pick": "deepseek/deepseek-v3", "pick_effort": None}]
     assert row["afterLabel"] == "deepseek/deepseek-v3"
@@ -1019,7 +1065,7 @@ def test_an_override_that_beat_the_pin_takes_the_pin_s_sentence_with_it():
     back — so once a pick is in, the chip names the pick and the pin's sentence is false. It used to
     be shown anyway, which had the control contradict itself in two consecutive sentences (#276)."""
     _, after = _drawn([{"mode": "plan", "signing": "implement",
-                        "pick": "deepseek/deepseek-v3::default"},
+                        "pick": "deepseek/deepseek-v3::"},
                        {"mode": "plan", "running": True}])
     assert after["label"] == "deepseek/deepseek-v3"
     assert "required for this session" not in (after["why"] or "")
