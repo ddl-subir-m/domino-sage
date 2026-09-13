@@ -420,7 +420,11 @@ for (const step of steps) {
   });
   // A build in flight. `pick` is read live out of ModelControl.snapshot — it has no per-turn pin
   // the way the mode does — so what this control offers mid-turn is its own claim.
-  SW.store.set({ buildRunning: !!step.running });
+  // `turnMode` is the mode the RUNNING turn is pinned to, which the picker does not follow: the
+  // mode selector stays live mid-turn, so the two disagree whenever somebody switches during a
+  // build. Without a step for it nothing here could set them apart, and the model chip's whole
+  // premise — that the turn is running on what it names — went unwitnessed.
+  SW.store.set({ buildRunning: !!step.running, buildTurnMode: step.turnMode || step.mode });
   calls.length = 0;
 
   const before = mount();

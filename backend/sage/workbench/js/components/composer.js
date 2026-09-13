@@ -414,6 +414,17 @@ window.SW = window.SW || {};
     const buildModes = BUILD_MODES();
     const activeBuildMode = buildModes.find((m) => m.id === buildMode) || buildModes[0];
     const modeQueued = showMode && buildRunning && buildTurnMode && buildTurnMode !== buildMode;
+    // Which mode the MODEL chip describes. While a turn runs that is the turn's, not the picker's:
+    // the mode picker stays live mid-turn — `modeQueued` one line up exists to say so — and every
+    // value derived below is about which model and which level are ON THE WIRE. Switch the selector
+    // to Auto during a Plan build and a chip reading the selector names the Auto slot and drops the
+    // pick's level, while the turn runs on the pick at that level; switch it to Plan during an Auto
+    // build and the chip names a pick Auto honours no part of.
+    //
+    // Falls back to the selection whenever no turn holds a mode, so the menu path is unchanged by
+    // construction — `buildTurnMode` is set only while a turn is pinned, and while one is pinned no
+    // menu is drawn at all.
+    const chipModeId = (buildRunning && buildTurnMode) || activeBuildMode.id;
 
     // A prompt written somewhere else and left here to read, edit or drop — the panel's cleanup
     // offer after an app-scoped removal is the one that writes it (ADR-0011). Taken as a DRAFT and
@@ -623,11 +634,11 @@ window.SW = window.SW || {};
     // every phase (ADR-0032). This copy of the precedence could not see that rule, and every line
     // below reads `pinnedModel` — so the label, the `(default)` marker and the override comparison
     // were all naming a model the turn would not run on.
-    const pinnedSlot = signingSlot || (activeBuildMode.id === 'ask'
+    const pinnedSlot = signingSlot || (chipModeId === 'ask'
       ? 'ask'
-      : activeBuildMode.id === 'auto'
+      : chipModeId === 'auto'
         ? (buildPhase === 'implement' ? 'implement' : 'plan')
-        : activeBuildMode.id);
+        : chipModeId);
     const pinnedModel = (catalog && catalog[pinnedSlot]) || '';
     // The sensitivity lock, read once for both pickers below (ADR-0043). Chat is gated exactly as
     // Build is — `llm_router` applies the lock OUTSIDE their fork — so both menus have to say so,
@@ -642,7 +653,7 @@ window.SW = window.SW || {};
       || SW.util.lockReason(sensitivity, name);
     const barredModel = (name) => lockedHere && !SW.util.isApproved(sensitivity, name);
 
-    const overridable = activeBuildMode.id === 'plan' || activeBuildMode.id === 'implement';
+    const overridable = chipModeId === 'plan' || chipModeId === 'implement';
     // The four configured slots reduced to the models behind them: two slots pointing at one model
     // are one row, not two the person has to tell apart.
     const slotModels = catalog ? [...new Set([catalog.plan, catalog.implement, catalog.ask])] : [];
@@ -788,7 +799,7 @@ window.SW = window.SW || {};
     // Auto has no model of its own — it runs the Plan assignment while it plans and the Implement
     // assignment while it builds — so a bare id here changes under the person with nothing to say
     // why. The phase is the missing half of that sentence.
-    const chipLabel = (name) => (activeBuildMode.id === 'auto'
+    const chipLabel = (name) => (chipModeId === 'auto'
       ? `${name} · ${buildPhase === 'implement' ? 'building' : 'planning'}`
       : name);
     // The way through to the assignments, from the menu that can only make an override. The two do

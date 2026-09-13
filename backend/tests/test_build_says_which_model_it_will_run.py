@@ -587,6 +587,36 @@ def test_a_stranded_level_on_a_real_override_is_accounted_for_mid_turn_too():
     assert f"{PLAN_MODEL} doesn't accept High" in row["why"]
 
 
+def test_the_running_chip_describes_the_turn_not_the_picker():
+    """The mode selector stays live mid-turn, so the selected mode and the running one disagree the
+    moment somebody switches during a build — `modeQueued` exists to say exactly that.
+
+    Every value the chip is built from was derived from the SELECTION. Switch to Auto during a Plan
+    build and the chip named the Auto slot and dropped the pick's level, while the turn ran on the
+    pick at that level. Two tests in this file designate this chip as the only surface for the level
+    receipt and the stranded sentence, on the stated premise that the turn is demonstrably running
+    at what it names — a premise that held only while the two modes agreed.
+    """
+    *_, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                      {"mode": "auto", "turnMode": "plan", "running": True}])
+
+    # The turn is pinned to Plan and running the pick, so the chip says so — not Auto's slot.
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+    assert "This turn is running on deepseek/deepseek-v3" in row["why"]
+
+
+def test_the_running_chip_honours_no_pick_a_turn_in_auto_never_read():
+    """The other direction, and the one that invents rather than drops. A pick standing while the
+    turn runs in Auto is honoured by nothing — `_resolve_build` reads `picked_model` in Plan and
+    Implement only — so a chip reading the selector names a model and a level the turn never saw.
+    """
+    *_, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                      {"mode": "plan", "turnMode": "auto", "running": True}])
+
+    assert "deepseek" not in row["label"]
+    assert "High" not in row["label"]
+
+
 def test_the_running_tooltip_points_at_no_row_it_cannot_reach():
     """The running chip has no menu behind it, so the open menu's exit sentence is false there.
 
