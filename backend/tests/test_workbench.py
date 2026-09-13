@@ -274,6 +274,29 @@ def test_the_view_follows_a_growing_answer_but_only_from_the_bottom():
     assert "el.scrollHeight - el.scrollTop - el.clientHeight < 120" in chat
 
 
+def test_build_follows_a_growing_turn_the_same_way_chat_does():
+    """Build had the length-only effect Chat used to have. A build turn pushes every tool card and
+    every streamed sentence onto the OPEN assistant row, so the list length never moves — and
+    `buildTyping` is no backup, because two `read` steps set it to the same string and a text chunk
+    sets it to null. The pane stopped at the old bottom for whole turns."""
+    builder = _js("modes", "builder.js")
+    # Not a bare "streamed" — the comment above the code says the word too, so that assertion
+    # stayed green with the code deleted.
+    assert "const streamed = buildMessages.length" in builder
+    assert "el.scrollHeight - el.scrollTop - el.clientHeight < 120" in builder
+    # A build turn is mostly tool cards, whose text is on `code`, not on `value`. Counting Chat's
+    # field alone would leave the pane still for every tool step.
+    assert "b.value || b.code || b.plan" in builder
+    # A candidates or withhold card is REPLACED where it stands (`putTableCard`), so a spinner
+    # becoming a list of groups moves no count and no text. Its `searching` flag is what moves.
+    assert "(b.searching ? 1 : 0)" in builder
+    # `buildTyping` is re-read on every tool step and mostly carries that step's subject. Left on
+    # the unguarded effect it pulled the pane down on each one, and the threshold below then always
+    # read as "already at the bottom" — the guard was there and did nothing.
+    assert "}, [buildTranscript.length]);" in builder
+    assert "}, [streamed, buildTyping]);" in builder
+
+
 def test_a_build_turn_carries_what_its_mentions_name():
     """The Build composer inserts "@name" and sent only the sentence, so an @mention in Build reached
     the agent as a bare word: the file it named was never attached to the turn, and the build read

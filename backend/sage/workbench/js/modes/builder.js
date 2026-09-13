@@ -1514,7 +1514,41 @@ window.SW = window.SW || {};
     useEffect(() => {
       const el = scroller.current;
       if (el) el.scrollTop = el.scrollHeight;
-    }, [buildTranscript.length, buildTyping]);
+    }, [buildTranscript.length]);
+
+    // A build turn grows the LAST message rather than adding one: every tool card and every
+    // streamed sentence is a block pushed onto the open assistant row (`buildHistoryToMessages`),
+    // so `buildTranscript.length` never moves and the effect above does not fire. `buildTyping` is
+    // no backup either — a text chunk sets it to null (`applyBuildEvent`), so a whole streamed
+    // answer changes nothing, and consecutive bash steps all carry the same label. Count what
+    // actually grows. Chat counts `value` alone, which is enough there; a build turn is mostly
+    // tool cards, whose text is on `code`, so count the blocks too.
+    //
+    // Off `buildMessages`, NOT off `buildTranscript`. Unified view sorts this app's build rows in
+    // among the Conversation's Chat turns (`applyBuildTranscript`), so the last row on screen is
+    // only usually the one being written — a Chat turn landing in another tab re-stamps the orders
+    // and can take that place. The growing row is always the last of Build's own half.
+    const streamed = buildMessages.length
+      ? (buildMessages[buildMessages.length - 1].blocks || []).reduce(
+          // `searching` because a candidates or withhold card GROWS IN PLACE: `putTableCard` and
+          // `putWithholdCard` overwrite the block where it stands, so the spinner becoming a full
+          // list of candidate groups moves no count and no text. The flag they key that swap on is
+          // the one thing about such a card that does change.
+          (n, b) => n + 1 + (b.searching ? 1 : 0) + (b.value || b.code || b.plan || '').length,
+          0
+        )
+      : 0;
+
+    // `buildTyping` belongs HERE, under the threshold, not on the effect above. It is re-read on
+    // every tool step and mostly carries that step's subject, so an unguarded effect watching it
+    // pulled the pane down on each one — which is the thing this threshold exists to stop.
+    useEffect(() => {
+      const el = scroller.current;
+      if (!el) return;
+      // Only from the bottom. Being yanked back down every frame while reading something further
+      // up is worse than not following at all — the same threshold Chat follows at.
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight;
+    }, [streamed, buildTyping]);
 
     // The orientation's question, which is NOT "is this pane empty". It asks whether THIS app has
     // turns in this conversation, and since #74 a brand-new Built App can be started inside a
