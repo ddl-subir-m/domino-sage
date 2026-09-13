@@ -357,11 +357,23 @@ window.SW = window.SW || {};
     // into the browser, which ADR-0049 refuses by name. The `length > 0` rule below is still shared
     // with the Chat chip and still has one copy.
     //
-    // An ABSENT field is not an empty list, the same distinction an absent ROW already gets one
-    // function down. Two producers build these rows — the Domino listing and the membership file —
-    // and a row from a producer that has not learned this field yet would otherwise read as "this
-    // alias offers no levels", removing the control, and make `strandedLevel` refuse every level it
-    // is asked about. `undefined` means no evidence; `[]` means the alias really offers none.
+    // An ABSENT field is not an empty list — `undefined` means no evidence, `[]` means the alias
+    // really offers none — and the two absences get DIFFERENT treatment here and in `strandedLevel`,
+    // deliberately, because the honest answer to "no evidence" differs by question.
+    //
+    // Asked "may this level stand?", no evidence means YES: `strandedLevel` refuses nothing, because
+    // refusing on an absence is the false claim (#295's second HIGH).
+    //
+    // Asked "which levels may I OFFER?", no evidence means NONE, and that is this function. The list
+    // is what the send path will enforce; without it there is nothing honest to put in a submenu.
+    // Falling back to the wide enum would put `gpt-5.4 · High` on the chip over a turn the shim runs
+    // at the alias default — this ticket's first HIGH, re-entered through the back door. So the
+    // control is absent rather than wrong, which is the trade this whole seam keeps making.
+    //
+    // The cost, stated because it is real: a row from a producer that has not learned this field
+    // offers no submenu at all, and a level already standing can then only be cleared through the
+    // way-back row. Reachable while the gateway leg is refusing AND the membership row predates
+    // #295; the next successful listing carries the field and restores the control.
     const buildEffortsFor = (id) => {
       const row = aliasRow(id);
       return row && row.reasoning_efforts_with_tools ? row.reasoning_efforts_with_tools : [];
@@ -1413,18 +1425,21 @@ window.SW = window.SW || {};
                         + 'turn runs at the model default. The row below clears the pick and puts '
                         + 'the mode back on its assignment.'
                       : '';
+                    // The accepted-level twin of the stranded sentence. Both are the collapse — a
+                    // pick naming the mode's own model — and in both the menu marks the way-back row
+                    // and offers no submenu (#310), so the tooltip is the only place either can be
+                    // accounted for. Mutually exclusive with `strandedWhy`: `pickedLevel` is empty
+                    // whenever a level is stranded.
+                    const levelWhy = !override && pickedLevel
+                      ? `This pick runs ${pinnedModel} at ${effortLabel(pickedLevel)}, not at `
+                        + "the assignment's level. The row below clears it."
+                      : '';
+                    // All three joined rather than any of them winning. Behind a `||` the pin
+                    // suppressed whichever level sentence applied — and it was the COMMONER one,
+                    // the accepted level, that lost its only surface, which is the asymmetry the
+                    // stranded join was added to end rather than to move one case along.
                     const why = buildBarred ? lockNote(buildPick)
-                      : [pinWhy, strandedWhy].filter(Boolean).join(' ') || ((collapsedStranded
-                      ? ''
-                      // The accepted-level twin, which had no sentence at all. Both are the collapse
-                      // — a pick naming the mode's own model — and in both the menu marks the
-                      // way-back row and offers no submenu (#310), so the tooltip is the only place
-                      // either can be accounted for. Giving one an explanation and not the other
-                      // left the commoner case silent.
-                      : (!override && pickedLevel
-                        ? `This pick runs ${pinnedModel} at ${effortLabel(pickedLevel)}, not at `
-                          + "the assignment's level. The row below clears it."
-                        : '')));
+                      : [pinWhy, strandedWhy, levelWhy].filter(Boolean).join(' ');
                     return why ? h(Tooltip, { title: why }, control) : control;
                   })()
                 // Ask and Auto honour no override — Ask is pinned to its slot and Auto follows the

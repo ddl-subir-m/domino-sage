@@ -496,6 +496,45 @@ def test_the_gateway_leg_reads_an_absent_narrow_list_as_no_evidence():
     assert not any("not accepted" in (r.get("label") or "") for r in _every_row(row))
 
 
+def test_a_row_with_no_narrow_list_offers_no_submenu_and_that_is_the_trade():
+    """The other half of the legacy-row path, which nothing asserted.
+
+    Its neighbours pin that nothing is REFUSED. This pins what is given up for that: with no narrow
+    list there is nothing honest to offer, so the control is absent rather than wrong. Falling back
+    to the wide enum would put `gpt-5.4 · High` on a chip over a turn the shim runs at the alias
+    default — this ticket's first HIGH, re-entered from behind.
+
+    Asserted because a behaviour nobody witnesses is a behaviour nobody chose: unwitnessed, the next
+    reader sees a missing submenu and "fixes" it with the wide list.
+    """
+    (row,) = _drawn([{"mode": "plan", "listing": "legacy",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "high"}}])
+
+    # `deepseek/deepseek-v3` advertises low and high, and still offers neither — because this row
+    # does not say which of them survive beside tools.
+    assert _children(row, "deepseek/deepseek-v3") is None
+    # The level stands and is named, so nothing is lost silently...
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+    # ...and the way back is still drawn, which is the exit while the control is absent.
+    assert "__pinned__" in [i.get("key") for i in row["items"]]
+
+
+def test_a_pin_does_not_swallow_the_accepted_level_sentence():
+    """The commoner twin of the stranded join, and the one that lost its only surface.
+
+    Behind a `||`, a signing pin suppressed the level sentence entirely: the chip read
+    `model · Max` while the tooltip spoke only about the session's required model. The way-back row
+    carries no submenu (#310), so the tooltip is the only place the level can be accounted for —
+    and the pin is about a different subject, so the two join rather than one winning.
+    """
+    (row,) = _drawn([{"mode": "plan", "signing": "implement",
+                      "seedPick": {"model": SIGNING_MODEL, "effort": "max"}}])
+
+    assert row["label"] == f"{SIGNING_MODEL} · Max"
+    assert "required for this session" in row["why"]
+    assert "The row below clears it." in row["why"]
+
+
 def test_a_missing_alias_listing_is_not_read_as_a_refusal():
     """The listing absent and the alias advertising nothing read identically off
     `reasoning_efforts` — both are `[]` — and they are opposite facts. `gatewayAliases` starts empty

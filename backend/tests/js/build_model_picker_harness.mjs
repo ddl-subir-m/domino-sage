@@ -51,10 +51,17 @@ const OPEN_WEIGHT = [
   // Offered so the two effort lists can be told apart through the menu: this is the one alias whose
   // advertised levels and tool-carrying levels differ.
   { id: 'openai/gpt-5.4', provider: 'OpenAI' },
-  // Deliberately unreal. No alias on any probed deployment carries a colon pair — and that promise
-  // about DATA is exactly what `onClick`'s row lookup exists so nobody has to make. A fixture with
-  // no such id cannot tell the lookup from the parse, because `splitEffortKey` returns the same
-  // answer for every id without one.
+  // Deliberately unreal, and KEEP IT. No alias on any probed deployment carries a colon pair — and
+  // that promise about DATA is exactly what `onClick`'s row lookup exists so nobody has to make. A
+  // fixture with no such id cannot tell the lookup from the parse, because `splitEffortKey` returns
+  // the same answer for every id without one; deleting the lookup left all 74 tests green until
+  // this row existed.
+  //
+  // The general point, because it will recur: the case a guard exists for is the case a fixture
+  // omits, precisely because the fixture is built to look like production and the guard is for what
+  // production does not produce. This one row has since armed a second, unrelated branch as well
+  // (`selectedPick`'s children guard), which is the argument for keeping one impossible value here
+  // permanently rather than adding one per guard as each is found unarmed.
   { id: 'weird/a::low', provider: 'Odd' },
   { id: 'anthropic/claude-planner', provider: 'Anthropic' },
 ];
