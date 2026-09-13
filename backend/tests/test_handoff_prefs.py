@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 _HARNESS = Path(__file__).resolve().parent / "js" / "prefs_harness.mjs"
+_SHEET_HARNESS = Path(__file__).resolve().parent / "js" / "handoff_sheet_harness.mjs"
 _SAGE = Path(__file__).resolve().parents[1] / "sage"
 _JS = _SAGE / "workbench" / "js"
 
@@ -26,6 +27,13 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None,
 
 def _run(steps: list[dict]) -> list:
     out = subprocess.run(["node", str(_HARNESS)], input=json.dumps(steps), check=False,
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def _render_sheet(cases: list[dict]) -> list[dict]:
+    out = subprocess.run(["node", str(_SHEET_HARNESS)], input=json.dumps(cases), check=False,
                          capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
@@ -109,6 +117,33 @@ def test_the_sheet_asks_only_which_built_app():
     assert "'Bring across'" not in sheet
     assert "Full conversation transcript" not in sheet
     assert "setInclude" not in sheet  # nothing on the sheet writes the answer any more
+
+
+def test_the_sheet_says_the_digest_always_goes_in_both_preference_states():
+    """The sheet must not make `.sage/handoff.md` look like one more preference result. It always
+    crosses, and it can hold the person's questions, so that has to be true with the optional files
+    on and with them off."""
+    off, on = _render_sheet([
+        {"resources": False, "artifacts": False, "transcript": False},
+        {"resources": True, "artifacts": True, "transcript": True},
+    ])
+
+    for rendered in (off, on):
+        always, optional = rendered["sections"]
+        assert "Always written to the project" in always["text"]
+        assert ".sage/plan.md" in always["rows"][0]
+        assert ".sage/handoff.md" in always["rows"][1]
+        assert "Always written" in always["rows"][1]
+        assert "questions" in always["rows"][1]
+        assert ".sage/handoff.md" not in " ".join(optional["rows"])
+
+    assert "No optional files will be written." in off["sections"][1]["text"]
+    assert off["sections"][1]["rows"] == []
+    assert on["sections"][1]["rows"] == [
+        "examples/ (2)",
+        ".sage/bindings.json",
+        ".sage/handoff-transcript.md",
+    ]
 
 
 def test_the_sheet_still_defaults_to_a_new_app_and_preselects_nothing():

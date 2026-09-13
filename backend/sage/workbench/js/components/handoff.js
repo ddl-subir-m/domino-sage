@@ -18,7 +18,6 @@ window.SW = window.SW || {};
   // is not this flow. Neither is the target app — the sheet still asks that, every time.
   function crossings() {
     return {
-      plan: true,
       resources: SW.prefs.get('handoffResources'),
       artifacts: SW.prefs.get('handoffArtifacts'),
       transcript: SW.prefs.get('handoffTranscript'),
@@ -61,13 +60,32 @@ window.SW = window.SW || {};
     const artifacts = handoffDraft.artifacts || [];
     const apps = handoffDraft.apps || [];
     const target = apps.find((a) => a.id === appId);
-    const files = [
-      include.plan && '.sage/plan.md',
-      '.sage/handoff.md',
+    const alwaysFiles = [
+      { path: '.sage/plan.md', note: 'Always written. Builder uses this plan.' },
+      {
+        path: '.sage/handoff.md',
+        note: 'Always written. Builder reads this summary. It can include the text of your questions.',
+      },
+    ];
+    const preferenceFiles = [
       include.artifacts && artifacts.length && `examples/ (${artifacts.length})`,
       include.resources && '.sage/bindings.json',
       include.transcript && '.sage/handoff-transcript.md',
     ].filter(Boolean);
+    const fileRow = (file) => {
+      const path = typeof file === 'string' ? file : file.path;
+      return h(
+        'div',
+        { key: path, className: 'sw-handoff-file' },
+        h(FileTextOutlined, { style: { color: '#8F8FA3' } }),
+        h(
+          'span',
+          { className: 'sw-handoff-file-text' },
+          h('code', null, path),
+          file.note && h('span', { className: 'sw-handoff-file-note' }, file.note)
+        )
+      );
+    };
 
     return h(
       Modal,
@@ -143,15 +161,17 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-handoff-files' },
-          h('div', { className: 'sw-field-label' }, 'Files written to the project'),
-          files.map((file) =>
-            h(
-              'div',
-              { key: file, className: 'sw-handoff-file' },
-              h(FileTextOutlined, { style: { color: '#8F8FA3' } }),
-              h('code', null, file)
-            )
-          )
+          h('div', { className: 'sw-field-label' }, 'Always written to the project'),
+          alwaysFiles.map(fileRow)
+        ),
+
+        h(
+          'div',
+          { className: 'sw-handoff-files' },
+          h('div', { className: 'sw-field-label' }, 'Written from your handoff preferences'),
+          preferenceFiles.length
+            ? preferenceFiles.map(fileRow)
+            : h('div', { className: 'sw-caption' }, 'No optional files will be written.')
         )
       )
     );
