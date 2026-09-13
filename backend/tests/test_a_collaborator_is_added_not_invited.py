@@ -744,3 +744,14 @@ def test_the_dialog_says_what_leaving_it_off_costs_the_charts():
     said = " ".join(modal(connected=True)["said"])
     assert "Charts follow the rows." in said
     assert "shows its title and date with no image" in said
+
+
+@needs_node
+def test_the_dialog_says_the_card_s_rows_never_passed_the_gateway():
+    """#321. Two lanes put rows on a card without a model ever seeing them, so the gateway's checks
+    never ran over them — by design, and the checks are a rule about what reaches a vendor model
+    rather than a promise about what a person sees of their own data. The card says nothing, which
+    is right; the one place a person is already weighing where these rows go says it once."""
+    said = " ".join(modal(connected=True)["said"])
+    assert "never pass the gateway" in said
+    assert "reaches a model" in said

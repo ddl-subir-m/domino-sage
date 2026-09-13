@@ -169,6 +169,13 @@ setting nobody can weigh.
 Off by default because the default must be the safe one when the destination is unknown, and it
 is unknown until someone looks.
 
+The setting carries one more sentence for the same reason it carries the host name — this is where
+somebody is weighing where these rows go. The rows on a card were never seen by a model, so the
+gateway's guardrails never ran over them. That is by design and it is not a bypass;
+[ADR-0041](0041-a-live-read-reaches-the-person-without-reaching-the-model.md), *The guardrail never
+saw the rows on the card*, is the long answer, including what `Block PII` does and does not match
+and how to ask a file that question directly.
+
 ## Read again, and why the rows must not touch disk
 
 The card carries a **Read again** button (its stamp reads *"Read 10 September 2026"*, so the

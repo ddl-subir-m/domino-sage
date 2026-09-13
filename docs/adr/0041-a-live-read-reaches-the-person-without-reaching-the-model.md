@@ -214,6 +214,32 @@ This is written down because the two decisions read as if they must meet. A late
 "sensitive" and "reads a Dataset" in one sentence will reach for the gate — and gating a Live read
 would break the one path built to keep rows away from the model in the first place.
 
+## The guardrail never saw the rows on the card (#321)
+
+Two lanes put rows in front of a person without a model ever seeing them, and both are this
+decision working. Chat's Python lane reads the file with pandas and writes the `*.table.json`
+itself — the prompt tells the agent to do exactly that — and a Live read hands the card its rows
+while the assistant gets columns, a row count and a path. So the gateway's guardrails, which run
+over what a turn **carries** to a vendor model, never ran over what is on screen. Somebody who has
+watched a turn refused over an email address will eventually ask whether the card bypassed
+something. It did not. A guardrail is an administrator's rule about what reaches vendor models; it
+is not a promise about what a person may see of their own data, and the two questions only look
+like one.
+
+It follows that a clean card is no verdict on the file behind it. `Block PII`, measured on
+`sage.gcp.cs.domino.tech` on 2026-09-11, is four regexes over **values** — an email address, a
+phone number, a card number, an SSN. Names, addresses and dates of birth pass it however obviously
+personal they are, and the column names alone never trip it. The patterns are the administrator's
+and another gateway's will differ, so to ask what a given file would do to a *turn* rather than to
+a card, run `scripts/guardrail-probe.py file <path>`: it sends the header and three sample rows,
+then each column, and prints GUARDRAIL or OK for each.
+
+No note is drawn on the card. A sentence on every table would teach the wrong model of the product
+— that a card is a thing the gateway vouches for — and would be noise by the second table. The
+[[Kept rows]] setting says the short form of this once, in the one place somebody is already
+weighing where these rows go (`workbench/js/components/collab.js`).
+
+
 ## Revised by
 
 [ADR-0045](0045-an-artifact-commits-the-shape-and-the-rows-only-by-consent.md) keeps the decision

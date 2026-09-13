@@ -300,6 +300,17 @@ window.SW = window.SW || {};
         }, SW.brand.text("Keep data rows in this {project}'s files"))
       ),
       h('div', { className: 'sw-caption' }, goes),
+      // Said once, here, and nowhere else (#321). Two lanes put rows on a card without a model
+      // ever seeing them — the Python lane writes a `*.table.json` and a Live read hands the card
+      // its rows — so the gateway's checks never ran over what is on screen. That is by design:
+      // the checks are an administrator's rule about what reaches a vendor model, not a promise
+      // about what a person sees of their own data. A note on every card would teach the wrong
+      // model of the product and become noise by the second table; this is the one surface where
+      // somebody is already weighing where these rows go.
+      h('div', { className: 'sw-caption' }, SW.brand.text(
+        "Rows on a card are read from this {project}'s files and shown to you, so they never pass "
+        + "the gateway's checks — those cover what reaches a model, not what you see."
+      )),
       // What OFF costs, said beside what ON costs (#255). A chart of the rows is the rows, so the
       // PNG follows them out of git — and this is the one effect a person notices without looking
       // at a commit. Saying it here is what makes the opt-in an offer rather than a surprise.
