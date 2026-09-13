@@ -1068,6 +1068,51 @@ window.SW = window.SW || {};
         'en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
     },
 
+    // When one event happened, precise enough to tell it from another one like it. That is the
+    // whole reason it is not `relativeTime`: that helper rounds to the hour past the first hour and
+    // to the day past the first day, so two plans for one app written twenty minutes apart read
+    // identically from the next hour onward, and two written a week ago collapse onto one bare date
+    // (#278 — same name, same status, same owner, so the stamp was all that was left to separate
+    // the rows). The clock is what separates them.
+    //
+    // The minute, and not the second, although `createdAt` carries one: the pair this is for is a
+    // plan and the change plan that follows the BUILD of it, and a build is minutes. Two documents
+    // inside one minute mean two Conversations racing a plan instead — #59's case, which
+    // `supersededBy` and the live mark answer — so a second on every row would be noise bought for
+    // a pair that is not told apart by time anyway.
+    //
+    // Relative inside a week and absolute beyond it, the shape `relativeTime` already has and the
+    // writing guidelines ask for — by calendar day, not by 24-hour buckets, because "yesterday at
+    // 11pm" is what the reader calls it whatever the elapsed hours say. The viewer's own zone,
+    // like `relativeTime`'s fallback and unlike `longDate`: an event happened at a wall-clock time
+    // for the person reading it, while an as-of date is a property of the data. `''` rather than
+    // `Invalid Date` for the same reason `longDate` guards — the value is read out of a file, and a
+    // file can hold anything.
+    dayAndTime(iso) {
+      if (!iso) return '';
+      const then = new Date(iso);
+      if (Number.isNaN(then.getTime())) return '';
+      const clock = then.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      const midnight = (at) => {
+        const d = new Date(at);
+        d.setHours(0, 0, 0, 0);
+        return d.getTime();
+      };
+      // `Date.now()` rather than the module's `TODAY`, which is captured once at load: a tab left
+      // open over midnight would otherwise go on calling yesterday today (#217).
+      const days = Math.round((midnight(Date.now()) - midnight(then)) / 86400000);
+      // A stamp ahead of the reader's clock — a container whose time is off, a file hand-edited —
+      // is still something that happened, so it reads as today rather than as "-1 days ago".
+      if (days <= 0) return `today at ${clock}`;
+      if (days === 1) return `yesterday at ${clock}`;
+      // The weekday rather than `N days ago`, which is the one phrase here that would stack a
+      // relative offset on an absolute clock — `4 days ago at 2:10 PM` asks the reader to hold two
+      // frames at once. It is also shorter, which the rail spends on the clock.
+      if (days < 7) return `${then.toLocaleDateString('en-US', { weekday: 'long' })} at ${clock}`;
+      return `${then.toLocaleDateString(
+        'en-US', { month: 'long', day: 'numeric', year: 'numeric' })} at ${clock}`;
+    },
+
     isoDaysAgo(days) {
       const d = new Date(TODAY);
       d.setDate(d.getDate() - days);
