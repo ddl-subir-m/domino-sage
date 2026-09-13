@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-_HARNESS = Path(__file__).resolve().parent / "js" / "chat_model_refusal_harness.mjs"
+_HARNESS = Path(__file__).resolve().parent / "js" / "model_refusal_harness.mjs"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not on PATH (it is in the Sage image)")
