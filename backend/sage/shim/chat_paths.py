@@ -14,6 +14,28 @@ from typing import Any
 
 from ..router.phase_classifier import READ_TOOLS, WRITE_TOOLS
 
+# The phrase an @mention's descriptor is introduced by, in both of `with_attachment_listing`'s
+# preambles (`driver/opencode.py`). Once a prompt has been flattened into a gateway payload this
+# sentence is the only thing left that tells an inlined descriptor apart from the person's prose,
+# and `withhold._carries_mention` reads it to count those rows as DATA (#290).
+#
+# It lives HERE, beside `content_text`, rather than in the driver that writes it. The intuitive
+# home is the producer, and it is the wrong one: `withhold.py` advertises talking to nothing, and
+# importing a 21-character string from `driver/opencode.py` pulls the whole driver graph and httpx
+# in behind it — MEASURED 45 ms / 238 modules against 12 ms / 90 for this file. A fact about the
+# TEXT SHAPE of a payload is what this module is for. One definition, both sides read it, and
+# neither can drift from the other.
+MENTION_MARK = "user @mentioned these"
+
+# The line every descriptor entry carries, holding the path of the file it describes. Read WITH
+# `MENTION_MARK`, never instead of it and never alone: the phrase is ordinary English and a person
+# discussing Sage's own prompt types it without attaching anything, while `path:` on its own is
+# more typeable still. A message has to carry both to be counted as data, and the pair is not
+# something anyone produces by accident. Getting this wrong is not neutral — a message wrongly
+# marked takes its whole turn off the "fetched nothing" fallback and suppresses a re-run that was
+# worth the call, which is a new wrong answer in the opposite direction from the one #290 fixes.
+MENTION_PATH_LINE = "\n  path: "
+
 # Thread ids we mint (`thr_` + hex) plus anything already on disk. A path using another id
 # is not "this Thread" even if it sits under examples/.
 _THREAD_ID = re.compile(r"^thr_[a-zA-Z0-9_-]+$")
@@ -170,11 +192,15 @@ def text_key(message: dict[str, Any]) -> str:
     down what was in it — which matters more here than anywhere else in Sage, because the thing
     being recorded is the thing a policy just refused to move.
     """
-    return "text:" + hashlib.sha256(_content_text(message.get("content")).encode()).hexdigest()[:16]
+    return "text:" + hashlib.sha256(content_text(message.get("content")).encode()).hexdigest()[:16]
 
 
-def _content_text(content: Any) -> str:
-    """A message's text, from either the plain-string or the content-parts shape."""
+def content_text(content: Any) -> str:
+    """A message's text, from either the plain-string or the content-parts shape.
+
+    Public because two modules read it and ask different things of it: `text_key` fingerprints it,
+    and `withhold._carries_mention` looks in it for the sentence an @mention appended (#290).
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
