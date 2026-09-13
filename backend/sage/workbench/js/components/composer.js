@@ -497,12 +497,6 @@ window.SW = window.SW || {};
         ? (buildPhase === 'implement' ? 'implement' : 'plan')
         : activeBuildMode.id);
     const pinnedModel = (catalog && catalog[pinnedSlot]) || '';
-    // Why the mode is not running its own slot's model. Without this the person who assigned
-    // gpt-5.4 to Plan sees Gemini and has nothing to read — the guarantee they cannot see is the
-    // one they file as a bug.
-    const pinWhy = signingSlot
-      ? `${pinnedModel} is required for this session, so every Build turn uses it.`
-      : '';
     // The sensitivity lock, read once for both pickers below (ADR-0043). Chat is gated exactly as
     // Build is — `llm_router` applies the lock OUTSIDE their fork — so both menus have to say so,
     // and saying it from one place is what keeps them saying the same thing.
@@ -543,6 +537,18 @@ window.SW = window.SW || {};
     //
     // No second name to reconcile here, unlike Chat's chip: the slots come off the catalog and the
     // menu keys on `option.alias`, so everything Build routes by is already in alias space.
+    // Why the mode is not running its own slot's model. Without this the person who assigned
+    // gpt-5.4 to Plan sees Gemini and has nothing to read — the guarantee they cannot see is the
+    // one they file as a bug.
+    //
+    // Empty under an override, which is why it is read here and not up beside `pinnedModel`:
+    // precedence is in-session act > pin, and `_pin_signing` returns a PLAN_OVERRIDE or
+    // IMPLEMENT_OVERRIDE decision untouched. So a pick really does beat the pin, the chip beside
+    // this sentence names the pick, and saying the session requires another model would have the
+    // control contradict itself in two consecutive sentences (#276).
+    const pinWhy = signingSlot && !override
+      ? `${pinnedModel} is required for this session, so every Build turn uses it.`
+      : '';
     const buildPick = override || pinnedModel;
     const buildBarred = barredModel(buildPick);
     const buildLabel = SW.util.lockedLabel(sensitivity, buildPick, '', false);
@@ -1041,9 +1047,18 @@ window.SW = window.SW || {};
                     // to put it in either, so the control closes instead.
                     // Two facts when the pick is barred, in the order they surprise: why the
                     // chip does not name what was picked, then why the control will not open.
+                    //
+                    // The same join for the signing pin, and for the same reason (#276): both
+                    // sentences are true at once, and the running one used to replace `pinWhy`
+                    // outright — so hovering the chip mid-build, which is the moment somebody
+                    // looks, gave no account of the pin at all. The lock still outranks the pin
+                    // here, exactly as it does below: under the lock the pin did not move this
+                    // model, and a sentence naming the wrong cause is worse than no sentence.
                     title: buildBarred
                       ? `${lockNote(buildPick)} This turn is running on ${buildLabel} — wait for it to finish to change the model.`
-                      : `This turn is running on ${buildLabel}. Wait for it to finish to change the model.`,
+                      : pinWhy
+                        ? `${pinWhy} This turn is running on ${buildLabel} — wait for it to finish to change the model.`
+                        : `This turn is running on ${buildLabel}. Wait for it to finish to change the model.`,
                   },
                   // The span is load-bearing: a browser dispatches no mouse events on a disabled
                   // button, so a Tooltip put straight on one never opens and the sentence above

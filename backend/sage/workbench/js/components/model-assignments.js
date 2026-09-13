@@ -169,7 +169,21 @@ window.SW = window.SW || {};
         // Preflight's verdict on the slot as it stands — the half of the save-time re-check that a
         // greyed menu row cannot carry, because that one says the model is bad and this says the
         // slot is.
-        current.problem
+        //
+        // Dropped on a row the lock has already moved, but only when it is the signing pin's
+        // sentence: the lock outranks the pin (`llm_router._lock_sensitivity` wraps `_pin_signing`),
+        // so under it the pin is not what decides this row, and "this model won't run" names both
+        // the wrong cause and the wrong remedy. The other two verdicts stay — a model that will not
+        // answer will not answer whatever moved the turn — and the lock's own line, one below, still
+        // says what runs. Which verdict it is comes from the server and not from reading the
+        // sentence, because a sentence is what a brand pack is allowed to change (#276).
+        //
+        // `barredNow` and NOT `runs`: `runs` is the narrower fact that the lock moved this row AND
+        // the panel was told where to. `_locked_slot_models` returns nothing at all when the
+        // approved set resolves to none — the lock that closes every model — and reading `runs`
+        // there would let the pin's sentence back in at exactly the moment the reader can act on it
+        // least.
+        current.problem && !(current.shadowed && barredNow)
           ? h('div', { className: 'sw-assignment-problem' }, current.problem)
           : null,
         // What the row would say if the lock were not holding. Not optional once the value above is
