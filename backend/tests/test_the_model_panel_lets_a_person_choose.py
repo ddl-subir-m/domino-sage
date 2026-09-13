@@ -750,3 +750,17 @@ def test_a_save_that_dropped_nothing_leaves_another_row_s_note_alone():
                                      "also": {"set": ["implement", "opus"]}}])
     assert drawn["afterEffortNotes"] == [
         'gpt-5.4 doesn\'t accept "Max", so the reasoning effort was cleared.']
+
+
+def test_a_stranded_level_beside_levels_the_model_does_offer():
+    """The partial case, and the shape narrowing the offer produces rather than the rare one. When a
+    list shrinks under a saved level — #282 narrows gpt-5.4 to the one level a tool-carrying turn can
+    run — the row holds a level that is missing from a list that is otherwise full. Without the
+    closed option the select has no label for the value it is showing and draws the raw key."""
+    (drawn,) = _drawn([{"seed": {"plan": {"model": "gpt-5.4", "effort": "max"}}}])
+    control = _effort_row(drawn, "Plan")
+    assert control["value"] == "max"
+    assert control["options"][-1]["label"] == "Max — not accepted"
+    # The levels it does offer are all still there, and so is the way back.
+    assert [o["value"] for o in control["options"][:-1]] == [
+        "__model_default__", "none", "low", "medium", "high", "xhigh"]
