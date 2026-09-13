@@ -82,6 +82,13 @@ def test_app_tag_sweeps_skip_stray_thread_directory_names(tmp_path: Path):
     store.rename_app("app_a", "New name")
     assert store.get(thread["id"])["touched"][0]["appName"] == "New name"
 
+
+def test_app_tag_delete_sweep_skips_stray_thread_directory_names(tmp_path: Path):
+    store = ThreadStore(tmp_path)
+    thread = store.create("A conversation")
+    store.record_touch(thread["id"], app_id="app_a", app_name="Old name", kind="built")
+    (tmp_path / ".sage" / "threads" / "thr_x copy").mkdir(parents=True)
+
     store.forget_app("app_a")
     assert store.get(thread["id"])["touched"] == []
 
