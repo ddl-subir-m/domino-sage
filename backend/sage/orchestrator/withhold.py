@@ -55,6 +55,7 @@ from ..shim.chat_paths import (
     file_key,
     read_path_from_tool_call,
     text_key,
+    tool_call_name_and_args,
 )
 
 BLOCKED = "blocked"   # the gateway refused this payload
@@ -228,13 +229,17 @@ def _walk(messages: list[dict]):
     was is exactly what the dedupe exists to forget.
     """
     paths: dict[str, str] = {}
+    tool_labels: dict[str, str] = {}
     for m in messages:
         if not isinstance(m, dict) or m.get("role") != "assistant":
             continue
         for call in m.get("tool_calls") or []:
-            if (isinstance(call, dict) and (path := read_path_from_tool_call(call))
-                    and (cid := str(call.get("id") or ""))):
+            if not isinstance(call, dict) or not (cid := str(call.get("id") or "")):
+                continue
+            if path := read_path_from_tool_call(call):
                 paths[cid] = path
+            if label := _tool_call_text_label(call):
+                tool_labels[cid] = label
     for m in messages:
         if not isinstance(m, dict) or m.get("role") in _NEVER:
             continue
@@ -252,7 +257,8 @@ def _walk(messages: list[dict]):
             path = paths[cid]
             yield Carrier(file_key(path), os.path.basename(path) or path, True, True, True), m
         elif _has_text(m):
-            yield Carrier(text_key(m), _text_label(m), False, is_data, is_tool), m
+            yield Carrier(text_key(m), _text_label(m, tool_labels.get(cid)), False,
+                          is_data, is_tool), m
 
 
 def suspects(messages: list[dict]) -> set[str]:
@@ -321,12 +327,20 @@ def _has_text(message: dict) -> bool:
         isinstance(p, dict) and str(p.get("text") or "").strip() for p in content)
 
 
-def _text_label(message: dict) -> str:
+def _tool_call_text_label(call: dict) -> str:
+    name, args = tool_call_name_and_args(call)
+    if name != "bash":
+        return ""
+    command = " ".join(str(args.get("command") or "").split())
+    return f"the output of `{command}`" if command else ""
+
+
+def _text_label(message: dict, tool_label: str | None = None) -> str:
     role = message.get("role")
     if role in ("user", "human"):
         return "the message you sent"
     if role == "tool":
-        return "something a tool read"
+        return tool_label or "something a tool read"
     return "an earlier answer in this conversation"
 
 
