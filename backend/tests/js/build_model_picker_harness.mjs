@@ -39,6 +39,13 @@ const CATALOG = {
   sovereign_plan: 'sovereign/plan',
   sovereign_implement: 'sovereign/implement',
   sovereign_ask: 'sovereign/ask',
+  // The ASSIGNMENT's own level, which `service.py`'s status payload ships beside each slot and this
+  // fixture used to stop short of. Without them nothing here can witness assignment-effort-aware
+  // behaviour at all — which is how a tooltip claiming "not at the assignment's level" went both
+  // unguarded and unfalsifiable on a ticket whose entire subject is efforts.
+  plan_effort: 'medium',
+  implement_effort: null,
+  ask_effort: null,
 };
 // What an `openai` gateway adds. One of them is already a configured slot, so the extras list has
 // to drop it — offering the same model under two headings is the same duplicate as above.
@@ -176,6 +183,13 @@ function serve(url, options = {}) {
       llm_aliases: [{
         id: 'id-deepseek', name: 'deepseek/deepseek-v3', display_name: 'DeepSeek v3',
         capabilities: ['chat'], reasoning_efforts: ['low', 'high'],
+      }, {
+        // The POSITIVE half. With only the row above, the mapper's passthrough could be mistyped or
+        // deleted outright and every test would stay green — absent maps to absent either way. This
+        // row is the one that fails if the field stops being carried.
+        id: 'id-gpt', name: 'openai/gpt-5.4', display_name: 'GPT-5.4',
+        capabilities: ['chat'], reasoning_efforts: ['none', 'low', 'high'],
+        reasoning_efforts_with_tools: ['none'],
       }],
     });
   }
@@ -292,7 +306,7 @@ for (const step of steps) {
   if (step.listingRoute) {
     // Through `fetchDominoListing`, not around it: the mapper is the thing under test.
     const read = await SW.api.resourceListing();
-    report.push({ step: 'listingRoute', row: (read.groups.model_llm || [])[0] });
+    report.push({ step: 'listingRoute', rows: read.groups.model_llm || [] });
     continue;
   }
 

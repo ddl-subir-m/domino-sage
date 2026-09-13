@@ -759,6 +759,13 @@ window.SW = window.SW || {};
     // MODEL being the slot's, and says nothing whatever about the level.
     const livePick = overridable && buildModel ? buildModel : '';
     const collapsedStranded = livePick && !override ? strandedLevel(livePick) : '';
+    // Declared HERE rather than beside its first reader, because both chips need it: the open one
+    // and the running one, and the running branch draws a disabled Button with no submenu behind it
+    // — so mid-turn this sentence is the only account of a stranded level there is.
+    const strandedWhy = collapsedStranded
+      ? `${pinnedModel} doesn't accept ${effortLabel(collapsedStranded)}, so this turn runs at the `
+        + 'model default. The row below clears the pick and puts the mode back on its assignment.'
+      : '';
     const buildChipLabel = override
       ? (pickedLevel ? `${override} · ${effortLabel(pickedLevel)}` : override)
       : livePick
@@ -1361,11 +1368,18 @@ window.SW = window.SW || {};
                     // looks, gave no account of the pin at all. The lock still outranks the pin
                     // here, exactly as it does below: under the lock the pin did not move this
                     // model, and a sentence naming the wrong cause is worse than no sentence.
-                    title: buildBarred
-                      ? `${lockNote(buildPick)} This turn is running on ${buildLabel} — wait for it to finish to change the model.`
-                      : pinWhy
-                        ? `${pinWhy} This turn is running on ${buildLabel} — wait for it to finish to change the model.`
-                        : `This turn is running on ${buildLabel}. Wait for it to finish to change the model.`,
+                    // And a STRANDED level joins too, because the running chip is the one place it
+                    // can have no other surface at all: this branch draws a disabled Button rather
+                    // than the Dropdown, so the submenu the comments keep calling "where a stranded
+                    // level is read" is unreachable, and the label drops the level because it will
+                    // not run. Reachable mid-turn exactly as `withEfforts` describes — the measured
+                    // table narrows under a live pick (#280) — and without this the chip quietly
+                    // loses `· High` and says only which model is running.
+                    title: [
+                      buildBarred ? lockNote(buildPick) : pinWhy,
+                      buildBarred ? '' : strandedWhy,
+                      `This turn is running on ${buildLabel}. Wait for it to finish to change the model.`,
+                    ].filter(Boolean).join(' '),
                   },
                   // The span is load-bearing: a browser dispatches no mouse events on a disabled
                   // button, so a Tooltip put straight on one never opens and the sentence above
@@ -1420,17 +1434,21 @@ window.SW = window.SW || {};
                     // the other left the moment somebody looks with no account of the second at all.
                     // The LOCK still wins outright: under it the pin did not move this model and the
                     // level was never sent, so both sentences would name wrong causes.
-                    const strandedWhy = collapsedStranded
-                      ? `${pinnedModel} doesn't accept ${effortLabel(collapsedStranded)}, so this `
-                        + 'turn runs at the model default. The row below clears the pick and puts '
-                        + 'the mode back on its assignment.'
-                      : '';
                     // The accepted-level twin of the stranded sentence. Both are the collapse — a
                     // pick naming the mode's own model — and in both the menu marks the way-back row
                     // and offers no submenu (#310), so the tooltip is the only place either can be
                     // accounted for. Mutually exclusive with `strandedWhy`: `pickedLevel` is empty
                     // whenever a level is stranded.
-                    const levelWhy = !override && pickedLevel
+                    //
+                    // Gated on the assignment ACTUALLY differing, which the composer can check and
+                    // did not: `catalog` carries `<slot>_effort` beside `<slot>`, from the same
+                    // payload `pinnedModel` is read out of. Pick the assignment's own level and the
+                    // ungated sentence asserts the turn is not running at it while it runs at
+                    // exactly that — a confident, specific falsehood reached through the one door
+                    // the paragraphs above do not cover, because it is a claim about the ASSIGNMENT
+                    // rather than about the pick.
+                    const pinnedEffort = (catalog && catalog[`${pinnedSlot}_effort`]) || null;
+                    const levelWhy = !override && pickedLevel && pickedLevel !== pinnedEffort
                       ? `This pick runs ${pinnedModel} at ${effortLabel(pickedLevel)}, not at `
                         + "the assignment's level. The row below clears it."
                       : '';

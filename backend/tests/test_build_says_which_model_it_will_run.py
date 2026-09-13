@@ -478,10 +478,15 @@ def test_the_listing_mapper_passes_an_absent_narrow_list_through_untouched():
     not empty — JSON drops an undefined value, which is exactly the distinction being kept.
     """
     (row,) = _drawn([{"listingRoute": True}])
-    mapped = row["row"]
+    absent, present = row["rows"]
 
-    assert mapped["reasoning_efforts"] == ["low", "high"]
-    assert "reasoning_efforts_with_tools" not in mapped
+    # Absent stays absent — the passthrough does not invent `[]`.
+    assert absent["reasoning_efforts"] == ["low", "high"]
+    assert "reasoning_efforts_with_tools" not in absent
+    # And present arrives intact. Without this half the passthrough could be deleted outright and
+    # every test would stay green, because absent maps to absent either way.
+    assert present["reasoning_efforts_with_tools"] == ["none"]
+    assert present["reasoning_efforts"] == ["none", "low", "high"]
 
 
 def test_the_gateway_leg_reads_an_absent_narrow_list_as_no_evidence():
@@ -517,6 +522,67 @@ def test_a_row_with_no_narrow_list_offers_no_submenu_and_that_is_the_trade():
     assert row["label"] == "deepseek/deepseek-v3 · High"
     # ...and the way back is still drawn, which is the exit while the control is absent.
     assert "__pinned__" in [i.get("key") for i in row["items"]]
+
+
+def test_a_pick_matching_the_assignments_own_level_claims_no_difference():
+    """The sentence says the turn is NOT running at the assignment's level. It has to be true.
+
+    Plan's assignment here is `medium`. Pick Plan's model at `medium` while in Implement, switch to
+    Plan, and the pick agrees with the assignment on both halves — so a tooltip asserting a
+    difference would be a confident, specific falsehood, reached through the one door the chip's
+    other paragraphs do not cover: a claim about the ASSIGNMENT rather than about the pick.
+
+    The composer has the data — `catalog` carries `<slot>_effort` beside `<slot>`, out of the same
+    payload `pinnedModel` is read from — and simply was not reading it.
+    """
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::medium"}, {"mode": "plan"}])
+
+    assert row["label"] == f"{PLAN_MODEL} · Medium"
+    assert "not at the assignment's level" not in (row["why"] or "")
+
+
+def test_a_pick_differing_from_the_assignment_still_says_so():
+    """The other side of the same gate — the sentence must survive where it is true. A guard that
+    silenced both cases would pass the test above and remove the only account of the level."""
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::high"}, {"mode": "plan"}])
+
+    assert row["label"] == f"{PLAN_MODEL} · High"
+    assert "not at the assignment's level" in row["why"]
+
+
+def test_a_stranded_level_is_still_accounted_for_while_a_turn_runs():
+    """The running chip draws a disabled Button, not the Dropdown — so the submenu the rest of this
+    file calls "where a stranded level is read" does not exist mid-turn, and the label drops the
+    level because it will not run.
+
+    Reachable exactly as `withEfforts` describes: the measured table narrows under a live pick
+    (#280). Without the sentence the chip quietly loses `· High` and says only which model runs,
+    which is the receipt-less setting this ticket keeps refusing to ship.
+    """
+    *_, row = _drawn([{"mode": "plan", "seedPick": {"model": PLAN_MODEL, "effort": "high"}},
+                      {"mode": "plan", "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]},
+                       "running": True}])
+
+    assert row["disabled"] is True
+    assert "doesn't accept High" in row["why"]
+    assert "This turn is running on" in row["why"]
+
+
+def test_none_is_a_level_and_survives_the_whole_write_path():
+    """`Model default` and `None` sit one row apart and mean opposite things — send no field and let
+    the alias reason as it likes, versus send the field and turn reasoning off. `effortLabel`'s
+    header exists for that distinction.
+
+    Every other pick step in this file clicks `::default`, `::high` or a bare id, so a regression
+    collapsing `none` into `null` at any of the three hops — `splitEffortKey`, `store.setBuildModel`,
+    `api.setBuildModel` — would send "reason as you like" where the person asked for reasoning OFF,
+    and nothing would redden.
+    """
+    (row,) = _drawn([{"mode": "plan", "pick": "openai/gpt-5.4::none"}])
+
+    assert row["wrote"] == [{"pick": "openai/gpt-5.4", "pick_effort": "none"}]
+    assert row["serverEffort"] == "none"
+    assert row["afterLabel"] == "openai/gpt-5.4 · None"
 
 
 def test_a_pin_does_not_swallow_the_accepted_level_sentence():
