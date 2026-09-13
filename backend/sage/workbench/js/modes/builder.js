@@ -1025,9 +1025,10 @@ window.SW = window.SW || {};
     //
     // The fallback is that recorded name, plainly — unlike the receipt, which took a third
     // sentence rather than fall back. Neither reason it had reaches here: `_rehydrate_attached`,
-    // the one writer whose `dataset` can be a served slug path, records neither `dataset_rel_path`
-    // nor `source: 'upload'`, so `isSageUpload` never opens this door on its entries, and the
-    // writers that do reach it set `dataset` from a real Dataset's `.name`.
+    // the one writer whose `dataset` can be a served slug path, records no `dataset_rel_path`, so
+    // nothing in the upload ledger can ever name its entries and `sage_upload` stays false on them
+    // — `isSageUpload` never opens this door there. The writers that do reach it set `dataset` from
+    // a real Dataset's `.name`.
     const menuFor = (record, attachment) => ({
       items: [
         { key: 'remove', label: `Remove from ${activeApp.name}`, danger: true },

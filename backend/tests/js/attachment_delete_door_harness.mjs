@@ -32,20 +32,35 @@ const APP = { id: 'app_a', name: 'Desk margins', selected: true };
 // absent, which is the only way `datasetNameNow` can answer nothing.
 const MEMBERS = [{ id: 'dataset:ds-3', name: 'Sales 2026 EMEA', kind: 'dataset' }];
 
-// Both uploads carry `source: 'upload'`, which is one of the two things that open this door
-// (`isSageUpload`). q3.csv is a genuine pre-existing Dataset file, on the walk so the door being
-// read is provably the upload's and not whichever row came last — and it carries the
-// `dataset_rel_path` every real writer sets (`_dataset_entry`), so it is kept out by the one
-// condition a real entry is kept out by rather than by a field the fixture simply omitted.
+// Both uploads carry `sage_upload: true`, the one thing that opens this door (`isSageUpload`),
+// alongside the `source: 'upload'` a real upload entry also has — which the door does NOT read, so
+// the fixture carries both rather than letting the spelling stand in for the fact. q3.csv is a
+// genuine pre-existing Dataset file, on the walk so the door being read is provably the upload's
+// and not whichever row came last — and it carries the `dataset_rel_path` every real writer sets
+// (`_dataset_entry`), so it is kept out by the one condition a real entry is kept out by rather
+// than by a field the fixture simply omitted.
+//
+// The last two are the pair #274 turns on, and they are deliberately indistinguishable except in
+// the one field that records who wrote the bytes. Both are `source: 'dataset'`, both sit under
+// `uploads/`, both name a Dataset the working set holds — so a door that reads the folder name
+// answers them the same way, and the two assertions built on them can only come out opposite if it
+// reads `sage_upload`. reattached.csv is a Sage upload attached again from the Dataset browser;
+// budget.csv is the person's own file, in a folder they happened to name `uploads/`.
 const ATTACHED = [
   { path: 'public/data/sales_2026/uploads/margins.csv', file: 'margins.csv',
     dataset: 'sales 2026', dataset_id: 'ds-3', dataset_rel_path: 'uploads/margins.csv',
-    size: 12, source: 'upload', added_by: 'user' },
+    size: 12, source: 'upload', sage_upload: true, added_by: 'user' },
   { path: 'public/data/archive/uploads/old.csv', file: 'old.csv', dataset: 'Cold archive',
     dataset_id: 'ds-gone', dataset_rel_path: 'uploads/old.csv',
-    size: 12, source: 'upload', added_by: 'user' },
+    size: 12, source: 'upload', sage_upload: true, added_by: 'user' },
   { path: 'public/data/sales_2026/raw/q3.csv', file: 'q3.csv', dataset: 'sales 2026',
     dataset_id: 'ds-3', dataset_rel_path: 'raw/q3.csv',
+    size: 12, source: 'dataset', added_by: 'user' },
+  { path: 'public/data/sales_2026/uploads/reattached.csv', file: 'reattached.csv',
+    dataset: 'sales 2026', dataset_id: 'ds-3', dataset_rel_path: 'uploads/reattached.csv',
+    size: 12, source: 'dataset', sage_upload: true, added_by: 'user' },
+  { path: 'public/data/sales_2026/uploads/budget.csv', file: 'budget.csv',
+    dataset: 'sales 2026', dataset_id: 'ds-3', dataset_rel_path: 'uploads/budget.csv',
     size: 12, source: 'dataset', added_by: 'user' },
 ];
 

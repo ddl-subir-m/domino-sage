@@ -5208,8 +5208,10 @@ window.SW = window.SW || {};
     // `removeAttachmentFromApp` above, which only drops the app's symlink and keeps the data: this
     // destroys it, so — unlike that one — it confirms first and carries the same race guard as
     // `removeBindingFromApp`, since the window a confirm leaves open is exactly the length that
-    // guard answers. The menu only ever offers this on a Sage-managed upload (`isSageUpload`);
-    // a genuine pre-existing Dataset file has no door here to delete it.
+    // guard answers. The menu only ever offers this where `isSageUpload` says the record shows Sage
+    // wrote the bytes — a Dataset file that records no upload is never given this door, which since
+    // #274 is a claim about what the entry says rather than about the folder the file sits in. This
+    // call itself is not a second gate and does not re-ask: `delete_file` re-asks on the server.
     async deleteAttachmentFromApp(attachment) {
       const asked = state.activeApp;
       const where = appScopeName();
@@ -5237,16 +5239,40 @@ window.SW = window.SW || {};
               resolve(false);
               return;
             }
+            let done;
             try {
-              await SW.api.deleteFile(attachment.path);
+              done = await SW.api.deleteFile(attachment.path);
             } catch (err) {
               antd.message.error(err.message);
               resolve(false);
               return;
             }
+            // The server asks the upload ledger again before it unlinks, and that ledger is shared
+            // — another Workspace on this volume can have destroyed the file and forgotten it since
+            // this app was last read (#274). So the sentence follows what came BACK, not what the
+            // control offered: the row this menu drew from can be a stale copy, and reporting the
+            // destroy anyway would tell somebody their Dataset is short a file that is still in it.
+            // And WHICH reason, because the two are different situations and a sentence naming the
+            // wrong one is worse than one naming none. `no-record` is permanent and the person acts
+            // on the platform; `unreachable` is the Dataset being absent right now and comes back.
+            const inDataset = SW.util.datasetNameNow(attachment.dataset_id) || attachment.dataset;
+            // Only an explicit `true` earns the sentence that claims the data is gone. Read the
+            // other way round — anything that is not `false` means gone — a response that is empty,
+            // or from a build that predates the field, produces exactly the over-claim this whole
+            // change exists to prevent. Unknown says nothing about the bytes instead.
+            const kept = done && done.bytes_removed === true ? null : (done && done.bytes_kept) || '';
+            const alsoDid = done && done.bytes_removed === true
+              ? "The file's data is gone too."
+              : kept === 'no-record'
+                ? `Its data is still in ${inDataset}. Sage has no record of writing those bytes, so `
+                  + 'it left them alone.'
+                : kept === 'unreachable'
+                  ? `Its data is still in ${inDataset}. Sage could not reach it just now, so it `
+                    + 'left them alone.'
+                  : '';
             applyAppScope(appScopeTicket(gen), {
               appAttachments: (state.appAttachments || []).filter((a) => a.path !== attachment.path),
-              appRemoval: removalNotice(where, name, [], "The file's data is gone too."),
+              appRemoval: removalNotice(where, name, [], alsoDid),
             });
             notify();
             resolve(true);

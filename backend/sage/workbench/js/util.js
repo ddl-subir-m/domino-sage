@@ -521,13 +521,19 @@ window.SW = window.SW || {};
       return `${lead} Chat's resources and files land here after Open Builder.`;
     },
 
-    // A Sage-managed upload: bytes Sage wrote under a Dataset's uploads/ or sensitive/ folder, and
-    // so safe to destroy — mirrors the backend's own `_is_sage_upload` (service.py). A genuine
-    // pre-existing Dataset file must never get this door (ADR-0023).
+    // Bytes SAGE wrote into a Dataset, and so the only ones this door may destroy (ADR-0023).
+    // Mirrors the backend's own `_is_sage_upload` (service.py) field for field — one field, because
+    // there is one authority. `sage_upload` is the project's upload ledger as of the last manifest
+    // read (`_restamp_uploads`); `source` is deliberately NOT consulted, here or there, because an
+    // entry is a per-app copy of a claim about shared Dataset bytes and a copy that answers on its
+    // own goes on answering after another app has destroyed them.
+    //
+    // It used to answer true for anything under `uploads/` or `sensitive/` too, which is the folder
+    // Sage WRITES INTO and not the folder Sage owns — a person whose Dataset already held an
+    // `uploads/` folder was offered a no-undo destroy door on their own files (#274). A Dataset
+    // file that records no upload gets no door here, whoever wrote its bytes.
     isSageUpload(entry) {
-      const rel = String((entry && entry.dataset_rel_path) || '');
-      return Boolean(entry && (entry.source === 'upload' || rel.startsWith('uploads/')
-        || rel.startsWith('sensitive/')));
+      return Boolean(entry && entry.sage_upload === true);
     },
 
     // One of the selected app's Attachment records, as a working-set row. Three surfaces need the
