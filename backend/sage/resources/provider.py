@@ -57,6 +57,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from ..orchestrator import brand
+from ..router.models import EFFORTS_WITH_TOOLS
 from ..router.models import reasoning_efforts_for as measured_reasoning_efforts
 
 
@@ -116,6 +117,28 @@ class LlmAlias:
     # /api/alias-groups (`approved_aliases` takes either), and a redaction resolves to an empty
     # approved set, which refuses. It cannot fail open.
     groups: list[str] = field(default_factory=list)
+
+    @property
+    def reasoning_efforts_with_tools(self) -> list[str]:
+        """`reasoning_efforts`, narrowed to what this alias keeps when the request ALSO carries
+        function tools (#280, ADR-0049).
+
+        A second answer and not a replacement, because both questions are asked and they differ:
+        Chat's chip offers the enum, Build's menu offers this, because every Build turn carries tools
+        and `enforcement.py` enforces exactly this narrowing on the way out. Offering the wide list
+        in Build names a level the shim then drops — the turn runs at the alias's own default while
+        the control says otherwise (#295).
+
+        Computed server-side so the measured table stays in one place; ADR-0049 refuses a second copy
+        of it in the browser by name.
+
+        DERIVED rather than a field, which is why no construction site had to learn it. Eight places
+        build an `LlmAlias` and a ninth would have been added the week after; a field they must each
+        remember is a field one of them forgets, and the one that forgot would publish `[]` — read by
+        the menu as "this alias offers no levels", silently removing a control. It also keeps the
+        positional-argument hazard off a dataclass that is constructed positionally in fixtures.
+        """
+        return alias_efforts_with_tools(self.name, self.reasoning_efforts)
 
 
 @dataclass(frozen=True)
@@ -998,6 +1021,28 @@ def alias_reasoning_efforts(name: str, inference_params: Any = None) -> list[str
     if listed and measured:
         return [e for e in measured if e in listed]
     return listed or list(measured)
+
+
+def alias_efforts_with_tools(name: str, efforts: list[str]) -> list[str]:
+    """`efforts` narrowed to what this alias keeps when the request also carries function tools.
+
+    Takes the already-resolved list rather than recomputing it, so it can never be WIDER than what
+    the alias was published as offering — the invariant `reasoning_efforts_with_tools` is held to in
+    `router/models.py`, kept here by construction instead of by a second comparison.
+
+    An alias with no tool-shape row keeps its whole list, which is the same default the table itself
+    takes: a tool-carrying request is unremarkable to almost every alias, and narrowing on no
+    evidence is precisely the bug the guard this replaced used to have (#282).
+
+    Reads `EFFORTS_WITH_TOOLS` rather than calling `reasoning_efforts_with_tools(name)`, because
+    that helper answers `reasoning_efforts_for(name)` when there is no row — indistinguishable here
+    from a genuine narrowing, and for an alias the gateway published but nobody probed it would
+    intersect the enum against an empty measured list and hide every level.
+    """
+    row = EFFORTS_WITH_TOOLS.get(name.rsplit("/", 1)[-1])
+    if row is None:
+        return list(efforts)
+    return [e for e in efforts if e in row]
 
 
 def parse_groups(raw: Any) -> list[str]:

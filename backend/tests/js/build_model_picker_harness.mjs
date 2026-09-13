@@ -48,6 +48,9 @@ const SIGNING_MODEL = 'google/gemini-3.7-flash';
 const OPEN_WEIGHT = [
   { id: 'deepseek/deepseek-v3', provider: 'DeepSeek' },
   { id: 'qwen/qwen-2-5', provider: 'Qwen' },
+  // Offered so the two effort lists can be told apart through the menu: this is the one alias whose
+  // advertised levels and tool-carrying levels differ.
+  { id: 'openai/gpt-5.4', provider: 'OpenAI' },
   { id: 'anthropic/claude-planner', provider: 'Anthropic' },
 ];
 
@@ -58,6 +61,8 @@ const OPEN_WEIGHT = [
 const ALIAS_EFFORTS = {
   'anthropic/claude-planner': ['low', 'medium', 'high'],
   'anthropic/claude-builder': [],
+  // Advertises five, keeps one beside tools. The pair that makes the two lists tell each other apart.
+  'openai/gpt-5.4': ['none', 'low', 'medium', 'high', 'xhigh'],
   // A SECOND alias that advertises none, so the empty-enum case is covered by a row that exists.
   // Leaving qwen out of this table entirely made its rows test the MISSING-LISTING path instead —
   // no row at all — which this menu deliberately treats as the opposite fact (see
@@ -67,6 +72,13 @@ const ALIAS_EFFORTS = {
   'deepseek/deepseek-v3': ['low', 'high'],
   'google/gemini-3.7-flash': ['low', 'medium', 'high', 'max'],
 };
+// The one alias measured to REFUSE its own advertised levels beside tools (ADR-0049's probe table).
+// Real name and real narrowing, because a placeholder here could only ever prove the field is
+// plumbed, never that the right list reaches the menu.
+const ALIAS_WITH_TOOLS = {
+  'openai/gpt-5.4': ['none'],
+};
+
 const ALIAS_ROWS = () => Object.keys(ALIAS_EFFORTS).map((alias) => ({
   id: `llm_alias:${alias.replace('/', '-')}`,
   kind: 'llm_alias',
@@ -74,6 +86,11 @@ const ALIAS_ROWS = () => Object.keys(ALIAS_EFFORTS).map((alias) => ({
   name: alias,
   capabilities: ['chat'],
   reasoning_efforts: ALIAS_EFFORTS[alias],
+  // Both lists, as the server sends them. Equal for every alias here except the one that exists to
+  // be unequal: `gpt-5.4` advertises levels it will not take beside function tools, which every
+  // Build turn carries. A fixture carrying only the wide list would let the Build menu read the
+  // wrong one and stay green.
+  reasoning_efforts_with_tools: ALIAS_WITH_TOOLS[alias] || ALIAS_EFFORTS[alias],
 }));
 
 let mode = 'auto';
@@ -241,6 +258,15 @@ for (const step of steps) {
     await SW.api.healthz();
     report.push({ step: 'health', fetched: fetched.slice() });
     continue;
+  }
+
+  if ('seedPick' in step) {
+    // A pick arriving from the SERVER rather than from a click, which is how a stored one reaches a
+    // reloaded Workbench — and the only way to hold a level the menu will not currently offer. The
+    // step runs before `setBuildMode`, whose status echo is what carries it into the store; the POST
+    // handler leaves `pickedEffort` alone unless the body names a `pick`, so the echo is faithful.
+    picked = step.seedPick.model;
+    pickedEffort = step.seedPick.effort || null;
   }
 
   if ('listing' in step) {

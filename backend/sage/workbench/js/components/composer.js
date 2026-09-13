@@ -346,6 +346,17 @@ window.SW = window.SW || {};
     // and a menu offering a level its alias refuses is a 400 on the turn rather than a wrong label.
     const aliasRow = (id) => aliases.find((a) => a.alias === id);
     const effortsFor = (id) => ((aliasRow(id) || {}).reasoning_efforts) || [];
+    // What BUILD may offer, which is a different question from the enum and has to be (ADR-0049).
+    // Every Build turn carries function tools, and `enforcement.py` drops a level the alias will not
+    // take beside them — `gpt-5.4` advertises five and keeps one. Offering the wide list here puts
+    // `gpt-5.4 · High` on the chip over a turn running at the alias's own default, which is this
+    // ticket's own defect arriving through the control it added (#295).
+    //
+    // A second READER of a distinction the server already draws, not a second rule: the narrowing
+    // is `EFFORTS_WITH_TOOLS` in `router/models.py`, published as its own field rather than copied
+    // into the browser, which ADR-0049 refuses by name. The `length > 0` rule below is still shared
+    // with the Chat chip and still has one copy.
+    const buildEffortsFor = (id) => ((aliasRow(id) || {}).reasoning_efforts_with_tools) || [];
     const efforts = effortsFor(effectiveModel);
 
     // What a chip's click actually did. In Build a mentioned Dataset file is an Attachment — the
@@ -672,7 +683,11 @@ window.SW = window.SW || {};
     const strandedLevel = (id) => {
       const alias = aliasRow(id);
       if (!alias || id !== buildModel || !buildEffort) return '';
-      return (alias.reasoning_efforts || []).includes(buildEffort) ? '' : buildEffort;
+      // Judged against the TOOL-carrying list, the same one the submenu offers and the same one the
+      // send path enforces. Against the enum, a level this alias drops beside tools reads as
+      // perfectly fine — `gpt-5.4` at `high` is in the enum and dropped on every Build turn — and
+      // the chip would name it over a turn running at the alias default (#295).
+      return (alias.reasoning_efforts_with_tools || []).includes(buildEffort) ? '' : buildEffort;
     };
     // The level the live pick is running at, where there is one the alias will take. Empty for no
     // pick, no level, a stranded level, or a mode that honours no pick at all.
@@ -738,7 +753,7 @@ window.SW = window.SW || {};
     // not to a control that forgets itself on restart (ADR-0017). Never on a barred row either: it
     // cannot be picked at all, so a submenu under it would be a door into a wall.
     const withEfforts = (row, id) => {
-      const levels = effortsFor(id);
+      const levels = buildEffortsFor(id);
       // A level standing against this row's model that the model will not take. Reachable without
       // anyone having done anything wrong: a deployment default can move under a live pick, and the
       // measured table can narrow when an alias is probed (#280). Dropped from the menu, the level

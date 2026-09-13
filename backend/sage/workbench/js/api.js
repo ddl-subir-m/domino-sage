@@ -162,6 +162,10 @@ async function fetchDominoListing() {
         kind: 'model_llm',
         capabilities: a.capabilities || [],
         reasoning_efforts: a.reasoning_efforts || [],
+        // The same list narrowed to what survives beside function tools (#295). Carried as well as
+        // the wide one, not instead of it: Chat's chip offers the enum and Build's menu offers this,
+        // because every Build turn carries tools and the send path enforces exactly this narrowing.
+        reasoning_efforts_with_tools: a.reasoning_efforts_with_tools || [],
         bindingKey: ['llm_alias', a.id],
       })),
       model_predictive: (res.model_apis || []).map((m) => ({

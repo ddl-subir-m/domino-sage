@@ -78,7 +78,7 @@ def test_the_open_weight_catalog_is_offered_as_extra_options():
     (group,) = [i for i in row["items"] if "group" in i]
     assert group["group"] == "Open-weight"
     keys = [c["key"] for c in group["children"]]
-    assert keys == ["deepseek/deepseek-v3", "qwen/qwen-2-5"]
+    assert keys == ["deepseek/deepseek-v3", "qwen/qwen-2-5", "openai/gpt-5.4"]
     assert PLAN_MODEL not in keys  # it is already a slot, one row up
 
 
@@ -140,6 +140,42 @@ def _children(row: dict, key: str) -> list | None:
             if candidate.get("key") == key:
                 return candidate.get("children")
     raise AssertionError(f"no row keyed {key}")
+
+
+def test_build_offers_the_levels_that_survive_beside_tools_not_the_enum():
+    """Every Build turn carries function tools, and the send path drops a level the alias will not
+    take beside them (`enforcement.py`, `reasoning_efforts_with_tools`). `gpt-5.4` advertises five
+    levels and keeps exactly one.
+
+    Offering the enum here is the ticket's own defect arriving through the control it added: nothing
+    marks `high` stranded, because it IS in the enum, so the chip would read `gpt-5.4 · High` over a
+    turn the shim has quietly put back on the alias's own default. The narrowing is the server's —
+    `EFFORTS_WITH_TOOLS` published as its own field — not a second copy of the table in the browser.
+    """
+    (row,) = _drawn([{"mode": "plan"}])
+
+    assert [c["label"] for c in _children(row, "openai/gpt-5.4")] == ["Model default", "None"]
+    # And the levels it advertises but cannot keep are absent, not merely reordered.
+    assert "High" not in [c["label"] for c in _children(row, "openai/gpt-5.4")]
+
+
+def test_a_level_the_alias_advertises_but_drops_beside_tools_is_stranded():
+    """The same narrowing, judged the other way round. A level picked while it was offered — or
+    arriving from a status poll — must be read against the TOOL-carrying list, or `gpt-5.4 · High`
+    reads as fine on a chip whose turn is running at the alias default.
+
+    This is the case the enum cannot see: `high` is perfectly valid for `gpt-5.4` on a request with
+    no tools, and there is no such thing as a Build turn without them.
+    """
+    (row,) = _drawn([{"mode": "plan",
+                      "seedPick": {"model": "openai/gpt-5.4", "effort": "high"}}])
+
+    # The chip does not name it: the turn will run at the alias's own default, not at High.
+    assert row["label"] == "openai/gpt-5.4"
+    # And the menu says so, rather than leaving a level nobody can see still standing.
+    stranded = _children(row, "openai/gpt-5.4")[-1]
+    assert stranded["label"] == "High — not accepted"
+    assert stranded["disabled"] is True
 
 
 def test_a_row_offers_the_levels_its_own_alias_advertises():

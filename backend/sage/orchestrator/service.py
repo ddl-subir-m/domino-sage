@@ -16261,6 +16261,12 @@ class Orchestrator:
                 # Recomputing there would offer the full measured table to the one alias whose
                 # every advertised level was probed and refused.
                 "reasoning_efforts": a.reasoning_efforts,
+                # The same list narrowed to what survives beside function tools (#295, ADR-0049).
+                # Beside the wide one rather than replacing it: Chat's chip offers the enum and
+                # Build's menu offers this, because every Build turn carries tools and the send path
+                # enforces exactly this narrowing. Derived on `LlmAlias`, so it cannot drift from the
+                # list above it and no producer has to remember it.
+                "reasoning_efforts_with_tools": a.reasoning_efforts_with_tools,
             }
             for a in self._resources.list_llm_aliases()
         ]

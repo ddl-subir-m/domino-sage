@@ -172,6 +172,71 @@ def test_an_unknown_level_is_not_refused_at_the_route(tmp_path: Path, monkeypatc
     assert orch.project().control.snapshot().picked_effort == "not-a-level"
 
 
+# ---------------------------------------------------------------- what the menu may offer
+
+
+def test_an_alias_publishes_both_effort_lists_and_the_narrow_one_is_never_wider():
+    """The server answers two questions because two are asked (#295, ADR-0049): which levels this
+    alias advertises, and which it keeps when the request also carries function tools. Chat's chip
+    reads the first, Build's menu the second, because every Build turn carries tools.
+
+    Derived on `LlmAlias` rather than passed in, so the eight places that build one cannot publish a
+    narrow list that disagrees with the wide one beside it — and the ninth, added later, gets it for
+    free rather than shipping `[]`, which the menu would read as "this alias offers no levels".
+    """
+    from sage.resources.provider import LlmAlias, alias_reasoning_efforts
+
+    def row(name: str) -> LlmAlias:
+        return LlmAlias("id", name, name, None, ["chat"], {}, None,
+                        alias_reasoning_efforts(name))
+
+    # The one alias measured to refuse its own advertised levels beside tools.
+    gpt = row("gpt-5.4")
+    assert gpt.reasoning_efforts == ["none", "low", "medium", "high", "xhigh"]
+    assert gpt.reasoning_efforts_with_tools == ["none"]
+
+    # And one that keeps everything, so the narrowing is not simply "always shorter".
+    gemini = row("domino/gemini-3.7-flash")
+    assert gemini.reasoning_efforts_with_tools == gemini.reasoning_efforts
+
+    # Never wider, for every alias the table knows — the invariant `router/models.py` holds its own
+    # two tables to, kept here by construction rather than by a second comparison.
+    for name in ("gpt-5.4", "domino/gpt-5.4", "domino/gemini-3.7-flash", "sonnet", "opus"):
+        wide, narrow = row(name).reasoning_efforts, row(name).reasoning_efforts_with_tools
+        assert set(narrow) <= set(wide), name
+
+
+def test_an_unprobed_alias_keeps_the_enum_the_gateway_published():
+    """The trap in narrowing by intersection. `reasoning_efforts_with_tools(name)` answers the
+    whole measured row when an alias has no tool-shape entry — and for an alias nobody probed that
+    row is EMPTY, so intersecting against it would hide every level the gateway actually published.
+
+    So the narrowing reads the tool-shape table directly and returns the list untouched where there
+    is no row, which is the same default the table itself takes.
+    """
+    from sage.resources.provider import LlmAlias, alias_efforts_with_tools
+
+    published = ["low", "high"]
+    assert alias_efforts_with_tools("nobody-probed-this", published) == published
+
+    unprobed = LlmAlias("id", "nobody-probed-this", "N", None, ["chat"], {}, None, published)
+    assert unprobed.reasoning_efforts_with_tools == published
+
+
+def test_the_resources_listing_carries_both_lists(tmp_path: Path, monkeypatch):
+    """The payload the Build menu actually reads. A field that exists on the dataclass and never
+    reaches `/api/resources` narrows nothing — the browser would fall back to the enum and the chip
+    would go on naming a level the shim drops."""
+    _client(tmp_path, monkeypatch)
+    orch = appmod.orchestrator
+
+    rows = {a["name"]: a for a in orch.list_llm_aliases()}
+
+    assert rows["gemini-3.7-flash"]["reasoning_efforts_with_tools"] == \
+        rows["gemini-3.7-flash"]["reasoning_efforts"]
+    assert "reasoning_efforts_with_tools" in rows["sonnet"]
+
+
 # ---------------------------------------------------------------- and it reaches the turn
 
 
