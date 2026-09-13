@@ -663,13 +663,21 @@ default doing unnamed work: it is passed explicitly, commented with what depends
 in `model_assignments_harness.mjs`. A default nobody knows is load-bearing is the same defect as a
 guard with no recorded expiry.
 
-**One window the mask does not close, accepted rather than fixed: #294.** A status poll writes the
-pick from the server on every read (`store.js`), and the orchestrator installs one of its own when a
-build turn escalates. So a pick can change behind the open drawer with no human act. It is left open
-because all three conditions must coincide — a lock holding, the row's assigned model barred, and an
-escalation pick that is itself unapproved — and because the fix belongs with the poll rather than
-here. If it is worth closing, the narrow move is to re-read when a poll changes the pick and the
-drawer is open, not to put the pick in the general re-read list.
+**One window the mask does not close, named here and decided under #294.** The orchestrator changes
+the pick with no human act when a build turn escalates (`service.py`,
+`project.control.pick(project.shim.catalog.plan)`), and nothing re-reads while the drawer stays open —
+the build watch re-reads sensitivity only once the turn has ENDED. So the rows can hold a
+pre-escalation answer for the length of an escalated step.
+
+Two conditions reach it, not three: a lock holding with `catalog.plan` unapproved, and the drawer open
+when an escalation fires. The escalation pick and the plan row's own assignment are the same value, so
+one fact serves both — which is worth stating because the first write-up of #294 counted them
+separately and concluded the window was narrower than it is. The browser has no signal to key off
+either: the turn-state payload carries no model.
+
+Decided fix: re-read on the build watch's own tick while the drawer is open. That is a refresh per
+tick on a surface that draws the answer, not a refresh per pick, so the decision above survives it
+intact.
 
 **`locked_runs_on` survives, for its name rather than its body.** With the pick restored it is
 `resolve` plus the empty-approved normalisation, and the reason it was not `resolve` in the first
