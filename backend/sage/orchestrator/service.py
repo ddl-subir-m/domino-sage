@@ -7090,7 +7090,17 @@ class Orchestrator:
         assigned by the time this runs, so an exception here would 500 whichever request happened
         to trigger the attach and then be cached away — every later call returns the Project, the
         migration never runs again in this process, and nothing says why. A bad directory name
-        under `.sage/threads/` (`safe_id` raises) or a full volume is enough."""
+        under `.sage/threads/` (`safe_id` raises) or a full volume is enough.
+
+        Kept blanket after #326 rather than narrowed, having been asked. It WAS hiding that fault
+        class from the open path: six readers in `ThreadStore` caught a pair too narrow to hold
+        `UnicodeDecodeError` (a seventh, `read_history`, catches nothing at all — #331), and
+        this catch is the only reason a non-UTF-8 `meta.json` degraded the Threads rail instead of
+        stopping `project()`. Narrowing it now buys nothing the guarded readers do not already
+        give, and would re-create #303's headline — a Project that will not open over one
+        unreadable sidecar. What makes the hiding affordable is that it is not silent:
+        `log.exception` puts the traceback and the raising site in the log, which is where #326
+        was read off. A shrug with a witness, not a shrug."""
         store = ThreadStore(project.record.path)
         swept = 0
         try:
@@ -19295,7 +19305,7 @@ class Orchestrator:
     def write_instructions(self, project: Project, content: str) -> None:
         """Record the user's project instructions, and render them where the agent reads them."""
         project.record.write_instructions(content)
-        self._splice_instructions(project)
+        self._splice_instructions(project, strict=True)
 
     def _voice_agents_md(self, project: Project) -> None:
         """Resolve the template's brand tokens in a freshly seeded AGENTS.md (#114).
@@ -19318,12 +19328,21 @@ class Orchestrator:
         if not agents.exists():
             return
         with self._agents_lock:   # same file as the two managed regions below
-            body = agents.read_text()
+            try:
+                body = agents.read_text()
+            except (ValueError, OSError):
+                # `ValueError` for the non-UTF-8 file, which arrives as `UnicodeDecodeError` and is
+                # not an `OSError` (#303). Unguarded, this was the LAST thing still stopping a
+                # Project opening: it runs before `_splice_instructions` on the same file. Voicing
+                # is cosmetic — a file we cannot read keeps the words it has, and the alternative
+                # to leaving it alone is rewriting a file whose bytes we could not decode.
+                log.warning("workspace: leaving %s as it is, it could not be read", agents)
+                return
             voiced = brand.text(body)
             if voiced != body:
                 agents.write_text(voiced)
 
-    def _splice_instructions(self, project: Project) -> None:
+    def _splice_instructions(self, project: Project, *, strict: bool = False) -> None:
         """Render the Project's instructions into the app's AGENTS.md as a managed block, preserving
         the template body and the attached-data block. No instructions removes the block.
 
@@ -19334,14 +19353,38 @@ class Orchestrator:
         agents = project.workspace.path / "AGENTS.md"
         if not agents.exists():
             return  # no app yet, or one with no AGENTS.md — nothing to render into
-        content = project.record.read_instructions()
+        try:
+            content = project.record.read_instructions(strict=True)
+        except (ValueError, OSError):
+            # Refusing loses nothing; shrugging loses the instructions. `content` would come back
+            # `""`, `block` would be `""`, and the splice below would strip the rendered block out
+            # of AGENTS.md and save the file — so one bad byte in the sidecar would durably delete
+            # the guidance the person wrote, silently, from the file the agent actually reads. The
+            # block already in AGENTS.md is the last good render of it, so leave it standing.
+            log.warning("project instructions: %s could not be read, leaving AGENTS.md as it is",
+                        project.record.instructions_path)
+            if strict:
+                raise
+            return
         if content:
             block = (f"{self._INSTR_BEGIN}\n{self._INSTR_HEAD}\n\n{self._INSTR_FRAME}\n\n"
                      f"{content}\n{self._INSTR_END}")
         else:
             block = ""
         with self._agents_lock:  # serialize with _write_agents_data_block — same file, distinct regions
-            before = agents.read_text()
+            try:
+                before = agents.read_text()
+            except (ValueError, OSError):
+                log.warning("project instructions: leaving %s as it is, it could not be read", agents)
+                if strict:
+                    # `strict` is the difference between OPENING a Project and SAVING to it. On the
+                    # open path, leaving the file alone is the right shrug. On a save the person
+                    # typed the text and is waiting to be told what happened: returning quietly
+                    # here let `PUT /api/project/instructions` answer `{"ok": True}` while the
+                    # block the agent actually reads was never touched, which is a worse failure
+                    # than the crash it replaced — it is the product saying something untrue.
+                    raise
+                return
             existing = before
             b, e = existing.find(self._INSTR_BEGIN), existing.find(self._INSTR_END)
             if b != -1 and e != -1:
