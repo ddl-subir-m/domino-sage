@@ -9,7 +9,10 @@
 // a plain object, so calling the component returns tree data. Hooks are real per mount, because the
 // toggle IS a hook — pressing it and drawing again is the whole of what this asks about.
 //
-// Input on stdin: `{ "act": "drawn" | "press" | "press-while-collapsed" | "press-and-back" }`.
+// Input on stdin: `{ "act": "drawn" | "press" | "press-while-collapsed" | "press-and-back"
+// | "menu" | "dates" }`. The last two are other claims about the same rows — the rename box
+// (#216) and the stamp that tells two plans for one app apart (#278) — and they share this
+// harness rather than copy its sandbox.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -132,9 +135,16 @@ const planRows = (nodes) => nodes
     const drawn = flatten(n);
     const name = drawn.find((d) => (d.p || {}).className === 'sw-res-name');
     const sub = drawn.find((d) => (d.p || {}).className === 'sw-res-sub');
+    // The tip over the subtitle, not the subtitle again: `.sw-res-sub` ellipsises, and since #278
+    // the part of a plan's subtitle that tells two lookalike rows apart is its TAIL. A row that
+    // truncates the one fact it was given to carry is the narrow-width failure, so the tip is a
+    // claim rather than polish.
+    const subTip = drawn.find((d) => d.t === 'Tooltip'
+      && (d.c || []).flat(Infinity).some((ch) => ch && ch.p && ch.p.className === 'sw-res-sub'));
     return {
       name: name ? text(name) : '',
       subtitle: sub ? text(sub) : '',
+      subtitleTip: subTip ? ((subTip.p || {}).title || null) : null,
       live: n.p.className.includes('is-live'),
     };
   });
@@ -186,6 +196,57 @@ if (act === 'menu') {
     okText: opened.okText,
     defaultValue: (opened.content.p || {}).defaultValue,
   };
+} else if (act === 'dates') {
+  // Two plans for one app, the second proposed after the first was built (#278). The planner writes
+  // the same opening sentence both times, so `caption` — and therefore the row's name — is
+  // identical; approve the change too and the review state stops differing as well. Whatever tells
+  // the rows apart has to come from the stamps, which are the only thing left.
+  //
+  // Two pairs, because the spacing is the claim. Ten minutes apart is what a plan-build-plan round
+  // really looks like, and it is the spacing a coarse stamp loses first: `relativeTime` rounds to
+  // the hour past the first hour, so both of the near pair read `2 hours ago`. The old pair is the
+  // second place it collapses — past seven days it is a bare date, and two plans written on one
+  // afternoon a week ago land on the same one.
+  //
+  // Anchored to the reader's own midnight rather than offset back from `Date.now()`, so the stamps
+  // are the same stamps whatever time the suite runs at. An offset fixture drifts across midnight:
+  // `now - 2h` is yesterday for the first two hours of the day, and the old pair would straddle two
+  // dates for the forty minutes a day its offsets span one, which is the window where this test
+  // would pass because the DATES differ and not because the clock separates them. Both of the old
+  // pair sit on one afternoon for that reason — it is the case the claim is about.
+  const at = (daysAgo, hours, minutes) => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - daysAgo);
+    d.setHours(hours, minutes, 0, 0);
+    return d.toISOString();
+  };
+  SW.store.set({
+    resourceGroups: {}, resourcesLoading: false, resourceErrors: {},
+    plans: [
+      // Ids run down the list because that is how they are allocated — one per document, in the
+      // order they were written — and the panel is handed them newest first.
+      { id: '007', title: '', caption: 'A desk exposure dashboard.', status: 'approved',
+        appId: 'app_a', archived: false, createdAt: at(1, 14, 10) },
+      { id: '006', title: '', caption: 'A desk exposure dashboard.', status: 'approved',
+        appId: 'app_a', archived: false, createdAt: at(1, 14, 0) },
+      // Inside the week but past yesterday, the one phrase the two pairs never produce.
+      { id: '005', title: '', caption: 'A plan from midweek.', status: 'approved',
+        appId: 'app_a', archived: false, createdAt: at(3, 14, 0) },
+      { id: '004', title: '', caption: 'A consumption dashboard.', status: 'approved',
+        appId: 'app_a', archived: false, createdAt: at(8, 14, 40) },
+      { id: '003', title: '', caption: 'A consumption dashboard.', status: 'approved',
+        appId: 'app_a', archived: false, createdAt: at(8, 14, 0) },
+      // No stamp at all, and a stamp nothing can parse. Documents were not backfilled when the
+      // field arrived, and the value is read out of a per-Project file that survives every rebuild.
+      { id: '002', title: '', caption: 'A plan from before the stamp.', status: 'draft',
+        appId: '', archived: false },
+      { id: '001', title: '', caption: 'A plan with a broken stamp.', status: 'draft',
+        appId: '', archived: false, createdAt: 'the day before yesterday' },
+    ],
+    activePlanId: '007', apps: [{ id: 'app_a', name: 'Desk exposure' }],
+  });
+  report.rows = planRows(panel());
 } else if (act === 'drawn') {
   const nodes = panel();
   report.head = head(nodes);

@@ -633,6 +633,45 @@ window.SW = window.SW || {};
       // hidden-but-highlighted row is the worst of both, and the Conversation's own plan card is
       // the surface that goes on showing it.
       const live = !plan.archived && livePlanId && String(plan.id) === livePlanId;
+      // What the row says about itself under its name. Two plans for one app are the case this has
+      // to answer (#278): the Build gate writes a second document rather than redrafting the first
+      // (#277), both describe the same app, so the planner opens both with the same sentence and
+      // `caption` IS that sentence until somebody types a title (#216). Approve the change too and
+      // the rows stop differing at all — which is how this was reported, as "two different plans
+      // with the same name". The stamp separates them, and it was on the document all along.
+
+      // Read before the sentence is built, because the guard below is on what the stamp FORMATS to
+      // rather than on whether the document holds one: a stamp nothing can parse is a stamp, and
+      // `Created ` with nothing after it is the shape that would reach the row.
+      const writtenAt = SW.util.dayAndTime(plan.createdAt);
+      const subtitle = [
+        // First, because it outranks the review state while the row is only on screen at all
+        // because somebody asked to see what was put away.
+        plan.archived ? 'Archived' : '',
+        // Ahead of the status and the app name both, and the position is the fix rather than a
+        // detail of it. `.sw-res-sub` is one nowrap line with an ellipsis, so a narrow rail cuts
+        // from the end — and the segments these two rows SHARE are exactly the ones a reader can
+        // afford to lose, while the part that differs is the clock at this segment's own tail.
+        // Behind the status and the app name it sat about fifty characters in and went first; in
+        // front of them the minutes land inside twenty-eight, which the rail has. The verb stays
+        // because the row holds one stamp and a bare time would not say which.
+        // `dayAndTime` rather than `relativeTime`, which every other event time in the
+        // shell uses: `relativeTime` rounds to the hour and then to the day, and two plans for one
+        // app are written minutes apart, so an hour later both rows would read `2 hours ago` and be
+        // identical again. `createdAt` rather than `updatedAt`, because what tells a change plan
+        // from the plan it follows is when it was written, not when it was last touched. A document
+        // can hold no stamp — nothing backfilled them — or a stamp nothing can parse, and
+        // `dayAndTime` answers `''` to both, so the row says less rather than leaving a bare
+        // separator or reading `Created Invalid Date`.
+        writtenAt ? `Created ${writtenAt}` : '',
+        live && inBuild && projectPlan && projectPlan.status === 'built'
+          ? 'Built'
+          : (status ? status.label : ''),
+        // Which app, because a plan is app-specific and this list is the Project's (ADR-0008). A
+        // plan drafted in Chat has no app yet — the reference is stamped on at the handoff — and
+        // saying so is the answer somebody looking for their draft came for.
+        owner || (plan.appId ? '' : 'Not built yet'),
+      ].filter(Boolean).join(' · ');
       return {
         id: plan.id,
         name: plan.caption || plan.title || 'Untitled plan',
@@ -641,18 +680,12 @@ window.SW = window.SW || {};
         title: plan.title || '',
         kind: 'plan',
         live,
-        // Which app, because a plan is app-specific and this list is the Project's (ADR-0008). A
-        // plan drafted in Chat has no app yet — the reference is stamped on at the handoff — and
-        // saying so is the answer somebody looking for their draft came for.
-        subtitle: [
-          // First, because it outranks the review state while the row is only on screen at all
-          // because somebody asked to see what was put away.
-          plan.archived ? 'Archived' : '',
-          live && inBuild && projectPlan && projectPlan.status === 'built'
-            ? 'Built'
-            : (status ? status.label : ''),
-          owner || (plan.appId ? '' : 'Not built yet'),
-        ].filter(Boolean).join(' · '),
+        subtitle,
+        // The same sentence again as the tip over it, for the rail narrow enough to cut even a
+        // stamp this far forward. It repeats the row whenever the rail is wide, which is the cost:
+        // a row cannot measure itself, so the choice is a tip that is sometimes redundant or a
+        // stamp that is sometimes unreadable, and an unreadable stamp is this ticket.
+        subtitleFull: subtitle,
       };
     });
 
