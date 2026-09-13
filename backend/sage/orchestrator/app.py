@@ -2062,11 +2062,13 @@ def sensitivity_state(conversation: str = "") -> JSONResponse:
         # for the same reason `locked` is — a read that threw claims nothing.
         #
         # `unavailable` is what says WHICH of those two this is, and it exists for one caller: the
-        # drawer's 2s cadence stops on a landed answer that says the lock is off, because that is a
-        # settled fact about the deployment. This answer is not that fact and is not settled — it is
-        # one exception on one read — so without the flag a single transient Domino failure would
-        # stop the cadence for the life of the drawer, which is the outcome the gate exists to
-        # prevent. It deliberately does NOT change what anyone else does with this payload: the
+        # drawer's 2s cadence skips every read once a landed answer says the lock is off, because
+        # that is a settled fact about the deployment. This answer is not that fact and is not
+        # settled — it is one exception on one read — so without the flag a single transient Domino
+        # failure would silence the cadence for the life of the drawer AND drop a standing lock from
+        # the drawer on every tick. `refreshSensitivity` refuses to install an answer carrying it,
+        # which is where both of those are closed. It deliberately does NOT change what anyone else
+        # does with this payload: the
         # picker failing OPEN here is the documented trade above, and the lock still holds in the
         # router and at publish whatever this answers.
         return JSONResponse(content={"enabled": False, "locked": False, "group": "",

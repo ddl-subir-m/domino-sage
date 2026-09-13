@@ -23,8 +23,10 @@
 //                   orchestrator picks and nothing writes the mirror.
 //   `chatPicked`  — serve the Chat half of the pick instead of the Build half, which is the fork
 //                   the `ask` row takes
-//   `failFromBoot` — how many sensitivity reads fail before one lands, counted from the setup, so
+//   `failFromBoot` — how many sensitivity reads REJECT before one lands, counted from the setup, so
 //                   the drawer opens with `state.sensitivity` still NULL
+//   `unavailableFor` / `unavailableFromOpen` — how many reads answer 200 with the route's
+//                   never-500 payload, armed after the drawer opens or from its own open read
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -303,6 +305,7 @@ for (const step of steps) {
   const buildWatch = buildWatchTimers();
   sensitivityReads = 0;
 
+  if (step.unavailableFromOpen) unavailableFor = step.unavailableFromOpen;
   if (step.open !== false) {
     registrar = 'openAssignments';
     await SW.store.openAssignments(true);
@@ -312,14 +315,17 @@ for (const step of steps) {
   const readsOnOpen = sensitivityReads;
   const runsOnOpen = ((SW.store.get().sensitivity || {}).slot_models || {}).plan || null;
   const drawnOnOpen = drawnPlanModel();
+  const lockedOnOpen = !!(SW.store.get().sensitivity || {}).locked;
 
   // The escalation, fired with the drawer already open and no human act behind it.
   escalated = true;
   // Armed HERE and not with the other step state, so the failures land on the TICKS. Set during
   // setup they were spent on `loadBuild`'s own read before the drawer opened, and a plant on the
   // gate they exist to test stayed green — the fixture answered every tick correctly, so there was
-  // nothing for the assertion to see.
-  unavailableFor = step.unavailableFor || 0;
+  // nothing for the assertion to see. `unavailableFromOpen` is the other arrangement and it is a
+  // different question: there the drawer's OWN read is the one the server could not answer, which
+  // is what decides whether an unusable answer counts as one having landed.
+  if (!step.unavailableFromOpen) unavailableFor = step.unavailableFor || 0;
   sensitivityReads = 0;
   appReads = 0;
   notifies = 0;
@@ -333,8 +339,9 @@ for (const step of steps) {
     readsOnOpen,
     runsOnOpen,
     drawnOnOpen,
+    lockedOnOpen,
     readsWhileOpen: sensitivityReads,
-    lockedOnOpen: !!(SW.store.get().sensitivity || {}).locked,
+    lockedAfterTicks: !!(SW.store.get().sensitivity || {}).locked,
     notifiesWhileOpen: notifies,
     drawnAfterTicks: drawnPlanModel(),
     drawnAskAfterTicks: drawnModel('ask'),

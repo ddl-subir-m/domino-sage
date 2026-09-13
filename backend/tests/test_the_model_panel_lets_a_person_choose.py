@@ -212,6 +212,12 @@ _LOCK = {
     "approved": ["coder", "opus"], "datasets": ["sales-2026"], "refusal": None,
     "model": "opus", "chat_model": "coder",
     "slot_models": {"plan": "opus", "implement": "coder", "ask": "coder"},
+    # Sent on every answer since #294, so a fixture that omits them describes a payload no
+    # deployment produces — and because the row asks the SERVED flag and falls through to the
+    # browser's mirror only when the key is ABSENT, omitting them here put every assertion in this
+    # file on the legacy branch. False by default: a pick is the exception, and the two fixtures
+    # that mean one say so.
+    "picked": False, "chat_picked": False,
     "reason": "declared",
 }
 

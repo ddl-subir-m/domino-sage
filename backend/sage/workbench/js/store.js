@@ -944,6 +944,19 @@ window.SW = window.SW || {};
         if (repairAppScope && SW.util.isLocked(read) && !state.activeApp) await loadAppList();
         if (((state.thread && state.thread.id) || '') !== asked) return;
         if (seq <= sensitivityApplied) return;
+        // A read the server could not answer is not an answer, and it is refused HERE rather than
+        // at each reader. The route never 500s: it reports a thrown read as a 200 carrying the
+        // unlocked shape, so installing it drops a standing lock — and under a 2s cadence it drops
+        // it over and over, turning a once-per-scope-load exposure into one per tick. That is the
+        // stale-"unlocked" direction this file calls the dangerous one.
+        //
+        // Refused here because three readers were each learning to un-do the same encoding: this
+        // assignment, the drawer's cadence gate, and its app-records repair. One place knows the
+        // answer is not usable, so `state.sensitivity` never holds one and nobody downstream needs
+        // the flag. Treated exactly like a rejected fetch, including leaving `sensitivityApplied`
+        // where it is: the last answer stands, and the route's own trade is untouched, because with
+        // nothing yet landed this leaves `null` and `isLocked(null)` is the fail-open it wants.
+        if (read && read.unavailable) return;
         sensitivityApplied = seq;
         // An answer that says exactly what the last one said is not a state change. Every other
         // caller here fires once per event, so this never mattered until the drawer's cadence made
@@ -3515,16 +3528,14 @@ window.SW = window.SW || {};
         // the same: its rows draw no lock, so there is nothing here to keep true, and a lock armed
         // from a second Workbench mid-drawer is a window this does not claim (the ones it does are
         // about a moved PICK).
-        // FOUND IN REVIEW, and it is the same gap one layer out: the first version of this told a
-        // LANDED answer from a `null` that never landed, and the route's never-500 handler answers a
-        // thrown read with a 200 carrying the unlocked shape. So an exception inside
-        // `sensitivity_state` landed as "this deployment has no lock", stopped the cadence for the
-        // life of the drawer, and never retried — the stale-"unlocked" outcome this gate exists to
-        // prevent, reached through the one shape it could not read. `unavailable` is the server
-        // saying which of the two it is. What the payload does elsewhere is untouched: the picker
-        // failing open on a failed read is that route's documented trade.
+        // Skips every read once a LANDED answer says the lock is off — a settled fact about the
+        // deployment — and keeps asking while nothing has landed. It does not need to know about
+        // the route's never-500 payload: `refreshSensitivity` refuses to install one, so
+        // `state.sensitivity` is null or a real answer and never the third thing. That was two
+        // readers ago a check here, and moving it to the one place that decides what lands is what
+        // stopped this gate, the repair below, and the assignment itself each carrying a copy.
         const seen = state.sensitivity;
-        if (seen && !seen.unavailable && !SW.util.isLocked(seen)) return;
+        if (seen && !SW.util.isLocked(seen)) return;
         // FOUND IN REVIEW: the repair is keyed on whether an answer has LANDED, not on whether the
         // caller repeats. The argument for turning it off — "`openAssignments` already took this
         // read once with the repair on" — assumed that read succeeded, and `refreshSensitivity`

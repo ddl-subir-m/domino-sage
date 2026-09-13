@@ -135,9 +135,10 @@ def test_a_lock_read_that_never_landed_is_retried_rather_than_read_as_unlocked()
     """
     (run,) = _ticked([{"watch": "stream", "locked": True, "open": True,
                        "ticks": 4, "failFromBoot": 3}])
-    assert run["runsOnOpen"] is None, "the premise: no lock on screen when the drawer opened"
+    assert run["lockedOnOpen"] is False, "the premise: nothing had landed when the drawer opened"
+    assert run["runsOnOpen"] is None
     assert run["readsWhileOpen"] == 4
-    assert run["lockedOnOpen"] is True
+    assert run["lockedAfterTicks"] is True
     assert run["runsAfterTicks"] == "gpt-5.4"
 
 
@@ -268,6 +269,35 @@ def test_a_read_the_server_could_not_answer_does_not_read_as_a_deployment_with_n
         {"watch": "stream", "locked": False, "open": True, "ticks": 4},
     ])
     assert broke["readsWhileOpen"] == 4, "two failures, and it was still asking on the fourth tick"
-    assert broke["lockedOnOpen"] is True and broke["drawnAfterTicks"] == "gpt-5.4"
+    assert broke["lockedAfterTicks"] is True and broke["drawnAfterTicks"] == "gpt-5.4"
+    # And the standing lock was never dropped on the way through. One notify, for the one answer
+    # that actually moved — not two, which is the payload being installed and then corrected.
+    assert broke["notifiesWhileOpen"] == 1
     # And the settled fact still stops it, or the gate would just be gone.
     assert really_unlocked["readsWhileOpen"] == 0
+
+
+def test_an_unusable_answer_is_refused_where_it_would_be_installed_not_at_each_reader():
+    """FOUND IN REVIEW, and it is the round that changed the shape rather than filling a case.
+
+    `unavailable` started as a flag the cadence gate read. Three readers needed it: the gate, the
+    app-records repair, and the assignment in `refreshSensitivity` itself — which was still
+    installing the never-500 payload over a standing lock, so an outage unlocked the drawer every
+    2s instead of once per scope load. Patching each reader was the wrong shape; the route encodes
+    "I could not answer" as "there is nothing to answer", and exactly one place should un-do that.
+
+    It is refused where answers land, so `state.sensitivity` is null or a real answer and never the
+    third thing. Measured on the arrangement that reaches both readers at once — nothing landed at
+    boot, and the drawer's own read is one the server could not answer:
+
+        with the refusal:     appReads 1, readsWhileOpen 4, recovers locked
+        without it:           appReads 0, readsWhileOpen 1, never recovers
+    """
+    (run,) = _ticked([{"watch": "stream", "locked": True, "open": True,
+                       "ticks": 4, "failFromBoot": 3, "unavailableFromOpen": 2}])
+    assert run["lockedOnOpen"] is False, "the premise: the drawer opened with nothing landed"
+    # The cadence is still asking on the fourth tick rather than having stopped on tick one.
+    assert run["readsWhileOpen"] == 4
+    # And the #264 repair still runs, because an unusable answer is not one having landed.
+    assert run["appReads"] == 1
+    assert run["lockedAfterTicks"] is True and run["drawnAfterTicks"] == "gpt-5.4"
