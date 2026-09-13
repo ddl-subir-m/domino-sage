@@ -990,8 +990,21 @@ window.SW = window.SW || {};
             : h(React.Fragment, null, 'It matched values in ', ...list, '. ',
                 survives
                   ? 'Nothing else this turn read is affected.'
-                  : 'That was everything this turn read, so this question '
-                    + "can't be answered from what's left.")),
+                  // What the button buys, said out loud. Nothing survives this turn, so the offer
+                  // is not about this question at all — it is ADR-0022's premise, that the refusal
+                  // outlives the turn and would refuse every later one. Without this line the
+                  // person reads a dead question and a button with no stated benefit (#288).
+                  : "That was everything this turn read, so this question can't be answered "
+                    + "from what's left. Stop sending "
+                    // Singular or plural with the button beneath, which counts carriers the same
+                    // way. Its NOUN is a separate, older question: it says "files" for a set that
+                    // holds none, in this arm and in the `survives` one alike (#292).
+                    + (carriers.length > 1 ? 'them' : 'it')
+                    + ' and this conversation will work again — ask something else'
+                    // Only offer the attachment when a file is what went. The same branch draws
+                    // several matched messages with no file anywhere, and telling that person to
+                    // attach a different one names something their conversation never had.
+                    + (carriers.some((c) => c.is_file) ? ', or attach a different file.' : '.'))),
         h('div', { className: 'sw-withhold-scope' },
           'Applies to this conversation. A new conversation starts fresh.'),
         block.live
