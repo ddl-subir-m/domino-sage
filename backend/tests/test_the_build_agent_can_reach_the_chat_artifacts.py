@@ -8,20 +8,20 @@ spec and the Artifacts are background, so the build still worked and nobody saw 
 
 Chat's own workdir has had a link into `examples/` since it was written (`ensure_chat_workdir`),
 for this exact reason. This is the app directory getting the same treatment: a relative symlink
-`apps/<appId>/examples -> ../../examples`, ensured at the `_refresh_history_archive` seam, which is
-the one place that runs before every turn's baseline AND at the tail of Reset.
+`apps/<appId>/examples/<threadId> -> ../../../examples/<threadId>`, ensured at the
+`_refresh_history_archive` seam, which is the one place that runs before every turn's baseline AND
+at the tail of Reset.
 
 The link must never be committed — it points outside the app tree, so a fresh clone of a repo that
 carried it would get a dangling link. The rule that keeps it out is `/examples`, anchored and with
-NO trailing slash, and that detail is load-bearing: git records a symlink as a symlink rather than
-as a directory, and `examples/` matches directories only, so the trailing-slash form silently
-commits the link. `test_the_link_is_ignored_by_a_rule_that_actually_matches_a_symlink` is what
-holds that.
+NO trailing slash. The app keeps `examples/` as a real directory whose children are symlinks, and
+the rule keeps the directory and its per-Thread links out of the app's commit.
 """
 from __future__ import annotations
 
 import ast
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -113,6 +113,8 @@ def _unlinked(app: Path) -> None:
     link = app / "examples"
     if link.is_symlink():
         link.unlink()
+    elif link.is_dir():
+        shutil.rmtree(link)
     gitignore = app / ".gitignore"
     kept = [ln for ln in gitignore.read_text().splitlines() if ln.strip() != "/examples"]
     gitignore.write_text("".join(ln + "\n" for ln in kept))
@@ -143,13 +145,33 @@ def test_a_confirmed_handoff_leaves_the_artifacts_readable_from_the_build_agents
 
     orch.draft_handoff_plan(tid)
     orch.confirm_handoff(tid, {"resources": False, "artifacts": True, "transcript": False})
-    list(orch.build_stream("build it"))
+    list(orch.build_stream("build it", conversation=tid))
 
     app = orch.project(start_preview=False).workspace.path
     assert app.parent.parent == root                      # the agent stands two levels down
     reached = app / "examples" / tid / "revenue.png"
     assert reached.read_bytes() == original.read_bytes()  # the path the digest names, from here
-    assert (app / "examples").is_symlink()                # linked, not copied (dataset_probe.py:140)
+    assert (app / "examples" / tid).is_symlink()          # linked, not copied (dataset_probe.py:140)
+
+
+def test_a_confirmed_handoff_does_not_link_other_threads_artifacts(tmp_path: Path):
+    """The digest names `examples/<this Thread>/...`; the link must not make another Thread's
+    `examples/<other Thread>/...` readable from the same app."""
+    orch, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN),
+                                  Turn(text="Built it.", writes={"src/App.tsx": "// built\n"})])
+    tid = orch.create_thread()["id"]
+    other = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "build me a desk dashboard"))
+    original = _artifact(root, tid)
+    _artifact(root, other, "private.png")
+
+    orch.draft_handoff_plan(tid)
+    orch.confirm_handoff(tid, {"resources": False, "artifacts": True, "transcript": False})
+    list(orch.build_stream("build it", conversation=tid))
+
+    app = orch.project(start_preview=False).workspace.path
+    assert (app / "examples" / tid / "revenue.png").read_bytes() == original.read_bytes()
+    assert not (app / "examples" / other / "private.png").exists()
 
 
 def test_an_app_seeded_before_this_change_gains_the_link_on_its_next_turn(tmp_path: Path):
@@ -159,7 +181,7 @@ def test_an_app_seeded_before_this_change_gains_the_link_on_its_next_turn(tmp_pa
     _unlinked(app)
     _artifact(root)
 
-    list(orch.build_stream("build me a desk dashboard"))
+    list(orch.build_stream("build me a desk dashboard", conversation="thr_a"))
 
     assert (app / "examples" / "thr_a" / "revenue.png").read_bytes() == ARTIFACT
     assert "/examples" in (app / ".gitignore").read_text().split()
@@ -174,20 +196,22 @@ def test_the_non_streaming_build_turn_gets_the_link_too(tmp_path: Path):
     _unlinked(app)
     _artifact(root)
 
-    assert orch.build("add a desk table")["ok"] is True
+    assert orch.build("add a desk table", conversation="thr_a")["ok"] is True
 
     assert (app / "examples" / "thr_a" / "revenue.png").read_bytes() == ARTIFACT
 
 
 def test_the_link_is_relative_so_it_survives_the_volume_moving(tmp_path: Path):
-    """`../../examples`, not `/mnt/code/examples`. The Project is a git repo that gets cloned into
-    another builder's volume, and an absolute link would point at the first builder's path."""
+    """`../../../examples/<threadId>`, not `/mnt/code/examples/<threadId>`. The Project is a git
+    repo that gets cloned into another builder's volume, and an absolute link would point at the
+    first builder's path."""
     orch, _root = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.build_conversation = "thr_a"
     app = project.workspace.path
     orch._ensure_examples_link(project)
 
-    assert (app / "examples").readlink() == Path("../../examples")
+    assert (app / "examples" / "thr_a").readlink() == Path("../../../examples/thr_a")
 
 
 # ---- creating it must not look like the agent writing ----------------------------------------
@@ -201,7 +225,7 @@ def test_a_read_only_turn_that_creates_the_link_still_passes_the_gate(tmp_path: 
     _unlinked(app)   # so this turn does BOTH writes: the rule and the link
     _artifact(root)
 
-    events = list(orch.build_stream("build me a desk dashboard"))
+    events = list(orch.build_stream("build me a desk dashboard", conversation="thr_a"))
 
     done = [e for e in events if e["type"] == "done"]
     # A gated turn resolves before the typecheck loop, so "awaiting approval" IS the clean exit;
@@ -224,7 +248,7 @@ def test_a_question_turn_that_creates_the_link_discards_nothing(tmp_path: Path):
     _unlinked(app)
     _artifact(root)
 
-    events = list(orch.build_stream("what charting library does this use?"))
+    events = list(orch.build_stream("what charting library does this use?", conversation="thr_a"))
 
     assert [e for e in events if e["type"] == "done"][-1]["decision"] == "answered"
     assert (app / "src" / "App.tsx").read_text() == "// built\n"   # not discarded
@@ -241,11 +265,11 @@ def test_reset_leaves_the_link_working_when_the_next_turn_runs(tmp_path: Path):
                                   Turn(text="Built it.", writes={"src/App.tsx": "// built\n"}),
                                   Turn(text=_PLAN)])
     orch.project(start_preview=False)   # attach and seed, without starting Vite
-    list(orch.build_stream("build me a desk dashboard"))
-    list(orch.approve_stream())
+    list(orch.build_stream("build me a desk dashboard", conversation="thr_a"))
+    list(orch.approve_stream(conversation="thr_a"))
     app = orch.project(start_preview=False).workspace.path
     _artifact(root)
-    assert (app / "examples").is_symlink()
+    assert (app / "examples" / "thr_a").is_symlink()
 
     orch.reset_app()
 
@@ -254,7 +278,7 @@ def test_reset_leaves_the_link_working_when_the_next_turn_runs(tmp_path: Path):
     # ...and still working on the turn that follows, which is what the criterion actually names.
     # Reset cleared `built`, so this turn is gated and read-only — the case that would have
     # reported a spurious violation if the link were being re-made after the baseline.
-    events = list(orch.build_stream("build me a desk dashboard"))
+    events = list(orch.build_stream("build me a desk dashboard", conversation="thr_a"))
     assert [e for e in events if e["type"] == "done"][-1]["decision"] == "awaiting approval"
     assert (app / "examples" / "thr_a" / "revenue.png").read_bytes() == ARTIFACT
     # And the Artifacts themselves are the Project's, so Reset never had a claim on them.
@@ -263,10 +287,8 @@ def test_reset_leaves_the_link_working_when_the_next_turn_runs(tmp_path: Path):
 
 # ---- git ---------------------------------------------------------------------------------------
 
-def test_the_link_is_ignored_by_a_rule_that_actually_matches_a_symlink(tmp_path: Path):
-    """The trailing slash is the trap. Git does not follow a symlink, so it records this one as a
-    symlink and not as a directory — `/examples/` would match nothing and `git add -A` would commit
-    a link pointing outside the app tree, which a fresh clone resolves to nothing.
+def test_the_link_is_ignored_by_the_app_examples_rule(tmp_path: Path):
+    """The app-local `examples/` directory holds symlinks that point outside the app tree.
 
     Asserted at the two levels it has to hold: the link is not staged, and git never descends
     through it to stage the Artifacts twice. The template's own rule is stripped first, so what is
@@ -282,6 +304,7 @@ def test_the_link_is_ignored_by_a_rule_that_actually_matches_a_symlink(tmp_path:
     # ADR-0045). Turned on so the second half of the claim below has something to be about.
     project.record.set_kept_rows(True)
     orch._apply_chart_ignore(project.record)
+    project.build_conversation = "thr_a"
     orch._ensure_examples_link(project)
 
     _git(root, "add", "-A")
@@ -323,6 +346,7 @@ def test_the_stop_buttons_revert_does_not_see_the_link(tmp_path: Path):
     snap = TurnSnapshot(app)
 
     # The link exists before the turn's baseline, exactly as the seam puts it there.
+    project.build_conversation = "thr_a"
     orch._ensure_examples_link(project)
     before = snap.working_tree_hash()
     snap.commit_before_turn()
@@ -338,7 +362,7 @@ def test_the_stop_buttons_revert_does_not_see_the_link(tmp_path: Path):
     assert (app / "src" / "App.tsx").read_text() == "export default function App() { return null }\n"
     assert not (app / "src" / "Desk.tsx").exists()
     # The revert left the link alone, and left the Project's Artifacts alone through it.
-    assert (app / "examples").is_symlink()
+    assert (app / "examples" / "thr_a").is_symlink()
     assert original.read_bytes() == ARTIFACT
     # The link is not in what the snapshot captures, so the revert neither restored nor removed it.
     # The rule write happened above, before `before` was taken — the seam's own ordering, and the
@@ -357,14 +381,15 @@ def test_the_symlink_itself_is_invisible_to_git(tmp_path: Path):
     app = project.workspace.path
     # Reach the steady state first: the rule's own write is the OTHER half of the claim, and the
     # test below owns it. The template cannot ship the rule (#222), so every app writes it once.
+    project.build_conversation = "thr_a"
     orch._ensure_examples_link(project)
-    (app / "examples").unlink()
+    shutil.rmtree(app / "examples")
     snap = TurnSnapshot(app)
     before = snap.working_tree_hash()
 
     orch._ensure_examples_link(project)
 
-    assert (app / "examples").is_symlink()
+    assert (app / "examples" / "thr_a").is_symlink()
     assert snap.working_tree_hash() == before
 
 
@@ -385,6 +410,7 @@ def test_the_ignore_rules_write_is_why_the_seam_runs_before_the_baseline(tmp_pat
     snap = TurnSnapshot(project.workspace.path)
 
     # The order the seam uses: the write is inside the baseline, so the turn starts clean.
+    project.build_conversation = "thr_a"
     orch._ensure_examples_link(project)
     snap.commit_before_turn()
     assert snap.changed_since_pre_turn() is False
@@ -396,6 +422,7 @@ def test_the_ignore_rules_write_is_why_the_seam_runs_before_the_baseline(tmp_pat
     _unlinked(project2.workspace.path)
     snap2 = TurnSnapshot(project2.workspace.path)
     snap2.commit_before_turn()
+    project2.build_conversation = "thr_a"
     orch2._ensure_examples_link(project2)
     assert snap2.changed_since_pre_turn() is True
 
@@ -416,6 +443,7 @@ def test_a_stop_does_not_delete_the_link_because_its_rule_pre_dates_the_baseline
     _artifact(root)
     snap = TurnSnapshot(app)
 
+    project.build_conversation = "thr_a"
     orch._ensure_examples_link(project)   # the order the seam uses
     snap.commit_before_turn()
     snap.discard_changes()                # the stop button
@@ -431,6 +459,7 @@ def test_a_stop_does_not_delete_the_link_because_its_rule_pre_dates_the_baseline
     _artifact(root2)
     snap2 = TurnSnapshot(app2)
     snap2.commit_before_turn()
+    project2.build_conversation = "thr_a"
     orch2._ensure_examples_link(project2)
     snap2.discard_changes()
 
@@ -480,6 +509,7 @@ def test_deleting_an_app_removes_the_link_and_leaves_the_artifacts_standing(tmp_
     project = orch.project(start_preview=False)
     app = project.workspace.path
     original = _artifact(root)
+    project.build_conversation = "thr_a"
     orch._ensure_examples_link(project)
     assert (app / "examples" / "thr_a" / "revenue.png").exists()
 
