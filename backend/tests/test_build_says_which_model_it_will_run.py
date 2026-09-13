@@ -660,7 +660,10 @@ def test_a_stranded_level_on_a_real_override_is_accounted_for_when_idle_too():
                       "narrow": {"alias": "deepseek/deepseek-v3", "efforts": ["low"]}}])
 
     assert "deepseek/deepseek-v3 doesn't accept High" in row["why"]
-    assert "The row below" not in row["why"]
+    # Asserted against the phrase the collapsed case actually emits. "The row below" is a string
+    # nobody produces any more, so an absence check on it would pass whatever the code did — the
+    # vacuous shape this file has now found four times.
+    assert "Clear the pick" not in row["why"]
 
 
 def test_a_stored_level_can_never_collide_with_the_no_level_row():
@@ -751,11 +754,14 @@ def test_the_running_tooltip_points_at_no_row_it_cannot_reach():
                        "running": True}])
 
     assert "doesn't accept High" in row["why"]
-    assert "The row below" not in row["why"]
-    # And the open menu still carries it, because there the row is real.
+    # The EXIT clause, not a direction: "Clear the pick" is an instruction with no menu in it, and
+    # the running chip has no menu to give. Asserted against the exact phrase the open chip uses, so
+    # this stays a real absence rather than a string nobody emits any more.
+    assert "Clear the pick" not in row["why"]
+    # And the open menu still carries it, because there the pick can be cleared.
     (open_row,) = _drawn([{"mode": "plan", "seedPick": {"model": PLAN_MODEL, "effort": "high"},
                            "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]}}])
-    assert "The row below clears the pick" in open_row["why"]
+    assert "Clear the pick to put the mode back on its assignment." in open_row["why"]
 
 
 def test_a_collapsed_pick_with_no_level_still_differs_from_an_assignment_that_has_one():
@@ -802,7 +808,7 @@ def test_a_pin_does_not_swallow_the_accepted_level_sentence():
 
     assert row["label"] == f"{SIGNING_MODEL} · Max"
     assert "required for this session" in row["why"]
-    assert "The row below clears it." in row["why"]
+    assert "Clear the pick to use the assignment's." in row["why"]
 
 
 def test_a_missing_alias_listing_is_not_read_as_a_refusal():
@@ -963,7 +969,7 @@ def test_a_pick_that_collapses_still_names_the_level_it_runs_at():
     # Names the assignment's actual level, not a generic "the assignment's level" — the person
     # comparing two numbers should not have to open the drawer to learn the second one.
     assert "at High, not at the assignment's Medium" in row["why"]
-    assert "clears it" in row["why"]
+    assert "Clear the pick" in row["why"]
 
 
 def test_a_collapsed_pick_whose_level_is_stranded_claims_no_default():

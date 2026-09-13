@@ -814,14 +814,19 @@ window.SW = window.SW || {};
       ? `${override || pinnedModel} doesn't accept ${effortLabel(strandedNow)}. Turns run at the `
         + 'model default instead.'
       : '';
-    // The fact PLUS the way out, for the open menu only. "The row below" is a real instruction
+    // The fact PLUS the way out, for the open menu only. Clearing the pick is a real instruction
     // there and a false one on the running chip, which draws a disabled Button with no menu behind
-    // it — pointing at a row nobody can reach and then saying to wait before changing anything, in
+    // it — offering an action nobody can take and then saying to wait before changing anything, in
     // consecutive sentences. Only the collapsed case needs it: on a real override the submenu marks
     // the level itself, which is a better account than a sentence.
+    //
+    // And the instruction carries no DIRECTION. It used to say "the row below", which is wrong
+    // twice: the dropdown opens `topRight` so the menu renders ABOVE the chip the tooltip hangs off,
+    // and the way-back row is `slotModels[0]` in Plan but `slotModels[1]` in Implement. A reader
+    // following it found the mode pill.
     const strandedWhy = strandedNow
       ? (collapsedStranded
-        ? `${strandedFact} The row below clears the pick and puts the mode back on its assignment.`
+        ? `${strandedFact} Clear the pick to put the mode back on its assignment.`
         // A real override keeps the FACT and loses only the row pointer, which belongs to the
         // collapsed case. Withholding it entirely left the idle chip strictly less informative than
         // the running one for the same state: the label drops the level because it will not run,
@@ -1563,7 +1568,8 @@ window.SW = window.SW || {};
                     const levelWhy = !override && livePick && !collapsedStranded
                       && (pickedLevel || null) !== pinnedEffort
                       ? `This pick runs ${pinnedModel} at ${effortLabel(pickedLevel || null)}, not `
-                        + `at the assignment's ${effortLabel(pinnedEffort)}. The row below clears it.`
+                        + `at the assignment's ${effortLabel(pinnedEffort)}. Clear the pick to `
+                        + "use the assignment's."
                       : '';
                     // All three joined rather than any of them winning. Behind a `||` the pin
                     // suppressed whichever level sentence applied — and it was the COMMONER one,
