@@ -76,13 +76,19 @@ def test_when_nothing_survives_the_button_does_not_promise_to_carry_on():
     assert _buttons(r)[0]["text"] == "Stop sending this file"
 
 
-def test_a_pasted_message_says_sage_will_not_change_what_you_wrote():
-    """The line that separates this from redaction, which ADR-0022 forbids outright."""
+def test_a_pasted_message_is_promised_it_will_not_be_altered():
+    """The line that separates this from redaction, which ADR-0022 forbids outright.
+
+    It says nothing about who wrote the thing. It used to say "what you wrote", and the same arm
+    catches a `bash cat`'s rows, which the person did not write (#297). The label names the author
+    one clause earlier, so the promise does not have to.
+    """
     r = _render(_card(carriers=[TEXT], surviving=0))
     said = _text(r)
-    assert "not in a file" in said
-    assert "won't change what you wrote" in said
-    assert _buttons(r)[0]["text"] == "Stop sending that message"
+    # The whole clause, not "not in a file" — that is a substring of the qualified form, so it
+    # would pass over the bare claim a `bash cat`'s rows were never in a file at all (#312).
+    assert "not in a file Sage can name. Sage won't change what it matched" in said
+    assert _buttons(r)[0]["text"] == "Stop sending it"
 
 
 def test_it_says_how_long_the_withhold_lasts():
@@ -128,8 +134,8 @@ def test_several_carriers_are_all_named():
     assert _buttons(r)[0]["act"] == "withhold:chat:file:raw.csv,file:export.csv"
 
 
-def _button_label(carriers: list[dict], surviving: int) -> str:
-    buttons = _buttons(_render(_card(carriers=carriers, surviving=surviving)))
+def _button_label(carriers: list[dict], surviving: int, **over) -> str:
+    buttons = _buttons(_render(_card(carriers=carriers, surviving=surviving, **over)))
     assert buttons, "a label only means anything if the button is drawn at all"
     return buttons[0]["text"]
 
@@ -162,11 +168,89 @@ def test_a_tool_s_rows_are_not_messages_either():
     names a non-file carrier three ways, and "something a tool read" is neither a file nor anything
     a person would call a message. Naming this set "messages" would be #292 one word over.
 
-    The card cannot tell the two apart on its own: the row carries `is_file`, and the distinction
-    lives in `Carrier.is_data`, which is not sent to it.
+    The card cannot tell the three apart on its own, and `Carrier.is_data` is not the field that
+    would let it: since #290 that field means "data, wherever it came from", so an @mention sets it
+    on the message a person typed (#297).
     """
     assert _button_label([TOOL, OLDER], 0) == "Stop sending them"
     assert _button_label([TOOL, FILE], 2) == "Continue without them"
+
+
+def test_a_lone_tool_read_is_not_credited_to_the_person_and_reaches_both_arms():
+    """#297. A `bash cat` or a `grep` leaves one carrier with no path, so no `is_file`, and the
+    arm that caught it said "Sage won't change what you wrote" over rows the person never wrote,
+    called them a message on the button, and drew the same bytes whether anything survived or not.
+
+    Both arms in one test, and the button read through `_button_label`, which fails if no button
+    is drawn at all: three tests each pinning one string would all pass over an empty card (#292).
+    """
+    gone = _text(_render(_card(carriers=[TOOL], surviving=0)))
+    left = _text(_render(_card(carriers=[TOOL], surviving=2)))
+    assert gone != left, "the two arms rendered byte-identical cards before this"
+
+    for said in (gone, left):
+        assert "wrote" not in said
+        assert "message" not in said
+        # The promise this arm exists to make. It outlives the author it used to name, because
+        # withholding is not redaction whoever wrote the thing (ADR-0022).
+        #
+        # "Sage can name" is not padding. A `bash cat transactions.csv` DID read a file and lands
+        # here only because no path came with it, so the bare "not in a file" was a second false
+        # claim about this exact carrier, in the same sentence as the first one. Asserting the
+        # bare form would pin it — the shape where a test reads as verification of a decision
+        # nobody checked.
+        assert "not in a file Sage can name. Sage won't change what it matched" in said
+
+    assert _button_label([TOOL], 0) == "Stop sending it"
+    assert _button_label([TOOL], 2) == "Continue without it"
+
+    # One act, one name, in the arm the older agreement test never rendered. Folding this arm into
+    # the shared ending left the promise clause still offering to "stop sending" while the button
+    # said "Continue without", which is the disagreement the note under the button forbids.
+    assert "stop sending" not in left.lower(), left
+
+
+def test_the_button_does_not_promise_to_carry_on_when_the_question_is_what_went():
+    """The case the store's own comment calls the one a person meets most, and the one the card
+    could not draw until the arms were folded together (#297).
+
+    `store.withholdContent` re-runs the turn on `surviving > 0 && !prompt`. The card was reading
+    `surviving` alone, so a matched question with every file surviving drew "Continue without it",
+    the click withheld and stopped, and the receipt underneath told the person to ask again in
+    different words. Rendered rather than reasoned about: this is the same field pair read from two
+    places, and the two places disagreed.
+    """
+    assert _button_label([TEXT], 2, prompt=True) == "Stop sending it"
+    assert _button_label([TEXT], 2, prompt=False) == "Continue without it"
+    # Reaches every set that can arrive this way, not only the one #297 opened it on: the button
+    # is one rule. No all-file row here — `withhold.prompt_withheld` returns `text_key(last user
+    # message) in {withheld keys}`, so a set with no text carrier never arrives with `prompt`
+    # set, and a row pinning one would read as coverage while standing for nothing.
+    assert _button_label([FILE, TEXT], 2, prompt=True) == "Stop sending them"
+
+    # And the button is given a reason to press it. #288's rule is about the button, not about
+    # `surviving`: folding the arms together left this card saying what would NOT happen and
+    # nothing about what the click buys, over the payload the store calls the commonest one.
+    said = _text(_render(_card(carriers=[TEXT], surviving=2, prompt=True)))
+    assert "asking it again in the same words would be stopped" in said
+    assert "this conversation will work again" in said
+    # Not the line for a turn with nothing left: the files here survive, and saying they do not
+    # would send someone re-reading work that was never lost.
+    assert "That was everything this turn read" not in said
+    # And the survivors are still named. A branch picking the question dropped the reassurance
+    # that the rest of the turn's reading is safe, on this same payload.
+    assert "Nothing else this turn read is affected" in said
+
+    # Both facts when both hold. They co-occur — a one-file conversation whose file AND typed
+    # question both matched has nothing left to answer from and loses its question — and a branch
+    # picking one of them says only the first. The person then met "Ask again in different words"
+    # on the receipt, over a card that had not mentioned their question at all.
+    both = _text(_render(_card(carriers=[FILE, TEXT], surviving=0, prompt=True)))
+    assert "That was everything this turn read" in both
+    assert "asking it again in the same words would be stopped" in both
+    # Nothing survives here, so the reassurance above must NOT appear — the two payloads differ
+    # in which facts are true, not in how many sentences they get.
+    assert "Nothing else this turn read is affected" not in both
 
 
 def test_the_button_and_the_sentence_above_it_never_disagree():
