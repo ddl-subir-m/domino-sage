@@ -1680,8 +1680,9 @@ _MEMBERSHIP_PARENT_KINDS = ("dataset", "data_source", "llm_alias", "model_api")
 _LEAF_ID_PREFIXES = ("table:", "dsfile:")
 
 # What a catalogue row carries for the sake of the membership row and nothing else: the model
-# picker reads `alias` and `reasoning_efforts` off the project's own resources when the Alias
-# listing is unavailable, so a join without them writes an option that cannot be selected. A chip
+# picker reads `alias` and BOTH effort lists off the project's own resources when the Alias listing
+# is unavailable, so a join without them writes an option that cannot be selected — and, since #295,
+# one whose levels the Build menu would read as refused rather than as unanswered. A chip
 # has no use for any of them, so they ride in on the mention and are taken back off before it is
 # stored. `inBuild` is the same idea for a different consumer: it routes a dataset-file mention to
 # `attach_file` vs `fetch_dataset_file_for_chat` and has no business in the stored chip either.
