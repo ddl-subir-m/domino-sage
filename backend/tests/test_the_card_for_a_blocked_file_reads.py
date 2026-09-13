@@ -321,3 +321,43 @@ def test_the_receipt_says_to_ask_again_in_different_words():
 
 def test_a_withheld_file_is_not_a_reason_to_rewrite_the_question():
     assert "different words" not in _text(_receipt())
+
+
+def test_the_promise_not_to_alter_anything_holds_at_every_size_of_a_set_with_no_file():
+    """ADR-0022's one hard promise: Sage stops sending material and never changes what a person
+    wrote. The clause carrying it hung off a gate that also COUNTED the carriers, so two matched
+    messages drew the destructive-sounding button with the promise nowhere on the card (#309).
+
+    Both sizes go through one render, asserting the SAME string. Two tests each pinning one size
+    would both still pass with the promise dropped from the other — which is the width #297 left
+    open and the reason it stayed open. The em dash is part of the assertion, not punctuation
+    taste: the list above it is comma-joined, so a comma here reads as one more thing the policy
+    matched rather than the break before the promise, and that misreading is only reachable once
+    the set is allowed to be plural.
+    """
+    promise = " — not in a file Sage can name. Sage won't change what it matched"
+    # `surviving` is a member too, not a constant. The clause sits above that branch today, so both
+    # arms carry it in fact — but #297's defect WAS two arms each keeping their own copy of this
+    # ending, and one of them going quiet is the failure this ticket is fixing one gate over.
+    for carriers, surviving in (([TEXT], 0), ([TEXT, OLDER], 0), ([TOOL, TEXT, OLDER], 0),
+                                ([TEXT, OLDER], 2)):
+        said = _text(_render(_card(carriers=carriers, surviving=surviving)))
+        assert promise in said, (carriers, surviving)
+
+    # An ALL-file set bounds the widening, and one clause is the whole bound: every carrier there is
+    # nameable, so "no file Sage can name" is false of every one of them.
+    #
+    # Whether such a card should promise not to ALTER what it matched is not asserted either way —
+    # nor is it for a mixed set, which is why neither is a member here. The promise is true of a
+    # named file, `RecallWithheld` says "Nothing was changed or deleted" for that same click
+    # whatever was withheld, and the card is silent. That gap is #337, filed rather than fixed:
+    # separating the promise from the file clause rewrites prose #292 landed, which this ticket is
+    # barred from re-deriving. Pinning the silence would mean #337 could not land without first
+    # overturning a green assertion in the test that recorded the gap.
+    for carriers in ([FILE], [FILE, EXPORT]):
+        said = _text(_render(_card(carriers=carriers, surviving=0)))
+        # A card was drawn and named the file. Without this the loop is a bare absence, which the
+        # early returns above (no carriers, incomplete search) satisfy by rendering no clause at
+        # all — a bound that reads as holding over a card the assertion never reached (#292).
+        assert "card_panel_transactions_RAW.csv" in said, carriers
+        assert "not in a file Sage can name" not in said, carriers

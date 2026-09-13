@@ -978,17 +978,26 @@ window.SW = window.SW || {};
     }
 
     const survives = (block.surviving || 0) > 0;
-    // The lone non-file carrier. Gates one CLAUSE, not a sentence and a button: there is no file
+    // No file anywhere in the set. Gates one CLAUSE, not a sentence and a button: there is no file
     // to name, and withholding is not redaction (ADR-0022's one hard promise). Everything after it
     // — what survives, what the button says — is the single rule below. While this arm kept its own
     // copy of that ending it drew byte-identical cards at `surviving: 0` and `surviving: 2`, and
     // said "what you wrote" over rows a `bash cat` fetched (#297).
     //
-    // One carrier wide, and that is an open GAP rather than a decision: two matched messages with
-    // no file between them draw a destructive-sounding button and no promise at all. Widening this
-    // gate is the fix and nothing here has made it — #297 was scoped to the singular arm, and the
-    // plural prose is #292's. Filed as #309; this line is the gap recorded, not the gap handled.
-    const onlyText = carriers.length === 1 && !carriers[0].is_file;
+    // Read off the carriers rather than counted, for the reason the button below it is. This was
+    // `carriers.length === 1 && !carriers[0].is_file`, and a second matched message drew that
+    // destructive-sounding button with ADR-0022's promise nowhere on the card (#309). The count was
+    // never what the clause is about: "no file Sage can name" is as true of five non-file carriers
+    // as of one, and every population `withhold.py`'s `_text_label` names — a typed message, an
+    // earlier answer, `bash cat`'s pathless rows — satisfies it whatever it arrives beside.
+    //
+    // Still one condition narrow, and that is a recorded GAP rather than a decision: a named file
+    // BESIDE a typed message withholds the promise, because the clause is gated on what a carrier
+    // arrives next to. `RecallWithheld` above says "Nothing was changed or deleted" for that same
+    // click unconditionally, so the card is quieter before the click than the receipt is after it.
+    // Not widened here: "not in a file Sage can name" is false of the file, so the promise has to
+    // come apart from the file clause first, and that prose is #292's. Filed as #337.
+    const noFileToName = !carriers.some((c) => c.is_file);
     // What the button acts on, read off the carriers rather than counted. Counting them and
     // calling whatever turned up "files" is what put "Stop sending these files" under a set
     // holding none, in this arm and in the `survives` one alike (#292).
@@ -1013,7 +1022,7 @@ window.SW = window.SW || {};
     // above, so nothing is lost by the button not repeating them.
     const noun = carriers.every((c) => c.is_file)
       ? (carriers.length > 1 ? 'these files' : 'this file')
-      // The singular arm is reachable since #297, which folded the button's `onlyText` case into
+      // The singular arm is reachable since #297, which folded the button's no-file case into
       // this one rule. It needed no new word because it was written correct while it was still
       // unreachable — the reason to keep writing an unreachable arm as though someone will run it.
       : (carriers.length > 1 ? 'them' : 'it');
@@ -1060,7 +1069,13 @@ window.SW = window.SW || {};
             // Dropping the author to serve the `bash cat` population dropped the referent with it;
             // this names the subject again without naming who wrote it. "It" is the policy, the
             // same "It" this sentence opens with.
-            onlyText ? ", not in a file Sage can name. Sage won't change what it matched. " : '. ',
+            //
+            // The dash rather than a comma: `...list` above is comma-joined with no "and", so on
+            // the plural sets this gate now reaches, a comma here reads as one more thing the
+            // policy matched. One string serves every size, and that is what stops the promise
+            // going missing on whichever size a second string was not written for (#309).
+            noFileToName
+              ? " — not in a file Sage can name. Sage won't change what it matched. " : '. ',
             // Three facts, each drawn when its own is true, joined rather than branched between.
             // They co-occur in every combination — a turn can have nothing left to answer from AND
             // lose its question, or keep every file AND lose its question. Each earlier shape here
@@ -1109,7 +1124,9 @@ window.SW = window.SW || {};
                   // where a file WAS named the only concrete thing the card tells them to do.
                   // Wherever the turn CARRIES ON the whole
                   // clause is absent, named file and `cat` alike — the button re-runs the turn
-                  // there and nothing needs attaching. That gate is #309's, not this line's.
+                  // there and nothing needs attaching. That gate is `carriesOn`'s, #311's, not
+                  // this line's — it read #309 until #309 landed and turned out to own the promise
+                  // clause forty lines up instead.
                   //
                   // Still no offer where nothing was read — several matched messages with no file
                   // anywhere, which is the population this gate was written against (#297): a
