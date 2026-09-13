@@ -84,6 +84,16 @@ def _errors(history: list[dict], key: str) -> list[int]:
             if isinstance(e, dict) and e.get("type") == "error" and e.get("reason") == key]
 
 
+def _last_refusal(rows: list[dict]) -> tuple[int, str] | None:
+    last = len(rows) - 1
+    while last >= 0 and rows[last].get("type") in {SEARCH, FOUND}:
+        last -= 1
+    if last < 0 or rows[last].get("type") != "error":
+        return None
+    key = str(rows[last].get("reason") or "")
+    return (last, key) if key else None
+
+
 def offer(history: list[dict]) -> str | None:
     """Which clear to offer for the refusal the transcript ends on, or None to offer nothing.
 
@@ -92,18 +102,17 @@ def offer(history: list[dict]) -> str | None:
     already been used and the value is somewhere clearing cannot reach.
     """
     rows = [e for e in (history or []) if isinstance(e, dict)]
-    if not rows or rows[-1].get("type") != "error":
+    refused = _last_refusal(rows)
+    if refused is None:
         return None
-    key = str(rows[-1].get("reason") or "")
-    if not key:
-        return None
+    last, key = refused
     seen = _errors(rows, key)
     if len(seen) < 2:
         return None
     # Only what happened BETWEEN this refusal and the last identical one. A clear that came before
     # the previous refusal was already answered by it, and a Conversation that recovers and is
     # refused again later starts the ladder over rather than opening on its last rung.
-    window = [e for e in rows[seen[-2] + 1:seen[-1]] if e.get("type") == CLEARED]
+    window = [e for e in rows[seen[-2] + 1:last] if e.get("type") == CLEARED]
     if not window:
         return SUMMARY
     return None if window[-1].get("scope") == EMPTY else EMPTY
@@ -127,17 +136,16 @@ def offer_now(history: list[dict]) -> str | None:
     failure really can be a blip and the person has lost nothing by trying again.
     """
     rows = [e for e in (history or []) if isinstance(e, dict)]
-    if not rows or rows[-1].get("type") != "error":
+    refused = _last_refusal(rows)
+    if refused is None:
         return None
-    key = str(rows[-1].get("reason") or "")
-    if not key:
-        return None
+    last, key = refused
     seen = _errors(rows, key)
     # Since the previous identical refusal, exactly as `offer` measures it — or since the start of
     # the Conversation, when this refusal is the first of its kind and there is no previous one to
     # measure from.
     start = seen[-2] + 1 if len(seen) >= 2 else 0
-    window = [e for e in rows[start:seen[-1]] if e.get("type") == CLEARED]
+    window = [e for e in rows[start:last] if e.get("type") == CLEARED]
     if not window:
         return SUMMARY
     return None if window[-1].get("scope") == EMPTY else EMPTY
@@ -150,13 +158,14 @@ def terminal(history: list[dict]) -> bool:
     already done to no effect, but where the value must therefore be.
     """
     rows = [e for e in (history or []) if isinstance(e, dict)]
-    if not rows or rows[-1].get("type") != "error":
+    refused = _last_refusal(rows)
+    if refused is None:
         return False
-    key = str(rows[-1].get("reason") or "")
+    last, key = refused
     seen = _errors(rows, key)
     if len(seen) < 2:
         return False
-    window = [e for e in rows[seen[-2] + 1:seen[-1]] if e.get("type") == CLEARED]
+    window = [e for e in rows[seen[-2] + 1:last] if e.get("type") == CLEARED]
     return bool(window) and window[-1].get("scope") == EMPTY
 
 

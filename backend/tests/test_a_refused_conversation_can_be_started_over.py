@@ -25,6 +25,14 @@ def _cleared(scope: str) -> dict:
     return {"type": recall.CLEARED, "scope": scope}
 
 
+def _search() -> dict:
+    return {"type": recall.SEARCH}
+
+
+def _found() -> dict:
+    return {"type": recall.FOUND, "carriers": [], "complete": False}
+
+
 def test_the_refusals_identity_is_the_gateways_words_not_the_sentence_shown():
     """The shown sentence names the turn's Attachment, and the ladder exists precisely because the
     NEXT turn fails on a different one. Keyed on the prose, the live pair never connects."""
@@ -47,6 +55,19 @@ def test_the_second_identical_refusal_offers_a_seeded_clear():
     assert recall.offer([_err(), _err()]) == recall.SUMMARY
 
 
+def test_withhold_rows_do_not_hide_the_second_identical_refusal():
+    assert recall.offer([_err(), _err()]) == recall.SUMMARY
+    assert recall.offer([_err(), _search(), _found(), _err(), _search(), _found()]) == recall.SUMMARY
+
+
+def test_withhold_rows_do_not_turn_one_refusal_into_an_offer():
+    assert recall.offer([_err(), _search(), _found()]) is None
+
+
+def test_withhold_rows_do_not_hide_the_one_refusal_that_is_enough_now():
+    assert recall.offer_now([_err(), _search(), _found()]) == recall.SUMMARY
+
+
 def test_a_different_refusal_does_not_advance_the_ladder():
     assert recall.offer([_err(), _err("http:500")]) is None
 
@@ -61,6 +82,13 @@ def test_refused_again_after_a_complete_clear_offers_nothing():
     """Recall is empty and it is still refused, so the value is in the message just typed or the
     file it names. There is nothing left for clearing to reach."""
     history = [_err(), _err(), _cleared(recall.SUMMARY), _err(), _cleared(recall.EMPTY), _err()]
+    assert recall.offer(history) is None
+    assert recall.terminal(history) is True
+
+
+def test_withhold_rows_do_not_hide_the_terminal_refusal():
+    history = ([_err(), _err(), _cleared(recall.SUMMARY), _err(), _cleared(recall.EMPTY), _err()]
+               + [_search(), _found()])
     assert recall.offer(history) is None
     assert recall.terminal(history) is True
 
