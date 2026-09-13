@@ -8682,7 +8682,11 @@ class Orchestrator:
             found = withhold.Found(stopped="the search failed")
         row = {
             "type": recall.FOUND,
-            "carriers": [{"key": c.key, "label": c.label, "is_file": c.is_file}
+            # `is_file` names the carrier on the card; `is_fetched` decides whether a different
+            # file is any use to this person. They come apart on a `bash cat`, whose rows came out
+            # of a file that no path arrived with (#312).
+            "carriers": [{"key": c.key, "label": c.label, "is_file": c.is_file,
+                          "is_fetched": c.is_fetched}
                          for c in found.carriers],
             # Whether withholding these actually clears the refusal, proven by a probe rather than
             # assumed. False means the caller must not claim anything has been fixed.
