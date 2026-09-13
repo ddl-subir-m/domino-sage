@@ -78,15 +78,15 @@ def test_the_open_weight_catalog_is_offered_as_extra_options():
     (group,) = [i for i in row["items"] if "group" in i]
     assert group["group"] == "Open-weight"
     keys = [c["key"] for c in group["children"]]
-    assert keys == ["deepseek/deepseek-v3", "qwen/qwen-2-5"]
+    assert keys == ["deepseek/deepseek-v3", "qwen/qwen-2-5", "openai/gpt-5.4", "weird/a::low"]
     assert PLAN_MODEL not in keys  # it is already a slot, one row up
 
 
 def test_the_pick_reaches_set_model():
     """The whole point of restoring the control. `pick` alone, with no `mode` beside it: the mode
     is a standing choice the picker never touched, and ModelControl.pick does not need it."""
-    (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3"}])
-    assert row["wrote"] == [{"pick": "deepseek/deepseek-v3"}]
+    (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::"}])
+    assert row["wrote"] == [{"pick": "deepseek/deepseek-v3", "pick_effort": None}]
     assert row["serverPick"] == "deepseek/deepseek-v3"
     # And the control now reads back the override rather than the pin it replaced.
     assert row["afterLabel"] == "deepseek/deepseek-v3"
@@ -95,11 +95,802 @@ def test_the_pick_reaches_set_model():
 def test_the_default_row_clears_the_override_rather_than_setting_it():
     """`(default)` is the way BACK. Sending the pinned model's id would look identical on screen
     and leave a standing override behind that survives an edit to the deployment's slots."""
-    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3"},
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::"},
                      {"mode": "implement", "pick": "__pinned__"}])
-    assert row["wrote"] == [{"pick": None}]
+    assert row["wrote"] == [{"pick": None, "pick_effort": None}]
     assert row["serverPick"] is None
     assert row["afterLabel"] == f"{IMPLEMENT_MODEL} (default)"
+
+
+# ---- the effort submenu (#295, ADR-0049) --------------------------------------------------------
+#
+# An effort is half of a pick, so the menu offers a level only underneath the model it belongs to
+# and one click delivers both. The rule for whether to offer anything at all is the alias's own
+# advertised list — the same `length > 0` the Chat chip uses one bar over, because validity is per
+# alias and measured, not anything a name predicts.
+#
+# The fixture's aliases: `claude-planner` and `deepseek-v3` advertise levels, `claude-builder` and
+# `qwen-2-5` advertise none.
+
+
+def _every_row(row: dict) -> list:
+    """Every drawable row in the menu, groups flattened and submenu children included.
+
+    Children are the point: `— not accepted` and every other level label exists only down there, so
+    a sweep that stops at `items` can only ever report that the top level is clean — which it always
+    is, bug or no bug.
+    """
+    flat = []
+    for item in row["items"]:
+        for candidate in (item["children"] if "group" in item else [item]):
+            flat.append(candidate)
+            flat.extend(candidate.get("children") or [])
+    return flat
+
+
+def _children(row: dict, key: str) -> list | None:
+    """The submenu under one row, or None where the row has no submenu at all.
+
+    The two answers are different claims — "offers Low and High" and "offers nothing" — and a
+    reader that flattened a missing submenu into an empty list would pass over the second.
+    """
+    for item in row["items"]:
+        for candidate in (item["children"] if "group" in item else [item]):
+            # `.get`, because a divider is an item too and carries no key of its own.
+            if candidate.get("key") == key:
+                return candidate.get("children")
+    raise AssertionError(f"no row keyed {key}")
+
+
+def test_build_offers_the_levels_that_survive_beside_tools_not_the_enum():
+    """Every Build turn carries function tools, and the send path drops a level the alias will not
+    take beside them (`enforcement.py`, `reasoning_efforts_with_tools`). `gpt-5.4` advertises five
+    levels and keeps exactly one.
+
+    Offering the enum here is the ticket's own defect arriving through the control it added: nothing
+    marks `high` stranded, because it IS in the enum, so the chip would read `gpt-5.4 · High` over a
+    turn the shim has quietly put back on the alias's own default. The narrowing is the server's —
+    `EFFORTS_WITH_TOOLS` published as its own field — not a second copy of the table in the browser.
+    """
+    (row,) = _drawn([{"mode": "plan"}])
+
+    assert [c["label"] for c in _children(row, "openai/gpt-5.4")] == ["Model default", "None"]
+    # And the levels it advertises but cannot keep are absent, not merely reordered.
+    assert "High" not in [c["label"] for c in _children(row, "openai/gpt-5.4")]
+
+
+def test_a_level_the_alias_advertises_but_drops_beside_tools_is_stranded():
+    """The same narrowing, judged the other way round. A level picked while it was offered — or
+    arriving from a status poll — must be read against the TOOL-carrying list, or `gpt-5.4 · High`
+    reads as fine on a chip whose turn is running at the alias default.
+
+    This is the case the enum cannot see: `high` is perfectly valid for `gpt-5.4` on a request with
+    no tools, and there is no such thing as a Build turn without them.
+    """
+    (row,) = _drawn([{"mode": "plan",
+                      "seedPick": {"model": "openai/gpt-5.4", "effort": "high"}}])
+
+    # The chip does not name it: the turn will run at the alias's own default, not at High.
+    assert row["label"] == "openai/gpt-5.4"
+    # And the menu says so, rather than leaving a level nobody can see still standing.
+    stranded = _children(row, "openai/gpt-5.4")[-1]
+    assert stranded["label"] == "High — not accepted"
+    assert stranded["disabled"] is True
+
+
+def test_a_row_offers_the_levels_its_own_alias_advertises():
+    """Per alias, and measured (ADR-0049). The gateway's own answer for one model says nothing
+    about the next one, so the submenu is built from that row's alias and not from a global set."""
+    (row,) = _drawn([{"mode": "implement"}])
+    # Implement's pin is `claude-builder`, so `claude-planner` is here as a pickable override.
+    assert [c["label"] for c in _children(row, PLAN_MODEL)] == [
+        "Model default", "Low", "Medium", "High"]
+    # A different alias, a different list — read off the row, not off the first one drawn.
+    assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
+        "Model default", "Low", "High"]
+
+
+def test_running_the_alias_at_its_own_default_is_the_first_thing_offered():
+    """What every Build pick did before this submenu existed stays the easiest thing to ask for.
+    Buried under the levels it would become the thing you have to know to look for, and picking a
+    model without choosing a level is still the common case."""
+    (row,) = _drawn([{"mode": "implement"}])
+    first, *rest = _children(row, PLAN_MODEL)
+    assert first == {"key": f"{PLAN_MODEL}::", "label": "Model default"}
+    assert all(c["key"] != f"{PLAN_MODEL}::" for c in rest)
+
+
+def test_a_model_that_advertises_no_levels_offers_no_submenu():
+    """`efforts.length > 0` — the rule Chat's picker already uses, reused rather than restated. A
+    row with a submenu of one entry would promise a choice the alias does not have, and on a
+    deployment nobody has probed that is every row."""
+    (row,) = _drawn([{"mode": "plan"}])
+    assert _children(row, IMPLEMENT_MODEL) is None
+    assert _children(row, "qwen/qwen-2-5") is None
+
+
+def test_the_pinned_row_offers_no_level_because_the_assignment_owns_one():
+    """`(default)` is the way BACK: picking it CLEARS the override, and what the slot then runs at
+    is its ASSIGNMENT's effort — the Project's standing choice, which belongs to the drawer and not
+    to a control that forgets itself on restart (ADR-0017). A submenu here would offer a level to
+    the one row that cannot carry one."""
+    # Implement's pinned row is `claude-builder`, an alias that advertises no levels at all — so
+    # this mode alone could not tell the pinned row's rule from the alias's own silence. Plan's
+    # pinned row is `claude-planner`, which advertises three and still offers none here.
+    implement, plan = _drawn([{"mode": "implement"}, {"mode": "plan"}])
+    assert _children(implement, "__pinned__") is None
+    assert _children(plan, "__pinned__") is None
+    # The same alias, one row over in the other mode, where it IS pickable: the levels are there.
+    assert _children(implement, PLAN_MODEL) is not None
+
+
+def test_a_barred_row_offers_no_level_either():
+    """Under the sensitivity lock (ADR-0043) the row cannot be picked at all, so a submenu beneath
+    it would be a door into a wall — and one whose levels read as an offer the lock has refused."""
+    (row,) = _drawn([{
+        "mode": "implement",
+        "sensitivity": {"enabled": True, "locked": True, "group": "approved-for-sensitive",
+                        "approved": ["anthropic/claude-builder"], "datasets": ["claims"],
+                        "refusal": None, "model": "anthropic/claude-builder", "chat_model": None,
+                        "slot_models": {}, "reason": "claims is sensitive"},
+        "app": "Claims app", "declaredIn": "binding",
+    }])
+    assert _children(row, PLAN_MODEL) is None
+    assert f"{PLAN_MODEL} — not allowed" in [i.get("label") for i in row["items"]]
+
+
+def test_picking_a_level_sends_it_with_the_model_it_belongs_to():
+    """Criterion 3, at the wire this control actually writes. A submenu that draws correctly and
+    sends nothing passes a rendering test and fails the ticket — so what is asserted here is the
+    body, not the menu.
+
+    One call carrying both. Two calls would leave a window where a level chosen for one alias is
+    standing against another, which is the stale pairing the whole of ADR-0049 is about."""
+    (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"}])
+    assert row["wrote"] == [{"pick": "deepseek/deepseek-v3", "pick_effort": "high"}]
+    assert row["serverPick"] == "deepseek/deepseek-v3"
+    assert row["serverEffort"] == "high"
+
+
+def test_the_chosen_level_is_marked_on_the_menu_and_the_chip():
+    """Criterion 2's browser half: after the click settles, both controls name the level.
+
+    What this does NOT prove, despite an earlier version of this docstring saying so: that the mark
+    survives the SERVER's echo. `setBuildModel` writes `state.buildEffort` optimistically before the
+    POST, and `applyModelStatus` only overwrites on `'picked_effort' in m` — the same partial-payload
+    idiom the model beside it uses — so deleting the key from the fixture's `status()` leaves this
+    passing on the optimistic value. The echo is covered where it can actually be observed, in
+    `test_the_status_reports_the_level_beside_the_model`, which reads the key off a write's answer
+    AND off a plain GET.
+
+    Kept because the two reads here are real: a menu that marked the wrong key, or a chip that
+    dropped the level, would fail this and nothing else.
+    """
+    (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"}])
+    assert row["afterSelected"] == ["deepseek/deepseek-v3::high"]
+    # And on the chip, which is the only thing left once the menu closes. A setting with no receipt
+    # reads as a setting that was dropped.
+    assert row["afterLabel"] == "deepseek/deepseek-v3 · High"
+
+
+def test_a_pick_left_on_the_model_default_says_nothing_extra_on_the_chip():
+    """The level is only worth chip space when somebody chose one. `Model default` is what every
+    pick did before this existed, so a chip that announced it would put new words on screen for a
+    behaviour that has not changed."""
+    (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::"}])
+    assert row["afterLabel"] == "deepseek/deepseek-v3"
+    assert row["afterSelected"] == ["deepseek/deepseek-v3::"]
+
+
+def test_a_level_the_model_stopped_offering_is_still_shown_and_still_escapable():
+    """A deployment default can move under a live pick, and the measured table can narrow when an
+    alias is probed (#280) — so a level somebody is standing on can stop being one the model takes,
+    with nobody having done anything wrong.
+
+    Dropped from the menu it would be invisible, still standing, and clearable only by giving up
+    the model too. This is the same call `model-assignments.js` makes for the drawer's half, and
+    the same label: shown, disabled, named for what it is, with `Model default` right there as the
+    way out.
+    """
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                     {"mode": "plan", "narrow": {"alias": "deepseek/deepseek-v3",
+                                                 "efforts": ["low"]}}])
+    stranded = _children(row, "deepseek/deepseek-v3")[-1]
+    assert stranded["label"] == "High — not accepted"
+    # Unclickable, and saying why. The label alone is not the guarantee: a row that reads
+    # "not accepted" and still sends on click would re-send the exact level it just said is refused.
+    assert stranded["disabled"] is True
+    assert "doesn't accept this level" in stranded["title"]
+    assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
+        "Model default", "Low", "High — not accepted"]
+
+
+def test_the_chip_does_not_name_a_level_the_turn_will_not_run_at():
+    """The chip names what will RUN, and the send path drops a level the resolved alias does not
+    accept — so the turn runs at the alias's own default. Naming the stranded level here would be
+    the one thing this control must never do: a confident, specific, false sentence.
+
+    The level is not lost by being left off the chip. It is in the submenu one click away, marked.
+    """
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                     {"mode": "plan", "narrow": {"alias": "deepseek/deepseek-v3",
+                                                 "efforts": ["low"]}}])
+    assert row["label"] == "deepseek/deepseek-v3"
+
+
+def test_a_model_left_with_no_levels_at_all_still_shows_the_one_being_stood_on():
+    """The narrowing that empties the list is the case a `levels.length` gate alone gets wrong: the
+    submenu would vanish entirely and take the standing level with it, which is exactly the state
+    with no way out."""
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                     {"mode": "plan", "narrow": {"alias": "deepseek/deepseek-v3",
+                                                 "efforts": []}}])
+    assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
+        "Model default", "High — not accepted"]
+
+
+def test_a_model_nobody_is_standing_on_gets_no_stranded_row():
+    """`stranded` is about the OVERRIDE's level, not about every row. Without that scope every
+    model in the menu would sprout a submenu the moment one level was picked anywhere."""
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::high"},
+                     {"mode": "implement", "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]}}])
+    # The picked model carries it...
+    assert [c["label"] for c in _children(row, PLAN_MODEL)][-1] == "High — not accepted"
+    # ...and a model nobody picked is a plain row, because it advertises none of its own.
+    assert _children(row, "qwen/qwen-2-5") is None
+
+
+def test_an_override_whose_row_has_no_submenu_is_marked_by_its_own_key():
+    """`selectedPick` asks whether the override's row actually HAS children before composing a child
+    key, and that guard had no witness: dropping it kept every test green while making the menu mark
+    nothing at all for any override whose row is plain — a legacy row, or an alias advertising no
+    levels.
+
+    `weird/a::low` advertises none, so its row stays plain and its own key is what must be marked.
+    """
+    (row,) = _drawn([{"mode": "plan", "pick": "weird/a::low"}])
+
+    assert row["afterSelected"] == ["weird/a::low"]
+    assert _children(row, "weird/a::low") is None
+
+
+def test_a_bare_id_carrying_the_separator_is_sent_whole():
+    """The reason `onClick` looks the key up among the rows it built instead of parsing it.
+
+    A row with no levels fires with its OWN key, and `splitEffortKey` cannot tell `a::low` the model
+    from `a` at level `low` — no reader of a flat key space can. The lookup asks the rows rather than
+    the string, so the promise "no alias contains a colon pair" is not needed anywhere.
+
+    The fixture's `weird/a::low` is deliberately unreal, and that is the point: every id WITHOUT a
+    separator makes the lookup and the parse return the same answer, so a fixture without one cannot
+    tell them apart. Deleting the lookup left all 74 tests green before this existed.
+    """
+    (row,) = _drawn([{"mode": "plan", "pick": "weird/a::low"}])
+
+    assert row["wrote"] == [{"pick": "weird/a::low", "pick_effort": None}]
+    assert row["serverPick"] == "weird/a::low"
+    assert row["serverEffort"] is None
+
+
+def test_the_running_chip_still_names_the_level_the_turn_is_running_at():
+    """The one screen state where the turn is demonstrably running at that level.
+
+    The closed chip used to fall back to a bare model name, so the receipt vanished for the duration
+    of the turn and came back when it ended — "a setting with no receipt reads as a setting that was
+    dropped", which is the open chip's own stated reason to exist, reintroduced exactly where it is
+    least true.
+    """
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                     {"mode": "plan", "running": True}])
+
+    assert row["disabled"] is True
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+
+
+def test_a_pin_and_a_stranded_level_are_both_accounted_for():
+    """Two different subjects — which model runs, and which level it runs at — so the sentences join
+    rather than one replacing the other.
+
+    Under a signing pin, a pick naming the pin's own model collapses, and a level that alias has
+    stopped accepting then had NO surface at all: the chip shows a bare name, the way-back row
+    carries no submenu (#310), and the tooltip said only that the session requires the model. Same
+    join, and the same reason, as #276's lock-and-running-turn pair.
+    """
+    *_, row = _drawn([{"mode": "plan", "signing": "implement",
+                       "seedPick": {"model": SIGNING_MODEL, "effort": "max"}},
+                      {"mode": "plan", "signing": "implement",
+                       "narrow": {"alias": SIGNING_MODEL, "efforts": ["low"]}}])
+
+    assert "required for this session" in row["why"]
+    assert "doesn't accept Max" in row["why"]
+
+
+def test_a_row_with_no_levels_still_writes_the_pick_on_its_own():
+    """The BARE branch of `onClick` — a row that advertises no levels is a plain item, so its own
+    key is what fires, with no `::` in it.
+
+    Every other `pick` step in this file clicks an `X::level` child, so without this the bare branch
+    had no payload assertion anywhere: a regression that split a bare id, or sent an invented level
+    beside it, would not have reddened a single test.
+    """
+    (row,) = _drawn([{"mode": "plan", "pick": IMPLEMENT_MODEL}])
+
+    assert row["wrote"] == [{"pick": IMPLEMENT_MODEL, "pick_effort": None}]
+    assert row["serverPick"] == IMPLEMENT_MODEL
+    assert row["serverEffort"] is None
+    assert row["afterLabel"] == IMPLEMENT_MODEL
+
+
+def test_the_levels_are_read_from_the_resources_listing_when_the_gateway_leg_is_empty():
+    """The composer's second source. `gatewayAliases` empty falls back to `resourceGroups.model_llm`,
+    which carries `reasoning_efforts` too — `provider.py` builds both from one helper.
+
+    This is the shape a real deployment takes when the gateway leg 40x's, and it is NOT the shape
+    the two missing-listing tests above pin: those hold the state before any listing has landed at
+    all. Read only through `gatewayAliases`, a regression that dropped `reasoning_efforts` from the
+    resources payload would leave every other test in this file green.
+    """
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                     {"mode": "plan", "listing": False, "resourceAliases": True}])
+
+    assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
+        "Model default", "Low", "High"]
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+
+
+def test_a_row_that_carries_no_narrow_list_refuses_nothing():
+    """The HIGH from #295's sixth review. An absent FIELD is not an empty list.
+
+    Two producers build `model_llm` rows: the Domino listing, which carries
+    `reasoning_efforts_with_tools`, and `rowFromMember`, which builds from the project's membership
+    file and (for rows written before the field existed) does not. On the fallback path the row
+    EXISTS while the field does not, so a guard that only checks the row would read every level as
+    refused — the chip silently dropping a level the router really is sending, and a tooltip saying
+    the turn runs at the model default while it runs at High.
+
+    That is the confident, specific, false sentence this control must never produce, arrived at from
+    an absence of evidence rather than from evidence. `undefined` means nobody answered; `[]` means
+    the alias answered "none".
+    """
+    (row,) = _drawn([{"mode": "plan", "listing": False, "resourceAliases": "legacy",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "high"}}])
+
+    # The level stands, because nothing has said this alias refuses it.
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+    # And no row anywhere claims a refusal it has no evidence for.
+    assert not any("not accepted" in (r.get("label") or "") for r in _every_row(row))
+    assert "doesn't accept" not in (row["why"] or "")
+
+
+def test_the_listing_mapper_passes_an_absent_narrow_list_through_untouched():
+    """The membership leg's contract, asserted on the OTHER leg and through the real mapper.
+
+    Both legs feed `model_llm`, and the composer prefers `gatewayAliases` whenever it is non-empty,
+    so a gateway listing whose rows lack the narrow field is never rescued by the membership rows
+    behind it. A `|| []` here alone would give one absence two opposite answers decided by which
+    listing happened to reply: unanswered on one leg, "refuses every level" on the other.
+
+    Driven through `SW.api.resourceListing` rather than by seeding the store, because the mapper is
+    the thing under test — seeding steps over the only line that can get this wrong, and a test that
+    steps over its subject stays green when the subject breaks.
+
+    `undefined` means nobody said; `[]` means the alias said none. The key is therefore ABSENT here,
+    not empty — JSON drops an undefined value, which is exactly the distinction being kept.
+    """
+    (row,) = _drawn([{"listingRoute": True}])
+    absent, present = row["rows"]
+
+    # Absent stays absent — the passthrough does not invent `[]`.
+    assert absent["reasoning_efforts"] == ["low", "high"]
+    assert "reasoning_efforts_with_tools" not in absent
+    # And present arrives intact. Without this half the passthrough could be deleted outright and
+    # every test would stay green, because absent maps to absent either way.
+    assert present["reasoning_efforts_with_tools"] == ["none"]
+    assert present["reasoning_efforts"] == ["none", "low", "high"]
+
+
+def test_the_gateway_leg_reads_an_absent_narrow_list_as_no_evidence():
+    """And what the menu does with such a row: nothing. No refusal, no dropped level.
+
+    The composer's half of the same contract, on the leg it prefers.
+    """
+    (row,) = _drawn([{"mode": "plan", "listing": "legacy",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "high"}}])
+
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+    assert not any("not accepted" in (r.get("label") or "") for r in _every_row(row))
+
+
+def test_a_row_with_no_narrow_list_offers_no_submenu_and_that_is_the_trade():
+    """The other half of the legacy-row path, which nothing asserted.
+
+    Its neighbours pin that nothing is REFUSED. This pins what is given up for that: with no narrow
+    list there is nothing honest to offer, so the control is absent rather than wrong. Falling back
+    to the wide enum would put `gpt-5.4 · High` on a chip over a turn the shim runs at the alias
+    default — this ticket's first HIGH, re-entered from behind.
+
+    Asserted because a behaviour nobody witnesses is a behaviour nobody chose: unwitnessed, the next
+    reader sees a missing submenu and "fixes" it with the wide list.
+    """
+    (row,) = _drawn([{"mode": "plan", "listing": "legacy",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "high"}}])
+
+    # `deepseek/deepseek-v3` advertises low and high, and still offers neither — because this row
+    # does not say which of them survive beside tools.
+    assert _children(row, "deepseek/deepseek-v3") is None
+    # The level stands and is named, so nothing is lost silently...
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+    # ...and the way back is still drawn, which is the exit while the control is absent.
+    assert "__pinned__" in [i.get("key") for i in row["items"]]
+
+
+def test_a_pick_matching_the_assignments_own_level_claims_no_difference():
+    """The sentence says the turn is NOT running at the assignment's level. It has to be true.
+
+    Plan's assignment here is `medium`. Pick Plan's model at `medium` while in Implement, switch to
+    Plan, and the pick agrees with the assignment on both halves — so a tooltip asserting a
+    difference would be a confident, specific falsehood, reached through the one door the chip's
+    other paragraphs do not cover: a claim about the ASSIGNMENT rather than about the pick.
+
+    The composer has the data — `catalog` carries `<slot>_effort` beside `<slot>`, out of the same
+    payload `pinnedModel` is read from — and simply was not reading it.
+    """
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::medium"}, {"mode": "plan"}])
+
+    assert row["label"] == f"{PLAN_MODEL} · Medium"
+    assert "not at the assignment's" not in (row["why"] or "")
+
+
+def test_a_pick_differing_from_the_assignment_still_says_so():
+    """The other side of the same gate — the sentence must survive where it is true. A guard that
+    silenced both cases would pass the test above and remove the only account of the level."""
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::high"}, {"mode": "plan"}])
+
+    assert row["label"] == f"{PLAN_MODEL} · High"
+    assert "not at the assignment's Medium" in row["why"]
+
+
+def test_a_stranded_level_is_still_accounted_for_while_a_turn_runs():
+    """The running chip draws a disabled Button, not the Dropdown — so the submenu the rest of this
+    file calls "where a stranded level is read" does not exist mid-turn, and the label drops the
+    level because it will not run.
+
+    Reachable exactly as `withEfforts` describes: the measured table narrows under a live pick
+    (#280). Without the sentence the chip quietly loses `· High` and says only which model runs,
+    which is the receipt-less setting this ticket keeps refusing to ship.
+    """
+    *_, row = _drawn([{"mode": "plan", "seedPick": {"model": PLAN_MODEL, "effort": "high"}},
+                      {"mode": "plan", "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]},
+                       "running": True}])
+
+    assert row["disabled"] is True
+    assert "doesn't accept High" in row["why"]
+    assert "This turn is running on" in row["why"]
+
+
+def test_a_stranded_level_on_a_real_override_is_accounted_for_mid_turn_too():
+    """The override half of the running-turn sentence, which the collapse gate silently excluded.
+
+    `collapsedStranded` is `!override`-gated, so the sentence existed only for a pick naming the
+    mode's own model. A stranded level on an ordinary override got nothing mid-turn: no receipt on
+    the label, no submenu (the running branch draws a disabled Button), no sentence.
+
+    Its twin passes because ITS fixture is the collapsed case. Fixing one side of a pair and leaving
+    the other is the third time on this ticket — so this asserts the side that was unwitnessed.
+    """
+    *_, row = _drawn([{"mode": "implement",
+                       "seedPick": {"model": PLAN_MODEL, "effort": "high"}},
+                      {"mode": "implement", "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]},
+                       "running": True}])
+
+    assert row["disabled"] is True
+    assert f"{PLAN_MODEL} doesn't accept High" in row["why"]
+
+
+def test_an_assignment_level_the_alias_drops_beside_tools_is_no_difference():
+    """The assignment half of the comparison, narrowed the same way the pick half already was.
+
+    The drawer validates a slot's level against the WIDE enum (`alias.get("reasoning_efforts")`), so
+    a slot may legitimately hold a level the alias drops beside tools — `plan_effort="high"` on
+    `gpt-5.4`, whose measured enum carries `high` and whose tool-carrying list is `["none"]`.
+
+    Then the unpicked slot and a pick carrying no level BOTH run at the model default, and comparing
+    a narrowed value against an un-narrowed one reports a difference that does not exist. Same
+    falsehood cf75c76 closed, reached through the assignment half rather than the pick half.
+    """
+    _, row = _drawn([{"mode": "implement", "pick": "openai/gpt-5.4::"},
+                     {"mode": "plan", "slots": {"plan": "openai/gpt-5.4"},
+                      "efforts": {"plan_effort": "high"}}])
+
+    assert row["label"] == "openai/gpt-5.4"
+    assert "not at the assignment's" not in (row["why"] or "")
+
+
+def test_an_assignment_level_the_alias_keeps_is_still_a_difference():
+    """The other side, so the narrowing is not simply silencing the comparison: `low` survives
+    beside tools on the fixture's deepseek, so a pick carrying no level really does differ."""
+    _, row = _drawn([{"mode": "implement", "pick": "deepseek/deepseek-v3::"},
+                     {"mode": "plan", "slots": {"plan": "deepseek/deepseek-v3"},
+                      "efforts": {"plan_effort": "low"}}])
+
+    assert "at Model default, not at the assignment's Low" in row["why"]
+
+
+def test_the_pin_supplies_the_effort_only_where_it_moves_the_model():
+    """`pinnedSlot` is the signing slot when one exists — right for the MODEL, wrong for the EFFORT.
+
+    `_pin_signing` early-returns the mode slot's decision UNMODIFIED when the signing slot names the
+    same alias (`if model == decision.model: return decision`), so the effort that runs is the mode
+    slot's, not the pin's. Reading the signing slot's either way compares the pick against a level
+    the router would never have used.
+
+    Here plan and implement both hold the signing model, at `low` and `high`. In Implement a
+    collapsed pick at `high` matches what clearing would actually give — so there is no difference
+    to report, and a sentence claiming one would be the confident, specific falsehood this control
+    must never produce.
+    """
+    (row,) = _drawn([{"mode": "implement", "signing": "plan", "alsoSigning": "implement",
+                      "efforts": {"plan_effort": "low", "implement_effort": "high"},
+                      "seedPick": {"model": SIGNING_MODEL, "effort": "high"}}])
+
+    # Seeded rather than clicked: the signing model only enters the catalog on this step, so there
+    # is no row to click on a prior one.
+    assert "not at the assignment's" not in (row["why"] or "")
+
+    # And the mirror, so the gate is not simply silencing everything: with the mode slot at `low`,
+    # a pick at `high` DOES differ, and the sentence must survive and name `low`.
+    (mirror,) = _drawn([{"mode": "implement", "signing": "plan", "alsoSigning": "implement",
+                         "efforts": {"plan_effort": "high", "implement_effort": "low"},
+                         "seedPick": {"model": SIGNING_MODEL, "effort": "high"}}])
+    assert "not at the assignment's Low" in mirror["why"]
+
+
+def test_a_stranded_level_on_a_real_override_is_accounted_for_when_idle_too():
+    """The idle twin of the mid-turn sentence, which was strictly less informative for one state.
+
+    On a real override the label drops the level (it will not run) and the only account was a
+    disabled row two hovers into a submenu — while the SAME state mid-turn got a sentence, on the
+    reasoning that a chip with no reachable menu needs one. An idle chip has a reachable menu, but
+    it does not have a reachable EXPLANATION until you go looking.
+
+    The row pointer stays collapse-only: on a real override the submenu is where the exit is.
+    """
+    (row,) = _drawn([{"mode": "plan",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "high"},
+                      "narrow": {"alias": "deepseek/deepseek-v3", "efforts": ["low"]}}])
+
+    assert "deepseek/deepseek-v3 doesn't accept High" in row["why"]
+    # Asserted against the phrase the collapsed case actually emits. "The row below" is a string
+    # nobody produces any more, so an absence check on it would pass whatever the code did — the
+    # vacuous shape this file has now found four times.
+    assert "Clear the pick" not in row["why"]
+
+
+def test_an_alias_that_keeps_no_level_beside_tools_strands_whatever_stands_on_it():
+    """The state every production alias except two is in today, and nothing covered it.
+
+    `sonnet`, `opus`, the Gemmas — every alias nobody has probed and the gateway publishes no enum
+    for — answer an EMPTY `reasoning_efforts_with_tools`. Empty is an answer ("this alias keeps no
+    level beside tools"), not an absence, so a level standing on one is stranded and
+    `enforcement.py` really does drop every level for exactly those aliases.
+
+    The fixture could express "advertises none, nothing standing" and "absent field, level
+    standing", but not this pair — which is the commonest pairing in production.
+    """
+    (row,) = _drawn([{"mode": "plan",
+                      "seedPick": {"model": "anthropic/claude-builder", "effort": "high"}}])
+
+    # The chip does not name a level the shim will drop...
+    assert row["label"] == "anthropic/claude-builder"
+    assert "anthropic/claude-builder doesn't accept High" in row["why"]
+    # ...and the row grows a submenu it would not otherwise have, BECAUSE a level is stranded on
+    # it: `withEfforts` draws when `levels.length || stranded`. So the level has somewhere to be
+    # read and `Model default` is a reachable exit — which is exactly the case that rule exists for,
+    # and the reason an alias offering nothing is not simply skipped.
+    kids = _children(row, "anthropic/claude-builder")
+    assert [c["label"] for c in kids] == ["Model default", "High — not accepted"]
+    assert kids[-1]["disabled"] is True
+
+
+def test_a_stored_level_can_never_collide_with_the_no_level_row():
+    """The no-level row's key rests on the ENCODING, not on a promise about what can be stored.
+
+    `POST /project/model` deliberately does not validate `pick_effort` — `ModelControl.pick` stores
+    an unrecognised level and lets the send path drop it — so a level of literally `"default"` was
+    storable out of band, and the menu then emitted two children with one key: the enabled no-level
+    row and the disabled stranded one. An empty suffix cannot collide, because an empty level is not
+    a level anywhere and `pick` already normalises `""` to none.
+
+    Counted rather than inspected: two items sharing a key is something no `selectedKeys` assertion
+    can see, since Ant marks one and the other is simply unreachable.
+    """
+    (row,) = _drawn([{"mode": "plan",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "default"}}])
+
+    keys = row["childKeys"]
+    assert len(keys) == len(set(keys)), keys
+    # And the out-of-band level is still shown for what it is, rather than silently swallowed.
+    assert "Default — not accepted" in [c["label"] for c in _children(row, "deepseek/deepseek-v3")]
+
+
+def test_the_lock_notice_reads_the_selector_not_the_running_turn():
+    """The notice answers "what would this composer run if the lock were not on" — a question about
+    the NEXT turn, so it is the selector's mode. The chip answers what the running turn is on.
+
+    Scoping the chip to the turn leaked into here, because `pickedModel` is not a menu value and the
+    notice renders regardless of `buildRunning`. Mid-turn it then announced a lock switch for the
+    slot the RUNNING turn used, while the next turn needs no switch at all.
+
+    The justification for the chip's change was "while a turn is pinned no menu is drawn" — true of
+    the menu, and applied to a consumer that is not the menu.
+    """
+    (row,) = _drawn([{
+        "mode": "plan", "turnMode": "implement", "running": True,
+        "sensitivity": {"enabled": True, "locked": True, "group": "approved-for-sensitive",
+                        "approved": [PLAN_MODEL], "datasets": ["claims"], "refusal": None,
+                        "model": PLAN_MODEL, "chat_model": None, "slot_models": {},
+                        "reason": "claims is sensitive"},
+        "app": "Claims app", "declaredIn": "binding",
+    }])
+
+    # Plan's own model is the approved one, so the next turn moves nothing and there is nothing to
+    # announce — even though the turn currently running is pinned to Implement, whose model is not.
+    assert row["lockNotice"] is None
+
+
+def test_the_running_chip_describes_the_turn_not_the_picker():
+    """The mode selector stays live mid-turn, so the selected mode and the running one disagree the
+    moment somebody switches during a build — `modeQueued` exists to say exactly that.
+
+    Every value the chip is built from was derived from the SELECTION. Switch to Auto during a Plan
+    build and the chip named the Auto slot and dropped the pick's level, while the turn ran on the
+    pick at that level. Two tests in this file designate this chip as the only surface for the level
+    receipt and the stranded sentence, on the stated premise that the turn is demonstrably running
+    at what it names — a premise that held only while the two modes agreed.
+    """
+    *_, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                      {"mode": "auto", "turnMode": "plan", "running": True}])
+
+    # The turn is pinned to Plan and running the pick, so the chip says so — not Auto's slot.
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+    assert "This turn is running on deepseek/deepseek-v3" in row["why"]
+
+
+def test_the_running_chip_honours_no_pick_a_turn_in_auto_never_read():
+    """The other direction, and the one that invents rather than drops. A pick standing while the
+    turn runs in Auto is honoured by nothing — `_resolve_build` reads `picked_model` in Plan and
+    Implement only — so a chip reading the selector names a model and a level the turn never saw.
+    """
+    *_, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                      {"mode": "plan", "turnMode": "auto", "running": True}])
+
+    assert "deepseek" not in row["label"]
+    assert "High" not in row["label"]
+
+
+def test_the_running_tooltip_points_at_no_row_it_cannot_reach():
+    """The running chip has no menu behind it, so the open menu's exit sentence is false there.
+
+    Joined verbatim it produced two consecutive sentences telling the person to use a row they
+    cannot reach and then to wait before changing anything. The FACT travels to both chips; the way
+    out belongs only where there is one.
+    """
+    *_, row = _drawn([{"mode": "plan", "seedPick": {"model": PLAN_MODEL, "effort": "high"}},
+                      {"mode": "plan", "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]},
+                       "running": True}])
+
+    assert "doesn't accept High" in row["why"]
+    # The EXIT clause, not a direction: "Clear the pick" is an instruction with no menu in it, and
+    # the running chip has no menu to give. Asserted against the exact phrase the open chip uses, so
+    # this stays a real absence rather than a string nobody emits any more.
+    assert "Clear the pick" not in row["why"]
+    # And the open menu still carries it, because there the pick can be cleared.
+    (open_row,) = _drawn([{"mode": "plan", "seedPick": {"model": PLAN_MODEL, "effort": "high"},
+                           "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]}}])
+    assert "Clear the pick to put the mode back on its assignment." in open_row["why"]
+
+
+def test_a_collapsed_pick_with_no_level_still_differs_from_an_assignment_that_has_one():
+    """The commoner shape of all — pick a model, leave levels alone — and it had no sentence.
+
+    A collapsed pick that names NO level still overrides: the router answers
+    `plan-override … effort=None` where the slot would have answered its assigned `medium`. Gating
+    the sentence on a level having been CHOSEN covered only the rarer half, where somebody had
+    touched one.
+    """
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::"}, {"mode": "plan"}])
+
+    assert row["label"] == PLAN_MODEL
+    assert "at Model default, not at the assignment's Medium" in row["why"]
+
+
+def test_none_is_a_level_and_survives_the_whole_write_path():
+    """`Model default` and `None` sit one row apart and mean opposite things — send no field and let
+    the alias reason as it likes, versus send the field and turn reasoning off. `effortLabel`'s
+    header exists for that distinction.
+
+    Every other pick step in this file clicks `::`, `::high` or a bare id, so a regression
+    collapsing `none` into `null` at any of the three hops — `splitEffortKey`, `store.setBuildModel`,
+    `api.setBuildModel` — would send "reason as you like" where the person asked for reasoning OFF,
+    and nothing would redden.
+    """
+    (row,) = _drawn([{"mode": "plan", "pick": "openai/gpt-5.4::none"}])
+
+    assert row["wrote"] == [{"pick": "openai/gpt-5.4", "pick_effort": "none"}]
+    assert row["serverEffort"] == "none"
+    assert row["afterLabel"] == "openai/gpt-5.4 · None"
+
+
+def test_a_pin_does_not_swallow_the_accepted_level_sentence():
+    """The commoner twin of the stranded join, and the one that lost its only surface.
+
+    Behind a `||`, a signing pin suppressed the level sentence entirely: the chip read
+    `model · Max` while the tooltip spoke only about the session's required model. The way-back row
+    carries no submenu (#310), so the tooltip is the only place the level can be accounted for —
+    and the pin is about a different subject, so the two join rather than one winning.
+    """
+    (row,) = _drawn([{"mode": "plan", "signing": "implement",
+                      "seedPick": {"model": SIGNING_MODEL, "effort": "max"}}])
+
+    assert row["label"] == f"{SIGNING_MODEL} · Max"
+    assert "required for this session" in row["why"]
+    assert "Clear the pick to use the assignment's." in row["why"]
+
+
+def test_a_missing_alias_listing_is_not_read_as_a_refusal():
+    """The listing absent and the alias advertising nothing read identically off
+    `reasoning_efforts` — both are `[]` — and they are opposite facts. `gatewayAliases` starts empty
+    and a gateway leg that 40x's at boot leaves it that way, so this is the state a Workbench opens
+    in rather than an exotic one.
+
+    Read as a refusal, a level the model takes perfectly well gets marked `— not accepted` and the
+    chip drops it: the confident, specific, false sentence the chip's own rule forbids, arrived at
+    through an absence of evidence. `store.js`'s `kept()` draws the same line for the drawer's half
+    — an alias the listing did not carry is a prediction with no evidence, not evidence of a drop.
+    """
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                     {"mode": "plan", "listing": False}])
+
+    # The chip still names the level, because nothing has said the model refuses it.
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+
+
+def test_a_missing_listing_puts_no_refusal_in_the_menu_either():
+    """The menu's half of the rule above, asserted apart from the chip's because they hang off two
+    different reads and one plant only reds the first of them. With no listing there is nothing to
+    offer, so the row is plain — what it must not be is a row stating a refusal it has no evidence
+    for."""
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                     {"mode": "plan", "listing": False}])
+
+    assert _children(row, "deepseek/deepseek-v3") is None
+    # Over every row AND every child. `— not accepted` is only ever produced as a CHILD label, so a
+    # sweep of `items` alone passes whether or not the bug is present — it is the shape of assertion
+    # this file has caught twice now, written a third time by the author who caught them.
+    assert not any("not accepted" in (r.get("label") or "") for r in _every_row(row))
+
+
+def test_the_listing_coming_back_restores_the_submenu():
+    """The absent-listing row is a waiting state, not a dead end: once the aliases land the level is
+    offered again, marked as the selection it already was."""
+    _, _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                        {"mode": "plan", "listing": False},
+                        {"mode": "plan", "listing": True}])
+
+    assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
+        "Model default", "Low", "High"]
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+
+
+def test_clearing_the_override_clears_its_level_with_it():
+    """Criterion 5's browser half. The way back sends no level, so the slot's own ASSIGNMENT effort
+    is what applies from the next turn — not the one that was picked for a model nobody is on any
+    more, and not none."""
+    _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
+                     {"mode": "plan", "pick": "__pinned__"}])
+    assert row["wrote"] == [{"pick": None, "pick_effort": None}]
+    assert row["serverEffort"] is None
+    assert row["afterSelected"] == ["__pinned__"]
 
 
 def test_ask_offers_no_override_but_is_no_longer_a_dead_control():
@@ -136,7 +927,7 @@ def test_a_pick_made_in_implement_does_not_leak_into_auto():
     it: `_resolve_build` only reads `picked_model` in Plan and Implement (ADR-0017's own words,
     "Auto follows phase"). The picker's `override` must forget it too, or the chip goes on naming a
     model nobody assigned to this phase and the assignments drawer never mentions."""
-    _, row = _drawn([{"mode": "implement", "pick": PLAN_MODEL}, {"mode": "auto"}])
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::"}, {"mode": "auto"}])
     assert row["offered"] is False
     assert row["label"] == f"{IMPLEMENT_MODEL} · building"
 
@@ -166,13 +957,94 @@ def test_the_one_closed_state_left_can_actually_be_hovered():
         assert row["disabled"] is False, row["step"]
 
 
-def test_an_override_naming_the_pinned_model_still_reads_as_the_default():
+def test_an_override_naming_the_pinned_model_is_not_mis_marked_in_the_menu():
     """Pick Plan's model while in Implement, then switch to Plan: the override now names the model
-    Plan is already pinned to. Read as an override it would mark no row selected and drop the
-    "(default)" off a control that is running exactly the default."""
-    _, row = _drawn([{"mode": "implement", "pick": PLAN_MODEL}, {"mode": "plan"}])
-    assert row["label"] == f"{PLAN_MODEL} (default)"
+    Plan is already pinned to. Read as an override it would mark no row selected at all, because the
+    menu keys that model as the way-back row rather than under its own id.
+
+    This also used to assert the LABEL read `(default)`, on the premise that such a pick is "running
+    exactly the default". That premise died when per-slot efforts landed (#281/#282) and nobody
+    noticed: the router answers `plan-override` with `effort=None` where the unpicked slot answers
+    `plan-pinned` with `effort=catalog.plan_effort`. Same model, different level, one label. What
+    the chip says now is two tests down.
+    """
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::"}, {"mode": "plan"}])
     assert row["selectedKeys"] == ["__pinned__"]
+
+
+def test_a_pick_that_collapses_still_names_the_level_it_runs_at():
+    """The collapse above is right about the MODEL and wrong about the LEVEL.
+
+    Pick plan's model at `High` while in Implement, then switch to Plan: `override` collapses,
+    because the model really is the slot's — but the router still returns PLAN_OVERRIDE carrying
+    `picked_effort`, so the turn runs at High while the assignments drawer says the slot's own
+    level applies. `(default)` over that would have the control claim the slot's setting while the
+    turn runs the person's, which is this ticket's defect arriving through the one door the menu
+    cannot mark.
+
+    The menu's mark is left on `__pinned__` deliberately and that row does clear the pick, so the
+    selection is incomplete rather than false. The chip is the half that has to be true; what the
+    way-back row should mean once it can also carry a level is #310.
+    """
+    _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::high"}, {"mode": "plan"}])
+    assert row["label"] == f"{PLAN_MODEL} · High"
+    assert row["selectedKeys"] == ["__pinned__"]
+    # And the tooltip accounts for it, because the menu cannot: the way-back row is marked and
+    # carries no submenu (#310), so this is the only place the level can be explained or its exit
+    # named. The stranded twin had a sentence from the start; this, the commoner case, had none.
+    # Names the assignment's actual level, not a generic "the assignment's level" — the person
+    # comparing two numbers should not have to open the drawer to learn the second one.
+    assert "at High, not at the assignment's Medium" in row["why"]
+    assert "Clear the pick" in row["why"]
+
+
+def test_a_collapsed_pick_whose_level_is_stranded_claims_no_default():
+    """The two special cases meeting: the pick names the mode's own pinned model AND its level has
+    stopped being one that model takes.
+
+    Neither arm of the chip fits. The level will not run, so naming it would be false — and
+    `(default)` is a claim about the SLOT'S ASSIGNMENT, which is not what routes either: a live pick
+    makes the decision an OVERRIDE, the shim drops the refused level, and the turn lands on the
+    ALIAS's default, a third thing again. So the chip names the model and stops.
+
+    The tooltip carries what the label cannot, because this is the one stranded level with nowhere
+    to be drawn: the way-back row has no submenu (#310), so without the sentence the person is told
+    nothing at all about a level they set and the turn is not running.
+    """
+    *_, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::high"},
+                      {"mode": "plan"},
+                      {"mode": "plan", "narrow": {"alias": PLAN_MODEL, "efforts": ["low"]}}])
+
+    assert row["label"] == PLAN_MODEL
+    assert "(default)" not in row["label"]
+    assert "doesn't accept High" in row["why"]
+    # "Turns run", not "this turn runs" — the same sentence reaches the idle dropdown, where there
+    # is no turn for a present-tense claim to be about.
+    assert "Turns run at the model default" in row["why"]
+
+
+def test_only_an_unpicked_slot_is_allowed_to_call_itself_the_default():
+    """One rule behind the shapes above: `(default)` is a claim about the SLOT'S ASSIGNMENT — its
+    model and its effort together — so it may only be made where that assignment is what routes.
+
+    Any live pick makes the decision an OVERRIDE, and an override carries the PICK's effort, never
+    `catalog.<slot>_effort`. Measured rather than argued: with `plan_effort="low"`, a pick naming
+    plan's own model resolves `plan-override … effort=None` while the unpicked slot resolves
+    `plan-pinned … effort=low`. Same model, same label until now, a different level.
+
+    So a collapsed pick reads as a bare name — true, and silent about a level it does not have —
+    and only a slot nobody has picked keeps the suffix.
+    """
+    implement, collapsed = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::"},
+                                   {"mode": "plan"}])
+    # Implement's own row is untouched by a pick that has not happened yet.
+    assert implement["label"] == f"{IMPLEMENT_MODEL} (default)"
+    # Plan's row carries a live pick naming its own model: a bare name, no claim about the slot.
+    assert collapsed["label"] == PLAN_MODEL
+
+    # And with no pick anywhere, the suffix is back — this is the one shape that earns it.
+    (clean,) = _drawn([{"mode": "plan"}])
+    assert clean["label"] == f"{PLAN_MODEL} (default)"
 
 
 def test_the_open_weight_list_is_read_from_healthz():
@@ -209,9 +1081,9 @@ def test_a_pinned_session_still_offers_the_override_that_beats_the_pin():
     """Precedence is in-session act > pin, so taking the menu away would be a lie in the other
     direction — the pick really does win."""
     (row,) = _drawn([{"mode": "plan", "signing": "implement",
-                      "pick": "deepseek/deepseek-v3"}])
+                      "pick": "deepseek/deepseek-v3::"}])
     assert row["offered"] is True
-    assert row["wrote"] == [{"pick": "deepseek/deepseek-v3"}]
+    assert row["wrote"] == [{"pick": "deepseek/deepseek-v3", "pick_effort": None}]
     assert row["afterLabel"] == "deepseek/deepseek-v3"
 
 
@@ -255,7 +1127,8 @@ def test_an_override_that_beat_the_pin_takes_the_pin_s_sentence_with_it():
     """Precedence is in-session act > pin — `_pin_signing` hands a PLAN_OVERRIDE decision straight
     back — so once a pick is in, the chip names the pick and the pin's sentence is false. It used to
     be shown anyway, which had the control contradict itself in two consecutive sentences (#276)."""
-    _, after = _drawn([{"mode": "plan", "signing": "implement", "pick": "deepseek/deepseek-v3"},
+    _, after = _drawn([{"mode": "plan", "signing": "implement",
+                        "pick": "deepseek/deepseek-v3::"},
                        {"mode": "plan", "running": True}])
     assert after["label"] == "deepseek/deepseek-v3"
     assert "required for this session" not in (after["why"] or "")

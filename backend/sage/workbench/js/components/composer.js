@@ -31,6 +31,33 @@ window.SW = window.SW || {};
     return value.charAt(0).toUpperCase() + value.slice(1);
   }
 
+  // Build's menu offers a level only underneath the model it belongs to, so one click has to
+  // deliver both halves of the pick (ADR-0049). The key carries them; there is no second click and
+  // no window in between where a level chosen for one alias stands against another.
+  //
+  // `::` is the join. What keeps it safe is NOT the separator being impossible in an alias id — the
+  // menu is also clicked with a BARE model id, from a row that advertises no levels, and no amount
+  // of `lastIndexOf` can tell `foo::bar` the model from `foo` at level `bar`. So the caller says
+  // which it has rather than the string being asked to confess: `onClick` looks the key up among
+  // the rows it just built, and splits only one that is not a row of its own.
+  const EFFORT_SEP = '::';
+  // The no-level row keys as an EMPTY suffix rather than the word `default`. `default` read well and
+  // rested on an invariant nobody enforces: the route deliberately does not validate `pick_effort`
+  // (`ModelControl.pick` stores an unrecognised level and lets the send path drop it), so a stored
+  // level of literally `"default"` would emit two children with one key — the enabled no-level row
+  // and the disabled stranded one — and the menu would mark the wrong one.
+  //
+  // An empty level cannot collide because it is not a level anywhere: `_EFFORT_VALUES` holds none,
+  // and `ModelControl.pick` already normalises `""` to no effort. That is a property of the
+  // encoding rather than a promise about what somebody might store.
+  const effortKey = (model, effort) => `${model}${EFFORT_SEP}${effort || ''}`;
+  function splitEffortKey(key) {
+    const at = key.lastIndexOf(EFFORT_SEP);
+    if (at < 0) return [key, null];
+    const level = key.slice(at + EFFORT_SEP.length);
+    return [key.slice(0, at), level || null];
+  }
+
   // Session context, then this Thread's artifacts, then project Resources, then the Project's
   // Uploads, then the selected app's Attachments, then the catalogue this project has not joined
   // yet. The working-set-before-catalogue half of that order is `SW.util.workingSetFirst`, shared
@@ -285,7 +312,7 @@ window.SW = window.SW || {};
     const {
       model, reasoningEffort, attachments, scope, resourceIndex, resourceGroups,
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
-      catalog, buildModel, buildPhase, openWeightModels, signingSlot,
+      catalog, buildModel, buildEffort, buildPhase, openWeightModels, signingSlot,
       apps, activeApp, composerSeed, queuedTurns, catalogueParents, appAttachments,
       sensitivity, sensitivityNoticeFor, crossingRefused,
     } = SW.store.get();
@@ -320,7 +347,45 @@ window.SW = window.SW || {};
     // approved Alias barred. `true`: this chip is drawn under `!showMode`, so the turn behind it is
     // a Chat turn, which the router pins to the sovereign Ask slot rather than the build mode.
     const modelLabel = SW.util.lockedLabel(sensitivity, effectiveModel, pickedLabel, true);
-    const efforts = (activeAlias && activeAlias.reasoning_efforts) || [];
+    // One rule for "which levels does this alias offer", shared by the Chat picker below and the
+    // Build menu further down. Validity is per alias and measured (ADR-0049), not anything a name
+    // predicts, so the answer has one source; two copies of it in one file could only disagree,
+    // and a menu offering a level its alias refuses is a 400 on the turn rather than a wrong label.
+    const aliasRow = (id) => aliases.find((a) => a.alias === id);
+    const effortsFor = (id) => ((aliasRow(id) || {}).reasoning_efforts) || [];
+    // What BUILD may offer, which is a different question from the enum and has to be (ADR-0049).
+    // Every Build turn carries function tools, and `enforcement.py` drops a level the alias will not
+    // take beside them — `gpt-5.4` advertises five and keeps one. Offering the wide list here puts
+    // `gpt-5.4 · High` on the chip over a turn running at the alias's own default, which is this
+    // ticket's own defect arriving through the control it added (#295).
+    //
+    // A second READER of a distinction the server already draws, not a second rule: the narrowing
+    // is `EFFORTS_WITH_TOOLS` in `router/models.py`, published as its own field rather than copied
+    // into the browser, which ADR-0049 refuses by name. The `length > 0` rule below is still shared
+    // with the Chat chip and still has one copy.
+    //
+    // An ABSENT field is not an empty list — `undefined` means no evidence, `[]` means the alias
+    // really offers none — and the two absences get DIFFERENT treatment here and in `strandedLevel`,
+    // deliberately, because the honest answer to "no evidence" differs by question.
+    //
+    // Asked "may this level stand?", no evidence means YES: `strandedLevel` refuses nothing, because
+    // refusing on an absence is the false claim (#295's second HIGH).
+    //
+    // Asked "which levels may I OFFER?", no evidence means NONE, and that is this function. The list
+    // is what the send path will enforce; without it there is nothing honest to put in a submenu.
+    // Falling back to the wide enum would put `gpt-5.4 · High` on the chip over a turn the shim runs
+    // at the alias default — this ticket's first HIGH, re-entered through the back door. So the
+    // control is absent rather than wrong, which is the trade this whole seam keeps making.
+    //
+    // The cost, stated because it is real: a row from a producer that has not learned this field
+    // offers no submenu at all, and a level already standing can then only be cleared through the
+    // way-back row. Reachable while the gateway leg is refusing AND the membership row predates
+    // #295; the next successful listing carries the field and restores the control.
+    const buildEffortsFor = (id) => {
+      const row = aliasRow(id);
+      return row && row.reasoning_efforts_with_tools ? row.reasoning_efforts_with_tools : [];
+    };
+    const efforts = effortsFor(effectiveModel);
 
     // What a chip's click actually did. In Build a mentioned Dataset file is an Attachment — the
     // bytes are copied into the selected app and a committed manifest entry rehydrates them on
@@ -356,6 +421,17 @@ window.SW = window.SW || {};
     const buildModes = BUILD_MODES();
     const activeBuildMode = buildModes.find((m) => m.id === buildMode) || buildModes[0];
     const modeQueued = showMode && buildRunning && buildTurnMode && buildTurnMode !== buildMode;
+    // Which mode the MODEL chip describes. While a turn runs that is the turn's, not the picker's:
+    // the mode picker stays live mid-turn — `modeQueued` one line up exists to say so — and every
+    // value derived below is about which model and which level are ON THE WIRE. Switch the selector
+    // to Auto during a Plan build and a chip reading the selector names the Auto slot and drops the
+    // pick's level, while the turn runs on the pick at that level; switch it to Plan during an Auto
+    // build and the chip names a pick Auto honours no part of.
+    //
+    // Falls back to the selection whenever no turn holds a mode, so the menu path is unchanged by
+    // construction — `buildTurnMode` is set only while a turn is pinned, and while one is pinned no
+    // menu is drawn at all.
+    const chipModeId = (buildRunning && buildTurnMode) || activeBuildMode.id;
 
     // A prompt written somewhere else and left here to read, edit or drop — the panel's cleanup
     // offer after an app-scoped removal is the one that writes it (ADR-0011). Taken as a DRAFT and
@@ -565,11 +641,27 @@ window.SW = window.SW || {};
     // every phase (ADR-0032). This copy of the precedence could not see that rule, and every line
     // below reads `pinnedModel` — so the label, the `(default)` marker and the override comparison
     // were all naming a model the turn would not run on.
-    const pinnedSlot = signingSlot || (activeBuildMode.id === 'ask'
+    // One derivation, called with whichever mode the READER is asking about. The chip asks about
+    // the turn; the lock notice asks about the next turn, which is the selector's. Scoping this
+    // once and letting every reader inherit it is what leaked a turn-scoped answer into a notice
+    // that renders mid-turn — the justification "while a turn is pinned no menu is drawn" was true
+    // of the MENU and applied to consumers that are not the menu.
+    const slotOf = (modeId) => signingSlot || (modeId === 'ask'
       ? 'ask'
-      : activeBuildMode.id === 'auto'
+      : modeId === 'auto'
         ? (buildPhase === 'implement' ? 'implement' : 'plan')
-        : activeBuildMode.id);
+        : modeId);
+    const runsFor = (modeId) => {
+      const slot = slotOf(modeId);
+      const model = (catalog && catalog[slot]) || '';
+      const canOverride = modeId === 'plan' || modeId === 'implement';
+      return {
+        slot,
+        model,
+        override: canOverride && buildModel && buildModel !== model ? buildModel : '',
+      };
+    };
+    const pinnedSlot = slotOf(chipModeId);
     const pinnedModel = (catalog && catalog[pinnedSlot]) || '';
     // The sensitivity lock, read once for both pickers below (ADR-0043). Chat is gated exactly as
     // Build is — `llm_router` applies the lock OUTSIDE their fork — so both menus have to say so,
@@ -584,7 +676,7 @@ window.SW = window.SW || {};
       || SW.util.lockReason(sensitivity, name);
     const barredModel = (name) => lockedHere && !SW.util.isApproved(sensitivity, name);
 
-    const overridable = activeBuildMode.id === 'plan' || activeBuildMode.id === 'implement';
+    const overridable = chipModeId === 'plan' || chipModeId === 'implement';
     // The four configured slots reduced to the models behind them: two slots pointing at one model
     // are one row, not two the person has to tell apart.
     const slotModels = catalog ? [...new Set([catalog.plan, catalog.implement, catalog.ask])] : [];
@@ -623,28 +715,195 @@ window.SW = window.SW || {};
     const pinWhy = signingSlot && !override
       ? `${pinnedModel} is required for this session, so every Build turn uses it.`
       : '';
+    // The chip is the only thing left on screen once the menu closes, so a level picked in there
+    // has to be readable here too — otherwise the person who chose one has no evidence it took, and
+    // a setting with no receipt reads as a setting that was dropped. Only when they chose one: a
+    // pick left on the alias's own default says nothing, which is what it did before this existed.
+    // The level standing against `id` that its alias will not take — the one the menu has to show
+    // marked rather than drop, and the one the chip must not name. Only ever the OVERRIDE's:
+    // `buildEffort` belongs to the picked model, so no other row can strand it.
+    //
+    // Gated on the alias ROW EXISTING, which is the distinction `effortsFor` on its own cannot make.
+    // An empty `reasoning_efforts` means this alias advertises no levels; a MISSING row means the
+    // listing has not landed or the gateway leg refused it (`gatewayAliases` starts empty, and a leg
+    // that 40x's at boot leaves it that way until something else re-reads). Those are opposite
+    // facts, and reading the second as the first strands a level the model takes perfectly well —
+    // making this control say the specific, false thing the chip comment below forbids. `store.js`'s
+    // `kept()` already draws the same line for the drawer's half: an alias the listing did not carry
+    // is a prediction with no evidence, not evidence of a drop.
+    // Keyed on `buildModel` and not on `override`: the level belongs to the model the person
+    // actually picked, and `override` collapses to '' in the one case below where that model is the
+    // mode's own pinned one. Same answer for every row the menu draws — `withEfforts` skips the
+    // pinned row anyway — and the right answer for the chip, which has to cover the collapse.
+    const strandedLevel = (id) => {
+      const alias = aliasRow(id);
+      // `!alias.reasoning_efforts_with_tools` rides with `!alias` for one reason: both are the
+      // absence of an answer rather than an answer of "no". A row from a producer that does not
+      // publish this field would otherwise strand every level it holds.
+      if (!alias || !alias.reasoning_efforts_with_tools) return '';
+      if (id !== buildModel || !buildEffort) return '';
+      // Judged against the TOOL-carrying list, the same one the submenu offers. Against the enum, a
+      // level this alias drops beside tools reads as perfectly fine — `gpt-5.4` at `high` is in the
+      // enum and dropped on every Build turn — and the chip would name it over a turn running at the
+      // alias default (#295).
+      //
+      // NOT identical to what the send path accepts, and the gap is worth naming rather than
+      // implying: for an alias the gateway publishes an enum for but nobody has probed,
+      // `alias_efforts_with_tools` returns that enum untouched while `enforcement.py` asks
+      // `reasoning_efforts_with_tools`, which falls through to the empty measured row and drops
+      // every level. The published list is then wider than the accepted one. Latent while the
+      // gateway reports `inference_params: {}` for every alias (#284), pre-existing on the Chat
+      // chip for the same reason, and tracked on #298 — the surface that can close it is the
+      // provider, not this menu.
+      //
+      // The OTHER direction is latent for the same reason and is named so the next reader does not
+      // assume there is only one: the browser reads `reasoning_efforts ∩ EFFORTS_WITH_TOOLS[alias]`
+      // while `enforcement.py` reads the tool table UN-intersected. Were the gateway ever to publish
+      // an enum excluding a level the measured table holds, this menu would refuse one the send path
+      // accepts — over-refusing rather than over-offering. Both collapse while `inference_params` is
+      // empty, which is why the two lists coincide today.
+      return (alias.reasoning_efforts_with_tools || []).includes(buildEffort) ? '' : buildEffort;
+    };
+    // The level the live pick is running at, where there is one the alias will take. Empty for no
+    // pick, no level, a stranded level, or a mode that honours no pick at all.
+    const pickedLevel = overridable && buildModel && buildEffort && !strandedLevel(buildModel)
+      ? buildEffort
+      : '';
+    //
+    // A STRANDED level is left off, and that is the chip doing its own job rather than an omission:
+    // this label names what will RUN, and a level the alias will not take is one the send path
+    // drops, so the turn runs at the alias's default. Naming it here would be the one thing this
+    // control must never do — a confident, specific, false sentence. The submenu is where the
+    // stranded level is read, marked for what it is, and where the way off it is.
+    // Three cases and not two, because of the collapse `override` performs just above: a pick that
+    // names the mode's OWN pinned model reads as no override, which is right about the model — it
+    // really is the slot's — and wrong about the level, because a level the person chose is not the
+    // assignment's. `(default)` over one of those would have the control claim the slot's setting
+    // while the turn runs theirs, which is this ticket's own defect arriving through the one door
+    // the menu cannot mark. The menu still marks `__pinned__` there; that row does clear the pick,
+    // so the selection is incomplete rather than false, and the chip is the half that must be true.
+    // What the way-back row should mean once it can also carry a level is #310.
+    //
+    // `(default)` is a claim about the SLOT'S ASSIGNMENT — its model and its effort together — so it
+    // may only be made where that assignment is what routes. ANY live pick makes `_resolve_build`
+    // return an OVERRIDE, and an override carries the PICK's effort rather than
+    // `catalog.<slot>_effort`: `None` where the person chose no level, the alias's own default where
+    // the level they chose is stranded. Both differ from the assignment wherever the slot carries a
+    // level, so `(default)` over either is the control naming a setting the turn is not running.
+    //
+    // Measured, not reasoned: with `plan_effort="low"` and a pick naming plan's own model, the
+    // router answers `plan-override … effort=None` where the unpicked slot answers
+    // `plan-pinned … effort=low`. True since #282 put an effort on the decision; #295 is what made
+    // it visible, because until then the pick had no level of its own to show either.
+    //
+    // One rule rather than a case per shape. The collapse that empties `override` is about the
+    // MODEL being the slot's, and says nothing whatever about the level.
+    const livePick = overridable && buildModel ? buildModel : '';
+    // The level standing on the live pick that its alias will not take, WHATEVER shape the pick is.
+    // `collapsedStranded` below narrows it to the collapsed case; this one does not, because the two
+    // readers want different scopes and gating once for both is how the override half went unheard.
+    const strandedNow = livePick ? strandedLevel(livePick) : '';
+    const collapsedStranded = !override ? strandedNow : '';
+    // The FACT, with no exit in it. `buildPick` rather than `pinnedModel`, so it names the model on
+    // a real override too — that is the half the collapse gate silently excluded.
+    // "Turns run", not "this turn runs": the same sentence reaches the RUNNING chip and the idle
+    // dropdown, and idle there is no turn for a present-tense claim to be about. On the running chip
+    // it would be wrong the other way anyway — a table that narrowed mid-flight leaves the in-flight
+    // turn having already sent the level.
+    const strandedFact = strandedNow
+      ? `${override || pinnedModel} doesn't accept ${effortLabel(strandedNow)}. Turns run at the `
+        + 'model default instead.'
+      : '';
+    // The fact PLUS the way out, for the open menu only. Clearing the pick is a real instruction
+    // there and a false one on the running chip, which draws a disabled Button with no menu behind
+    // it — offering an action nobody can take and then saying to wait before changing anything, in
+    // consecutive sentences. Only the collapsed case needs it: on a real override the submenu marks
+    // the level itself, which is a better account than a sentence.
+    //
+    // And the instruction carries no DIRECTION. It used to say "the row below", which is wrong
+    // twice: the dropdown opens `topRight` so the menu renders ABOVE the chip the tooltip hangs off,
+    // and the way-back row is `slotModels[0]` in Plan but `slotModels[1]` in Implement. A reader
+    // following it found the mode pill.
+    const strandedWhy = strandedNow
+      ? (collapsedStranded
+        ? `${strandedFact} Clear the pick to put the mode back on its assignment.`
+        // A real override keeps the FACT and loses only the row pointer, which belongs to the
+        // collapsed case. Withholding it entirely left the idle chip strictly less informative than
+        // the running one for the same state: the label drops the level because it will not run,
+        // and the only account was a disabled row two hovers into a submenu.
+        : strandedFact)
+      : '';
+    const buildChipLabel = override
+      ? (pickedLevel ? `${override} · ${effortLabel(pickedLevel)}` : override)
+      : livePick
+      ? (pickedLevel ? `${pinnedModel} · ${effortLabel(pickedLevel)}` : pinnedModel)
+      : `${pinnedModel} (default)`;
     const buildPick = override || pinnedModel;
     const buildBarred = barredModel(buildPick);
     const buildLabel = SW.util.lockedLabel(sensitivity, buildPick, '', false);
     // Auto has no model of its own — it runs the Plan assignment while it plans and the Implement
     // assignment while it builds — so a bare id here changes under the person with nothing to say
     // why. The phase is the missing half of that sentence.
-    const chipLabel = (name) => (activeBuildMode.id === 'auto'
+    const chipLabel = (name) => (chipModeId === 'auto'
       ? `${name} · ${buildPhase === 'implement' ? 'building' : 'planning'}`
       : name);
     // The way through to the assignments, from the menu that can only make an override. The two do
     // different things and say so: an override is this Builder's, until it restarts; an assignment
     // is the Project's (ADR-0017).
     const ASSIGNMENTS_KEY = '__assignments__';
-    const buildModelMenu = {
-      selectedKeys: [override || PINNED_KEY],
-      items: [
+    // A model row grows a submenu of the levels that alias advertises, so the level is chosen under
+    // the model it belongs to and both arrive as one act (ADR-0049). Same `length > 0` rule the
+    // Chat chip one bar over uses to decide whether to draw anything at all: a model that
+    // advertises no levels stays a plain row, which is every row on a deployment nobody has probed.
+    //
+    // Never on the pinned row. Picking that one CLEARS the override, and what the slot then runs at
+    // is its ASSIGNMENT's effort — the Project's standing choice, which belongs to the drawer and
+    // not to a control that forgets itself on restart (ADR-0017). Never on a barred row either: it
+    // cannot be picked at all, so a submenu under it would be a door into a wall.
+    const withEfforts = (row, id) => {
+      const levels = buildEffortsFor(id);
+      // A level standing against this row's model that the model will not take. Reachable without
+      // anyone having done anything wrong: a deployment default can move under a live pick, and the
+      // measured table can narrow when an alias is probed (#280). Dropped from the menu, the level
+      // would be invisible, still standing, and clearable only by giving up the model too.
+      //
+      // The answer is `model-assignments.js`'s, taken verbatim down to the label — that is where it
+      // was decided, for the drawer's half of this same setting, and this is the second control on
+      // it. Two controls answering one stranded level differently is the drift that costs; whoever
+      // changes one of these changes both.
+      const stranded = strandedLevel(id);
+      if ((!levels.length && !stranded) || row.disabled || row.key === PINNED_KEY) return row;
+      return {
+        ...row,
+        children: [
+          // First, and not buried under the levels: running the alias at its own default is what
+          // every Build pick did before this submenu existed, so it stays the easiest thing to ask
+          // for rather than becoming the thing you have to know to look for. It is also the way out
+          // of a stranded level, which is why it is here even where `levels` is empty.
+          { key: effortKey(id, null), label: effortLabel(null) },
+          ...levels.map((value) => ({ key: effortKey(id, value), label: effortLabel(value) })),
+          // Disabled for the reason a barred model is disabled one level up: it is not a thing that
+          // can be chosen, and the way out is the row above it. Drawn at all so the level the
+          // session is standing on has somewhere to be read.
+          ...(stranded
+            ? [{
+                key: effortKey(id, stranded),
+                disabled: true,
+                label: `${effortLabel(stranded)} — not accepted`,
+                title: `${id} doesn't accept this level. Pick another, or go back to the model `
+                  + 'default.',
+              }]
+            : []),
+        ],
+      };
+    };
+    const buildItems = [
         // The pinned row is never barred, even when the slot behind it holds an unapproved model.
         // It carries no model id — picking it CLEARS the override — so disabling it would strand
         // somebody on the override they are trying to leave, and it is the one row here that cannot
         // make things worse. What the slot actually resolves to under the lock is the router's
         // answer and not this menu's, and the notice under the box is where that is said.
-        ...slotModels.map((id) => ({
+        ...slotModels.map((id) => withEfforts({
           key: id === pinnedModel ? PINNED_KEY : id,
           disabled: id !== pinnedModel && barredModel(id),
           // `title` and not a wrapped element, so the label stays the plain string every reader of
@@ -655,27 +914,63 @@ window.SW = window.SW || {};
             : barredModel(id)
             ? `${id} — not allowed`
             : id,
-        })),
+        }, id)),
         ...(extraModels.length
           ? [{
               type: 'group',
               label: 'Open-weight',
-              children: extraModels.map((o) => ({
+              children: extraModels.map((o) => withEfforts({
                 key: o.id,
                 disabled: barredModel(o.id),
                 title: barredModel(o.id) ? lockNote(o.id) : undefined,
                 label: barredModel(o.id)
                   ? `${o.id} — not allowed`
                   : `${o.id} (${o.provider})`,
-              })),
+              }, o.id)),
             }]
           : []),
         { type: 'divider' },
         { key: ASSIGNMENTS_KEY, label: 'Model assignments…' },
-      ],
+    ];
+    // What the menu marks, read off the rows that were actually built rather than by restating the
+    // rule that decided whether each one has a submenu. A row with a submenu is selected by its
+    // CHILD, and a second copy of the "does this row have one" condition could only disagree with
+    // the first — about the one row the session is running.
+    const overrideRow = override
+      ? buildItems.flatMap((i) => (i.type === 'group' ? i.children : [i]))
+          .find((i) => i.key === override)
+      : null;
+    const selectedPick = !override
+      ? PINNED_KEY
+      : (overrideRow && overrideRow.children ? effortKey(override, buildEffort) : override);
+    const buildModelMenu = {
+      selectedKeys: [selectedPick],
+      items: buildItems,
       onClick: ({ key }) => {
         if (key === ASSIGNMENTS_KEY) return SW.store.openAssignments(true);
-        return SW.store.setBuildModel(key === PINNED_KEY ? null : key);
+        // The way back carries no level of its own: it clears the override, and the slot's
+        // ASSIGNMENT effort is what applies from the next turn on (ADR-0049's last row).
+        if (key === PINNED_KEY) return SW.store.setBuildModel(null, null);
+        // A row with a submenu never fires this with its own key — Ant opens the submenu instead —
+        // so the model here arrives either bare, from a row that advertises no levels, or paired
+        // with the level the person clicked under it.
+        //
+        // Told apart by LOOKING, not by parsing. A bare key is a row of its own, and an alias id
+        // containing the separator would otherwise be split inside its own name and sent as a
+        // truncated model at an invented level. The rows were built three lines up; asking them
+        // costs nothing.
+        //
+        // The residual, stated rather than implied: this makes the BARE direction safe, not the key
+        // space itself. An alias literally named `a::low`, drawn beside an alias `a` that offers
+        // `low`, produces one key for two rows — and no reader of a flat key space can separate
+        // those, this one or Ant's own `selectedKeys`. That is a property of menu keys, not of this
+        // parse, and the honest thing is to say so rather than to claim a guarantee one lookup
+        // cannot give.
+        const bare = buildItems.some((i) => (i.type === 'group'
+          ? i.children.some((c) => c.key === key)
+          : i.key === key));
+        const [id, level] = bare ? [key, null] : splitEffortKey(key);
+        return SW.store.setBuildModel(id, level);
       },
     };
 
@@ -743,7 +1038,14 @@ window.SW = window.SW || {};
     // pin has already been through the signing rule, so it is the model the router starts from),
     // Chat's picked Alias. Empty unless the lock really moved it — an approved pick is not a switch
     // and has nothing to announce.
-    const pickedModel = showMode ? (override || pinnedModel) : effectiveModel;
+    // The SELECTOR's mode, not the running turn's: this is what the composer would run NEXT, which
+    // is the question the notice answers. Mid-turn the two differ, and reading the turn's here
+    // announced a lock switch for the slot the running turn used — or, with a barred pick standing
+    // and the selector on Auto, named a pick Auto will never honour.
+    const selectedRuns = runsFor(activeBuildMode.id);
+    const pickedModel = showMode
+      ? (selectedRuns.override || selectedRuns.model)
+      : effectiveModel;
     const movedFrom = pickedModel && barredModel(pickedModel) ? pickedModel : '';
     // What "once" is counted against: what the notice SAYS, which is the approved set, the model
     // it moved to, and which of the two reasons is holding the lock. None of them alone. The set
@@ -1140,18 +1442,34 @@ window.SW = window.SW || {};
                     // looks, gave no account of the pin at all. The lock still outranks the pin
                     // here, exactly as it does below: under the lock the pin did not move this
                     // model, and a sentence naming the wrong cause is worse than no sentence.
-                    title: buildBarred
-                      ? `${lockNote(buildPick)} This turn is running on ${buildLabel} — wait for it to finish to change the model.`
-                      : pinWhy
-                        ? `${pinWhy} This turn is running on ${buildLabel} — wait for it to finish to change the model.`
-                        : `This turn is running on ${buildLabel}. Wait for it to finish to change the model.`,
+                    // And a STRANDED level joins too, because the running chip is the one place it
+                    // can have no other surface at all: this branch draws a disabled Button rather
+                    // than the Dropdown, so the submenu the comments keep calling "where a stranded
+                    // level is read" is unreachable, and the label drops the level because it will
+                    // not run. Reachable mid-turn exactly as `withEfforts` describes — the measured
+                    // table narrows under a live pick (#280) — and without this the chip quietly
+                    // loses `· High` and says only which model is running.
+                    title: [
+                      buildBarred ? lockNote(buildPick) : pinWhy,
+                      buildBarred ? '' : strandedFact,
+                      `This turn is running on ${buildLabel}. Wait for it to finish to change the model.`,
+                    ].filter(Boolean).join(' '),
                   },
                   // The span is load-bearing: a browser dispatches no mouse events on a disabled
                   // button, so a Tooltip put straight on one never opens and the sentence above
                   // becomes the silence it was written to prevent.
                   h('span', { style: { display: 'inline-block' } },
                     h(Button, { size: 'small', disabled: true, 'aria-label': 'Build model' },
-                      chipLabel(buildLabel)))
+                      // The level rides on the RUNNING chip too. This is the one screen state where
+                      // the turn is demonstrably running AT that level, so dropping the receipt here
+                      // is the "a setting with no receipt reads as a setting that was dropped"
+                      // failure the open chip cites as its own reason to exist, reintroduced exactly
+                      // where it is least true. Not under the lock: there `buildLabel` is the model
+                      // the lock moved the turn ONTO, and a level picked for the model it moved off
+                      // is not what that turn runs at.
+                      chipLabel(!buildBarred && pickedLevel
+                        ? `${buildLabel} · ${effortLabel(pickedLevel)}`
+                        : buildLabel)))
                 )
               : overridable
                 ? (() => {
@@ -1165,7 +1483,7 @@ window.SW = window.SW || {};
                         // lock it falls back nowhere near there. So the lock's answer replaces the
                         // whole construction rather than being appended to it.
                         h(Space, { size: 4 },
-                          buildBarred ? buildLabel : (override || `${pinnedModel} (default)`),
+                          buildBarred ? buildLabel : buildChipLabel,
                           h(DownOutlined, { style: { fontSize: 9 } }))
                       )
                     );
@@ -1176,7 +1494,89 @@ window.SW = window.SW || {};
                     //
                     // The lock first: under it the signing pin is not what moved this model, and a
                     // sentence naming the wrong cause is worse than no sentence.
-                    const why = buildBarred ? lockNote(buildPick) : pinWhy;
+                    //
+                    // The stranded sentence comes last of the three, behind the lock and the pin,
+                    // for the same reason they are ordered: each outranks it as a cause, and a
+                    // confident sentence naming the wrong one is worse than one fewer sentence. It
+                    // is the only account of a level the collapsed row cannot draw — the menu shows
+                    // no submenu on the way-back row (#310), so without this the person is told
+                    // nothing at all about a level they set and the turn is not running.
+                    // The pin and a stranded level are about DIFFERENT things — which model runs,
+                    // and which level it runs at — so they join rather than one winning. Ordered
+                    // pin-first because it is the bigger fact, and joined for the reason #276 joined
+                    // the lock and the running turn: both are true at once, and letting one replace
+                    // the other left the moment somebody looks with no account of the second at all.
+                    // The LOCK still wins outright: under it the pin did not move this model and the
+                    // level was never sent, so both sentences would name wrong causes.
+                    // The accepted-level twin of the stranded sentence. Both are the collapse — a
+                    // pick naming the mode's own model — and in both the menu marks the way-back row
+                    // and offers no submenu (#310), so the tooltip is the only place either can be
+                    // accounted for. Mutually exclusive with `strandedWhy`: `pickedLevel` is empty
+                    // whenever a level is stranded.
+                    //
+                    // Gated on the assignment ACTUALLY differing, which the composer can check and
+                    // did not: `catalog` carries `<slot>_effort` beside `<slot>`, from the same
+                    // payload `pinnedModel` is read out of. Pick the assignment's own level and the
+                    // ungated sentence asserts the turn is not running at it while it runs at
+                    // exactly that — a confident, specific falsehood reached through the one door
+                    // the paragraphs above do not cover, because it is a claim about the ASSIGNMENT
+                    // rather than about the pick.
+                    // The slot whose EFFORT the turn would run at with no pick, which is not
+                    // always `pinnedSlot`. `_pin_signing` early-returns the mode slot's decision
+                    // UNMODIFIED when the signing slot names the same model — so the pin supplies
+                    // the effort only where it actually MOVES the model. Reading the signing slot's
+                    // either way compares against a level the router would not have used, and then
+                    // the sentence below names a difference that does not exist (or hides one that
+                    // does). Restated here because the picker restates the router's precedence, and
+                    // this is the half of the pin rule the server's `signing_slot` cannot express.
+                    const modeSlot = chipModeId === 'ask' ? 'ask'
+                      : chipModeId === 'auto' ? (buildPhase === 'implement' ? 'implement' : 'plan')
+                      : chipModeId;
+                    const pinMoves = Boolean(signingSlot && catalog
+                      && catalog[signingSlot] !== catalog[modeSlot]);
+                    const effortSlot = pinMoves ? signingSlot : modeSlot;
+                    // Narrowed the SAME way the pick's level is, because the two are about to be
+                    // compared. The pick goes through `buildEffortsFor` before it may appear; the
+                    // assignment was read raw off the catalog — and the drawer validates a slot's
+                    // level against the WIDE enum (`service.py`'s `alias.get("reasoning_efforts")`),
+                    // so a slot can legitimately hold a level the alias drops beside tools.
+                    //
+                    // `plan_effort="high"` on `gpt-5.4` is exactly that: the send path drops it, so
+                    // the unpicked slot and a pick carrying no level BOTH run at the model default —
+                    // and comparing a narrowed value against an un-narrowed one reported a
+                    // difference that does not exist. Same falsehood cf75c76 closed, reached through
+                    // the assignment half rather than the pick half.
+                    //
+                    // No evidence still PERMITS: with no alias row, or a row not carrying the narrow
+                    // list, the level stands rather than being narrowed away.
+                    const pinnedEffortSaved = (catalog && catalog[`${effortSlot}_effort`]) || null;
+                    const pinnedEffortRow = aliasRow((catalog && catalog[effortSlot]) || '');
+                    const pinnedEffort = pinnedEffortSaved && pinnedEffortRow
+                      && pinnedEffortRow.reasoning_efforts_with_tools
+                      && !pinnedEffortRow.reasoning_efforts_with_tools.includes(pinnedEffortSaved)
+                      ? null
+                      : pinnedEffortSaved;
+                    // Compared as EFFECTIVE levels, not on whether a level was chosen. A collapsed
+                    // pick that names NO level still overrides — the router answers
+                    // `plan-override … effort=None` where the slot would have answered its assigned
+                    // level — and that is the commoner shape of all: pick a model, leave levels
+                    // alone. Gating on `pickedLevel` covered only the half where somebody had
+                    // touched a level, which is the rarer one.
+                    //
+                    // Not while stranded: that has its own sentence, and both would name the same
+                    // gap twice with different causes.
+                    const levelWhy = !override && livePick && !collapsedStranded
+                      && (pickedLevel || null) !== pinnedEffort
+                      ? `This pick runs ${pinnedModel} at ${effortLabel(pickedLevel || null)}, not `
+                        + `at the assignment's ${effortLabel(pinnedEffort)}. Clear the pick to `
+                        + "use the assignment's."
+                      : '';
+                    // All three joined rather than any of them winning. Behind a `||` the pin
+                    // suppressed whichever level sentence applied — and it was the COMMONER one,
+                    // the accepted level, that lost its only surface, which is the asymmetry the
+                    // stranded join was added to end rather than to move one case along.
+                    const why = buildBarred ? lockNote(buildPick)
+                      : [pinWhy, strandedWhy, levelWhy].filter(Boolean).join(' ');
                     return why ? h(Tooltip, { title: why }, control) : control;
                   })()
                 // Ask and Auto honour no override — Ask is pinned to its slot and Auto follows the

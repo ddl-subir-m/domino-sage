@@ -162,6 +162,15 @@ async function fetchDominoListing() {
         kind: 'model_llm',
         capabilities: a.capabilities || [],
         reasoning_efforts: a.reasoning_efforts || [],
+        // The same list narrowed to what survives beside function tools (#295). Carried as well as
+        // the wide one, not instead of it: Chat's chip offers the enum and Build's menu offers this,
+        // because every Build turn carries tools and the send path enforces exactly this narrowing.
+        // NO `|| []`, deliberately, and the same passthrough `rowFromMember` uses. `undefined`
+        // means nobody answered and `[]` means the alias answered "none" — the distinction the
+        // Build menu is built on. Defaulting here would make a producer that has not learned this
+        // field refuse every level on this leg while the other leg reads it as unanswered: the same
+        // absence given two opposite answers, decided by which listing happened to reply (#295).
+        reasoning_efforts_with_tools: a.reasoning_efforts_with_tools,
         bindingKey: ['llm_alias', a.id],
       })),
       model_predictive: (res.model_apis || []).map((m) => ({
@@ -261,6 +270,11 @@ function rowFromMember(item) {
     alias: item.alias,
     capabilities: item.capabilities || [],
     reasoning_efforts: item.reasoning_efforts || [],
+    // Beside its wide twin, and passed through UNDEFINED rather than defaulted to `[]`: this row is
+    // also built from membership files written before the field existed, and the Build menu reads a
+    // missing value as "no evidence" while `[]` means "this alias offers no levels" (#295). A
+    // default here would turn every such row into a refusal of every level.
+    reasoning_efforts_with_tools: item.reasoning_efforts_with_tools,
     pins: item.pins || [],
     // Every Built App that binds this Resource, with its Scope (#133). Server-computed from the
     // apps' own manifests, so the Resource Browser subtitle and the drawer both read one answer —
@@ -775,7 +789,13 @@ SW.api = {
   // Build's model override. `pick` alone, without `mode`: ModelControl.pick is mode-independent
   // and the router reads it only in Plan and Implement, so sending the mode too would re-assert a
   // standing choice the picker never touched.
-  setBuildModel: (pick) => post('/project/model', { pick: pick || null }),
+  // `pick_effort` rides in the same body because it is half of the same act (ADR-0049) — the menu
+  // offers a level only underneath the model it belongs to, so there is no call that sends one
+  // alone. Cleared with the pick rather than kept: a level with no model under it belongs to
+  // nothing, and the way back is the slot, whose own assigned effort then applies.
+  setBuildModel: (pick, effort) => post('/project/model', {
+    pick: pick || null, pick_effort: (pick && effort) || null,
+  }),
   // The model panel's two calls (ADR-0017). These write an ASSIGNMENT — the Project's standing
   // choice, persisted and shared — which is a different thing from `setBuildModel` above, and the
   // reason they are not folded together. `null` clears one, putting the slot back on the

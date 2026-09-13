@@ -246,6 +246,15 @@ window.SW = window.SW || {};
     // choice against it. Empty means no override, which is what the pin is for.
     catalog: null,
     buildModel: '',
+    // The level `buildModel` runs at, when the person chose one under it (#295, ADR-0049). Null
+    // means they chose none and the alias answers at its own default — never "fall back to the
+    // slot's level", which would apply a number picked for a model they moved off.
+    //
+    // Only meaningful beside `buildModel`: with no override there is no pick to carry it, and the
+    // slot's own assigned effort is what routes. The two cannot come apart, by two facts rather
+    // than by care taken here: `ModelControl.pick` drops the pair together on the server, and
+    // `status()` always carries both keys — so no poll can restore one without the other.
+    buildEffort: null,
     buildPhase: 'plan',
     // Which slot pinned the whole session, or '' (ADR-0032). Server-computed: the picker
     // restates the router's precedence below, and the signing pin is the one rule it cannot see.
@@ -399,6 +408,10 @@ window.SW = window.SW || {};
       if (m.catalog.ask) state.catalogAsk = m.catalog.ask;
     }
     if ('picked_model' in m) state.buildModel = m.picked_model || '';
+    // Read back rather than remembered, for the reason the model beside it is: this is what the
+    // menu restores its selection from after a reload, and a level the poll does not carry is a
+    // control that looks like it dropped the setting every time the page is refreshed (#295).
+    if ('picked_effort' in m) state.buildEffort = m.picked_effort || null;
     if (m.phase) state.buildPhase = m.phase;
     if ('signing_slot' in m) state.signingSlot = m.signing_slot || '';
     if ('chat_model' in m || m.chat_model === null) {
@@ -3431,19 +3444,28 @@ window.SW = window.SW || {};
     // Build's override, which the router honours in Plan and Implement and ignores everywhere else
     // (llm_router: Ask is pinned, and Auto follows the phase). `null` clears it and puts the mode
     // back on its pinned slot — which is the "(default)" row in the menu.
-    async setBuildModel(pick) {
+    // `effort` is the level chosen under that model in the menu, or null for the alias's own
+    // default (#295, ADR-0049). One call for both, never two: the model and the level are one act,
+    // and sending them separately would leave a window where a level picked for one alias is
+    // standing against another.
+    async setBuildModel(pick, effort) {
       const previous = state.buildModel;
+      const previousEffort = state.buildEffort;
       state.buildModel = pick || '';
+      state.buildEffort = (pick && effort) || null;
       notify();
       try {
-        const status = await SW.api.setBuildModel(pick || null);
+        const status = await SW.api.setBuildModel(pick || null, state.buildEffort);
         applyModelStatus(status);
         notify();
       } catch (err) {
         // Put back, unlike the two above it. A refused mode change is visible in the next turn's
         // behaviour; a refused model is not, so a control left showing the pick would name the
-        // wrong model for every build after it.
+        // wrong model for every build after it. The level goes back with it for the same reason
+        // and in the same breath — a level left standing over a restored model is the mismatched
+        // pair this whole seam exists to prevent.
         state.buildModel = previous;
+        state.buildEffort = previousEffort;
         notify();
         antd.message.error(String((err && err.message) || err));
       }

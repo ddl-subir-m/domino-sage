@@ -926,6 +926,10 @@ def test_the_orchestrator_lists_aliases_from_the_injected_provider(tmp_path: Pat
         "id": "x", "name": "sonnet", "display_name": "Claude Sonnet 4.6",
         "description": "desc", "capabilities": ["chat"], "costs": {"input": 3.0},
         "reasoning_efforts": [],
+        # The same list narrowed to what survives beside function tools (#295). Derived on
+        # `LlmAlias`, so an alias with no tool-shape row publishes the wide list unchanged — `sonnet`
+        # advertises nothing either way, which is why both are empty here rather than one of them.
+        "reasoning_efforts_with_tools": [],
     }]
 
 
