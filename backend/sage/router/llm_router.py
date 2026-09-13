@@ -68,8 +68,13 @@ def _lock_sensitivity(
         return decision
     if decision.model in approved:
         return replace(decision, locked=True)
+    # No effort. The lock picks by approval, not by slot, so nothing here made an assignment — and
+    # an approved model that happens to equal some other slot's is still not that slot's assignment
+    # (ADR-0049). Inheriting one from the barred slot is the stale-effort defect wearing a
+    # coincidence. The approved-passthrough above keeps the effort, because the slot still answered.
     return ModelDecision(
-        model=_nearest_approved(state, catalog, approved), reason=Reason.SENSITIVITY, locked=True
+        model=_nearest_approved(state, catalog, approved), reason=Reason.SENSITIVITY, locked=True,
+        effort=None,
     )
 
 
@@ -198,7 +203,8 @@ def resolve_unsigned(state: SessionState, catalog: ModelCatalog) -> ModelDecisio
     for slot in ASSIGNABLE_SLOTS:
         model = getattr(catalog, slot)
         if not signs(model):
-            return ModelDecision(model=model, reason=Reason.SIGNING_VETO, locked=False)
+            return ModelDecision(model=model, reason=Reason.SIGNING_VETO, locked=False,
+                                 effort=getattr(catalog, f"{slot}_effort"))
     return None
 
 
@@ -222,33 +228,57 @@ def _pin_signing(decision: ModelDecision, catalog: ModelCatalog) -> ModelDecisio
     model = getattr(catalog, slot)
     if model == decision.model:
         return decision
-    return ModelDecision(model=model, reason=Reason.SIGNING_PIN, locked=False)
+    # The pin's own slot supplies the effort, because the pin is what chose the model: a plan turn
+    # pinned to implement's model runs implement's effort (ADR-0049). Anything else sends plan's
+    # level to a model that never advertised it, which on gemini — the only signing alias — is a 400.
+    #
+    # Only on THIS return. The early return above is not the same case wearing a different shape:
+    # there the pin moved nothing, so the asking slot's own assignment is still the one that chose
+    # what runs, and two slots holding the same alias with different efforts is the per-phase split
+    # working rather than a coincidence to be normalised away.
+    return ModelDecision(model=model, reason=Reason.SIGNING_PIN, locked=False,
+                         effort=getattr(catalog, f"{slot}_effort"))
 
 
 def _resolve_build(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     # 1. Auto mode: the pipeline drives model choice by phase.
     if state.mode is Mode.AUTO:
         if state.phase is Phase.PLAN:
-            return ModelDecision(model=catalog.plan, reason=Reason.AUTO_PLAN, locked=False)
-        return ModelDecision(model=catalog.implement, reason=Reason.AUTO_IMPLEMENT, locked=False)
+            return ModelDecision(model=catalog.plan, reason=Reason.AUTO_PLAN, locked=False,
+                                 effort=catalog.plan_effort)
+        return ModelDecision(model=catalog.implement, reason=Reason.AUTO_IMPLEMENT, locked=False,
+                             effort=catalog.implement_effort)
 
     # 2. Ask mode: pinned to the ask model. Read-only is enforced by the shim, not routing.
     if state.mode is Mode.ASK:
-        return ModelDecision(model=catalog.ask, reason=Reason.ASK_PINNED, locked=False)
+        return ModelDecision(model=catalog.ask, reason=Reason.ASK_PINNED, locked=False,
+                             effort=catalog.ask_effort)
 
     # 3. Plan mode: pinned to the plan model, overridable by an explicit pick.
     if state.mode is Mode.PLAN:
         if state.picked_model is not None:
-            return ModelDecision(model=state.picked_model, reason=Reason.PLAN_OVERRIDE, locked=False)
-        return ModelDecision(model=catalog.plan, reason=Reason.PLAN_PINNED, locked=False)
+            # An in-session pick replaces the model, so it replaces the effort — and the Build
+            # picker has no effort of its own, so the honest answer is none (ADR-0049). Falling back
+            # to the slot's is the version anyone writes first, and it applies a level chosen for a
+            # model the person just moved off.
+            return ModelDecision(model=state.picked_model, reason=Reason.PLAN_OVERRIDE, locked=False,
+                                 effort=None)
+        return ModelDecision(model=catalog.plan, reason=Reason.PLAN_PINNED, locked=False,
+                             effort=catalog.plan_effort)
 
     # 4. Implement mode: pinned to the implement model, overridable by an explicit pick.
     if state.picked_model is not None:
-        return ModelDecision(model=state.picked_model, reason=Reason.IMPLEMENT_OVERRIDE, locked=False)
-    return ModelDecision(model=catalog.implement, reason=Reason.IMPLEMENT_PINNED, locked=False)
+        return ModelDecision(model=state.picked_model, reason=Reason.IMPLEMENT_OVERRIDE,
+                             locked=False, effort=None)   # the pick's own, as above
+    return ModelDecision(model=catalog.implement, reason=Reason.IMPLEMENT_PINNED, locked=False,
+                         effort=catalog.implement_effort)
 
 
 def _resolve_chat(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     if state.chat_model:
-        return ModelDecision(model=state.chat_model, reason=Reason.CHAT_OVERRIDE, locked=False)
-    return ModelDecision(model=catalog.ask, reason=Reason.CHAT_DEFAULT, locked=False)
+        # Chat's picker carries an effort beside the model, so its override is the one act that
+        # does supply one. Build's does not; see _resolve_build.
+        return ModelDecision(model=state.chat_model, reason=Reason.CHAT_OVERRIDE, locked=False,
+                             effort=state.reasoning_effort)
+    return ModelDecision(model=catalog.ask, reason=Reason.CHAT_DEFAULT, locked=False,
+                         effort=catalog.ask_effort)
