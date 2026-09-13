@@ -395,6 +395,10 @@ window.SW = window.SW || {};
     return (state.thread && state.thread.id) || null;
   }
 
+  // Seeded to the pair a store that has read nothing holds, so a refusal before the first status
+  // read puts back what is already on screen rather than `undefined`.
+  let chatConfirmed = { model: '', effort: null };
+
   function applyModelStatus(status) {
     const m = (status && status.model) || status;
     if (!m) return;
@@ -418,6 +422,23 @@ window.SW = window.SW || {};
       state.model = m.chat_model || '';
     }
     if ('reasoning_effort' in m) state.reasoningEffort = m.reasoning_effort || null;
+    // The Chat pair as the SERVER last reported it, which is what a refused save has to put back
+    // (#306). Recorded here because this is the one place every confirmed answer passes through — a
+    // landed save and any `loadBuild` alike — and because `setChatModel` cannot capture it itself:
+    // picks are optimistic and nothing blocks a second one, so a call made while the first POST is
+    // still out would read the FIRST pick's optimistic value as its own "before", and two refusals
+    // in a row would then restore a pair nobody ever confirmed.
+    //
+    // Off THIS ANSWER, and only where it carried both halves. A payload with no Chat pair in it
+    // writes neither field above, so the store at that moment still holds whatever is on screen —
+    // the optimistic pick, if a save is out — and reading the pair from `state` would confirm the
+    // very value the save is waiting on. `loadBuild` hands `{}` here whenever `/project` fails,
+    // which is truthy and so gets past the exit at the top, making that an ordinary Tuesday rather
+    // than an edge. One half without the other is refused for the same reason: it would pair a
+    // model this answer named with a level left over from something else.
+    if ('chat_model' in m && 'reasoning_effort' in m) {
+      chatConfirmed = { model: state.model, effort: state.reasoningEffort };
+    }
   }
 
   function indexResources(groups) {
@@ -3766,6 +3787,22 @@ window.SW = window.SW || {};
       }
     },
 
+    // Chat's picker. Written optimistically and put back on a refusal, for the reason spelled out
+    // on `setBuildModel` above: a refused mode change is visible in the next turn's behaviour, a
+    // refused model is not, so a control left showing the pick would name the wrong model for every
+    // turn after it. Since #286 it can be more than one stale control — the model drawer's "Ask and
+    // Chat" row falls back to `state.model` as the browser's mirror of the Chat pick, so the stale
+    // field becomes a row predicting what that mode runs from a pick the server never took. Only a
+    // fallback: the drawer asks `sensitivity.chat_picked` first and reads the mirror just where that
+    // field is ABSENT, so the drawn half of this retires with the last deployment whose payload
+    // predates it. The stale control does not.
+    //
+    // Two fields, and that is not `setBuildModel`'s one-field case twice. A level is only
+    // meaningful against a model that accepts it (ADR-0049), so the two go back together, out of one
+    // record of what the server confirmed. Putting the model back while the level stays, or taking
+    // the two from different moments, leaves a pairing that was never on screen — and can leave one
+    // no model on the gateway would accept, which is the exact thing sending them as a single call
+    // exists to prevent.
     async setChatModel(alias, effort) {
       state.model = alias || '';
       state.reasoningEffort = effort || null;
@@ -3775,6 +3812,25 @@ window.SW = window.SW || {};
         applyModelStatus(status);
         notify();
       } catch (err) {
+        // What goes back is the pair `applyModelStatus` last recorded, never one read on the way in.
+        // Nothing disables the picker while this POST is out, so a second pick can be made in this
+        // window — and a call that read `state` at entry would take THIS call's optimistic value as
+        // the pair to restore. Two refusals in a row would then leave the control on a pair no
+        // answer ever carried, which is the defect this whole seam exists to prevent.
+        //
+        // Guarded on the pair still being this call's own, which is a narrower job than it looks:
+        // a save that LANDED in the window has already moved the record, so the guard is not what
+        // protects that case. What it protects is a pick whose own save is still out — restoring
+        // over that would take somebody's second choice off the control while it is still being
+        // saved, under a toast about their first. Compared rather than generation-tagged like
+        // `scopeLoad`'s reads, because the writers that could have moved it share no counter; what
+        // the comparison cannot see is a later write of the SAME pair, and there restoring and
+        // leaving it are the same thing.
+        if (state.model === (alias || '') && state.reasoningEffort === (effort || null)) {
+          state.model = chatConfirmed.model;
+          state.reasoningEffort = chatConfirmed.effort;
+          notify();
+        }
         antd.message.error(String((err && err.message) || err));
       }
     },
