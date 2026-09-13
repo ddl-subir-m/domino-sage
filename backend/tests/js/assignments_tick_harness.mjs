@@ -358,4 +358,26 @@ for (const step of steps) {
   }
   report.push(row);
 }
-console.log(JSON.stringify(report));
+// A Project switch whose new read the server cannot answer. Its own arm rather than a step, because
+// it is about `loadScopeData` rather than about the drawer — but it belongs in this file, since
+// refusing to install the never-500 payload (#294) is what removed the path that used to clear the
+// old Project's lock by accident. Reported once, ahead of the steps.
+async function scopeSwitchLeak() {
+  SW.store.set({ scope: { id: 'projA', name: 'A' }, thread: null, threads: [], activeApp: null,
+                 sensitivity: null, projects: [{ id: 'projA', name: 'A' }, { id: 'projB', name: 'B' }] });
+  locked = true; escalated = false; unavailableFor = 0; failSensitivityFor = 0;
+  await SW.store.reloadSensitivity();
+  await settle();
+  const inA = !!(SW.store.get().sensitivity || {}).locked;
+  // Every later read answers with the shape `app.py` sends for a read that threw.
+  unavailableFor = 99;
+  await SW.store.setScope({ id: 'projB', name: 'B' }, { silent: true });
+  await settle();
+  unavailableFor = 0;
+  return { lockedInA: inA, inheritedIntoB: !!(SW.store.get().sensitivity || {}).locked };
+}
+// Run AFTER the steps, not before: it switches Project and leaves a lock standing, and a step
+// starting from that state counted one extra redraw — the arm changing what it was measured beside.
+const leak = await scopeSwitchLeak();
+
+console.log(JSON.stringify({ leak, steps: report }));

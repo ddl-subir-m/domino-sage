@@ -24,13 +24,17 @@ from pathlib import Path
 _HARNESS = Path(__file__).resolve().parent / "js" / "assignments_tick_harness.mjs"
 
 
-def _ticked(steps: list[dict]) -> list[dict]:
+def _run(steps: list[dict]) -> dict:
     out = subprocess.run(
         ["node", str(_HARNESS)],
         input=json.dumps(steps), check=False, capture_output=True, text=True, timeout=60,
     )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def _ticked(steps: list[dict]) -> list[dict]:
+    return _run(steps)["steps"]
 
 
 # ---- the window ------------------------------------------------------------------------------
@@ -311,3 +315,27 @@ def test_an_unusable_answer_is_refused_where_it_would_be_installed_not_at_each_r
     # And the #264 repair still runs, because an unusable answer is not one having landed.
     assert run["appReads"] == 1
     assert run["lockedAfterTicks"] is True and run["drawnAfterTicks"] == "gpt-5.4"
+
+
+def test_a_project_switch_does_not_inherit_the_last_projects_lock():
+    """FOUND IN REVIEW, and the hole is one this branch opened.
+
+    Refusing to install the route's never-500 payload took away the one path that had been clearing
+    `state.sensitivity` on a switch BY ACCIDENT — B's read failing installed B's absence, which
+    cleared A's lock as a side effect of being wrong. With that gone, A's lock, A's approved
+    whitelist and A's Dataset name draw over B for as long as B's reads keep failing. Another
+    Project's approved list is the stale-"unlocked" direction wearing a lock: a model B bars may be
+    one A allows. The reject path had the same hole and always did.
+
+    Pinned here rather than where it was broken, because the invariant is `loadScopeData`'s: a lock
+    belongs to a Project.
+
+    NOT pinned, and said rather than implied: the guard fires only on a CHANGE of scope, so a
+    same-Project reload keeps the answer instead of un-greying the picker for a round trip. That
+    half is reasoned. Driving it needs a `loadScopeData` for an unchanged scope, which this harness
+    reaches only through `setScope`, and the arm written for it was passing on a swallowed throw —
+    a vacuous control, so it was removed rather than left reading green.
+    """
+    leak = _run([])["leak"]
+    assert leak["lockedInA"] is True, "the premise: A really was locked before the switch"
+    assert leak["inheritedIntoB"] is False

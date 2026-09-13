@@ -708,16 +708,23 @@ window.SW = window.SW || {};
     const projectGen = ++projectRead;
     // A lock belongs to a PROJECT, so a switch does not inherit one. Dropped synchronously here,
     // before the read that replaces it, for the same reason `dropSessionLock` drops a Conversation's
-    // — leaving the old answer standing is right when the read is about the SAME scope and wrong
-    // when it is about a different one, and nothing downstream can tell those apart.
+    // — leaving the last answer standing is right when the next read is about the SAME scope and
+    // wrong when it is about a different one, and no reader downstream can tell those apart.
     //
     // FOUND IN REVIEW of #294, where refusing to install the route's never-500 payload removed the
-    // one path that had been clearing this by accident: B's read failing would install A's absence,
+    // one path that had been clearing this by accident: B's read failing installed B's absence,
     // which cleared A's lock as a side effect of being wrong. With that gone, A's lock, A's approved
     // whitelist and A's Dataset name would draw over B for as long as B's reads kept failing — and
-    // an approved list from another Project is the stale-"unlocked" direction wearing a lock, since
-    // a model B bars may be one A allows. The reject path had the same hole and always did.
-    state.sensitivity = null;
+    // another Project's approved list is the stale-"unlocked" direction wearing a lock, because a
+    // model B bars may be one A allows. The reject path had the same hole and always did.
+    //
+    // ONLY on a change of scope, which is the whole point of tracking which scope the standing
+    // answer came from. Clearing on every scope load would un-grey the picker for one round trip on
+    // a same-Project refresh — a stale-unlocked window opened by the fix for a stale-locked one.
+    if (sensitivityScope !== null && sensitivityScope !== (scope && scope.id)) {
+      state.sensitivity = null;
+      sensitivityScope = null;
+    }
 
     const [resources, activity] = await Promise.all([
       SW.api.resources(scope.id),
@@ -877,6 +884,7 @@ window.SW = window.SW || {};
   function dropSessionLock() {
     if (!state.sensitivity || state.sensitivity.reason !== 'session') return;
     state.sensitivity = null;
+    sensitivityScope = null;
     notify();
   }
 
@@ -908,6 +916,10 @@ window.SW = window.SW || {};
   // rollback and no rejection path: a read that never lands simply never moves the mark.
   let sensitivityAsked = 0;
   let sensitivityApplied = 0;
+  // Which scope the standing answer is ABOUT. Not in `state` because nothing renders it: it exists
+  // so `loadScopeData` can tell "the same Project, read again" from "a different Project", which is
+  // the difference between keeping the last answer and inheriting another Project's lock.
+  let sensitivityScope = null;
 
   // `repairAppScope` turns off the one-shot rail load below. Off for the drawer's repeating tick
   // (`_watchAssignments`) and on everywhere else, which is every caller that fires once per event.
@@ -970,6 +982,13 @@ window.SW = window.SW || {};
         // nothing yet landed this leaves `null` and `isLocked(null)` is the fail-open it wants.
         if (read && read.unavailable) return;
         sensitivityApplied = seq;
+        // Recorded here and not below the dedupe: two Projects can answer with identical bytes —
+        // both unlocked is the common one — and this is about WHICH Project the standing answer
+        // describes, which has changed even when its content has not.
+        sensitivityScope = (state.scope && state.scope.id) || null;
+        // Recorded here and not below the dedupe: two Projects can answer with identical bytes —
+        // both unlocked is the common one — and this is about WHICH Project the standing answer
+        // describes, which has changed even when its content has not.
         // An answer that says exactly what the last one said is not a state change. Every other
         // caller here fires once per event, so this never mattered until the drawer's cadence made
         // this the only recurring `notify()` an idle Workbench has — a whole-shell re-render every
