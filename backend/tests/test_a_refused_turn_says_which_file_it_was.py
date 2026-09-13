@@ -67,13 +67,17 @@ def _history(orch, tid: str) -> list[dict]:
     return ThreadStore(orch.project(start_preview=False).record.path).read_history(tid)
 
 
-def _run(tmp_path: Path):
+def _run(tmp_path: Path, turns: list[Turn] | None = None):
     gw = _Guardrail()
-    orch, _ = _orch(tmp_path, [Turn(error=BLOCKED)], gateway=gw)
+    orch, _ = _orch(tmp_path, turns if turns is not None else [Turn(error=BLOCKED)], gateway=gw)
     project = orch.project(start_preview=False)
     project.last_refused = ("gpt-5.4", _payload())
     tid = orch.create_thread()["id"]
     return orch, tid, list(orch.chat_stream(tid, "chart the panel spend")), gw
+
+
+def _repeat_refusal(orch) -> None:
+    orch.project(start_preview=False).last_refused = ("gpt-5.4", _payload())
 
 
 def test_the_search_names_the_file_and_leaves_the_others_alone(tmp_path: Path):
@@ -85,11 +89,24 @@ def test_the_search_names_the_file_and_leaves_the_others_alone(tmp_path: Path):
 
 
 def test_the_rows_arrive_in_the_order_a_person_can_read(tmp_path: Path):
-    _orch, _tid, out, _gw = _run(tmp_path)
+    orch, tid, _first, _gw = _run(tmp_path, [Turn(error=BLOCKED), Turn(error=BLOCKED)])
+    _repeat_refusal(orch)
+    out = list(orch.chat_stream(tid, "try the chart again"))
     order = [e["type"] for e in out if e["type"] in
              ("error", recall.SEARCH, recall.FOUND, recall.SUGGEST, "done")]
     assert order[0] == "error"
-    assert order.index(recall.SEARCH) < order.index(recall.FOUND) < order.index("done")
+    assert order.index(recall.SEARCH) < order.index(recall.FOUND) < order.index(recall.SUGGEST)
+    assert order.index(recall.SUGGEST) < order.index("done")
+
+
+def test_the_second_identical_refusal_offers_clear_recall_on_chat(tmp_path: Path):
+    orch, tid, first, _gw = _run(tmp_path, [Turn(error=BLOCKED), Turn(error=BLOCKED)])
+    assert not [e for e in first if e["type"] == recall.SUGGEST]
+    _repeat_refusal(orch)
+    out = list(orch.chat_stream(tid, "try the chart again"))
+    assert [e["scope"] for e in out if e["type"] == recall.SUGGEST] == [recall.SUMMARY]
+    assert [e["scope"] for e in _history(orch, tid)
+            if e.get("type") == recall.SUGGEST] == [recall.SUMMARY]
 
 
 def test_the_search_survives_a_reload(tmp_path: Path):
@@ -153,8 +170,10 @@ def _build_history(orch) -> list[dict]:
     return project.app_for_turn().read_history(project.build_conversation)
 
 
-def _run_build(tmp_path: Path, payload: list[dict] | None = None):
-    orch, oc = _build_orch(tmp_path, turns=[PLAN, BUILD], break_on={2})
+def _run_build(tmp_path: Path, payload: list[dict] | None = None, *,
+               turns: list[Turn] | None = None, break_on: set[int] | None = None):
+    orch, oc = _build_orch(tmp_path, turns=turns if turns is not None else [PLAN, BUILD],
+                           break_on=break_on if break_on is not None else {2})
     oc.break_message = _NEST
     list(orch.build_stream("build me a consumption dashboard"))
     # The Build helper hardcodes a gateway that answers everything, and the search needs one that
@@ -172,11 +191,24 @@ def test_build_names_the_file_the_same_way_chat_does(tmp_path: Path):
 
 
 def test_build_puts_the_rows_in_the_same_order(tmp_path: Path):
-    _orch, out = _run_build(tmp_path)
+    orch, _first = _run_build(tmp_path, turns=[PLAN, BUILD, BUILD], break_on={2, 3})
+    _repeat_refusal(orch)
+    out = list(orch.approve_stream())
     order = [e["type"] for e in out if e["type"] in
              ("error", recall.SEARCH, recall.FOUND, recall.SUGGEST, "done")]
     assert order[0] == "error"
-    assert order.index(recall.SEARCH) < order.index(recall.FOUND) < order.index("done")
+    assert order.index(recall.SEARCH) < order.index(recall.FOUND) < order.index(recall.SUGGEST)
+    assert order.index(recall.SUGGEST) < order.index("done")
+
+
+def test_the_second_identical_refusal_offers_clear_recall_on_build(tmp_path: Path):
+    orch, first = _run_build(tmp_path, turns=[PLAN, BUILD, BUILD], break_on={2, 3})
+    assert not [e for e in first if e["type"] == recall.SUGGEST]
+    _repeat_refusal(orch)
+    out = list(orch.approve_stream())
+    assert [e["scope"] for e in out if e["type"] == recall.SUGGEST] == [recall.SUMMARY]
+    assert [e["scope"] for e in _build_history(orch)
+            if e.get("type") == recall.SUGGEST] == [recall.SUMMARY]
 
 
 def test_build_rows_survive_a_reload(tmp_path: Path):
