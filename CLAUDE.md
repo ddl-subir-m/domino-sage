@@ -75,7 +75,7 @@ Run tests less often, and never serially:
 - `-n auto` is the default in `pyproject.toml`. Do not remove it. Use `-n0` only to read
   interleaved output or to run one test under a debugger.
 
-**A red in a file your diff never opened: three checks, in this order.**
+**A red in a file your diff never opened: four checks, in this order.**
 
 `-n auto` is xdist's `--dist load`, which hands out individual TESTS, not files. Adding one test
 file re-deals the whole suite across workers, so a test that leaves shared state behind reddens
@@ -85,11 +85,27 @@ read a line of that file:
 1. Run it alone. `uv run --extra dev pytest -q tests/test_the_red_one.py`
 2. Run it beside your new file under `-n0`, which takes the distribution out of it.
 3. Run the full suite with your new file `--deselect`ed.
+4. Re-run the full suite on the byte-identical tree — the whole suite, your new file back in.
 
-Passing all three means the red is pre-existing and is not yours. Say so, open an issue, move on.
-Do not go green by reordering or deleting tests. `backend/tests/conftest.py` already fails the test
-that leaks a turn lock rather than the test after it (#265); a new red of this shape is a new kind
-of shared state, and the fix is another check beside that one.
+Passing checks 1-3 means the red is not yours. Check 4 says what it is instead, and the first three
+cannot. A re-run that reds the same test again is deterministic: say so, open an issue, move on.
+A re-run that comes back green says only that the red is NOT deterministic — usually resource
+pressure, but `--dist load` re-deals on timing, so a leak that reds only when leaker and victim
+share a worker comes back green too. Report "did not reproduce"; if the shape recurs, it is a leak
+and it gets a ticket. Either way, do not go green by reordering or deleting tests.
+`backend/tests/conftest.py` already fails the test that leaks a turn lock rather than the test
+after it (#265); a new red of this shape is a new kind of shared state, and the fix is another
+check beside that one.
+
+The re-run is the evidence. An `OSError`, an `io.open` failure, or a setup error raised inside
+pytest's own runner points at pressure, but it is a hint and not a verdict: a leaked handle, or a
+tmpdir another test removed, raises the same from shared state, and a conftest leak raises it
+inside the runner, which is the #265 shape. On 2026-09-12 a full run gave `1 failed, 5487 passed,
+3 skipped, 1 error` and neither red was an assertion; the re-run on the identical tree gave `5489
+passed, 3 skipped`, exit 0. Both runs collected 5492 items, so every test ran both times and two
+failed once, on IO (#300). Reconcile on the COLLECTED count, not on `passed + failed + error`:
+that error was at setup and so is its own item, but a teardown error is reported beside a test that
+already counted as passed, and the sum then over-counts.
 
 ## 6. Scoped Reviews
 

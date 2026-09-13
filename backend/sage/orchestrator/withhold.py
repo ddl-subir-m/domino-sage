@@ -87,6 +87,45 @@ class Carrier:
     # (#290, `_carries_mention`). Data is about where the material came from, not which role
     # carried it.
     is_data: bool = False
+    # Whether the turn READ this material, or somebody typed it. The third question this row
+    # answers about one carrier, and the middle one by width — every named file is a fetch and
+    # every fetch is data, and neither holds the other way round. `is_file` asks whether Sage can
+    # NAME the file the rows came out of; `is_data` asks whether the turn has anything left to
+    # answer FROM; this asks which side of the screen the material arrived from. Set on every
+    # `role:"tool"` result, named or not.
+    #
+    # The card hangs the ", or attach a different file" offer off THIS, not off `is_file`. A
+    # `bash cat transactions.csv` or a `grep` did read a file; only the name failed to come with it
+    # (`read_path_from_tool_call` reads `read`-shaped calls alone). Reading `is_file` there told
+    # exactly the person a different file would help that no remedy applied to them (#312).
+    #
+    # Not `is_data`, and the whole difference between the two is the @mention: since #290
+    # `is_data` is `is_tool or _carries_mention`, so `is_data and not is_fetched` on a carrier
+    # means exactly "somebody @mentioned a file and its inlined descriptor is what matched". #312
+    # rules that population out, and the reason is the LABEL: the card calls it "the message you
+    # sent", and the withhold takes the person's typed question away with the descriptor. Offering
+    # a file swap under that label names the file half of a carrier whose other half is their
+    # words. Worth saying plainly that it is a call and not an implication — a person who
+    # @mentioned a file would be helped by attaching a different one, and if that case is ever
+    # argued again it is argued on the label, not on `is_data` being wider.
+    #
+    # The residual, recorded rather than guessed at, and it is the whole of "not a file" rather
+    # than one example of it. This is set on EVERY tool result, so a `bash psql` against a customer
+    # table, a `webfetch`, an MCP result and a subagent's answer all count as fetched, and a
+    # conversation whose only data came that way is offered a file swap it has no use for. Reading
+    # a tool NAME would not fix it either: `bash` covers `cat transactions.csv` and `psql` alike,
+    # and telling them apart means parsing shell commands, which is the "nearly right is worse than
+    # not guessing" this module's `search` refuses by name.
+    #
+    # It is taken because the direction is bounded and the trade is the ticket's (#312): an offer
+    # that does not fit, against a person whose file WAS refused being offered nothing at all.
+    #
+    # The live-read tools are the population most likely to be quoted back at this, and they are
+    # the mild end of it. `live_read_files` reads the head of a real file, so the offer fits it as
+    # it fits a `cat`. `live_read_table` hands the assistant a receipt — columns, a row count and a
+    # path — and the rows go to the card instead (ADR-0041), so its result is not a payload a
+    # value-matching guardrail refuses in the first place.
+    is_fetched: bool = False
 
 
 @dataclass
@@ -204,13 +243,16 @@ def _walk(messages: list[dict]):
         # RESULT, while counting it as data is about where the material came from — and `is_data`
         # is now the wider of the two (#290). A user message has no `tool_call_id` so the file
         # branch could not fire on one anyway; it says `is_tool` because that is what it means.
+        # Three readers now, and the local keeps the payload's name while each field keeps the
+        # name of the question it answers: `is_data` counts survivors, `is_fetched` decides whether
+        # a different file is any use to this person (#312).
         is_tool = m.get("role") == "tool"
         is_data = is_tool or _carries_mention(m)
         if is_tool and cid in paths:
             path = paths[cid]
-            yield Carrier(file_key(path), os.path.basename(path) or path, True, True), m
+            yield Carrier(file_key(path), os.path.basename(path) or path, True, True, True), m
         elif _has_text(m):
-            yield Carrier(text_key(m), _text_label(m), False, is_data), m
+            yield Carrier(text_key(m), _text_label(m), False, is_data, is_tool), m
 
 
 def suspects(messages: list[dict]) -> set[str]:

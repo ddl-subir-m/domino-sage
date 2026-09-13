@@ -2188,6 +2188,39 @@ window.SW = window.SW || {};
     fallback.blocks.push(block);
   }
 
+  // Whether pressing the card's button re-runs the failed turn, and with what question — '' when
+  // it does not. The button PROMISES this and `withholdContent` PERFORMS it, so it is decided in
+  // one place and read from both. #297's whole history is one reader of this pair lagging another:
+  // the button fell behind the store, and then the prose fell behind the button (#311).
+  //
+  // Three conditions, not two. `surviving` says there is something left to answer FROM; `prompt`
+  // says the question itself is one of the things going. Those two come apart in the case a person
+  // meets most — the guardrail matched what they typed and every file the turn read survives — and
+  // re-sending then asks nothing: the same words hash to the same key (`chat_paths.text_key`) and
+  // are replaced by a placeholder that tells the model to say it cannot see them, and that copy
+  // stays for good because the session has no delete, no revert and no fork (ADR-0022).
+  //
+  // The third is that there is a question to re-send at all, and it is the one a second copy of
+  // this rule cannot see. `lastUserPrompt` does not stop at the last user row — a row whose text
+  // block is empty fails its `find` and the walk carries on backwards — so this is `''` only when
+  // NO user row in the drawn transcript holds text. A transcript with an empty row over an older
+  // question re-runs that older question, and the card promises it, because the two agree; whether
+  // reaching back past the refused turn is the right question to re-send is `lastUserPrompt`'s
+  // business and not this one's.
+  //
+  // Unreachable from the UI as it stands — `sendMessage` and `sendBuildPrompt` both refuse text
+  // that trims to nothing, so no live transcript is empty of questions — which is the reason to
+  // answer it here rather than to leave it out: the day either send path stops trimming, or a
+  // transcript arrives from neither of them, the button is wrong and nothing says so.
+  //
+  // Naming the RIGHT transcript is the whole of the surface split. The first version of this named
+  // Chat's on both, so on Build the door was called, the row was written, and the person watched a
+  // card that did not move: `state.messages` is not what Build draws.
+  function withholdRerunPrompt(block) {
+    if (!block || (block.surviving || 0) <= 0 || block.prompt) return '';
+    return lastUserPrompt(block.surface === 'build' ? state.buildMessages : state.messages);
+  }
+
   // The spinner with no answer to put in its place — the same backstop `dropTableCard` is, for the
   // same end. `withhold-found` is written even when the search throws, so the only way here is a
   // stream that stopped between the two, and a card left saying "finding" over a finished turn is
@@ -7269,23 +7302,15 @@ window.SW = window.SW || {};
       notify();
     },
 
+    // Read by the card, which promises in words what this answers. Exported rather than derived
+    // there: see the note on the function.
+    withholdRerunPrompt,
+
     async withholdContent(block) {
       const id = state.thread && state.thread.id;
       if (!id) return;
       const onBuild = block.surface === 'build';
-      // Every line below that names a transcript has to name the RIGHT one. The first version of
-      // this named Chat's on both surfaces, so on Build the door was called, the row was written,
-      // and the person watched a card that did not move: `state.messages` is not what Build draws,
-      // `lastUserPrompt` found nothing in it, and `sendMessage` is Chat's turn.
-      const drawn = onBuild ? state.buildMessages : state.messages;
-      // Two questions, and re-running needs both answered. `surviving` says there is something left
-      // to answer FROM; `prompt` says the question itself is one of the things going. They come
-      // apart in the case a person meets most: the guardrail matched what they typed, every file
-      // the turn read survives, and `surviving` counts those files. Re-sending then asks nothing —
-      // the same words hash to the same key (`chat_paths.text_key`) and are replaced by a
-      // placeholder that tells the model to say it cannot see them — and the copy stays for good,
-      // because the session has no delete, no revert and no fork (ADR-0022).
-      const again = (block.surviving || 0) > 0 && !block.prompt ? lastUserPrompt(drawn) : '';
+      const again = withholdRerunPrompt(block);
       const keys = (block.carriers || []).map((c) => c.key);
       const labels = (block.carriers || []).map((c) => c.label);
       if (!keys.length) return;

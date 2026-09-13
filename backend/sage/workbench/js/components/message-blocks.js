@@ -1017,20 +1017,23 @@ window.SW = window.SW || {};
       // this one rule. It needed no new word because it was written correct while it was still
       // unreachable — the reason to keep writing an unreachable arm as though someone will run it.
       : (carriers.length > 1 ? 'them' : 'it');
-    // Whether the click actually carries on, which is the store's question and not this card's:
-    // `withholdContent` re-runs the turn on `surviving > 0 && !prompt` and returns without one
-    // otherwise (`store.js`, `const again`). `survives` alone is half of that pair, and the half it
-    // drops is the case the store's own comment calls the one a person meets most — the guardrail
-    // matched the words they typed, every file the turn read survives. Drawn from `survives` alone
-    // that card reads "Continue without it", the click withholds and stops, and the receipt that
-    // replaces it tells them to ask again in different words. The button said the conversation
-    // carries on and nothing carried on.
+    // Whether the click actually carries on, which is the store's question and not this card's —
+    // and it is ASKED here rather than answered. `withholdRerunPrompt` is the same call
+    // `withholdContent` makes to decide whether to re-run the turn, so the button cannot promise a
+    // thing the click does not do.
+    //
+    // It was derived here once, from `surviving` and `prompt`, and that copy was a clause short of
+    // the click's three: the store also needs a question to re-send, and a drawn transcript with
+    // no user row holding text has none. Both fields can say carry on over that transcript, so the
+    // card read "Continue without it", the click withheld and returned, and no turn ran — the
+    // button said the conversation carries on and nothing carried on, which is #297's defect one
+    // condition further out (#311).
     //
     // Read by the button and by the prose's last sentence, which are the two places that describe
     // the ACT. The prose's other sentences read one field each, because each states one fact:
     // what is left reads `survives`, and whether the question is going reads `prompt`. Two
     // questions, two fields — and the pair only where the subject is what the click does.
-    const carriesOn = survives && !block.prompt;
+    const carriesOn = !!SW.store.withholdRerunPrompt(block);
     return h('div', { className: 'sw-nudge' },
       h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
       h('div', { className: 'sw-nudge-main' },
@@ -1093,17 +1096,37 @@ window.SW = window.SW || {};
                   // files puts this exact "them" on the button.
                   + (carriers.length > 1 ? 'them' : 'it')
                   + ' and this conversation will work again — ask something else'
-                  // Only offer the attachment when a file is what went — where "a file" means one
-                  // `is_file` could name. The same branch draws several matched messages with no
-                  // file anywhere, and telling that person to attach a different one names
-                  // something their conversation never had.
+                  // Only offer the attachment when the turn READ what went. `is_fetched`, not
+                  // `is_file`: `is_file` asks whether Sage can name the file, and a
+                  // `bash cat transactions.csv` came out of a file that no path arrived with, so
+                  // reading it here ended the one card a different file would actually fix with no
+                  // remedy at all (#312). Both file populations get it wherever this arm is
+                  // drawn at all, and the sentence above has already told the unnamed one that
+                  // Sage cannot say which file it was. Those two sit together on purpose and do
+                  // not argue: one says what SAGE can name, the other what the PERSON can do, and
+                  // the person reading "a different file" knows which file they ran the command
+                  // over. Rewording it to drop the comparison would cost the three populations
+                  // where a file WAS named the only concrete thing the card tells them to do.
+                  // Wherever the turn CARRIES ON the whole
+                  // clause is absent, named file and `cat` alike — the button re-runs the turn
+                  // there and nothing needs attaching. That gate is #309's, not this line's.
                   //
-                  // Read against THAT population only. It also drops the offer for the person it
-                  // fits best: a `bash cat transactions.csv` did read a file and carries no path,
-                  // so `is_file` is false and this ends with no remedy for the one case a
-                  // different file would actually fix. Filed as #312, which needs a distinction
-                  // the payload does not carry — this line is the gap recorded, not handled.
-                  + (carriers.some((c) => c.is_file) ? ', or attach a different file.' : '.'),
+                  // Still no offer where nothing was read — several matched messages with no file
+                  // anywhere, which is the population this gate was written against (#297): a
+                  // person told to attach a different one goes looking for something their
+                  // conversation never had.
+                  //
+                  // `Carrier.is_data` was the obvious field and is deliberately not sent here.
+                  // Since #290 an @mention's inlined descriptor makes a carrier LABELLED "the
+                  // message you sent" arrive as data, so hanging the offer there would put it back
+                  // on prose — this same defect, inverted.
+                  //
+                  // `is_file` is read beside it for the rows ALREADY IN TRANSCRIPTS. A named file
+                  // is a `read` result, so the two agree on every row written from here on; the
+                  // pair is what stops a card re-drawn from a row written before the field existed
+                  // from silently losing the offer it was first rendered with.
+                  + (carriers.some((c) => c.is_fetched || c.is_file)
+                    ? ', or attach a different file.' : '.'),
             ].filter(Boolean).join(' '))),
         h('div', { className: 'sw-withhold-scope' },
           'Applies to this conversation. A new conversation starts fresh.'),
