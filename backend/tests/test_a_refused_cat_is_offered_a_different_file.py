@@ -15,7 +15,10 @@ flags agree with the card while the search that produces them disagrees with bot
 """
 from __future__ import annotations
 
+import json
 import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -129,3 +132,49 @@ def test_a_card_redrawn_from_a_row_written_before_the_field_existed_keeps_its_of
     old_row = [{"key": "file:/mnt/data/transactions.csv", "label": "transactions.csv",
                 "is_file": True}]
     assert OFFER in _said(old_row)
+
+
+def _said_over(carriers: list[dict], *, surviving: int, messages: list[dict] | None) -> str:
+    """The card as drawn over a given transcript, not only over the one `_said` assumes.
+
+    `_said` renders at `surviving: 0`, where the click can never re-run and the clause this ticket
+    edits is always drawn. Since #311 that is no longer the only way in.
+    """
+    harness = Path(__file__).resolve().parent / "js" / "withhold_card_harness.mjs"
+    spec = {"block": {"type": "withhold", "searching": False, "carriers": carriers,
+                      "complete": True, "surviving": surviving, "prompt": False,
+                      "stopped": "", "surface": "chat", "live": True}}
+    if messages is not None:
+        spec["messages"] = messages
+    out = subprocess.run(["node", str(harness)], input=json.dumps(spec),
+                         capture_output=True, text=True, check=True)
+    return " ".join(n["text"] for n in json.loads(out.stdout)["nodes"] if n["text"])
+
+
+@_needs_node
+def test_the_offer_splits_the_same_way_where_the_click_cannot_re_run():
+    """The population #311 opened under this clause, which neither ticket's tests reached.
+
+    `carriesOn` used to be `surviving > 0 && !prompt` and is now `withholdRerunPrompt(block)`,
+    which asks the store for the words it would re-send and gets `''` when the drawn transcript
+    holds no user row with text. So a turn WITH survivors can now fall into the arm this clause
+    lives in — a case that did not exist when the offer was wired to `is_fetched`.
+
+    It splits there exactly as it does everywhere else, because the two questions are unrelated:
+    whether the click can carry on is about the transcript, and whether a different file is any
+    use is about where the material came from. Both sides are asserted, so an arm that stopped
+    drawing at all could not pass this as a pair of absences.
+    """
+    catted = [{"key": "text:c", "label": "something a tool read", "is_file": False,
+               "is_fetched": True}]
+    typed = [{"key": "text:t", "label": "the message you sent", "is_file": False,
+              "is_fetched": False}]
+
+    carries_on = _said_over(catted, surviving=1, messages=None)
+    assert "Stop sending it and this conversation will work again" not in carries_on, (
+        "a transcript with a question in it still re-runs, and the whole clause stays away")
+
+    stalled = _said_over(catted, surviving=1, messages=[])
+    assert "Stop sending it and this conversation will work again" in stalled
+    assert OFFER in stalled, "#312's population, reached the way #311 opened"
+    assert OFFER not in _said_over(typed, surviving=1, messages=[])
