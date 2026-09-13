@@ -112,6 +112,7 @@ from ..resources.preflight import (
     credential_fix,
     endpoint_binding_fix,
     missing_credentials,
+    shadowed_slots,
     slot_alias,
     slots_on_dead_endpoints,
     stale_bindings,
@@ -14473,13 +14474,24 @@ class Orchestrator:
         # default" is a lie with a consequence: the day the deployment default moves, this project
         # will not follow it, and the panel said it would.
         overrides = project.record.read_catalog_overrides()
+        # The one verdict that needs no gateway, so it is settled before one is asked (#276). A
+        # shadowed slot is shadowed whether or not the Alias listing lands, and reading it below the
+        # `except` would hide the pin from the drawer on exactly the read that already has the least
+        # to say.
+        shadowed = {p.slot: p.message for p in shadowed_slots(live)}
         slots = [
             {
                 "slot": slot,
                 "model": getattr(live, slot),
                 "default": getattr(defaults, slot),
                 "assigned": slot in overrides,
-                "problem": None,
+                "problem": shadowed.get(slot),
+                # Which KIND of verdict `problem` is carrying, for the one reader that has to tell
+                # them apart: the sensitivity lock outranks the signing pin
+                # (`llm_router._lock_sensitivity` wraps `_pin_signing`), so on a row the lock has
+                # moved, the shadow's sentence is false while the other two verdicts stay true. The
+                # panel holds the lock's own per-slot answer and this says which line it may drop.
+                "shadowed": slot in shadowed,
             }
             for slot in ASSIGNABLE_SLOTS
         ]
@@ -14498,7 +14510,12 @@ class Orchestrator:
                     list(unresolved_slots(live, aliases))
                     + list(slots_on_dead_endpoints(live, aliases, endpoints))}
         for row in slots:
-            row["problem"] = verdicts.get(row["slot"])
+            # A shadow already on the row keeps it. Those two verdicts say "turns that use this
+            # model will fail"; on a shadowed slot no turn uses it, so the sentence is false in its
+            # subject and its remedy sends the reader to start an endpoint this session was never
+            # going to call. Release the pin and the slot's own verdict comes back on the next read,
+            # which is when it starts being true.
+            row["problem"] = row["problem"] or verdicts.get(row["slot"])
         return {
             "slots": slots,
             "aliases": [

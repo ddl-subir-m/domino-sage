@@ -241,6 +241,43 @@ def test_ask_under_the_pin_names_the_pinned_model_too():
     assert "required for this session" in row["why"]
 
 
+def test_a_running_turn_still_accounts_for_the_pin():
+    """Both sentences are true at once, and the running one used to win `title` outright — so the
+    hover that happens mid-build, which is the moment somebody looks at this chip, gave no account
+    of the pin at all (#276). The closed control still explains itself; it now explains both."""
+    (row,) = _drawn([{"mode": "plan", "signing": "implement", "running": True}])
+    assert row["disabled"] is True
+    assert "required for this session" in row["why"]
+    assert "This turn is running on" in row["why"]
+
+
+def test_an_override_that_beat_the_pin_takes_the_pin_s_sentence_with_it():
+    """Precedence is in-session act > pin — `_pin_signing` hands a PLAN_OVERRIDE decision straight
+    back — so once a pick is in, the chip names the pick and the pin's sentence is false. It used to
+    be shown anyway, which had the control contradict itself in two consecutive sentences (#276)."""
+    _, after = _drawn([{"mode": "plan", "signing": "implement", "pick": "deepseek/deepseek-v3"},
+                       {"mode": "plan", "running": True}])
+    assert after["label"] == "deepseek/deepseek-v3"
+    assert "required for this session" not in (after["why"] or "")
+    assert "This turn is running on deepseek/deepseek-v3" in after["why"]
+
+
+def test_a_barred_pick_mid_turn_leaves_the_pin_unnamed():
+    """The lock outranks the pin here exactly as it does on the open control: under the lock the pin
+    is not what moved this model, and a confident sentence naming the wrong cause is worse than one
+    fewer sentence."""
+    (row,) = _drawn([{
+        "mode": "plan", "signing": "implement", "running": True,
+        "sensitivity": {"enabled": True, "locked": True, "group": "approved-for-sensitive",
+                        "approved": ["sovereign/plan"], "datasets": ["claims"],
+                        "refusal": None, "model": "sovereign/plan", "chat_model": None,
+                        "slot_models": {}, "reason": ""},
+        "app": "Claims app", "declaredIn": "binding",
+    }])
+    assert "required for this session" not in row["why"]
+    assert "This turn is running on" in row["why"]
+
+
 def test_no_signing_slot_leaves_every_word_of_the_picker_alone():
     plain, _ = _drawn([{"mode": "auto"}, {"mode": "auto", "signing": None}])
     assert plain["label"] == f"{PLAN_MODEL} · planning"

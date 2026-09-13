@@ -268,3 +268,65 @@ def test_a_session_lock_still_says_how_to_get_out_of_it():
     (alert,) = [a for a in drawn["alerts"] if a["message"] == "Allowed models only"]
     assert len(alert["paragraphs"]) == 2
     assert "Start a new chat" in alert["paragraphs"][1]
+
+
+# ---- the pin the drawer could not see (#276) -------------------------------------------------------
+
+
+_LOCKED = {
+    "enabled": True, "locked": True, "group": "approved-for-sensitive", "approved": ["opus"],
+    "datasets": ["claims"], "refusal": None, "model": "opus", "chat_model": "opus",
+    "slot_models": {"plan": "opus", "implement": "opus", "ask": "opus"}, "reason": "declared",
+}
+
+_SHADOW = ("The implement model (coder) runs every Turn in this session, so this model won't run."
+           " Change the implement model to release the session.")
+# The `ask` row's own sentence: the pin does not reach Chat, so that slot still drives a model.
+_SHADOW_ASK = ("The implement model (coder) runs every Turn in this session, so this model only"
+               " runs in Chat. Change the implement model to release the session.")
+# The lock that closes every model. `_locked_slot_models` returns nothing at all when the approved
+# set resolves to none, so this is the lock holding with no substitute to name.
+_LOCKED_DEAD = dict(_LOCKED, approved=[], slot_models={},
+                    refusal="No models are approved for sensitive data yet.")
+
+
+def test_a_shadowed_row_draws_the_sentence_and_the_holder_row_does_not():
+    """The drawer is where the choice is made and it said nothing about the pin: a slot the pin had
+    taken out of play drew exactly like a live one. Two sentences over three rows is the assertion —
+    the holder is the row without one, because it runs exactly what it says, and a sentence telling
+    the reader to change the model they are looking at would send them backwards."""
+    (drawn,) = _drawn([{"signing": "implement"}])
+    assert drawn["labels"] == ["Plan", "Implement", "Ask and Chat"]
+    assert drawn["problems"] == [_SHADOW, _SHADOW_ASK]
+
+
+def test_the_lock_takes_the_shadow_off_a_row_it_has_already_moved():
+    """The lock outranks the pin (`llm_router._lock_sensitivity` wraps `_pin_signing`), so on a row
+    the lock has moved, "this model won't run" names the wrong cause and sends the reader to a slot
+    that changes nothing while the lock holds. The row already says what runs, one line down.
+
+    Plan is assigned an APPROVED model first, so it is the row the lock has NOT moved — the shadow
+    has to survive there, or this would pass by suppressing the sentence everywhere."""
+    _, drawn = _drawn([{"set": ["plan", "opus"]}, {"signing": "implement", "sensitivity": _LOCKED}])
+    assert drawn["problems"] == [_SHADOW]
+    assert "gpt-5.4 isn't approved, so this runs opus." in drawn["details"]
+
+
+def test_a_lock_that_closes_every_model_still_takes_the_shadow_off():
+    """The narrower case, and the one the reader can act on least: `_locked_slot_models` returns
+    nothing at all when the approved set resolves to none, so there is no substitute model to name
+    and the row draws no "so this runs X" line. The lock still outranks the pin, so the pin's
+    sentence is still false — gating on the substitute rather than on the lock would have let it
+    back in at exactly that moment."""
+    (drawn,) = _drawn([{"signing": "implement", "sensitivity": _LOCKED_DEAD}])
+    assert drawn["problems"] == []
+
+
+def test_the_lock_leaves_a_verdict_about_a_model_that_will_not_answer_standing():
+    """Only the pin's sentence goes. A model that will not answer will not answer whatever moved the
+    turn, so dropping every `problem` on a moved row would lose a true one — which is the difference
+    between gating on `shadowed && runs` and gating on `runs`."""
+    # Two steps: a row's verdict is read off the tree drawn BEFORE the click, so the assignment has
+    # to land in its own step for the panel to have re-read and reported it.
+    _, drawn = _drawn([{"set": ["implement", "local-llm"]}, {"sensitivity": _LOCKED}])
+    assert any("Start that endpoint" in p for p in drawn["problems"])

@@ -3,7 +3,9 @@
 // Input on stdin: a list of steps. `{}` just opens the panel; `{ "running": true }` opens it during
 // a build; `{ "listing": "down" }` opens it when the gateway will not list Aliases; `{ "set":
 // ["plan", "opus"] }` also changes one row and reports what was written; `{ "sensitivity": {...} }`
-// opens it with the sensitivity lock holding, served from the route the panel actually reads.
+// opens it with the sensitivity lock holding, served from the route the panel actually reads;
+// `{ "signing": "implement" }` opens it with that slot holding a model that signs, so the other
+// rows arrive carrying the shadow the pin casts over them (#276).
 //
 // Nothing is mounted. `createElement` is stubbed to a plain object, so calling the component returns
 // the tree it would draw — which is where a Select's options and disabled state are settled.
@@ -38,6 +40,10 @@ const ALIASES = [
 
 let listing = 'up';
 let failReloadAfterSave = false;
+// The assignable slot holding a model that signs its tool calls, or null. Set by a step and served,
+// never derived here: the server owns `signing_slot` (ADR-0032) and a copy of that rule in this file
+// would let the panel agree with a fixture rather than with the product (#276).
+let signingSlot = null;
 // The lock, exactly as `/api/project/sensitivity` answers it. Served rather than written into the
 // store, because opening the drawer re-reads it (`openAssignments`) — a value set by hand would be
 // overwritten by that read before the panel drew a single row.
@@ -60,14 +66,28 @@ const status = () => ({
   },
 });
 
+// What `shadowed_slots` sends for a slot the pin has taken out of play, and the `shadowed` flag
+// that says which kind of verdict `problem` is carrying. The sentence is the server's, copied; what
+// this file is asking the panel is whether it DRAWS it, and when it drops it.
+// `ask` gets the other sentence, as it does from the server: the pin does not reach Chat, so that
+// row still drives a model even while Build's Ask mode runs on the holder.
+const shadow = (slot) => (signingSlot && slot !== signingSlot
+  && model(slot) !== model(signingSlot)
+  ? `The ${signingSlot} model (${model(signingSlot)}) runs every Turn in this session, so this `
+    + (slot === 'ask' ? 'model only runs in Chat. ' : "model won't run. ")
+    + `Change the ${signingSlot} model to release the session.`
+  : null);
+
 const panel = () => ({
   slots: ['plan', 'implement', 'ask'].map((slot) => ({
     slot, model: model(slot), default: DEFAULTS[slot], assigned: slot in overrides,
+    shadowed: shadow(slot) !== null,
     // Preflight's verdict, which the server recomputes on every read — so a slot assigned to a
     // model that will not answer reports it the moment the panel re-reads after the save.
-    problem: (ALIASES.find((a) => a.name === model(slot)) || {}).serving === false
-      ? `The ${slot} model (${model(slot)}) is Stopped. Turns that use it will fail. Start that endpoint, or pick a different model.`
-      : null,
+    problem: shadow(slot)
+      || ((ALIASES.find((a) => a.name === model(slot)) || {}).serving === false
+        ? `The ${slot} model (${model(slot)}) is Stopped. Turns that use it will fail. Start that endpoint, or pick a different model.`
+        : null),
   })),
   aliases: listing === 'up' || listing === 'unchecked' ? ALIASES : [],
   error: listing === 'down' ? 'The LLM Gateway is not answering.'
@@ -152,6 +172,7 @@ for (const step of steps) {
   listing = step.listing || 'up';
   failReloadAfterSave = !!step.failReload;
   sensitivity = step.sensitivity || null;
+  signingSlot = step.signing || null;
   SW.store.set({ buildRunning: !!step.running, catalog: status().model.catalog });
   await SW.store.openAssignments(true);
   await settle();

@@ -317,3 +317,105 @@ def test_a_slot_naming_an_alias_the_gateway_does_not_offer_reports_it_too(tmp_pa
     orch.set_catalog(ask="gone-model")
     row = next(r for r in orch.model_assignments()["slots"] if r["slot"] == "ask")
     assert "isn't available" in row["problem"]
+
+
+# ---- the pin the panel could not see (#276) ---------------------------------------------------------
+
+
+SIGNING = "gemini-3.7-flash"
+
+
+def _problems(orch: Orchestrator) -> dict[str, str | None]:
+    return {r["slot"]: r["problem"] for r in orch.model_assignments()["slots"]}
+
+
+def test_a_slot_the_signing_pin_has_shadowed_says_so(tmp_path):
+    """The drawer is where the choice gets made and it knew least about it: a slot the pin had taken
+    out of play drew exactly like a live one — same row, same text, `problem: null`. The sentence
+    names the cause and the cure, because neither is the row it lands on."""
+    orch = _orch(tmp_path)
+    orch.set_catalog(implement=SIGNING, plan="opus")
+    plan = _problems(orch)["plan"]
+    assert f"The implement model ({SIGNING})" in plan
+    assert "this model won't run" in plan
+    assert "Change the implement model" in plan
+
+
+def test_the_slot_holding_the_signing_model_is_left_alone(tmp_path):
+    """It is running exactly what it says. A row telling the reader to change the model they are
+    looking at, on the one row where that model is the one running, would send them backwards."""
+    orch = _orch(tmp_path)
+    orch.set_catalog(implement=SIGNING, plan="opus")
+    assert "won't run" not in (_problems(orch)["implement"] or "")
+
+
+def test_the_ask_row_says_chat_still_runs_on_it(tmp_path):
+    """`ask` is one row with two consumers and the pin reaches only one: `llm_router.resolve` sends a
+    Chat turn down `_resolve_chat` before the pin is applied. "This model won't run" is true of the
+    other two slots and false here, and the row is labelled "Ask and Chat" for that very reason."""
+    orch = _orch(tmp_path)
+    orch.set_catalog(implement=SIGNING)
+    ask = _problems(orch)["ask"]
+    assert "only runs in Chat" in ask
+    assert "won't run" not in ask
+
+
+def test_two_slots_holding_one_signing_model_shadow_neither(tmp_path):
+    """The claim is about the model, not about which slot's assignment carries it there. Assign the
+    signing model to Plan as well and Plan runs exactly the model its row shows — saying otherwise
+    would be the same false row this fixes, pointed the other way."""
+    orch = _orch(tmp_path)
+    orch.set_catalog(plan=SIGNING, implement=SIGNING)
+    assert "won't run" not in (_problems(orch)["plan"] or "")
+
+
+def test_the_shadow_outranks_a_verdict_about_a_model_no_turn_will_reach(tmp_path):
+    """Plan's default (`gpt-5.4`) is not on this fixture's gateway, so the row carried "isn't
+    available" — a sentence whose subject is turns that use this model, of which there are now none,
+    and whose remedy sends the reader to the wrong slot. Release the pin and it comes back."""
+    orch = _orch(tmp_path)
+    assert "isn't available" in _problems(orch)["plan"]
+    orch.set_catalog(implement=SIGNING)
+    assert "isn't available" not in _problems(orch)["plan"]
+    orch.set_catalog(implement=None)
+    assert "isn't available" in _problems(orch)["plan"]
+
+
+def test_a_gateway_that_will_not_answer_still_reports_the_shadow(tmp_path):
+    """The only slot verdict that is a property of the catalog rather than of the gateway, so it is
+    settled before one is asked. Hiding it here would drop the pin's explanation on exactly the read
+    that already has the least to say."""
+    from sage.resources.provider import ResourceUnavailable
+    orch = _orch(tmp_path)
+    orch.set_catalog(implement=SIGNING)
+
+    def _boom():
+        raise ResourceUnavailable("The LLM Gateway is not answering.")
+
+    orch._resources.list_llm_aliases = _boom
+    panel = orch.model_assignments()
+    assert panel["aliases"] == []
+    assert "Change the implement model" in _problems(orch)["plan"]
+
+
+def test_the_row_says_which_kind_of_verdict_it_is_carrying(tmp_path):
+    """The panel has to tell them apart and must not do it by reading the sentence — a sentence is
+    what a brand pack is allowed to change. The sensitivity lock outranks the pin
+    (`llm_router._lock_sensitivity` wraps `_pin_signing`), so on a row the lock has moved the shadow
+    is false while the other two verdicts stay true, and this flag is what lets the drawer drop the
+    one without dropping the others."""
+    orch = _orch(tmp_path)
+    orch.set_catalog(implement=SIGNING)
+    flags = {r["slot"]: r["shadowed"] for r in orch.model_assignments()["slots"]}
+    assert flags == {"plan": True, "implement": False, "ask": True}
+    # The other two verdicts are on rows that report `shadowed: False`, so the drawer's gate cannot
+    # reach them. `plan` here carries "isn't available" and nothing else.
+    orch.set_catalog(implement=None)
+    assert all(r["shadowed"] is False for r in orch.model_assignments()["slots"])
+    assert "isn't available" in _problems(orch)["plan"]
+
+
+def test_no_signing_assignment_leaves_every_row_as_it_was(tmp_path):
+    orch = _orch(tmp_path)
+    orch.set_catalog(implement="opus")
+    assert all("won't run" not in (p or "") for p in _problems(orch).values())

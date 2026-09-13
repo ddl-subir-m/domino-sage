@@ -9,16 +9,18 @@ provider already computes — so each check costs one gateway call, not one per 
 That listing is the right authority for both: `/v1/models` is what a model call is actually
 resolved against, so an Alias missing from it is an Alias that will 404 mid-turn.
 
-Pure functions on purpose. Everything here takes an already-fetched alias list, so the decisions
-are testable without a gateway and the two callers (startup, session open) each own their own I/O
-and their own failure handling.
+Pure functions on purpose. Everything that asks the gateway a question takes an already-fetched
+alias list, so the decisions are testable without a gateway and the two callers (startup, session
+open) each own their own I/O and their own failure handling. `shadowed_slots` takes none because it
+asks the gateway nothing — see its own docstring, and note that this makes it the one slot verdict
+that still stands when the listing fails.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from ..orchestrator import brand
-from ..router.models import Mode, ModelCatalog, signing_slot
+from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, signing_slot
 from .bindings import KIND_DATA_SOURCE, KIND_LLM_ALIAS, KIND_MODEL_API, Binding
 from .provider import HostedEndpoint, LlmAlias
 
@@ -277,6 +279,89 @@ def slots_on_dead_endpoints(catalog: ModelCatalog, aliases: list[LlmAlias],
         if found:
             problems.append(EndpointProblem(slot, alias, found[0], found[1]))
     return problems
+
+
+@dataclass(frozen=True)
+class ShadowedSlot:
+    """An assignable slot the signing pin has taken out of play (#276).
+
+    The third verdict a slot can carry, and the only one that is a property of the CATALOG rather
+    than of a gateway the slot's Alias resolves against. Both its neighbours ask "will this model
+    answer"; this one asks "will this model be asked", and nothing before it ever did — so a slot
+    the pin had already shadowed drew exactly like a live one, same row, same text, no note.
+
+    The rule it reports is `signing_slot`'s, read and not restated, for the reason `turn_slots`
+    gives: a second copy would go stale the first time `SIGNS_TOOL_CALLS` grows.
+
+    Carries `message` alone, where `SlotProblem` and `EndpointProblem` also split out `fault` and
+    `fix` under ADR-0027. Nothing reports this one as a creator-facing Problem — the model panel
+    reads `message` and that is the whole of its audience — and a split nobody consumes is a
+    promise about a surface that does not exist.
+    """
+
+    slot: str
+    holder: str  # the assignable slot whose model signs, and so holds the session
+    holder_model: str
+
+    @property
+    def message(self) -> str:
+        """Names the cause and the cure in one breath, because the row this lands on is not the row
+        to change. A sentence that said only "this model will not run" would leave the reader
+        looking for the fault in the slot they are already looking at."""
+        # "Build" is not in either sentence and putting it back is a lint failure, not a style note:
+        # CONTEXT.md marks it `_Kind_: name`, so a marked position that spells it out owes it a noun
+        # key (ADR-0026). It is worth one if a second string ever needs the word; one string is not,
+        # and the drawer this lands in is Build's own, listing Build's own modes.
+        #
+        # Two whole sentences rather than one with the tail substituted in, because a substituted
+        # value is not scanned again (`brand.text`) — a `{chat}` handed in as a value would reach a
+        # person with its braces on, and the lint over marked positions would never have seen it.
+        #
+        # `ask` is one row with two consumers, and the pin reaches only one of them:
+        # `llm_router.resolve` sends a Chat turn down `_resolve_chat` BEFORE `_pin_signing` is
+        # applied, so this slot still drives Chat's model while Build's Ask mode runs on the holder.
+        # "This model won't run" is the true sentence for the other two slots and a false one here,
+        # and the panel labels this row "Ask and Chat" precisely because its reader asks about both.
+        template = (
+            "The {holder} model ({model}) runs every {turn} in this session, so this model only "
+            "runs in {chat}. Change the {holder} model to release the session."
+            if self.slot == "ask" else
+            "The {holder} model ({model}) runs every {turn} in this session, so this model won't "
+            "run. Change the {holder} model to release the session."
+        )
+        return brand.text(template, holder=self.holder, model=self.holder_model)
+
+
+def shadowed_slots(catalog: ModelCatalog) -> list[ShadowedSlot]:
+    """The assignable slots a signing assignment has shadowed, in ASSIGNABLE_SLOTS order.
+
+    No alias listing, unlike the two checks above: whether a slot will be reached is settled by the
+    catalog alone, so this is also the one slot verdict that survives a gateway that will not answer.
+
+    ASSIGNABLE_SLOTS and not `SLOTS`. `signing_slot` reads only the three, so only the three can be
+    pinned or shadowed; reporting a sovereign slot here would name a shadow no rule casts.
+
+    A slot holding the same model string as the holder is NOT shadowed. Two slots can name one
+    model — assigning the signing model to both Plan and Implement is the shape that produces it —
+    and such a row runs exactly the model it shows. The claim being made is about the model, not
+    about which slot's assignment carries it there.
+
+    Two rules outrank the pin and so bound what this can promise. The sensitivity lock is one and is
+    handled where the drawing happens, because only the panel holds the lock's per-slot answer. The
+    other is `llm_router.resolve_unsigned`: a session whose history already carries unsigned tool
+    calls cannot take a signing model at all, and the shim then routes it to the first NON-signing
+    assignable slot — one of these very rows. That state is a property of one session's transcript,
+    which no catalog can be asked about, so the sentence is knowingly wrong for the length of a
+    recovered session rather than guessed at. If a slot verdict ever needs to see it, the thing to
+    reach for is the session, not another rule restated here.
+    """
+    holder = signing_slot(catalog)
+    if holder is None:
+        return []
+    held = getattr(catalog, holder)
+    return [ShadowedSlot(slot, holder, held)
+            for slot in ASSIGNABLE_SLOTS
+            if slot != holder and getattr(catalog, slot, "") != held]
 
 
 # ---- the same two questions, asked at the turn instead of at boot (#125) -------------------------
