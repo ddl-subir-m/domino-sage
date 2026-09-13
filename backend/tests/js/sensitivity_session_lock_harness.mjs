@@ -118,8 +118,13 @@ if (spec.wayOut) {
         // and every flag here answers about whatever happens to sit there.
         found: at !== -1,
         loadsApp: load !== -1,
-        gatedOnLock: /if \(SW\.util\.isLocked\(read\) && !state\.activeApp\) await loadAppList\(\)/
-          .test(body),
+        // `repairAppScope` is optional in the pattern and the lock gate is not. The drawer's 2s
+        // cadence asks for the repair off once an answer has landed (#294), so a conjunct sits in
+        // front of this condition now — but what this flag is about is that the load is GATED ON
+        // THE LOCK rather than unconditional, and that has to keep failing if the gate goes.
+        gatedOnLock:
+          /if \((?:repairAppScope && )?SW\.util\.isLocked\(read\) && !state\.activeApp\) await loadAppList\(\)/
+            .test(body),
         beforeApply: load !== -1 && load < body.indexOf('state.sensitivity = read'),
       };
     })(),
