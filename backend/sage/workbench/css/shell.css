@@ -1449,12 +1449,14 @@ a.sw-topnav-link {
 }
 .sw-handoff-file {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--s2);
   font-size: var(--fs-12);
   padding: 2px 0;
 }
 .sw-handoff-file code { font-family: var(--mono); color: var(--dark-700); }
+.sw-handoff-file-text { display: grid; gap: 2px; min-width: 0; }
+.sw-handoff-file-note { color: var(--gray-500); line-height: 1.35; }
 
 /* Command palette -------------------------------------------------------- */
 

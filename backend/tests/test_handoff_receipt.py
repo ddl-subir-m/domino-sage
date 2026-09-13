@@ -212,8 +212,11 @@ def test_a_crossing_that_carried_nothing_extra_says_so(tmp_path: Path):
     assert crossed["charts"] == []
     assert crossed["context"] == []
     assert crossed["transcript"] is False
+    assert ".sage/handoff.md" in crossed["files"]
     assert ".sage/handoff-transcript.md" not in crossed["files"]
     app_id = orch.project(start_preview=False).workspace.app_id
+    handoff_md = root / "apps" / app_id / ".sage" / "handoff.md"
+    assert "build me a desk exposure dashboard" in handoff_md.read_text()
     assert not (root / "apps" / app_id / ".sage" / "handoff-transcript.md").exists()
 
 
