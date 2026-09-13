@@ -32,10 +32,14 @@ _KIND_SUFFIX = {
 
 # What `new_id("thr")` mints, matched loosely enough to cover every id this store has ever
 # written. Deliberately the same shape as `shim.chat_paths._THREAD_ID`, which gates the other
-# direction (what a Chat turn may write). `examples/` is an ordinary directory at the Project root
-# and a person may keep their own folders in it, so this prefix is the only thing that tells this
+# direction (what a Chat turn may write). `examples/` and `.sage/threads/` are ordinary directories
+# on disk once a person has the Project folder, so this prefix is the only thing that tells this
 # store's directories from theirs — which matters most where something is about to be removed.
 _MINTED_ID = re.compile(r"^thr_[a-zA-Z0-9_-]+$")
+
+
+def _is_thread_id(value: object) -> bool:
+    return isinstance(value, str) and len(value) <= 64 and bool(_MINTED_ID.fullmatch(value))
 
 
 def safe_id(value: str, what: str) -> str:
@@ -106,7 +110,7 @@ def handoff_unresolved(row: dict | None) -> bool:
 
 def _is_live(row: dict | None) -> bool:
     """A Thread record that is readable and not a tombstone. See `ThreadStore.delete`."""
-    return row is not None and not row.get("deleted")
+    return row is not None and _is_thread_id(row.get("id")) and not row.get("deleted")
 
 
 def _is_auto_artifact(item: dict) -> bool:
@@ -349,7 +353,10 @@ class ThreadStore:
         for d in self._thread_dirs():
             # Read before write, as forget_app does: a rename rewrites the few records that name
             # the app rather than every record in the Project.
-            tags = (self._read_meta(d.name) or {}).get("touched") or []
+            row = self._read_meta(d.name)
+            if not _is_live(row):
+                continue
+            tags = row.get("touched") or []
             if any(isinstance(t, dict) and t.get("appId") == app_id for t in tags):
                 self._edit_meta(d.name, edit)
 
@@ -370,7 +377,10 @@ class ThreadStore:
         for d in self._thread_dirs():
             # Read before the write, so a delete rewrites the few records that named this app rather
             # than every record in a Project that may hold hundreds.
-            tags = (self._read_meta(d.name) or {}).get("touched") or []
+            row = self._read_meta(d.name)
+            if not _is_live(row):
+                continue
+            tags = row.get("touched") or []
             if any(isinstance(t, dict) and t.get("appId") == app_id for t in tags):
                 self._edit_meta(d.name, edit)
 
@@ -438,13 +448,7 @@ class ThreadStore:
         self._adopt_legacy_index()
         ids = []
         for d in self._thread_dirs():
-            try:
-                row = self._read_meta(d.name)
-            except ValueError:
-                # A directory name no `new_id` ever minted. Nothing this store wrote, so nothing
-                # it may delete — and skipping it rather than raising keeps one piece of junk in
-                # `.sage/threads/` from stopping the sweep over every real tombstone beside it.
-                continue
+            row = self._read_meta(d.name)
             if (row or {}).get("deleted"):
                 ids.append(d.name)
         return ids
@@ -612,7 +616,7 @@ class ThreadStore:
         root = self._root / ".sage" / "threads"
         if not root.is_dir():
             return []
-        return [d for d in root.iterdir() if d.is_dir()]
+        return [d for d in root.iterdir() if d.is_dir() and _is_thread_id(d.name)]
 
     def _read_meta(self, thread_id: str) -> dict | None:
         p = self.meta_path(thread_id)
@@ -631,9 +635,7 @@ class ThreadStore:
             #
             # `safe_id` still raises past this: `meta_path` calls it BEFORE the `try`. That is
             # deliberate — a directory name nothing minted is a different fault from a file that
-            # will not decode — but read it as a limit, NOT as a reassurance. `tombstoned_ids`
-            # catches that `ValueError`; `list()` does not, so a stray folder here still stops the
-            # rail this guard is about. Different fault, same headline, filed as #332.
+            # will not decode — so directory scans must filter those names before they read meta.
             return None
         return data if isinstance(data, dict) else None
 
@@ -680,7 +682,7 @@ class ThreadStore:
         in_legacy_index: set[str] = set()
         for row in rows:
             thread_id = str(row.get("id") or "") if isinstance(row, dict) else ""
-            if not thread_id:
+            if not _is_thread_id(thread_id):
                 continue
             in_legacy_index.add(thread_id)
             if not self.meta_path(thread_id).exists():
