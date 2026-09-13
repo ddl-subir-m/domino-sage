@@ -3137,6 +3137,25 @@ def add_thread_context(thread_id: str, body: dict) -> JSONResponse:
     return JSONResponse(row)
 
 
+@control_app.post("/api/threads/{thread_id}/crossing")
+def cross_thread_context(thread_id: str) -> JSONResponse:
+    """Cross this Conversation's chips into the selected Built App — the Build tab's door (#275).
+
+    Beside the handoff sheet's confirm rather than part of it: that one crosses a plan and its
+    documents, this one crosses the chips alone, for somebody who walked into Build without writing
+    a plan at all.
+
+    Answers what moved and what was refused. Crossing is per chip, so a half-failed one is a 200
+    with a refusal in it — the bar reads it to avoid claiming a chip moved that did not.
+    """
+    try:
+        return JSONResponse(orchestrator.cross_chat_context(thread_id))
+    except KeyError:
+        return JSONResponse({"error": "unknown thread"}, status_code=404)
+    except TurnBusy as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+
+
 @control_app.delete("/api/threads/{thread_id}/context/{item_id}")
 def remove_thread_context(thread_id: str, item_id: str) -> JSONResponse:
     row = orchestrator.remove_thread_context(thread_id, item_id)

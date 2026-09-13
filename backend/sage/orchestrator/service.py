@@ -7493,6 +7493,75 @@ class Orchestrator:
         return {"ok": True, "threadId": thread_id, "appId": app_id,
                 "planId": str(handoff_row.get("planId") or ""), "crossed": crossed}
 
+    def cross_chat_context(self, thread_id: str) -> dict:
+        """Cross this Conversation's chips into the app that is selected — Build's own door (#275).
+
+        Build has two ways in and only one of them crossed anything. The handoff sheet crosses; the
+        Build tab did not, and said nothing about it, so chips drawn over the Build composer named
+        data the selected app did not hold until the first turn refused them.
+
+        The same three per-chip acts, and deliberately NOT `_write_crossing`: that one also writes
+        `.sage/handoff.md` and unlinks `.sage/handoff-transcript.md` when the transcript is not
+        included, so this door would destroy a real handoff's transcript on its way past.
+
+        Only ever reached by a click. The bar OFFERS, because a Binding is a person's pick
+        (ADR-0010) and arriving in Build is not one.
+        """
+        if not self._acquire_for_door():
+            raise TurnBusy(self._turn_wedged, "add these items")
+        try:
+            # Both locks, for the reason `confirm_handoff` takes both: this writes Bindings and
+            # bytes into the app that is selected and then names that app in what it answers, and a
+            # click in the rail landing between the two would report the wrong one.
+            with self._app_lock:
+                return self._cross_chat_context(thread_id)
+        finally:
+            self._release_turn()
+
+    def _cross_chat_context(self, thread_id: str) -> dict:
+        chat = self._chat_project()
+        store = ThreadStore(chat.record.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        # Seeded, for the reason `_ensure_seeded` names: Chat may be attached to an empty volume, and
+        # `_chat_project` above has just filled the cache with an unseeded one. This writes into the
+        # app's tree, so it needs the app's tree to exist — the same path every other door takes.
+        project = self._ensure_seeded()
+        rows = self._cross_context_items(store.read_context(thread_id).get("items") or [],
+                                         thread_id, keep_bound=True)
+        # An Attachment is recorded against the Conversation, so the chat Project has writes of its
+        # own waiting behind this — the same flush the handoff doors make for the same reason.
+        self._flush_chat_save("crossing", holding_turn=True)
+        moved = rows["bindings"] + rows["uploads"] + rows["files"]
+        # Folded per CHIP, not per act, because the bar counts chips. A Dataset file chip performs
+        # two acts — its Dataset is bound and its bytes are attached — so reporting acts would put one
+        # name in both lists, and "added" beside "stayed in Chat" for one chip answers nothing.
+        #
+        # Keyed on the chip's id and never on its name: an Upload and a Dataset file in one
+        # Conversation can both be `data.csv`, and folding those together reports one chip's refusal
+        # against the other chip's bytes, which did cross.
+        refused: dict[str, dict] = {}
+        for row in moved:
+            if not row.get("crossed"):
+                refused.setdefault(row["chip"], {"name": row["name"],
+                                                 "reason": str(row.get("reason") or "")})
+        crossed = list(dict.fromkeys(r["name"] for r in moved
+                                     if r.get("crossed") and r["chip"] not in refused))
+        return {
+            "ok": True,
+            "threadId": thread_id,
+            "appId": project.workspace.app_id,
+            "appName": project.workspace.display_name(),
+            "crossed": crossed,
+            "refused": list(refused.values()),
+            # Crossed, and still unable to open: the Binding is recorded whether or not Domino
+            # resolved the store (#204), so "added" is true and would be the whole of what a person
+            # heard. Its own list rather than a refusal, because the row IS there — what is missing
+            # is the store behind it, and the fix is a re-bind rather than another crossing.
+            "unresolved": [r["name"] for r in rows["bindings"]
+                           if not r.get("resolved") and r["chip"] not in refused],
+        }
+
     def cancel_plan(self, conversation: str = "", plan_id: str = "") -> dict:
         """Archive the plan awaiting approval. Idempotent: with no live plan this does nothing.
 
@@ -7810,10 +7879,14 @@ class Orchestrator:
                         include: dict) -> dict:
         """Write what this Conversation carries into a Built App, and report what went.
 
-        Two doors call it: the confirm that makes the crossing, and Change on the plan card, which
-        redoes it with different answers (#60). The receipt it returns is what that card reads, so
-        it names real files and real rows rather than repeating the answers it was handed — a
-        handoff nobody can inspect is the magic docs/workbench/handoff.md §1 forbids.
+        Two doors call it, both a handoff's: the confirm that makes the crossing, and Change on the
+        plan card, which redoes it with different answers (#60). The receipt it returns is what that
+        card reads, so it names real files and real rows rather than repeating the answers it was
+        handed — a handoff nobody can inspect is the magic docs/workbench/handoff.md §1 forbids.
+
+        A door with no handoff behind it calls `_cross_context_items` instead (#275) and must: this
+        one writes `.sage/handoff.md` and unlinks `.sage/handoff-transcript.md` when the transcript
+        is not included, which would destroy a real handoff's document on its way past.
 
         What it does NOT touch is the plan and the app. The plan is not one of the answers (a
         handoff without one is not this flow), and the target is a per-handoff decision the sheet
@@ -7843,26 +7916,13 @@ class Orchestrator:
             transcript_path.write_text(chat_handoff.transcript_markdown(store.read_history(thread_id)))
         else:
             transcript_path.unlink(missing_ok=True)
-        uploads = []
-        if include_resources:
-            for item in context:
-                # A row with no table chosen crosses as an UNSCOPED Data Source Binding, and this
-                # is the moment the new app is born unable to query (#204). It is written anyway,
-                # and deliberately: the alternative — refusing the crossing over a half-answered
-                # question — loses the whole handoff, and an unscoped Binding is still a Data
-                # Source the panel's picker can scope afterwards.
-                #
-                # What makes that acceptable is that the question is now ASKED before anyone gets
-                # here. Chat's table gate runs above the handoff short-circuit, so a request that
-                # names a store meets the candidate card first and this row carries the table the
-                # click recorded. It did not, and that is how an app shipped querying `FROM GONG`.
-                binding = chat_handoff.binding_from_context(item)
-                if binding is not None:
-                    self._bind_from_handoff(binding)
-                self._promote_chat_file(item, thread_id)
-                crossed = self._cross_chat_upload(item)
-                if crossed is not None:
-                    uploads.append(crossed)
+        # Without the chip id the per-chip loop stamps on every row. This list is not a return value
+        # here — it is written into the Conversation's history as the receipt the plan card reads, so
+        # it keeps the shape that card was written against rather than growing a field for a door it
+        # is not part of.
+        uploads = ([{k: v for k, v in row.items() if k != "chip"}
+                    for row in self._cross_context_items(context, thread_id)["uploads"]]
+                   if include_resources else [])
         charts = [{"title": str(a.get("title") or a.get("name") or ""),
                    "path": str(a.get("path") or "")}
                   for a in artifacts] if include_artifacts else []
@@ -7923,7 +7983,66 @@ class Orchestrator:
             opened.workspace.set_display_name(title)
         return opened
 
-    def _promote_chat_file(self, item: dict, thread_id: str = "") -> None:
+    def _cross_context_items(self, context: list[dict], thread_id: str, *,
+                             keep_bound: bool = False) -> dict:
+        """Move a Conversation's chips into the app that is bound, one chip at a time.
+
+        The per-chip half of the crossing, and all of it: a Binding recorded, a Dataset file
+        attached, an Upload written onto a Dataset. The digest, the transcript and the plan document
+        stay with `_write_crossing`, because they are documents a plan gives a reader and the Build
+        tab's door (#275) has no plan behind it.
+
+        Crossing is not all-or-nothing, so every act reports for itself: `{"bindings": [...],
+        "uploads": [...], "files": [...]}` — the Uploads' receipts the confirm card already reads,
+        and the other two, which the Build tab's bar needs to avoid claiming a chip moved that did
+        not.
+
+        `keep_bound` is the difference between the two kinds of door, and it is not a preference.
+        A Binding is REPLACED in place by a re-bind (`_record`), and a bare store chip carries no
+        table — so crossing one into an app somebody has already scoped by hand would throw the
+        Scope away and leave an app that cannot query, for a chip the bar never offered. A handoff
+        into a fresh app has nothing to protect and wants the rest of the chip's fields written;
+        a door that only ADDS what is missing must leave a bound Resource exactly as it is.
+        """
+        bound: set[tuple] = set()
+        if keep_bound:
+            # No preview and no seeding on a READ: the door above has already ensured both, and this
+            # would otherwise be a Vite start waiting for the first caller who arrives cold.
+            project = self.project(start_preview=False, seed_app=False)
+            bound = {b.key for b in parse_bindings(project.workspace.read_bindings())}
+        bindings, uploads, files = [], [], []
+        for item in context:
+            # Every receipt row carries the CHIP it is about, not just a name. Two chips in one
+            # Conversation can be called `data.csv` — an Upload and a Dataset file are different
+            # rows from different stores — and a caller folding outcomes by name would report one
+            # chip's refusal over the other chip's success.
+            chip = str(item.get("id") or "")
+            # A row with no table chosen crosses as an UNSCOPED Data Source Binding, and this
+            # is the moment the new app is born unable to query (#204). It is written anyway,
+            # and deliberately: the alternative — refusing the crossing over a half-answered
+            # question — loses the whole handoff, and an unscoped Binding is still a Data
+            # Source the panel's picker can scope afterwards.
+            #
+            # What makes that acceptable is that the question is now ASKED before anyone gets
+            # here. Chat's table gate runs above the handoff short-circuit, so a request that
+            # names a store meets the candidate card first and this row carries the table the
+            # click recorded. It did not, and that is how an app shipped querying `FROM GONG`.
+            binding = chat_handoff.binding_from_context(item)
+            if binding is not None and binding.key not in bound:
+                resolved = self._bind_from_handoff(binding)
+                # Named as the chip is named, because the bar's sentence names chips: a receipt that
+                # said `ds-1` would not answer the question the person clicked.
+                bindings.append({"chip": chip, "resolved": resolved, "crossed": True,
+                                 "name": str(item.get("name") or binding.name or binding.id)})
+            promoted = self._promote_chat_file(item, thread_id)
+            if promoted is not None:
+                files.append({**promoted, "chip": chip})
+            crossed = self._cross_chat_upload(item)
+            if crossed is not None:
+                uploads.append({**crossed, "chip": chip})
+        return {"bindings": bindings, "uploads": uploads, "files": files}
+
+    def _promote_chat_file(self, item: dict, thread_id: str = "") -> dict | None:
         """Move a Dataset file fetched for a question into the app's own data tree.
 
         Chat fetches into scratch because a question has no app to serve bytes to. A confirmed
@@ -7944,13 +8063,20 @@ class Orchestrator:
         `thread_id` keeps a default because this is called directly by tests that have no
         Conversation to name, and an Attachment with no Conversation on it is a record short of a
         field rather than a broken one. The one production caller always passes it.
+
+        Answers a named receipt — crossed, or refused and why — in `_cross_chat_upload`'s shape, and
+        None for a chip that is not a Dataset file. The refusal is still logged: a handoff is worth
+        more than one file and goes on regardless. What the receipt adds is a place for the Build
+        tab's bar to read it, which is what a door that OFFERS to move chips needs in order not to
+        report one it did not move (#275).
         """
         if str(item.get("kind") or "") != "file":
-            return
+            return None
         dataset_id = str(item.get("datasetId") or "")
         rel = str(item.get("datasetRelPath") or "")
         if not dataset_id or not rel:
-            return
+            return None
+        name = str(item.get("name") or rel.split("/")[-1])
         path = str(item.get("path") or "")
         local = None
         if path.startswith(_CHAT_DATA_PREFIX):
@@ -7965,6 +8091,9 @@ class Orchestrator:
             # The handoff is worth more than one file. The app is built from the plan either way,
             # and the Data panel still offers the attach by hand.
             log.warning("handoff: could not attach %s from Dataset %s", rel, dataset_id)
+            return {"name": name, "crossed": False,
+                    "reason": f"{name} stayed in Chat — it could not be attached from its Dataset"}
+        return {"name": name, "crossed": True, "dataset": dataset_id}
 
     def _cross_chat_upload(self, item: dict) -> dict | None:
         """Turn one Upload context item into an Attachment, by writing its bytes into a writable
@@ -7972,9 +8101,9 @@ class Orchestrator:
         or refused and why — so the confirm receipt can show what happened rather than something
         the handoff only trusts happened. Returns None for a context item that is not an Upload.
 
-        Unlike `_promote_chat_file` above, a refusal here is never silent: the composer's file is
-        the reason the person opened Chat, so `_promote_chat_file`'s `log.warning` path is wrong for
-        it, where it is right for a Dataset file Chat merely fetched.
+        A refusal here reaches the person, where `_promote_chat_file`'s reaches the log as well as
+        the receipt: the composer's file is the reason they opened Chat, and a Dataset file Chat
+        merely fetched is one the Data panel can attach again by hand.
         """
         if not _is_chat_upload(item):
             return None
@@ -7989,8 +8118,12 @@ class Orchestrator:
             return {"name": name, "crossed": False, "reason": f"{name} stayed in Chat — {e}"}
         return {"name": name, "crossed": True, "dataset": result.get("dataset")}
 
-    def _bind_from_handoff(self, binding: Binding) -> None:
+    def _bind_from_handoff(self, binding: Binding) -> bool:
         """Record one Chat context row as a Binding, resolving a Data Source the way the rail does.
+
+        Answers whether it RESOLVED. The row is written either way — see below — so this is not a
+        success flag: it is the difference between an app that can open its data and one that names
+        a store it cannot, which a door reporting back to a person has to be able to say (#275).
 
         `binding_from_context` is a parser with no listing to ask, so the only name it has for a
         Data Source row is the chip's — and for a TABLE chip that is the table's name, not the
@@ -8009,7 +8142,7 @@ class Orchestrator:
         """
         if binding.kind != KIND_DATA_SOURCE:
             self._record(binding)
-            return
+            return True
         try:
             self.bind_data_source(binding.id, binding.database or "", binding.schema or "",
                                   binding.table or "")
@@ -8017,6 +8150,8 @@ class Orchestrator:
             log.warning("handoff: Data Source %s did not resolve (%s) — recording it unresolved, "
                         "the app will not be able to open it until it is re-bound", binding.id, e)
             self._record(binding)
+            return False
+        return True
 
     def _chat_agents_md(self) -> str:
         """The stub AGENTS.md for the Chat workdir. The rules are NOT here.

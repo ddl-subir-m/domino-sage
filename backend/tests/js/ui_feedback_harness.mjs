@@ -112,6 +112,10 @@ function* walk(node) {
   yield* walk(node.c);
 }
 const find = (tree, pred) => [...walk(tree)].find(pred);
+// By class LIST: a chip the selected app does not hold carries a second class (#275), and an
+// exact match on the attribute would read as a chip that was never drawn.
+const hasChipClass = (n) =>
+  !!n.p && String(n.p.className || '').split(' ').includes('sw-chip');
 const strings = (node) => [...walk(node)].flatMap((n) => (n.c || []).flat(Infinity))
   .filter((c) => typeof c === 'string');
 const labelled = (tree, label) =>
@@ -197,11 +201,11 @@ if (scenario === 'planPreview') {
   });
   await settle();
   out = { reported, chips: [...walk(mount(SW.Composer, COMPOSER))]
-    .filter((n) => n.p && n.p.className === 'sw-chip').length };
+    .filter((n) => hasChipClass(n)).length };
 } else if (scenario === 'detachFailure') {
   // The chip's own close button, with the DELETE failing. The chip stays, so silence reads as a
   // dead button.
-  const chip = find(mount(SW.Composer, COMPOSER), (n) => n.p && n.p.className === 'sw-chip');
+  const chip = find(mount(SW.Composer, COMPOSER), hasChipClass);
   chip.p.onClose({ preventDefault() {} });
   await settle();
   out = { reported };

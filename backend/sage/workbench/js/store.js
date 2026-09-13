@@ -315,6 +315,11 @@ window.SW = window.SW || {};
     // Conversation's and must not follow the app (#84). This one is read off the app's own
     // manifest, so switching app replaces it — see `loadBuild` (#92).
     appAttachments: [],
+    // What the Build tab's crossing refused, per chip, and which app refused it (#275):
+    // `{ appId, byName: { <chip name>: <reason> } }`. Kept beside the app rather than on the chip
+    // because the chip is the Conversation's and a refusal belongs to the app that made it — the
+    // next app has not been asked yet.
+    crossingRefused: null,
     // What the last app-scoped removal reported, drawn as a notice inside the section that did it.
     // `{ text, prompt }` — `prompt` is null when the app's code refers to nothing that went, and a
     // notice with nothing to act on carries no offer. Never a toast: five seconds is not long
@@ -1074,8 +1079,19 @@ window.SW = window.SW || {};
     notify();
   }
 
+  // Which Conversation `state.crossingRefused` was written for. Not in the state itself: nothing
+  // draws it, and a reader that could see it would have to know not to.
+  let crossingRefusedFor = null;
+
   async function refreshAttachments() {
     const id = conversationId();
+    if (id !== crossingRefusedFor) {
+      // A refusal is about one Conversation's chips, and the map is keyed by chip name — so without
+      // this, opening another Conversation with a `sales.csv` of its own would show it the reason
+      // the last one was refused, for an attempt nobody made here.
+      state.crossingRefused = null;
+      crossingRefusedFor = id;
+    }
     state.attachments = id ? await SW.api.conversationContext(id) : [];
     notify();
   }
@@ -4725,6 +4741,85 @@ window.SW = window.SW || {};
       return entries;
     },
 
+    // What the selected app does not hold, chip by chip (#275) --------------------------------
+    //
+    // The Build tab is the other way into a Built App and it crossed nothing: chips added in Chat
+    // are drawn over the Build composer and the selected app held none of them, until the first
+    // turn named one and was refused. So the question `unusableMentions` asks of a token in the box
+    // is asked here of every chip, against the same two lists — the app's Bindings and its own
+    // files.
+    //
+    // Derived on every render rather than held in state, which is what makes a switch in the rail
+    // re-ask: both lists arrive WITH the app (`refreshAppScope`), so the answer moves when they do.
+    //
+    // Only chips the crossing can actually MOVE are named. An Artifact, or a path that is neither a
+    // Chat Upload nor a Dataset file, has no act behind it — the same rows `unusableMentions` passes
+    // over, for the same reason — and offering one would be a click that does nothing.
+    //
+    // The Scope gap is deliberately NOT here. A bound store that reads the wrong table is a
+    // different gap with a different fix, and it already has one on screen beside this: crossing
+    // again would not answer it, so the bar must not offer to.
+    chipsNotInApp() {
+      const app = state.activeApp;
+      if (!app) return [];
+      const bound = new Set((state.bindings || []).map((b) => SW.util.bindingId(b)));
+      // Keyed by basename, for the reason `unusableMentions` spells out: an Attachment lives under
+      // `public/data/` and a chip names where Chat fetched it, so the full paths never meet.
+      const attached = new Set(
+        (state.appAttachments || []).map((a) => String(a.path || '').split('/').pop())
+      );
+      const peers = SW.util.attachmentPeers(state.appAttachments || []);
+      const rows = [];
+      (state.attachments || []).forEach((att) => {
+        const name = att.resourceName || '';
+        const path = String(att.path || '');
+        const key = att.bindingKey ? att.bindingKey.join(':') : '';
+        // Asked of the app's live lists only. `attachedApp` records where bytes WENT and is never
+        // cleared, so a file since removed from the app in the Data panel still carries it — reading
+        // it here would leave that chip neither muted nor offered, and the next turn naming it
+        // refused with no way back. Where the two marks then disagree, `chipNote` reconciles them:
+        // "In <app>" is where the bytes went, the mute is what the app holds now.
+        if (key) {
+          if (bound.has(key)) return;
+        } else if (att.datasetId && att.datasetRelPath) {
+          if (attached.has(String(att.datasetRelPath).split('/').pop())) return;
+        } else if (path.startsWith(SCRATCH_PREFIX)) {
+          // Every scratch path the server will act on, because the one it excludes — a fetched
+          // Dataset file under `.sage/scratch/datasets/` — always arrives with `datasetId` on the row
+          // and is answered by the branch above. Were that to stop being true, this would offer a
+          // chip the crossing has no act for: a click that reports success and moves nothing.
+          if (attached.has(path.split('/').pop())) return;
+        } else {
+          return;
+        }
+        rows.push({
+          id: att.id, name, app: app.name, appId: app.id,
+          // The token somebody would type for it, not the row's own name: `mentionToken` collapses
+          // whitespace, so a store called "Sales Warehouse" stands in the box as `@Sales_Warehouse`
+          // and a bar quoting the name would name something they cannot mention.
+          token: SW.util.mentionToken({ name, path, kind: att.resourceKind }, peers),
+        });
+      });
+      return rows;
+    },
+
+    // The bar's sentence, built where the rows are so the count and the names cannot disagree.
+    crossingOffer() {
+      const rows = store.chipsNotInApp();
+      if (!rows.length) return null;
+      const app = (state.activeApp && state.activeApp.name) || '';
+      const names = rows.map((r) => r.token).join(', ');
+      const one = rows.length === 1;
+      return {
+        count: rows.length,
+        names: rows.map((r) => r.name),
+        text: one
+          ? `1 item in this Conversation isn't in ${app}: ${names}.`
+          : `${rows.length} items in this Conversation aren't in ${app}: ${names}.`,
+        label: one ? 'Add it' : 'Add them',
+      };
+    },
+
     // Out of the selected Built App ---------------------------------------
     //
     // The third of the three removal scopes. Both acts live here — beside the list that owns the
@@ -4908,6 +5003,42 @@ window.SW = window.SW || {};
       return true;
     },
 
+    // The click behind the bar (#275). It offers first and crosses second, because a Binding is a
+    // person's pick (ADR-0010) and arriving in Build is not one.
+    //
+    // Down here rather than beside `chipsNotInApp` and `crossingOffer`, which share its lists: that
+    // region is the compose-time check's, and a test holds it to reading only — the two derivations
+    // belong there and this act does not.
+    async crossChipsToApp() {
+      const app = state.activeApp;
+      // The app the act is issued against, captured before the request the way every app-scoped act
+      // here does (#101): a switch in the rail mid-flight must not land this answer on another app.
+      const gen = appGen;
+      const res = await SW.api.crossChatContext(conversationId());
+      // Kept against the app it happened in, so a switch does not carry one app's refusal onto
+      // another app's chip — where the chip is outside BOTH apps and only one has been asked. The
+      // answer's own `appId` rather than the one captured above: the server resolves the target from
+      // the live selection, so a switch that lands first crosses into the NEW app, and filing the
+      // refusal under the old one would draw it on a chip that was never tried.
+      state.crossingRefused = {
+        appId: (res && res.appId) || (app && app.id),
+        byName: ((res && res.refused) || []).reduce(
+          (acc, r) => Object.assign(acc, { [r.name]: r.reason }), {}),
+      };
+      // Both lists read back together rather than patched from the answer: crossing is per chip and
+      // half of it can be refused, so what the bar says next has to come off what the app now
+      // holds. `refreshAppScope` is the one reader that assigns them as a pair (#95).
+      await refreshAppScope(app, appScopeTicket(gen));
+      // And the lock, by name, for the reason the promote states (ADR-0043): this attaches files
+      // under `public/data/` and binds Datasets, so a declared Dataset that was in nobody's scope
+      // can be in this app's on the way out of one click. `refreshAppScope` reads the app's two
+      // lists and nothing else, so without this the picker goes on offering a model the router will
+      // then refuse under the person — the stale-unlocked direction.
+      if (!state.sensitivity || state.sensitivity.enabled) refreshSensitivity();
+      notify();
+      return res;
+    },
+
     // Off the Dataset bytes an Upload wrote — the Dataset-scope door (ADR-0023). Distinct from
     // `removeAttachmentFromApp` above, which only drops the app's symlink and keeps the data: this
     // destroys it, so — unlike that one — it confirms first and carries the same race guard as
@@ -4995,6 +5126,20 @@ window.SW = window.SW || {};
       }
       state.panelFilter = null;
       notify();
+
+      // In Build the same post attached bytes into the selected app (ADR-0048), and nothing here
+      // said so: `appAttachments` is written by a scope load and by Build's own path, neither of
+      // which this is. Read back rather than patched, because the `public/data/` path is the
+      // server's to compose — and the chip's own mark is a join against this list (#275), so a
+      // stale one draws "not in this app" over a file the click has just put there.
+      // `notify` by hand: `applyAppScope` deliberately makes one pass with no await and no render in
+      // it (#95), and the only notify above ran BEFORE this await. Without it the corrected list
+      // lands with nothing drawing it, so the chip keeps the mute it was given a tick earlier until
+      // some unrelated render comes along — a bar offering to add the file this click just added.
+      if (attachment.attachedApp) {
+        await refreshAppScope(state.activeApp);
+        notify();
+      }
 
       // Pointing at something from the catalogue brings it into the project on
       // the way in, so the panel has to hear about its new member.

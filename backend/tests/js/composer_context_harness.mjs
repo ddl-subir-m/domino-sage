@@ -29,6 +29,15 @@ let apps = [
   { id: 'app_alpha', name: 'Alpha', selected: true },
   { id: 'app_beta', name: 'Beta', selected: false },
 ];
+// What each app holds under `public/data/`, written by the attach half of an `inBuild` add.
+const attached = [];
+// What each app is BOUND to. Served rather than left to the catch-all, because the store's
+// `refreshAppScope` assigns `bindings` and `appAttachments` as a pair: an unserved route makes
+// every refresh silently wipe whatever a case had seeded, and the chip join that reads
+// `bindingKey` could then never be exercised here at all.
+const bindings = new Map();
+// What the next crossing answers, set by the step that presses the bar's button.
+let crossing = {};
 let inflight = 0;
 let nextId = 0;
 
@@ -60,6 +69,14 @@ function serve(url, options = {}) {
       if (posted.inBuild && posted.datasetId) {
         const selected = apps.find((a) => a.selected);
         if (selected) row.attachedApp = selected.id;
+        // And the other half of that same act, which the row does NOT record: the app now holds the
+        // bytes, under `public/data/`. Served from `/project` below, because it is the list the
+        // "does this app hold it" question is actually asked of (#275) — a server that skipped it
+        // would have every crossed chip reading as one that never crossed.
+        if (selected) {
+          attached.push({ app: selected.id,
+                          path: `public/data/${posted.datasetId}/${posted.datasetRelPath}` });
+        }
       }
       delete row.inBuild;
       rows(m[1]).push(row);
@@ -72,6 +89,37 @@ function serve(url, options = {}) {
              json: async () => null, text: async () => '' };
   }
   if (path === '/apps') return json({ items: apps });
+  // The selected app's own Attachments, the way `refreshAppScope` reads them.
+  if (path === '/project') {
+    const selected = apps.find((a) => a.selected);
+    return json({ attached: attached.filter((a) => selected && a.app === selected.id) });
+  }
+  if (path === '/bindings') {
+    const selected = apps.find((a) => a.selected);
+    return json({ bindings: (selected && bindings.get(selected.id)) || [] });
+  }
+  // The Build tab's crossing door (#275). It answers per chip, and a case says which name it refuses
+  // — the half-failed crossing is the state the mark on a chip exists for.
+  if ((m = path.match(/^\/threads\/([^/]+)\/crossing$/)) && method === 'POST') {
+    const selected = apps.find((a) => a.selected);
+    const refuse = String(crossing.refuse || '');
+    const chips = rows(m[1]);
+    const moved = chips.filter((i) => i.name !== refuse);
+    for (const row of moved) {
+      if (row.datasetId) {
+        attached.push({ app: selected.id,
+                        path: `public/data/${row.datasetId}/${row.datasetRelPath || row.name}` });
+      }
+    }
+    return json({
+      ok: true, appId: selected && selected.id, appName: selected && selected.name,
+      crossed: moved.map((i) => i.name),
+      refused: refuse
+        ? [{ name: refuse, reason: `${refuse} stayed in Chat — no writable Dataset is mounted here` }]
+        : [],
+      unresolved: [],
+    });
+  }
   if ((m = path.match(/^\/apps\/([^/]+)\/select$/)) && method === 'POST') {
     const wanted = decodeURIComponent(m[1]);
     apps = apps.map((a) => ({ ...a, selected: a.id === wanted }));
@@ -149,7 +197,12 @@ function* walk(node) {
   yield node;
   yield* walk(node.c);
 }
-const chipNodes = (tree) => [...walk(tree)].filter((n) => n.p && n.p.className === 'sw-chip');
+// By class LIST, not by the whole attribute: a chip the selected app does not hold carries a
+// second class (#275), and an exact match would drop exactly those chips out of every
+// assertion here — reading as a chip that was never drawn.
+const hasClass = (n, want) =>
+  !!n.p && String(n.p.className || '').split(' ').includes(want);
+const chipNodes = (tree) => [...walk(tree)].filter((n) => hasClass(n, 'sw-chip'));
 const chipName = (node) =>
   (node.c || []).flat(Infinity).filter((c) => typeof c === 'string').join('');
 const chips = (where) => chipNodes(mount(where)).map(chipName);
@@ -157,10 +210,42 @@ const chips = (where) => chipNodes(mount(where)).map(chipName);
 // row. Read off its own class rather than out of the chip's words, because `chipName` takes only
 // the direct string children and every other reader here names a chip by that.
 const chipMark = (node) => [...walk(node)]
-  .filter((n) => n.p && n.p.className === 'sw-chip-scope')
+  .filter((n) => hasClass(n, 'sw-chip-scope'))
   .map((n) => (n.c || []).flat(Infinity).filter((c) => typeof c === 'string').join(''))
   .join('');
 const marks = (where) => chipNodes(mount(where)).map(chipMark);
+
+// The offer over the chip row and the mute on the chips (#275). Both are drawn from one question
+// asked per chip — does the SELECTED app hold this — so they are read off one mount together, and
+// read here rather than off the store because a bar that is computed and never rendered looks
+// exactly like a bar that works.
+const barText = (tree) => {
+  // The bar is a function component and this file's `createElement` stub does not invoke one, so it
+  // is called here by hand. Only this one: every other reading below has always been made against
+  // the shallow tree, and expanding the walk itself would move answers nobody is asking about.
+  const bar = [...walk(tree)]
+    .find((n) => typeof n.t === 'function' && n.t.name === 'CrossingOffer');
+  if (!bar) return '';
+  return [...walk(bar.t(bar.p))]
+    .filter((n) => hasClass(n, 'sw-crossing-offer-text'))
+    .map((n) => (n.c || []).flat(Infinity).filter((c) => typeof c === 'string').join(''))
+    .join('');
+};
+const mutedChips = (tree) =>
+  chipNodes(tree).filter((n) => hasClass(n, 'is-not-in-app')).map(chipName);
+// What a chip SAYS when it is muted: the tooltip its Tag sits in. The mark is half the ticket and the
+// reason is the half a person can act on, so it is read here rather than inferred from the class.
+const chipNotes = (tree) => [...walk(tree)]
+  .filter((n) => n.p && n.p.title && chipNodes(n).length)
+  .map((n) => String(n.p.title));
+
+// Every render the store asked for, as the offer looked at that moment. A state that is corrected
+// without a notify() behind it is invisible to a reader that mounts on demand — `snapshot()` below
+// does exactly that — and the composer then keeps a mark the store has already withdrawn.
+const renders = [];
+SW.store.subscribe(() => {
+  renders.push(mutedChips(mount('build')));
+});
 
 // Handlers fire and forget; the store writes to the server and reads back. Wait for the traffic to
 // stop rather than for a fixed number of ticks.
@@ -181,6 +266,16 @@ function snapshot() {
     buildMarks: marks('build'),
     server: (contexts.get(CONVERSATION) || []).map((i) => i.name),
     activeApp: state.activeApp ? state.activeApp.id : null,
+    // What the selected app holds, beside what the Conversation carries: the mute and the bar are a
+    // join across the two, and a report with only one side of it cannot say which was wrong.
+    appAttachments: (state.appAttachments || []).map((a) => a.path),
+    chipNotes: chipNotes(mount('build')),
+    // The last thing the store actually drew, which is what a person sees.
+    lastRenderMuted: renders.length ? renders[renders.length - 1] : null,
+    chatBar: barText(mount('chat')),
+    buildBar: barText(mount('build')),
+    chatMuted: mutedChips(mount('chat')),
+    buildMuted: mutedChips(mount('build')),
   };
 }
 
@@ -188,6 +283,10 @@ SW.store.set({
   thread: { id: CONVERSATION, artifacts: [] },
   scope: { id: 'proj', name: 'Demo Project' },
   messages: [],
+  // An opted-out deployment, which is a state and not an absence: the lock is loaded and off. Left
+  // unset, every act that MIGHT move the lock asks for it again — and that read's own notify() then
+  // stands in for one a door forgot, hiding a corrected list that nothing draws.
+  sensitivity: { enabled: false, locked: false, approved: [], datasets: [], group: '' },
 });
 // Opening a conversation is what loads its context, in either mode.
 await SW.store.reloadAttachments();
@@ -218,6 +317,11 @@ for (const step of steps) {
     const node = chipNodes(mount(on)).find((n) => chipName(n) === name);
     if (!node) throw new Error(`no chip named ${name} in the ${on} composer`);
     node.p.onClose({ preventDefault() {} });
+  } else if (step.crossChips) {
+    // The bar's own button, through the store: the composer's `onCross` is this call and nothing
+    // else, so pressing it here runs the same act with the same refresh behind it.
+    crossing = step.crossChips;
+    await SW.store.crossChipsToApp();
   } else if (step.selectApp) {
     await SW.store.selectApp(step.selectApp);
   } else {

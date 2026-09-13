@@ -244,6 +244,31 @@ window.SW = window.SW || {};
     );
   }
 
+  // The offer, drawn in Build beside the chips it is about (#275). The Build tab is the other way
+  // into a Built App and it crossed nothing, so chips added in Chat reached it as decoration: named
+  // over the composer, held by nothing, refused by the first turn that mentioned one.
+  //
+  // It offers and never crosses on its own, because a Binding is a person's pick (ADR-0010) and
+  // arriving in Build is not one. The sentence is built in the store beside the rows it counts, so
+  // the number and the names cannot drift apart.
+  function CrossingOffer({ offer, onCross }) {
+    const [busy, run] = SW.util.useBusyAct();
+    return h(
+      'div',
+      { className: 'sw-crossing-offer' },
+      h('div', { className: 'sw-crossing-offer-text' }, offer.text),
+      h(Button, {
+        size: 'small',
+        // The suggested next act on arriving in Build, and the only filled button here — the
+        // mention guard below draws its own only when the prompt already names a gap this closes.
+        type: 'primary',
+        loading: busy === 'cross',
+        disabled: !!busy,
+        onClick: run('cross', onCross),
+      }, offer.label)
+    );
+  }
+
   SW.Composer = function Composer({
     placeholder,
     onSend,
@@ -257,7 +282,7 @@ window.SW = window.SW || {};
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
       catalog, buildModel, buildPhase, openWeightModels, signingSlot,
       apps, activeApp, composerSeed, queuedTurns, catalogueParents, appAttachments,
-      sensitivity, sensitivityNoticeFor,
+      sensitivity, sensitivityNoticeFor, crossingRefused,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -356,6 +381,27 @@ window.SW = window.SW || {};
     // warning clears the moment the Binding or the Attachment lands, with nothing to invalidate.
     const unusable = showMode ? SW.store.unusableMentions(text) : [];
 
+    // The same question, asked of the chips rather than of the text (#275). Build only, and read on
+    // every render for the reason above — which is also what makes it re-ask on an app switch, since
+    // both lists arrive with the app.
+    const notInApp = showMode ? SW.store.chipsNotInApp() : [];
+    const crossing = showMode ? SW.store.crossingOffer() : null;
+    const missingChip = (att) => notInApp.find((r) => r.id === att.id);
+
+    // What a chip says when the selected app does not hold it. `attachMark` above records where
+    // bytes WENT and is deliberately not re-derived; this reports what the app holds NOW, which is
+    // the question somebody switching apps is asking. Both can be true of one chip: bytes crossed
+    // into the app on the left, and this one on the right holds nothing.
+    const chipNote = (att, who) => {
+      const missing = missingChip(att);
+      if (!missing) return who;
+      // A refused chip carries its own reason where there is one. `Not in <app>` alone would read as
+      // the same plain gap its neighbours have, when in fact this one has been tried and refused.
+      const refused = crossingRefused && crossingRefused.appId === missing.appId
+        ? (crossingRefused.byName || {})[att.resourceName] : '';
+      return `${refused || `Not in ${missing.app}`} · ${who}`;
+    };
+
     const send = () => {
       const value = text.trim();
       if (!value || disabled) return;
@@ -386,6 +432,29 @@ window.SW = window.SW || {};
     // Every one of these updates the UI first — the token typed, the chip drawn, the picker
     // closed — so a rejected call leaves the screen claiming something that never happened.
     const sayFailed = (err) => antd.message.error(String((err && err.message) || err));
+
+    // The bar's button (#275). A crossing is per chip and can be half refused, so what comes back is
+    // reported rather than assumed: the first refusal is said out loud here, and every refusal keeps
+    // its own words on its own chip. A success names the app, since the whole question was which app
+    // holds this.
+    const cross = () => SW.store.crossChipsToApp().then((res) => {
+      const refused = (res && res.refused) || [];
+      const unresolved = (res && res.unresolved) || [];
+      // The app the SERVER wrote into, which is the one the person needs named: it resolves the
+      // target from the live selection, so a switch landing first crosses somewhere else.
+      const where = (res && res.appName) || (activeApp ? activeApp.name : 'the app');
+      if (refused.length) {
+        antd.message.warning(refused[0].reason || `${refused[0].name} stayed in Chat.`);
+      } else if (unresolved.length) {
+        // Added, and still unable to open. Saying only "added" would leave somebody to find out
+        // from the first turn that queries it.
+        antd.message.warning(
+          `Added to ${where}, but Domino could not open ${unresolved.join(', ')}. `
+          + 'Re-bind it in the Data panel.');
+      } else {
+        antd.message.success(`Added to ${where}.`);
+      }
+    }).catch(sayFailed);
 
     // State first, pref second: hiding must not wait on a write the browser may refuse. The
     // state takes the note off screen now; the pref keeps it away on every later visit.
@@ -771,9 +840,9 @@ window.SW = window.SW || {};
                   // The chips are the only place conversation context is shown
                   // now, so the reason Sage reached for something has to live
                   // here rather than in a panel zone.
-                  title: att.addedBy === 'sage'
+                  title: chipNote(att, att.addedBy === 'sage'
                     ? `${SW.brand.assistant()} added this — ${att.rationale || 'picked for you.'}`
-                    : 'You added this to the conversation.',
+                    : 'You added this to the conversation.'),
                 },
                 h(
                   Tag,
@@ -787,7 +856,10 @@ window.SW = window.SW || {};
                       // close button.
                       SW.store.removeFromConversation(att).catch(sayFailed);
                     },
-                    className: 'sw-chip',
+                    // Muted where the selected app does not hold it: the chip stays legible and
+                    // stays closable, because it is still this Conversation's context and still arms
+                    // the sensitivity lock — it is the app that is missing something, not the chip.
+                    className: missingChip(att) ? 'sw-chip is-not-in-app' : 'sw-chip',
                   },
                   h('span', null, SW.util.iconFor(att.resourceKind)),
                   att.resourceName,
@@ -797,11 +869,20 @@ window.SW = window.SW || {};
             )
           ),
 
+        // What the selected app is missing out of what this Conversation carries, with the one click
+        // that moves it (#275). Under the chips it counts and above the box, so it is read in the
+        // order it happens: these are the chips, this is the app that holds none of them, here is
+        // the button.
+        crossing && h(CrossingOffer, { offer: crossing, onCross: cross }),
+
         // The first chip teaches its own scope (#137): a chip is Session context — this
         // Conversation's only — and the app someone builds declares its own Resources. The same
         // guard that draws the chip row draws the note, so it appears exactly when the first
         // chip does and never over an empty composer. Dismissal is for good.
-        attachments.length > 0 && !chipHintDismissed &&
+        //
+        // Not beside the offer above, which says the same thing with an act on it: two notes over
+        // one chip row, one of them teaching what the other is already fixing.
+        attachments.length > 0 && !chipHintDismissed && !crossing &&
           h(
             'div',
             { className: 'sw-chip-hint' },
