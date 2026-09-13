@@ -372,13 +372,15 @@ _Kind_: name
 _Avoid_: agent mode, code mode, editor, IDE
 
 **Model assignment**:
-Which model a Build mode runs on, chosen once and kept. There are three: Plan, Implement, and
+Which model a Build mode runs on and how hard it is asked to reason, chosen once and kept. A
+model and an Effort, saved together. There are three: Plan, Implement, and
 Ask and Chat — one assignment, because Chat runs the Ask model whenever the person has not
 chosen their own. Auto has no assignment of its own: it runs the Plan assignment while it
 plans and the Implement assignment while it builds. An assignment belongs to the Project, not
 to the viewer who set it, and it reaches the other people in that Project when the Project
 next syncs. See
-[ADR-0017](docs/adr/0017-the-catalog-is-the-door-for-auto-and-ask.md).
+[ADR-0017](docs/adr/0017-the-catalog-is-the-door-for-auto-and-ask.md) and
+[ADR-0049](docs/adr/0049-an-effort-belongs-to-an-assignment-and-follows-the-model-that-runs.md).
 _Kind_: name
 _Avoid_: slot (that is the field in code), catalog, model setting, default model (the phrase
 names what an assignment reverts to, not the assignment)
@@ -390,6 +392,23 @@ Implement honour it. Saving any assignment clears it.
 _Kind_: name
 _Avoid_: pick (that is the field in code), temporary model, per-turn model (it lasts until it
 is cleared, not one turn)
+
+**Effort**:
+How hard a model is asked to reason, saved beside the model in a Model assignment and sent on
+the turns that assignment runs. Not every model takes one — most of the Aliases on the LLM
+Gateway discard the field in silence — so a slot whose model takes none offers no control at
+all, and which levels a model accepts is measured per Alias rather than guessed from its name.
+An Effort belongs to the model that actually runs a turn rather than to the slot it was saved
+on: when the signing pin, the sensitivity lock or a Model override moves a turn onto another
+model, the Effort moves with it — to that model's own, or to none where whatever moved it
+named no assignment. A saved level is dropped rather than sent when the model on the wire will
+not take it, which includes a level that was legal when it was saved and stopped being, since
+nothing re-validates one. The turn then runs at the model's own default, and the only witness
+is a line in the log. See
+[ADR-0049](docs/adr/0049-an-effort-belongs-to-an-assignment-and-follows-the-model-that-runs.md).
+_Kind_: name
+_Avoid_: reasoning_effort (that is the field on the wire), thinking budget, reasoning level,
+effort setting, model default (the phrase names what an Effort reverts to, not the Effort)
 
 **Conversation**:
 One line of talk inside a Project, and one row in the rail. A Project has many Conversations;
