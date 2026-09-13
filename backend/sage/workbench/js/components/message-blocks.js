@@ -1096,17 +1096,37 @@ window.SW = window.SW || {};
                   // files puts this exact "them" on the button.
                   + (carriers.length > 1 ? 'them' : 'it')
                   + ' and this conversation will work again — ask something else'
-                  // Only offer the attachment when a file is what went — where "a file" means one
-                  // `is_file` could name. The same branch draws several matched messages with no
-                  // file anywhere, and telling that person to attach a different one names
-                  // something their conversation never had.
+                  // Only offer the attachment when the turn READ what went. `is_fetched`, not
+                  // `is_file`: `is_file` asks whether Sage can name the file, and a
+                  // `bash cat transactions.csv` came out of a file that no path arrived with, so
+                  // reading it here ended the one card a different file would actually fix with no
+                  // remedy at all (#312). Both file populations get it wherever this arm is
+                  // drawn at all, and the sentence above has already told the unnamed one that
+                  // Sage cannot say which file it was. Those two sit together on purpose and do
+                  // not argue: one says what SAGE can name, the other what the PERSON can do, and
+                  // the person reading "a different file" knows which file they ran the command
+                  // over. Rewording it to drop the comparison would cost the three populations
+                  // where a file WAS named the only concrete thing the card tells them to do.
+                  // Wherever the turn CARRIES ON the whole
+                  // clause is absent, named file and `cat` alike — the button re-runs the turn
+                  // there and nothing needs attaching. That gate is #309's, not this line's.
                   //
-                  // Read against THAT population only. It also drops the offer for the person it
-                  // fits best: a `bash cat transactions.csv` did read a file and carries no path,
-                  // so `is_file` is false and this ends with no remedy for the one case a
-                  // different file would actually fix. Filed as #312, which needs a distinction
-                  // the payload does not carry — this line is the gap recorded, not handled.
-                  + (carriers.some((c) => c.is_file) ? ', or attach a different file.' : '.'),
+                  // Still no offer where nothing was read — several matched messages with no file
+                  // anywhere, which is the population this gate was written against (#297): a
+                  // person told to attach a different one goes looking for something their
+                  // conversation never had.
+                  //
+                  // `Carrier.is_data` was the obvious field and is deliberately not sent here.
+                  // Since #290 an @mention's inlined descriptor makes a carrier LABELLED "the
+                  // message you sent" arrive as data, so hanging the offer there would put it back
+                  // on prose — this same defect, inverted.
+                  //
+                  // `is_file` is read beside it for the rows ALREADY IN TRANSCRIPTS. A named file
+                  // is a `read` result, so the two agree on every row written from here on; the
+                  // pair is what stops a card re-drawn from a row written before the field existed
+                  // from silently losing the offer it was first rendered with.
+                  + (carriers.some((c) => c.is_fetched || c.is_file)
+                    ? ', or attach a different file.' : '.'),
             ].filter(Boolean).join(' '))),
         h('div', { className: 'sw-withhold-scope' },
           'Applies to this conversation. A new conversation starts fresh.'),

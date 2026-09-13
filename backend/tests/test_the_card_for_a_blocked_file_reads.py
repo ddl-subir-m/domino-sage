@@ -25,7 +25,13 @@ OLDER = {"key": "text:xyz789", "label": "an earlier answer in this conversation"
 # A turn that fetched rows through `bash cat` or `grep` leaves a carrier with no path, so no
 # `is_file` — and it is not a message either. The label population that rules out "messages"
 # as the word for a set holding no file.
-TOOL = {"key": "text:def456", "label": "something a tool read", "is_file": False}
+#
+# `is_fetched` is what the server actually sends beside it (#312), and it belongs in the fixture
+# even though nothing in this file asserts on the clause it gates. Without it the row models a
+# `bash cat` the way the server stopped sending it, and the next test written over `TOOL` would
+# render a card missing an offer and read as though that were the answer.
+TOOL = {"key": "text:def456", "label": "something a tool read", "is_file": False,
+        "is_fetched": True}
 
 
 def _render(block: dict) -> dict:
