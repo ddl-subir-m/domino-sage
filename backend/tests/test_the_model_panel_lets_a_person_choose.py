@@ -898,3 +898,67 @@ def test_a_pinned_and_locked_row_draws_no_sentence_at_all():
     ])
     assert pinned_and_locked["problems"] == []
     assert any("couldn't be read" in p for p in locked_only["problems"])
+
+
+# ---- the line under an assigned row (#299) ---------------------------------------------------------
+
+
+def test_a_row_assigned_to_the_model_that_is_also_the_default_says_which_it_is():
+    """The one state the select cannot show. `plan` holds `gpt-5.4` and the deployment default IS
+    `gpt-5.4`, so a closed select naming it is true of a row that was pinned and of a row that was
+    never touched — and the two behave differently the day the default moves. Naming the default
+    here ("Default is gpt-5.4.") answers a question nobody asked and leaves the reader unable to
+    tell the two apart, so the sentence names the assignment and what it costs instead."""
+    (drawn,) = _drawn([{"seed": {"plan": {"model": "gpt-5.4"}}}])
+    assert _row(drawn, "Plan")["value"] == "gpt-5.4"
+    assert drawn["details"] == [
+        ("Assigned to gpt-5.4, which is also the current default. "
+         "This slot stays on it if the default changes."),
+    ]
+
+
+def test_a_row_assigned_away_from_the_default_still_names_what_it_left():
+    """The other side of the same fork, asserted beside it rather than left to the pick tests: where
+    the two differ the select already shows the assignment, so the thing the row cannot show is what
+    it went back to — and that sentence is unchanged."""
+    (drawn,) = _drawn([{"seed": {"implement": {"model": "gpt-5.4"}}}])
+    assert _row(drawn, "Implement")["value"] == "gpt-5.4"
+    assert drawn["details"] == ["Default is coder."]
+
+
+def test_a_row_whose_file_moved_under_a_stale_catalog_claims_no_pin():
+    """The skew the server cannot rule out, so the sentence has to. `assigned` is a fresh read of
+    `model_overrides.json` while `model` is the shim catalog, which is rebuilt at boot and on save
+    and not when the file moves underneath it — so a committed file arriving in an open Builder
+    assigns `coder` while the catalog still holds `gpt-5.4`, and `model` equals `default` for a
+    reason that has nothing to do with a pin. Reading that equality alone drew "Assigned to gpt-5.4,
+    which is also the current default", of which both halves are false. The row falls back to the
+    older line instead: it names the default and claims nothing about the assignment."""
+    (drawn,) = _drawn([{"seed": {"plan": {"model": "coder"}}, "stale": {"plan": "gpt-5.4"}}])
+    assert _row(drawn, "Plan")["value"] == "gpt-5.4"
+    assert drawn["details"] == ["Default is gpt-5.4."]
+
+
+def test_the_re_read_that_closes_the_gap_gets_the_sentence_back():
+    """The control on the test above, and the reason it is not just a way of never drawing the line:
+    the same two steps, with the catalog caught up, and the row says what it holds. Without this a
+    sentence that had simply stopped being drawn would pass the test beside it."""
+    _, caught_up = _drawn([
+        {"seed": {"plan": {"model": "gpt-5.4"}}, "stale": {"plan": "coder"}},
+        {"seed": {"plan": {"model": "gpt-5.4"}}},
+    ])
+    assert caught_up["details"] == [
+        ("Assigned to gpt-5.4, which is also the current default. "
+         "This slot stays on it if the default changes."),
+    ]
+
+
+def test_a_slot_with_no_default_at_all_claims_nothing_rather_than_naming_nothing():
+    """Holding the neighbour still. The pin sentence is drawn on three names agreeing, and the only
+    reason three ABSENT names cannot agree their way into "Assigned to undefined, which is also the
+    current default" is a separate conjunct one line up — the gate already requires a default. That
+    is a rule holding for a reason stated somewhere else, which is exactly what stops holding when
+    someone widens the other conjunct (#287). No deployment sends a slot without a default today, so
+    this is the guard and not the report of a live fault."""
+    (drawn,) = _drawn([{"seed": {"plan": {"model": "gpt-5.4"}}, "noDefault": ["plan"]}])
+    assert drawn["details"] == []
