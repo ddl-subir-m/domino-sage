@@ -775,7 +775,13 @@ SW.api = {
   // Build's model override. `pick` alone, without `mode`: ModelControl.pick is mode-independent
   // and the router reads it only in Plan and Implement, so sending the mode too would re-assert a
   // standing choice the picker never touched.
-  setBuildModel: (pick) => post('/project/model', { pick: pick || null }),
+  // `pick_effort` rides in the same body because it is half of the same act (ADR-0049) — the menu
+  // offers a level only underneath the model it belongs to, so there is no call that sends one
+  // alone. Cleared with the pick rather than kept: a level with no model under it belongs to
+  // nothing, and the way back is the slot, whose own assigned effort then applies.
+  setBuildModel: (pick, effort) => post('/project/model', {
+    pick: pick || null, pick_effort: (pick && effort) || null,
+  }),
   // The model panel's two calls (ADR-0017). These write an ASSIGNMENT — the Project's standing
   // choice, persisted and shared — which is a different thing from `setBuildModel` above, and the
   // reason they are not folded together. `null` clears one, putting the slot back on the

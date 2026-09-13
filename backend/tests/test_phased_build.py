@@ -274,6 +274,31 @@ def test_the_retry_escalates_to_the_strong_model(tmp_path: Path, monkeypatch):
     assert project.control.snapshot().picked_model != "strong-model"
 
 
+def test_the_retry_gives_the_persons_own_pick_back_with_its_level(tmp_path: Path, monkeypatch):
+    """The escalation borrows the pick, so it has to return BOTH halves of it (#295, ADR-0049).
+
+    A capture that took only the model would spend one stall to erase the level the person chose,
+    silently, for the rest of the session — and this is a door the model menu cannot see, so the
+    menu would go on drawing the level it no longer has. That is the ticket's own defect one layer
+    further in: a control whose setting is discarded without saying so.
+
+    The level and the model are asserted together on purpose. Restoring the model alone leaves the
+    chip reading exactly right.
+    """
+    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
+    turns = [Turn(text=PHASED_PLAN), Turn(text="stuck"), _writes("src/data.ts"),
+             _writes("src/Table.tsx"), _writes("src/Filter.tsx")]
+    orch, _oc, project = _build(tmp_path, turns)
+    project.control.pick("gemini-3.7-flash", "high")
+
+    list(orch.build_stream("build me a trades dashboard"))
+    list(orch.approve_stream())
+
+    state = project.control.snapshot()
+    assert state.picked_model == "gemini-3.7-flash"
+    assert state.picked_effort == "high"
+
+
 # --- stop -----------------------------------------------------------------------------------------
 
 def test_stop_mid_build_reverts_every_phase(tmp_path: Path):

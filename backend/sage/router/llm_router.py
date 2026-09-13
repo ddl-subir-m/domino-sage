@@ -269,27 +269,30 @@ def _resolve_build(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     # 3. Plan mode: pinned to the plan model, overridable by an explicit pick.
     if state.mode is Mode.PLAN:
         if state.picked_model is not None:
-            # An in-session pick replaces the model, so it replaces the effort — and the Build
-            # picker has no effort of its own, so the honest answer is none (ADR-0049). Falling back
-            # to the slot's is the version anyone writes first, and it applies a level chosen for a
-            # model the person just moved off.
+            # An in-session pick replaces the model, so it replaces the effort — with the one the
+            # SAME act chose, never the slot's (ADR-0049). Falling back to `catalog.plan_effort` is
+            # the version anyone writes first, and it applies a level chosen for a model the person
+            # just moved off. `None` when they picked no level, which is every pick made before the
+            # menu could carry one (#295) and every pick of an alias that advertises none.
             return ModelDecision(model=state.picked_model, reason=Reason.PLAN_OVERRIDE, locked=False,
-                                 effort=None)
+                                 effort=state.picked_effort)
         return ModelDecision(model=catalog.plan, reason=Reason.PLAN_PINNED, locked=False,
                              effort=catalog.plan_effort)
 
     # 4. Implement mode: pinned to the implement model, overridable by an explicit pick.
     if state.picked_model is not None:
         return ModelDecision(model=state.picked_model, reason=Reason.IMPLEMENT_OVERRIDE,
-                             locked=False, effort=None)   # the pick's own, as above
+                             locked=False, effort=state.picked_effort)   # the pick's own, as above
     return ModelDecision(model=catalog.implement, reason=Reason.IMPLEMENT_PINNED, locked=False,
                          effort=catalog.implement_effort)
 
 
 def _resolve_chat(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     if state.chat_model:
-        # Chat's picker carries an effort beside the model, so its override is the one act that
-        # does supply one. Build's does not; see _resolve_build.
+        # Chat's picker carries an effort beside the model, and since #295 Build's does too — so
+        # both overrides now supply one, from their own field. `reasoning_effort` is this pick's,
+        # `picked_effort` is Build's, and they stay two fields because they are two standing
+        # choices on two models; see `SessionState` and `_resolve_build`.
         return ModelDecision(model=state.chat_model, reason=Reason.CHAT_OVERRIDE, locked=False,
                              effort=state.reasoning_effort)
     return ModelDecision(model=catalog.ask, reason=Reason.CHAT_DEFAULT, locked=False,

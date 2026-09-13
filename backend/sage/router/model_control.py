@@ -13,6 +13,10 @@ class ModelControl:
         self._mode = mode
         self._phase = phase
         self._picked_model: ModelId | None = None
+        # The level the Build pick runs at, set by the same act that set the model (ADR-0049) and
+        # cleared with it. Standing, not token-scoped, for the same reason `_picked_model` is: it is
+        # the person's choice until they change it, not a guarantee some turn armed.
+        self._picked_effort: str | None = None
         self._chat_model: ModelId | None = None
         self._reasoning_effort: str | None = None
         # Read-only guarantee is scoped to the turn that armed it, not a shared on/off flag. arm_
@@ -69,8 +73,30 @@ class ModelControl:
     def set_phase(self, phase: Phase) -> None:
         self._phase = phase
 
-    def pick(self, model: ModelId | None) -> None:
+    def pick(self, model: ModelId | None, effort: str | None = None) -> None:
+        """Build's in-session override: an alias, and optionally the level to run it at.
+
+        Two values because an in-session act picks both (ADR-0049): the person chose this model, so
+        the effort beside it is theirs and not the slot's. `None` effort is no effort — the alias
+        answers at its own default, which is what every Build pick did before this field existed.
+
+        The effort is dropped with the model, exactly as `pick_chat` drops it: a level chosen for an
+        alias that is no longer picked is the stale pairing the whole of ADR-0049 is about, and a
+        cleared pick puts the mode back on its slot, whose own effort then applies.
+
+        `""` is read as no level, the way `set_chat_pick` reads it for the other pick. An empty
+        string is not a level anybody can choose, so storing one would reach `ModelDecision.effort`
+        as a value the send path drops with a `dropping reasoning_effort=` line naming nothing —
+        a log entry about a choice that was never made.
+
+        An unrecognised level is NOT normalised away, and that is the point of the route's comment:
+        it is stored, sent, and dropped by the measured table for the alias that actually resolves.
+        The menu's `default` key is a MENU key — the browser resolves it to `None` before it sends —
+        so it has no meaning here, and teaching this seam to recognise it would tie the router to a
+        control's key encoding.
+        """
         self._picked_model = model
+        self._picked_effort = (effort or None) if model else None
 
     def pick_chat(self, model: ModelId | None, effort: str | None = None) -> None:
         """Standing Chat alias + optional reasoning_effort. None model is Auto."""
@@ -212,6 +238,7 @@ class ModelControl:
             mode=self._turn_mode if self._turn_mode_token is not None else self._mode,
             phase=self._phase,
             picked_model=self._picked_model,
+            picked_effort=self._picked_effort,
             web_allowed=self._web_token is not None,
             read_only_turn=self._read_only_token is not None,
             read_only_reason=self._read_only_reason,

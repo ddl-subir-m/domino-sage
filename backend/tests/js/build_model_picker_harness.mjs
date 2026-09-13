@@ -51,9 +51,35 @@ const OPEN_WEIGHT = [
   { id: 'anthropic/claude-planner', provider: 'Anthropic' },
 ];
 
+// Which levels each alias advertises, as the resources listing reports them. Per alias and
+// measured (ADR-0049), so the fixture has to be too: a menu that derived them from the name would
+// pass here and offer a 400 on the deployment. `claude-builder` advertises none on purpose — the
+// row that must stay a plain row is the assertion this file would otherwise never make.
+const ALIAS_EFFORTS = {
+  'anthropic/claude-planner': ['low', 'medium', 'high'],
+  'anthropic/claude-builder': [],
+  // A SECOND alias that advertises none, so the empty-enum case is covered by a row that exists.
+  // Leaving qwen out of this table entirely made its rows test the MISSING-LISTING path instead —
+  // no row at all — which this menu deliberately treats as the opposite fact (see
+  // `test_a_missing_alias_listing_is_not_read_as_a_refusal`). Two tests read as the empty-enum case
+  // and neither was one.
+  'qwen/qwen-2-5': [],
+  'deepseek/deepseek-v3': ['low', 'high'],
+  'google/gemini-3.7-flash': ['low', 'medium', 'high', 'max'],
+};
+const ALIAS_ROWS = () => Object.keys(ALIAS_EFFORTS).map((alias) => ({
+  id: `llm_alias:${alias.replace('/', '-')}`,
+  kind: 'llm_alias',
+  alias,
+  name: alias,
+  capabilities: ['chat'],
+  reasoning_efforts: ALIAS_EFFORTS[alias],
+}));
+
 let mode = 'auto';
 let phase = 'plan';
 let picked = null;
+let pickedEffort = null;
 // Server-computed (ADR-0032). Set by a step, never derived here — the point of the field is
 // that the picker cannot work it out, so a harness that derived it would test nothing.
 let signingSlot = null;
@@ -72,7 +98,7 @@ const json = (body) => ({
 // nothing in this file starts a turn.
 const status = () => ({
   model: {
-    mode, selected_mode: mode, phase, picked_model: picked,
+    mode, selected_mode: mode, phase, picked_model: picked, picked_effort: pickedEffort,
     chat_model: null, reasoning_effort: null, catalog: CATALOG,
     signing_slot: signingSlot,
   },
@@ -92,6 +118,10 @@ function serve(url, options = {}) {
       if (mode === 'plan' || mode === 'implement') phase = mode;
     }
     if ('pick' in body) picked = body.pick;
+    // Stored beside the model and cleared with it, which is what ModelControl.pick does. A server
+    // that kept a level over a cleared pick would let the menu look right while the router read a
+    // pairing nobody chose.
+    if ('pick' in body) pickedEffort = body.pick ? (body.pick_effort || null) : null;
     return json(status());
   }
   return json({});
@@ -165,7 +195,21 @@ const pickerTip = (tree) => find(tree, (n) => n.t === 'Tooltip'
   && [...walk(n.c)].some((x) => x.p && x.p['aria-label'] === 'Build model'));
 // A divider carries neither, so both stay undefined rather than false and the JSON drops them —
 // the same reading `label` already gets.
-const itemRow = (i) => ({ key: i.key, label: i.label, disabled: i.disabled, title: i.title });
+// `children` rides along because a row with a submenu is a different offer from a row without one,
+// and a reader that flattened them away would let the effort submenu vanish and still report a
+// menu that looks exactly right (#295).
+const itemRow = (i) => ({
+  key: i.key, label: i.label, disabled: i.disabled, title: i.title,
+  // Children carry `disabled` and `title` for the reason top-level rows do: the stranded level's
+  // whole point is that it is drawn UNCLICKABLE with a sentence saying why, and a reader that kept
+  // only the label would pass a regression that made it clickable — which would re-send the very
+  // level the row exists to say is refused.
+  ...(i.children
+    ? { children: i.children.map((c) => ({
+        key: c.key, label: c.label, disabled: c.disabled, title: c.title,
+      })) }
+    : {}),
+});
 // The switch notice under the box (ADR-0043). `createElement` here is a stub, so a component in
 // the tree is an uninvoked function and its words are not in it yet — this calls it the way React
 // would, which is also why it can assert the SENTENCE and not just the element's presence. Found by
@@ -181,6 +225,10 @@ SW.store.set({
   scope: { id: 'proj', name: 'Demo Project' },
   messages: [], resourceGroups: {},
   openWeightModels: OPEN_WEIGHT,
+  // The listing the composer reads levels off. Seeded here rather than per step because the loop
+  // below rewrites `resourceGroups` on every row, and a source that came and went would make the
+  // effort submenu appear and disappear for reasons no test is about.
+  gatewayAliases: ALIAS_ROWS(),
 });
 
 const report = [];
@@ -193,6 +241,23 @@ for (const step of steps) {
     await SW.api.healthz();
     report.push({ step: 'health', fetched: fetched.slice() });
     continue;
+  }
+
+  if ('listing' in step) {
+    // The alias listing absent, which is NOT the same fixture state as an alias advertising no
+    // levels — `gatewayAliases` starts empty and a gateway leg that 40x's at boot leaves it that
+    // way. Its own step because the menu has to tell the two apart: one is knowledge, the other is
+    // the absence of it, and `reasoning_efforts` reads `[]` for both.
+    SW.store.set({ gatewayAliases: step.listing ? ALIAS_ROWS() : [] });
+  }
+
+  if ('narrow' in step) {
+    // The deployment moving under a live pick: an alias stops advertising a level somebody is
+    // already standing on. Reachable without anyone doing anything wrong (a default moves, or the
+    // measured table narrows when an alias is probed — #280), and there is no other way to reach it
+    // from here, because the fixture's listing is otherwise fixed for the whole run.
+    ALIAS_EFFORTS[step.narrow.alias] = step.narrow.efforts;
+    SW.store.set({ gatewayAliases: ALIAS_ROWS() });
   }
 
   if ('signing' in step) {
@@ -231,8 +296,17 @@ for (const step of steps) {
   const byName = (n) => ({ kind: 'dataset', id: `ds_${n}`, name: n });
   SW.store.set({
     activeApp: step.app ? { id: 'app_1', name: step.app } : null,
-    resourceGroups: step.declaredIn
-      ? { dataset: locked.map((n) => ({ id: `dataset:ds_${n}`, name: n, declared: true })) } : {},
+    // `model_llm` is the composer's SECOND alias source: `gatewayAliases` empty falls back to it,
+    // and in production it carries `reasoning_efforts` too (`provider.py` builds both from one
+    // helper). Folded into THIS write rather than set in its own step, because this one runs on
+    // every row and would clobber it — which is how the first attempt at it read as a broken
+    // fallback rather than a clobbered fixture.
+    resourceGroups: {
+      ...(step.declaredIn
+        ? { dataset: locked.map((n) => ({ id: `dataset:ds_${n}`, name: n, declared: true })) }
+        : {}),
+      ...(step.resourceAliases ? { model_llm: ALIAS_ROWS() } : {}),
+    },
     bindings: step.declaredIn === 'binding' ? held.map(byName) : [],
     appAttachments: step.declaredIn === 'attachment'
       ? held.map((n) => ({ path: `public/data/${n}/rows.csv`, dataset_id: `ds_${n}` }))
@@ -285,14 +359,25 @@ for (const step of steps) {
 
   if (step.pick) {
     if (!menu) throw new Error(`${step.mode} offers no model menu to pick from`);
+    // Two levels deep: a model row that advertises levels is a SUBMENU, so the key a person can
+    // actually click is a child of it (#295). Flattening both makes `pick` name the thing clicked
+    // rather than the thing it happens to sit under.
     const target = [...menu.p.menu.items].flatMap((i) => (i.type === 'group' ? i.children : [i]))
+      .flatMap((i) => (i.children ? i.children : [i]))
       .find((i) => i.key === step.pick);
     if (!target) throw new Error(`${step.mode} has no row keyed ${step.pick}`);
     menu.p.menu.onClick({ key: target.key });
     await settle();
     row.wrote = calls.slice();
     row.serverPick = picked;
-    row.afterLabel = strings(pickerButton(mount())).join(' ');
+    row.serverEffort = pickedEffort;
+    // One remount, read twice. The chip and the menu are the two places the pick shows, and a
+    // second `mount()` would be a second render of the same state that could only agree with the
+    // first while costing a reader the right to assume they came from one draw.
+    const after = mount();
+    row.afterLabel = strings(pickerButton(after)).join(' ');
+    const afterMenu = pickerMenu(after);
+    row.afterSelected = afterMenu ? afterMenu.p.menu.selectedKeys : null;
   }
   report.push(row);
 }

@@ -108,8 +108,11 @@ def test_an_in_session_pick_replaces_the_effort_along_with_the_model():
     """An override replaces the model, so it replaces the effort (ADR-0049).
 
     Falling back to the slot's effort is the version anyone writes first, and it applies a level
-    picked for a model that may not accept it — the pick has no effort of its own on Build, so the
-    honest answer is none.
+    picked for a model that may not accept it — here, plan's `high` onto an alias the person
+    deliberately moved off.
+
+    A pick that named no level answers none. That is every pick made before the Build menu could
+    carry one (#295), and every pick of an alias that advertises none.
     """
     catalog = _replace(CATALOG, plan_effort="high", implement_effort="low")
 
@@ -118,6 +121,28 @@ def test_an_in_session_pick_replaces_the_effort_along_with_the_model():
     assert picked.effort is None
     assert llm_router.resolve(
         _state(mode=Mode.IMPLEMENT, picked_model="gpt-5.4"), catalog).effort is None
+
+
+def test_a_pick_that_names_a_level_sends_that_one_and_not_the_slots():
+    """The other half of the same rule, now that the Build menu can carry a level (#295).
+
+    `picked_effort` is the act's own, so it outranks the slot's in exactly the way `picked_model`
+    does — the in-session-act row of ADR-0049's table. The catalog here assigns `high` to plan and
+    `low` to implement and neither reaches the wire: the person is on a model neither slot names,
+    at the level they chose for it.
+    """
+    catalog = _replace(CATALOG, plan_effort="high", implement_effort="low")
+
+    picked = llm_router.resolve(
+        _state(mode=Mode.PLAN, picked_model="gemini-3.7-flash", picked_effort="max"), catalog)
+    assert picked.reason is Reason.PLAN_OVERRIDE
+    assert picked.model == "gemini-3.7-flash"
+    assert picked.effort == "max"
+
+    implement = llm_router.resolve(
+        _state(mode=Mode.IMPLEMENT, picked_model="gemini-3.7-flash", picked_effort="low"), catalog)
+    assert implement.reason is Reason.IMPLEMENT_OVERRIDE
+    assert implement.effort == "low"
 
 
 def test_the_signing_pin_takes_its_own_slots_effort_with_it():

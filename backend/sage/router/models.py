@@ -228,6 +228,23 @@ class SessionState:
     mode: Mode
     phase: Phase
     picked_model: ModelId | None = None
+    # The level `picked_model` runs at, when the person chose one (#295, ADR-0049). The Build pick's
+    # twin of `reasoning_effort` below, and separate from it for the reason the two picks are
+    # separate: Chat's and Build's overrides are different standing choices on different models, and
+    # one field would make either surface silently restate the other's level.
+    #
+    # Only ever read beside `picked_model` — a level with no pick under it belongs to no model, which
+    # is the stale pairing ADR-0049 exists to prevent, so `ModelControl.pick` clears the two together
+    # rather than leaving this to every reader. That invariant is what makes the several
+    # `replace(state, picked_model=...)` callers safe without also naming this field: with no pick,
+    # nothing reads it. `_resolve_chat` and `reasoning_effort` are the same pair, one field down.
+    #
+    # Landing it HERE rather than at the end of the class was safe only because no caller passes
+    # anything past `phase` positionally — checked across every construction when it was added, and
+    # a property of the callers rather than a guarantee. A field inserted mid-dataclass rebinds every
+    # positional argument after it, silently and everywhere at once, so the next one goes on the end
+    # unless somebody checks again.
+    picked_effort: str | None = None
     # This turn must not touch the filesystem. Ask mode implies it, but a gated plan turn does too
     # while `mode` is still auto/plan — the gate is a per-turn decision the mode can't express, so
     # the orchestrator sets it explicitly and the shim strips write/shell tools on that basis.

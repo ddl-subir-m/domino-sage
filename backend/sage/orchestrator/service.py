@@ -4094,6 +4094,11 @@ class Project:
                 "selected_mode": self.control.selected_mode.value,
                 "phase": s.phase.value,
                 "picked_model": s.picked_model,
+                # Sent beside the model rather than left to be recomputed, for the reason the
+                # picked model is: the status poll is what the menu restores itself from after a
+                # reload, and a level the browser cannot read back is a control whose setting looks
+                # dropped every time the page is refreshed (#295).
+                "picked_effort": s.picked_effort,
                 "chat_model": s.chat_model,
                 "reasoning_effort": s.reasoning_effort,
                 "catalog": {
@@ -12373,10 +12378,16 @@ class Orchestrator:
             if ambiguous:
                 yield persist({"type": "mentions-ambiguous", "message": ambiguous})
 
-        # The user's own model pick (None in Auto). Set when a planning stall forces us to pin the
-        # strong model for the Implement retry (see the nudge branch); restored on exit so we never
-        # leave the user's own pick clobbered.
-        original_pick = project.control.snapshot().picked_model
+        # The user's own model pick (None in Auto), BOTH halves of it. Set when a planning stall
+        # forces us to pin the strong model for the Implement retry (see the nudge branch); restored
+        # on exit so we never leave the user's own pick clobbered.
+        #
+        # The effort travels with the model because it is half of the same act (ADR-0049), and a
+        # capture that took only the model would erase it: one stall, and the level the person set
+        # is gone for the rest of the session with nothing on screen to say so (#295).
+        pick_state = project.control.snapshot()
+        original_pick = pick_state.picked_model
+        original_effort = pick_state.picked_effort
         escalated_pick = False
 
         # Arm the read-only guarantee for a gated (plan) turn OR an answer-only turn (Ask mode / any
@@ -12414,7 +12425,7 @@ class Orchestrator:
             # request this turn will make has already been made.
             project.control.disarm_withheld(withheld_token)
             if escalated_pick:
-                project.control.pick(original_pick)
+                project.control.pick(original_pick, original_effort)
             if ro_token is not None:
                 project.control.disarm_read_only(ro_token)
             if web_token is not None:
@@ -13511,7 +13522,12 @@ class Orchestrator:
                         # so a model capable of calling the edit tool drives it. Restored to the user's
                         # own pick in restore_mode().
                         if strong_fallback and not escalated_pick and mode_now in (Mode.AUTO, Mode.IMPLEMENT):
-                            project.control.pick(project.shim.catalog.plan)
+                            # The plan slot's own effort rides along, because this escalation is the
+                            # act that chose the model and ADR-0049's table says the effort comes
+                            # from whatever chose it. Leaving it bare would run the plan model at
+                            # the alias default here and at the assigned level everywhere else.
+                            project.control.pick(project.shim.catalog.plan,
+                                                 project.shim.catalog.plan_effort)
                             escalated_pick = True
                             reason += " with the strong model"
                         iterate_reason = reason
@@ -14057,7 +14073,12 @@ class Orchestrator:
         string "stopped", or a failure reason; swallows the phase's own terminal `done` so the build
         emits exactly one."""
         strong_retry = os.environ.get("SAGE_PHASE_RETRY_STRONG", "1").strip().lower() not in ("0", "false", "no")
-        original_pick = project.control.snapshot().picked_model
+        # Both halves of the person's pick, restored together in the `finally` below. A capture that
+        # took only the model would spend one phase retry to erase the level they chose, silently and
+        # for the rest of the session (#295, ADR-0049).
+        pick_state = project.control.snapshot()
+        original_pick = pick_state.picked_model
+        original_effort = pick_state.picked_effort
         escalated = False
         errors = ""
         reason = "the step did not complete"
@@ -14068,8 +14089,10 @@ class Orchestrator:
                 if attempt == 2 and strong_retry:
                     # The cheap coder just demonstrated it can't do this step. Paying for one strong
                     # attempt beats failing the whole build, and the pick is restored below so the
-                    # escalation lasts exactly one phase.
-                    project.control.pick(project.shim.catalog.plan)
+                    # escalation lasts exactly one phase. Its own effort goes with it: the act that
+                    # chose the model chose the level (ADR-0049), so the strong attempt runs at the
+                    # plan slot's assigned level rather than at whatever the alias defaults to.
+                    project.control.pick(project.shim.catalog.plan, project.shim.catalog.plan_effort)
                     escalated = True
                     yield {"type": "active", "tool": "retry",
                            "detail": f"phase {step.n} failed — retrying on {project.shim.catalog.plan}"}
@@ -14114,7 +14137,7 @@ class Orchestrator:
             raise
         finally:
             if escalated:
-                project.control.pick(original_pick)
+                project.control.pick(original_pick, original_effort)
         return reason
 
     def record_runtime_error(self, message: str, stack: str = "") -> None:

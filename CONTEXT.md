@@ -386,22 +386,25 @@ _Avoid_: slot (that is the field in code), catalog, model setting, default model
 names what an assignment reverts to, not the assignment)
 
 **Model override**:
-One person's standing choice to run a model other than the assignment, in their own Sage
-Builder only. It is not shared, it does not survive the Sage Builder, and only Plan and
-Implement honour it. Saving any assignment clears it.
+One person's standing choice to run a model other than the assignment — and, where that model
+takes one, the Effort to run it at — in their own Sage Builder only. It is not shared, it does
+not survive the Sage Builder, and only Plan and Implement honour it. Saving any assignment
+clears it, and clearing it puts the mode back on the assignment's model and the assignment's
+Effort together.
 _Kind_: name
 _Avoid_: pick (that is the field in code), temporary model, per-turn model (it lasts until it
 is cleared, not one turn)
 
 **Effort**:
-How hard a model is asked to reason, saved beside the model in a Model assignment and sent on
-the turns that assignment runs. Not every model takes one — most of the Aliases on the LLM
-Gateway discard the field in silence — so a slot whose model takes none offers no control at
-all, and which levels a model accepts is measured per Alias rather than guessed from its name.
-An Effort belongs to the model that actually runs a turn rather than to the slot it was saved
-on: when the signing pin, the sensitivity lock or a Model override moves a turn onto another
-model, the Effort moves with it — to that model's own, or to none where whatever moved it
-named no assignment. A saved level is dropped rather than sent when the model on the wire will
+How hard a model is asked to reason, chosen beside the model it belongs to and sent on the turns
+that model runs. It is half of a Model assignment, and half of a Model override too — the Build
+model menu offers the levels underneath the model, so one click chooses both. Not every model
+takes one — most of the Aliases on the LLM Gateway discard the field in silence — so a model
+that takes none offers no control at all, and which levels a model accepts is measured per Alias
+rather than guessed from its name. An Effort belongs to the model that actually runs a turn
+rather than to the slot it was saved on: when the signing pin, the sensitivity lock or a Model
+override moves a turn onto another model, the Effort moves with it — to the one chosen for that
+model, or to none where whoever moved it chose no level. A saved level is dropped rather than sent when the model on the wire will
 not take it, which includes a level that was legal when it was saved and stopped being, since
 nothing re-validates one. The turn then runs at the model's own default, and the only witness
 is a line in the log. See
