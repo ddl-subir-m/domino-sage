@@ -7048,7 +7048,17 @@ class Orchestrator:
         assigned by the time this runs, so an exception here would 500 whichever request happened
         to trigger the attach and then be cached away — every later call returns the Project, the
         migration never runs again in this process, and nothing says why. A bad directory name
-        under `.sage/threads/` (`safe_id` raises) or a full volume is enough."""
+        under `.sage/threads/` (`safe_id` raises) or a full volume is enough.
+
+        Kept blanket after #326 rather than narrowed, having been asked. It WAS hiding that fault
+        class from the open path: six readers in `ThreadStore` caught a pair too narrow to hold
+        `UnicodeDecodeError` (a seventh, `read_history`, catches nothing at all — #331), and
+        this catch is the only reason a non-UTF-8 `meta.json` degraded the Threads rail instead of
+        stopping `project()`. Narrowing it now buys nothing the guarded readers do not already
+        give, and would re-create #303's headline — a Project that will not open over one
+        unreadable sidecar. What makes the hiding affordable is that it is not silent:
+        `log.exception` puts the traceback and the raising site in the log, which is where #326
+        was read off. A shrug with a witness, not a shrug."""
         store = ThreadStore(project.record.path)
         swept = 0
         try:
