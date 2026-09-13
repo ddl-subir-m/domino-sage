@@ -121,11 +121,10 @@ def signing_slot(catalog: ModelCatalog) -> str | None:
 REASONING_EFFORTS: dict[str, tuple[str, ...]] = {
     # Every level except `none` is refused together with function tools ("Function tools with
     # reasoning_effort are not supported for gpt-5.4 in /v1/chat/completions"). gemini takes any of
-    # its levels alongside tools, and is the only alias here that does — but that difference buys
-    # nothing yet: enforcement.apply drops the effort from EVERY tool-carrying turn, for every
-    # alias, so today the only turn an effort reaches at all is a tool-less Chat turn. Sending one
-    # on a Build turn is #282. Either way the exclusion is a property of the request shape, not of
-    # the alias's enum, so it does not narrow these rows.
+    # its levels alongside tools, and is the only alias here that does. The exclusion is a property
+    # of the request SHAPE, not of the alias's enum, so it does not narrow these rows — it narrows
+    # `EFFORTS_WITH_TOOLS` below, which the send path reads INSTEAD of this table on a request that
+    # carries tools.
     #
     # `none` and `xhigh` are in the row because the probe found them, not because anything
     # advertised them: the name match this replaced published low/medium/high for gpt-5.4 and had
@@ -146,6 +145,41 @@ def reasoning_efforts_for(model: ModelId) -> tuple[str, ...]:
     (#284), so in practice this table answers by itself.
     """
     return REASONING_EFFORTS.get(model.rsplit("/", 1)[-1], ())
+
+
+# The subset of an alias's levels that survives when the request ALSO carries function tools. An
+# alias absent here keeps its whole row: a tool-carrying request is unremarkable to most aliases,
+# and defaulting to "narrower" is precisely the bug this table ends — the guard it replaced dropped
+# the field from every tool-carrying turn, for every alias, which is why a Build turn had never sent
+# one (#282, ADR-0049). Same key spelling as the tables above it: the alias as the gateway writes it.
+EFFORTS_WITH_TOOLS: dict[str, tuple[str, ...]] = {
+    # A hard 400 on the WHOLE request, not a preference: "Function tools with reasoning_effort are
+    # not supported for gpt-5.4 in /v1/chat/completions".
+    #
+    # `none` surviving is measured, not reasoned: it answers 200 beside tools where every other
+    # level 400s (scripts/reasoning-probe.py, 2026-09-12). It is kept because it is a LEVEL, not an
+    # absence — dropping it would run at the alias's own higher default on the one turn somebody
+    # asked for no reasoning at all, which is the cost lever they were reaching for. Dropping the
+    # field is the right answer only where nobody chose it; see the send path in enforcement.py.
+    "gpt-5.4": ("none",),
+}
+
+
+def reasoning_efforts_with_tools(model: ModelId) -> tuple[str, ...]:
+    """`reasoning_efforts_for`, narrowed to what the alias keeps on a tool-carrying request.
+
+    A separate question from the enum, and it has to be one: gemini takes every level it advertises
+    alongside tools (200) while gpt-5.4 takes one of its five. Reading the enum alone sends a 400 on
+    a Build plan phase, which always carries tools; reading neither is what the old guard did, and
+    it cost the field on every Build turn ever run.
+
+    Never wider than the enum — a level here that `reasoning_efforts_for` does not offer would reach
+    the wire on exactly the requests the alias refuses it on. The tests hold the two tables to that.
+    """
+    alias = model.rsplit("/", 1)[-1]
+    if alias in EFFORTS_WITH_TOOLS:
+        return EFFORTS_WITH_TOOLS[alias]
+    return reasoning_efforts_for(model)
 
 
 @dataclass(frozen=True)
@@ -219,7 +253,12 @@ class SessionState:
 
     # Standing Chat pick. Ignored on Build turns. None means catalog.ask.
     chat_model: ModelId | None = None
-    # OpenAI-style reasoning_effort for Chat, when the picked alias supports it. None omits the field.
+    # OpenAI-style reasoning_effort for Chat, when the picked alias supports it.
+    #
+    # Still the Chat PICK and only that — the in-session-act row of ADR-0049's table, which is the
+    # one act that carries an effort of its own. What actually reaches the wire is
+    # `ModelDecision.effort`, chosen by whatever chose the model; read that before adding a second
+    # reader here.
     reasoning_effort: str | None = None
     # The aliases approved for sensitive work, when this turn is under the lock (ADR-0043).
     # None means no lock: either the deployment never configured SAGE_SENSITIVE_MODEL_GROUP, or no
@@ -243,3 +282,16 @@ class ModelDecision:
     # True when the sensitivity lock chose or approved this model (ADR-0043); the picker shows the
     # rest disabled. False everywhere else. The shim still overwrites model on every request.
     locked: bool
+    # The reasoning effort that belongs to THIS model, or None for the alias's own default.
+    #
+    # Carried on the decision rather than read off the catalog by the caller, because the slot that
+    # was asked for is not always the slot that answered: the signing pin (ADR-0032), the signing
+    # veto and the sensitivity lock all move the model, and an effort is validated by the model that
+    # receives it — two aliases 400 on a level they do not list, and `qwen-2-5` 400s on the field
+    # itself. So whatever chose the model chose the effort (ADR-0049), and the shim reads one field
+    # instead of writing the same comparison once per slot and drifting twice.
+    #
+    # NOT a promise the model accepts it. A stored effort is validated at save against the model the
+    # slot ran then, and the deployment default can move under it afterwards; the send path re-checks
+    # against the measured table and drops rather than letting the turn 400.
+    effort: str | None = None

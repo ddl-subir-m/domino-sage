@@ -18,7 +18,15 @@ from typing import Any
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import Mode, ModelCatalog, Reason, is_bedrock, reasoning_efforts_for, supports_vision
+from ..router.models import (
+    Mode,
+    ModelCatalog,
+    Reason,
+    is_bedrock,
+    reasoning_efforts_for,
+    reasoning_efforts_with_tools,
+    supports_vision,
+)
 from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, assess
 from . import keepalive as ka
 from .chat_paths import apply_withheld, strip_denied_writes
@@ -181,6 +189,9 @@ class EnforcementShim:
         # The last (Conversation, Live read tools offered) pair logged, so the line below says
         # something on the turn it changes and nothing on the dozen requests inside one turn.
         self._live_read_offered: tuple[str, tuple[str, ...]] | None = None
+        # The last (model, effort, carries-tools) triple whose effort was dropped, so the line below
+        # says something when the answer changes and nothing on the requests that repeat it.
+        self._effort_dropped: tuple[str, str, bool] | None = None
 
     @property
     def catalog(self) -> ModelCatalog:
@@ -355,39 +366,71 @@ class EnforcementShim:
                 # the signing model. Verified live 2026-09-04, which is how this was caught.
                 decision = replace(fallback, reason=Reason.SIGNING_VETO)
 
-        # Function tools and `reasoning_effort` are mutually exclusive on chat/completions for the
-        # GPT-5 family: the gateway answers 400 with "Function tools with reasoning_effort are not
-        # supported for gpt-5.4 in /v1/chat/completions". Chat turns always carry tools, so with
-        # gpt-5.4 as the Chat alias EVERY turn failed, down to "hi" — the same request succeeded the
-        # moment it routed to sonnet, which advertises no efforts and so was never given one.
-        # The field is dropped rather than sent as 'none' (the other half of the gateway's advice).
-        # Measured 2026-09-12 (scripts/reasoning-probe.py): 'none' DOES pass alongside tools on
-        # gpt-5.4 — 200, where every other level 400s — so the reason this drops instead is no
-        # longer "the alias would refuse it". It drops because 'none' is a level, not an absence:
-        # sending it would pin every tool-carrying turn to no reasoning at all for an alias whose
-        # own default is higher. Deciding that for a Build turn is #282's, not this line's.
-        # Cost is what is lost — the turn runs at the alias default. A tool-less Chat turn keeps it.
+        # The reasoning effort, for Build and Chat alike. Three questions, in this order, and the
+        # order is the rule: WHICH level (the decision's, never the slot's), then may this MODEL
+        # take it, then may it take it on a request of this SHAPE.
+        #
+        # 1. The decision carries it (ADR-0049). The router re-resolves per request, so the model on
+        #    the wire is not always the model an effort was chosen for — the signing pin, the veto
+        #    and the lock all move it. This replaced `request["model"] == state.chat_model`, which
+        #    was the same rule asked of Chat alone; written per slot it would be three comparisons
+        #    drifting two ways.
+        # 2. The measured table decides acceptance, per alias (#280). This is also the ONLY
+        #    re-validation a stored effort ever gets: `set_catalog` checks the level against the
+        #    model the slot ran at save time, and a deployment default can move under it long
+        #    afterwards (see `_effective_catalog`). Dropped rather than sent, because the person's
+        #    build is worth more than their stale level — two aliases 400 on a level they do not
+        #    list and qwen-2-5 400s on the field itself, and a 400 here kills the whole turn.
+        # 3. Tools narrow it for gpt-5.4 only ("Function tools with reasoning_effort are not
+        #    supported for gpt-5.4 in /v1/chat/completions") — with gpt-5.4 as the Chat alias EVERY
+        #    turn failed, down to "hi". Narrowed by alias and not by request shape alone, which is
+        #    what the guard before this did: it dropped the field from every tool-carrying turn for
+        #    every alias, so a Build plan phase — always tool-carrying — could never send one, and
+        #    gemini's measured 200 with tools and all was thrown away with it.
         tool_call = bool(request.get("tools"))
+        accepted = (reasoning_efforts_with_tools(request["model"]) if tool_call
+                    else reasoning_efforts_for(request["model"]))
+        # Whatever the caller sent is not an answer to any of the three. `model` is overwritten
+        # above on every request, so an incoming effort was chosen for a model that is no longer on
+        # the wire — the exact stale pairing the rest of this block exists to prevent, arriving
+        # through the door instead of off the disk. Dropped rather than checked: this seam decides
+        # the effort, and honouring one from outside would make that untrue on the one path
+        # (OpenCode's own config, or a direct POST to /v1/chat/completions) nothing here can see.
+        if "reasoning_effort" in request:
+            request = {k: v for k, v in request.items() if k != "reasoning_effort"}
 
-        # Chat-only: the user picked an effort for THIS alias. Do not send it when routing landed
-        # on a different model — qwen-2-5 400s on unknown fields.
-        if (
-            not tool_call
-            and state.chat_thread_id
-            and state.reasoning_effort
-            and state.chat_model
-            and request["model"] == state.chat_model
-        ):
-            request = {**request, "reasoning_effort": state.reasoning_effort}
-        elif not tool_call and state.chat_thread_id and "low" in reasoning_efforts_for(request["model"]):
-            # Chat on Auto never reached the branch above: no pick means no effort, so a data
-            # question was answered at the alias's own default — a full reasoning pass, paid before
-            # the first token, on turns as small as "hi". Low is the floor for this kind of work;
-            # someone who wants more picks it, and that pick still wins because it is tested first.
-            # Gated the same way, and for the same reason: an alias that does not advertise the
-            # field 400s on it.
-            request = {**request, "reasoning_effort": "low"}
-
+        effort = decision.effort
+        if effort is not None and effort not in accepted:
+            # Said out loud. A dropped effort is a silent bill — the turn runs at the alias's own
+            # default, costs more or thinks less than the person asked for, and looks exactly like a
+            # turn nobody configured. This line is what tells a stale stored level from a slot that
+            # was never given one.
+            #
+            # Deduped like the Live read line above, and for the same reason: an unacceptable stored
+            # level is a STANDING fact, so an unkeyed line repeats on every inference of every turn
+            # for the life of the assignment and buries the turn it first appeared on.
+            if self._effort_dropped != (request["model"], effort, tool_call):
+                self._effort_dropped = (request["model"], effort, tool_call)
+                log.info(
+                    "model policy: dropping reasoning_effort=%s — %s accepts %s%s",
+                    effort, request["model"], ", ".join(accepted) or "no effort",
+                    " on a request carrying tools" if tool_call else "",
+                )
+            effort = None
+        if effort is None and state.chat_thread_id and "low" in accepted:
+            # Chat on Auto: no pick means no effort, so a data question was answered at the alias's
+            # own default — a full reasoning pass, paid before the first token, on turns as small as
+            # "hi". Low is the floor for this kind of work. An effort that reached here beats it,
+            # including one on the `ask` assignment, because an assignment IS somebody's pick
+            # (ADR-0049) — which is why this tests `is None` and not falsiness: `none` is a level.
+            #
+            # AFTER the acceptance test, not before it. A level that was dropped just above leaves
+            # this turn with no effort at all, which is the state the floor was written for — put
+            # first, the floor would be skipped by the very stale assignment that most needs it, and
+            # a Chat turn would pay the alias's full default because somebody once picked `xhigh`.
+            effort = "low"
+        if effort is not None:
+            request = {**request, "reasoning_effort": effort}
         # Handoff note. A rescued step lands on a different model mid-turn with the transcript but
         # no account of why it was called in — so it re-attempts the edit that just failed. Appended
         # as `system`, NOT `user`: _current_turn() treats a user message as a turn boundary, so
@@ -422,8 +465,13 @@ class EnforcementShim:
             request = {**request, "messages": split_parallel_tool_calls(request["messages"])}
 
         log.info(
-            "model policy: requested=%s -> resolved=%s (%s, phase=%s, locked=%s)",
+            "model policy: requested=%s -> resolved=%s (%s, phase=%s, locked=%s, effort=%s)",
             requested, request["model"], decision.reason.value, state.phase.value, decision.locked,
+            # What went on the wire, not what the decision proposed: the two differ whenever a level
+            # was dropped or the Chat floor answered. Named here and not only on the drop path,
+            # because a turn running at an effort nobody expected is the same question asked from
+            # the other side, and the drop line is deduped — after the first one it says nothing.
+            request.get("reasoning_effort", "none sent"),
         )
         if on_resolved is not None:
             try:

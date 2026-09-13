@@ -148,21 +148,37 @@ contains a level its backing model rejects.
 
 ## Consequences
 
-- `SessionState.reasoning_effort` stops meaning "the Chat pick" and starts meaning "the effort for
-  the model this turn resolved to". The `state.chat_model == request["model"]` guard in
-  `enforcement.py` was already doing the job this ADR generalises — never send an effort to a model
-  nobody chose it for — so it survives, with the decision as its subject rather than the Chat pick.
-  What it must not become is one such comparison per slot, which is the same rule written three
-  times and drifting twice. The send path is #282's to write.
+- The effort the turn sends stops being read off `SessionState` and becomes
+  `ModelDecision.effort`, set by whatever chose the model. `SessionState.reasoning_effort` stays
+  exactly what it was — the Chat pick, which is the in-session-act row of the table above and the
+  one act that carries an effort of its own. **Corrected 2026-09-12, on #282's implementation:** the
+  bullet here first said `SessionState.reasoning_effort` would take on the new meaning, which cannot
+  be right. It is the router's INPUT, and "the effort for the model this turn resolved to" is an
+  output; the body of this ADR already says so ("a property of the router's decision"). The
+  `state.chat_model == request["model"]` guard in `enforcement.py` was already doing the job this
+  ADR generalises — never send an effort to a model nobody chose it for — so it survives, with the
+  decision as its subject rather than the Chat pick. What it must not become is one such comparison
+  per slot, which is the same rule written three times and drifting twice.
 - The hardcoded `"low"` floor for Chat-on-Auto stays, and an effort on the `ask` assignment beats
   it. The floor exists because no pick meant no field, and a data question was answered at the
   alias's own default; an assignment that names an effort is a pick, so the floor has nothing left
-  to do on that turn. Where that precedence lands in the code is #282's.
+  to do on that turn. Where that precedence lands in the code is #282's. **Added 2026-09-12:** it lands _after_ the acceptance
+  check, not before it. An assignment that is a pick but is refused by the model on the wire leaves
+  the turn with no effort at all, which is the state the floor was written for; asked first, the
+  floor is skipped by the one assignment already known to be stale.
 - The Chat picker is unchanged. Its effort was always the in-session-act row of the table above,
   and it keeps behaving as it does today.
 - `preflight` gains nothing. It answers "can this slot's model be reached", and an effort cannot
-  make a reachable alias unreachable. An effort the alias would refuse is refused on save
-  (#281), against the per-alias table (#280) — not at turn time.
+  make a reachable alias unreachable. An effort the alias would refuse is refused on save (#281),
+  against the per-alias table (#280).
+- **Added 2026-09-12, on #282's implementation:** the save-time refusal is not the last check, and
+  cannot be. It validates the level against the model the slot ran _then_, and a deployment default
+  can move under a stored effort long afterwards — which turns a saved-good level into a first-turn
+  400 the moment anything sends the field, and #282 is what sends it. So the send path re-asks the
+  same measured table against the model actually on the wire, and **drops** rather than refusing:
+  the person's build is worth more than their stale level, and a 400 here kills the whole turn. Two
+  checks, one table, and they are not redundant — the save-time one exists to tell a person that
+  what they asked for will not work, which is a sentence only the write path can say.
 - `CONTEXT.md` is deliberately not touched yet. Its **Model assignment** entry opens "The model a
   Build mode runs on, chosen once and kept", which will be wrong once it carries an effort, and
   the glossary will gain **Effort** — but the glossary describes the product as it is, and neither
