@@ -64,7 +64,7 @@ def test_the_offer_reaches_every_population_whose_rows_came_out_of_a_file(tmp_pa
         {"role": "assistant", "content": f"It reads J Doe,{POISON}."}])
 
     assert [c["label"] for c in named] == ["transactions.csv"]
-    assert [c["label"] for c in catted] == ["something a tool read"]
+    assert [c["label"] for c in catted] == ["the output of `cat transactions.csv`"]
     assert [c["label"] for c in typed] == ["the message you sent"]
     assert [c["label"] for c in answered] == ["an earlier answer in this conversation"]
 
@@ -165,7 +165,7 @@ def test_the_offer_splits_the_same_way_where_the_click_cannot_re_run():
     use is about where the material came from. Both sides are asserted, so an arm that stopped
     drawing at all could not pass this as a pair of absences.
     """
-    catted = [{"key": "text:c", "label": "something a tool read", "is_file": False,
+    catted = [{"key": "text:c", "label": "the output of `cat transactions.csv`", "is_file": False,
                "is_fetched": True}]
     typed = [{"key": "text:t", "label": "the message you sent", "is_file": False,
               "is_fetched": False}]

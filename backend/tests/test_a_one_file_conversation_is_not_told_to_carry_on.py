@@ -26,6 +26,7 @@ from .test_a_refused_turn_says_which_file_it_was import POISON, _Guardrail
 from .test_chat_turn import _orch
 
 _HARNESS = Path(__file__).resolve().parent / "js" / "build_withhold_card_harness.mjs"
+CAT_LABEL = "the output of `cat transactions.csv`"
 
 
 def _read(cid: str, path: str, body: str) -> list[dict]:
@@ -105,7 +106,7 @@ def test_data_a_tool_read_without_a_filename_still_counts_as_data(tmp_path: Path
     the same waste as #288, one tool name away."""
     payload = [*_one_file()[:3], *_cat("t1", "transactions.csv", f"name,ssn\nJ Doe,{POISON}")]
     found = _found_row(tmp_path, payload)
-    assert [c["label"] for c in found["carriers"]] == ["something a tool read"]
+    assert [c["label"] for c in found["carriers"]] == [CAT_LABEL]
     assert found["surviving"] == 0, "the cat'd rows were everything this turn read"
 
 

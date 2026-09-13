@@ -30,7 +30,7 @@ OLDER = {"key": "text:xyz789", "label": "an earlier answer in this conversation"
 # even though nothing in this file asserts on the clause it gates. Without it the row models a
 # `bash cat` the way the server stopped sending it, and the next test written over `TOOL` would
 # render a card missing an offer and read as though that were the answer.
-TOOL = {"key": "text:def456", "label": "something a tool read", "is_file": False,
+TOOL = {"key": "text:def456", "label": "the output of `cat transactions.csv`", "is_file": False,
         "is_fetched": True}
 
 
