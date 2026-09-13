@@ -240,7 +240,13 @@ It follows that a clean card is no verdict on the file behind it. `Block PII`, m
 phone number, a card number, an SSN — and `shim/refusal_scan.py` mirrors them in five patterns,
 because a separated `555-123-4567` carries no long digit run and needs its own. Names, addresses
 and dates of birth pass however obviously personal they are, and the column names alone never trip
-it. The patterns are the administrator's
+it. Which **aliases** a guardrail runs over is the administrator's too, and it moves faster than
+the patterns do: coverage was measured as `gpt-5.4` alone on 2026-09-11 and over further aliases on
+2026-09-13, with no change to any code in this repo in between (#315). Nothing above or below this
+paragraph rests on that — the claim this section makes is that rows can reach a card without
+reaching a model at all, which is a property of Sage's own data path — but a sentence naming a
+covered alias would be wrong within days of being written, so there is none. The patterns are the
+administrator's
 and another gateway's will differ, so to ask what a given file would do to a *turn* rather than to
 a card, run `scripts/guardrail-probe.py file <path>`: it sends the header and the first three
 rows, and breaks the answer down per column only when that sample is refused.
