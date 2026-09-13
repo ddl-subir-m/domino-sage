@@ -1017,20 +1017,23 @@ window.SW = window.SW || {};
       // this one rule. It needed no new word because it was written correct while it was still
       // unreachable — the reason to keep writing an unreachable arm as though someone will run it.
       : (carriers.length > 1 ? 'them' : 'it');
-    // Whether the click actually carries on, which is the store's question and not this card's:
-    // `withholdContent` re-runs the turn on `surviving > 0 && !prompt` and returns without one
-    // otherwise (`store.js`, `const again`). `survives` alone is half of that pair, and the half it
-    // drops is the case the store's own comment calls the one a person meets most — the guardrail
-    // matched the words they typed, every file the turn read survives. Drawn from `survives` alone
-    // that card reads "Continue without it", the click withholds and stops, and the receipt that
-    // replaces it tells them to ask again in different words. The button said the conversation
-    // carries on and nothing carried on.
+    // Whether the click actually carries on, which is the store's question and not this card's —
+    // and it is ASKED here rather than answered. `withholdRerunPrompt` is the same call
+    // `withholdContent` makes to decide whether to re-run the turn, so the button cannot promise a
+    // thing the click does not do.
+    //
+    // It was derived here once, from `surviving` and `prompt`, and that copy was a clause short of
+    // the click's three: the store also needs a question to re-send, and a drawn transcript with
+    // no user row holding text has none. Both fields can say carry on over that transcript, so the
+    // card read "Continue without it", the click withheld and returned, and no turn ran — the
+    // button said the conversation carries on and nothing carried on, which is #297's defect one
+    // condition further out (#311).
     //
     // Read by the button and by the prose's last sentence, which are the two places that describe
     // the ACT. The prose's other sentences read one field each, because each states one fact:
     // what is left reads `survives`, and whether the question is going reads `prompt`. Two
     // questions, two fields — and the pair only where the subject is what the click does.
-    const carriesOn = survives && !block.prompt;
+    const carriesOn = !!SW.store.withholdRerunPrompt(block);
     return h('div', { className: 'sw-nudge' },
       h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
       h('div', { className: 'sw-nudge-main' },
