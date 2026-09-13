@@ -4036,10 +4036,18 @@ class Project:
     #
     # `_acquire_turn` and not "whenever the lock is taken": `build()`, `_maybe_compact_chat` and the
     # door's own acquirers take `_turn_lock` directly and clear nothing. Compaction is the one that
-    # writes here — its `summarize` goes through the shim — and it is harmless only because it runs
-    # in aftercare, after the row it could have corrupted is already on disk, and because the next
-    # granted turn clears before writing. Anything that starts reading this OFF a streaming turn
-    # inherits that, and would need its own clear.
+    # WRITES here — its `summarize` goes through the shim — and it runs in Chat's aftercare, off the
+    # lock, after this turn's row is already on disk.
+    #
+    # That is a write with no reader, today, and this is what makes it one rather than a limit
+    # somebody is minding: `resolved_row()` has exactly TWO callers, `persist()` and `finish()`, and
+    # both run inside the turn generator. Chat's release is triggered by the very `done` that
+    # `finish` has already written — measured, not read: at `_release_turn` the stamped row is on
+    # disk. So no row can be written from this field after the lock is gone, and the next granted
+    # turn clears the aftercare's write before anything could read it.
+    #
+    # A THIRD caller of `resolved_row()` is what would end that, not a new writer. Add one that runs
+    # off a streaming turn and it reads whatever compaction last left here, with nothing to say so.
     resolved_model: ResolvedModel | None = None
     # Working-tree hash the running turn compares against to tell whether anything on disk changed
     # (the ground-truth half of "did the agent write", alongside its edit-tool calls). Lives on the
