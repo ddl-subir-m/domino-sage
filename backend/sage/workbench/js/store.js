@@ -258,9 +258,17 @@ window.SW = window.SW || {};
     // it costs a gateway listing and an endpoint listing, and the drawer is almost always closed.
     assignmentsOpen: false,
     assignmentsLoading: false,
-    // { slots: [{slot, model, default, assigned}], aliases: [{name, display_name, capabilities,
-    // serving, problem}], error }. Null until first opened.
+    // { slots: [{slot, model, default, effort, default_effort, assigned, problem, shadowed}],
+    // aliases: [{name, display_name, capabilities, reasoning_efforts, serving, problem}], error }.
+    // Null until first opened.
     assignments: null,
+    // `{slot, effort, model}` for the one row whose saved level the LAST model change took with it,
+    // or null (ADR-0049). Kept beside `assignments` rather than patched onto its row, because
+    // `loadAssignments` replaces that object wholesale and this has to outlive the read that
+    // discovers it. One at a time, and cleared only by an act on its OWN row or by reopening the
+    // drawer: a save on another row says nothing about whether this one's level is still
+    // unexplained, and "that save dropped nothing" is the commonest save there is.
+    assignmentEffortDropped: null,
     // Why the Alias list is missing, when it is. The panel stays open and read-only on this rather
     // than falling back to the models already assigned — a list that can only offer what is already
     // chosen cannot express a change.
@@ -3353,6 +3361,11 @@ window.SW = window.SW || {};
 
     // The panel's read. Also its re-verify: a save calls this again, so the reachability check runs
     // against the assignment that just landed rather than against a cached one (ADR-0017).
+    // Answers whether the read LANDED, which is a different question from `assignmentsError` — that
+    // one is also set by a listing that arrived carrying a partial failure, and those rows are real.
+    // `setAssignment` is the caller that needs the difference: a row that came back without the
+    // level it went in with is the server having dropped it, but only if a row came back at all
+    // (ADR-0049).
     async loadAssignments() {
       state.assignmentsLoading = true;
       notify();
@@ -3360,8 +3373,10 @@ window.SW = window.SW || {};
         const panel = await SW.api.modelAssignments();
         state.assignments = panel;
         state.assignmentsError = panel.error || '';
+        return true;
       } catch (err) {
         state.assignmentsError = String((err && err.message) || err);
+        return false;
       } finally {
         state.assignmentsLoading = false;
         notify();
@@ -3370,6 +3385,10 @@ window.SW = window.SW || {};
 
     openAssignments(open) {
       state.assignmentsOpen = Boolean(open);
+      // A note about a save made the last time this drawer was open is spent. It explains a control
+      // that has just gone back to its default under the reader's hand, and read cold on a later
+      // opening it is a sentence about something they did not just do.
+      state.assignmentEffortDropped = null;
       notify();
       if (open) this.loadAssignments();
       // Beside the panel read, because this drawer is the one surface that draws every closed row
@@ -3382,6 +3401,11 @@ window.SW = window.SW || {};
     // call would make a setting refusable for a reason outside the person's control, and the greyed
     // rows already stop the common case at draw time.
     async setAssignment(slot, model) {
+      const rowOf = () => ((state.assignments && state.assignments.slots) || [])
+        .find((r) => r.slot === slot);
+      // The level this row went in carrying, read BEFORE the write so the re-read can be compared
+      // against it (ADR-0049).
+      const had = (rowOf() || {}).effort || null;
       try {
         const status = await SW.api.setModelAssignment(slot, model);
         applyModelStatus(status);
@@ -3392,12 +3416,39 @@ window.SW = window.SW || {};
         // telling the reader their save was refused. `problem` goes back to null because the
         // verdict on the new model is exactly what has not been fetched yet.
         if (state.assignments && state.assignments.slots) {
+          // The level the row keeps. It goes with the model wherever the new one will not take it,
+          // for the same reason the model itself is written here rather than waited for: a reload
+          // that never lands must not leave the row offering a level the save has already taken off
+          // disk. This is the one prediction on the path — it reads the panel's own
+          // `reasoning_efforts`, the server's narrowed answer for that alias rather than a second
+          // copy of the measured table (ADR-0049) — and the reload overwrites it either way.
+          // Clearing the model clears the whole entry, level included.
+          //
+          // The UNFILTERED alias list, where the drawer's model options read the chat-capable one.
+          // Not a drift between two readers: the question here is whether the SERVER will keep the
+          // level, and `_merge_assignment` has no opinion on whether a model can hold a
+          // conversation. Filtering would answer "no levels" for a row the panel itself cannot have
+          // produced, and predict a drop the server is not going to perform.
+          const kept = (r) => {
+            if (!model || !r.effort) return null;
+            const next = (state.catalog || {})[slot] || r.model;
+            const alias = (state.assignments.aliases || []).find((a) => a.name === next);
+            // An alias the listing did not carry means the prediction has no evidence, not evidence
+            // of a drop — so the row keeps what it had, which is what every other read on this
+            // surface does with an answer that never arrived. The difference only shows when the
+            // reload ALSO fails; a read that lands overwrites this either way. Unreachable from the
+            // panel today, because the row's options are the listing and an empty listing closes
+            // the row — delete it if a path ever assigns a model from somewhere else.
+            if (!alias) return r.effort;
+            return (alias.reasoning_efforts || []).includes(r.effort) ? r.effort : null;
+          };
           state.assignments = {
             ...state.assignments,
             slots: state.assignments.slots.map((r) => (r.slot === slot
               ? { ...r,
                   model: (state.catalog || {})[slot] || r.model,
                   assigned: Boolean(model),
+                  effort: kept(r),
                   problem: null }
               : r)),
           };
@@ -3414,12 +3465,91 @@ window.SW = window.SW || {};
         // hold the saved row behind a second round trip. A failed read leaves the last answer
         // standing, which `refreshSensitivity` is already built for.
         refreshSensitivity();
-        await this.loadAssignments();
+        // Why the row's level is gone, for the drawer to say (ADR-0049). Read off what the server
+        // sent BACK rather than predicted from the new model's levels: `_merge_assignment` drops a
+        // level exactly once — when the row is retargeted at a model that will not take it — so a
+        // row that came back carrying none, having gone in carrying one, has been through that
+        // drop and nothing else. The narrower reading is what makes the sentence safe to write.
+        //
+        // Three conditions, and each rules out a different way the level could be gone without a
+        // model having refused it. `model` excludes taking the assignment back, which deletes the
+        // whole entry — both halves — with no model asked about either one. `had` is the level that
+        // was actually there. And `landed` excludes the read that never arrived: the patch above
+        // predicts the same drop and a note drawn off it would be this surface claiming a refusal
+        // it was never told about, on the one read that has the least to say.
+        //
+        // The effort control's own saves cannot reach here, and that is the point of their being a
+        // separate call: a person clearing the level themselves would otherwise be told a model
+        // refused it.
+        const landed = await this.loadAssignments();
+        const after = landed ? rowOf() : null;
+        if (model && had && after && !after.effort) {
+          state.assignmentEffortDropped = { slot, effort: had, model: after.model };
+        } else if ((state.assignmentEffortDropped || {}).slot === slot) {
+          // Only this row's, like every other clear on this surface. A save that dropped nothing
+          // says nothing about the OTHER row whose level is still gone and still unexplained —
+          // and "nothing was dropped here" is the commonest save there is, so left unguarded this
+          // is the line that puts the silence back.
+          state.assignmentEffortDropped = null;
+        }
+        notify();
       } catch (err) {
         antd.message.error(String((err && err.message) || err));
+        // The only exit that wrote no verdict, until it did. A note left standing under a REFUSED
+        // save reads as that save's account — the row saying a model refused the level, beside a
+        // toast saying nothing was saved at all. This row's only, for the reason the effort half
+        // clears only its own.
+        if ((state.assignmentEffortDropped || {}).slot === slot) {
+          state.assignmentEffortDropped = null;
+        }
         // Re-read rather than patch back: the refusal may have been the turn lock, in which case
         // nothing changed, and guessing which of the three rows to revert is how the panel comes to
         // disagree with the catalog.
+        await this.loadAssignments();
+      }
+    },
+
+    // The level on one row, saved on its own (ADR-0049). Its own call rather than an argument to
+    // `setAssignment`, because `set_catalog` reads an absent key as "leave it": sending the level
+    // alone is what stops it clobbering the model and the other way round, the same argument that
+    // keeps this panel from posting all three rows whenever one changes.
+    async setAssignmentEffort(slot, effort) {
+      try {
+        const status = await SW.api.setAssignmentEffort(slot, effort);
+        applyModelStatus(status);
+        // Patched for the reason the model half is: the POST already carries the saved state, and
+        // without writing it a failed reload redraws the PRE-save level under "couldn't check every
+        // model". `problem` is NOT reset here, unlike the model half — preflight's verdict is about
+        // the model, which this save did not touch, and dropping it would take a true sentence off
+        // the row until the next read put it back.
+        if (state.assignments && state.assignments.slots) {
+          state.assignments = {
+            ...state.assignments,
+            slots: state.assignments.slots.map((r) => (r.slot === slot
+              ? { ...r, effort: effort || null }
+              : r)),
+          };
+        }
+        // Spent, and only this row's. The note explains a control that has just moved under the
+        // reader's hand, so THIS row's is an account of the wrong act — but another row's is about
+        // a level that is still gone and still unexplained, and clearing it here would put back the
+        // silence this whole surface exists to close.
+        if ((state.assignmentEffortDropped || {}).slot === slot) {
+          state.assignmentEffortDropped = null;
+        }
+        notify();
+        // No `refreshSensitivity` twin, unlike the model half. An assignment is an input to the
+        // lock's per-slot answer because `locked_runs_on` resolves MODELS — the approved set, the
+        // administrator's ordering and the signing pin are every one of them a fact about a model,
+        // and no level is an input to any of them. A read here would be a gateway listing per level
+        // picked, to be told the same thing back.
+        await this.loadAssignments();
+      } catch (err) {
+        // The 400 `_merge_assignment` answers when the row's model will not take this level — the
+        // half of the contract that refuses rather than drops, because here the level IS what was
+        // asked for. Re-read for the reason the model half does: the refusal may have been the turn
+        // lock, in which case nothing changed at all.
+        antd.message.error(String((err && err.message) || err));
         await this.loadAssignments();
       }
     },
