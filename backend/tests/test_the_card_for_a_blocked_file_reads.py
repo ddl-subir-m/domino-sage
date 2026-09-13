@@ -336,9 +336,13 @@ def test_the_promise_not_to_alter_anything_holds_at_every_size_of_a_set_with_no_
     the set is allowed to be plural.
     """
     promise = " — not in a file Sage can name. Sage won't change what it matched"
-    for carriers in ([TEXT], [TEXT, OLDER], [TOOL, TEXT, OLDER]):
-        said = _text(_render(_card(carriers=carriers, surviving=0)))
-        assert promise in said, carriers
+    # `surviving` is a member too, not a constant. The clause sits above that branch today, so both
+    # arms carry it in fact — but #297's defect WAS two arms each keeping their own copy of this
+    # ending, and one of them going quiet is the failure this ticket is fixing one gate over.
+    for carriers, surviving in (([TEXT], 0), ([TEXT, OLDER], 0), ([TOOL, TEXT, OLDER], 0),
+                                ([TEXT, OLDER], 2)):
+        said = _text(_render(_card(carriers=carriers, surviving=surviving)))
+        assert promise in said, (carriers, surviving)
 
     # An ALL-file set bounds the widening, and one clause is the whole bound: every carrier there is
     # nameable, so "no file Sage can name" is false of every one of them.
@@ -352,4 +356,8 @@ def test_the_promise_not_to_alter_anything_holds_at_every_size_of_a_set_with_no_
     # overturning a green assertion in the test that recorded the gap.
     for carriers in ([FILE], [FILE, EXPORT]):
         said = _text(_render(_card(carriers=carriers, surviving=0)))
+        # A card was drawn and named the file. Without this the loop is a bare absence, which the
+        # early returns above (no carriers, incomplete search) satisfy by rendering no clause at
+        # all — a bound that reads as holding over a card the assertion never reached (#292).
+        assert "card_panel_transactions_RAW.csv" in said, carriers
         assert "not in a file Sage can name" not in said, carriers
