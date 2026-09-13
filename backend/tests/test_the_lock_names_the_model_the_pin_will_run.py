@@ -380,3 +380,39 @@ def test_the_payload_says_whether_a_pick_is_live_for_each_turn_a_row_drives(tmp_
 
     control.pick(None)
     assert orch.sensitivity_state()["picked"] is False
+
+
+def test_the_slot_answer_reads_the_snapshot_it_is_handed_and_not_a_fresh_one(tmp_path, monkeypatch):
+    """FOUND IN REVIEW. One payload used to take three separate `control.snapshot()` reads.
+
+    `sensitivity_state` reports `picked`/`chat_picked` beside `slot_models`, and the drawer's row
+    draws that answer only where the flag says a pick is why (#294). Read apart, an escalation
+    landing between them ships `picked: False` over a `slot_models` that has already moved — the
+    gate shut over a moved answer, which is #294 itself in a one-tick window. The payload has to be
+    a photograph of one moment, so the snapshot is taken once and handed down.
+
+    Asserted by taking the snapshot away: the live one is made to RAISE for the duration, so any
+    read of its own is a red rather than a silently different answer. Handing it a pick the control
+    does not hold is not enough on its own — the loop `replace`s almost every field it reads, so a
+    re-read there changes nothing observable, and a test written that way passes over it. This
+    covers both the pick line, where a raise propagates, and the loop, where the method's own
+    `except` would turn one into a missing slot.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    project = orch.project(start_preview=False)
+    project.control.set_mode(Mode.PLAN)
+    approved, _ = orch._sensitivity_for_turn(project, None)
+
+    assert project.control.snapshot().picked_model is None, "the premise: nothing is picked live"
+    handed = replace(project.control.snapshot(), picked_model="sov-imp")
+
+    def gone():
+        raise AssertionError("read its own snapshot instead of the one it was handed")
+
+    monkeypatch.setattr(project.control, "snapshot", gone)
+    answered = orch._locked_slot_models(project, approved, handed)
+
+    assert sorted(answered) == sorted(ASSIGNABLE_SLOTS), "a slot that raised would simply be absent"
+    assert answered["plan"] == answered["implement"] == "sov-imp"

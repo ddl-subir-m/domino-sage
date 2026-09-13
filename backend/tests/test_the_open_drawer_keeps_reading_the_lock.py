@@ -216,3 +216,35 @@ def test_the_ask_row_reads_the_chat_pick_and_the_build_rows_read_the_build_one()
     ])
     assert (build["drawnAfterTicks"], build["drawnAskAfterTicks"]) == ("gpt-5.4", "__default__")
     assert (chat["drawnAfterTicks"], chat["drawnAskAfterTicks"]) == ("__default__", "coder")
+
+
+def test_the_served_pick_is_asked_first_and_the_mirror_only_answers_for_an_old_payload():
+    """FOUND IN REVIEW. The comment said "asked first" and the code was an OR, which cannot be
+    closed by a fresher answer.
+
+    Three states, and an OR collapses two of them. `set_catalog` clears the Build pick server-side
+    on save, so a payload saying `picked: false` beside a mirror still holding the old pick is the
+    server being RIGHT and the browser being behind — the gate must shut. A payload with no such
+    key is a deployment that predates the field, and only there is the mirror the better answer.
+    """
+    cleared, old_payload = _ticked([
+        {"watch": "stream", "locked": True, "open": True, "ticks": 4,
+         "pick": "gpt-5.4", "servesPick": False},
+        {"watch": "stream", "locked": True, "open": True, "ticks": 4,
+         "pick": "gpt-5.4", "servesPick": "absent"},
+    ])
+    assert cleared["drawnAfterTicks"] == "__default__", "the server said no pick, and it is fresher"
+    assert old_payload["drawnAfterTicks"] == "gpt-5.4", "no such key, so the mirror is all there is"
+
+
+def test_an_unchanged_answer_does_not_redraw_the_shell():
+    """FOUND IN REVIEW. Every other caller of `refreshSensitivity` fires once per event, so
+    replacing `state.sensitivity` and notifying unconditionally never cost anything.
+
+    This cadence makes it the only recurring `notify()` an idle Workbench has — a whole-shell
+    re-render every 2s for the life of an open drawer, over an answer with the same bytes in it.
+    Four ticks, one changed answer, one redraw.
+    """
+    (run,) = _ticked([{"watch": "stream", "locked": True, "open": True, "ticks": 4}])
+    assert run["readsWhileOpen"] == 4, "the premise: it did keep asking"
+    assert run["notifiesWhileOpen"] == 1, "and told the shell only about the answer that moved"

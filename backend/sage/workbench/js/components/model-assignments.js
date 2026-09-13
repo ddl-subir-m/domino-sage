@@ -248,7 +248,13 @@ window.SW = window.SW || {};
         ? (sensitivity || {}).chat_picked
         : (sensitivity || {}).picked;
       const mirror = (spec.slot === 'ask' ? chatPick : buildModel) || '';
-      const picked = locked && (Boolean(served) || Boolean(mirror));
+      // ASKED FIRST, not OR'd — FOUND IN REVIEW, where the comment said one and the code did the
+      // other. An OR cannot be closed by a fresher answer: `set_catalog` clears the Build pick
+      // server-side on save, the next read lands `picked: false`, and a mirror still holding the old
+      // pick would keep this gate open on a pick the server has already dropped. `undefined` is the
+      // only reading of the fallback: a deployment whose payload predates the field, not one
+      // answering false.
+      const picked = locked && (served === undefined ? Boolean(mirror) : Boolean(served));
       const moved = barredNow || Boolean(current.shadowed) || picked;
       const runs = moved && answer !== current.model ? answer : '';
       // The levels this row may be saved with (ADR-0049). Read off the alias the row's OWN model

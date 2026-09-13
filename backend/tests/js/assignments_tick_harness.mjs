@@ -56,19 +56,32 @@ let escalated = false;
 // rows read the Build one — the same fork `_locked_slot_models` takes with `chat_thread_id` — so a
 // step can put the pick on one side and see which rows open.
 let chatPicked = false;
+// Whether the payload carries the pick flags at all. A step turns them off to stand in for the two
+// states that are NOT "no pick": a server that has just cleared the pick on a save while the
+// browser's mirror still holds it, and a deployment whose payload predates the field.
+let servesPick = true;
 let sensitivityReads = 0;
 const lock = () => {
   sensitivityReads += 1;
   if (!locked) return { enabled: false, locked: false, approved: [], datasets: [], refusal: null };
-  return {
+  const answer = {
     enabled: true, locked: true, reason: 'dataset', group: 'restricted',
     approved: ['coder', 'gpt-5.4'], datasets: [{ id: 'd1', name: 'Claims' }], refusal: null,
     slot_models: escalated ? AFTER : BEFORE,
-    // Served beside `slot_models` and off the same fact, which is how the server sends it: one
-    // `control.snapshot()` decides both, so a fixture that moved the models without the flag would
-    // describe a state the product cannot produce.
-    picked: escalated && !chatPicked, chat_picked: escalated && chatPicked,
+    // Served beside `slot_models` and off the same fact, which is how the server sends it: ONE
+    // `control.snapshot()` decides both (`sensitivity_state` takes it and hands it down), so a
+    // fixture that moved the models without the flag would describe a state the product cannot
+    // produce. That was not true when this comment was first written — the server took three
+    // separate snapshots — and the fixture asserting it is what made the skew invisible.
+    picked: escalated && !chatPicked,
+    chat_picked: escalated && chatPicked,
   };
+  // "false" is a server that HAS no pick standing — a save has just cleared it. "absent" is a
+  // deployment whose payload predates the field, which is the only reading the browser's mirror is
+  // a fallback for. The two must not behave the same, which is the whole of the fresher-first rule.
+  if (servesPick === 'absent') { delete answer.picked; delete answer.chat_picked; }
+  else if (!servesPick) { answer.picked = false; answer.chat_picked = false; }
+  return answer;
 };
 
 // What the panel route answers. The plan row holds an APPROVED model of its own, which is the
@@ -217,6 +230,11 @@ const buildWatchTimers = () => [...owners]
 const drawerTimers = () => [...owners]
   .filter(([id, who]) => timers.has(id) && who === 'openAssignments').length;
 
+// Every `notify()` the store makes, which is a whole-shell redraw in the product. Counted rather
+// than reasoned about: the drawer's cadence is the only recurring notify an idle Workbench has.
+let notifies = 0;
+SW.store.subscribe(() => { notifies += 1; });
+
 const report = [];
 for (const step of steps) {
   // Both watches let out through their own exits, not by clearing the table underneath them.
@@ -233,6 +251,7 @@ for (const step of steps) {
   escalated = false;
   locked = step.locked !== false;
   chatPicked = !!step.chatPicked;
+  servesPick = step.servesPick === undefined ? true : step.servesPick;
   failSensitivityFor = step.failFromBoot || 0;
   buildStateRunning = false;
 
@@ -284,6 +303,7 @@ for (const step of steps) {
   escalated = true;
   sensitivityReads = 0;
   appReads = 0;
+  notifies = 0;
   await fire(step.ticks || 3);
   const row = {
     appReads,
@@ -296,6 +316,7 @@ for (const step of steps) {
     drawnOnOpen,
     readsWhileOpen: sensitivityReads,
     lockedOnOpen: !!(SW.store.get().sensitivity || {}).locked,
+    notifiesWhileOpen: notifies,
     drawnAfterTicks: drawnPlanModel(),
     drawnAskAfterTicks: drawnModel('ask'),
     runsAfterTicks: ((SW.store.get().sensitivity || {}).slot_models || {}).plan || null,

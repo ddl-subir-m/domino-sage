@@ -835,7 +835,10 @@ window.SW = window.SW || {};
   // orchestrator moves the pick itself on a build escalation with no human act to block; and a
   // second Workbench open on the same Project, whose picker this tab's mask never sees. The browser's
   // half of both is closed by `_watchAssignments`, which re-reads the lock on its own 2s cadence for
-  // as long as the drawer is drawn: whenever the server's answer moves, these rows now follow it.
+  // as long as the drawer is drawn: while a lock is holding, a moved answer reaches these rows. It
+  // does not reach a lock that ARMS mid-drawer — the cadence stops on a landed "nothing narrows",
+  // for the reason written at the gate — so an unlocked Project whose Dataset a second Workbench
+  // declares stays unlocked here until the drawer is reopened.
   // That is a refresh per tick on the one surface that reads this field, not a refresh per pick, so
   // this list is unchanged. WHEN the server's answer moves is a separate question and not one this
   // closes — `_locked_slot_models` drops a pick the standing mode will not honour, so a session in
@@ -942,6 +945,13 @@ window.SW = window.SW || {};
         if (((state.thread && state.thread.id) || '') !== asked) return;
         if (seq <= sensitivityApplied) return;
         sensitivityApplied = seq;
+        // An answer that says exactly what the last one said is not a state change. Every other
+        // caller here fires once per event, so this never mattered until the drawer's cadence made
+        // this the only recurring `notify()` an idle Workbench has — a whole-shell re-render every
+        // 2s, for the life of an open drawer, over an object with the same bytes in it. Compared
+        // rather than deep-equalled because both sides came out of `JSON.parse` of one response
+        // shape, so key order is the server's and is stable.
+        if (JSON.stringify(read) === JSON.stringify(state.sensitivity)) return;
         state.sensitivity = read;
         notify();
       },

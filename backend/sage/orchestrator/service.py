@@ -16060,7 +16060,7 @@ class Orchestrator:
             # turn in hand, so they carry the rules that sit between a slot and the lock — the
             # signing pin above all (ADR-0032). Reusing `model` for every row would ALSO have named
             # a model two of the three rows do not get, because the move follows the mode.
-            "slot_models": self._locked_slot_models(project, approved),
+            "slot_models": self._locked_slot_models(project, approved, pick_now),
             # WHETHER a pick is live, for each of the two turns a row can drive (#294). Booleans and
             # not the models: `slot_models` above already says what each slot runs, and this payload
             # already carries two fields called `model` and `chat_model` meaning where the lock MOVES
@@ -16078,9 +16078,12 @@ class Orchestrator:
             # Not gated on `honours_pick`, deliberately: this says a pick EXISTS, and whether the
             # standing mode honours it is already spent inside `slot_models`. Gating it here too
             # would be one rule in two places, which is the shape #285 was.
-            # One snapshot for both, because they are two halves of one fact and a reader is
-            # entitled to assume they were taken together — the harness fixture serves them off one
-            # flag on exactly that assumption.
+            # Off `pick_now`, the SAME snapshot `slot_models` above was computed from. FOUND IN
+            # REVIEW: these were three reads of `control.snapshot()` in one payload, and an
+            # escalation landing between them shipped `picked: False` beside a `slot_models` that
+            # had already moved — the browser's gate shut over a moved answer, which is #294 itself
+            # in a one-tick window. They are two halves of one fact and the payload has to be a
+            # photograph of it, not three glances.
             "picked": bool(pick_now.picked_model),
             "chat_picked": bool(pick_now.chat_model),
         }
@@ -16122,7 +16125,7 @@ class Orchestrator:
             return None
 
     def _locked_slot_models(
-        self, project: Project, approved: ApprovedModels | None
+        self, project: Project, approved: ApprovedModels | None, snapshot: SessionState
     ) -> dict[str, str]:
         """What a turn in each assignable slot RUNS under the lock, for the panel's rows (ADR-0043).
 
@@ -16148,6 +16151,11 @@ class Orchestrator:
         `chat_thread_id` is forced too, and NOT uniformly — see the comment on the line. It is the
         only place in this method where the three slots are not asked the same question, because
         `ask` is the only row whose model drives two turns and the pin reaches one of them.
+
+        `snapshot` is passed in rather than read here, and taking a fresh one would be a defect
+        rather than a tidy-up: the caller reports `picked`/`chat_picked` beside this answer, the
+        drawer's row draws this answer only when that flag says a pick is why, and an escalation
+        landing between the two reads shipped a shut gate over a moved answer. One photograph.
 
         A slot that cannot be worked out is ABSENT rather than None-valued: the panel substitutes a
         row's shown model only where this names one, and a key holding null would make "the router
@@ -16204,11 +16212,11 @@ class Orchestrator:
         # The Chat pick is not gated with it. Chat has no modes to make one inert, which is the same
         # asymmetry `set_catalog` has: it clears `picked_model` and leaves `chat_model` standing.
         honours_pick = project.control.selected_mode in (Mode.PLAN, Mode.IMPLEMENT)
-        pick = project.control.snapshot().picked_model if honours_pick else None
+        pick = snapshot.picked_model if honours_pick else None
         out: dict[str, str] = {}
         for slot in ASSIGNABLE_SLOTS:
             try:
-                state = replace(project.control.snapshot(),
+                state = replace(snapshot,
                                 picked_model=pick,
                                 # The `ask` row is the one with two turns behind it — `SLOTS` labels
                                 # it "Ask and Chat" and `_resolve_chat` returns `catalog.ask` — and
