@@ -238,7 +238,7 @@ class EnforcementShim:
         router's `resolve_unsigned` returns the reason of the path it fell back to, which is the
         path an ordinary turn with no pick at all takes.
 
-        `phase` is empty for a Chat turn, which has none — see the call site.
+        `phase` is empty for the turns that have none — Chat and Ask; see the call site.
         """
         requested = request.get("model")
         state = self._control.snapshot()
@@ -486,13 +486,23 @@ class EnforcementShim:
         )
         if on_resolved is not None:
             try:
-                # No phase for a Chat turn, and that is not a tidy-up: the classifier above only
-                # runs for Build (`chat_thread_id is None`), so `state.phase` on a Chat request is
-                # whatever the last Build turn left in `ModelControl` — measured, a Chat turn after
-                # an Implement turn reports `implement`. Chat has no phases at all, so the honest
-                # value is none, and a stale one would put a Build fact on a Chat row.
+                # No phase for the two kinds of turn that have none, and that is not a tidy-up:
+                # `state.phase` is only a fact about THIS turn where something set it for this turn.
+                # Measured against a control left in IMPLEMENT by an Auto build:
+                #
+                #   Chat        -> phase=implement   (the classifier above skips Chat entirely)
+                #   Ask mode    -> phase=implement   (it skips non-Auto too, and `_sync_phase` has
+                #                                     no branch for ASK)
+                #   Plan mode   -> phase=plan        (`ModelControl._sync_phase` set it)
+                #   Implement   -> phase=implement   (likewise)
+                #   Auto        -> phase=plan        (the classifier reclassified it)
+                #
+                # So only the first two are stale, and only they are blanked. Blanking the pinned
+                # modes as well would throw away a phase their own `set_mode` just made true — the
+                # over-wide fix, and the one that looks more consistent.
                 on_resolved(request["model"],
-                            "" if state.chat_thread_id else state.phase.value,
+                            "" if (state.chat_thread_id or state.mode is Mode.ASK)
+                            else state.phase.value,
                             decision.reason.value)
             except Exception:
                 # Swallowed, because a recorder must never be able to fail an inference — but said

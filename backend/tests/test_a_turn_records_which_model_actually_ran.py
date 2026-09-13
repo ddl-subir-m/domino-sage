@@ -106,21 +106,26 @@ def test_the_shim_says_which_model_ran_and_which_rule_chose_it(case, setup, cata
     assert got_reason == reason, f"{case}: reason was {got_reason!r}, expected {reason!r}"
 
 
-def test_a_chat_turn_carries_no_phase_even_after_a_build_turn_left_one(monkeypatch):
-    """Chat has no phases, and the shim only recomputes one for Build.
-
-    So `ModelControl.phase` on a Chat request is whatever the last Build turn left behind, and the
-    row would carry a Build fact — measured before the fix: a Chat turn following an Implement turn
-    reported `implement`. The trap this test exists for is that a fresh `ModelControl` defaults to
-    PLAN, so a Chat assertion written against a fresh one pins the DEFAULT and passes either way.
-    This one hands it IMPLEMENT first, which is the only setup where the bug can appear.
-    """
+# Every kind of turn, against a control an Auto build just left in IMPLEMENT — the only setup in
+# which a stale phase can show itself. A fresh `ModelControl` defaults to PLAN, so the same
+# assertions written against a fresh one pin the DEFAULT and pass whether the phase was computed for
+# this turn or inherited from the last one.
+#
+# Both halves matter. Chat and Ask have no phase and must report none; the pinned modes have one
+# their own `set_mode` just made true (`ModelControl._sync_phase`) and must keep it. A fix that
+# blanked all four would pass the first two lines and quietly throw away the second two.
+@pytest.mark.parametrize("case,setup,phase", [
+    ("Chat has no phases", lambda c: (_chat(c), c.pick_chat("sonnet")), ""),
+    ("Ask mode has none either", lambda c: c.set_mode(Mode.ASK), ""),
+    ("Plan mode's own phase is a fact", lambda c: c.set_mode(Mode.PLAN), "plan"),
+    ("Implement mode's likewise", lambda c: c.set_mode(Mode.IMPLEMENT), "implement"),
+    ("Auto reclassifies per step", lambda c: c.set_mode(Mode.AUTO), "plan"),
+])
+def test_a_turn_reports_a_phase_only_where_one_is_a_fact_about_it(case, setup, phase):
     c = ModelControl(mode=Mode.AUTO, phase=Phase.IMPLEMENT)
-    c.arm_chat("t1")
-    c.pick_chat("sonnet")
-    model, phase, _reason = _resolved(c, _catalog())
-    assert model == "sonnet"
-    assert phase == "", f"a Chat turn reported a Build phase: {phase!r}"
+    setup(c)
+    _model, got, _reason = _resolved(c, _catalog())
+    assert got == phase, f"{case}: reported phase {got!r}, expected {phase!r}"
 
 
 def test_the_veto_is_told_apart_from_the_fallback_it_lands_on():
@@ -184,7 +189,8 @@ def test_the_turns_ledger_names_the_model_that_ran_not_the_one_asked_for(monkeyp
     timing.start_turn("build", "who ran this")
     TestClient(orchmod.control_app).post("/v1/chat/completions",
                                          json={"model": "gemini-3.7-flash", "messages": []})
-    rec = timing.finish_turn(ok=True, decision="-") or timing.recent(1)[0]
+    timing.finish_turn(ok=True, decision="-")
+    rec = timing.recent(1)[0]
 
     call = timing.as_dict(rec)["calls"][0]
     assert call["model"] == "gpt-5.4", "the ledger kept the model OpenCode asked for"

@@ -3741,8 +3741,12 @@ async def chat_completions(request: Request):
         not switch off with a performance flag — and it is harmless because the next granted turn
         clears the Project's copy before any row is written from it.
         """
-        call.model(model, phase, reason)
+        # The row first, the waterfall second. The shim swallows whatever this raises, so whichever
+        # call goes last is the one a failure in the first can cost — and these two are not worth
+        # the same: the ledger is a diagnostic nobody is shown, the Project's copy is what a person
+        # reads on the transcript, and the shim's own warning about losing it says as much.
         project.note_resolved(model, phase, reason)
+        call.model(model, phase, reason)
 
     gen = project.shim.handle(body, project=project.id,
                               session=project.active_session_id or project.session_id,
