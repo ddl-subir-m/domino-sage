@@ -110,7 +110,7 @@ def handoff_unresolved(row: dict | None) -> bool:
 
 def _is_live(row: dict | None) -> bool:
     """A Thread record that is readable and not a tombstone. See `ThreadStore.delete`."""
-    return row is not None and _is_thread_id(row.get("id")) and not row.get("deleted")
+    return row is not None and not row.get("deleted")
 
 
 def _is_auto_artifact(item: dict) -> bool:
@@ -147,7 +147,8 @@ class ThreadStore:
         the first one's Thread while its history sits on disk (ADR-0008). Each Thread's record is
         written only by the Builder that owns it, and no two of them are the same file."""
         self._adopt_legacy_index()
-        rows = [r for r in (self._read_meta(d.name) for d in self._thread_dirs()) if _is_live(r)]
+        rows = [row for d in self._thread_dirs()
+                if (row := self._list_row(d.name, self._read_meta(d.name))) is not None]
         rows.sort(key=lambda r: (str(r.get("updatedAt") or ""), str(r.get("id") or "")), reverse=True)
         return rows
 
@@ -617,6 +618,16 @@ class ThreadStore:
         if not root.is_dir():
             return []
         return [d for d in root.iterdir() if d.is_dir() and _is_thread_id(d.name)]
+
+    def _list_row(self, thread_id: str, row: dict | None) -> dict | None:
+        if not _is_live(row):
+            return None
+        if _is_thread_id(row.get("id")):
+            return row
+        degraded = {**row, "id": thread_id}
+        degraded.setdefault("title", "New conversation")
+        degraded.setdefault("touched", [])
+        return degraded
 
     def _read_meta(self, thread_id: str) -> dict | None:
         p = self.meta_path(thread_id)

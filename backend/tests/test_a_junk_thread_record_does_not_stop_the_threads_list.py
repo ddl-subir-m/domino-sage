@@ -51,7 +51,26 @@ def test_an_idless_meta_record_does_not_reach_the_rail_payload(tmp_path: Path):
 
     rows = orch.list_threads()
 
-    assert [(r["id"], r["title"]) for r in rows] == [(keep["id"], "A conversation")]
+    assert [(r["id"], r["title"]) for r in rows] == [
+        (keep["id"], "A conversation"),
+        ("thr_idless", "New conversation"),
+    ]
+
+
+def test_an_idless_meta_record_can_still_be_deleted(tmp_path: Path):
+    store = ThreadStore(tmp_path)
+    thread_id = "thr_idless"
+    thread = tmp_path / ".sage" / "threads" / thread_id
+    thread.mkdir(parents=True)
+    (thread / "meta.json").write_text("{}")
+    examples = store.examples_dir(thread_id)
+    examples.mkdir(parents=True)
+    (examples / "chart.png").write_bytes(b"png")
+
+    assert store.orphaned_artifact_ids() == []
+    assert store.delete(thread_id) is True
+    assert store.get(thread_id) is None
+    assert not examples.exists()
 
 
 def test_app_tag_sweeps_skip_stray_thread_directory_names(tmp_path: Path):
