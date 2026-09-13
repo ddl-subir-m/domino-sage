@@ -1022,8 +1022,11 @@
   margin-bottom: 6px;
 }
 /* The line under a select says what the default was, so it belongs to the control above it, not to
-   the row below. */
-.sw-assignment-row .sw-assignment-detail:last-child { margin: 6px 0 0; }
+   the row below. No longer qualified on `:last-child`, which was never the rule — it was a
+   description of a row that had nothing after this line. Since ADR-0049 the effort control can
+   follow it, and left qualified the sentence would lose the space above it on exactly the rows that
+   have most below it. */
+.sw-assignment-row .sw-assignment-detail { margin: 6px 0 0; }
 /* Preflight's verdict on a slot. Warning-coloured because it is the difference between a setting
    that looks saved and one that will fail the next build — and `--warning-text`, not `--warning`,
    because this is ink: the fill colour measures 2.03:1 on white at 11px, which is a sentence about
@@ -1035,3 +1038,34 @@
   color: var(--warning-text);
   margin-top: 6px;
 }
+/* The effort half of a row (ADR-0049), as its own group under the model and the model's sentences.
+   12px: more than the 6px that holds a control to its own sentence, less than the 20px between
+   rows, so the level reads as belonging to the model above it rather than to the slot below. Its
+   own margin rather than a gap on the row, because the group is absent on every model that takes
+   no level and a gap would leave the space behind. */
+.sw-assignment-effort { margin-top: 12px; }
+/* Lighter than `.sw-assignment-label`, because that one names the slot — the thing this whole row
+   is about — and this one names the second control on it. Same weight as the label would be two
+   headings on one row with nothing to say which is the subject. */
+.sw-assignment-sublabel {
+  display: block;
+  font-size: var(--fs-12);
+  color: var(--gray-600);
+  margin-bottom: 2px;
+}
+/* Why a level a person set is gone. Warning-coloured on the same argument as `.sw-assignment-problem`
+   above: it is the difference between a setting that looks saved and one that is not there any more,
+   and the reason it is drawn at all is that the drop was otherwise silent. Grey fine print would
+   restate the silence one shade louder. */
+.sw-assignment-effort-note {
+  font-size: var(--fs-12);
+  color: var(--warning-text);
+  /* Its own group by default, because the case it matters in most is the one where the control it
+     is about is GONE — a model that accepts no level takes the control off the row at the same
+     moment it takes the setting, and at 6px the sentence would read as a continuation of the
+     model's own line. */
+  margin-top: 12px;
+}
+/* Beside its control, when there is one. 6px is what holds a sentence to the thing above it, and
+   the group's own 12px has already done the separating. */
+.sw-assignment-effort + .sw-assignment-effort-note { margin-top: 6px; }

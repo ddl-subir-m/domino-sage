@@ -27,11 +27,28 @@ window.SW = window.SW || {};
   ];
 
   const DEFAULT_KEY = '__default__';
+  // The effort's own way back, and a separate constant from the model's on purpose: the two selects
+  // sit on one row and `set_catalog` reads an ABSENT key as "leave it", so a shared sentinel would
+  // be one value with two meanings on the one call where telling them apart is the whole contract
+  // (ADR-0049).
+  const DEFAULT_EFFORT_KEY = '__model_default__';
+
+  // A level as a person reads it. A copy of `composer.js`'s `effortLabel`, which is scoped to that
+  // file's IIFE and cannot be reached from here — the two files share only `util.js`, and that one
+  // belongs to another ticket this week. The distinction it encodes is the load-bearing part and is
+  // why the way back is NOT called "Default": `none` is a real level that sends the field and turns
+  // reasoning off, while no level at all sends no field and lets the alias reason as it likes. Two
+  // entries a row apart cannot both be "Default".
+  const effortLabel = (value) => {
+    if (!value) return 'Model default';
+    if (value === 'xhigh') return 'Extra high';
+    return value.charAt(0).toUpperCase() + value.slice(1);
+  };
 
   SW.ModelAssignmentsDrawer = function ModelAssignmentsDrawer() {
     const {
       assignmentsOpen, assignments, assignmentsLoading, assignmentsError, buildRunning, catalog,
-      sensitivity,
+      sensitivity, assignmentEffortDropped,
     } = SW.store.get();
 
     const close = () => SW.store.openAssignments(false);
@@ -42,7 +59,13 @@ window.SW = window.SW || {};
       || (catalog
         ? SLOTS.map((s) => ({ slot: s.slot, model: catalog[s.slot], default: null, problem: null }))
         : []);
-    const aliases = SW.util.chatCapable((assignments && assignments.aliases) || []);
+    // Two lists, because two different questions are asked of them. `listed` is every Alias the
+    // panel was told about and is what a row's LEVELS are read from — whether a model accepts a
+    // reasoning effort has nothing to do with whether it can hold a conversation, and it is the
+    // list `_merge_assignment` effectively validates against. `aliases` is the chat-capable subset
+    // and is what may be ASSIGNED, which is the Chat picker's rule reused rather than a second copy.
+    const listed = (assignments && assignments.aliases) || [];
+    const aliases = SW.util.chatCapable(listed);
     const listable = aliases.length > 0;
     const readOnly = buildRunning || !listable;
 
@@ -191,6 +214,36 @@ window.SW = window.SW || {};
       // fourth reading of the catalog.
       const moved = barredNow || Boolean(current.shadowed);
       const runs = moved && answer !== current.model ? answer : '';
+      // The levels this row may be saved with (ADR-0049). Read off the alias the row's OWN model
+      // names, never off `runs`: `_merge_assignment` validates an effort against the model the
+      // assignment holds — its own, or the deployment default it falls back to, which is what
+      // `current.model` already is on an unassigned row — so offering the substitute's levels would
+      // offer levels this row cannot save. The lock moves what RUNS; it does not move what is
+      // being edited here.
+      //
+      // Server-computed, not a rule restated here: `alias_reasoning_efforts` narrows the gateway's
+      // published enum by the measured table before it is sent (#280), which is the one narrowing
+      // ADR-0049 says must not be copied to this side. This reads its answer.
+      const efforts = (listed.find((a) => a.name === current.model) || {}).reasoning_efforts || [];
+      // A level on disk that this row's model does not offer. Reachable without anyone having done
+      // anything wrong: the deployment default can move under a stored level long after it was
+      // saved and nothing re-validates it (`service._effective_catalog` says so in as many words),
+      // and the measured table can narrow under one when an alias is probed (#280). The control has
+      // to survive it — otherwise the setting is invisible, still saved, and the only way to clear
+      // it is to give up the row's model assignment as well.
+      const stranded = current.effort && !efforts.includes(current.effort) ? current.effort : '';
+      // Nothing is drawn where the model offers none. Five of the eight Aliases on the gateway
+      // discard `reasoning_effort` silently, so a 200 there means "thrown away" rather than
+      // "accepted" — a control that appears where the setting changes nothing is worse than no
+      // control, and this is the same `efforts.length > 0` rule the Chat picker already applies
+      // rather than a second one. Empty also covers the reads with no Alias list at all: a gateway
+      // that would not list, and the fallback rows built from the status poll's catalog.
+      //
+      // No `problem`/`serving` gate beside it. A stopped endpoint is a reason the model will not
+      // answer, and the row says so one line up; it is not a reason the level cannot be saved, and
+      // closing the control on it would be a second sentence's worth of meaning drawn as silence.
+      const effortDropped = assignmentEffortDropped
+        && assignmentEffortDropped.slot === spec.slot ? assignmentEffortDropped : null;
       return h(
         'div',
         { key: spec.slot, className: 'sw-assignment-row' },
@@ -256,6 +309,89 @@ window.SW = window.SW || {};
           // already says exactly that is noise on every row nobody has touched.
           : assigned && current.default
           ? h('div', { className: 'sw-assignment-detail' }, `Default is ${current.default}.`)
+          : null,
+        // The effort half of the assignment, as a second group under the model and the model's own
+        // two sentences rather than beside the select (ADR-0049). Below, because it is a property
+        // of the model above it: a person picks the model first and the levels on offer are that
+        // model's, so a control drawn before it would offer an answer to a question not yet asked.
+        efforts.length || stranded
+          ? h('div', { className: 'sw-assignment-effort' },
+              h('label', {
+                className: 'sw-assignment-sublabel', htmlFor: `effort-${spec.slot}`,
+              }, 'Reasoning effort'),
+              h(Select, {
+                id: `effort-${spec.slot}`,
+                'aria-label': `${spec.label} reasoning effort`,
+                style: { width: '100%' },
+                disabled: readOnly,
+                // No `runs` twin. The model select substitutes because the row exists to say what
+                // this mode runs; this one is not a second answer to that question, and an effort
+                // the lock moved the turn onto belongs to whichever slot the veto landed on, which
+                // this row is not (ADR-0049). Drawing a substituted level here would be a fourth
+                // claim about a turn, made by the one control on the row that has no server answer
+                // of its own to make it from.
+                //
+                // `current.effort` alone, with no `assigned` twin: the deployment default IS no
+                // effort, so a level that is present was picked (`service.model_assignments`).
+                value: current.effort || DEFAULT_EFFORT_KEY,
+                options: [
+                  // The way BACK, carrying no level of its own, the way the model's own first
+                  // option carries no model id: picking it CLEARS the level rather than setting
+                  // one. Named for what it does — no field is sent and the alias reasons as it
+                  // likes — and not "Default", which is the entry one row below it when a
+                  // deployment ever sets one.
+                  {
+                    value: DEFAULT_EFFORT_KEY,
+                    label: current.default_effort
+                      ? `Use the default (${effortLabel(current.default_effort)})`
+                      : effortLabel(null),
+                  },
+                  ...efforts.map((value) => ({ value, label: effortLabel(value) })),
+                  // The saved level, when the model no longer offers it. Present so the select can
+                  // label the value it is already showing — without an option antd draws the raw
+                  // key — and disabled for the reason a barred model is disabled one control up:
+                  // it is not a thing that can be chosen, and the way out is the row above it.
+                  ...(stranded
+                    ? [{
+                        value: stranded,
+                        disabled: true,
+                        label: `${effortLabel(stranded)} — not accepted`,
+                        title: `${current.model} doesn't accept this level. Pick another, or go `
+                          + 'back to the model default.',
+                      }]
+                    : []),
+                ],
+                onChange: (value) => SW.store.setAssignmentEffort(
+                  spec.slot, value === DEFAULT_EFFORT_KEY ? null : value
+                ),
+              }))
+          : null,
+        // Why the level a person set is gone. `_merge_assignment` drops it rather than refusing the
+        // save when a row is retargeted at a model that will not take it — refusing would make a
+        // slot carrying a level impossible to retarget — and the drop is visible on the re-read
+        // while saying nothing about itself, which is a row that moved and gave no reason (#287).
+        //
+        // NOT a fourth verdict in the series above it, and that is why it needs no place in their
+        // precedence. The other three all answer ONE question — what will this slot's turn run —
+        // which is why they can contradict each other and why the lock outranks the pin among them
+        // (`llm_router._lock_sensitivity` wraps `_pin_signing`; `moved` and the drop gate above are
+        // this file's only copy of that order). This one answers a different question: what was
+        // just written to disk. A shadowed row, a row the lock moved, and a row whose model will
+        // not answer all had the same thing happen to their saved level, and none of the three
+        // sentences says it — so this one is drawn beside all of them, under the control it is
+        // about, rather than competing for the one line below the model.
+        //
+        // Drawn even where the control above is not, which is the case it matters in most: a model
+        // that accepts no level at all takes the whole control off the row at the same moment it
+        // takes the setting, and the reader is left with two things gone and no account of either.
+        effortDropped
+          ? h('div', { className: 'sw-assignment-effort-note' },
+              `${effortDropped.model} doesn't accept `
+              // Quoted, and spelled the way the menu spelled it. `none` is a real level, so
+              // unquoted the sentence reads as "accepts nothing" on the one level whose name is
+              // also the negation — and the reader is being told about a thing they picked, which
+              // means naming it as they picked it.
+              + `"${effortLabel(effortDropped.effort)}", so the reasoning effort was cleared.`)
           : null
       );
     };

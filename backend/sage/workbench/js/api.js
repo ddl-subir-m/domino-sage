@@ -800,6 +800,14 @@ SW.api = {
     post(`/project/assets/${encodeURIComponent(datasetId)}/sensitive`, {}),
   setModelAssignment: (slot, model) =>
     post('/project/model', { catalog: { [slot]: model || null } }),
+  // The effort half of the same assignment (ADR-0049), and a separate call rather than a second
+  // argument above. A bare id IS `{model: id}` to `_merge_assignment`, and a key that is ABSENT
+  // from the object means "leave it" — so sending the level alone is what stops a model change
+  // from clobbering the level and the other way round, which is the same argument that keeps this
+  // panel from posting all three rows on every change. `null` clears the level and leaves the
+  // model where it is.
+  setAssignmentEffort: (slot, effort) =>
+    post('/project/model', { catalog: { [slot]: { effort: effort || null } } }),
   setChatModel: (chat_model, reasoning_effort) =>
     post('/project/model', { chat_model: chat_model || null, reasoning_effort: reasoning_effort || null }),
   // The Conversation is optional and is what makes Undo on a handoff card readable after a

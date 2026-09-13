@@ -28,6 +28,19 @@ def _row(drawn: dict, slot_label: str) -> dict:
     return next(r for r in drawn["rows"] if r["label"] == f"{slot_label} model")
 
 
+def _model_rows(drawn: dict) -> list[dict]:
+    """The MODEL select of each slot row. A row has carried two controls since ADR-0049 — the second
+    one is the reasoning effort — so counting every Select in the tree no longer counts slots."""
+    return [r for r in drawn["rows"] if r["label"].endswith(" model")]
+
+
+def _effort_row(drawn: dict, slot_label: str) -> dict | None:
+    """The effort select of one row, or None where no control was drawn at all. The difference is the
+    rule: a model the gateway measured as discarding `reasoning_effort` gets no control, because a
+    control whose setting is thrown away is worse than none (#280)."""
+    return next((r for r in drawn["rows"] if r["label"] == f"{slot_label} reasoning effort"), None)
+
+
 # ---- what the panel offers ------------------------------------------------------------------------
 
 
@@ -47,7 +60,7 @@ def test_two_slots_holding_one_model_are_still_two_rows():
     (drawn,) = _drawn([{}])
     assert _row(drawn, "Plan")["value"] == "__default__"
     assert _row(drawn, "Ask and Chat")["value"] == "__default__"
-    assert len(drawn["rows"]) == 3
+    assert len(_model_rows(drawn)) == 3
 
 
 def test_every_row_offers_the_way_back_to_the_default_by_name():
@@ -460,3 +473,280 @@ def test_a_fallback_row_cannot_invent_a_move_it_was_never_told_about():
     assert drawn["labels"] == ["Plan", "Implement", "Ask and Chat"], "the rows are drawn at all"
     assert [r["value"] for r in drawn["rows"]] == ["gpt-5.4", "coder", "gpt-5.4"]
     assert drawn["details"] == []
+
+
+# ---- the effort beside the model (ADR-0049, #283) --------------------------------------------
+#
+# The row's second control. It is the drawer's and not the Build menu's because an effort is half an
+# assignment: a cost-and-quality decision about the Project's work, shared and persisted, where the
+# Build menu's override dies with the Builder. The menu's own submenu is #295 and waits on the
+# plumbing that carries a picked effort to a turn (#282).
+
+
+def test_a_row_whose_model_takes_a_level_offers_one_and_names_the_way_back():
+    """Two controls on the row, and the second one's first option carries no level of its own —
+    picking it CLEARS the effort rather than setting one, the same difference the model select's
+    "Use the default" draws one line up."""
+    (drawn,) = _drawn([{}])
+    plan = _effort_row(drawn, "Plan")
+    assert plan is not None
+    assert plan["value"] == "__model_default__"
+    assert plan["options"][0] == {"value": "__model_default__", "label": "Model default",
+                                  "disabled": False, "title": None}
+
+
+def test_a_model_that_throws_the_field_away_gets_no_control_at_all():
+    """Five of the eight Aliases on the gateway discard `reasoning_effort` in silence, so a 200 from
+    one of them means "thrown away" and not "accepted" (#280). A control that appears where the
+    setting changes nothing is worse than no control, and this is the same `efforts.length > 0` rule
+    the Chat picker already applies rather than a second one written here."""
+    (drawn,) = _drawn([{}])
+    # `implement` holds `coder`, measured as discarding the field.
+    assert _effort_row(drawn, "Implement") is None
+    assert _effort_row(drawn, "Plan") is not None
+
+
+def test_the_levels_offered_are_the_ones_that_row_s_model_accepts():
+    """Per alias, never a union. A person offered `max` because some other Alias takes it would get
+    a hard 400 from the one their row is actually on — which is the whole reason the measured table
+    is keyed by alias rather than being one set of legal values (ADR-0049)."""
+    (_, drawn) = _drawn([{"set": ["plan", "gemini-3.7-flash"]}, {}])
+    assert [o["value"] for o in _effort_row(drawn, "Plan")["options"]] == [
+        "__model_default__", "low", "medium", "high", "max"]
+    # The same panel, one row down, offering a different set off a different model.
+    assert [o["value"] for o in _effort_row(drawn, "Ask and Chat")["options"]] == [
+        "__model_default__", "none", "low", "medium", "high", "xhigh"]
+    # `minimal` is advertised by the gateway and 400s at Vertex, so the narrowing takes it off
+    # before the panel ever sees it — asserted because publishing the enum verbatim is the one
+    # mistake this list is drawn to avoid.
+    assert "minimal" not in [o["value"] for o in _effort_row(drawn, "Plan")["options"]]
+
+
+def test_setting_a_level_writes_the_level_and_leaves_the_model_alone():
+    """Its own call carrying its own key. `set_catalog` reads an ABSENT key as "leave it", so this
+    is what stops the two controls on one row clobbering each other — the same argument that keeps
+    the panel from posting all three rows whenever one changes."""
+    (drawn,) = _drawn([{"setEffort": ["plan", "high"]}])
+    assert drawn["wrote"] == [{"catalog": {"plan": {"effort": "high"}}}]
+    assert drawn["afterEffort"] == "high"
+    # The model half untouched, and still following the default it was following.
+    assert drawn["after"] == "__default__"
+
+
+def test_the_way_back_clears_the_level_rather_than_setting_one():
+    """`null`, not the level that happens to be the alias's own default. A setting that could never
+    be undone is the defect the model's own "Use the default" row exists to prevent, and an effort
+    saved beside it is no different."""
+    (_, drawn) = _drawn([{"setEffort": ["plan", "high"]},
+                         {"setEffort": ["plan", "__model_default__"]}])
+    assert drawn["wrote"] == [{"catalog": {"plan": {"effort": None}}}]
+    assert drawn["afterEffort"] == "__model_default__"
+
+
+def test_setting_a_level_does_not_re_read_the_sensitivity_lock():
+    """The model half does, because `locked_runs_on` resolves MODELS and an assignment moves every
+    row's answer at once (#285). No level is an input to any of it — not the approved set, not the
+    administrator's ordering, not the signing pin — so a read here would be a gateway listing per
+    level picked, to be told the same thing back."""
+    (model_save,) = _drawn([{"set": ["implement", "opus"]}])
+    (effort_save,) = _drawn([{"setEffort": ["plan", "high"]}])
+    assert model_save["sensitivityReads"] == 1
+    assert effort_save["sensitivityReads"] == 0
+
+
+# ---- the level a model change took with it ---------------------------------------------------
+#
+# `_merge_assignment` DROPS the level rather than refusing the save, because refusing would make a
+# slot carrying one impossible to retarget. The drop is visible on the re-read — the control goes
+# back to its default — and until this ticket it said nothing about itself, which is a row that
+# moved and gave no reason (#287) in its weaker form.
+
+_RETARGET = [{"set": ["plan", "gemini-3.7-flash"]}, {"setEffort": ["plan", "max"]}]
+
+
+def test_a_level_the_new_model_refuses_is_cleared_and_the_row_says_why():
+    *_, drawn = _drawn([*_RETARGET, {"set": ["plan", "gpt-5.4"]}])
+    assert drawn["afterEffort"] == "__model_default__"
+    assert drawn["afterEffortNotes"] == [
+        'gpt-5.4 doesn\'t accept "Max", so the reasoning effort was cleared.']
+
+
+def test_the_row_says_why_even_when_the_control_itself_is_gone():
+    """The case it matters in most. A model that accepts no level at all takes the control off the
+    row at the same moment it takes the setting, so a sentence drawn only beside a surviving control
+    would be silent exactly where the reader has the least to go on."""
+    *_, drawn = _drawn([*_RETARGET, {"set": ["plan", "coder"]}])
+    assert drawn["afterEffort"] is None, "the control should be gone, not defaulted"
+    assert drawn["afterEffortNotes"] == [
+        'coder doesn\'t accept "Max", so the reasoning effort was cleared.']
+
+
+def test_a_level_the_new_model_accepts_survives_the_change_in_silence():
+    """The sentence is about a drop, not about a model change. Drawn on a row that kept its level it
+    would be a warning about something that did not happen."""
+    *_, drawn = _drawn([{"set": ["plan", "gemini-3.7-flash"]},
+                        {"setEffort": ["plan", "high"]},
+                        {"set": ["plan", "gpt-5.4"]}])
+    assert drawn["afterEffort"] == "high"
+    assert drawn["afterEffortNotes"] == []
+
+
+def test_taking_the_assignment_back_does_not_claim_a_model_refused_anything():
+    """Clearing the model clears the whole entry, both halves, and no model was asked about either
+    one. The fixture is the case that proves the exclusion is needed rather than tidy: the default
+    this row falls back to DOES accept `high`, so a note here would name a refusal that never
+    happened and could not happen."""
+    *_, drawn = _drawn([{"set": ["plan", "gemini-3.7-flash"]},
+                        {"setEffort": ["plan", "high"]},
+                        {"set": ["plan", "__default__"]}])
+    assert drawn["afterEffort"] == "__model_default__"
+    assert drawn["afterEffortNotes"] == []
+
+
+def test_a_person_clearing_the_level_themselves_is_not_told_a_model_refused_it():
+    """Why the two controls save on separate calls rather than one PUT of the whole row: the note is
+    written from the MODEL call, so an effort call can never produce it. Folded into one call, a
+    person picking "Model default" would be handed an explanation for their own act."""
+    *_, drawn = _drawn([{"setEffort": ["plan", "high"]},
+                        {"setEffort": ["plan", "__model_default__"]}])
+    assert drawn["afterEffortNotes"] == []
+
+
+def test_a_level_the_row_s_own_model_refuses_is_refused_rather_than_dropped():
+    """The other half of the contract, and the reason the drop is safe to explain: when the call
+    ASKED for the level, `_merge_assignment` answers 400 and nothing is written. So a level that is
+    gone after a model change has been through the drop and nothing else, which is what lets the
+    sentence above name a cause without a server field to read it from."""
+    *_, drawn = _drawn([{"set": ["plan", "gemini-3.7-flash"]},
+                        {"setEffort": ["plan", "max"]},
+                        {"set": ["plan", "gpt-5.4"]},
+                        {"setEffort": ["plan", "max"]}])
+    # Refused: the row still holds no level, and no note claims one was dropped.
+    assert drawn["afterEffort"] == "__model_default__"
+    assert drawn["afterEffortNotes"] == []
+
+
+def test_a_re_read_that_never_landed_claims_no_drop():
+    """The patched row predicts the same clearing so a failed reload does not leave a level showing
+    that is already off disk — but a SENTENCE drawn off that prediction would be this surface
+    claiming a refusal it was never told about, on the one read with the least to say."""
+    *_, drawn = _drawn([*_RETARGET, {"set": ["plan", "coder"], "failReload": True}])
+    assert drawn["afterEffortNotes"] == []
+
+
+# ---- the level beside the three sentences that were already there ----------------------------
+#
+# The row carries three verdicts and a written order between them (#287, ADR-0043). All three answer
+# ONE question — what will this slot's turn run — which is why they can contradict each other and
+# why the lock outranks the pin among them. The effort note answers a different question: what was
+# just written to disk. So it joins no precedence, and these are the assertions that say so.
+
+
+def test_the_effort_control_adds_no_sentence_to_the_three_about_what_runs():
+    *_, drawn = _drawn(_PIN_PAST_APPROVED)
+    assert drawn["details"] == [
+        "This runs coder, not opus.",
+        "This runs coder, not gpt-5.4.",
+        "This runs coder, not gpt-5.4.",
+    ]
+    assert drawn["problems"] == []
+    assert drawn["effortNotes"] == []
+
+
+def test_a_dropped_level_and_a_model_that_will_not_answer_are_both_said():
+    """Neither displaces the other, because they are about different things: one says this model
+    will fail the next build, the other says the level you set is gone. Dropping either would be
+    this row going quiet about something true to keep its neighbour company."""
+    *_, drawn = _drawn([*_RETARGET, {"set": ["plan", "local-llm"]}])
+    assert any("Start that endpoint" in p for p in drawn["afterProblems"])
+    assert drawn["afterEffortNotes"] == [
+        'local-llm doesn\'t accept "Max", so the reasoning effort was cleared.']
+
+
+def test_a_locked_row_offers_the_levels_of_the_model_it_would_save():
+    """The select above substitutes because the row exists to say what this mode RUNS. This one does
+    not, and must not: `_merge_assignment` validates a level against the model the ASSIGNMENT holds,
+    so offering the substitute's levels would offer levels this row cannot save. The lock moves what
+    runs; it does not move what is being edited here."""
+    (drawn,) = _drawn([{"sensitivity": _LOCK}])
+    # `plan` holds `gpt-5.4` and the lock runs it on `opus`, which takes no level at all.
+    assert _row(drawn, "Plan")["value"] == "opus"
+    assert [o["value"] for o in _effort_row(drawn, "Plan")["options"]] == [
+        "__model_default__", "none", "low", "medium", "high", "xhigh"]
+
+
+def test_a_shadowed_row_says_what_runs_and_what_was_saved_without_contradiction():
+    """The precedence question, asked of the pin's sentence rather than the lock's, because the pin
+    is the one that can stand beside a drop. Both are true and neither weakens the other: the pin
+    names the model every Turn in this session runs, and the note names the level this save took off
+    disk. Written as an assertion rather than left to the comment, because the last time a sentence
+    was added to this row it was true in isolation and wrong beside its neighbour (#287)."""
+    *_, drawn = _drawn([*_RETARGET, {"set": ["plan", "gpt-5.4"], "signing": "implement"}])
+    assert any("runs every Turn in this session" in p for p in drawn["afterProblems"])
+    assert drawn["afterEffortNotes"] == [
+        'gpt-5.4 doesn\'t accept "Max", so the reasoning effort was cleared.']
+    # And no fourth claim about what runs, which is the shape the contradiction would take.
+    assert not any("runs" in d for d in drawn["afterDetails"])
+
+
+def test_one_row_s_save_does_not_wipe_another_row_s_note():
+    """The note is keyed to the row it is about, so clearing it has to be too. Cleared wholesale, a
+    person who retargets Plan and then sets Implement's level has just lost the only account of why
+    Plan's level went — the silence this surface exists to close, put back by an unrelated click."""
+    *_, drawn = _drawn([*_RETARGET, {"set": ["plan", "gpt-5.4"],
+                                     "also": {"setEffort": ["ask", "high"]}}])
+    assert drawn["afterEffortNotes"] == [
+        'gpt-5.4 doesn\'t accept "Max", so the reasoning effort was cleared.']
+
+
+def test_a_refused_save_takes_the_note_down_with_it():
+    """Every other exit from a save writes a verdict; this one used to write none. A note left
+    standing under a REFUSED save reads as that save's account — the row explaining a clearing
+    beside a toast saying nothing was saved at all."""
+    *_, drawn = _drawn([*_RETARGET, {"set": ["plan", "gpt-5.4"],
+                                     "also": {"set": ["plan", "opus"], "failSave": True}}])
+    assert drawn["afterEffortNotes"] == []
+
+
+# ---- a level the row's model stopped accepting ------------------------------------------------
+#
+# Reachable with nobody having done anything wrong, and `service._effective_catalog` names both
+# ways: the deployment default can move under a stored level long after it was saved, and the
+# measured table can narrow under one when an alias is probed (#280). Nothing re-validates either.
+
+_STRANDED = [{"seed": {"plan": {"model": "coder", "effort": "high"}}}]
+
+
+def test_a_level_the_model_no_longer_accepts_can_still_be_seen_and_taken_off():
+    """Otherwise the setting is invisible, still on disk, still sent — and the only way to clear it
+    is to give up the row's model assignment as well. The "draw nothing where the model offers none"
+    rule is about a control that would change nothing; this one clears something real."""
+    (drawn,) = _drawn(_STRANDED)
+    control = _effort_row(drawn, "Plan")
+    assert control is not None, "the control was removed while the level was still saved"
+    assert control["value"] == "high"
+    # Offered so the select can label the value it is showing — without an option antd draws the raw
+    # key — and closed, because it is not a thing that can be chosen again.
+    stranded = next(o for o in control["options"] if o["value"] == "high")
+    assert stranded["disabled"] is True
+    assert stranded["label"] == "High — not accepted"
+    assert "doesn't accept this level" in stranded["title"]
+
+
+def test_the_way_back_is_still_open_on_a_stranded_level():
+    """The point of drawing the control at all. A row whose only option was the level it cannot use
+    would be a dead end with an explanation on it."""
+    *_, drawn = _drawn([*_STRANDED, {"setEffort": ["plan", "__model_default__"]}])
+    assert drawn["wrote"] == [{"catalog": {"plan": {"effort": None}}}]
+    assert drawn["afterEffort"] is None, "the control goes once the level it was drawn for is gone"
+
+
+def test_a_save_that_dropped_nothing_leaves_another_row_s_note_alone():
+    """The commonest save there is, and the one the note has to survive. Every clear on this surface
+    is keyed to the row it is about; unguarded, a routine model change two rows down would erase the
+    only account of why the level above it went — which is the silence, put back by a click that had
+    nothing to do with it."""
+    *_, drawn = _drawn([*_RETARGET, {"set": ["plan", "gpt-5.4"],
+                                     "also": {"set": ["implement", "opus"]}}])
+    assert drawn["afterEffortNotes"] == [
+        'gpt-5.4 doesn\'t accept "Max", so the reasoning effort was cleared.']
