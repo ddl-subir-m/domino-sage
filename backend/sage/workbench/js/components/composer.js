@@ -785,8 +785,14 @@ window.SW = window.SW || {};
     // it — pointing at a row nobody can reach and then saying to wait before changing anything, in
     // consecutive sentences. Only the collapsed case needs it: on a real override the submenu marks
     // the level itself, which is a better account than a sentence.
-    const strandedWhy = collapsedStranded
-      ? `${strandedFact} The row below clears the pick and puts the mode back on its assignment.`
+    const strandedWhy = strandedNow
+      ? (collapsedStranded
+        ? `${strandedFact} The row below clears the pick and puts the mode back on its assignment.`
+        // A real override keeps the FACT and loses only the row pointer, which belongs to the
+        // collapsed case. Withholding it entirely left the idle chip strictly less informative than
+        // the running one for the same state: the label drops the level because it will not run,
+        // and the only account was a disabled row two hovers into a submenu.
+        : strandedFact)
       : '';
     const buildChipLabel = override
       ? (pickedLevel ? `${override} · ${effortLabel(pickedLevel)}` : override)
@@ -1469,7 +1475,21 @@ window.SW = window.SW || {};
                     // exactly that — a confident, specific falsehood reached through the one door
                     // the paragraphs above do not cover, because it is a claim about the ASSIGNMENT
                     // rather than about the pick.
-                    const pinnedEffort = (catalog && catalog[`${pinnedSlot}_effort`]) || null;
+                    // The slot whose EFFORT the turn would run at with no pick, which is not
+                    // always `pinnedSlot`. `_pin_signing` early-returns the mode slot's decision
+                    // UNMODIFIED when the signing slot names the same model — so the pin supplies
+                    // the effort only where it actually MOVES the model. Reading the signing slot's
+                    // either way compares against a level the router would not have used, and then
+                    // the sentence below names a difference that does not exist (or hides one that
+                    // does). Restated here because the picker restates the router's precedence, and
+                    // this is the half of the pin rule the server's `signing_slot` cannot express.
+                    const modeSlot = chipModeId === 'ask' ? 'ask'
+                      : chipModeId === 'auto' ? (buildPhase === 'implement' ? 'implement' : 'plan')
+                      : chipModeId;
+                    const pinMoves = Boolean(signingSlot && catalog
+                      && catalog[signingSlot] !== catalog[modeSlot]);
+                    const effortSlot = pinMoves ? signingSlot : modeSlot;
+                    const pinnedEffort = (catalog && catalog[`${effortSlot}_effort`]) || null;
                     // Compared as EFFECTIVE levels, not on whether a level was chosen. A collapsed
                     // pick that names NO level still overrides — the router answers
                     // `plan-override … effort=None` where the slot would have answered its assigned

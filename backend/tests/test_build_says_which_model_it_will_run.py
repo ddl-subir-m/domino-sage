@@ -587,6 +587,53 @@ def test_a_stranded_level_on_a_real_override_is_accounted_for_mid_turn_too():
     assert f"{PLAN_MODEL} doesn't accept High" in row["why"]
 
 
+def test_the_pin_supplies_the_effort_only_where_it_moves_the_model():
+    """`pinnedSlot` is the signing slot when one exists — right for the MODEL, wrong for the EFFORT.
+
+    `_pin_signing` early-returns the mode slot's decision UNMODIFIED when the signing slot names the
+    same alias (`if model == decision.model: return decision`), so the effort that runs is the mode
+    slot's, not the pin's. Reading the signing slot's either way compares the pick against a level
+    the router would never have used.
+
+    Here plan and implement both hold the signing model, at `low` and `high`. In Implement a
+    collapsed pick at `high` matches what clearing would actually give — so there is no difference
+    to report, and a sentence claiming one would be the confident, specific falsehood this control
+    must never produce.
+    """
+    (row,) = _drawn([{"mode": "implement", "signing": "plan", "alsoSigning": "implement",
+                      "efforts": {"plan_effort": "low", "implement_effort": "high"},
+                      "seedPick": {"model": SIGNING_MODEL, "effort": "high"}}])
+
+    # Seeded rather than clicked: the signing model only enters the catalog on this step, so there
+    # is no row to click on a prior one.
+    assert "not at the assignment's" not in (row["why"] or "")
+
+    # And the mirror, so the gate is not simply silencing everything: with the mode slot at `low`,
+    # a pick at `high` DOES differ, and the sentence must survive and name `low`.
+    (mirror,) = _drawn([{"mode": "implement", "signing": "plan", "alsoSigning": "implement",
+                         "efforts": {"plan_effort": "high", "implement_effort": "low"},
+                         "seedPick": {"model": SIGNING_MODEL, "effort": "high"}}])
+    assert "not at the assignment's Low" in mirror["why"]
+
+
+def test_a_stranded_level_on_a_real_override_is_accounted_for_when_idle_too():
+    """The idle twin of the mid-turn sentence, which was strictly less informative for one state.
+
+    On a real override the label drops the level (it will not run) and the only account was a
+    disabled row two hovers into a submenu — while the SAME state mid-turn got a sentence, on the
+    reasoning that a chip with no reachable menu needs one. An idle chip has a reachable menu, but
+    it does not have a reachable EXPLANATION until you go looking.
+
+    The row pointer stays collapse-only: on a real override the submenu is where the exit is.
+    """
+    (row,) = _drawn([{"mode": "plan",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "high"},
+                      "narrow": {"alias": "deepseek/deepseek-v3", "efforts": ["low"]}}])
+
+    assert "deepseek/deepseek-v3 doesn't accept High" in row["why"]
+    assert "The row below" not in row["why"]
+
+
 def test_the_running_chip_describes_the_turn_not_the_picker():
     """The mode selector stays live mid-turn, so the selected mode and the running one disagree the
     moment somebody switches during a build — `modeQueued` exists to say exactly that.

@@ -355,8 +355,14 @@ for (const step of steps) {
     // worth aiming at — changing nothing the menu looks at, and the test would pass over an
     // untouched control.
     if (step.narrow.alias in ALIAS_WITH_TOOLS) {
-      ALIAS_WITH_TOOLS[step.narrow.alias] = step.narrow.efforts.filter(
-        (e) => ALIAS_WITH_TOOLS[step.narrow.alias].includes(e));
+      // `withTools` when the step says so, otherwise the intersection — which is the faithful
+      // simulation (a level the enum no longer advertises cannot survive beside tools) but CANNOT
+      // WIDEN. Narrowing `gpt-5.4` to ['low','high'] against a with-tools list of ['none'] yields
+      // [], and that is correct rather than a bug — it is stated here because the first test aimed
+      // at the one alias whose two lists differ would otherwise meet a fixture state it did not ask
+      // for and read it as the menu's answer.
+      ALIAS_WITH_TOOLS[step.narrow.alias] = step.narrow.withTools
+        || step.narrow.efforts.filter((e) => ALIAS_WITH_TOOLS[step.narrow.alias].includes(e));
     }
     SW.store.set({ gatewayAliases: ALIAS_ROWS() });
   }
@@ -365,6 +371,12 @@ for (const step of steps) {
     // The server reports the slot and the assignment together, so the fixture moves together too.
     signingSlot = step.signing;
     if (step.signing) CATALOG[step.signing] = SIGNING_MODEL;
+    // The pin NOT moving the model: the signing slot and the mode slot name the same alias, so
+    // `_pin_signing` early-returns the mode slot's decision untouched and its effort is what runs.
+    // Without a step that can put one model in two slots with different efforts, nothing here could
+    // tell "the pin supplies the effort" from "the mode slot does".
+    if (step.alsoSigning) CATALOG[step.alsoSigning] = SIGNING_MODEL;
+    if (step.efforts) Object.assign(CATALOG, step.efforts);
   }
   await SW.store.setBuildMode(step.mode);
   await settle();
