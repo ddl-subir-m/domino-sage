@@ -706,6 +706,25 @@ window.SW = window.SW || {};
     const scope = state.scope;
     const gen = ++scopeLoad;
     const projectGen = ++projectRead;
+    // A lock belongs to a PROJECT, so a switch does not inherit one. Dropped synchronously here,
+    // before the read that replaces it, for the same reason `dropSessionLock` drops a Conversation's
+    // — leaving the last answer standing is right when the next read is about the SAME scope and
+    // wrong when it is about a different one, and no reader downstream can tell those apart.
+    //
+    // FOUND IN REVIEW of #294, where refusing to install the route's never-500 payload removed the
+    // one path that had been clearing this by accident: B's read failing installed B's absence,
+    // which cleared A's lock as a side effect of being wrong. With that gone, A's lock, A's approved
+    // whitelist and A's Dataset name would draw over B for as long as B's reads kept failing — and
+    // another Project's approved list is the stale-"unlocked" direction wearing a lock, because a
+    // model B bars may be one A allows. The reject path had the same hole and always did.
+    //
+    // ONLY on a change of scope, which is the whole point of tracking which scope the standing
+    // answer came from. Clearing on every scope load would un-grey the picker for one round trip on
+    // a same-Project refresh — a stale-unlocked window opened by the fix for a stale-locked one.
+    if (sensitivityScope !== null && sensitivityScope !== (scope && scope.id)) {
+      state.sensitivity = null;
+      sensitivityScope = null;
+    }
 
     const [resources, activity] = await Promise.all([
       SW.api.resources(scope.id),
@@ -831,9 +850,18 @@ window.SW = window.SW || {};
   // `mask: false` — which is why that prop is now passed explicitly, commented where it is passed,
   // and asserted in `model_assignments_harness.mjs`.
   //
-  // "At this keyboard" is the whole of its reach, so it leaves two windows rather than one: #294,
-  // where the orchestrator moves the pick itself on a build escalation with no human act to block;
-  // and a second Workbench open on the same Project, whose picker this tab's mask never sees.
+  // "At this keyboard" is the whole of its reach, and it used to leave two windows: #294, where the
+  // orchestrator moves the pick itself on a build escalation with no human act to block; and a
+  // second Workbench open on the same Project, whose picker this tab's mask never sees. The browser's
+  // half of both is closed by `_watchAssignments`, which re-reads the lock on its own 2s cadence for
+  // as long as the drawer is drawn: while a lock is holding, a moved answer reaches these rows. It
+  // does not reach a lock that ARMS mid-drawer — the cadence stops on a landed "nothing narrows",
+  // for the reason written at the gate — so an unlocked Project whose Dataset a second Workbench
+  // declares stays unlocked here until the drawer is reopened.
+  // That is a refresh per tick on the one surface that reads this field, not a refresh per pick, so
+  // this list is unchanged. WHEN the server's answer moves is a separate question and not one this
+  // closes — `_locked_slot_models` drops a pick the standing mode will not honour, so a session in
+  // Auto never had a stale row to fix.
   //
   // A failed read leaves the last answer standing rather than clearing it, and the asymmetry is
   // deliberate in one direction: dropping a lock the UI is drawing would put non-approved models
@@ -856,6 +884,7 @@ window.SW = window.SW || {};
   function dropSessionLock() {
     if (!state.sensitivity || state.sensitivity.reason !== 'session') return;
     state.sensitivity = null;
+    sensitivityScope = null;
     notify();
   }
 
@@ -887,8 +916,20 @@ window.SW = window.SW || {};
   // rollback and no rejection path: a read that never lands simply never moves the mark.
   let sensitivityAsked = 0;
   let sensitivityApplied = 0;
+  // Which scope the standing answer is ABOUT. Not in `state` because nothing renders it: it exists
+  // so `loadScopeData` can tell "the same Project, read again" from "a different Project", which is
+  // the difference between keeping the last answer and inheriting another Project's lock.
+  let sensitivityScope = null;
 
-  function refreshSensitivity(gen) {
+  // `repairAppScope` turns off the one-shot rail load below. Off for the drawer's repeating tick
+  // (`_watchAssignments`) and on everywhere else, which is every caller that fires once per event.
+  // The load is a repair for "nothing has loaded the app records yet", and `!state.activeApp` is
+  // its signal — but a Project with no app SELECTED leaves that null for good, so under a caller
+  // that repeats it stops being a repair and becomes a second request every 2s, forever. The tick
+  // asks for it only until an answer has LANDED — not merely because it repeats. The first version
+  // of this argued "`openAssignments` already took this read once with the repair on", which
+  // assumes that read succeeded; a rejection here is swallowed, so it can leave nothing behind.
+  function refreshSensitivity(gen, { repairAppScope = true } = {}) {
     const asked = (state.thread && state.thread.id) || '';
     const seq = (sensitivityAsked += 1);
     return SW.api.sensitivity(asked).then(
@@ -924,15 +965,50 @@ window.SW = window.SW || {};
         // AWAITED before the state is applied, so the notice arrives whole. Applied first, the
         // notice would draw its sentence, then sprout a way out a beat later — and `noticeKey`
         // carries the app name, so a dismissal taken in that window would be undone by the arrival.
-        if (SW.util.isLocked(read) && !state.activeApp) await loadAppList();
+        if (repairAppScope && SW.util.isLocked(read) && !state.activeApp) await loadAppList();
         if (((state.thread && state.thread.id) || '') !== asked) return;
         if (seq <= sensitivityApplied) return;
+        // A read the server could not answer is not an answer, and it is refused HERE rather than
+        // at each reader. The route never 500s: it reports a thrown read as a 200 carrying the
+        // unlocked shape, so installing it drops a standing lock — and under a 2s cadence it drops
+        // it over and over, turning a once-per-scope-load exposure into one per tick. That is the
+        // stale-"unlocked" direction this file calls the dangerous one.
+        //
+        // Refused here because three readers were each learning to un-do the same encoding: this
+        // assignment, the drawer's cadence gate, and its app-records repair. One place knows the
+        // answer is not usable, so `state.sensitivity` never holds one and nobody downstream needs
+        // the flag. Treated exactly like a rejected fetch, including leaving `sensitivityApplied`
+        // where it is: the last answer stands, and the route's own trade is untouched, because with
+        // nothing yet landed this leaves `null` and `isLocked(null)` is the fail-open it wants.
+        if (read && read.unavailable) return;
         sensitivityApplied = seq;
+        // Recorded here and not below the dedupe: two Projects can answer with identical bytes —
+        // both unlocked is the common one — and this is about WHICH Project the standing answer
+        // describes, which has changed even when its content has not.
+        sensitivityScope = (state.scope && state.scope.id) || null;
+        // Recorded here and not below the dedupe: two Projects can answer with identical bytes —
+        // both unlocked is the common one — and this is about WHICH Project the standing answer
+        // describes, which has changed even when its content has not.
+        // An answer that says exactly what the last one said is not a state change. Every other
+        // caller here fires once per event, so this never mattered until the drawer's cadence made
+        // this the only recurring `notify()` an idle Workbench has — a whole-shell re-render every
+        // 2s, for the life of an open drawer, over an object with the same bytes in it. Compared
+        // rather than deep-equalled because both sides came out of `JSON.parse` of one response
+        // shape, so key order is the server's and is stable.
+        if (JSON.stringify(read) === JSON.stringify(state.sensitivity)) return;
         state.sensitivity = read;
         notify();
       },
       () => {},
     );
+  }
+
+  // Ends the drawer's cadence (`_watchAssignments`). Idempotent, because both doors reach it: the
+  // close that knows it is closing, and the tick that finds the drawer already gone.
+  function stopAssignmentsWatch() {
+    if (!store._assignmentsTimer) return;
+    clearInterval(store._assignmentsTimer);
+    store._assignmentsTimer = null;
   }
 
   // Everything a read of `/project` writes. Both refreshes take that read, and two copies of this
@@ -3408,7 +3484,107 @@ window.SW = window.SW || {};
       // Beside the panel read, because this drawer is the one surface that draws every closed row
       // at once (ADR-0043): an administrator who has just added a model to the group is most likely
       // to be looking here, and a lock read on the last scope load would still be showing it out.
-      if (open) refreshSensitivity();
+      if (open) refreshSensitivity(scopeLoad);
+      // And then keeps reading it, for as long as this stays open (#294). See `_watchAssignments`.
+      if (open) store._watchAssignments();
+      else stopAssignmentsWatch();
+    },
+
+    // The drawer's own cadence. Its rows name what each mode RUNS, that answer reads the in-session
+    // pick (ADR-0043), and the pick can move with no human act: the orchestrator escalates a stalled
+    // build turn to the strong plan-tier model (`service.py`, `project.control.pick(catalog.plan)`).
+    // The drawer is read-only while a build runs and it is masked, so nobody can act on the stale
+    // row — but reading it is the whole reason it is open, and for the length of an escalated step
+    // it named a model the turn had stopped using.
+    //
+    // Hung off the drawer and NOT off the build watch's tick, which is where #294 and ADR-0043 both
+    // said to put it. That tick is only in a tab that called `loadBuild` while a build was ALREADY
+    // running — `_watchBuild` has exactly one caller, the last line of `loadBuild` — and the two
+    // stream paths set `buildRunning` themselves and never reach it. So in the tab where somebody
+    // pressed Build and then opened this drawer, the likeliest way to reach the window at all, there
+    // is no tick to gate: the fix would have been a no-op on its own ticket. Keyed to the surface
+    // that HAS the staleness, it also closes the other window `openAssignments` names — a second
+    // Workbench on the same Project, whose pick this tab's mask cannot reach — rather than covering
+    // it by accident for the length of a build.
+    //
+    // What it closes is the BROWSER's half: whenever the server's answer moves, these rows follow.
+    // Whether an escalation moves it is `_locked_slot_models`'s own gate, which drops a pick the
+    // standing mode will not honour — so a session standing in Auto, the commonest way to reach an
+    // escalation, never had a stale row here at all. What was fixed is Plan or Implement.
+    //
+    // ADR-0043's re-read decision is untouched in its own terms. That decision is "the Workbench
+    // re-reads on a mode change and not on a MODEL change", and this is neither: it is a refresh per
+    // tick while the one surface that draws the answer is drawn. No call site learns about picks.
+    //
+    // Started and stopped together, because an interval a surface opens has to die with it. It
+    // starts on open, is cleared on close, and each tick checks `assignmentsOpen` itself so a close
+    // that never came through here still ends it. Nothing else bounds it and nothing else needs to:
+    // a build ending is deliberately not a stop condition, since that would put the second-Workbench
+    // window back on the accident this exists to remove. What makes the cadence safe rather than
+    // just cheap is `refreshSensitivity` itself — it compares against what has actually been APPLIED,
+    // so stacked reads landing out of order cannot install a stale answer, and a read that fails
+    // leaves the last one standing rather than clearing it. Stale "locked" costs an explanation that
+    // is a beat out of date; stale "unlocked" would put a barred model under somebody's hand.
+    //
+    // Gated on the lock as well as on the drawer, mirroring `setBuildMode`. That is not an
+    // optimisation: unlocked is the common case, and without it every deployment that never opted
+    // in would pay a request every 2s for a row it does not draw.
+    // TWO SECONDS, chosen rather than inherited from the build watch this no longer hangs off.
+    // The field this exists to track is not behind a cache: `picked` and `slot_models` are decided
+    // from `control.snapshot()` in process, so they move the instant the orchestrator escalates and
+    // a slower tick is purely a slower row. The halves that ARE cached ride along at no backend cost
+    // — `SensitivityGate` serves the declaration from a 5s TTL and the approved set from a 60s one,
+    // so a tick inside those windows costs one round trip and no Domino call. Matching the tick to
+    // the 5s TTL would have been matching it to the wrong half.
+    //
+    // In flight at most one, unlike the build watch, which deliberately lets its ticks overlap.
+    // There the awaits are the work; here a slow Domino would stack reads that each hold a
+    // sync-route slot to answer a question the next tick asks again. `sensitivityAsked`/`Applied`
+    // already stop a late answer overwriting a newer one, which is a different problem — that guard
+    // is about which answer WINS, this one is about how many are outstanding.
+    _watchAssignments() {
+      if (store._assignmentsTimer) return;
+      let reading = false;
+      store._assignmentsTimer = setInterval(() => {
+        if (!state.assignmentsOpen) return stopAssignmentsWatch();
+        // NOT `isLocked`, which is where this gate was first written. That helper folds two answers
+        // into one and only the first of them means "stop asking": a read that LANDED saying the
+        // lock is off is a fact about the deployment, while `null` is a read that has not landed —
+        // it never has, or it failed, or `dropSessionLock` cleared it on a Conversation change. Read
+        // through `isLocked`, the one state where a retry is worth most looks exactly like the one
+        // where it is worth nothing, and a locked deployment whose read failed would sit behind an
+        // open drawer with no lock drawn and every model selectable, retrying never. That is the
+        // stale-"unlocked" direction this file calls the dangerous one, reached by the guard meant
+        // to be cheap. An opted-in deployment holding a LANDED "nothing narrows" is left alone all
+        // the same: its rows draw no lock, so there is nothing here to keep true, and a lock armed
+        // from a second Workbench mid-drawer is a window this does not claim (the ones it does are
+        // about a moved PICK).
+        // Skips every read once a LANDED answer says the lock is off — a settled fact about the
+        // deployment — and keeps asking while nothing has landed. It does not need to know about
+        // the route's never-500 payload: `refreshSensitivity` refuses to install one, so
+        // `state.sensitivity` is null or a real answer and never the third thing. That was two
+        // readers ago a check here, and moving it to the one place that decides what lands is what
+        // stopped this gate, the repair below, and the assignment itself each carrying a copy.
+        const seen = state.sensitivity;
+        if (seen && !SW.util.isLocked(seen)) return;
+        // FOUND IN REVIEW: the repair is keyed on whether an answer has LANDED, not on whether the
+        // caller repeats. The argument for turning it off — "`openAssignments` already took this
+        // read once with the repair on" — assumed that read succeeded, and `refreshSensitivity`
+        // swallows a rejection, so the open read can leave nothing behind. `seen` is the same
+        // "nothing has landed" signal the line above reads, and once an answer HAS landed the
+        // repair has either run or found no app to find, so it is off for every tick after.
+        // Generation-tagged like `setBuildMode`'s read, and read fresh per tick rather than captured
+        // once: a read issued before a project switch is dropped when it lands, and the tick that
+        // comes after the switch carries the new generation and keeps its answer.
+        if (reading) return;
+        reading = true;
+        const done = () => { reading = false; };
+        // Returned, which `setInterval` ignores and the harness does not: `fire()` calls this
+        // function directly and awaits it to keep one tick's reads from overlapping the next's.
+        // Without the return it awaited an undefined and the serialisation its comment promised
+        // was silently absent (found in review).
+        return refreshSensitivity(scopeLoad, { repairAppScope: !seen }).then(done, done);
+      }, 2000);
     },
 
     // Saves immediately and verifies afterwards (ADR-0017): blocking the write on a live gateway

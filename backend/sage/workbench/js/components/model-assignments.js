@@ -208,12 +208,14 @@ window.SW = window.SW || {};
       // outranks the pin, so this row's turn runs the pick and not what the row holds). A
       // difference none of the three explains is a stale read.
       //
-      // The pick is read from the status poll rather than from `sensitivity`, which carries no pick
-      // field, and the two agree for the reason the whole of #286 rests on: the drawer is masked, so
-      // nobody can move the picker while these rows are on screen. It is the SAME pick the server
-      // resolved with — the `ask` row is answered as Chat (`_locked_slot_models` forces
-      // `chat_thread_id`), so it reads the Chat pick and the other two read the Build one, which is
-      // the existing fork rather than a second one.
+      // The pick was read from the status poll alone, because `sensitivity` carried no pick field,
+      // and the two agreed for the reason the whole of #286 rests on: the drawer is masked, so
+      // nobody can move the picker while these rows are on screen. That reasoning is about the hands
+      // at this keyboard and there is a second picker — the orchestrator, escalating a stalled build
+      // turn — so `sensitivity` now carries the fact (`picked`/`chat_picked`, #294) and is asked
+      // first. It is the SAME pick the server resolved with — the `ask` row is answered as Chat
+      // (`_locked_slot_models` forces `chat_thread_id`), so it reads the Chat pick and the other two
+      // read the Build one, which is the existing fork rather than a second one.
       //
       // `picked` carries the same one-round-trip residue `barredNow` does, and no more: between a
       // save and its re-read landing, `answer` is the pre-save one while `set_catalog` has already
@@ -233,8 +235,34 @@ window.SW = window.SW || {};
       // transcript and no catalog can be asked about it — the same limit `shadowed_slots` records
       // for its own sentence. Such a row is still silent. Closing it needs the session, not a
       // fourth reading of the catalog.
-      const pick = (spec.slot === 'ask' ? chatPick : buildModel) || '';
-      const picked = locked && Boolean(pick);
+      // WHETHER a pick is live for the turn this row drives. Two sources, and the lock's own read is
+      // asked first because it is the fresher of them (#294): `sensitivity` is re-read on a cadence
+      // while this drawer is open, while `buildModel`/`chatPick` are the browser's MIRROR of the
+      // pick and are written by `applyModelStatus` alone — user acts and loads. Every pick a PERSON
+      // makes writes the mirror, which is why reading it was right until the orchestrator became
+      // the other one who picks: it escalates a stalled build turn with no human act, so the mirror
+      // stayed empty, this gate stayed shut, and the row drew the pre-escalation model over a
+      // `slot_models` that had already moved. The mirror is kept as the fallback for a deployment
+      // whose payload predates the field.
+      const served = spec.slot === 'ask'
+        ? (sensitivity || {}).chat_picked
+        : (sensitivity || {}).picked;
+      const mirror = (spec.slot === 'ask' ? chatPick : buildModel) || '';
+      // ASKED FIRST, not OR'd — the comment used to say one and the code did the other. The reason
+      // is NOT the one review offered, which was that a save clears the pick server-side and leaves
+      // the mirror holding it: measured, `set_model` answers the save with `project.status()` and
+      // `setAssignment` puts that through `applyModelStatus`, so the mirror clears on the same round
+      // trip. The reason is pairing. `served` was taken from the SAME snapshot as the `slot_models`
+      // beside it — the server takes one and hands it down for exactly this — while the mirror comes
+      // from a different read at a different moment, so an OR can pair a mirror saying "a pick is
+      // live" with an answer that has no pick folded into it. That skew is the defect this ticket
+      // has now been fixed for twice, once in the browser and once inside the payload.
+      //
+      // `undefined` is the only state the mirror answers for: a payload predating the field. It is
+      // kept rather than deleted because a server that stopped sending the flag would otherwise go
+      // silent on every row at once, and its expiry is that condition rather than a date — when
+      // something else makes an absent flag loud, this goes.
+      const picked = locked && (served === undefined ? Boolean(mirror) : Boolean(served));
       const moved = barredNow || Boolean(current.shadowed) || picked;
       const runs = moved && answer !== current.model ? answer : '';
       // The levels this row may be saved with (ADR-0049). Read off the alias the row's OWN model
@@ -433,8 +461,10 @@ window.SW = window.SW || {};
         // the picker out of reach for as long as this is open. `mask: false` would leave the rows
         // going stale under a hand that can still move them. Load-bearing, with no expiry: it stops
         // being a default doing unnamed work and becomes the thing `model_assignments_harness.mjs`
-        // asserts. It reaches this tab's hands and no further — `store.js` names the two windows
-        // that leaves.
+        // asserts. It reaches this tab's hands and no further, and it is no longer the only thing
+        // holding these rows true: the two windows it left open — a pick the orchestrator moves
+        // itself, and a second Workbench — are closed by `store._watchAssignments`, which re-reads
+        // the lock for as long as this is open (#294).
         mask: true,
       },
       h(

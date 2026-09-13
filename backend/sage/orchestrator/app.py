@@ -2027,7 +2027,17 @@ def sensitivity_state(conversation: str = "") -> JSONResponse:
     Its own route rather than a field on `/api/project/status`, for the reason
     `/api/project/model/assignments` is: the status poll runs on a timer, and a locked Project would
     pay a gateway listing on every tick to answer a question that changes when an administrator
-    edits a group. It is read on a scope load and after a Binding changes.
+    edits a group. It is read on a scope load, after a Binding changes, and — since #294 — every 2s
+    while the model drawer is OPEN.
+
+    That third caller does not reopen the decision above, and the difference is the population rather
+    than the cost. The reasoning was about the status poll: always on, every Project, every tab, for
+    as long as the tab lives. The drawer is modal, masked, watched by somebody, and stops the moment
+    it closes. The named cost is not paid either — `SensitivityGate` serves the approved set from a
+    60s TTL (`APPROVED_TTL_S`), so the gateway listing that sentence is about happens once a minute
+    however often this is asked. What a tick can cost on top is a `list_datasets` and a Taxonomy read
+    per undeclared bound Dataset once per 5s (`UNDECLARED_TTL_S`), on a Taxonomy-locked Project.
+    Anything faster than those windows is served from cache.
 
     Never 500s. The Workbench draws badges and a picker from this, and a read that threw would take
     the picker down rather than the lock — which still holds, in the router and at publish, whatever
@@ -2046,10 +2056,26 @@ def sensitivity_state(conversation: str = "") -> JSONResponse:
         return JSONResponse(content=orchestrator.sensitivity_state(asked))
     except Exception:
         log.exception("sensitivity state read failed")
+        # The third copy of this shape, and it owes every key the other two do: the drawer's gate
+        # reads `picked`/`chat_picked` to decide whether a row draws the per-slot answer at all, and
+        # a payload missing them makes "no pick" and "this read failed" the same answer. Falsy here
+        # for the same reason `locked` is — a read that threw claims nothing.
+        #
+        # `unavailable` is what says WHICH of those two this is, and it exists for one caller: the
+        # drawer's 2s cadence skips every read once a landed answer says the lock is off, because
+        # that is a settled fact about the deployment. This answer is not that fact and is not
+        # settled — it is one exception on one read — so without the flag a single transient Domino
+        # failure would silence the cadence for the life of the drawer AND drop a standing lock from
+        # the drawer on every tick. `refreshSensitivity` refuses to install an answer carrying it,
+        # which is where both of those are closed. It deliberately does NOT change what anyone else
+        # does with this payload: the
+        # picker failing OPEN here is the documented trade above, and the lock still holds in the
+        # router and at publish whatever this answers.
         return JSONResponse(content={"enabled": False, "locked": False, "group": "",
                                      "approved": [], "datasets": [], "refusal": None,
                                      "model": None, "chat_model": None, "slot_models": {},
-                                     "reason": ""})
+                                     "picked": False, "chat_picked": False,
+                                     "unavailable": True, "reason": ""})
 
 
 @control_app.post("/api/project/assets/{dataset_id}/sensitive")

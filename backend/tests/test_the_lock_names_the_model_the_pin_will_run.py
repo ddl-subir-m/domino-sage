@@ -347,3 +347,72 @@ def test_the_panel_is_told_the_model_the_pin_will_run_on_every_row(tmp_path, mon
     assert state["slot_models"]["plan"] == SIGNING
     assert state["slot_models"]["implement"] == SIGNING
     assert set(state["slot_models"]) == set(ASSIGNABLE_SLOTS)
+
+
+def test_the_payload_says_whether_a_pick_is_live_for_each_turn_a_row_drives(tmp_path, monkeypatch):
+    """FOUND IN REVIEW of #294. `slot_models` says what a slot RUNS; this says whether a PICK is why.
+
+    The panel draws the per-slot answer only where a rule that could have caused the difference is on
+    the row (#287), and a live pick is one of them (#286). That gate used to read the browser's own
+    mirror of the pick, which `applyModelStatus` writes on user acts and loads — true of every pick a
+    person makes, and false of the one #294 is about, where the orchestrator escalates a stalled
+    build turn with no human act. So the fact is served here, on the read that surface already takes.
+
+    Booleans rather than model names: `slot_models` already carries what runs, and this payload
+    already has `model` and `chat_model` meaning where the lock MOVES a barred turn. Two more model
+    names in it would be read as two more of those.
+
+    Not gated on whether the standing mode honours the pick — that is spent inside `slot_models`,
+    and asking it twice would be one rule in two places.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    control = orch.project(start_preview=False).control
+
+    quiet = orch.sensitivity_state()
+    assert quiet["picked"] is False and quiet["chat_picked"] is False
+
+    control.pick("sov-imp")
+    live = orch.sensitivity_state()
+    assert live["picked"] is True, "the Build pick, which is the one an escalation moves"
+    assert live["chat_picked"] is False, "and it is not the Chat one — two turns, two facts"
+
+    control.pick(None)
+    assert orch.sensitivity_state()["picked"] is False
+
+
+def test_the_slot_answer_reads_the_snapshot_it_is_handed_and_not_a_fresh_one(tmp_path, monkeypatch):
+    """FOUND IN REVIEW. One payload used to take three separate `control.snapshot()` reads.
+
+    `sensitivity_state` reports `picked`/`chat_picked` beside `slot_models`, and the drawer's row
+    draws that answer only where the flag says a pick is why (#294). Read apart, an escalation
+    landing between them ships `picked: False` over a `slot_models` that has already moved — the
+    gate shut over a moved answer, which is #294 itself in a one-tick window. The payload has to be
+    a photograph of one moment, so the snapshot is taken once and handed down.
+
+    Asserted by taking the snapshot away: the live one is made to RAISE for the duration, so any
+    read of its own is a red rather than a silently different answer. Handing it a pick the control
+    does not hold is not enough on its own — the loop `replace`s almost every field it reads, so a
+    re-read there changes nothing observable, and a test written that way passes over it. This
+    covers both the pick line, where a raise propagates, and the loop, where the method's own
+    `except` would turn one into a missing slot.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    project = orch.project(start_preview=False)
+    project.control.set_mode(Mode.PLAN)
+    approved, _ = orch._sensitivity_for_turn(project, None)
+
+    assert project.control.snapshot().picked_model is None, "the premise: nothing is picked live"
+    handed = replace(project.control.snapshot(), picked_model="sov-imp")
+
+    def gone():
+        raise AssertionError("read its own snapshot instead of the one it was handed")
+
+    monkeypatch.setattr(project.control, "snapshot", gone)
+    answered = orch._locked_slot_models(project, approved, handed)
+
+    assert sorted(answered) == sorted(ASSIGNABLE_SLOTS), "a slot that raised would simply be absent"
+    assert answered["plan"] == answered["implement"] == "sov-imp"

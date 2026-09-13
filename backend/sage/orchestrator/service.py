@@ -154,7 +154,15 @@ from ..resources.sensitivity import (
 from ..resources.table_search import Candidate
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, reasoning_efforts_for, signing_slot
+from ..router.models import (
+    ASSIGNABLE_SLOTS,
+    Mode,
+    ModelCatalog,
+    Phase,
+    SessionState,
+    reasoning_efforts_for,
+    signing_slot,
+)
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
 from ..workspace.manager import (
@@ -16027,7 +16035,8 @@ class Orchestrator:
         """
         gate = self._sensitivity_gate()
         off = {"enabled": False, "locked": False, "group": "", "approved": [], "datasets": [],
-               "refusal": None, "model": None, "chat_model": None, "slot_models": {}, "reason": ""}
+               "refusal": None, "model": None, "chat_model": None, "slot_models": {},
+               "picked": False, "chat_picked": False, "unavailable": False, "reason": ""}
         if not gate.enabled:
             return off
         project = self.project()
@@ -16038,6 +16047,7 @@ class Orchestrator:
         # declaration beside it, and neither holds a cached verdict of its own.
         sticky = conversation is not None and project.record.session_ran_locked(conversation)
         approved, refusal = self._sensitivity_for_turn(project, conversation)
+        pick_now = project.control.snapshot()
         return {
             "enabled": True,
             "locked": bool(declared) or sticky,
@@ -16058,7 +16068,36 @@ class Orchestrator:
             # turn in hand, so they carry the rules that sit between a slot and the lock — the
             # signing pin above all (ADR-0032). Reusing `model` for every row would ALSO have named
             # a model two of the three rows do not get, because the move follows the mode.
-            "slot_models": self._locked_slot_models(project, approved),
+            "slot_models": self._locked_slot_models(project, approved, pick_now),
+            # WHETHER a pick is live, for each of the two turns a row can drive (#294). Booleans and
+            # not the models: `slot_models` above already says what each slot runs, and this payload
+            # already carries two fields called `model` and `chat_model` meaning where the lock MOVES
+            # a barred turn. A third and fourth model name in here would be read as one of those.
+            #
+            # The panel's rows draw the per-slot answer only where a rule that could have caused the
+            # difference is on the row (#287), and a live pick is one of those rules (#286). It used
+            # to be read from the browser's own mirror of the pick — written by `applyModelStatus`,
+            # so by user acts and loads and nothing else. That is true of every pick a PERSON makes
+            # and false of the one #294 is about: the orchestrator picks the strong plan-tier model
+            # when a build turn stalls, with no human act to write the mirror, so the row's gate
+            # stayed shut over a freshly-read answer. Sent here rather than polled anywhere new,
+            # because this is the read that surface already takes and now takes on a cadence.
+            #
+            # Not gated on `honours_pick`, deliberately: this says a pick EXISTS, and whether the
+            # standing mode honours it is already spent inside `slot_models`. Gating it here too
+            # would be one rule in two places, which is the shape #285 was.
+            # Off `pick_now`, the SAME snapshot `slot_models` above was computed from. FOUND IN
+            # REVIEW: these were three reads of `control.snapshot()` in one payload, and an
+            # escalation landing between them shipped `picked: False` beside a `slot_models` that
+            # had already moved — the browser's gate shut over a moved answer, which is #294 itself
+            # in a one-tick window. They are two halves of one fact and the payload has to be a
+            # photograph of it, not three glances.
+            "picked": bool(pick_now.picked_model),
+            "chat_picked": bool(pick_now.chat_model),
+            # Always False on an answer this function returned at all — it is the route's own
+            # never-500 handler that sets it. Present here and in `off` because a key that appears
+            # in one of three shapes is a key some reader will find missing.
+            "unavailable": False,
         }
 
     def _locked_model(
@@ -16098,7 +16137,7 @@ class Orchestrator:
             return None
 
     def _locked_slot_models(
-        self, project: Project, approved: ApprovedModels | None
+        self, project: Project, approved: ApprovedModels | None, snapshot: SessionState
     ) -> dict[str, str]:
         """What a turn in each assignable slot RUNS under the lock, for the panel's rows (ADR-0043).
 
@@ -16125,6 +16164,11 @@ class Orchestrator:
         only place in this method where the three slots are not asked the same question, because
         `ask` is the only row whose model drives two turns and the pin reaches one of them.
 
+        `snapshot` is passed in rather than read here, and taking a fresh one would be a defect
+        rather than a tidy-up: the caller reports `picked`/`chat_picked` beside this answer, the
+        drawer's row draws this answer only when that flag says a pick is why, and an escalation
+        landing between the two reads shipped a shut gate over a moved answer. One photograph.
+
         A slot that cannot be worked out is ABSENT rather than None-valued: the panel substitutes a
         row's shown model only where this names one, and a key holding null would make "the router
         could not answer" and "the router said nothing moves" the same read.
@@ -16137,19 +16181,30 @@ class Orchestrator:
         `_resolve_build` reads `picked_model`, so the `chat_thread_id` fork two paragraphs up already
         puts each row on the pick its own turn reads.
 
-        The browser still does not re-read on a pick (`store.js` re-reads on a mode, Binding or
-        Conversation change), and what makes holding this answer across one safe is the drawer rather
-        than the answer: its rows are the only reader, it re-reads on open, its mask puts the picker
-        out of reach for as long as it is open, and `set_catalog` clears the Build pick on every save.
-        Two windows that leaves rather than one, both of the same shape: #294, where the orchestrator
-        moves the pick itself when a build turn escalates and there is no human act to block; and a
-        second Workbench on the same Project, which one tab's mask cannot reach.
+        The browser did not re-read on a pick (`store.js` re-read on a mode, Binding or Conversation
+        change), and what made holding this answer across one safe was the drawer rather than the
+        answer: its rows are the only reader, it re-reads on open, its mask puts the picker out of
+        reach for as long as it is open, and `set_catalog` clears the Build pick on every save. Two
+        windows that left rather than one, both of the same shape: #294, where the orchestrator moves
+        the pick itself when a build turn escalates and there is no human act to block; and a second
+        Workbench on the same Project, which one tab's mask cannot reach.
 
-        #294 is NARROWER than its own write-up since the gate above. The escalation pins the turn
+        Both are closed since #294, and the paragraph above is left as written because the mechanism
+        is the part worth recognising. The drawer now re-reads this answer on its own 2s cadence for
+        as long as it is open (`store._watchAssignments`) — a refresh per tick on the surface that
+        draws the answer, not a refresh per pick, so `store.js`'s re-read list is unchanged. That is
+        the TIMING half only. The other half is that the panel's rows draw a moved answer only where
+        a rule that could have caused the move is on the row, and its pick rule read the browser's
+        own mirror of the pick — written on user acts alone, so an orchestrator's pick reached a
+        freshly-read answer and a shut gate. `sensitivity_state` therefore sends `picked` and
+        `chat_picked` beside this field, and the row asks those first.
+
+        #294 is NARROWER than its own write-up since the gate below. The escalation pins the turn
         with `set_turn_mode`, which deliberately leaves the standing choice alone — so a session
-        standing in Auto, the commonest way to reach an escalation at all, now has `selected_mode`
-        Auto and these rows drop the escalated pick unread. What is left is a session standing in
-        Plan or Implement. Whoever takes #294 should scope it from that and not from here.
+        standing in Auto, the commonest way to reach an escalation at all, has `selected_mode` Auto
+        and these rows drop the escalated pick unread. What was fixed is a session standing in Plan
+        or Implement. The two flags above are deliberately NOT gated the same way: they say a pick
+        EXISTS, and whether the standing mode honours it is already spent here.
         """
         if approved is None:
             return {}
@@ -16169,11 +16224,11 @@ class Orchestrator:
         # The Chat pick is not gated with it. Chat has no modes to make one inert, which is the same
         # asymmetry `set_catalog` has: it clears `picked_model` and leaves `chat_model` standing.
         honours_pick = project.control.selected_mode in (Mode.PLAN, Mode.IMPLEMENT)
-        pick = project.control.snapshot().picked_model if honours_pick else None
+        pick = snapshot.picked_model if honours_pick else None
         out: dict[str, str] = {}
         for slot in ASSIGNABLE_SLOTS:
             try:
-                state = replace(project.control.snapshot(),
+                state = replace(snapshot,
                                 picked_model=pick,
                                 # The `ask` row is the one with two turns behind it — `SLOTS` labels
                                 # it "Ask and Chat" and `_resolve_chat` returns `catalog.ask` — and

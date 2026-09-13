@@ -166,7 +166,15 @@ def test_the_lock_state_is_off_and_reads_nothing_without_the_group(tmp_path, mon
     assert orch.sensitivity_state() == {
         "enabled": False, "locked": False, "group": "",
         "approved": [], "datasets": [], "refusal": None, "model": None, "chat_model": None,
-        "slot_models": {}, "reason": "",
+        # Whether a pick is live, for each of the two turns a panel row can drive (#294). Present in
+        # the opted-out shape as well as the live one, because every reader of the live answer reads
+        # this one too — a missing key would make "no pick" and "no such deployment" the same read at
+        # the gate that decides whether a row draws anything at all.
+        # `unavailable` says WHICH falsy answer this is: a deployment with the gate off, or the
+        # route's own never-500 handler over a read that threw. They are the same shape otherwise,
+        # and the drawer's cadence stops on the first and must not stop on the second (#294).
+        "slot_models": {}, "picked": False, "chat_picked": False, "unavailable": False,
+        "reason": "",
     }
 
 
