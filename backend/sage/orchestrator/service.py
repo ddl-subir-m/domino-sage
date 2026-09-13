@@ -16027,7 +16027,8 @@ class Orchestrator:
         """
         gate = self._sensitivity_gate()
         off = {"enabled": False, "locked": False, "group": "", "approved": [], "datasets": [],
-               "refusal": None, "model": None, "chat_model": None, "slot_models": {}, "reason": ""}
+               "refusal": None, "model": None, "chat_model": None, "slot_models": {},
+               "picked": False, "chat_picked": False, "reason": ""}
         if not gate.enabled:
             return off
         project = self.project()
@@ -16038,6 +16039,7 @@ class Orchestrator:
         # declaration beside it, and neither holds a cached verdict of its own.
         sticky = conversation is not None and project.record.session_ran_locked(conversation)
         approved, refusal = self._sensitivity_for_turn(project, conversation)
+        pick_now = project.control.snapshot()
         return {
             "enabled": True,
             "locked": bool(declared) or sticky,
@@ -16059,6 +16061,28 @@ class Orchestrator:
             # signing pin above all (ADR-0032). Reusing `model` for every row would ALSO have named
             # a model two of the three rows do not get, because the move follows the mode.
             "slot_models": self._locked_slot_models(project, approved),
+            # WHETHER a pick is live, for each of the two turns a row can drive (#294). Booleans and
+            # not the models: `slot_models` above already says what each slot runs, and this payload
+            # already carries two fields called `model` and `chat_model` meaning where the lock MOVES
+            # a barred turn. A third and fourth model name in here would be read as one of those.
+            #
+            # The panel's rows draw the per-slot answer only where a rule that could have caused the
+            # difference is on the row (#287), and a live pick is one of those rules (#286). It used
+            # to be read from the browser's own mirror of the pick — written by `applyModelStatus`,
+            # so by user acts and loads and nothing else. That is true of every pick a PERSON makes
+            # and false of the one #294 is about: the orchestrator picks the strong plan-tier model
+            # when a build turn stalls, with no human act to write the mirror, so the row's gate
+            # stayed shut over a freshly-read answer. Sent here rather than polled anywhere new,
+            # because this is the read that surface already takes and now takes on a cadence.
+            #
+            # Not gated on `honours_pick`, deliberately: this says a pick EXISTS, and whether the
+            # standing mode honours it is already spent inside `slot_models`. Gating it here too
+            # would be one rule in two places, which is the shape #285 was.
+            # One snapshot for both, because they are two halves of one fact and a reader is
+            # entitled to assume they were taken together — the harness fixture serves them off one
+            # flag on exactly that assumption.
+            "picked": bool(pick_now.picked_model),
+            "chat_picked": bool(pick_now.chat_model),
         }
 
     def _locked_model(
@@ -16137,19 +16161,30 @@ class Orchestrator:
         `_resolve_build` reads `picked_model`, so the `chat_thread_id` fork two paragraphs up already
         puts each row on the pick its own turn reads.
 
-        The browser still does not re-read on a pick (`store.js` re-reads on a mode, Binding or
-        Conversation change), and what makes holding this answer across one safe is the drawer rather
-        than the answer: its rows are the only reader, it re-reads on open, its mask puts the picker
-        out of reach for as long as it is open, and `set_catalog` clears the Build pick on every save.
-        Two windows that leaves rather than one, both of the same shape: #294, where the orchestrator
-        moves the pick itself when a build turn escalates and there is no human act to block; and a
-        second Workbench on the same Project, which one tab's mask cannot reach.
+        The browser did not re-read on a pick (`store.js` re-read on a mode, Binding or Conversation
+        change), and what made holding this answer across one safe was the drawer rather than the
+        answer: its rows are the only reader, it re-reads on open, its mask puts the picker out of
+        reach for as long as it is open, and `set_catalog` clears the Build pick on every save. Two
+        windows that left rather than one, both of the same shape: #294, where the orchestrator moves
+        the pick itself when a build turn escalates and there is no human act to block; and a second
+        Workbench on the same Project, which one tab's mask cannot reach.
 
-        #294 is NARROWER than its own write-up since the gate above. The escalation pins the turn
+        Both are closed since #294, and the paragraph above is left as written because the mechanism
+        is the part worth recognising. The drawer now re-reads this answer on its own 2s cadence for
+        as long as it is open (`store._watchAssignments`) — a refresh per tick on the surface that
+        draws the answer, not a refresh per pick, so `store.js`'s re-read list is unchanged. That is
+        the TIMING half only. The other half is that the panel's rows draw a moved answer only where
+        a rule that could have caused the move is on the row, and its pick rule read the browser's
+        own mirror of the pick — written on user acts alone, so an orchestrator's pick reached a
+        freshly-read answer and a shut gate. `sensitivity_state` therefore sends `picked` and
+        `chat_picked` beside this field, and the row asks those first.
+
+        #294 is NARROWER than its own write-up since the gate below. The escalation pins the turn
         with `set_turn_mode`, which deliberately leaves the standing choice alone — so a session
-        standing in Auto, the commonest way to reach an escalation at all, now has `selected_mode`
-        Auto and these rows drop the escalated pick unread. What is left is a session standing in
-        Plan or Implement. Whoever takes #294 should scope it from that and not from here.
+        standing in Auto, the commonest way to reach an escalation at all, has `selected_mode` Auto
+        and these rows drop the escalated pick unread. What was fixed is a session standing in Plan
+        or Implement. The two flags above are deliberately NOT gated the same way: they say a pick
+        EXISTS, and whether the standing mode honours it is already spent here.
         """
         if approved is None:
             return {}

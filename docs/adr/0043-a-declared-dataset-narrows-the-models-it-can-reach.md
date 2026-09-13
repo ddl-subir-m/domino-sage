@@ -850,3 +850,117 @@ the first non-signing slot, and
 neither `slot_models` nor `shadowed` can see it, both being catalog-derived while that state is a
 property of one transcript — the same limit `preflight.shadowed_slots` records for its own sentence.
 See #293, where the mechanism is stated as the hypothesis to test rather than the thing to fix.
+
+## Amendment: the drawer holds its own cadence, because the tick it was given does not exist (#294)
+
+This closes the window the two amendments above name and leave open. The decision recorded for it
+turned out not to run, and that is the half of this worth reading.
+
+**The decided fix was unbuildable, and the paragraphs above are left as written.** Both of them say
+it: "re-read on the build watch's own tick while the drawer is open", and "#294's decided fix turns
+this from one read per event into a cadence for as long as a build runs with the drawer open". The
+whole argument for that shape was that the tick already existed and only needed a gate. It does not
+exist where the ticket needs it. `store._watchTimer` is written only inside `_watchBuild`, and
+`_watchBuild` has exactly one caller — the last line of `loadBuild`, `if (state.buildRunning)`. The
+two stream paths set `buildRunning` themselves and never reach it. So the tick runs only in a tab
+that loaded into a build that was ALREADY going: a reload, or the second Workbench. In the tab where
+somebody pressed Build and then opened this drawer — the likeliest way to reach the window at all —
+there is nothing to gate, and the fix would have shipped a green test and changed nothing in the case
+it was written for.
+
+**And the premise was empty rather than merely incomplete, which is a stronger claim and is
+measured.** Removing the new start/stop and re-running the harness leaves the row naming the
+pre-escalation model on BOTH paths, including the reload one where a build watch is live. That tick
+re-reads sensitivity only once the turn has ENDED, through `refreshBindings`. So a gate on it was
+never a gate on an existing read: option (a) needed a new call in the tick regardless, and the tick's
+existence — its only argument over the alternatives — bought nothing.
+`test_the_build_watch_reads_no_lock_of_its_own_mid_turn` holds that, because the absence is invisible
+from the call site and the next reader will otherwise propose (a) again from the fact that a timer
+exists.
+
+**What replaced it hangs off the surface instead.** `openAssignments` starts `_watchAssignments`, a
+2s interval that re-reads the lock while the drawer is open and the lock holds, and that is cleared
+on close. Both of the ticket's gates are kept, `assignmentsOpen` and `isLocked`; only the thing they
+hang off changes. The lock gate is not an optimisation — unlocked is the common case and draws no
+per-slot row, so without it every deployment that never opted in would pay a read every 2s.
+
+**The re-read decision above survives, in its own terms.** "The Workbench re-reads on a mode change
+and not on a model change" is unchanged, and no call site learned about picks. This is a refresh per
+tick while the one surface that draws the answer is drawn — the same justification (a) leaned on,
+minus the accident that a timer already existed elsewhere. What it costs is the sentence in the
+amendment above about `slot_models` staying outside the re-read list on a UI invariant: that field is
+still outside the list, but the invariant standing behind it is no longer only the mask.
+
+**What closes is the BROWSER's half of both windows, which is the whole of what a browser can close.**
+Whenever the server's answer moves, these rows now follow it. WHETHER a given escalation moves it is
+`_locked_slot_models`'s own gate, unchanged and recorded under #286: it drops a pick the standing mode
+will not honour, so a session standing in Auto — the commonest way to reach an escalation — never had
+a stale row here at all. Read without that sentence beside it, "both windows are closed" is wider than
+what shipped.
+
+**Both windows close by one mechanism, and that is the reason to prefer this over the version that
+was decided.** The amendment above names two of the same shape: the orchestrator moving the pick with
+no human act, and a second Workbench whose picker this tab's mask cannot reach. Keyed to the build,
+(a) would have covered the second only for as long as a build happened to be running. Keyed to the
+drawer, both are closed by the drawer being drawn. For the same reason a build ending is deliberately
+NOT a stop condition — narrowing the cadence to `buildRunning` would look like an optimisation and
+would put the second window back on the accident this exists to remove. The bound is the drawer,
+which is masked and read-only while a build runs and which nobody leaves open.
+
+**The cadence alone was observably nothing, and finding that out is the real content of this
+amendment.** A refreshed `slot_models` does not change a row: the panel draws the server's per-slot
+answer only where `moved` opens, and `moved`'s pick rule read `buildModel` — the browser's MIRROR of
+the pick, written by `applyModelStatus` and so by user acts and loads alone. That is true of every
+pick a PERSON makes, and false of the only one this ticket is about. Measured on the panel harness
+with the two cases differing in nothing else: a human pick draws `gpt-5.4`, an orchestrator pick
+leaves the row on `__default__` over a store that has already learned the move. So `sensitivity_state`
+sends `picked` and `chat_picked` beside `slot_models`, and the row asks those first, keeping the
+mirror as the fallback. That is the ticket's own option (b) — "add the live pick to the payload" —
+relocated onto the read this surface already takes, so it costs no endpoint, no request and no second
+cadence.
+
+**"The browser has no signal to key off" is two statements and neither text separated them.** Both
+#294's body and the amendment above say it, meaning WHEN to re-read. It is equally true of the GATE,
+and fixing only the first ships a change nobody can see — the same failure as option (a), reached a
+second time by a different route. Anyone reading that sentence later should read it as covering both.
+
+**Two things the review found in the guard rather than in the mechanism, and both worth keeping
+written down.** The tick's cheap gate was `isLocked`, and that helper folds two answers into one: a
+LANDED `enabled: false`, which is a fact about the deployment and a reason to stop asking, and `null`,
+which is a read that has not landed — it never has, it failed, or `dropSessionLock` cleared it on a
+Conversation change. Gated on the helper, a locked deployment whose reads were failing when the drawer
+opened would sit behind it with no lock drawn, every model selectable, and nothing retrying for the
+life of the drawer: the stale-"unlocked" direction this file calls the dangerous one, reached by the
+guard that exists to be cheap. The gate now stops only on a landed answer. And `refreshSensitivity`
+carries a one-shot repair for the app records (`!state.activeApp`, #264) which a Project with no app
+SELECTED never satisfies, so under a repeating caller it became a second request every 2s forever;
+the tick asks for it off until an answer has LANDED — not merely because it repeats, which was the
+first version of that argument and assumed a read that swallows its own rejection had succeeded. Both
+are the same shape, and it is the shape to carry away: a condition written for a caller that fires
+once per event, inherited by one that fires on a cadence. Neither is visible by reading the new code;
+both were correct where they were written.
+
+A third of the same family, declined rather than fixed: the null-sensitivity branch retries every 2s
+with no cap and no backoff. Bounded by an open modal drawer, and neither the build watch nor the turn
+watch has backoff either; capping it means teaching `refreshSensitivity` to report a failure it
+deliberately swallows.
+
+**An interval a surface opens has to die with it.** It starts on open, is cleared on close, and each
+tick re-checks `assignmentsOpen` and clears itself, so a close that never came through
+`openAssignments(false)` still ends it. A leaked 2s read of the lock, forever, would be a worse
+defect than the stale row. The read is generation-tagged like `setBuildMode`'s, read fresh per tick,
+so a read issued before a project switch is dropped when it lands.
+
+**What makes the cadence safe rather than only cheap is `refreshSensitivity` itself**, and it is worth
+naming here rather than rediscovering: it compares against what has actually been APPLIED, so stacked
+reads landing out of order cannot install a stale answer, and a read that fails leaves the last one
+standing rather than clearing it. That asymmetry is the right one in the same direction as everywhere
+else on this surface — a stale "locked" costs an explanation a beat out of date, while a stale
+"unlocked" would put a barred model under somebody's hand.
+
+**What this does not reach, unchanged from #287.** The ordering inside a single save round-trip is a
+different window and is still closed by the `moved` conjunct rather than by a refresh. That amendment
+says as much, and predicted this correctly: #294 changes the COUNT of reads in flight and leaves the
+ordering exactly as it was. The scope shrink recorded under #286 also stands — `_locked_slot_models`
+drops a pick the standing mode will not honour, so a session in Auto never opened this window at all,
+and what was fixed is a session standing in Plan or Implement.
