@@ -65,12 +65,12 @@ def chat_path_allowed(path: str, thread_id: str) -> bool:
     return rel.startswith((examples, meta))
 
 
-def _call_name_and_args(call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def tool_call_name_and_args(call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """The tool name and arguments of a tool_call, in either shape we see.
 
     The OpenAI shape the shim reads, and the OpenCode `state.input` shape the orchestrator reads.
-    Split out because the write side and the read side want the same parse and differ only in
-    which tool names they accept.
+    Split out because the write side, the read side and the label side want the same parse and
+    differ only in which tool names they accept.
     """
     name = ""
     args: Any = {}
@@ -98,7 +98,7 @@ def _path_arg(args: dict[str, Any]) -> str | None:
 
 def write_path_from_tool_call(call: dict[str, Any]) -> str | None:
     """The file a write/edit tool_call would touch, or None if this call is not a write."""
-    name, args = _call_name_and_args(call)
+    name, args = tool_call_name_and_args(call)
     return _path_arg(args) if name in WRITE_TOOLS else None
 
 
@@ -113,7 +113,7 @@ def read_path_from_tool_call(call: dict[str, Any]) -> str | None:
     the tool) still gets withheld; it is just named by its content fingerprint rather than by a
     filename, which is the fallback `apply_withheld` already needs for pasted text.
     """
-    name, args = _call_name_and_args(call)
+    name, args = tool_call_name_and_args(call)
     return _path_arg(args) if name in READ_TOOLS else None
 
 

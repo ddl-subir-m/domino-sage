@@ -398,6 +398,7 @@ window.SW = window.SW || {};
   // Seeded to the pair a store that has read nothing holds, so a refusal before the first status
   // read puts back what is already on screen rather than `undefined`.
   let chatConfirmed = { model: '', effort: null };
+  let buildConfirmed = { model: '', effort: null };
 
   function applyModelStatus(status) {
     const m = (status && status.model) || status;
@@ -438,6 +439,23 @@ window.SW = window.SW || {};
     // model this answer named with a level left over from something else.
     if ('chat_model' in m && 'reasoning_effort' in m) {
       chatConfirmed = { model: state.model, effort: state.reasoningEffort };
+    }
+    // Build's pair, on the same terms and for the same three reasons — #323 found all three of them
+    // live on `setBuildModel`, which #306 had scoped out on a comparison that only asked whether it
+    // reverts at all. Every word above about reading it off THIS ANSWER holds here unchanged,
+    // including the `{}` that `loadBuild` substitutes for a failed `/project`: that body writes
+    // neither `picked_model` nor `picked_effort`, so it may confirm neither.
+    //
+    // Its own record, gated on its own two keys, rather than a field on the one above. Not because
+    // any live answer separates the pairs — `project.status()` writes all four on adjacent lines, so
+    // today every payload that carries one carries the other — but because a shared record would
+    // gate Build's pair on keys that say nothing about it. The four-key rule and this two-key one
+    // agree on every payload that exists; they part on a body carrying Build's halves and not
+    // Chat's, and there the shared record would confirm neither, which is a refusal no payload
+    // argues for. Same reason the AND here is the rule's shape rather than a case with a witness:
+    // the reachable state is the one where BOTH keys are absent, which is the `{}` above.
+    if ('picked_model' in m && 'picked_effort' in m) {
+      buildConfirmed = { model: state.buildModel, effort: state.buildEffort };
     }
   }
 
@@ -3503,8 +3521,6 @@ window.SW = window.SW || {};
     // and sending them separately would leave a window where a level picked for one alias is
     // standing against another.
     async setBuildModel(pick, effort) {
-      const previous = state.buildModel;
-      const previousEffort = state.buildEffort;
       state.buildModel = pick || '';
       state.buildEffort = (pick && effort) || null;
       notify();
@@ -3518,9 +3534,35 @@ window.SW = window.SW || {};
         // wrong model for every build after it. The level goes back with it for the same reason
         // and in the same breath — a level left standing over a restored model is the mismatched
         // pair this whole seam exists to prevent.
-        state.buildModel = previous;
-        state.buildEffort = previousEffort;
-        notify();
+        //
+        // What goes back is the pair `applyModelStatus` last recorded, never one read on the way in
+        // (#323, the same three failures #306 fixed on `setChatModel`). Nothing disables the picker
+        // while this POST is out, so a second pick can be made in the window — and a call that
+        // captured `state` at entry would take the FIRST pick's optimistic value as the pair to
+        // restore. Measured, not inferred: two refusals in one window left the control on the first
+        // pick's `coder` while the server still held `gpt-5.4`/`high`, and a refused model never
+        // self-corrects, so it named a model no build would run from then on.
+        //
+        // Guarded on the pair still being this call's own, which is narrower than it looks: a save
+        // that LANDED in the window has already moved the record, so the guard is not what protects
+        // that case. What it protects is a pick whose own save is still out — restoring over that
+        // would take somebody's second choice off the control while it is still being saved, under
+        // a toast about their first. Compared rather than generation-tagged like `scopeLoad`'s
+        // reads, because the writers that could have moved it share no counter; what the comparison
+        // cannot see is a later write of the SAME pair, and there restoring and leaving it are the
+        // same thing.
+        //
+        // The residual #306 left open is left open here, and for its reason. Pick A, pick B, pick A
+        // again inside one round trip: the comparison sees A and cannot tell the third call's A from
+        // this one's, so the refusal restores over a pick whose own POST is still out. That POST
+        // then answers and settles the control either way — a flicker, not the lasting wrong name
+        // this seam exists to prevent — and a generation counter would cost every writer of the pair
+        // a tag to buy only the flicker.
+        if (state.buildModel === (pick || '') && state.buildEffort === ((pick && effort) || null)) {
+          state.buildModel = buildConfirmed.model;
+          state.buildEffort = buildConfirmed.effort;
+          notify();
+        }
         antd.message.error(String((err && err.message) || err));
       }
     },

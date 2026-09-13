@@ -7,6 +7,8 @@ shape of a value-matching guardrail.
 """
 from __future__ import annotations
 
+import json
+
 from sage.orchestrator import withhold
 from sage.orchestrator.withhold import BLOCKED, CLEAN, UNKNOWN, carriers, search
 from sage.shim.chat_paths import apply_withheld, file_key, text_key
@@ -20,6 +22,16 @@ def _read(cid: str, path: str, body: str) -> list[dict]:
         {"role": "assistant", "content": None, "tool_calls": [
             {"id": cid, "type": "function",
              "function": {"name": "read", "arguments": f'{{"filePath": "{path}"}}'}}]},
+        {"role": "tool", "tool_call_id": cid, "content": body},
+    ]
+
+
+def _tool(cid: str, name: str, args: dict, body: str) -> list[dict]:
+    """One non-read tool call, as the gateway payload carries it."""
+    return [
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": cid, "type": "function",
+             "function": {"name": name, "arguments": json.dumps(args)}}]},
         {"role": "tool", "tool_call_id": cid, "content": body},
     ]
 
@@ -52,6 +64,24 @@ def test_it_names_the_one_file_that_is_refused():
     found = search(msgs, ask)
     assert [c.label for c in found.carriers] == ["raw.csv"]
     assert found.complete is True
+
+
+def test_a_bash_result_is_named_by_the_command_that_produced_it():
+    msgs = [
+        {"role": "system", "content": "You are Sage."},
+        *_tool("git", "bash", {"command": "git show HEAD --stat"}, f"Author: a@b.com\n{POISON}"),
+    ]
+    assert [c.label for c in carriers(msgs)] == ["the output of `git show HEAD --stat`"]
+
+
+def test_a_non_bash_tool_result_keeps_the_generic_tool_read_label():
+    msgs = [
+        {"role": "system", "content": "You are Sage."},
+        *_tool("live", "live_read_files", {"dataset": "Card_txn_raw",
+                                           "path": "card_panel_transactions_RAW.csv"},
+               f"RuntimeError: request 1234567890\n{POISON}"),
+    ]
+    assert [c.label for c in carriers(msgs)] == ["something a tool read"]
 
 
 def test_the_search_costs_about_two_log_n_calls():
