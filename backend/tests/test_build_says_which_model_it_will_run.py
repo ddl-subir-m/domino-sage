@@ -666,6 +666,32 @@ def test_a_stranded_level_on_a_real_override_is_accounted_for_when_idle_too():
     assert "Clear the pick" not in row["why"]
 
 
+def test_an_alias_that_keeps_no_level_beside_tools_strands_whatever_stands_on_it():
+    """The state every production alias except two is in today, and nothing covered it.
+
+    `sonnet`, `opus`, the Gemmas — every alias nobody has probed and the gateway publishes no enum
+    for — answer an EMPTY `reasoning_efforts_with_tools`. Empty is an answer ("this alias keeps no
+    level beside tools"), not an absence, so a level standing on one is stranded and
+    `enforcement.py` really does drop every level for exactly those aliases.
+
+    The fixture could express "advertises none, nothing standing" and "absent field, level
+    standing", but not this pair — which is the commonest pairing in production.
+    """
+    (row,) = _drawn([{"mode": "plan",
+                      "seedPick": {"model": "anthropic/claude-builder", "effort": "high"}}])
+
+    # The chip does not name a level the shim will drop...
+    assert row["label"] == "anthropic/claude-builder"
+    assert "anthropic/claude-builder doesn't accept High" in row["why"]
+    # ...and the row grows a submenu it would not otherwise have, BECAUSE a level is stranded on
+    # it: `withEfforts` draws when `levels.length || stranded`. So the level has somewhere to be
+    # read and `Model default` is a reachable exit — which is exactly the case that rule exists for,
+    # and the reason an alias offering nothing is not simply skipped.
+    kids = _children(row, "anthropic/claude-builder")
+    assert [c["label"] for c in kids] == ["Model default", "High — not accepted"]
+    assert kids[-1]["disabled"] is True
+
+
 def test_a_stored_level_can_never_collide_with_the_no_level_row():
     """The no-level row's key rests on the ENCODING, not on a promise about what can be stored.
 
