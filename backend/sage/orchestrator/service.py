@@ -131,7 +131,6 @@ from ..resources.provider import (
     ResourceProvider,
     ResourceUnavailable,
     Table,
-    alias_reasoning_efforts,
     cascade_levels,
     safe_identifier,
     walkable_databases,
@@ -15752,7 +15751,13 @@ class Orchestrator:
                 "description": a.description,
                 "capabilities": a.capabilities,
                 "costs": a.costs,
-                "reasoning_efforts": a.reasoning_efforts or alias_reasoning_efforts(a.name),
+                # Taken as it stands, for the reason the same field in `model_assignments` is
+                # (#281, #291): every LlmAlias arrives with this already narrowed, so a fallback
+                # behind it could only fire on the EMPTY list — and empty is the verdict that the
+                # gateway's enum and the measured table are disjoint, not an unfilled field.
+                # Recomputing there would offer the full measured table to the one alias whose
+                # every advertised level was probed and refused.
+                "reasoning_efforts": a.reasoning_efforts,
             }
             for a in self._resources.list_llm_aliases()
         ]

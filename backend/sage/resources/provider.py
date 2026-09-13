@@ -2073,20 +2073,36 @@ class DominoResourceProvider:
 # alias included, so the rail can be exercised locally with no gateway. Kept faithful rather than
 # tidy: every real record carries `streaming` and `responses` alongside the capabilities that
 # actually tell aliases apart, and several report the gateway's fallback {1.0, 2.0} rate.
+#
+# `reasoning_efforts` is filled the way the live records fill it, rather than left to a default: the
+# gateway publishes `inference_params: {}` for every alias today, so `alias_reasoning_efforts` with
+# no metadata is literally what a real row computes. It is carried because callers read this field
+# as it stands (#291) — a row that left it empty here would say "every level was probed and
+# refused", which is a verdict, not a fixture that has not been filled in.
+# Evaluated once at import, where the old fallback ran per request. Equivalent only while
+# `REASONING_EFFORTS` (router/models.py) is a dict literal nothing mutates — if it ever becomes
+# loaded, patched or measured at runtime, these rows must go back to computing per call, or they
+# freeze at import and the stale answer surfaces in the picker rather than here.
 _FAKE_ALIASES = (
     LlmAlias("f-gpt54", "gpt-5.4", "gpt-5.4", "gpt-5.4",
-             ["chat", "tools", "responses", "streaming", "vision"], {"input": 2.5, "output": 15.0}),
+             ["chat", "tools", "responses", "streaming", "vision"], {"input": 2.5, "output": 15.0},
+             reasoning_efforts=alias_reasoning_efforts("gpt-5.4")),
     LlmAlias("f-sonnet", "sonnet", "Claude Sonnet 4.6", None,
-             ["chat", "responses", "tools", "streaming"], {"input": 3.0, "output": 15.0}),
+             ["chat", "responses", "tools", "streaming"], {"input": 3.0, "output": 15.0},
+             reasoning_efforts=alias_reasoning_efforts("sonnet")),
     LlmAlias("f-opus", "opus", "Claude Opus 4.6", None,
-             ["chat", "streaming", "responses", "tools"], {"input": 5.0, "output": 25.0}),
+             ["chat", "streaming", "responses", "tools"], {"input": 5.0, "output": 25.0},
+             reasoning_efforts=alias_reasoning_efforts("opus")),
     LlmAlias("f-qwen3c", "bedrock-qwen3-coder", "bedrock-qwen3-coder", None,
-             ["chat", "streaming", "tools", "responses"], {"input": 1.0, "output": 2.0}),
+             ["chat", "streaming", "tools", "responses"], {"input": 1.0, "output": 2.0},
+             reasoning_efforts=alias_reasoning_efforts("bedrock-qwen3-coder")),
     LlmAlias("f-qwen25", "qwen-2-5", "Qwen 2.5 (Domino-hosted)",
              "Runs inside Domino, so calls never leave the platform.",
-             ["chat", "tools"], {"input": 1.0, "output": 2.0}),
+             ["chat", "tools"], {"input": 1.0, "output": 2.0},
+             reasoning_efforts=alias_reasoning_efforts("qwen-2-5")),
     LlmAlias("f-embed", "text-embedding-3-small", "Text Embedding 3 Small",
-             "Turns text into vectors. Not a chat model.", ["embeddings"], {}),
+             "Turns text into vectors. Not a chat model.", ["embeddings"], {},
+             reasoning_efforts=alias_reasoning_efforts("text-embedding-3-small")),
 )
 
 
