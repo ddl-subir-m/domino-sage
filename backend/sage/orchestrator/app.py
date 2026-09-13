@@ -1676,9 +1676,11 @@ async def set_model(request: Request) -> JSONResponse:
         try:
             orchestrator.set_catalog(**(body.get("catalog") or {}))
         except ValueError as e:
-            # A slot name the catalog does not have. The panel only ever sends names this route's
-            # GET returned, so if it appears the bug is in Sage — but it arrives over the wire, and
-            # a 500 is the wrong way to say so.
+            # A slot name the catalog does not have, a malformed assignment, or an effort the slot's
+            # model does not accept (ADR-0049). The panel only ever sends what this route's GET
+            # returned, so if the first appears the bug is in Sage — but the last is a choice a
+            # person can make, and all three arrive over the wire, where a 500 is the wrong way to
+            # say so. The sentence is the service's: it names the model and the levels it takes.
             return JSONResponse(status_code=400, content={"error": str(e)})
         except TurnBusy as e:
             # 409, as everywhere else the turn lock refuses: the request is well formed and what is

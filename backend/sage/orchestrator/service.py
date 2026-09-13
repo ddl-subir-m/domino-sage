@@ -155,7 +155,7 @@ from ..resources.sensitivity import (
 from ..resources.table_search import Candidate
 from ..router import llm_router
 from ..router.model_control import ModelControl
-from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, signing_slot
+from ..router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, reasoning_efforts_for, signing_slot
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
 from ..workspace.manager import (
@@ -3825,6 +3825,13 @@ class Project:
                     "plan": self.shim.catalog.plan,
                     "implement": self.shim.catalog.implement,
                     "ask": self.shim.catalog.ask,
+                    # Flat `<slot>_effort` keys rather than a `{model, effort}` per slot, so that
+                    # every reader already keyed on `catalog.plan` keeps reading it (ADR-0049). The
+                    # Build chip menu restates the router's precedence in JS and now has the second
+                    # half of each assignment to restate with it.
+                    "plan_effort": self.shim.catalog.plan_effort,
+                    "implement_effort": self.shim.catalog.implement_effort,
+                    "ask_effort": self.shim.catalog.ask_effort,
                 },
                 # The picker draws the model each mode will run on by restating the router's
                 # precedence in JS. It cannot see the signing pin, which outranks all of it, so a
@@ -14631,7 +14638,36 @@ class Orchestrator:
 
     def _effective_catalog(self, record: ProjectRecord) -> ModelCatalog:
         overrides = record.read_catalog_overrides()
-        return replace(self._catalog, **overrides) if overrides else self._catalog
+        fields: dict[str, str] = {}
+        for slot, assignment in overrides.items():
+            if slot not in SLOTS:
+                # A key no catalog has. `set_catalog` refuses to write one, and this is the same
+                # refusal reached through the file, which a hand-edit or a bad merge can still
+                # produce — `replace()` would raise TypeError on EVERY resolve of this project's
+                # catalog, which is the durable brick that guard is argued for. Guarded here and
+                # not only for the effort half below, because half a defense against a brick is
+                # not a defense: either shape of bad key takes the Project down the same way.
+                log.warning("model assignments: ignoring %r, which is not a model slot", slot)
+                continue
+            if assignment.get("model"):
+                fields[slot] = assignment["model"]
+            # An effort can outlive the model it was saved beside: clearing a slot's model leaves
+            # the deployment default in place, and the effort stays with it. `set_catalog` checks
+            # the pair on the way in, which is where a bad level gets a 400 rather than a turn.
+            # That check is not a guarantee this read can lean on, though — the deployment default
+            # can move under a stored effort long after it was saved, and nothing re-validates it.
+            # Harmless while nothing sends the field; #282 is where that stops being true and is
+            # the ticket that owns the answer.
+            #
+            # Guarded by ASSIGNABLE_SLOTS and not just by presence: only those three have an
+            # `<slot>_effort` on ModelCatalog, so a `sovereign_plan` effort — which `set_catalog`
+            # refuses to write but a hand-edit or a bad merge of this committed file can still
+            # produce — would raise TypeError out of `replace()` on EVERY resolve of this project's
+            # catalog. The same durable brick the unknown-slot guard in `set_catalog` is written
+            # against, reached through the file instead of through the route.
+            if slot in ASSIGNABLE_SLOTS and assignment.get("effort"):
+                fields[f"{slot}_effort"] = assignment["effort"]
+        return replace(self._catalog, **fields) if fields else self._catalog
 
     def model_assignments(self) -> dict:
         """What the model panel is drawn from: the three assignable slots, and the Aliases a person
@@ -14653,10 +14689,15 @@ class Orchestrator:
         defaults = self._catalog
         project = self.project()
         live = project.shim.catalog
-        # Key presence, not `live != default`. Assigning a slot to the model that happens to BE the
+        # A saved model, not `live != default`. Assigning a slot to the model that happens to BE the
         # deployment default writes an override all the same, and reporting that as "following the
         # default" is a lie with a consequence: the day the deployment default moves, this project
         # will not follow it, and the panel said it would.
+        #
+        # Key presence used to be the whole check and is no longer enough: an entry can now exist
+        # carrying an effort alone, with its model still following the default (ADR-0049). So the
+        # question moved one level in — to the MODEL inside the entry — while the argument above it
+        # did not, because `assigned` has only ever been the model's word.
         overrides = project.record.read_catalog_overrides()
         # The one verdict that needs no gateway, so it is settled before one is asked (#276). A
         # shadowed slot is shadowed whether or not the Alias listing lands, and reading it below the
@@ -14668,7 +14709,14 @@ class Orchestrator:
                 "slot": slot,
                 "model": getattr(live, slot),
                 "default": getattr(defaults, slot),
-                "assigned": slot in overrides,
+                # The effort half of the assignment, reported the same way as the model half and
+                # for the same reason: once a row carries one, the catalog it is showing no longer
+                # holds what "Use the default" goes back to (ADR-0049). No `assigned` twin, because
+                # unlike a model there is nothing to distinguish — the default IS no effort, so an
+                # effort that is present was picked.
+                "effort": getattr(live, f"{slot}_effort"),
+                "default_effort": getattr(defaults, f"{slot}_effort"),
+                "assigned": bool((overrides.get(slot) or {}).get("model")),
                 "problem": shadowed.get(slot),
                 # Which KIND of verdict `problem` is carrying, for the one reader that has to tell
                 # them apart: the sensitivity lock outranks the signing pin
@@ -14709,6 +14757,19 @@ class Orchestrator:
                     # Carried so the panel can reuse the chat-capable filter the Chat picker already
                     # applies, rather than growing a second copy of that rule on this side.
                     "capabilities": a.capabilities,
+                    # Same reason as `capabilities` above: the row a slot names decides which
+                    # efforts that slot may offer, and the join is here or it is a second copy of
+                    # the per-alias table on the panel's side (#280).
+                    #
+                    # Taken as it stands, with no `or alias_reasoning_efforts(a.name)` behind it.
+                    # Every LlmAlias is built carrying this field already narrowed (provider.py's
+                    # two construction sites), so such a fallback could only fire on the EMPTY
+                    # list — and empty is not "nobody filled it in", it is the verdict that the
+                    # gateway's published enum and the measured table have nothing in common.
+                    # Recomputing without the metadata there would answer the full measured list
+                    # and put back exactly the levels the narrowing just refused, which is the one
+                    # case `alias_reasoning_efforts` exists for.
+                    "reasoning_efforts": a.reasoning_efforts,
                     "serving": (problem := alias_problem(a.name, aliases, endpoints)) is None,
                     "problem": problem,
                 }
@@ -14719,8 +14780,96 @@ class Orchestrator:
             "error": " ".join(errors) or None,
         }
 
-    def set_catalog(self, **fields: str | None) -> ModelCatalog:
-        """Assign the model a Build mode runs on, or take an assignment back (ADR-0017).
+    def _merge_assignment(self, slot: str, stored: dict | None,
+                          value: str | dict | None) -> dict | None:
+        """One row's new saved state, or None when the row goes back to the default entirely.
+
+        Raises ValueError for everything the route answers 400 to. All of it is refused BEFORE the
+        write, for the reason the unknown-slot check in `set_catalog` is: what lands in
+        `model_overrides.json` is read on every resolve of this project's catalog, so a value saved
+        here that a turn cannot use is a durable brick rather than a transient 400.
+        """
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            value = {"model": value}
+        if not isinstance(value, dict):
+            # ValueError and not the TypeError the shape suggests: this arrives over the wire and
+            # the route answers every ValueError out of here with a 400. A TypeError would be a 500,
+            # which is the wrong way to say "that is not an assignment".
+            raise ValueError(f"{slot}: expected a model id or a {{model, effort}} object")  # noqa: TRY004
+        extra = sorted(k for k in value if k not in ("model", "effort"))
+        if extra:
+            raise ValueError(f"{slot}: not part of a model assignment: {', '.join(extra)}")
+        wrong = sorted(k for k in ("model", "effort")
+                       if value.get(k) is not None and not isinstance(value[k], str))
+        if wrong:
+            # Both halves are strings or they are nothing. Without this a `{"model": 123}` reaches
+            # `reasoning_efforts_for`, which calls `.rsplit` on it, and the AttributeError is a 500
+            # — the one answer this whole path is written to keep off the wire.
+            raise ValueError(f"{slot}: a model assignment's "
+                             f"{' and '.join(wrong)} must be text")
+        merged = dict(stored or {"model": None, "effort": None})
+        if "model" in value:
+            merged["model"] = value["model"] or None
+        if "effort" in value:
+            if value["effort"] and slot not in ASSIGNABLE_SLOTS:
+                # Unreachable from the panel, which draws its rows `for slot in ASSIGNABLE_SLOTS`,
+                # so the only caller that can land here is one working the API directly — and it has
+                # no panel to learn the rule from. The sentence is therefore the whole value of the
+                # refusal and has to carry the fact, not the verdict. Refused rather than tolerated
+                # because storing it would be a setting that nothing ever reads, which is the
+                # outcome this path exists to prevent.
+                raise ValueError(f"{slot} carries no reasoning effort: the router reads no "
+                                 f"sovereign slot, so an effort saved there would never be sent")
+            merged["effort"] = value["effort"] or None
+        if slot not in ASSIGNABLE_SLOTS:
+            # Not only when one ARRIVES. An effort already on a sovereign row — from a legacy file,
+            # a hand-edit, or a row written before the refusal above existed — would otherwise ride
+            # through a model-only save and be written back, so the path that refuses to accept the
+            # setting would be the path that keeps re-persisting it.
+            merged["effort"] = None
+        # The model this row will actually run: its own if it has one, otherwise the deployment
+        # default it falls back to. An effort is legal against THAT, never against the model the row
+        # used to hold.
+        model = merged["model"] or getattr(self._catalog, slot)
+        # The measured table, not the alias record's `reasoning_efforts` the panel draws its menu
+        # from — ADR-0049 names the table for this check, and reading the record would put a gateway
+        # call on a write path, where an unreachable gateway would stop a person saving.
+        #
+        # The two agree on every alias here, because they differ only for an alias that has a
+        # published enum AND no row in the measured table — and `inference_params` is `{}` for every
+        # alias on this gateway, gpt-5.4 included (#284, read straight off /api/aliases).
+        #
+        # What that pair does when it does arrive is not "a menu with a bad option on it". With no
+        # row there is no intersection, so `alias_reasoning_efforts` passes the RAW enum through to
+        # the panel, while `reasoning_efforts_for` answers `()` — every level the control offers is
+        # refused here, and nothing on that row can be saved at all.
+        #
+        # So the lever is the table's coverage, not #284 landing: what closes it is probing that
+        # alias (scripts/reasoning-probe.py), not a change here. Re-read this if a row ever reports
+        # an effort it cannot save — either that alias needs a probe, or this check has to reach the
+        # same record the panel drew from.
+        accepted = reasoning_efforts_for(model)
+        if merged["effort"] and merged["effort"] not in accepted:
+            # "Did this call CHANGE the effort", not "did it mention one". A drawer that PUTs the
+            # whole row on a model change echoes the effort it was already showing, and that is the
+            # person changing the model — the case the drop below is written for — not the person
+            # asking for a level. Keying on the key's presence would answer it with a hard 400 and
+            # would make the rule depend on the client sending `effort` only when it changed, which
+            # is a constraint on #283 rather than a property of this contract.
+            if value.get("effort") and value["effort"] != (stored or {}).get("effort"):
+                takes = f"it accepts {', '.join(accepted)}" if accepted else "it accepts no effort"
+                raise ValueError(f"{model} does not accept the reasoning effort "
+                                 f"{merged['effort']!r} — {takes}")
+            # Not asked for here: the person is changing the model and the old effort came with the
+            # row. Refusing would make a slot that carries an effort impossible to retarget, so the
+            # effort goes instead — it belonged to the model that just left.
+            merged["effort"] = None
+        return merged if merged["model"] or merged["effort"] else None
+
+    def set_catalog(self, **fields: str | dict | None) -> ModelCatalog:
+        """Assign the model and effort a Build mode runs on, or take either back (ADR-0017, 0049).
 
         Three cases, and telling the second from the third is the whole point. A field carrying a
         model id ASSIGNS that slot. A field carrying `None` or `""` CLEARS it, so the slot falls
@@ -14728,6 +14877,22 @@ class Orchestrator:
         assignment, once made, could never be undone, and the "Use the default" row had nothing to
         call. A field that is ABSENT is left alone: the drawer saves one row at a time and must not
         silently revert the other two.
+
+        A field may instead carry `{"model": ..., "effort": ...}`, and those same three cases apply
+        again to each key INSIDE it — because the row has two controls and touching one must not
+        clobber the other, exactly as touching one row must not clobber the other two. An effort
+        that could not be cleared on its own would be a setting that can never be undone, which is
+        the defect the clear path above exists to prevent.
+
+        A bare model id is exactly `{"model": id}` — one rule rather than a second spelling with its
+        own behaviour — which is what the drawer sends until #283 draws the second control.
+
+        One invariant holds the pair legal: a stored effort is always one the slot's model accepts,
+        measured per alias (#280). An effort that ARRIVES here and fails that is refused, because
+        the person is asking for something the alias will 400 on and should be told. An effort
+        ALREADY on disk that the incoming model does not accept is dropped instead, because the
+        person is changing the model and refusing that would make a slot with an effort on it
+        impossible to retarget. Either way nothing that would break a turn reaches the file.
 
         The new catalog is rebuilt through `_effective_catalog` rather than by patching the live
         one, because that is the only expression that knows what a cleared slot reverts TO.
@@ -14751,9 +14916,10 @@ class Orchestrator:
             raise TurnBusy(self._turn_wedged, "change the model")
         try:
             overrides = project.record.read_catalog_overrides()
-            for slot, model in fields.items():
-                if model:
-                    overrides[slot] = model
+            for slot, value in fields.items():
+                assignment = self._merge_assignment(slot, overrides.get(slot), value)
+                if assignment:
+                    overrides[slot] = assignment
                 else:
                     overrides.pop(slot, None)
             project.record.write_catalog_overrides(overrides)

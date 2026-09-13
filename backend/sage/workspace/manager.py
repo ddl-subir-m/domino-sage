@@ -40,6 +40,13 @@ from .threads import CHAT_WORK, new_id, safe_id
 
 log = logging.getLogger(__name__)
 
+# `(overrides file, slot)` pairs already reported as unreadable by `read_catalog_overrides`, so a
+# malformed row is said once per process instead of on every catalog resolve. Bounded by the slots
+# of the Projects this Builder has opened, and deliberately never cleared — re-reporting the same
+# row after a poll is the noise this exists to stop, and a row that gets FIXED stops being read
+# here at all. Retire it with #289, which gives the fault a witness a person can actually see.
+_warned_bad_slots: set[tuple[str, str]] = set()
+
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -627,9 +634,50 @@ class ProjectRecord:
         return self.path / ".sage" / "model_overrides.json"
 
     def read_catalog_overrides(self) -> dict:
+        """One entry per assigned slot, always `{"model": ..., "effort": ...}` (ADR-0049).
+
+        A bare string where an object is now expected is an assignment written before efforts
+        shipped, and it means **this model, no effort** — which is exactly what that assignment has
+        always done, so the migration preserves the behaviour rather than guessing at it. It is
+        normalised on the way out and nowhere else, so callers never see two shapes — which is the
+        whole point of doing it here instead of at each reader.
+
+        Reading never writes. The file is rewritten by the next `set_catalog`, and because that
+        reads the whole dict and writes the whole dict back, saving any ONE row converts every
+        legacy row in the file along with it. Worth knowing before reaching for the old shape as
+        evidence of anything: it survives until the first save of any slot, not of that slot.
+        """
         if not self.catalog_overrides_path.exists():
             return {}
-        return json.loads(self.catalog_overrides_path.read_text())
+        raw = json.loads(self.catalog_overrides_path.read_text())
+        out = {}
+        for slot, value in raw.items():
+            if isinstance(value, str):
+                out[slot] = {"model": value, "effort": None}
+            elif isinstance(value, dict):
+                # Both halves named, never `dict(value)`. The docstring above promises callers one
+                # shape, and a pass-through breaks that promise for the most natural thing a person
+                # hand-editing this file would write: `{"model": "gpt-5.4"}` with no effort key.
+                # `_merge_assignment` copies what it is given and then subscripts both halves, so a
+                # missing key is a KeyError — a 500 out of the save route that is written to answer
+                # 400. Filling them here is what makes "callers never see two shapes" true.
+                out[slot] = {"model": value.get("model"), "effort": value.get("effort")}
+            else:
+                # Neither shape, so not an assignment: the slot follows the deployment default,
+                # which is what no assignment has always meant. Dropped rather than raised because
+                # this file is committed and shared with everyone in the Project — a hand-edit or a
+                # bad merge is reachable, and a read that raises takes out every resolve of this
+                # project's catalog rather than the one row that is wrong.
+                #
+                # Said once per row per process, not once per read: this runs on every catalog
+                # resolve and every draw of the panel, which polls, so an un-deduplicated warning
+                # is a line every few seconds for as long as the Builder is open. The person-facing
+                # witness for this fault is #289's, on the row's own `problem` field.
+                if (key := (str(self.catalog_overrides_path), slot)) not in _warned_bad_slots:
+                    _warned_bad_slots.add(key)
+                    log.warning("model assignments: ignoring the %s slot, which holds no model",
+                                slot)
+        return out
 
     def write_catalog_overrides(self, overrides: dict) -> None:
         self.catalog_overrides_path.parent.mkdir(parents=True, exist_ok=True)
