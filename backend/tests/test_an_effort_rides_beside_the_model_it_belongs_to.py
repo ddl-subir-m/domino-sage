@@ -301,6 +301,43 @@ def test_an_empty_effort_list_is_a_verdict_and_is_not_recomputed(tmp_path):
     assert row["reasoning_efforts"] == []
 
 
+def test_the_chat_picker_reads_the_same_verdict_rather_than_recomputing_it(tmp_path):
+    """The Chat picker holds a second copy of the idiom above (#291), and empty means there the
+    same thing it means in the panel: every level this alias advertises was probed and refused. The
+    two rows differ only for this alias shape — a narrowed list is the same either way — so the
+    empty one is the whole test."""
+    orch = Orchestrator(
+        workspace_dir=tmp_path / "mnt" / "code", template=_template(tmp_path),
+        gateway=FakeGatewayClient(), catalog=CATALOG, project_id="Sage",
+        resources=FakeResourceProvider([
+            LlmAlias("id-gemini", "gemini-3.7-flash", "Gemini 3.7 Flash", None, ["chat"], {},
+                     reasoning_efforts=[]),
+            LlmAlias("id-gpt", "gpt-5.4", "GPT-5.4", None, ["chat"], {},
+                     reasoning_efforts=["low"]),
+        ]),
+    )
+    by_name = {a["name"]: a for a in orch.list_llm_aliases()}
+    assert by_name["gemini-3.7-flash"]["reasoning_efforts"] == []
+    assert by_name["gpt-5.4"]["reasoning_efforts"] == ["low"]
+
+
+def test_an_effort_the_picker_does_not_offer_is_refused_rather_than_stored(tmp_path):
+    """`set_chat_pick` validates against that same list, so the verdict has to reach it too: an
+    alias narrowed to nothing takes no effort at all, rather than the four the measured table
+    holds."""
+    orch = Orchestrator(
+        workspace_dir=tmp_path / "mnt" / "code", template=_template(tmp_path),
+        gateway=FakeGatewayClient(), catalog=CATALOG, project_id="Sage",
+        resources=FakeResourceProvider([
+            LlmAlias("id-gemini", "gemini-3.7-flash", "Gemini 3.7 Flash", None, ["chat"], {},
+                     reasoning_efforts=[]),
+        ]),
+    )
+    orch.project(start_preview=False)
+    with pytest.raises(ValueError, match="invalid reasoning_effort"):
+        orch.set_chat_pick("gemini-3.7-flash", "max")
+
+
 def test_the_status_carries_each_slots_effort_beside_its_model(tmp_path):
     """Flat `<slot>_effort` keys, so every reader already keyed on `catalog.plan` keeps reading it."""
     orch = _orch(tmp_path)
