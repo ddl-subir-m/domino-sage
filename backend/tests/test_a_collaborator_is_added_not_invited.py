@@ -747,11 +747,22 @@ def test_the_dialog_says_what_leaving_it_off_costs_the_charts():
 
 
 @needs_node
-def test_the_dialog_says_the_card_s_rows_never_passed_the_gateway():
-    """#321. Two lanes put rows on a card without a model ever seeing them, so the gateway's checks
-    never ran over them — by design, and the checks are a rule about what reaches a vendor model
-    rather than a promise about what a person sees of their own data. The card says nothing, which
-    is right; the one place a person is already weighing where these rows go says it once."""
-    said = " ".join(modal(connected=True)["said"])
-    assert "never pass the gateway" in said
-    assert "reaches a model" in said
+def test_the_dialog_says_the_gateway_s_checks_do_not_cover_the_card():
+    """#321. The checks are an administrator's rule about what reaches a vendor model, not a
+    promise about what a person sees of their own data, and a Live read puts rows on a card while
+    the assistant gets a receipt. The card itself says nothing, which is right; the one place a
+    person is already weighing where these rows go says it once.
+
+    The sentence says what the checks COVER and not where any one card's rows came from, because
+    the caption is rendered unconditionally and both other shapes are false somewhere: "read from
+    this Project's files" is false with the switch off, where `withhold_table_rows` takes the rows
+    back out at turn end, and "the checks never ran over them" is false for a table a model
+    composed after reading the rows itself. Both answers are looped so that a later branch on the
+    switch cannot drop it from one of them; the loop pins that, and not the claim.
+    """
+    for kept in ({"on": False, "destination": ""}, {"on": True, "destination": "github.com/a/b"}):
+        said = " ".join(modal(connected=True, keptRows=kept)["said"])
+        assert "without reaching a model" in said, kept
+        # Spans the {llmGateway} token, so a mistyped or dropped key paints the brace and reds
+        # this, rather than leaving it green beside a caption nobody can read.
+        assert "the LLM Gateway's checks don't cover what you see" in said, kept

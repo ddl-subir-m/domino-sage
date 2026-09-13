@@ -300,16 +300,25 @@ window.SW = window.SW || {};
         }, SW.brand.text("Keep data rows in this {project}'s files"))
       ),
       h('div', { className: 'sw-caption' }, goes),
-      // Said once, here, and nowhere else (#321). Two lanes put rows on a card without a model
-      // ever seeing them — the Python lane writes a `*.table.json` and a Live read hands the card
-      // its rows — so the gateway's checks never ran over what is on screen. That is by design:
-      // the checks are an administrator's rule about what reaches a vendor model, not a promise
-      // about what a person sees of their own data. A note on every card would teach the wrong
-      // model of the product and become noise by the second table; this is the one surface where
-      // somebody is already weighing where these rows go.
+      // Said once, here, and nowhere else (#321). A Live read hands the card its rows while the
+      // assistant gets a receipt, and Chat's Python lane can write a `*.table.json` a model never
+      // read — so the gateway's checks need never have run over what is on screen. That is by
+      // design: the checks are an administrator's rule about what reaches a vendor model, not a
+      // promise about what a person sees of their own data. A note on every card would teach the
+      // wrong model of the product and become noise by the second table; this is the one surface
+      // where somebody is already weighing where these rows go.
+      //
+      // Says what the checks COVER, and not where any one card's rows came from, because both of
+      // the other shapes are false somewhere. "Read from this {project}'s files" is false in the
+      // default state: with the switch above off, `withhold_table_rows` takes the rows back out of
+      // the file at turn end, and nothing puts them back — Read again is a person pressing it, and
+      // only where a Binding makes the card answerable (#258). "The checks never ran over them" is
+      // false the other way round — a model that read a CSV and then composed the table in a
+      // `write` call put rows through the gateway that the card then shows. Scope is the one claim
+      // that holds in every state, and it is the claim a person needs.
       h('div', { className: 'sw-caption' }, SW.brand.text(
-        "Rows on a card are read from this {project}'s files and shown to you, so they never pass "
-        + "the gateway's checks — those cover what reaches a model, not what you see."
+        "Rows can reach a card without reaching a model, so the {llmGateway}'s checks don't cover "
+        + 'what you see — they cover what reaches a model.'
       )),
       // What OFF costs, said beside what ON costs (#255). A chart of the rows is the rows, so the
       // PNG follows them out of git — and this is the one effect a person notices without looking
