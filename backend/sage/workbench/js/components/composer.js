@@ -356,7 +356,16 @@ window.SW = window.SW || {};
     // is `EFFORTS_WITH_TOOLS` in `router/models.py`, published as its own field rather than copied
     // into the browser, which ADR-0049 refuses by name. The `length > 0` rule below is still shared
     // with the Chat chip and still has one copy.
-    const buildEffortsFor = (id) => ((aliasRow(id) || {}).reasoning_efforts_with_tools) || [];
+    //
+    // An ABSENT field is not an empty list, the same distinction an absent ROW already gets one
+    // function down. Two producers build these rows — the Domino listing and the membership file —
+    // and a row from a producer that has not learned this field yet would otherwise read as "this
+    // alias offers no levels", removing the control, and make `strandedLevel` refuse every level it
+    // is asked about. `undefined` means no evidence; `[]` means the alias really offers none.
+    const buildEffortsFor = (id) => {
+      const row = aliasRow(id);
+      return row && row.reasoning_efforts_with_tools ? row.reasoning_efforts_with_tools : [];
+    };
     const efforts = effortsFor(effectiveModel);
 
     // What a chip's click actually did. In Build a mentioned Dataset file is an Attachment — the
@@ -682,7 +691,11 @@ window.SW = window.SW || {};
     // pinned row anyway — and the right answer for the chip, which has to cover the collapse.
     const strandedLevel = (id) => {
       const alias = aliasRow(id);
-      if (!alias || id !== buildModel || !buildEffort) return '';
+      // `!alias.reasoning_efforts_with_tools` rides with `!alias` for one reason: both are the
+      // absence of an answer rather than an answer of "no". A row from a producer that does not
+      // publish this field would otherwise strand every level it holds.
+      if (!alias || !alias.reasoning_efforts_with_tools) return '';
+      if (id !== buildModel || !buildEffort) return '';
       // Judged against the TOOL-carrying list, the same one the submenu offers and the same one the
       // send path enforces. Against the enum, a level this alias drops beside tools reads as
       // perfectly fine — `gpt-5.4` at `high` is in the enum and dropped on every Build turn — and

@@ -1685,7 +1685,13 @@ _LEAF_ID_PREFIXES = ("table:", "dsfile:")
 # has no use for any of them, so they ride in on the mention and are taken back off before it is
 # stored. `inBuild` is the same idea for a different consumer: it routes a dataset-file mention to
 # `attach_file` vs `fetch_dataset_file_for_chat` and has no business in the stored chip either.
-_MEMBERSHIP_ONLY_FIELDS = ("description", "alias", "capabilities", "reasoning_efforts", "inBuild")
+_MEMBERSHIP_ONLY_FIELDS = ("description", "alias", "capabilities", "reasoning_efforts",
+                           # Beside its wide twin because the Build menu reads the narrow one, and a
+                           # membership row is the composer's source whenever the gateway alias leg
+                           # has not answered (#295). Without it here the row arrives carrying the
+                           # enum and nothing else, and a consumer that reads a missing field as an
+                           # empty list refuses every level the alias actually takes.
+                           "reasoning_efforts_with_tools", "inBuild")
 
 # Set once `_backfill_membership_from_bindings` has reconciled this Project's working set with the
 # Bindings that predate membership-on-bind (#140). In the Project's settings rather than derived
@@ -15543,7 +15549,9 @@ class Orchestrator:
         added = {"added": False, "item": None}
 
         keep = ("id", "kind", "name", "description", "project", "path", "bindingKey",
-                "alias", "capabilities", "reasoning_efforts")
+                # Both effort lists: an alias row that kept only the enum would leave the Build menu
+                # with no narrow list to read on the membership path (#295).
+                "alias", "capabilities", "reasoning_efforts", "reasoning_efforts_with_tools")
 
         def change(items: list[dict]) -> list[dict]:
             for row in items:
@@ -16378,7 +16386,11 @@ class Orchestrator:
             raise LookupError(alias_id)
         return self._record(
             Binding(KIND_LLM_ALIAS, alias["id"], alias["name"], alias["display_name"]),
-            {k: alias.get(k) for k in ("description", "capabilities", "reasoning_efforts")})
+            # Both effort lists, for the reason `_MEMBERSHIP_ONLY_FIELDS` carries both: this is
+            # what the row is built from on the membership path, which is the composer's source
+            # whenever the gateway alias leg has not answered (#295).
+            {k: alias.get(k) for k in ("description", "capabilities", "reasoning_efforts",
+                                       "reasoning_efforts_with_tools")})
 
     def bind_model_api(self, model_api_id: str) -> list[dict]:
         """Record that this app uses one Model API, and return the new Binding list (#9).

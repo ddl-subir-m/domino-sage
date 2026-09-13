@@ -373,6 +373,30 @@ def test_the_levels_are_read_from_the_resources_listing_when_the_gateway_leg_is_
     assert row["label"] == "deepseek/deepseek-v3 · High"
 
 
+def test_a_row_that_carries_no_narrow_list_refuses_nothing():
+    """The HIGH from #295's sixth review. An absent FIELD is not an empty list.
+
+    Two producers build `model_llm` rows: the Domino listing, which carries
+    `reasoning_efforts_with_tools`, and `rowFromMember`, which builds from the project's membership
+    file and (for rows written before the field existed) does not. On the fallback path the row
+    EXISTS while the field does not, so a guard that only checks the row would read every level as
+    refused — the chip silently dropping a level the router really is sending, and a tooltip saying
+    the turn runs at the model default while it runs at High.
+
+    That is the confident, specific, false sentence this control must never produce, arrived at from
+    an absence of evidence rather than from evidence. `undefined` means nobody answered; `[]` means
+    the alias answered "none".
+    """
+    (row,) = _drawn([{"mode": "plan", "listing": False, "resourceAliases": "legacy",
+                      "seedPick": {"model": "deepseek/deepseek-v3", "effort": "high"}}])
+
+    # The level stands, because nothing has said this alias refuses it.
+    assert row["label"] == "deepseek/deepseek-v3 · High"
+    # And no row anywhere claims a refusal it has no evidence for.
+    assert not any("not accepted" in (r.get("label") or "") for r in _every_row(row))
+    assert "doesn't accept" not in (row["why"] or "")
+
+
 def test_a_missing_alias_listing_is_not_read_as_a_refusal():
     """The listing absent and the alias advertising nothing read identically off
     `reasoning_efforts` — both are `[]` — and they are opposite facts. `gatewayAliases` starts empty

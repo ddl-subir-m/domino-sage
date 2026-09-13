@@ -265,6 +265,11 @@ function rowFromMember(item) {
     alias: item.alias,
     capabilities: item.capabilities || [],
     reasoning_efforts: item.reasoning_efforts || [],
+    // Beside its wide twin, and passed through UNDEFINED rather than defaulted to `[]`: this row is
+    // also built from membership files written before the field existed, and the Build menu reads a
+    // missing value as "no evidence" while `[]` means "this alias offers no levels" (#295). A
+    // default here would turn every such row into a refusal of every level.
+    reasoning_efforts_with_tools: item.reasoning_efforts_with_tools,
     pins: item.pins || [],
     // Every Built App that binds this Resource, with its Scope (#133). Server-computed from the
     // apps' own manifests, so the Resource Browser subtitle and the drawer both read one answer —

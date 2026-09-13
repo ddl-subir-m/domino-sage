@@ -79,6 +79,18 @@ const ALIAS_WITH_TOOLS = {
   'openai/gpt-5.4': ['none'],
 };
 
+// What a MEMBERSHIP row looks like — `api.js`'s `rowFromMember`, which builds `model_llm` from the
+// project's own membership file rather than from the Domino listing. It carries `reasoning_efforts`
+// and NOT `reasoning_efforts_with_tools`, and that asymmetry is the point: stamping both fields on
+// both sources made the fallback test pass on a shape no deployment produces.
+// Membership rows carry BOTH lists since #295 — `_MEMBERSHIP_ONLY_FIELDS`, the `keep` tuple and
+// `bind_llm_alias` all pass the narrow one through now. The row shape is otherwise `rowFromMember`'s.
+const MEMBER_ROWS = () => ALIAS_ROWS();
+// And the shape written BEFORE that field existed, which `rowFromMember` still has to survive: the
+// row exists, the narrow list does not. The menu must read that as no evidence, never as a refusal.
+const LEGACY_MEMBER_ROWS = () =>
+  ALIAS_ROWS().map(({ reasoning_efforts_with_tools, ...row }) => row);
+
 const ALIAS_ROWS = () => Object.keys(ALIAS_EFFORTS).map((alias) => ({
   id: `llm_alias:${alias.replace('/', '-')}`,
   kind: 'llm_alias',
@@ -331,7 +343,9 @@ for (const step of steps) {
       ...(step.declaredIn
         ? { dataset: locked.map((n) => ({ id: `dataset:ds_${n}`, name: n, declared: true })) }
         : {}),
-      ...(step.resourceAliases ? { model_llm: ALIAS_ROWS() } : {}),
+      ...(step.resourceAliases
+        ? { model_llm: step.resourceAliases === 'legacy' ? LEGACY_MEMBER_ROWS() : MEMBER_ROWS() }
+        : {}),
     },
     bindings: step.declaredIn === 'binding' ? held.map(byName) : [],
     appAttachments: step.declaredIn === 'attachment'

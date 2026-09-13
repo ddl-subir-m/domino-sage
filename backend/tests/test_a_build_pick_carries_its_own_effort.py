@@ -29,6 +29,7 @@ from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator import app as appmod
 from sage.orchestrator.service import Orchestrator
 from sage.resources.provider import FakeResourceProvider, LlmAlias
+from sage.resources.provider import alias_reasoning_efforts as _alias_efforts
 from sage.router.model_control import ModelControl
 from sage.router.models import Mode, ModelCatalog, Phase
 from sage.shim.enforcement import EnforcementShim
@@ -51,9 +52,15 @@ CATALOG = ModelCatalog(
     ask="gpt-5.4",
 )
 
+# Real measured levels rather than a hand-written list: `alias_reasoning_efforts` is what the live
+# provider fills this field with, so a fixture that hardcoded it could drift from the table these
+# tests are about. Gemini carries levels and sonnet carries none, which is the pair that tells
+# "this alias offers nothing" apart from "nobody said".
 ALIASES = [
-    LlmAlias("id-gemini", "gemini-3.7-flash", "Gemini 3.7 Flash", None, ["chat"], {}),
-    LlmAlias("id-sonnet", "sonnet", "Claude Sonnet 4.6", None, ["chat"], {}),
+    LlmAlias("id-gemini", "gemini-3.7-flash", "Gemini 3.7 Flash", None, ["chat"], {}, None,
+             _alias_efforts("gemini-3.7-flash")),
+    LlmAlias("id-sonnet", "sonnet", "Claude Sonnet 4.6", None, ["chat"], {}, None,
+             _alias_efforts("sonnet")),
 ]
 
 TOOLS = [{"function": {"name": "read"}}]
@@ -232,9 +239,80 @@ def test_the_resources_listing_carries_both_lists(tmp_path: Path, monkeypatch):
 
     rows = {a["name"]: a for a in orch.list_llm_aliases()}
 
-    assert rows["gemini-3.7-flash"]["reasoning_efforts_with_tools"] == \
-        rows["gemini-3.7-flash"]["reasoning_efforts"]
-    assert "reasoning_efforts_with_tools" in rows["sonnet"]
+    assert rows["gemini-3.7-flash"]["reasoning_efforts"] == ["low", "medium", "high", "max"]
+    assert rows["gemini-3.7-flash"]["reasoning_efforts_with_tools"] == ["low", "medium", "high", "max"]
+    # An alias that advertises none publishes an empty narrow list, not a missing one: over this
+    # route the server always answers, and empty is the answer.
+    assert rows["sonnet"]["reasoning_efforts_with_tools"] == []
+
+
+def test_a_membership_row_carries_the_narrow_list_too(tmp_path: Path, monkeypatch):
+    """The composer's OTHER alias source. `model_llm` rows come from the Domino listing when it has
+    answered and from the project's membership file when it has not — and the second is the state
+    the gateway-leg-refused case leaves a Workbench in.
+
+    A field published on one producer and not the other is a feature that disappears on the fallback
+    path, and worse: a consumer reading the missing field as an empty list refuses every level the
+    alias actually takes. Three sites carry a membership row's fields, and all three had to learn
+    this one.
+    """
+    client, orch = _client(tmp_path, monkeypatch)
+    orch.add_project_resource({
+        "id": "llm_alias:id-gemini", "kind": "model_llm", "name": "Gemini 3.7 Flash",
+        "alias": "gemini-3.7-flash",
+        "capabilities": ["chat"],
+        "reasoning_efforts": ["low", "medium", "high", "max"],
+        "reasoning_efforts_with_tools": ["low", "medium", "high", "max"],
+    })
+
+    (row,) = orch.list_project_resources()
+    assert row["reasoning_efforts_with_tools"] == ["low", "medium", "high", "max"]
+
+
+def test_binding_an_alias_joins_it_with_both_effort_lists(tmp_path: Path, monkeypatch):
+    """The other door onto a membership row, and the one that does not go through the caller.
+
+    `bind_llm_alias` builds the row from the project's own listing rather than from anything passed
+    in — `_join_project_on_bind` writes it, and the catalogue dict is what it keeps. The returned
+    value is the BINDING list, which deliberately carries none of these fields; the membership row
+    is where they land, so that is what this reads.
+    """
+    client, orch = _client(tmp_path, monkeypatch)
+
+    orch.bind_llm_alias("id-gemini")
+
+    (row,) = [r for r in orch.list_project_resources() if r["id"] == "llm_alias:id-gemini"]
+    assert row["reasoning_efforts"] == ["low", "medium", "high", "max"]
+    assert row["reasoning_efforts_with_tools"] == ["low", "medium", "high", "max"]
+
+
+def test_a_mentioned_alias_joins_with_both_effort_lists_too(tmp_path: Path, monkeypatch):
+    """The third door onto a membership row. An `@` mention of a catalogue Resource joins it to the
+    project, and `_join_project_on_mention` builds that row through `_MEMBERSHIP_ONLY_FIELDS`.
+
+    Tested because the field list is shared: the same constant that decides what a mention writes
+    decides what a chip does NOT carry, and a narrow list missing here produces exactly the defect
+    the other two doors had — a row that exists without the field, read by the menu as a refusal of
+    every level.
+    """
+    client, orch = _client(tmp_path, monkeypatch)
+    listed = {a["name"]: a for a in orch.list_llm_aliases()}["gemini-3.7-flash"]
+
+    joined = orch._join_project_on_mention({
+        # `resourceId`, which is the key a mention row carries — `id` on one of these is the
+        # CHIP's own id, and the join reads the Resource's.
+        # `llm_alias`, the kind `_MEMBERSHIP_PARENT_KINDS` gates on — the browser's `model_llm` is
+        # the row kind one layer up and is not what reaches this door.
+        "resourceId": "llm_alias:id-gemini", "kind": "llm_alias", "name": "Gemini 3.7 Flash",
+        "alias": listed["name"],
+        "capabilities": listed["capabilities"],
+        "reasoning_efforts": listed["reasoning_efforts"],
+        "reasoning_efforts_with_tools": listed["reasoning_efforts_with_tools"],
+    })
+    assert joined is True
+
+    (row,) = [r for r in orch.list_project_resources() if r["id"] == "llm_alias:id-gemini"]
+    assert row["reasoning_efforts_with_tools"] == ["low", "medium", "high", "max"]
 
 
 # ---------------------------------------------------------------- and it reaches the turn
