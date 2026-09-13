@@ -76,13 +76,16 @@ def test_a_save_that_lands_keeps_the_pick():
 
 def test_a_refusal_does_not_put_its_pair_back_over_a_later_save_that_landed():
     """The window the revert itself opens. Nothing disables the picker while a save is in flight, so
-    a second pick can land before the first answers — and `applyModelStatus` has a dozen other
-    callers besides, every `loadBuild` among them. A revert with no guard would then put the
-    pre-FIRST pair back over a pair the server has already taken, under a toast naming the save that
-    failed: the control would name a model no read ever reported, and nothing on screen would say so.
+    a second pick can land before the first answers. Putting the pre-FIRST pair back over a pair the
+    server has already taken would leave the control naming a model no read ever reported, under a
+    toast naming the save that failed — and before this ticket a refusal wrote nothing back, so the
+    later save simply stood. That is what makes this the revert's own case, not a pre-existing one.
 
-    Before this ticket a refusal wrote nothing back, so the later save stood. That is what makes this
-    the revert's own case rather than a pre-existing one.
+    What holds it is the RECORD, not the staleness guard: the save that landed moved `chatConfirmed`
+    on its way through `applyModelStatus`, so the pair this refusal puts back is already the new one.
+    Said explicitly because the guard was the obvious suspect and is not the answer — disarming it
+    leaves this test green, and only `test_a_refusal_does_not_yank_back_a_pick_whose_own_save_is_
+    still_out` goes red. A docstring naming the wrong protector reads as coverage this does not have.
     """
     (overlapped,) = _run([{"start": {"model": "gpt-5.4", "effort": "high"},
                            "pick": {"model": "coder"},

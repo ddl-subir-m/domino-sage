@@ -3823,9 +3823,14 @@ window.SW = window.SW || {};
         // protects that case. What it protects is a pick whose own save is still out — restoring
         // over that would take somebody's second choice off the control while it is still being
         // saved, under a toast about their first. Compared rather than generation-tagged like
-        // `scopeLoad`'s reads, because the writers that could have moved it share no counter; what
-        // the comparison cannot see is a later write of the SAME pair, and there restoring and
-        // leaving it are the same thing.
+        // `scopeLoad`'s reads, because the writers that could have moved it share no counter.
+        //
+        // Its residual, named rather than implied: equality is not identity. Pick A, then B, then A
+        // again inside one round trip and A's first refusal sees its own pair on screen — written by
+        // the THIRD pick, whose save is still out — so it restores over that one. The control shows
+        // the confirmed pair until the third answer lands and settles it, which is a flicker rather
+        // than the lasting wrong name this seam exists to prevent, and is why the guard stays an
+        // equality test instead of growing a counter for a case that heals itself.
         if (state.model === (alias || '') && state.reasoningEffort === (effort || null)) {
           state.model = chatConfirmed.model;
           state.reasoningEffort = chatConfirmed.effort;
