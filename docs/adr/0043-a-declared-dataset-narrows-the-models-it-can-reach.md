@@ -412,7 +412,8 @@ separately approved, which is the only shape where the mode decides anything at 
 
 **The Workbench re-reads on a mode change and not on a model change.** Both follow from the
 paragraphs above: the mode is an input to `nearest_approved` and the pick is not. A refresh per
-model pick would have been the wrong fix for the right worry.
+model pick would have been the wrong fix for the right worry. *Amended below — the per-slot answer
+added later reads one more input, and an assignment is not a pick.*
 
 **The name must not be able to take the lock down.** `/api/project/sensitivity` answers a failed
 read with `enabled: false`, and that fallback is right for the lock state and wrong for the label on
@@ -540,3 +541,68 @@ The blunt fix — a per-Project taint that never clears — was rejected on the 
 per-turn cache above: it over-restricts every Project that ever bound a declared Dataset, forever,
 with no way back short of a new Project, and it would fire hardest on the deployments that opted in.
 The narrower promise is the one that can be kept and said out loud.
+
+## Amendment: what a slot RUNS is not where the lock MOVES it (#285)
+
+The state carries two kinds of answer, and for a while they were computed by one rule. `model` and
+`chat_model` are where the lock MOVES a barred turn. `slot_models` is what each assignable slot
+RUNS. Both were asked of `llm_router.nearest_approved`, which answers only the first, and the model
+panel — the only surface that reads the second — drew the first as though it were the second.
+
+The difference is everything that sits between a slot and the lock, and on a shipped deployment that
+is the signing pin (ADR-0032). `resolve` applies it under the lock: `_lock_sensitivity(_pin_signing(
+_resolve_build(...)))`. So when a signing model is assigned and is ITSELF approved, the lock has no
+reason to move a turn off it, the pin stands, and every Build turn runs it whatever the mode says —
+while the panel named the sovereign slot on every row holding an unapproved model. Measured with the
+router alone, no gateway: `plan=gpt-5.4`, `implement=gemini-3.7-flash`, `ask=sonnet`, all three
+sovereign slots approved alongside `gemini-3.7-flash`. Panel said `sov-plan`; the turn ran
+`gemini-3.7-flash`.
+
+**`llm_router.locked_runs_on` is the composite, and the two functions both stay.** It is `resolve`'s
+own chain with the pick dropped, handing the decision to `_lock_sensitivity` itself rather than
+restating its two lines. Both callers are legitimate and neither may be folded into the other:
+
+- A label read only once the turn's own model is ALREADY barred wants the move. Every reader of
+  `model`/`chat_model` is that: `util.lockedRunsOn` is the single reader, and its own readers ask it
+  only after `buildPick` came back barred — and `buildPick` has already folded the pin in
+  (`composer.js` reads `signingSlot`), while an in-session pick beats the pin outright. Answering
+  those with the pin's model would be wrong in exactly the pick case, which is the one a person has
+  just acted in.
+- A label drawn per slot with no turn in hand wants what runs. That is the panel, and it is why the
+  pin has to be in its answer.
+
+**An assignment is an input to the lock's answer, so the Workbench re-reads on one.** This amends the
+decision above. The pin's input is `signing_slot(catalog)`, so assigning a signing model moves every
+row's sentence at once and assigning away from one moves them all back. `openAssignments` already
+re-read; `setAssignment` now does too. The pick is still out, and still for the reason given above —
+with one thing worth writing down beside it: `set_catalog` clears the pick on every save
+(`project.control.pick(None)`), so at the moment that read is taken there is never one.
+
+**The "Ask and Chat" row is answered for Chat, and it is the only row asked a different question.**
+It is the one row with two turns behind it — `SLOTS` labels it so and `_resolve_chat` returns
+`catalog.ask` — and the pin reaches only the Build half. Answered pin-aware like its neighbours it
+read "so this runs `gemini-3.7-flash`" while the Chat chip an inch away read `chat_model` and named
+the sovereign Ask slot: two visible controls disagreeing about one row. Chat wins the select because
+it is the half this row's own assignment still decides. Under a held pin the row has stopped
+governing Build at all, which is what `ShadowedSlot`'s own sentence for `ask` says out loud ("this
+model only runs in Chat"), and Build's account is complete two controls over. Answer the row for
+Build instead and Chat is contradicted with nothing on screen to correct it. It costs nothing where
+no pin holds: `_lock_preferences` prefers `sovereign_ask` for an Ask turn and a Chat turn alike.
+
+**Two edges left open, named rather than fixed.** Neither is new here; both are decidable now in a
+way they were not before, which is why they are written down.
+
+The pick still outranks the pin one layer below the lock, and this answer drops the pick. So while a
+BARRED pick is live, a turn goes where the lock moves it and these rows still name the pin's model.
+Closing it means putting the pick back in the browser's re-read list, which the decision above keeps
+out on purpose — and the trade favours leaving it: a sentence a beat behind on a row nobody is acting
+from, against an answer that goes stale on the surface they ARE acting from.
+
+And the panel cannot yet tell whether the pin SURVIVED the lock, which is what the row's prose turns
+on. "`gpt-5.4` isn't approved, so this runs `gemini-3.7-flash`" names the right model with the wrong
+cause: approving `gpt-5.4` would change nothing, because the pin is what decides that row. The
+sentence carrying the real cure — `ShadowedSlot.message`, "change the holder's model to release the
+session" — is the one the drawer drops on that row. The discriminator is whether the HOLDER's model
+is approved, and the panel is not told which model that is; `model_assignments` sends `shadowed` as a
+bare boolean and does not read the lock at all. Fixing it is a field, not a rule, and it belongs with
+the gate it feeds rather than with the router.

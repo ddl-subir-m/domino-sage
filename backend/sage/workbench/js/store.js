@@ -798,6 +798,16 @@ window.SW = window.SW || {};
   // `resolve`'s answer instead and this comment becomes false — that answer IS the pick when the
   // pick is approved, so it would go stale the moment somebody picked a barred model next.
   //
+  // `slot_models` is a pick-free answer too, and reads one more input for it: since #285 it applies
+  // the signing pin (`llm_router.locked_runs_on`), whose input is an assignment. So an assignment
+  // joins the list, and `setAssignment` is where it is read from — the drawer is the only surface
+  // that can change one. What stays outside the list is the one rule dropping the pick drops with
+  // it: an in-session act outranks the pin, so while a barred pick is live a turn goes where the
+  // lock MOVES it and these rows still name the pin's model. Bounded twice over — the trade is the
+  // one above, a sentence a beat behind on a row nobody is acting from against an answer that goes
+  // stale on the surface they ARE acting from; and `set_catalog` clears the pick on every save
+  // (`project.control.pick(None)`), so at the moment the read below is taken there is never one.
+  //
   // A failed read leaves the last answer standing rather than clearing it, and the asymmetry is
   // deliberate in one direction: dropping a lock the UI is drawing would put non-approved models
   // back in the picker on a network wobble, and the picker is the surface a person acts from.
@@ -3377,6 +3387,17 @@ window.SW = window.SW || {};
           };
         }
         notify();
+        // Beside the panel read, because an assignment is an INPUT to the lock's per-slot answer
+        // since #285: `locked_runs_on` applies the signing pin, and the pin's input is
+        // `signing_slot(catalog)` — so assigning a signing model moves every row's "so this runs X"
+        // at once, and assigning away from one moves them all back. Without this the drawer redraws
+        // its rows from the save and its sentences from a read taken before it, which is the stale
+        // half of exactly the defect the pin-aware answer was added to fix.
+        //
+        // Unawaited, unlike the panel read: nothing below depends on it, and the drawer must not
+        // hold the saved row behind a second round trip. A failed read leaves the last answer
+        // standing, which `refreshSensitivity` is already built for.
+        refreshSensitivity();
         await this.loadAssignments();
       } catch (err) {
         antd.message.error(String((err && err.message) || err));

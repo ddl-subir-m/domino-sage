@@ -330,3 +330,18 @@ def test_the_lock_leaves_a_verdict_about_a_model_that_will_not_answer_standing()
     # to land in its own step for the panel to have re-read and reported it.
     _, drawn = _drawn([{"set": ["implement", "local-llm"]}, {"sensitivity": _LOCKED}])
     assert any("Start that endpoint" in p for p in drawn["problems"])
+
+
+def test_a_save_re_reads_the_lock_because_the_assignment_is_one_of_its_inputs():
+    """#285. The lock's per-slot answer applies the signing pin, and the pin's input is an
+    assignment — so assigning a signing model moves every row's "so this runs X" at once. The
+    drawer redrawing its rows from the save while its sentences came from a read taken before it is
+    the stale half of the same defect.
+
+    Counted rather than compared, deliberately: asserting the sentence CHANGED would need the
+    fixture to re-implement `locked_runs_on`, and the panel would then be agreeing with this file
+    instead of with the product.
+    """
+    (drawn,) = _drawn([{"set": ["implement", "opus"]}])
+    assert drawn["wrote"] == [{"catalog": {"implement": "opus"}}]
+    assert drawn["sensitivityReads"] == 1

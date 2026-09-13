@@ -309,17 +309,25 @@ def test_every_assignable_slot_is_answered_separately(tmp_path, monkeypatch):
 
 def test_a_router_that_cannot_answer_a_slot_leaves_it_out(tmp_path, monkeypatch):
     """Absent rather than null: the panel substitutes a row's model only where this names one, and a
-    key holding None would make "could not work it out" and "nothing moves" the same read."""
+    key holding None would make "could not work it out" and "nothing moves" the same read.
+
+    `locked_runs_on` and not `nearest_approved`, because the slots ask a different question from the
+    chip since #285 — the pin sits between a slot and the lock, and the chip's readers have already
+    applied it. Patching the chip's function here would have proved nothing about the loop below it,
+    which is the shape of mistake this whole file exists to catch.
+    """
     monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
     orch = _orch(tmp_path)
     _bind(orch, [_dataset_binding("ds_claims", "claims")])
-    monkeypatch.setattr(service_module.llm_router, "nearest_approved",
+    monkeypatch.setattr(service_module.llm_router, "locked_runs_on",
                         lambda *a, **k: (_ for _ in ()).throw(ValueError("no")))
 
     state = orch.sensitivity_state()
 
     assert state["locked"] is True
     assert state["slot_models"] == {}
+    # And the chip is untouched by the slots' failure: it reads its own function, which still works.
+    assert state["model"] == APPROVED
 
 
 def test_an_unusable_approved_set_carries_the_refusal_rather_than_an_empty_lock(tmp_path, monkeypatch):

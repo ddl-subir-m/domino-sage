@@ -141,15 +141,21 @@ window.SW = window.SW || {};
       const current = rows.find((r) => r.slot === spec.slot);
       if (!current) return null;
       const assigned = Boolean(current.assigned);
-      // What the lock moves this slot to, when the assignment it would move IS barred. Drawn as the
+      // What this slot's turn RUNS, when the assignment the row shows IS barred. Drawn as the
       // row's value rather than left showing the barred one, because a select whose closed state
       // reads "gpt-5.4 — not allowed" has answered the wrong question: the row is there to say what
       // this mode runs, and under a lock that is never the barred model (ADR-0043).
       //
-      // The server's answer, per slot, not a rule re-derived here. `llm_router.nearest_approved`
-      // reads the sovereign slots and the administrator's group ordering, and a second copy of that
-      // in JavaScript would be a confident label that is wrong exactly where it matters — the same
-      // reasoning that keeps `lockedRunsOn` reading `sensitivity.model` for the composer chip.
+      // The server's answer, per slot, not a rule re-derived here. `llm_router.locked_runs_on` reads
+      // the sovereign slots, the administrator's group ordering AND the signing pin, and a second
+      // copy of that in JavaScript would be a confident label that is wrong exactly where it matters
+      // — the same reasoning that keeps `lockedRunsOn` reading `sensitivity.model` for the chip.
+      //
+      // It is `locked_runs_on` and not the chip's `nearest_approved` since #285, because this row has
+      // no turn in hand: the chip is consulted only once the model its turn was going to run is
+      // already barred, and the pin has been folded into that question before it is asked. Here the
+      // pin sits BETWEEN the slot and the lock, so all three rows named the sovereign slot while
+      // every Build turn ran the signing model.
       const barredNow = locked && !SW.util.isApproved(sensitivity, current.model);
       const runs = (barredNow && ((sensitivity.slot_models || {})[spec.slot])) || '';
       return h(
@@ -172,11 +178,16 @@ window.SW = window.SW || {};
         //
         // Dropped on a row the lock has already moved, but only when it is the signing pin's
         // sentence: the lock outranks the pin (`llm_router._lock_sensitivity` wraps `_pin_signing`),
-        // so under it the pin is not what decides this row, and "this model won't run" names both
-        // the wrong cause and the wrong remedy. The other two verdicts stay — a model that will not
+        // so the pin's remedy — release the session by changing the holder's model — is not what
+        // frees THIS row while the lock holds. The other two verdicts stay — a model that will not
         // answer will not answer whatever moved the turn — and the lock's own line, one below, still
         // says what runs. Which verdict it is comes from the server and not from reading the
         // sentence, because a sentence is what a brand pack is allowed to change (#276).
+        //
+        // Dropped even where the pin survives the lock, which since #285 is a real case: an approved
+        // signing model IS what these rows run, and the line below now names it. Two sentences
+        // naming one model, with two different remedies, is worse on this row than the one that
+        // starts from the thing the reader came here to change.
         //
         // `barredNow` and NOT `runs`: `runs` is the narrower fact that the lock moved this row AND
         // the panel was told where to. `_locked_slot_models` returns nothing at all when the
