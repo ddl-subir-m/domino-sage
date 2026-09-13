@@ -3950,6 +3950,26 @@ def _crossing_minted_app(workspace: Workspace, conversation: str) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class ResolvedModel:
+    """Which model a turn's last inference actually ran on, and which rule put it there (#316).
+
+    Not the pick. Four rules move a request off the picked model — the Ask-mode pin, the signing
+    pin, the sensitivity lock and the unsigned veto — and three of them land on the same alias, so
+    the model alone does not say which happened. `reason` is `Reason`'s own value, handed over by
+    the shim rather than re-derived here, because the shim is the only place that knows.
+
+    The LAST inference of the turn, because that is the one a person is asking about when they ask
+    why the turn behaved as it did, and because a phased build resolves once per phase and no single
+    answer covers all of them. A turn that reached no model has no `ResolvedModel` at all — see
+    `resolved_row`.
+    """
+
+    model: str
+    phase: str
+    reason: str
+
+
 @dataclass
 class Project:
     id: str
@@ -4007,6 +4027,28 @@ class Project:
     # tool; tool calls but no disk edits = OpenCode received tool calls but didn't apply them.
     model_calls: int = 0
     tool_call_responses: int = 0
+    # The same wrapper's third record: what the router resolved on the LAST inference of this turn
+    # (#316). Separate from the counters above because it answers a different question — those say
+    # whether a model was reached, this says WHICH, and which rule chose it. Cleared when a turn is
+    # granted through `_acquire_turn`, never when one ends: a turn that reaches no model must name
+    # none rather than inherit the previous turn's, which on a transcript reads exactly like a turn
+    # that ran on it.
+    #
+    # `_acquire_turn` and not "whenever the lock is taken": `build()`, `_maybe_compact_chat` and the
+    # door's own acquirers take `_turn_lock` directly and clear nothing. Compaction is the one that
+    # WRITES here — its `summarize` goes through the shim — and it runs in Chat's aftercare, off the
+    # lock, after this turn's row is already on disk.
+    #
+    # That is a write with no reader, today, and this is what makes it one rather than a limit
+    # somebody is minding: `resolved_row()` has exactly TWO callers, `persist()` and `finish()`, and
+    # both run inside the turn generator. Chat's release is triggered by the very `done` that
+    # `finish` has already written — measured, not read: at `_release_turn` the stamped row is on
+    # disk. So no row can be written from this field after the lock is gone, and the next granted
+    # turn clears the aftercare's write before anything could read it.
+    #
+    # A THIRD caller of `resolved_row()` is what would end that, not a new writer. Add one that runs
+    # off a streaming turn and it reads whatever compaction last left here, with nothing to say so.
+    resolved_model: ResolvedModel | None = None
     # Working-tree hash the running turn compares against to tell whether anything on disk changed
     # (the ground-truth half of "did the agent write", alongside its edit-tool calls). Lives on the
     # project rather than inside build_stream because attach/upload/detach also write into the tree
@@ -4037,6 +4079,30 @@ class Project:
     # scratch, and the Threads and plan documents beside them. Everything else a caller names is
     # the app's, and resolves inside `apps/<appId>/`.
     _PROJECT_PREFIXES = ("examples/", _SCRATCH_PREFIX, ".sage/threads/", ".sage/plan-docs/")
+
+    def note_resolved(self, model: str, phase: str, reason: str) -> None:
+        """What the shim just resolved. Called once per inference; the last call wins."""
+        self.resolved_model = ResolvedModel(model=model, phase=phase, reason=reason)
+
+    def resolved_row(self) -> dict:
+        """The record as a terminal row carries it, or nothing at all when no model was reached.
+
+        An empty dict rather than a filled one with blank fields, so `**` splices it away: a turn
+        refused at the door or wedged before it prompted has no answer to give, and absence is that
+        answer. A reader must never take a missing key as a standing value — a blank model would
+        read as one, and a stale one would be a lie in the product's voice.
+
+        But absence has THREE causes and only one of them is "no model ran". A row written before
+        #316 shipped carries no key either, and so does a row whose `on_resolved` raised and was
+        swallowed at the shim. So a reader may say "no model ran" only where it knows the row is
+        recent — on a live turn it watched — and over history it must say nothing rather than
+        assert. `persist()`'s sibling record a few lines up makes the same admission about its own
+        backfill gap, for the same reason: nothing can be done about old rows without rewriting
+        history, which is a worse trade than one quiet transcript.
+        """
+        r = self.resolved_model
+        return {} if r is None else {
+            "resolved": {"model": r.model, "reason": r.reason, "phase": r.phase}}
 
     def app_for_turn(self) -> Workspace:
         """The Built App a turn writes into: the one it pinned at its start, else the one on screen.
@@ -9509,6 +9575,23 @@ class Orchestrator:
             yield {"type": "error", "message": "Unknown thread"}
             yield {"type": "done", "ok": False, "decision": "unknown thread"}
             return
+        def finish(done: dict) -> dict:
+            """The Chat turn's terminal row, on its way to the Thread.
+
+            Build stamps its `done` inside `persist()` for a stated reason — every ending passes
+            through one seam, and the yield sites that can end a turn are that many chances to
+            forget. Chat has eight endings and no such seam: `chat_stream` above has one, but it
+            sits AFTER these rows are on disk, so a stamp applied there would live exactly as long
+            as the page stayed open and vanish on the reload it exists for.
+
+            Narrow on purpose. Only the terminal row passes through here, not every event: routing
+            the whole of this turn's history through one wrapper is a refactor of seventeen call
+            sites for a fact that belongs to one of them.
+            """
+            done.update(project.resolved_row())
+            store.append_history(thread_id, done)
+            return done
+
         self._cancel_chat_idle_save()
         store.examples_dir(thread_id).mkdir(parents=True, exist_ok=True)
         was_first = thread.get("title") in ("", "New conversation")
@@ -9621,7 +9704,7 @@ class Orchestrator:
         if early:
             done = {"type": "done", "ok": True, "decision": "handoff"}
             store.append_history(thread_id, early)
-            store.append_history(thread_id, done)
+            finish(done)
             yield early
             yield done
             return
@@ -9649,7 +9732,7 @@ class Orchestrator:
             store.append_history(thread_id, err)
             yield err
             done = {"type": "done", "ok": False, "decision": "refused"}
-            store.append_history(thread_id, done)
+            finish(done)
             yield done
 
         chat_token = project.control.arm_chat(thread_id)
@@ -9809,7 +9892,7 @@ class Orchestrator:
                                    "Stopped. Anything {assistantName} had already written is kept.")}
                     done = {"type": "done", "ok": False, "decision": "stopped"}
                     store.append_history(thread_id, stopped)
-                    store.append_history(thread_id, done)
+                    finish(done)
                     yield stopped
                     yield done
                     return
@@ -9940,7 +10023,7 @@ class Orchestrator:
                         yield art_ev
                         done["artifacts"] = timed_out
                     store.append_history(thread_id, err)
-                    store.append_history(thread_id, done)
+                    finish(done)
                     yield err
                     yield done
                     if suggestion:
@@ -10251,7 +10334,7 @@ class Orchestrator:
                 yield from self._maybe_offer_recall(store, thread_id)
             if artifacts:
                 done["artifacts"] = artifacts
-            store.append_history(thread_id, done)
+            finish(done)
             yield done
             with timing.span("after.handoff"):
                 suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
@@ -11793,6 +11876,7 @@ class Orchestrator:
         ticket.app = self._turn_app_id() if app else ""
         if self._turns.admit(ticket):
             ticket.granted = True
+            self._begin_model_record()
             return
         ticket.snapshot = self._turn_snapshot(conversation, app=app)
         try:
@@ -11819,6 +11903,7 @@ class Orchestrator:
                 yield {"type": "done", "ok": False, "decision": "context changed"}
                 return
             ticket.granted = True
+            self._begin_model_record()
         finally:
             # A generator abandoned at one of those yields — a client that hung up, a caller that
             # stopped reading — is a place in the queue nobody is standing in. Left on the deque it
@@ -11826,6 +11911,25 @@ class Orchestrator:
             # every path that reached the front of the queue under its own steam.
             if not ticket.granted:
                 self._turns.cancel(ticket.id)
+
+    def _begin_model_record(self) -> None:
+        """Forget which model the PREVIOUS turn ran on, now that this one holds the lock (#316).
+
+        Here rather than at the door of `_acquire_turn`, and that is the whole of the placement: a
+        turn that joins the QUEUE has not started, and the turn ahead of it is still running and
+        still has its terminal row to write. Clearing on arrival would blank the record of a turn
+        that is mid-flight — the reader and the writer are on different threads, and the symptom
+        would be an occasional done row with no model on a turn that plainly ran one.
+
+        At the start and not at the end for the reason `resolved_row` gives: the honest answer for a
+        turn that reaches no model is no answer, and a record only ever cleared on the way out would
+        leave the previous turn's standing for anything that died before it got there.
+
+        Silent before the project is attached. The first turn of a session can reach this with
+        nothing to clear, which is not a condition worth branching at the call sites for.
+        """
+        if self._project is not None:
+            self._project.resolved_model = None
 
     def _stop_wedged_session(self, client, sid: str) -> bool:
         """Ask a wedged session to stop, and report whether it confirmed that it did (#39).
@@ -12169,6 +12273,12 @@ class Orchestrator:
             # long since built or replaced, and the person is one new turn away from a card that is
             # right.
             if ev["type"] == "done":
+                # WHICH model this turn actually ran on, and which rule chose it (#316). Here for
+                # the reason the two records above give: every terminal `done` passes through
+                # persist(), and the yield sites that can end a turn are that many chances to
+                # forget. Spliced rather than assigned, so a turn that reached no model carries no
+                # key at all — `resolved_row` is where that decision is written down.
+                ev.update(project.resolved_row())
                 timing.decide(ev.get("ok"), str(ev.get("decision") or ""))
             if ev["type"] == "done" and read_only:
                 ev["readOnly"] = read_only
