@@ -2,7 +2,8 @@
 //
 // Input on stdin: a list of steps. `{}` just opens the panel; `{ "running": true }` opens it during
 // a build; `{ "listing": "down" }` opens it when the gateway will not list Aliases; `{ "set":
-// ["plan", "opus"] }` also changes one row and reports what was written; `{ "sensitivity": {...} }`
+// ["plan", "opus"] }` also changes one row and reports what was written and how many times the
+// lock was re-read afterwards; `{ "sensitivity": {...} }`
 // opens it with the sensitivity lock holding, served from the route the panel actually reads;
 // `{ "signing": "implement" }` opens it with that slot holding a model that signs, so the other
 // rows arrive carrying the shadow the pin casts over them (#276).
@@ -48,6 +49,10 @@ let signingSlot = null;
 // store, because opening the drawer re-reads it (`openAssignments`) — a value set by hand would be
 // overwritten by that read before the panel drew a single row.
 let sensitivity = null;
+// Counted, not just served: an assignment is an input to the lock's per-slot answer (#285), so
+// "did the panel re-read the lock after the save" is a wiring fact this file can check without
+// copying `locked_runs_on` into a fixture and letting the panel agree with the copy.
+let sensitivityReads = 0;
 const calls = [];
 
 const json = (body) => ({
@@ -102,6 +107,7 @@ function serve(url, options = {}) {
   if (path === '/project/model/assignments' && listing === 'throw') throw new Error('network down');
   if (path === '/project/model/assignments') return json(panel());
   if (path.startsWith('/project/sensitivity')) {
+    sensitivityReads += 1;
     return json(sensitivity || { enabled: false, locked: false, group: '', approved: [],
       datasets: [], refusal: null, model: null, chat_model: null, slot_models: {}, reason: '' });
   }
@@ -177,6 +183,7 @@ for (const step of steps) {
   await SW.store.openAssignments(true);
   await settle();
   calls.length = 0;
+  sensitivityReads = 0;
 
   const tree = mount();
   const rows = selects(tree).map((s) => ({
@@ -217,6 +224,7 @@ for (const step of steps) {
     select.p.onChange(value);
     await settle();
     row.wrote = calls.slice();
+    row.sensitivityReads = sensitivityReads;
     row.after = selects(mount()).find((s) => s.p.id === `assign-${slot}`).p.value;
   }
   report.push(row);

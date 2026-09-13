@@ -15401,6 +15401,10 @@ class Orchestrator:
         slots, and a second copy of it in JavaScript would be a confident sentence that is wrong
         exactly where it matters.
 
+        `slot_models` is a different question and reads a different rule for it — see
+        `_locked_slot_models`. The two are not interchangeable, and #285 is the cost of having
+        treated them as though they were.
+
         TWO of them because Build and Chat are two different turns and each has its own composer.
         Chat is pinned to the sovereign Ask slot while Build follows its mode, so a deployment whose
         sovereign slots differ and are separately approved gets two different answers — and one
@@ -15437,10 +15441,13 @@ class Orchestrator:
             "refusal": refusal or None,
             "model": self._locked_model(project, approved, chat=False),
             "chat_model": self._locked_model(project, approved, chat=True),
-            # Per SLOT, which is a third question again: `model` and `chat_model` answer "what does
-            # THIS turn run", off the mode the session is in right now, and the model panel draws
-            # all three rows at once regardless of that mode. Reusing `model` for every row would
-            # have made the two rows that are not the current mode name a model they do not get.
+            # Per SLOT, and a genuinely different QUESTION rather than the same one asked three
+            # times — which is what #285 was. The two fields above are where the lock MOVES a barred
+            # turn, all a chip needs, because a chip is read once the turn's own model is already
+            # barred. These answer what each slot RUNS, for a panel drawing all three rows with no
+            # turn in hand, so they carry the rules that sit between a slot and the lock — the
+            # signing pin above all (ADR-0032). Reusing `model` for every row would ALSO have named
+            # a model two of the three rows do not get, because the move follows the mode.
             "slot_models": self._locked_slot_models(project, approved),
         }
 
@@ -15448,6 +15455,15 @@ class Orchestrator:
         self, project: Project, approved: ApprovedModels | None, chat: bool
     ) -> str | None:
         """Where the lock moves a barred turn of this kind, or None if it could not be worked out.
+
+        Still `nearest_approved` and deliberately NOT `locked_runs_on`, which is the fix for #285 one
+        method down. Every reader of this is `util.lockedRunsOn`, and every reader of THAT consults
+        it only once the model the turn was going to run is already barred — `buildPick` folds in the
+        signing pin before asking (`composer.js` reads `signingSlot`), and an in-session pick beats
+        the pin outright. So by the time this answer is read, the pin has either been applied to the
+        question or been defeated by a pick, and the move is the only thing left to name. Answering
+        with the pin's model here would be wrong in exactly the pick case, which is the one a person
+        just acted in.
 
         `chat_thread_id` is forced rather than read, because it is armed per TURN: between turns the
         snapshot says Build for both, and asking it would answer the Chat composer with Build's
@@ -15474,23 +15490,39 @@ class Orchestrator:
     def _locked_slot_models(
         self, project: Project, approved: ApprovedModels | None
     ) -> dict[str, str]:
-        """Where the lock moves each assignable slot, for the model panel's three rows (ADR-0043).
+        """What a turn in each assignable slot RUNS under the lock, for the panel's rows (ADR-0043).
 
-        The panel draws Plan, Implement and Ask together, and the lock does not move them to the
-        same place: `llm_router._lock_preferences` prefers the SOVEREIGN slot of the mode a turn is
-        in, and a deployment whose sovereign slots differ and are separately approved gets a
-        different answer per row. `model` and `chat_model` answer for the mode the session happens
-        to be in right now, so a panel drawn off either would name the right model on one row and
-        the wrong one on the other two.
+        A different question from `_locked_model`'s, and asking `nearest_approved` for both is what
+        #285 was: that one is where the lock MOVES a barred turn, which is all a chip needs, because
+        a chip is consulted only once the turn's own model is already barred. The panel has no turn
+        in hand — it draws all three slots at once — so its sentence has to survive the rules that
+        sit BETWEEN the slot and the lock. The signing pin is one: a signing assignment in any slot
+        takes every Build turn (ADR-0032), so while it holds and its model is approved, all three
+        rows run it and the panel named the sovereign slot on each. `llm_router.locked_runs_on` is
+        the composite, and it stays one copy there rather than two half-rules here.
+
+        The panel needs a row of its own even so: `llm_router._lock_preferences` prefers the
+        SOVEREIGN slot of the mode a turn is in, so a deployment whose sovereign slots differ and
+        are separately approved gets a different answer per row, while `model` and `chat_model`
+        answer only for the mode the session happens to be in right now.
 
         The mode is forced rather than read for the same reason `_locked_model` forces
         `chat_thread_id`: it is the fork the rule reads, and the snapshot holds whichever mode the
         last turn armed. `ASSIGNABLE_SLOTS` and `Mode` share their values, which is what makes the
         mapping a cast rather than a table that could drift from the slot list.
 
+        `chat_thread_id` is forced too, and NOT uniformly — see the comment on the line. It is the
+        only place in this method where the three slots are not asked the same question, because
+        `ask` is the only row whose model drives two turns and the pin reaches one of them.
+
         A slot that cannot be worked out is ABSENT rather than None-valued: the panel substitutes a
         row's shown model only where this names one, and a key holding null would make "the router
         could not answer" and "the router said nothing moves" the same read.
+
+        The pick is not forced here because `locked_runs_on` drops it itself, and that is deliberate
+        rather than an oversight to tidy up: this answer is held in the browser across pick changes
+        (`store.js` re-reads on a mode, Binding or Conversation change and NOT on a pick), so an
+        answer that could be the pick would go stale the moment somebody picked a barred model.
         """
         if approved is None:
             return {}
@@ -15498,13 +15530,25 @@ class Orchestrator:
         for slot in ASSIGNABLE_SLOTS:
             try:
                 state = replace(project.control.snapshot(),
-                                chat_thread_id=None,
+                                # The `ask` row is the one with two turns behind it — `SLOTS` labels
+                                # it "Ask and Chat" and `_resolve_chat` returns `catalog.ask` — and
+                                # the pin takes only the Build one. Answered as Build it read "so
+                                # this runs <holder>" while the Chat chip beside it read `chat_model`
+                                # and named the sovereign Ask slot: two controls disagreeing about
+                                # one row. Chat wins the select because it is the half this row's own
+                                # assignment still decides; under a held pin the row has stopped
+                                # governing Build, which is what `ShadowedSlot`'s own sentence for
+                                # `ask` says, and Build's account is complete at the composer (the
+                                # chip names the holder, `pinWhy` says why). Free when no pin holds:
+                                # `_lock_preferences` prefers `sovereign_ask` for both turns, so the
+                                # two answers differ only where the pin is what separates them.
+                                chat_thread_id="unarmed" if slot == "ask" else None,
                                 mode=Mode(slot),
                                 phase=Phase.IMPLEMENT if slot == "implement" else Phase.PLAN,
                                 approved_models=approved.names, approved_order=approved.order)
-                out[slot] = llm_router.nearest_approved(state, project.shim.catalog)
+                out[slot] = llm_router.locked_runs_on(state, project.shim.catalog)
             except Exception:
-                log.exception("sensitivity: couldn't work out where the lock moves the %s slot", slot)
+                log.exception("sensitivity: couldn't work out what the %s slot will run", slot)
         return out
 
     def declare_dataset_sensitive(self, dataset_id: str) -> dict:

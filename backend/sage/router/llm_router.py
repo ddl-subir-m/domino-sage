@@ -81,12 +81,57 @@ def nearest_approved(state: SessionState, catalog: ModelCatalog) -> str:
     remembers it, and then names that stale model the moment the pick changes to a barred one. This
     reads no pick at all, which is why it is safe to hold across one.
 
+    NOT the same question as `locked_runs_on` either, and #285 is what telling them apart costs:
+    this one is the MOVE, and it never applies the signing pin, so a caller that wanted "what will
+    this turn run" and asked here named the sovereign slot on a session the pin held on one model.
+    Both callers are legitimate — a label consulted only once the turn's own model is already barred
+    wants the move, and one drawn per slot with no turn in hand wants what runs.
+
     The mode and the phase it DOES read: `_lock_preferences` prefers the sovereign slot for them.
 
     Raises on an empty or absent approved set, for the reason `_lock_sensitivity` does — asking where
     a lock moves a turn to, when nothing is approved, has no answer that is not a refusal.
     """
     return _nearest_approved(state, catalog, state.approved_models or frozenset())
+
+
+def locked_runs_on(state: SessionState, catalog: ModelCatalog) -> str:
+    """What a turn under the lock RUNS, for a label with no turn in hand (ADR-0043, #285).
+
+    `resolve`'s own chain with the pick dropped out of it, which is the whole difference between
+    this and its two neighbours. `nearest_approved` answers where the lock MOVES a barred turn and
+    never applies the signing pin — right for a chip consulted only once the turn's own model is
+    already barred, wrong for the model panel, which draws all three slots with no turn in hand and
+    has to say what each one will run. Under a held pin that is the signing model, on every row
+    (ADR-0032), and the panel named the sovereign slot instead.
+
+    Not `resolve` itself, for the reason `nearest_approved` records: `resolve` reads the pick, and
+    the browser holds this answer across pick changes, so an answer that could BE the pick goes
+    stale the moment somebody picks a barred model. Dropped HERE rather than by each caller, so
+    there is one copy of what the label is allowed to read.
+
+    Dropping the pick also drops the one rule that outranks the pin below the lock: an in-session
+    act (`_pin_signing` returns a PLAN_OVERRIDE or IMPLEMENT_OVERRIDE untouched). So while a pick is
+    live and barred, a turn goes where the lock MOVES it and this still names the pin's model. That
+    is the same trade the pick-free answer has always made, one rule further down; closing it would
+    put the pick in the browser's re-read list, which `store.js` keeps out on purpose.
+
+    Raises on an empty or absent approved set, exactly as `nearest_approved` does.
+    """
+    # An absent approved set becomes an empty one, so the refusal below is the one
+    # `nearest_approved` makes: `_lock_sensitivity` passes an unlocked state straight through, and a
+    # label asking what a lock runs when there is no lock is a caller bug, not a model.
+    state = replace(state, picked_model=None, chat_model=None,
+                    approved_models=state.approved_models or frozenset())
+    # `resolve`'s own fork, mirrored rather than flattened: the pin is a Build rule, because Chat has
+    # no phases to hold still. Flattened, Chat's row would name a signing model it never runs.
+    if state.chat_thread_id:
+        decision = _resolve_chat(state, catalog)
+    else:
+        decision = _pin_signing(_resolve_build(state, catalog), catalog)
+    # And the lock itself, not its two lines restated here — which would be this very defect told
+    # about the rule one layer up.
+    return _lock_sensitivity(decision, state, catalog).model
 
 
 def _nearest_approved(
