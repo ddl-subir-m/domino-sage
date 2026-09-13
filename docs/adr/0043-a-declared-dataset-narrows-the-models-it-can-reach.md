@@ -607,7 +607,9 @@ sentence carrying the real cure — `ShadowedSlot.message`, "change the holder's
 session" — is the one the drawer drops on that row. The discriminator is whether the HOLDER's model
 is approved, and the panel is not told which model that is; `model_assignments` sends `shadowed` as a
 bare boolean and does not read the lock at all. Fixing it is a field, not a rule, and it belongs with
-the gate it feeds rather than with the router.
+the gate it feeds rather than with the router. *Amended below — the prose no longer claims a cause,
+so the wrong-cause half of this is gone; the dropped cure and the missing discriminator still
+stand.*
 
 ## Amendment: the row predicts, so it reads the pick (#286)
 
@@ -641,7 +643,9 @@ closes all three at once.
 **The trigger does not widen.** The row substitutes only while a lock holds and its own assigned
 model is barred. Everywhere else the `Select` shows the assignment plainly: with no lock it is an
 assignment editor, and a transient pick in its closed state would make the control lie about the
-thing it edits.
+thing it edits. *Amended below — it widened, for a different reason: #287 substitutes where the
+SERVER has already moved the slot, which is settled rather than transient, so the concern this
+paragraph protects is untouched.*
 
 **The "Ask and Chat" row reads the Chat pick.** It is answered as Chat (`chat_thread_id="unarmed"`)
 for the reason two amendments above, and `_resolve_chat` reads `chat_model` — a different field from
@@ -692,4 +696,87 @@ function carrying the wrong explanation is a defect this repo has logged more th
 the pin survived the lock, so a row's prose can name the right model for the wrong cause. That is a
 field (`model_assignments` sends `shadowed` as a bare boolean), not a rule, and it belongs with the
 gate it feeds. Taken in the other order it would give a confident wrong cause on a row whose model is
-also wrong.
+also wrong. *Amended below — the prose no longer names a cause, so this is now about the missing
+CURE alone. The field is still needed, for the remedy rather than for the sentence.*
+
+## Amendment: a moved row says so, without claiming a cause (#287)
+
+This closes the second of the two edges left open above, in the half that was about the row's PROSE.
+The half about its remedy is untouched and still open — which is the whole of the split below. The
+decision is unchanged and one consequence moved: the panel still substitutes what a slot RUNS, still
+reads the server's per-slot answer rather than re-deriving the rule, and `_locked_model` is still not
+pin-aware.
+
+**The gate asked a narrower question than the sentence answered.** It was `barredNow` — the row's OWN
+model being unapproved. The signing pin takes every Build turn to whichever slot signs (ADR-0032), so
+when that holder is barred the lock moves the turn on from there, and a row holding an APPROVED model
+moves with it. Measured: `plan=opus` approved, `implement=domino/gemini-3.7-flash` barred, the Plan
+row reads `opus` and the Plan turn runs `sov-plan`. Of the edges known on this surface that was the
+worst-reading one — not a wrong explanation beside a visible warning, which a reader can doubt, but a
+wrong model with no sentence at all, which gives them nothing to doubt. The gate is now the
+comparison the sentence actually answers: the server's answer for the slot differs from what the row
+holds.
+
+**The comparison alone is not the gate, and this is the part invisible from either half.** Its two
+sides come from reads that are not ORDERED against each other. `setAssignment` patches the row and
+calls `notify()` before the lock's re-read lands, and that re-read is fire-and-forget precisely so a
+failed one leaves the last answer standing. The claim is about that ordering and not about how many
+reads are in flight: #294's decided fix turns this from one read per event into a cadence for as long
+as a build runs with the drawer open, which changes the count and leaves the ordering exactly as it
+is. A later reader arriving after #294 should find this still true as written.
+
+Gated on the bare difference, swapping one approved model for
+another would have drawn the PRE-save model back into the select under "This runs \<old\>, not
+\<new\>" — the drawer telling a person their save was refused. So the difference is drawn only where
+a rule that could have caused it is on the row: `barredNow`, or the pin having shadowed it. A
+difference neither explains is a stale read, not a move.
+
+This is a different window from the one named under #294, and they should not be read as one. #294 is
+the orchestrator changing the pick under an open drawer with no human act, and its decided fix — a
+re-read on the build watch's own tick while the drawer is open — does not reach this one, which is an
+ordering inside a single save round-trip and is closed by the conjunct rather than by a refresh.
+Shipping #294 is not a reason to drop the narrowing.
+
+**Widening the gate broke its neighbour, which is the second thing worth recording.** The pin's
+sentence drops on `shadowed && barredNow`, and that gate's own comment states the rule as *drop it
+wherever the line below names what the row runs* — which the code kept only because `runs` implied
+`barredNow`. Once it did not, the pin's sentence survived on the moved row and asserted that a barred
+holder's model runs, one line above a sentence naming a different one. It is now
+`shadowed && (barredNow || runs)`. `barredNow` stays in it for the case with no line below at all:
+`_locked_slot_models` returns nothing when the approved set resolves to none.
+
+**The prose drops its cause.** "`gpt-5.4` isn't approved, so this runs `gemini-3.7-flash`" is false
+on exactly the row the wider gate reaches: there the row's model IS approved, and approving it again
+would change nothing. It is now "This runs `gemini-3.7-flash`, not `gpt-5.4`." The two model names
+are the part the row can state truthfully whatever moved the turn; the causes are left to the
+controls that know which one it was.
+
+**What this closes of the second edge, and what it does not.** The quoted sentence is gone and with
+it the wrong cause, because the prose no longer asserts one. The rest stands, measured against the
+shape that paragraph describes — a row holding a barred model, a pin whose holder is approved, so the
+pin survives the lock:
+
+```
+PROBLEMS: []
+DETAILS : ['This runs opus, not gpt-5.4.', 'Default is coder.', 'This runs opus, not gpt-5.4.']
+```
+
+`PROBLEMS: []` is `ShadowedSlot.message` still dropped on that row — the cure still not offered, now
+via `barredNow` rather than because of it. The discriminator is still whether the HOLDER's model is
+approved, the panel is still not told which model that is, and fixing it is still a field. What this
+removes is the need for that discriminator to make the row's prose HONEST. It is still needed to make
+the row's remedy COMPLETE.
+
+**Where this meets #286, whose code had not landed when this was written.** `moved` is
+`barredNow || shadowed` because those are the two rules that can separate `slot_models` from the
+model a row holds, and a pick is not one of them: `locked_runs_on` drops the pick itself
+(`replace(state, picked_model=None, chat_model=None)`), so no pick can move that answer. If restoring
+the pick changes what `slot_models` sees, `moved` needs a conjunct for it, or a picked row goes
+silent again in exactly the way this amendment just fixed.
+
+One edge remains beyond all of these and is filed rather than named here.
+`llm_router.resolve_unsigned` routes a session whose history already carries unsigned tool calls to
+the first non-signing slot, and
+neither `slot_models` nor `shadowed` can see it, both being catalog-derived while that state is a
+property of one transcript — the same limit `preflight.shadowed_slots` records for its own sentence.
+See #293, where the mechanism is stated as the hypothesis to test rather than the thing to fix.

@@ -231,14 +231,14 @@ def test_a_slot_already_holding_an_approved_model_is_left_alone():
     (drawn,) = _drawn([{"sensitivity": _lock()}])
     # `implement` runs `coder`, which is approved, so the row still offers the way back.
     assert _row(drawn, "Implement")["value"] == "__default__"
-    assert not any("coder isn't approved" in d for d in drawn["details"])
+    assert not any("not coder." in d for d in drawn["details"])
 
 
 def test_a_substituted_row_says_what_it_would_have_run():
     """Without it the panel simply shows a model nobody chose, and the person who set the slot reads
     the row as having lost their assignment."""
     (drawn,) = _drawn([{"sensitivity": _lock()}])
-    assert "gpt-5.4 isn't approved, so this runs opus." in drawn["details"]
+    assert "This runs opus, not gpt-5.4." in drawn["details"]
 
 
 def test_a_row_whose_move_the_server_could_not_work_out_is_not_invented():
@@ -309,7 +309,7 @@ def test_the_lock_takes_the_shadow_off_a_row_it_has_already_moved():
     has to survive there, or this would pass by suppressing the sentence everywhere."""
     _, drawn = _drawn([{"set": ["plan", "opus"]}, {"signing": "implement", "sensitivity": _LOCKED}])
     assert drawn["problems"] == [_SHADOW]
-    assert "gpt-5.4 isn't approved, so this runs opus." in drawn["details"]
+    assert "This runs opus, not gpt-5.4." in drawn["details"]
 
 
 def test_a_lock_that_closes_every_model_still_takes_the_shadow_off():
@@ -345,3 +345,118 @@ def test_a_save_re_reads_the_lock_because_the_assignment_is_one_of_its_inputs():
     (drawn,) = _drawn([{"set": ["implement", "opus"]}])
     assert drawn["wrote"] == [{"catalog": {"implement": "opus"}}]
     assert drawn["sensitivityReads"] == 1
+
+
+# ---- a row the lock moved past an approved model (#287) ------------------------------------------
+
+# The lock as it answers once the pin has routed a turn past an approved row: the server's answer for
+# every slot is `coder`, whatever that slot holds. `plan` will hold `opus`, which IS approved, and it
+# moves all the same — the pin takes the Build turn to a holder the lock bars, and the lock moves it
+# on from there. The row's own model is not what moved it, which is what a gate reading only the
+# row's own model cannot see.
+_PIN_MOVED = _lock(model="coder", chat_model="coder",
+                   slot_models={"plan": "coder", "implement": "coder", "ask": "coder"})
+
+# The measured case, built in the harness's own terms: the signing slot holds `gpt-5.4`, which the
+# lock bars, and `plan` holds an approved model of its own.
+_PIN_PAST_APPROVED = [{"set": ["implement", "gpt-5.4"]}, {"set": ["plan", "opus"]},
+                      {"signing": "implement", "sensitivity": _PIN_MOVED}]
+
+
+def test_a_row_holding_an_approved_model_still_says_where_its_turn_went():
+    """#287. The sentence was gated on the row's OWN model being unapproved, so this row — approved,
+    and moved anyway — named one model, ran another, and said nothing at all. A wrong explanation
+    beside a visible warning is recoverable, because the reader sees a claim and can doubt it; a
+    silent substitution gives them nothing to doubt."""
+    *_, drawn = _drawn(_PIN_PAST_APPROVED)
+    assert _row(drawn, "Plan")["value"] == "coder"
+    assert "This runs coder, not opus." in drawn["details"]
+
+
+def test_one_sentence_covers_both_ways_a_row_gets_moved():
+    """The old prose asserted a cause — "<model> isn't approved, so <other> runs" — and it is false
+    on exactly the row the wider gate reaches: `opus` IS approved, and approving it again would
+    change nothing. Asserted as a whole list, because the defect this replaces was a row drawing no
+    sentence: a membership test passes just as well when a row is still silent."""
+    *_, drawn = _drawn(_PIN_PAST_APPROVED)
+    assert drawn["details"] == [
+        "This runs coder, not opus.",        # approved, moved by the pin
+        "This runs coder, not gpt-5.4.",     # barred, moved by the lock
+        "This runs coder, not gpt-5.4.",
+    ]
+
+def test_the_moved_row_does_not_also_carry_the_pins_sentence():
+    """The pin's sentence names the HOLDER's model as what runs, and on this row that is false: the
+    holder is barred too, so the lock moved the pinned turn on again. Left standing beside the new
+    line it gave the reader two adjacent sentences naming two different models as what runs, and
+    nothing to tell them apart — a worse reading than the silence #287 started as.
+
+    Asserted here and not only in the block above, because the fixture that produces the pair is the
+    one whose `problems` nothing was looking at."""
+    *_, drawn = _drawn(_PIN_PAST_APPROVED)
+    assert drawn["problems"] == []
+
+
+# The pin's other state: the holder's model is APPROVED, so the lock leaves the pin standing and the
+# pin is genuinely what moved the row. Both sentences are true here, which is the reason to keep one.
+_PIN_SURVIVES = [
+    {"set": ["implement", "opus"]}, {"set": ["plan", "coder"]},
+    {"signing": "implement", "sensitivity": _lock(
+        model="opus", chat_model="opus",
+        slot_models={"plan": "opus", "implement": "opus", "ask": "opus"})},
+]
+
+
+def test_a_row_the_pin_moved_says_it_once_and_not_twice():
+    """Two true sentences naming one model with two different remedies, where one sends the reader to
+    another row and the other starts the thing they came here to change. The row keeps the one that
+    answers what it runs — which is what the drop has always been for, and it stopped happening here
+    the moment `runs` outgrew `barredNow`."""
+    *_, drawn = _drawn(_PIN_SURVIVES)
+    assert "This runs opus, not coder." in drawn["details"]
+    assert drawn["problems"] == []
+
+
+def test_an_answer_that_no_rule_on_this_row_explains_is_not_drawn():
+    """The comparison reads two values from two reads that are not kept in step. `setAssignment`
+    patches the row and notifies BEFORE the lock's re-read lands, and that read is fire-and-forget
+    so a failed one leaves the last answer standing — so swapping one approved model for another
+    would have snapped the select back to the PRE-save model under "This runs <old>, not <new>",
+    the drawer telling the reader their save was refused.
+
+    Same fixture as above with the pin taken off: `plan` holds an approved model, nothing has
+    shadowed it, and the server's stale-looking answer is then a disagreement between two reads
+    rather than a move."""
+    _, drawn = _drawn([{"set": ["plan", "opus"]}, {"sensitivity": _PIN_MOVED}])
+    assert _row(drawn, "Plan")["value"] == "opus"
+    assert not any("not opus." in d for d in drawn["details"])
+
+
+# The fallback rows — `assignments` null, so the panel builds rows from the status poll's catalog —
+# carry no `shadowed` key, so `moved` falls back to `barredNow` there and the widened gate cannot
+# invent a move. That is a true argument and it is the reason the path is safe, but an argument is
+# not a guard. Adding `shadowed` to the fallback-row shape is a reasonable thing to want, since the
+# pin's sentence needs no gateway and is already computed without one; the day somebody does, the
+# two reads behind the comparison stop being comparable — `catalog` is kept current by the status
+# poll, and `sensitivity` is refreshed on open, save and mode change and by nothing else. This is
+# what fails then.
+#
+# One step, and the throw has to be in the FIRST one: a read that fails after a read that landed
+# leaves the earlier answer standing, so the panel still holds real rows and never reaches this
+# path. The approved set is the deployment defaults for the same reason the rows cannot be assigned
+# here — with no read there is nothing to save against, so `barredNow` has to be made false by
+# approving what the catalog already holds.
+_STALE_FALLBACK = [{"listing": "throw", "sensitivity": _lock(
+    approved=["gpt-5.4", "coder"], model="coder", chat_model="coder",
+    slot_models={"plan": "coder", "implement": "gpt-5.4", "ask": "coder"})}]
+
+
+def test_a_fallback_row_cannot_invent_a_move_it_was_never_told_about():
+    """A row built from the catalog poll carries no verdict of its own, so a difference between it
+    and the lock's per-slot answer is two reads disagreeing rather than a move. Saying "This runs
+    coder, not gpt-5.4." there would name a substitution nothing on the server performed, on the one
+    read that already has the least to say."""
+    (drawn,) = _drawn(_STALE_FALLBACK)
+    assert drawn["labels"] == ["Plan", "Implement", "Ask and Chat"], "the rows are drawn at all"
+    assert [r["value"] for r in drawn["rows"]] == ["gpt-5.4", "coder", "gpt-5.4"]
+    assert drawn["details"] == []
