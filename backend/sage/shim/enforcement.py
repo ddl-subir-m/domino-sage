@@ -359,10 +359,13 @@ class EnforcementShim:
         # GPT-5 family: the gateway answers 400 with "Function tools with reasoning_effort are not
         # supported for gpt-5.4 in /v1/chat/completions". Chat turns always carry tools, so with
         # gpt-5.4 as the Chat alias EVERY turn failed, down to "hi" — the same request succeeded the
-        # moment it routed to sonnet, which advertises no efforts and so was never given one. The
-        # field is dropped rather than sent as 'none' (the other half of the gateway's advice):
-        # `none` is not in the enum the alias advertises, and an alias that does not advertise a
-        # value 400s on it, which is the failure this whole block already guards against twice.
+        # moment it routed to sonnet, which advertises no efforts and so was never given one.
+        # The field is dropped rather than sent as 'none' (the other half of the gateway's advice).
+        # Measured 2026-09-12 (scripts/reasoning-probe.py): 'none' DOES pass alongside tools on
+        # gpt-5.4 — 200, where every other level 400s — so the reason this drops instead is no
+        # longer "the alias would refuse it". It drops because 'none' is a level, not an absence:
+        # sending it would pin every tool-carrying turn to no reasoning at all for an alias whose
+        # own default is higher. Deciding that for a Build turn is #282's, not this line's.
         # Cost is what is lost — the turn runs at the alias default. A tool-less Chat turn keeps it.
         tool_call = bool(request.get("tools"))
 

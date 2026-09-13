@@ -57,7 +57,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from ..orchestrator import brand
-from ..router.models import reasoning_efforts_for as name_reasoning_efforts
+from ..router.models import reasoning_efforts_for as measured_reasoning_efforts
 
 
 def _platform_api() -> str:
@@ -951,7 +951,12 @@ def parse_costs(raw: Any) -> dict[str, float]:
     }
 
 
-_EFFORT_VALUES = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+# Every legal spelling of `reasoning_effort` across the providers the gateway fronts — the union,
+# so that an enum the gateway does advertise survives the read. Membership here says a value is a
+# value, never that any alias accepts it: `max` is Gemini's top level, `minimal` is one Gemini
+# advertises and Vertex then refuses. Which of them an alias can actually run is
+# `router.models.REASONING_EFFORTS`, measured per alias (#280).
+_EFFORT_VALUES = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 
 def parse_reasoning_efforts(raw: Any) -> list[str]:
@@ -972,9 +977,27 @@ def parse_reasoning_efforts(raw: Any) -> list[str]:
 
 
 def alias_reasoning_efforts(name: str, inference_params: Any = None) -> list[str]:
-    """Gateway enum if present, else the GPT-5 / o-series heuristic."""
+    """Gateway enum if present, narrowed by the per-alias measurement where there is one (#280).
+
+    Metadata stays the authority over WHICH levels an alias offers — it is the live answer and the
+    table is a snapshot. It is not the authority over which ones RUN: Gemini advertises `minimal`
+    and Vertex behind it answers 400 "Thinking level unsupported: THINKING_LEVEL_MINIMAL", so an
+    enum published verbatim would put a level in the picker that kills the turn that picks it. A
+    probed alias has had every spelling tried against it (scripts/reasoning-probe.py), so its row is
+    complete and may narrow the enum; an alias nobody probed has no row and the enum passes through.
+
+    The cost of narrowing is a level the gateway adds after the probe, which stays hidden until
+    somebody re-probes. That is the trade this whole table already makes: a missing control costs
+    one choice, a level that 400s costs the turn.
+
+    Order comes from the table, never from the enum. This list is rendered straight into the effort
+    menu, and the gateway's enum is alphabetical — obeying it would read High / Low / Max / Medium.
+    """
     listed = parse_reasoning_efforts(inference_params)
-    return listed or list(name_reasoning_efforts(name))
+    measured = measured_reasoning_efforts(name)
+    if listed and measured:
+        return [e for e in measured if e in listed]
+    return listed or list(measured)
 
 
 def parse_groups(raw: Any) -> list[str]:

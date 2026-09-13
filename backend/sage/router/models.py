@@ -62,9 +62,6 @@ def supports_vision(model: ModelId) -> bool:
 # it. TEMPORARY: delete this and its use once the gateway's Bedrock adapter groups tool results.
 BEDROCK_SERVED = frozenset({"bedrock-qwen3-coder", "nova"})
 
-# OpenAI-style reasoning_effort values. Used when the gateway alias record does not list them.
-_REASONING_EFFORTS = ("low", "medium", "high")
-
 
 def is_bedrock(model: ModelId) -> bool:
     return model.rsplit("/", 1)[-1] in BEDROCK_SERVED
@@ -100,16 +97,55 @@ def signing_slot(catalog: ModelCatalog) -> str | None:
     return None
 
 
-def reasoning_efforts_for(model: ModelId) -> tuple[str, ...]:
-    """Heuristic: GPT-5 and the o-series accept `reasoning_effort` on chat/completions.
+# Which `reasoning_effort` values each gateway alias actually accepts. One alias at a time, by
+# sending a NONSENSE value (scripts/reasoning-probe.py): a 400 means the alias validates the field
+# and so honours it, a 200 means it discards the field in silence. The two are indistinguishable if
+# you only ever send a value that happens to be legal, which is why nobody had noticed. Probed live
+# on sage.gcp.cs.domino.tech, 2026-09-12.
+#
+# Measured per alias because the name cannot tell you, and the name match this replaced was wrong
+# in both directions: gemini-3.7-flash honours the field, while sonnet, Opus-4.8, haiku and both
+# Gemmas throw it away. The old `gpt-5`/o-series match named none of that, and was right about the
+# rest only by accident.
+#
+# Keys are the alias name EXACTLY as the gateway spells it, not a normalised one — the lookup is
+# case-sensitive, like VISION_CAPABLE and SIGNS_TOOL_CALLS above it, and this deployment does serve
+# mixed-case names (`Opus-4.8`). A key lowercased out of habit answers `()` forever and looks like
+# an alias that simply offers no control.
+#
+# This is the USABLE set, not the advertised one. Gemini's own refusal names
+# 'high','low','max','medium','minimal', but `minimal` then 400s at Vertex ("Thinking level
+# unsupported: THINKING_LEVEL_MINIMAL"), so republishing the enum verbatim would offer a level that
+# cannot run. An alias absent from this table is offered no effort at all: a missing control costs
+# its user one choice, where a wrong guess costs a hard 400 that kills the whole turn.
+REASONING_EFFORTS: dict[str, tuple[str, ...]] = {
+    # Every level except `none` is refused together with function tools ("Function tools with
+    # reasoning_effort are not supported for gpt-5.4 in /v1/chat/completions"). gemini takes any of
+    # its levels alongside tools, and is the only alias here that does — but that difference buys
+    # nothing yet: enforcement.apply drops the effort from EVERY tool-carrying turn, for every
+    # alias, so today the only turn an effort reaches at all is a tool-less Chat turn. Sending one
+    # on a Build turn is #282. Either way the exclusion is a property of the request shape, not of
+    # the alias's enum, so it does not narrow these rows.
+    #
+    # `none` and `xhigh` are in the row because the probe found them, not because anything
+    # advertised them: the name match this replaced published low/medium/high for gpt-5.4 and had
+    # simply never been checked against the alias.
+    "gpt-5.4": ("none", "low", "medium", "high", "xhigh"),
+    "gemini-3.7-flash": ("low", "medium", "high", "max"),
+}
 
-    Alias metadata (`inference_params`) is the authority when present; this is the fallback so a
-    picker can still offer Low/Medium/High for gpt-5.4 when the gateway omits the enum.
+
+def reasoning_efforts_for(model: ModelId) -> tuple[str, ...]:
+    """The efforts this alias was measured to accept; empty for one nobody has probed.
+
+    NOT the last word, and not a passthrough either. `alias_reasoning_efforts` lets an alias record
+    that advertises an enum choose which of these levels to offer, and narrows that enum by this
+    row — so a level here can be dropped by the gateway, and a level the gateway advertises but the
+    probe proved broken never reaches a picker. Read that function for the whole rule; it is two
+    sentences and this one cannot state it alone. Today the gateway publishes `{}` for every alias
+    (#284), so in practice this table answers by itself.
     """
-    bare = model.rsplit("/", 1)[-1].lower()
-    if "gpt-5" in bare or bare.startswith(("o1", "o3", "o4")):
-        return _REASONING_EFFORTS
-    return ()
+    return REASONING_EFFORTS.get(model.rsplit("/", 1)[-1], ())
 
 
 @dataclass(frozen=True)

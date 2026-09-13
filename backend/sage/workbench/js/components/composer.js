@@ -21,8 +21,13 @@ window.SW = window.SW || {};
     return SW.util.chatCapable(resourceGroups.model_llm);
   }
 
+  // 'Model default' rather than 'Default', because `none` is now a level some aliases really
+  // offer (gpt-5.4 measured 2026-09-12, #280) and it means the opposite thing: 'Model default'
+  // sends no field and lets the alias reason as it likes, 'None' sends the field and turns
+  // reasoning off. Two menu entries a row apart cannot both be called Default.
   function effortLabel(value) {
-    if (!value) return 'Default';
+    if (!value) return 'Model default';
+    if (value === 'xhigh') return 'Extra high';
     return value.charAt(0).toUpperCase() + value.slice(1);
   }
 
@@ -705,7 +710,7 @@ window.SW = window.SW || {};
 
     const effortMenu = {
       items: [
-        { key: 'default', label: 'Default' },
+        { key: 'default', label: effortLabel(null) },
         ...efforts.map((value) => ({ key: value, label: effortLabel(value) })),
       ],
       onClick: ({ key }) => {

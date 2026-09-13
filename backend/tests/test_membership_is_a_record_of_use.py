@@ -96,7 +96,7 @@ def test_a_bind_writes_the_same_row_the_browse_button_writes(tmp_path: Path):
 
     row = _member(orch, "llm_alias:f-gpt54")
     assert row["alias"] == "gpt-5.4"
-    assert row["reasoning_efforts"] == ["low", "medium", "high"]
+    assert row["reasoning_efforts"] == ["none", "low", "medium", "high", "xhigh"]
     assert "vision" in row["capabilities"]
     assert row["description"] == "gpt-5.4"
 
