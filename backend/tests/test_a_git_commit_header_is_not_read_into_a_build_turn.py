@@ -100,13 +100,17 @@ def test_blame_is_named_as_a_second_route_and_not_folded_into_the_header():
     """
     body = flat()
     assert "`git blame` prints no header" in body
-    assert "puts one on every line it emits" in body
-    # The property, then the spellings. `--show-email` is `-e`'s long form and leaks identically
-    # (verified live); two rounds of this rule named `-e` alone and blessed the long form by
-    # omission, which is why the sentence is about what a flag ASKS FOR.
-    assert "every\n  flag that asks it for the author's address" in rule()
-    for flag in ("`-e`", "`--show-email`", "`--porcelain`", "`--line-porcelain`"):
-        assert flag in body, flag
+    assert "carry the address on every line they emit" in body
+    # And then the instruction, which is a CLOSED form rather than a test to apply. Every draft
+    # that gave the agent a predicate for blame cleared a leaker it had not thought of: "without
+    # `-e`" cleared `--porcelain`; naming three flags cleared `--show-email`; "every flag that
+    # ASKS for the address" cleared `--incremental`, which asks for nothing and prints two address
+    # lines anyway, and `git annotate`, which is blame under another name. All verified live.
+    assert "Do not work out which form is safe" in body
+    assert "run `git blame <file>` bare, or not at all" in body
+    for spelling in ("`-e`", "`--show-email`", "`--porcelain`", "`--line-porcelain`",
+                     "`--incremental`", "`git annotate`"):
+        assert spelling in body, spelling
 
 
 def test_the_rule_generalises_on_the_address_rather_than_on_the_header():
@@ -135,9 +139,34 @@ def test_the_safe_list_is_closed_and_names_no_escape_hatch():
     is now described by what its flags do and blessed by nothing.
     """
     body = flat()
-    assert "`git status --short`, `git diff`." in body
-    for hatch in ("are fine", "is fine", "none of those", "without `-e`"):
-        assert hatch not in body, hatch
+    safe, sep, _ = body.partition("Two routes put an address there")
+    assert sep, "the safe list no longer runs up to the routes sentence"
+    _, sep, safe = safe.partition("These print no commit header and no author line")
+    assert sep, "the safe list no longer states what it is claiming"
+
+    # Structural, because a blocklist of phrasings only catches the spellings that already
+    # happened: a fifth draft ending "plain `git blame` on its own prints only a name" passes any
+    # list of past wordings and re-blesses `--porcelain` by omission. The property is that the
+    # safe list names COMMANDS and that blame is not one of them, whatever words surround it.
+    assert "blame" not in safe, safe
+    for named in ("git log --oneline", 'git log --format="%h %s"', "git show --stat --format=",
+                  "git status --short", "git diff"):
+        assert named in safe, named
+
+
+def test_the_safe_list_claims_no_more_than_it_can_deliver():
+    """The claim is scoped to the header and the author line, never to the output as a whole.
+
+    `git diff` prints file CONTENT and `git log --oneline` prints commit SUBJECTS, both of which
+    are user-controlled and can hold an address. "These print none" would have been false, and
+    false in the worst direction: the agent is told these five are safe, so it will not apply the
+    rule's own "work out what it will actually print" to them. Scoping the sentence makes it true
+    without dragging file content into a bullet about reading history — that is `read`'s surface,
+    not this one.
+    """
+    body = flat()
+    assert "These print no commit header and no author line" in body
+    assert "These print none" not in body
 
 
 def test_the_rule_does_not_ask_anyone_to_redact():
@@ -222,15 +251,26 @@ def test_the_build_instructions_are_not_a_second_copy_inside_opencode_json():
         assert carriers == [], (probe, carriers)
 
 
-def test_the_chat_agent_is_exempt_because_it_is_never_sent_to_the_projects_history():
-    """Why the rule is in one template and not both.
+def test_chat_is_told_not_to_run_git_at_all_in_both_copies():
+    """The second surface, and the mirror it needs.
 
-    sage-chat holds `bash: allow`, so it COULD run git — the reason it is exempt is not permission
-    but instruction: it answers data questions in `.sage/chat-work` and is told outright not to go
-    looking around the project. If that sentence ever leaves the Chat prompt, Chat becomes a
-    second surface that needs this rule, and this test is what says so.
+    An earlier version of this file asserted Chat was EXEMPT, on the grounds that it is told not
+    to go looking around the project. That asserted the premise instead of checking it: sage-chat
+    holds `bash: allow`, its cwd is `<project>/.sage/chat-work` inside the Project tree, and its
+    prompt said nothing whatever about git — so "when did this data change?" could reach `git log`
+    and hit the identical refusal, with nothing to prevent it and no test that would go red.
+
+    Chat gets the SHORT form — do not run git at all — rather than Build's. It has no reason to
+    read history, so a closed instruction costs it nothing and leaves no form to reason about.
+
+    Both copies, because `template/chat/AGENTS.md` is the source of truth and `opencode.json` is
+    what the model is actually sent. Editing one alone is the failure this asserts against.
     """
-    cfg = json.loads((ROOT / "opencode.json").read_text(encoding="utf-8"))
-    chat = cfg["agent"]["sage-chat"]["prompt"]
-    assert chat == (ROOT / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
-    assert "Do not list files, do not search, do not `cd`" in chat
+    md = (ROOT / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
+    prompt = json.loads((ROOT / "opencode.json").read_text(encoding="utf-8"))[
+        "agent"]["sage-chat"]["prompt"]
+    assert prompt == md
+    for probe in ("Do not run `git` either", "not `log`, not `show`, not `blame`",
+                  "carries the committer's email address"):
+        assert probe in md, probe
+        assert probe in prompt, probe
