@@ -5437,7 +5437,8 @@ class Orchestrator:
         if self._project is None:
             return self.project(start_preview=False, seed_app=True)
         self._wm.ensure(self._project_id, seed_app=True)
-        self._prepare_app_files()
+        if self._prepare_app_files():
+            self._restart_preview_for_config_change(self._project)
         # The app may have been seeded just now, from a template that carries the pack's tokens and
         # no instructions block.
         self._voice_agents_md(self._project)
@@ -5916,7 +5917,8 @@ class Orchestrator:
         # emptying that one under it would leave its end-of-turn repairs with nothing to restore
         # from (see Project.turn_attached and _restore_attachments).
         project.attached = []
-        self._prepare_app_files()
+        if self._prepare_app_files():
+            self._restart_preview_for_config_change(project)
         self._voice_agents_md(project)   # the app being bound to may have been seeded just now
         self._splice_instructions(project)
         self._rehydrate_attached(project)
@@ -6009,10 +6011,15 @@ class Orchestrator:
                 {"type": "plan-superseded", "planId": earlier["id"], "by": new_plan_id,
                  "byConversation": conversation}, origin)
 
-    def _prepare_app_files(self) -> None:
-        self._wm.refresh_preview_config()
+    def _prepare_app_files(self) -> bool:
+        preview_config_changed = self._wm.refresh_preview_config()
         self._wm.ensure_llm_helper()
         self._wm.refresh_owned_sources()
+        return preview_config_changed
+
+    def _restart_preview_for_config_change(self, project: Project) -> None:
+        project.supervisor.stop()
+        project.supervisor = ViteSupervisor(project.workspace.path, domino_base_prefix())
 
     def _ensure_preview_running(self, project: Project) -> None:
         try:
