@@ -12,7 +12,7 @@ import secrets
 import shutil
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -118,6 +118,25 @@ def _is_auto_artifact(item: dict) -> bool:
     if str(item.get("kind") or "") != "artifact":
         return False
     return str(item.get("addedBy") or "sage") != "user"
+
+
+class HistoryRows(list):
+    """What `read_history` returns: the rows it parsed, and whether the read lost anything getting
+    there (ADR-0051). `[]` already means "an empty conversation"; folding "could not read this"
+    into the same value would make the two indistinguishable, so both ride beside the rows instead
+    of inside them — a caller that only iterates or compares the rows never has to know.
+
+    `dropped` counts JSONL lines that would not parse (skipped, not fatal: the rest of the log
+    still speaks). `unreadable` is set instead of `dropped` when nothing could be read at all — for
+    example non-UTF-8 bytes, where skipping a line does not reach it. Both stay their true value
+    every time `strict=True` is passed: a strict read never returns a lossy `HistoryRows`, it
+    raises, so these fields only take a non-default value on a `strict=False` read.
+    """
+
+    def __init__(self, rows: Iterable[dict] = (), *, dropped: int = 0, unreadable: bool = False):
+        super().__init__(rows)
+        self.dropped = dropped
+        self.unreadable = unreadable
 
 
 class ThreadStore:
@@ -254,11 +273,44 @@ class ThreadStore:
         with p.open("a") as f:
             f.write(json.dumps({**entry, "at": _now()}) + "\n")
 
-    def read_history(self, thread_id: str) -> list[dict]:
+    def read_history(self, thread_id: str, *, strict: bool = False) -> HistoryRows:
+        """The Thread's turn-by-turn transcript, one JSON row per line.
+
+        `strict` is for a caller that REWRITES from this read — `chat_handoff.transcript_markdown`
+        is exactly that caller, and turning an unreadable file into `[]` there would write an
+        EMPTY transcript over whatever was there before (ADR-0051, and the trap #326 did not
+        widen its catch to avoid). Strict raises instead of returning a lossy result, on a whole
+        unreadable file AND on any line that failed to parse: a rewrite built from 9 of a
+        conversation's 10 turns is the same silent loss as one built from zero.
+
+        Non-strict — every DISPLAY caller, which is nearly everyone here — proceeds with what it
+        could read and says how much it lost: `.dropped` counts JSONL lines that would not parse
+        (skipped rather than losing every row after them, since the rest of the log still speaks),
+        and `.unreadable` is set instead when nothing could be read at all, for example non-UTF-8
+        bytes — a different failure than a bad line, and not one skipping reaches.
+        """
         p = self.history_path(thread_id)
         if not p.exists():
-            return []
-        return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+            return HistoryRows()
+        try:
+            text = p.read_text()
+        except (ValueError, OSError):
+            # `ValueError` covers the non-UTF-8 file as well as bad JSON — see `_read_meta`.
+            if strict:
+                raise
+            return HistoryRows(unreadable=True)
+        rows = []
+        dropped = 0
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                dropped += 1
+        if dropped and strict:
+            raise ValueError(f"{dropped} line(s) in {p} could not be parsed")
+        return HistoryRows(rows, dropped=dropped)
 
     def read_context(self, thread_id: str) -> dict:
         p = self.thread_dir(thread_id) / "context.json"

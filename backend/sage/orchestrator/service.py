@@ -175,6 +175,7 @@ from ..workspace.manager import (
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
+    HistoryRows,
     ThreadStore,
     _ensure_dir_link,
     ensure_chat_workdir,
@@ -1582,6 +1583,17 @@ def _artifacts_present(root: Path, items: list[dict]) -> list[dict]:
     say a chart is not here; a digest naming a file that is not there is just a wrong instruction
     (ADR-0006 — the digest is the only record of the link)."""
     return [row for row in _artifacts_with_absences(root, items) if not row.get("missing")]
+
+
+def _warn_if_history_lossy(history: HistoryRows, where: str) -> None:
+    """Says so, per ADR-0051, for a DISPLAY caller that proceeds with what `read_history` could
+    read and has no response field to carry the rest of the answer in. Logged rather than shown:
+    these routes render a transcript, not a diagnostic, and the person reading it already sees
+    fewer turns than they sent — this is for whoever goes looking for why."""
+    if history.unreadable:
+        log.warning("%s: a history file could not be read", where)
+    elif history.dropped:
+        log.warning("%s: %d history line(s) could not be parsed", where, history.dropped)
 
 
 def _history_with_absences(root: Path, history: list[dict], *, kept: bool = True) -> list[dict]:
@@ -3944,9 +3956,11 @@ def _crossing_minted_app(workspace: Workspace, conversation: str) -> bool:
     time a build turn asks, `apps/` holds the app either way. It is what separates the rail's
     "Built X" tag from "Changed X", and it does not change with later turns.
     """
+    history = workspace.read_history(conversation)
+    _warn_if_history_lossy(history, "_crossing_minted_app")
     return any(
         isinstance(row.get("crossed"), dict) and row["crossed"].get("newApp")
-        for row in workspace.read_history(conversation)
+        for row in history
     )
 
 
@@ -6161,18 +6175,28 @@ class Orchestrator:
         untagged entry to the project's OLDEST conversation: an upgraded project keeps its
         transcript, and a conversation created after the upgrade — the "New conversation" the rail
         offers — still opens empty. With no conversations yet nothing can own them, so leave them
-        for the first one that builds."""
-        if not workspace.has_untagged_history():
-            return
-        rows = ThreadStore(record.path).list()
-        if not rows:
-            return
-        # createdAt has one-second resolution, so two Threads made in the same second tie. The id
-        # carries epoch-ms and is strictly increasing, so it breaks the tie by creation order —
-        # the list itself no longer carries one, being a scan (ADR-0008).
-        oldest = min(rows, key=lambda r: (str(r.get("createdAt") or ""), str(r.get("id") or "")))
-        if oldest.get("id"):
-            workspace.adopt_history(str(oldest["id"]))
+        for the first one that builds.
+
+        Several call sites reach this as a side effect of something else — one of them is the
+        history DISPLAY route — so a Build log this cannot read whole (for example non-UTF-8
+        bytes) must not fail the call it rides in on. `adopt_history` itself refuses to rewrite
+        from a partial read (ADR-0051); this is the caller that decides a skipped upgrade is the
+        right answer to that refusal, not a 500 four call sites away from the log it is about."""
+        try:
+            if not workspace.has_untagged_history():
+                return
+            rows = ThreadStore(record.path).list()
+            if not rows:
+                return
+            # createdAt has one-second resolution, so two Threads made in the same second tie.
+            # The id carries epoch-ms and is strictly increasing, so it breaks the tie by creation
+            # order — the list itself no longer carries one, being a scan (ADR-0008).
+            oldest = min(rows, key=lambda r: (str(r.get("createdAt") or ""), str(r.get("id") or "")))
+            if oldest.get("id"):
+                workspace.adopt_history(str(oldest["id"]))
+        except (ValueError, OSError):
+            log.warning("_adopt_legacy_build_history: %s's Build log could not be read; "
+                        "leaving its history untagged", record.path)
 
     def _ensure_session(self, project: Project, conversation: str | None = None) -> str:
         client = self._ensure_opencode()
@@ -6691,12 +6715,8 @@ class Orchestrator:
         conversation = project.build_conversation
         if not conversation:
             return ""
-        try:
-            history = ThreadStore(project.record.path).read_history(conversation)
-        except (OSError, ValueError):
-            # A transcript we cannot read is background, not the turn: build without it.
-            log.exception("chat context: could not read conversation %s", conversation)
-            return ""
+        history = ThreadStore(project.record.path).read_history(conversation)
+        _warn_if_history_lossy(history, "_chat_context_note")
         summary = chat_compact.chat_summary(history)
         return f"{_CHAT_CONTEXT_PREAMBLE}\n\n{summary}" if summary else ""
 
@@ -7016,10 +7036,11 @@ class Orchestrator:
         if row is None:
             raise KeyError(thread_id)
         handoffs = store.read_handoffs(thread_id)
+        history = store.read_history(thread_id)
+        _warn_if_history_lossy(history, "get_thread")
         return {
             **row,
-            "history": _history_with_absences(record.path, store.read_history(thread_id),
-                                              kept=record.kept_rows()),
+            "history": _history_with_absences(record.path, history, kept=record.kept_rows()),
             "context": store.read_context(thread_id),
             "artifacts": _artifacts_with_absences(record.path, store.read_artifacts(thread_id),
                                                   kept=record.kept_rows()),
@@ -7174,7 +7195,9 @@ class Orchestrator:
         return rows
 
     def thread_history(self, thread_id: str) -> list[dict]:
-        return ThreadStore(self._chat_project().record.path).read_history(thread_id)
+        history = ThreadStore(self._chat_project().record.path).read_history(thread_id)
+        _warn_if_history_lossy(history, "thread_history")
+        return history
 
     def conversation_history(self, thread_id: str) -> list[dict]:
         """One Conversation's whole record — what was asked in Chat and what was done in Build —
@@ -7194,7 +7217,9 @@ class Orchestrator:
         both actually had — Build only ever started after a handoff out of Chat.
         """
         record = self._chat_project().record
-        rows = [{**row, "half": "chat"} for row in ThreadStore(record.path).read_history(thread_id)]
+        chat_history = ThreadStore(record.path).read_history(thread_id)
+        _warn_if_history_lossy(chat_history, "conversation_history (chat)")
+        rows = [{**row, "half": "chat"} for row in chat_history]
         for app_id in self._wm.app_ids():
             workspace = self._wm.app_workspace(self._project_id, app_id)
             # The same adoption `history()` does before it reads, and for the same reason: build
@@ -7202,7 +7227,9 @@ class Orchestrator:
             # it an upgraded Project's merged view would be strictly emptier than the split view it
             # replaces — Build's whole transcript missing, and only under unified.
             self._adopt_legacy_build_history(workspace, record)
-            rows += [{**row, "half": "build"} for row in workspace.read_history(thread_id)]
+            build_history = workspace.read_history(thread_id)
+            _warn_if_history_lossy(build_history, f"conversation_history (build:{app_id})")
+            rows += [{**row, "half": "build"} for row in build_history]
         # Stable, so rows sharing a stamp — a whole turn is written inside one second — keep the
         # order the log they came from has them in. The half is only ever the tiebreak for the
         # stampless rows above; for two stamped rows it agrees with what stability already gives,
@@ -7743,7 +7770,9 @@ class Orchestrator:
             yield {"type": "done", "ok": False, "decision": "unknown thread"}
             return
         store.suppress_handoff(thread_id)
-        pending = chat_handoff.unanswered_ask(store.read_history(thread_id))
+        history = store.read_history(thread_id)
+        _warn_if_history_lossy(history, "decline_handoff_stream")
+        pending = chat_handoff.unanswered_ask(history)
         if not pending:
             # An offer the classifier raised, and the turn that raised it already answered. There is
             # nothing to run, and running the last question again would answer it twice.
@@ -7782,10 +7811,12 @@ class Orchestrator:
             if not chat_handoff.should_classify(store.read_handoffs(thread_id)):
                 return None
             thread = store.get(thread_id) or {}
+            history = store.read_history(thread_id)
+            _warn_if_history_lossy(history, "_maybe_suggest_handoff")
             hit = chat_handoff.wants_an_app(
                 title=thread.get("title") or "",
                 user=prompt,
-                assistant=chat_handoff.last_assistant_text(store.read_history(thread_id)),
+                assistant=chat_handoff.last_assistant_text(history),
                 gateway=project.shim.gateway,
                 catalog=project.shim.catalog,
                 thread=thread_id,
@@ -8028,6 +8059,10 @@ class Orchestrator:
 
         thread = store.get(thread_id) or {}
         history = store.read_history(thread_id)
+        _warn_if_history_lossy(history, "_draft_handoff_plan")
+        # Non-strict, deliberately: this digest rides into a prompt for a DRAFT the person still
+        # reviews and can edit, not a file. The strict read that guards the real record is the one
+        # in `_write_crossing`, at confirm time.
         context = store.read_context(thread_id).get("items") or []
         artifacts = _artifacts_present(project.record.path, store.read_artifacts(thread_id))
         digest = chat_handoff.draft_digest(
@@ -8289,10 +8324,15 @@ class Orchestrator:
         context = store.read_context(thread_id).get("items") or []
         artifacts = _artifacts_present(project.record.path, store.read_artifacts(thread_id))
         thread = store.get(thread_id) or {}
+        # Both reads below are strict (ADR-0051): this method writes `.sage/handoff.md` and, when
+        # asked, `.sage/handoff-transcript.md` FROM what it reads here, and a lenient read that
+        # swallowed a bad line or a whole unreadable file would carry that loss straight into a
+        # document the person believes is a complete record. A refusal here is a ValueError, same
+        # as "no plan" and "unknown app" above it, and reaches the route the same way.
         digest = chat_handoff.confirm_digest(
             chat_handoff.draft_digest(
                 title=thread.get("title") or "",
-                asked=chat_handoff.user_texts(store.read_history(thread_id)),
+                asked=chat_handoff.user_texts(store.read_history(thread_id, strict=True)),
                 context=context if include_resources else [],
                 artifacts=artifacts if include_artifacts else [],
             ),
@@ -8304,7 +8344,8 @@ class Orchestrator:
         (project.workspace.path / ".sage" / "handoff.md").write_text(digest)
         transcript_path = project.workspace.path / ".sage" / "handoff-transcript.md"
         if include_transcript:
-            transcript_path.write_text(chat_handoff.transcript_markdown(store.read_history(thread_id)))
+            transcript_path.write_text(
+                chat_handoff.transcript_markdown(store.read_history(thread_id, strict=True)))
         else:
             transcript_path.unlink(missing_ok=True)
         # Without the chip id the per-chip loop stamps on every row. This list is not a return value
@@ -8715,7 +8756,9 @@ class Orchestrator:
         that the choice is made where the reason for it lives, and so `recall` stays the one place
         that knows what a rung is.
         """
-        scope = rule(store.read_history(thread_id))
+        history = store.read_history(thread_id)
+        _warn_if_history_lossy(history, "_record_recall_offer")
+        scope = rule(history)
         if not scope:
             return None
         ev = {"type": recall.SUGGEST, "scope": scope}
@@ -8874,6 +8917,7 @@ class Orchestrator:
         try:
             raw = _error_raw(project.last_gateway_error) or said
             history = store.read_history(thread_id)
+            _warn_if_history_lossy(history, "_record_plan_refusal")
             if _said_already(history, said):
                 message = brand.text(
                     "{assistantName} couldn't write a plan either — the same refusal, on a "
@@ -8909,7 +8953,9 @@ class Orchestrator:
         which is exactly the pair the session id is filed under.
         """
         app = project.app_for_turn()
-        scope = recall.offer(app.read_history(project.build_conversation))
+        history = app.read_history(project.build_conversation)
+        _warn_if_history_lossy(history, "_record_build_recall_offer")
+        scope = recall.offer(history)
         if not scope:
             return None
         ev = {"type": recall.SUGGEST, "scope": scope}
@@ -9731,6 +9777,7 @@ class Orchestrator:
         immediate = "first" if was_first else None
         artifacts: list[dict] = []
         history = store.read_history(thread_id)
+        _warn_if_history_lossy(history, "_chat_stream")
         urls = _urls_in_chat(prompt, history)
         if self._opencode_mcp_at is None:
             # Counted at the point the turn is pinned as Chat, which is where its tool list is about
@@ -9835,11 +9882,13 @@ class Orchestrator:
             # apart: assembling the prompt reads the Thread's history, artifacts and handoffs off
             # disk, while the dispatch is one HTTP POST. Folded together they were one unnamed gap.
             with timing.span("setup.prompt"):
+                prompt_history = store.read_history(thread_id)
+                _warn_if_history_lossy(prompt_history, "_chat_stream (prompt assembly)")
                 turn_prompt = self._chat_prompt(thread_id, prompt, ctx, urls,
                                                 workspace=Path(work),
                                                 artifacts=store.read_artifacts(thread_id),
                                                 handoffs=store.read_handoffs(thread_id),
-                                                history=store.read_history(thread_id),
+                                                history=prompt_history,
                                                 declined=declined)
             with timing.span("setup.dispatch"):
                 client.send_prompt(sid, turn_prompt, agent="sage-chat",
@@ -10329,6 +10378,7 @@ class Orchestrator:
                 # Read once: the short form and the last rung's note are both decided from it, and
                 # the row below is what changes it.
                 rows_before = store.read_history(thread_id)
+                _warn_if_history_lossy(rows_before, "_chat_stream (step failed)")
                 # A run of identical refusals says the paragraph once. Unlike the handoff, where
                 # this is the normal case, here it takes a person asking the same thing twice —
                 # but it is the same noise, and the ladder is about to offer the way out anyway.
@@ -12385,8 +12435,9 @@ class Orchestrator:
         # and each has its own session — the same reason `_record_build_recall_offer` counts per
         # (Conversation, app). Armed exactly as Chat arms it; the shim cannot tell the two apart,
         # which is what keeps one filter serving both halves.
-        withheld_token = project.control.arm_withheld(
-            recall.withheld(project.app_for_turn().read_history(project.build_conversation)))
+        build_history_for_turn = project.app_for_turn().read_history(project.build_conversation)
+        _warn_if_history_lossy(build_history_for_turn, "_build_stream (withheld)")
+        withheld_token = project.control.arm_withheld(recall.withheld(build_history_for_turn))
         # The failure-replan flag, consumed. Written here rather than beside its read because it has to
         # land after the pre-turn commit: a stop reverts the tree to that commit, and a flag cleared
         # ahead of it would take the gate the failure earned down with it.
@@ -13386,6 +13437,7 @@ class Orchestrator:
                 # The Conversation's history, read before this refusal joins it, so the ladder and
                 # the sentence below agree about which rung this is.
                 build_history = project.app_for_turn().read_history(project.build_conversation)
+                _warn_if_history_lossy(build_history, "_build_stream (refusal message)")
                 # Said once per run of identical refusals, for the reason Chat says it once: the
                 # guardrail sentence is a paragraph, and a second copy of it directly under the
                 # first explains nothing the first did not.
@@ -15600,7 +15652,9 @@ class Orchestrator:
         without starting the preview (attaching the project) — a plain GET must not spin up Vite."""
         workspace = self._wm.app_workspace(self._project_id)
         self._adopt_legacy_build_history(workspace, self._wm.project_record(self._project_id))
-        return workspace.read_history(conversation, tool_detail=tool_detail)
+        history = workspace.read_history(conversation, tool_detail=tool_detail)
+        _warn_if_history_lossy(history, "Orchestrator.history")
+        return history
 
     def list_project_resources(self) -> list[dict]:
         """Domino Resources the creator added to this project — the rail, not the catalogue.

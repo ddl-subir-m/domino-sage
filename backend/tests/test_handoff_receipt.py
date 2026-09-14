@@ -220,6 +220,25 @@ def test_a_crossing_that_carried_nothing_extra_says_so(tmp_path: Path):
     assert not (root / "apps" / app_id / ".sage" / "handoff-transcript.md").exists()
 
 
+def test_a_corrupted_conversation_refuses_the_crossing_rather_than_writing_an_empty_transcript(
+        tmp_path: Path):
+    """#331's trap: a lenient read of a broken history file must not turn a REWRITE into an empty
+    `.sage/handoff-transcript.md` (ADR-0051 rule three — a caller that rewrites from a read
+    refuses). One bad line is enough; `read_history(strict=True)` raises on it before either
+    `.sage/handoff.md` or the transcript is written, so the crossing leaves no half-written files
+    behind for a person to mistake for the real record."""
+    orch, root, tid = _a_conversation_with_something_to_carry(tmp_path)
+    store = _store(orch)
+    with store.history_path(tid).open("a") as f:
+        f.write("{not json\n")
+
+    with pytest.raises(ValueError):
+        orch.confirm_handoff(tid, ALL_ON)
+
+    assert not list(root.rglob("handoff-transcript.md"))
+    assert not list(root.rglob("handoff.md"))
+
+
 # ---- Change redoes the crossing -------------------------------------------------------------
 
 

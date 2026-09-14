@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from sage.workspace.threads import (
     ThreadStore,
     ensure_chat_workdir,
@@ -46,6 +48,40 @@ def test_chips_persist_on_the_user_event_after_removal(tmp_path: Path):
     assert store.remove_context(thread["id"], chip["id"]) is True
     assert store.read_context(thread["id"])["items"] == []
     assert store.read_history(thread["id"])[0]["contextIds"] == [chip["id"]]
+
+
+def test_a_malformed_history_line_is_dropped_not_fatal(tmp_path: Path):
+    """ADR-0051 rule two: a bad line is skipped and counted, the rest of the log still speaks."""
+    store = ThreadStore(tmp_path)
+    thread = store.create()
+    store.append_history(thread["id"], {"type": "user", "text": "first"})
+    with store.history_path(thread["id"]).open("a") as f:
+        f.write("{not json\n")
+    store.append_history(thread["id"], {"type": "user", "text": "second"})
+
+    rows = store.read_history(thread["id"])
+    assert [r["text"] for r in rows] == ["first", "second"]
+    assert rows.dropped == 1
+    assert rows.unreadable is False
+
+    with pytest.raises(ValueError):
+        store.read_history(thread["id"], strict=True)
+
+
+def test_a_non_utf8_history_file_is_unreadable_not_empty(tmp_path: Path):
+    """ADR-0051 rule one: unreadable is its own field, never folded into `[]` meaning "no turns"."""
+    store = ThreadStore(tmp_path)
+    thread = store.create()
+    store.append_history(thread["id"], {"type": "user", "text": "first"})
+    with store.history_path(thread["id"]).open("ab") as f:
+        f.write(b"\xff\xfe not utf-8\n")
+
+    rows = store.read_history(thread["id"])
+    assert list(rows) == []
+    assert rows.unreadable is True
+
+    with pytest.raises(ValueError):
+        store.read_history(thread["id"], strict=True)
 
 
 def test_record_artifact_does_not_land_in_context(tmp_path: Path):
