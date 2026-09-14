@@ -10,6 +10,7 @@ Every rung here is derived from the transcript. Nothing counts, nothing is store
 from __future__ import annotations
 
 from sage.orchestrator import recall
+from sage.shim.chat_paths import text_key
 
 RAW = ('Provider request failed with HTTP 502: {"error":{"message":"gateway returned 400 for '
        'https://host/v1/chat/completions: {\\"detail\\":{\\"error\\":{\\"message\\":\\"Blocked by '
@@ -125,6 +126,38 @@ def test_a_seeded_clear_carries_what_was_said_and_nothing_after_it():
     seeded = recall.seed(said + [_err(), _err(), _cleared(recall.SUMMARY)])
     assert "what is in the forecast file" in seeded
     assert "Three predictions over a million." in seeded
+
+
+def test_a_seeded_clear_does_not_replay_a_withheld_message():
+    poison = "my account is 4871715921430428"
+    history = [
+        {"type": "user", "text": poison},
+        {"type": recall.WITHHELD, "keys": [text_key({"content": poison})],
+         "labels": ["the message you sent"]},
+        _err(),
+        _err(),
+        _cleared(recall.SUMMARY),
+    ]
+
+    seeded = recall.seed(history)
+
+    assert "4871715921430428" not in seeded
+    assert "a message in this conversation is not being sent" in seeded
+
+
+def test_a_seeded_clear_does_not_restore_a_withheld_file_line():
+    history = [
+        {"type": "agent", "kind": "text", "text": "raw.csv showed J Doe,222-33-4444."},
+        {"type": recall.WITHHELD, "keys": ["file:raw.csv"], "labels": ["raw.csv"]},
+        _err(),
+        _err(),
+        _cleared(recall.SUMMARY),
+    ]
+
+    seeded = recall.seed(history)
+
+    assert "222-33-4444" not in seeded
+    assert "raw.csv is not being sent" in seeded
 
 
 def test_a_complete_clear_carries_nothing():

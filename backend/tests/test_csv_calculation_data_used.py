@@ -584,6 +584,27 @@ def test_selected_operation_values_reused_in_tool_arguments_are_tracked(tmp_path
     assert "780" in json.dumps(prepared["messages"])
 
 
+def test_selected_operation_values_reused_by_compaction_are_tracked(tmp_path):
+    turn, data, journal = setup_turn(tmp_path)
+    reply = run.perform("live_read_files", args(), turn)
+    oid = json.loads(reply)["data_use"]
+    request = {"model": "alias", "messages": [
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "Earlier compacted context: total revenue was 780."}
+        ]},
+    ]}
+
+    prepared, used = data.prepare(request)
+    list(data.observe(iter([b'data: {"choices":[{"finish_reason":"stop"}]}\n\n']),
+                      prepared, used))
+
+    assert used == {oid}
+    assert "780" in json.dumps(prepared["messages"])
+    event = journal[-1]["dataUsed"][0]
+    assert event["requests"][0]["requested_alias"] == "alias"
+    assert event["requests"][0]["state"] == "response_completed"
+
+
 def test_source_code_read_stays_available_even_if_it_mentions_sensitive_shapes():
     data = DataUse()
     request = direct_request("read", {"filePath": "src/main.py"},

@@ -182,6 +182,8 @@ class DataUse:
                         message = _rewrite_image_result(message, calls.get(message.get("tool_call_id"), {}))
                 else:
                     text = _tool_content_text(message.get("content"))
+                    for oid, _event, _reply in self._selected_operation_args(text):
+                        used.add(oid)
                     source = _source_for_local_text(text, local_texts, direct.values())
                     if source:
                         receipt = _local_receipt({"tool": "background", "state": {"input": {}}},
