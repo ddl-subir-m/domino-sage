@@ -1,9 +1,11 @@
+import collections
 import sys
 import time
 import weakref
 
 import pytest
 
+from sage import timing
 from sage.orchestrator.service import Orchestrator
 
 # For `test_a_leaked_turn_lock_fails_the_test_that_took_it`, which runs pytest inside pytest to
@@ -26,6 +28,44 @@ def _isolate_brand_override(monkeypatch, tmp_path):
     ones that would notice, not the only ones affected.
     """
     monkeypatch.setenv("SAGE_BRAND_OVERRIDE", str(tmp_path / "no-brand-override.json"))
+
+
+@pytest.fixture
+def ledger(monkeypatch):
+    """A turn ledger this test alone writes to and reads back.
+
+    `sage.timing` keeps ONE record and ONE ring for the whole process, so a test that asks it what
+    just ran is asking a question about the process (#339). Without this, `last_finished()` after
+    the first ledger test in a worker never returns `None` again — it returns whatever the previous
+    test left, so a build that stopped recording reads as a stranger's turn rather than as nothing,
+    and the assertion that was written to say so cannot fire.
+
+    Restored rather than only cleared, for the same reason as the turn-lock check below: a record
+    this test leaves open must not travel to whoever shares the worker next.
+
+    One residual, and it is the reverse direction. A turn left OPEN by an earlier test, with a
+    background thread still on it, is blanked here — so that thread's `finish_turn` finds nothing
+    and never rings it, and the restore hands the still-open record back afterwards, to be rung
+    `abandoned` by the next `start_turn`. A turn that finished is then reported as one that died.
+    Diagnostics only: no test reads `_history` without this fixture. A test that does would need
+    the leak named where it happens, the way the turn-lock check below names it.
+    """
+    monkeypatch.setattr(timing, "_history", collections.deque(maxlen=timing._HISTORY))
+    monkeypatch.setattr(timing, "_current", None)
+
+
+@pytest.fixture
+def ledger_required(ledger):
+    """`ledger`, and the flag has to be on for the test to mean anything.
+
+    Read here rather than at import: `timing.enabled()` is a per-call environment read everywhere
+    else in the module, and a `skipif` evaluated at collection would disagree with it the moment
+    anything set the variable afterwards.
+    """
+    if not timing.enabled():
+        pytest.skip("SAGE_TIMING is off: the ledger records nothing, so there is no turn to "
+                    "assert on. The no-op is covered by "
+                    "test_the_turn_ledger_says_which_turn_you_get.py.")
 
 
 _ORCHESTRATORS: "weakref.WeakSet[Orchestrator]" = weakref.WeakSet()

@@ -23,13 +23,13 @@ import json
 import time
 from pathlib import Path
 
-from sage import timing
 from sage.driver.agent_driver import AgentEvent
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator, _EventTap
 from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
+from .ledger import last_turn, needs_ledger
 
 
 class OkFeedback:
@@ -224,6 +224,7 @@ def test_the_build_turn_subscribes_to_its_own_sessions_directory(tmp_path):
     assert opened["directory"] == created["directory"]
 
 
+@needs_ledger
 def test_a_streaming_turn_does_not_pay_the_poll_sleep(tmp_path):
     """The before/after, read off the metric that reports it live rather than off the wall clock.
 
@@ -236,7 +237,7 @@ def test_a_streaming_turn_does_not_pay_the_poll_sleep(tmp_path):
         orch, _ = _orch(tmp_path / name, [Turn(text="done", writes={"src/App.tsx": "x"})],
                         cls=_Streaming, frames=frames)
         list(orch.build_stream("make a chart"))
-        rec = timing.recent(1)[0]
+        rec = last_turn()
         return rec.observations.get("poll.sleep_ms", [])
 
     silent = run("silent", [])

@@ -18,10 +18,12 @@ import pytest
 
 from sage import timing
 from sage.feedback.runner import FeedbackReport
+from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode, ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
+from .ledger import last_turn, needs_ledger
 
 
 class OkFeedback:
@@ -36,10 +38,26 @@ def _catalog() -> ModelCatalog:
 
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
+    """No sleeping, and a handoff classifier that has not already given up (#339).
+
+    `handoff._health` is process-wide on purpose — the thing it tracks is the gateway route, not a
+    Thread — and its `unreadable` count only falls on a readable verdict or an explicit reset. So
+    it ACCUMULATES across tests: three unreadable answers anywhere on an xdist worker, in three
+    different files, trip the breaker, and `wants_an_app` then returns before it records anything.
+    A chat turn still runs and still answers; its record simply carries no handoff call, which is
+    what `test_the_chat_classifier_is_on_the_ledger_like_the_scope_one` reads and fails on.
+
+    That is why the red was invisible to every scoped run and deterministic on the full deal, and
+    why bisecting the order found a boundary but no single culprit: nothing here leaks, the count
+    creeps. Reset on both sides, as the other 23 files that drive the classifier already do.
+    """
     import time
 
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    handoff._health.reset()
+    yield
+    handoff._health.reset()
 
 
 def _orch(tmp_path: Path, turns: list[Turn]) -> Orchestrator:
@@ -85,11 +103,12 @@ def _names(rec) -> list[str]:
     return [s.name for s in rec.spans]
 
 
+@needs_ledger
 def test_a_build_turn_records_the_gates_it_paid_for(tmp_path: Path):
     orch = _orch(tmp_path, [Turn(text="Built it.", writes={"src/App.tsx": "export default () => null\n"})])
     list(orch.build_stream("add a chart"))
 
-    rec = timing.recent(1)[0]
+    rec = last_turn()
     assert rec.kind == "build"
     assert rec.t1 is not None, "the record was never closed — a turn that ends must close its span"
     names = _names(rec)
@@ -103,6 +122,7 @@ def test_a_build_turn_records_the_gates_it_paid_for(tmp_path: Path):
     assert rec.counters.get("poll.iterations", 0) >= 1, "the poll loop counted no iterations"
 
 
+@needs_ledger
 def test_a_nudged_build_records_every_agent_turn_it_spent(tmp_path: Path):
     """MAX_NUDGES and friends are budgets nobody can see being spent. A turn that wrote nothing is
     re-sent, and each re-send is another full model turn — the readout has to show them separately
@@ -113,7 +133,7 @@ def test_a_nudged_build_records_every_agent_turn_it_spent(tmp_path: Path):
     ])
     list(orch.build_stream("add a chart"))
 
-    rec = timing.recent(1)[0]
+    rec = last_turn()
     names = _names(rec)
     turns = [n for n in names if n.startswith("agent-turn.")]
     assert turns == ["agent-turn.1", "agent-turn.2"], names
@@ -122,6 +142,7 @@ def test_a_nudged_build_records_every_agent_turn_it_spent(tmp_path: Path):
     assert whys[1] and whys[1] != "first send", f"the nudge did not record why it happened: {whys}"
 
 
+@needs_ledger
 def test_the_readout_renders_a_turn_that_is_still_running(tmp_path: Path):
     """The record someone most wants is the one they are waiting on, so an open turn has to render
     rather than raise on its half-finished spans."""
@@ -135,6 +156,7 @@ def test_the_readout_renders_a_turn_that_is_still_running(tmp_path: Path):
     timing.finish_turn(ok=True, decision="typecheck clean")
 
 
+@needs_ledger
 def test_a_chat_turn_records_where_it_went_too(tmp_path: Path):
     """Chat recorded `turn.acquire` and nothing else, which is not the same as costing nothing.
 
@@ -151,7 +173,7 @@ def test_a_chat_turn_records_where_it_went_too(tmp_path: Path):
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "what moved most this week?"))
 
-    rec = timing.recent(1)[0]
+    rec = last_turn()
     assert rec.kind == "chat"
     assert rec.t1 is not None
     names = _names(rec)
@@ -169,23 +191,33 @@ def test_a_chat_turn_records_where_it_went_too(tmp_path: Path):
     assert rec.counters["poll.iterations"] >= 1
 
 
+@needs_ledger
 def test_the_chat_classifier_is_on_the_ledger_like_the_scope_one(tmp_path: Path):
     """The post-turn classifier calls the gateway directly, so it bypassed the /v1 shim handler
     that fills the ledger — the same gap already closed for the scope classifier in scope.py.
 
     It runs after the answer is on screen, which is exactly the stretch that reads as time nothing
     can account for."""
+    # Said before the turn runs, because the way this fails otherwise is a record with an empty
+    # `calls` list and nothing to say why (#339). A classifier that has already given up does not
+    # reach its `model_call`, so the turn answers normally and records no inference — the symptom
+    # of a breaker three unreadable verdicts old is indistinguishable from broken ledger wiring,
+    # which is the thing this test exists to catch.
+    assert handoff._health.broken is False, \
+        "the classifier had already given up before this test ran — the ledger is not the suspect"
+
     orch = _chat_orch(tmp_path, [Turn(text="here is the answer")])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "which desk lost the most?"))
 
-    rec = timing.recent(1)[0]
+    rec = last_turn()
     handoff_calls = [c for c in rec.calls if c.phase == "handoff"]
     assert len(handoff_calls) == 1, [(c.model, c.phase) for c in rec.calls]
     assert handoff_calls[0].t1 is not None, "the entry was left open"
     assert handoff_calls[0].model == "a"   # catalog.ask, what the classifier routes to
 
 
+@needs_ledger
 def test_a_slow_first_byte_says_whether_the_shim_or_the_gateway_spent_it(monkeypatch):
     """A first byte that took 38.9 seconds names no suspect until the record splits it in two.
 
@@ -234,7 +266,8 @@ def test_a_slow_first_byte_says_whether_the_shim_or_the_gateway_spent_it(monkeyp
         timing.start_turn("build", "measure the first byte")
         TestClient(orchmod.control_app).post("/v1/chat/completions",
                                              json={"model": "gpt-5.4", "messages": []})
-        rec = timing.finish_turn(ok=True, decision="-") or timing.recent(1)[0]
+        rec = timing.finish_turn(ok=True, decision="-")
+        assert rec is not None, "the turn was never opened"
         call = timing.as_dict(rec)["calls"][0]
         assert call["prepMs"] is not None, "the shim/gateway boundary was never marked"
         assert call["ttfbMs"] is not None, "no first byte was recorded"
@@ -251,6 +284,7 @@ def test_a_slow_first_byte_says_whether_the_shim_or_the_gateway_spent_it(monkeyp
     assert ttfb - prep >= 250, f"the gateway's 300ms is missing from its half ({ttfb - prep}ms)"
 
 
+@needs_ledger
 def test_a_step_records_what_it_spent_its_round_trip_on(monkeypatch):
     """Eighteen calls in one approve turn, and the ledger could say what each COST and never what it
     was for. Ranking them for removal then came down to reading chunk counts and guessing, which is
@@ -303,8 +337,9 @@ def test_a_step_records_what_it_spent_its_round_trip_on(monkeypatch):
     timing.start_turn("build", "what did the step do")
     TestClient(orchmod.control_app).post("/v1/chat/completions",
                                          json={"model": "gpt-5.4", "messages": []})
-    timing.finish_turn(ok=True, decision="-")
-    call = timing.as_dict(timing.recent(1)[0])["calls"][0]
+    rec = timing.finish_turn(ok=True, decision="-")
+    assert rec is not None, "the turn was never opened"
+    call = timing.as_dict(rec)["calls"][0]
 
     assert call["tools"] == ["read", "read", "write"]
-    assert "tools=read,read,write" in timing.render(timing.recent(1)[0])
+    assert "tools=read,read,write" in timing.render(rec)

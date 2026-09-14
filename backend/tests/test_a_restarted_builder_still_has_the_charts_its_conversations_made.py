@@ -6,12 +6,11 @@ broken image: the title was right, the "Show all rows" count was right, and ever
 Conversation's Artifact survived, and the cut was the Builder's boot time to the minute.
 
 Nothing deleted them. They were never committed. `/examples` is a real ignore rule for a Built App,
-where `examples` is a symlink up to the Project's Chat Artifacts and a committed link would be
-dangling in a fresh clone. But ONE template `.gitignore` seeds two roots — every app AND the
-Project root — and at the Project root `examples/` is the Artifacts themselves. So `git add -A`
-never staged a single chart, they lived only on the container's own disk, and the restart pulled
-back a transcript (`.sage/threads/` IS committed, artifacts.json and all) describing files no clone
-had ever seen.
+where `examples` is an app-local directory of per-Thread symlinks up to the Project's Chat
+Artifacts. But ONE template `.gitignore` seeds two roots — every app AND the Project root — and at
+the Project root `examples/` is the Artifacts themselves. So `git add -A` never staged a single
+chart, they lived only on the container's own disk, and the restart pulled back a transcript
+(`.sage/threads/` IS committed, artifacts.json and all) describing files no clone had ever seen.
 
 The two halves are tested apart. That the app still gets its rule, and the link still works, is
 `test_the_build_agent_can_reach_the_chat_artifacts.py`. This is the half about the Project root:
@@ -172,11 +171,12 @@ def test_the_app_still_keeps_its_own_link_out_of_git(tmp_path: Path):
     _repo(root)
     _chart(root)
 
+    project.build_conversation = "thr_a"
     orch._ensure_examples_link(project)
     git.commit_all(root, "a build turn")
 
-    assert (app / "examples").is_symlink()
+    assert (app / "examples" / "thr_a").is_symlink()
     assert RULE in (app / ".gitignore").read_text().split()
     tracked = set(_git(root, "ls-files").split())
-    assert project.repo_rel("examples") not in tracked          # the link stays out
+    assert not [p for p in tracked if p.startswith(f"{project.repo_rel('')}examples/")]
     assert "examples/thr_a/chart1_events_by_drug.png" in tracked  # the Artifacts go in
