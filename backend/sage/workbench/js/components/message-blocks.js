@@ -1945,6 +1945,29 @@ window.SW = window.SW || {};
     );
   }
 
+  function DataUsed({ event }) {
+    const coverage = event.coverage || {};
+    return h('details', { className: 'sw-data-used' },
+      h('summary', null, 'Data used'),
+      h('p', null, 'Calculated in Domino from ',
+        h(Tag, { 'aria-label': `Source file: ${event.source}` }, event.source.split('/').pop()), '.'),
+      h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +
+        `${coverage.excluded} excluded; ${coverage.failed} failed; ${coverage.unfinished} unfinished.`),
+      h('p', null, `Selected fields: ${(event.selected_fields || []).join(', ') || 'Structure only'}.`),
+      h('p', null, 'Artifact: ', h(Tag, { 'aria-label': `Artifact: ${event.artifact}` }, event.artifact.split('/').pop())),
+      ...(event.requests || []).map((request) => h('div', { key: request.request_id },
+        h('p', null, 'Requested model: ',
+          h(Tag, { 'aria-label': `Requested model: ${request.requested_alias}` }, request.requested_alias),
+          '. Serving model: ', request.serving_model || 'unknown', '.'),
+        h('p', null, request.state === 'response_completed' ? 'Gateway response completed. '
+          : request.state === 'failed' ? 'Gateway request failed. '
+          : request.state === 'interrupted' ? 'Gateway response interrupted. '
+          : 'Gateway request attempted. ', 'Provider receipt: unknown. Cache: unknown.'),
+        h('p', null, `Request: ${request.request_id}`))),
+      !(event.requests || []).length && h('p', null, 'Gateway delivery: unknown.'),
+      h('p', null, `Operation: ${event.operation_id}`));
+  }
+
   SW.MessageBlock = function MessageBlock({ block, onSave }) {
     switch (block.type) {
       case 'text':
@@ -1952,6 +1975,8 @@ window.SW = window.SW || {};
         // looks like a model that finished a short answer, and the reader gives up on it.
         return h('div', { className: `sw-msg-text${block.streaming ? ' is-streaming' : ''}` },
                  SW.util.markdown(block.value));
+      case 'data_used':
+        return h(DataUsed, { event: block.event });
       case 'code':
         return h(CodeBlock, { code: block.value, language: block.language });
       case 'sandbox_run':
