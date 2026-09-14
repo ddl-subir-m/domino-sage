@@ -18,9 +18,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from typing import Any, Protocol
 
 from .open_models import OpenModel
@@ -182,7 +184,50 @@ class FakeGatewayClient:
         yield from self.scripted_events
 
 
-class OpenAICompatibleClient:
+class _NoCookies(DefaultCookiePolicy):
+    def set_ok(self, cookie, request):
+        return False
+
+
+class _PooledHTTPClient:
+    """Reuse connections across inferences, but never credentials, tags or cookies.
+
+    Create lazily: importing an app does not allocate a transport. Only creation and shutdown
+    take the lock; independent inference streams must be able to run at the same time.
+    """
+
+    def __init__(self, timeout_s: float, read_timeout_s: float) -> None:
+        self._timeout_s = timeout_s
+        self._read_timeout_s = read_timeout_s
+        self._http = None
+        self._http_lock = threading.Lock()
+        self._http_closed = False
+
+    def _http_client(self):
+        import httpx
+
+        with self._http_lock:
+            if self._http_closed:
+                raise RuntimeError("gateway client is closed")
+            if self._http is None:
+                self._http = httpx.Client(
+                    timeout=httpx.Timeout(self._timeout_s, read=self._read_timeout_s),
+                    follow_redirects=False,
+                    # Keep an idle connection across local tool execution between model calls.
+                    limits=httpx.Limits(keepalive_expiry=60.0),
+                    cookies=CookieJar(policy=_NoCookies()),
+                )
+            return self._http
+
+    def close(self) -> None:
+        with self._http_lock:
+            self._http_closed = True
+            client, self._http = self._http, None
+        if client is not None:
+            client.close()
+
+
+class OpenAICompatibleClient(_PooledHTTPClient):
     """Client for any OpenAI-compatible endpoint behind a Bearer token.
 
     Two modes, one code path:
@@ -206,12 +251,9 @@ class OpenAICompatibleClient:
         self._base_url = base_url.rstrip("/")
         self._token_provider = token_provider
         self._domino_tags = domino_tags
-        self._timeout_s = timeout_s
-        self._read_timeout_s = read_timeout_s
+        super().__init__(timeout_s, read_timeout_s)
 
     def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
-        import httpx  # local import so tests that never hit the network don't need it
-
         headers = {"Authorization": f"Bearer {self._token_provider()}"}
         if self._domino_tags:
             # Stored in the gateway's usage `tags` column, queryable as group_by=tag:sage-*.
@@ -240,11 +282,7 @@ class OpenAICompatibleClient:
         # gateway that stops sending would hang the turn forever. A large FINITE value tolerates real
         # thinking gaps yet still surfaces a dead stream as a clean error (the shim wraps it into a
         # readable message). connect/write/pool stay bounded via _timeout_s.
-        timeout = httpx.Timeout(self._timeout_s, read=self._read_timeout_s)
-        with (
-            httpx.Client(timeout=timeout, follow_redirects=False) as client,
-            client.stream("POST", url, json=request, headers=headers) as resp,
-        ):
+        with self._http_client().stream("POST", url, json=request, headers=headers) as resp:
             # Surface upstream errors BEFORE streaming so the caller gets a clean message
             # instead of a mid-stream reset. A 3xx here means auth bounced to a login page.
             if resp.status_code >= 400 or resp.is_redirect:
@@ -256,7 +294,7 @@ class OpenAICompatibleClient:
         raise NotImplementedError("Step 2.3: depends on guardrail event exposure (Q4)")
 
 
-class MultiProviderOpenAIClient:
+class MultiProviderOpenAIClient(_PooledHTTPClient):
     """openai gateway mode: each model routes to its own vendor base_url/key.
 
     Unlike OpenAICompatibleClient (one fixed base_url), there's no shared gateway here — the
@@ -265,12 +303,9 @@ class MultiProviderOpenAIClient:
 
     def __init__(self, models: list[OpenModel], *, timeout_s: float = 60.0, read_timeout_s: float = 300.0) -> None:
         self._by_id = {m.id: m for m in models}
-        self._timeout_s = timeout_s
-        self._read_timeout_s = read_timeout_s
+        super().__init__(timeout_s, read_timeout_s)
 
     def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
-        import httpx  # local import so tests that never hit the network don't need it
-
         model_id = request.get("model")
         model = self._by_id.get(model_id)
         if model is None:
@@ -283,11 +318,7 @@ class MultiProviderOpenAIClient:
 
         headers = {"Authorization": f"Bearer {key}"}
         url = f"{model.base_url.rstrip('/')}/chat/completions"
-        timeout = httpx.Timeout(self._timeout_s, read=self._read_timeout_s)  # large FINITE inter-chunk read (see route above)
-        with (
-            httpx.Client(timeout=timeout, follow_redirects=False) as client,
-            client.stream("POST", url, json=request, headers=headers) as resp,
-        ):
+        with self._http_client().stream("POST", url, json=request, headers=headers) as resp:
             if resp.status_code >= 400 or resp.is_redirect:
                 body = resp.read().decode(errors="replace")[:800]
                 raise GatewayUpstreamError(resp.status_code, url, body)
