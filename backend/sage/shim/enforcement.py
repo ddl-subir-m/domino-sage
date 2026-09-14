@@ -268,22 +268,23 @@ class EnforcementShim:
         # `permission: {edit: deny, bash: deny}` does nothing on the headless server path (see
         # READ_ONLY_DENIED), so if a tool survives this filter, it runs. Shell matters most — that's
         # the hole that let Ask mode write files with `printf > file` for as long as it existed.
-        # Chat turns are the opposite: they must write Artifacts, so write/bash stay, and
+        # Chat turns usually do the opposite: they may write Artifacts, so write/bash stay, and
         # strip_denied_writes turns an out-of-path write into a tool error so the model retries
         # examples/<threadId>/ instead of src/. The files are also reverted on disk at turn end.
+        # A Chat turn that was explicitly armed read-only is not an Artifact turn; it is a plain
+        # answer. It keeps Chat's Thread scoping but inherits the same no-shell/no-write guarantee
+        # as Ask, or one simple question can become a multi-step agent loop.
         # Web tools are default-denied on EVERY turn and only survive when the orchestrator armed
         # web_allowed for this turn (the current prompt asked for the web). Same enforcement reason as
         # read-only: OpenCode's per-agent permission is inert on the headless path, so stripping the
         # tool from the request is the only thing that stops the agent wandering off to fetch URLs.
         chat_id = state.chat_thread_id
-        if chat_id:
-            denied: set[str] = set()
-        else:
-            denied = set(READ_ONLY_DENIED) if (state.mode is Mode.ASK or state.read_only_turn) else set()
-        # An answering turn also loses the task-list tool: it answers and returns without building, so
-        # a task list on it reads as a build in progress that never arrives. A gated plan turn keeps it.
-        if not chat_id and (state.read_only_reason in ("ask", "question") or state.mode is Mode.ASK):
-            denied |= TODO_TOOLS
+        denied = set(READ_ONLY_DENIED) if (state.mode is Mode.ASK or state.read_only_turn) else set()
+        # An answering turn also loses tools that create a visible work loop: it answers and returns
+        # without building, so a task list or sub-task on it reads as a build in progress that never
+        # arrives. A gated plan turn keeps them.
+        if state.read_only_reason in ("ask", "question") or state.mode is Mode.ASK:
+            denied |= TODO_TOOLS | {"task"}
         if not state.web_allowed:
             denied |= WEB_TOOLS
         if denied and "tools" in request:
@@ -460,6 +461,8 @@ class EnforcementShim:
                             "again — re-read the file you are changing and fix the cause, rather "
                             "than repeating the change that just failed."),
             }]}
+
+        request = self.data_use.apply_restrictions(request, withheld=state.withheld)
 
         # Attached images against a non-vision model: strip them here rather than switch models or
         # let it fly. The resolved model is only known at this point (per request). Passing an image

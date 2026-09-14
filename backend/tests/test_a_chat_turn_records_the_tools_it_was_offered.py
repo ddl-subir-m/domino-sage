@@ -95,3 +95,37 @@ def test_the_list_is_what_the_model_GOT_not_what_opencode_proposed(caplog):
     assert said == [("chat tools: live read sage-live-read_live_read_table — all 2: "
                      "read, sage-live-read_live_read_table")]
     assert "webfetch" not in said[0]
+
+
+def test_a_read_only_chat_answer_is_not_offered_agentic_tools(caplog):
+    """A plain Chat answer must not get the tools that turn one question into an agent loop.
+
+    Live on 2026-09-14, two simple Chat questions took about a minute each because Chat was offered
+    bash/task/write tools and spent five model calls running Python. Chat still needs Live read, but
+    a turn already marked as a read-only question must inherit the same no-shell guarantee as Ask.
+    """
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    shim = EnforcementShim(control, CATALOG, FakeGatewayClient())
+    chat_token = control.arm_chat("thr_plain_answer")
+    read_only_token = control.arm_read_only("question")
+
+    with caplog.at_level(logging.INFO, logger="sage.shim"):
+        list(shim.handle(_req(
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "task",
+            "todowrite",
+            "sage-live-read_live_read_table",
+            "sage-live-read_live_read_files",
+        ), {}))
+
+    control.disarm_read_only(read_only_token)
+    control.disarm_chat(chat_token)
+    sent = shim.gateway.seen[-1][0]
+    names = {t["function"]["name"] for t in sent["tools"]}
+
+    assert {"apply_patch", "bash", "task", "todowrite"}.isdisjoint(names)
+    assert {"read", "glob", "grep", "sage-live-read_live_read_table",
+            "sage-live-read_live_read_files"} <= names
