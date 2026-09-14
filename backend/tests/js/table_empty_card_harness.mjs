@@ -67,9 +67,11 @@ const SW = sandbox.SW;
 
 // The Project's CURRENT answer, which is not the same fact as the one in the file and is read from
 // the store rather than from the block (ADR-0045). Off unless a test says otherwise, which is the
-// state every other test here is written against. An env var rather than a second field on stdin:
-// the input to this harness is one block, and its sibling test file depends on that.
-if (process.env.KEPT_ROWS === '1') SW.store.set({ keptRows: { on: true, destination: '' } });
+// state every other test here is written against. Set explicitly rather than inherited from the
+// store's initial value: the Workbench default is on, and this harness is about the receipt a
+// Project that turned it off still shows. An env var rather than a second field on stdin: the
+// input to this harness is one block, and its sibling test file depends on that.
+SW.store.set({ keptRows: { on: process.env.KEPT_ROWS === '1', destination: '' } });
 
 function* walk(node) {
   if (!node || typeof node !== 'object') return;

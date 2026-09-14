@@ -538,11 +538,11 @@ class ProjectRecord:
     def kept_rows(self) -> bool:
         """Whether this Project may commit real data rows into its files (ADR-0045).
 
-        Off until somebody turns it on. The default has to be the safe one because it is the one
-        that holds when the destination is unknown, and the destination is unknown until someone
-        looks at `git.push_url`.
+        On until somebody turns it off. A settings file that never recorded an answer is treated
+        as on, so a Project that was never asked keeps rows rather than stripping them. The
+        person can still opt out beside the destination named in the Add-people modal.
         """
-        return bool(self.read_settings().get("keptRows"))
+        return bool(self.read_settings().get("keptRows", True))
 
     def set_kept_rows(self, on: bool) -> None:
         settings = self.read_settings()

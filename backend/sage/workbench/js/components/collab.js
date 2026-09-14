@@ -266,8 +266,8 @@ window.SW = window.SW || {};
     // {project} pushes through whatever git credential is present.
     //
     // Read from the server already stripped of any credential the remote URL carried. "" is not a
-    // blank to hide: a destination nobody has looked up is exactly the case the safe default is
-    // for, and saying so is more use than a sentence that names nothing.
+    // blank to hide: a destination nobody has looked up is the case the opt-out is for, and saying
+    // so is more use than a sentence that names nothing.
     const destination = (keptRows && keptRows.destination) || '';
     const goes = destination
       ? SW.brand.text("They're committed and pushed to {destination}.", { destination })
