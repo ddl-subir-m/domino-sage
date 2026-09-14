@@ -2260,6 +2260,8 @@ class WorkspaceManager:
     def ensure_llm_helper(self) -> bool:
         """Put the Sage-owned model helper in the workspace, replacing a stale copy. True if written.
 
+        #358's outcome contract is new-app-only: _ensure_helper preserves pre-contract copies.
+
         The LLM helper ships in the template, so every project seeded after #7 already has it. The
         absent case is for the ones seeded before: their repo has no helper, and writing the config
         file next to a missing module would leave an app that cannot build.
@@ -2334,6 +2336,12 @@ class WorkspaceManager:
         if names is not TEMPLATE:
             payload = names.localize(payload.decode()).encode()
         dst = self.app_path / names.localize(rel)
+        # #358 changes the answer contract for NEW apps only. Existing apps can consume partial
+        # tokens as final values; replacing their helper would silently change their runtime.
+        marker = b"SAGE_MODEL_OUTCOME_V1"
+        if (rel == _LLM_HELPER and marker in payload and dst.is_file()
+                and marker not in dst.read_bytes()):
+            return False
         if dst.is_file() and (not refresh or dst.read_bytes() == payload):
             return False
         dst.parent.mkdir(parents=True, exist_ok=True)
