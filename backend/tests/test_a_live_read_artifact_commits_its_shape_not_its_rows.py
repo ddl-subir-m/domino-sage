@@ -259,6 +259,6 @@ def test_the_read_is_told_what_this_project_answered(tmp_path: Path):
     thread = orch.create_thread()["id"]
     token = orch._mint_live_read_token(thread)
 
-    assert orch._live_read_turn(token).keep_rows is False
-    orch.set_kept_rows(True)
     assert orch._live_read_turn(token).keep_rows is True
+    orch.set_kept_rows(False)
+    assert orch._live_read_turn(token).keep_rows is False

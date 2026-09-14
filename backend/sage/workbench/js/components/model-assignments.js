@@ -85,8 +85,7 @@ window.SW = window.SW || {};
       running: {
         type: 'info',
         message: 'A build is running',
-        description: 'Changing a model now would move the rest of that build onto it. Wait for the '
-          + 'turn to finish.',
+        description: 'Wait for this build to finish. Changing a model now would apply it mid-build.',
         retry: false,
       },
       unlistable: {
@@ -98,15 +97,13 @@ window.SW = window.SW || {};
       empty: {
         type: 'warning',
         message: 'No models available to you',
-        description: 'The LLM Gateway offers no chat model this account can use, so these cannot be '
-          + 'changed. Ask whoever administers the LLM Gateway for access to one.',
+        description: 'No chat models are available to this account. Ask an administrator for access.',
         retry: true,
       },
       unchecked: {
         type: 'warning',
         message: "Couldn't check every model",
-        description: `${assignmentsError} The models below can still be chosen, but Sage could not `
-          + 'confirm they are all serving.',
+        description: `${assignmentsError} You can still choose a model below; some may not be serving.`,
         retry: true,
       },
     };
@@ -325,7 +322,7 @@ window.SW = window.SW || {};
         //
         // Dropped on a row the lock has already moved, but only when it is the signing pin's
         // sentence: the lock outranks the pin (`llm_router._lock_sensitivity` wraps `_pin_signing`),
-        // so the pin's remedy — release the session by changing the holder's model — is not what
+        // so the pin's remedy — switch by changing the holder's model — is not what
         // frees THIS row while the lock holds. The other two verdicts stay — a model that will not
         // answer will not answer whatever moved the turn — and the lock's own line, one below, still
         // says what runs. Which verdict it is comes from the server and not from reading the

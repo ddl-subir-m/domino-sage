@@ -259,8 +259,8 @@ window.SW = window.SW || {};
     const on = ((SW.store.get() || {}).keptRows || {}).on;
     if (block.rowCount > 0 && !on) {
       lines.push(SW.brand.text(
-        'Rows aren\'t kept in this {project}\'s files. To keep them, switch on "Keep data rows" '
-        + 'in Add people.'));
+        'Rows aren\'t saved in this {project}. To keep them, turn on "Keep data rows" '
+        + 'under Add people.'));
     }
     return lines;
   }
@@ -274,8 +274,8 @@ window.SW = window.SW || {};
     const counted = `${fresh.truncated ? 'the first ' : ''}${n} ${fresh.rowCount === 1 ? 'row' : 'rows'}`;
     const when = SW.util.longDate(fresh.readAt);
     return SW.brand.text(
-      `Now on screen: ${counted}${when ? `, read ${when}` : ''}. This {project} doesn't keep data ` +
-      'rows in its files, so these are not saved.');
+      `On screen: ${counted}${when ? `, read ${when}` : ''}. These rows aren't saved in this ` +
+      '{project}.');
   }
 
   // A table whose rows this Project does not keep, told apart from one the recovery ladder could
@@ -1904,8 +1904,8 @@ window.SW = window.SW || {};
           block.producedAt &&
             h('div', { className: 'sw-block-sub' }, `Drawn ${SW.util.relativeTime(block.producedAt)}`),
           h('div', { className: 'sw-block-sub' }, block.notKept
-            ? SW.brand.text("This {project} doesn't keep chart images in its files, so this one "
-                            + "didn't survive a restart. Ask for it again to see it.")
+            ? SW.brand.text("This chart wasn't saved, so it didn't survive a restart. Ask for it "
+                            + 'again.')
             : SW.brand.text("This chart isn't in this {project}'s files. Ask for it again to see "
                             + 'it.'))
         )
@@ -1960,7 +1960,7 @@ window.SW = window.SW || {};
         return h(ChartBlock, {
           chartId: block.chartId,
           onAddToPlan: SW.store.get().activePlanId
-            ? () => antd.message.success('Added to the plan as supporting evidence')
+            ? () => antd.message.success('Added to the plan')
             : null,
         });
       case 'image':

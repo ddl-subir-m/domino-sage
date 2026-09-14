@@ -16,6 +16,7 @@ Project/phase come from headers so OpenCode's vanilla OpenAI body stays untouche
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import queue
@@ -59,7 +60,17 @@ _control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
 _shim = EnforcementShim(_control, _catalog, _gateway,
                         project_name=domino_project_label(fallback="unknown"))
 
-app = FastAPI(title="sage enforcement shim")
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        close_gateway = getattr(_gateway, "close", None)
+        if close_gateway is not None:
+            close_gateway()
+
+
+app = FastAPI(title="sage enforcement shim", lifespan=_lifespan)
 
 
 @app.get("/healthz")

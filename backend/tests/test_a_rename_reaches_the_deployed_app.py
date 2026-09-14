@@ -139,7 +139,7 @@ def test_a_404_from_a_route_that_is_not_there_is_not_read_as_a_deleted_app(tmp_p
     assert out["dominoApp"] == "failed"
     # The App is still there, so it is still serving — and nobody is told to publish a second one.
     assert cp.app_names[published["app_id"]] == "Sales dashboard"
-    assert "still serving" in out["dominoAppError"]
+    assert "still has the old name" in out["dominoAppError"]
     assert "deleted" not in out["dominoAppError"]
 
 

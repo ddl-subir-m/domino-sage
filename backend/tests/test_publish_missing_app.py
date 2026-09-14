@@ -271,7 +271,7 @@ def test_a_new_app_beside_a_live_one_is_refused_rather_than_stranding_it(tmp_pat
     cp = FakeControlPlane()
     orch, app_id = _published(tmp_path, cp)
 
-    with pytest.raises(RuntimeError, match="still there"):
+    with pytest.raises(RuntimeError, match="already has a published App"):
         orch.publish(new_app=True)
 
     assert list(cp.published) == [app_id]

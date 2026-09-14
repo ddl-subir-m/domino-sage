@@ -115,7 +115,7 @@ def test_a_store_this_conversation_never_named_is_refused(tmp_path: Path):
     said = _call(orch, "live_read_table", {
         "token": _token(oc), "source": "Snowflake-Data-Warehouse", "table": "GONG__CALLS",
     })
-    assert "Use it in this conversation" in said
+    assert "Use in this conversation" in said
     assert resources.asked == [], "and the store is never touched"
 
 
@@ -286,7 +286,7 @@ def test_a_binding_is_what_puts_the_store_in_range_for_a_build_turn(tmp_path: Pa
 
     list(orch.build_stream("show me 1 sample conversation", conversation=tid))
 
-    assert "Use it in this conversation" in oc.said
+    assert "Use in this conversation" in oc.said
     assert resources.asked == []
 
 

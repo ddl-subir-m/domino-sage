@@ -14,15 +14,15 @@ window.SW = window.SW || {};
   // holds the remedy, not who is at fault: four of the six are nobody the reader can chase, and the
   // creator still has to know, because those failures land on their build.
   const GROUPS = [
-    { owner: 'you', title: 'Yours to fix' },
-    { owner: 'admin', title: "Your administrator's to fix" },
+    { owner: 'you', title: 'You can fix' },
+    { owner: 'admin', title: 'An administrator can fix' },
   ];
 
   SW.ProblemsDrawer = function ProblemsDrawer() {
     const { problemsOpen, problems } = SW.store.get();
     const found = Array.isArray(problems) ? problems : [];
 
-    // A group with nothing in it is not drawn. "Yours to fix — none" is a heading that says the
+    // A group with nothing in it is not drawn. "You can fix — none" is a heading that says the
     // reader has something to read, and a drawer opened off a lit chip has to be all signal.
     const group = (spec) => {
       const mine = found.filter((p) => p && p.owner === spec.owner);
@@ -59,7 +59,7 @@ window.SW = window.SW || {};
       // that reads as a failed read.
       found.length
         ? GROUPS.map(group)
-        : h('p', { className: 'sw-problems-empty' }, 'Nothing needs your attention right now.')
+        : h('p', { className: 'sw-problems-empty' }, 'No problems right now.')
     );
   };
 })();

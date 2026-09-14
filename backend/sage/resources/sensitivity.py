@@ -382,8 +382,8 @@ def unrecorded_lock_refusal() -> str:
     nothing they can do in Sage fixes it.
     """
     return brand.text(
-        "{assistantName} couldn't save that this chat is using sensitive data, so it stopped. "
-        "Try again, and tell a {platformName} administrator if it keeps happening.")
+        "{assistantName} couldn't record that this chat is using sensitive data, so it stopped. "
+        "Try again. If it keeps happening, tell a {platformName} administrator.")
 
 
 def declared_turn_refusal_for_model(model: str, approved: frozenset[str]) -> str:

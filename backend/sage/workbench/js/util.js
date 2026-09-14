@@ -76,7 +76,7 @@ window.SW = window.SW || {};
     DECLARED_MARK: 'Sensitive',
     declaredTitle() {
       return SW.brand.text(
-        'This {dataset} is tagged sensitive. Only approved models can be used while it is attached.'
+        'Tagged sensitive. Only approved models can be used while it is attached.'
       );
     },
 
@@ -317,7 +317,7 @@ window.SW = window.SW || {};
       const datasets = SW.util.declaredPhrase(sensitivity);
       if (SW.util.lockedBySession(sensitivity)) {
         return SW.brand.text(
-          "{name} isn't allowed in this chat — it already used {datasets}. Ask an admin to "
+          "{name} isn't allowed here — this chat already used {datasets}. Ask an admin to "
           + 'approve it, or start a new chat.',
           { name, datasets }
         );
@@ -332,7 +332,7 @@ window.SW = window.SW || {};
     // the mark is a reflection of them and not a second store of the same fact (#137, ADR-0015) —
     // a reader who wants it gone has to be sent to where it can go. The panel offers no verb for
     // that: "Stop using here" is on the row's own menu and in the drawer behind it.
-    IN_CONTEXT_TITLE: 'In this conversation — it is one of the chips above the composer.',
+    IN_CONTEXT_TITLE: 'In this conversation — shown as a chip above the message box.',
 
     // The mark a `missing` row wears, and the sentence behind it. Three surfaces read one answer —
     // the rail, the @ menu and the bind picker — so the words are written once, the way
@@ -351,7 +351,7 @@ window.SW = window.SW || {};
     // case, and the second case is the one where somebody else can put it back.
     missingTitle() {
       return SW.brand.text(
-        'You can no longer reach this on {platformName}: it was deleted, or your access to it was.'
+        'You can no longer reach this on {platformName}. It was deleted, or your access was revoked.'
       );
     },
     isMissing(row) {

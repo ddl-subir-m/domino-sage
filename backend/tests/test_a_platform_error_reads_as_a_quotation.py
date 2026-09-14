@@ -124,8 +124,9 @@ def test_the_copy_around_the_quotation_comes_from_the_pack():
 
 
 def _door_raising(monkeypatch, err: Exception):
-    import sage.orchestrator.app as appmod
     from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
 
     class _Door:
         def ensure_default(self):
@@ -189,8 +190,9 @@ def test_the_off_platform_door_sentence_is_ours_too(monkeypatch):
     inside the quotation as if the platform said it, under a Try again that cannot fix an
     Environment — the misattribution this contract exists to prevent, on the same route.
     """
-    import sage.orchestrator.app as appmod
     from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
 
     monkeypatch.setattr(appmod, "_door", None)
     body = TestClient(appmod.control_app).post("/api/door").json()

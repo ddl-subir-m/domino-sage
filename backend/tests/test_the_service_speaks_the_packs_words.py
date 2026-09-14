@@ -246,29 +246,25 @@ def _orch(tmp: Path, *, control_plane: FakeControlPlane | None = None,
 
 def test_publishing_from_the_workbenchs_own_app_refuses_in_the_packs_words(acme, tmp_path,
                                                                           monkeypatch):
-    """Three roles in two sentences: the workspace and the product are ours and move, `/mnt/code`
-    is a path and does not."""
+    """The Workbench App is the product, not a Creation, so publish is refused here."""
     monkeypatch.setenv("SAGE_PROXY_MODE", "app")
     orch = _orch(tmp_path, control_plane=FakeControlPlane())
 
     with pytest.raises(RuntimeError) as e:
         orch.publish()
     assert str(e.value) == (
-        "Publish is only available in a Ada Builder workspace whose app repo is /mnt/code. "
-        "This Acme Studio App is Ada itself, not a Creation."
+        "This is Ada itself, not a Creation, so it can't be published from here."
     )
 
 
-def test_publishing_off_platform_names_the_pack_and_keeps_the_env_var(acme, tmp_path):
-    """`DOMINO_PROJECT_ID` is the name of an environment variable, so it is named, not renamed —
-    the whole point of telling somebody which variable is missing is that they can go and set it."""
+def test_publishing_off_platform_names_the_pack(acme, tmp_path):
+    """Off the platform there is nothing to publish to, and the sentence names the pack."""
     orch = _orch(tmp_path, control_plane=None, domino_project_id="")
 
     with pytest.raises(RuntimeError) as e:
         orch.publish()
     assert str(e.value) == (
-        "Publish is only available when this builder runs on Acme Cloud (missing control-plane or "
-        "DOMINO_PROJECT_ID)."
+        "Publish is only available when this builder runs on Acme Cloud."
     )
 
 

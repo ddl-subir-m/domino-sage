@@ -83,8 +83,8 @@ window.SW = window.SW || {};
         // "its record of what it needs to run" rather than "its Bindings" (ADR-0025), and a
         // *record* rather than the things themselves: deleting the app takes the grants, never the
         // Resources — those stay in the Project and can be picked again (ADR-0011).
-        h('div', null, SW.brand.text("This deletes the app's code and plan. That can't be undone. "
-          + 'Your other {builtAppPlural} and this conversation stay.')),
+        h('div', null, SW.brand.text("Deletes this app's code and plan. That can't be undone. "
+          + 'Other {builtAppPlural} and this conversation stay.')),
         app.published &&
           h(
             'div',
@@ -119,9 +119,8 @@ window.SW = window.SW || {};
               // can stop it, and the person has somewhere to go if that is not what they wanted.
               antd.message.warning({
                 content: SW.brand.text(
-                  'Deleted "{name}". Its {platformName} App is still running — delete it in '
-                    + "{platformName} if you don't want it, because {assistantName} can no longer "
-                    + 'reach it.',
+                  'Deleted "{name}". Its {platformName} App is still running. Delete it in '
+                    + "{platformName} if you don't want it.",
                   { name: app.name }
                 ),
                 duration: 10,
@@ -239,8 +238,8 @@ window.SW = window.SW || {};
         SW.brand.text(
           again
             ? 'This updates the published app. The URL stays the same.'
-            : "This publishes the app to {platformName} with its own URL. Share it there before "
-              + 'anyone else can open it.'
+            : 'Publishes this app to {platformName} with its own URL. Share it there to give '
+              + 'others access.'
         )
       ),
       // Label above the field, and no `autoFocus`: the OK button keeps the focus antd gives it, so
@@ -293,7 +292,7 @@ window.SW = window.SW || {};
             antd.message.success(
               out && out.republished
                 ? `Published a new version of "${shipped}". It takes a few minutes to serve the new code.`
-                : `Published "${shipped}". It takes a few minutes to come up — Open app opens it.`
+                : `Published "${shipped}". It takes a few minutes to come up.`
             );
             // And the half of that sentence that stopped being true (#219). A re-publish ships a
             // version, which carries no name, so the name reaches the App through a rename — and
@@ -1117,7 +1116,7 @@ window.SW = window.SW || {};
         mark &&
           h(
             Tooltip,
-            { title: '"not used" is what the last build saw, and it publishes either way.' },
+            { title: '"not used" is from the last build. It still publishes.' },
             h('span', { className: 'sw-appdeps-unused' }, ' (not used)')
           ),
         h(
@@ -1404,8 +1403,7 @@ window.SW = window.SW || {};
             'div',
             { className: 'sw-preview-overlay is-stalled' },
             h('div', { className: 'sw-preview-overlay-text' },
-              SW.brand.text("Preview didn't start in 90 seconds. A first build can take longer — "
-                + 'check again.')),
+              SW.brand.text("Preview didn't start in 90 seconds. A first build can take longer.")),
             h(
               Button,
               {

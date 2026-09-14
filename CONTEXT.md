@@ -256,8 +256,8 @@ _Avoid_: query, Named query (that is the app's), sample, Sample rows (those are 
 preview, peek, fetch, lookup
 
 **Kept rows**:
-The Project's standing answer to whether real data rows may be committed into its files. Off
-until someone turns it on, and turned on beside the name of the git remote they will be pushed
+The Project's standing answer to whether real data rows may be committed into its files. On
+until someone turns it off, and turned off beside the name of the git remote they will be pushed
 to, because that name is the only part of the audience Sage can read. It governs every writer
 alike — a [[Live read]], a [[Chat]] turn's table, a chart — since deciding per source would need
 an audience Sage cannot obtain. It is not a Domino grant and it narrows nothing on the platform;

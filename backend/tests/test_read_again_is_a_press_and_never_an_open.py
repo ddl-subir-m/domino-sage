@@ -95,8 +95,8 @@ def test_the_stamp_still_says_when_the_file_was_read():
     card = _card(_RECEIPT, press="Read again", answers=_FRESH)
 
     assert card["said"][1] == "5 rows, read March 4, 2026"
-    assert card["said"][-1] == ("Now on screen: 2 rows, read September 11, 2026. This Project "
-                                "doesn't keep data rows in its files, so these are not saved.")
+    assert card["said"][-1] == ("On screen: 2 rows, read September 11, 2026. These rows aren't "
+                                "saved in this Project.")
 
 
 @needs_node

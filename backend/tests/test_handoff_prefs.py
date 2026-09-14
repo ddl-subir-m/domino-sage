@@ -130,7 +130,7 @@ def test_the_sheet_says_the_digest_always_goes_in_both_preference_states():
 
     for rendered in (off, on):
         always, optional = rendered["sections"]
-        assert "Always written to the project" in always["text"]
+        assert "Always saved to the project" in always["text"]
         assert ".sage/plan.md" in always["rows"][0]
         assert ".sage/handoff.md" in always["rows"][1]
         assert "Always written" in always["rows"][1]
