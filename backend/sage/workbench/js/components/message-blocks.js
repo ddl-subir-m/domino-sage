@@ -1996,7 +1996,9 @@ window.SW = window.SW || {};
       case 'status':
         return h(
           'div',
-          { className: `sw-status-line${block.ok === false ? ' is-err' : ''}` },
+          {
+            className: `sw-status-line${block.ok === false ? ' is-err' : block.warn ? ' is-warn' : ''}`,
+          },
           block.value
         );
       case 'mentions_unresolved':

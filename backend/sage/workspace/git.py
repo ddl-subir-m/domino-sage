@@ -14,8 +14,11 @@ from pathlib import Path
 
 @dataclass
 class SaveResult:
+    """rejected is True only when a push was attempted and git refused it (e.g. non-fast-forward).
+    Distinct from pushed=False for "no remote" or "nothing to commit", which are not failures."""
     pushed: bool
     detail: str
+    rejected: bool = False
 
 
 @dataclass
@@ -191,7 +194,8 @@ def push(path: Path) -> SaveResult:
         return SaveResult(pushed=False, detail="committed (no remote)")
     r = _git(path, "push", check=False)
     if r.returncode != 0:
-        return SaveResult(pushed=False, detail=f"push failed: {(r.stderr or r.stdout).strip()[:200]}")
+        detail = f"push failed: {(r.stderr or r.stdout).strip()[:200]}"
+        return SaveResult(pushed=False, detail=detail, rejected=True)
     return SaveResult(pushed=True, detail="pushed")
 
 

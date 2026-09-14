@@ -2484,10 +2484,18 @@ window.SW = window.SW || {};
                      offerKey: recallOfferKey('build', pos) }],
         });
       } else if (ev.type === 'saved') {
-        const value = ev.ok
-          ? (ev.pushed ? 'Saved and pushed' : `Saved${ev.detail ? ` — ${ev.detail}` : ''}`)
-          : `Couldn't save — ${ev.detail || 'git error'}`;
-        ensureAssistant().blocks.push({ type: 'status', ok: !!ev.ok, value });
+        let value, warn;
+        if (ev.rejected) {
+          // Committed locally but the remote refused the push — this is not the same as a plain
+          // save, and drawing it in success styling would hide that the work isn't on the remote.
+          value = `Saved locally — not pushed. Pull the latest, then save again.${ev.detail ? ` (${ev.detail})` : ''}`;
+          warn = true;
+        } else if (ev.ok) {
+          value = ev.pushed ? 'Saved and pushed' : `Saved${ev.detail ? ` — ${ev.detail}` : ''}`;
+        } else {
+          value = `Couldn't save — ${ev.detail || 'git error'}`;
+        }
+        ensureAssistant().blocks.push({ type: 'status', ok: !!ev.ok, warn: !!warn, value });
       } else if ((ev.type === 'ask-blocked' || ev.type === 'ask-active') && ev.message) {
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
       } else if (ev.type === 'data-leak' && ev.file) {

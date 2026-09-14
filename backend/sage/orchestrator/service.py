@@ -14386,7 +14386,8 @@ class Orchestrator:
             detail = result.detail
             if leaked:
                 detail += f" — kept {len(leaked)} copied data file(s) out of git; fetch attached data from data/ instead"
-            return {"type": "saved", "ok": True, "pushed": result.pushed, "detail": detail}
+            return {"type": "saved", "ok": True, "pushed": result.pushed,
+                     "rejected": result.rejected, "detail": detail}
         except Exception as e:
             log.exception("git save failed")
             return {"type": "saved", "ok": False, "pushed": False, "detail": f"{type(e).__name__}: {e}"}

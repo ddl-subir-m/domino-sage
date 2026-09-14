@@ -78,6 +78,7 @@ def test_commit_without_remote_is_not_an_error(tmp_path: Path):
     result = git.commit_and_push(work, "sage: build")
 
     assert result.pushed is False and "no remote" in result.detail
+    assert result.rejected is False  # no remote is not a rejection — #234
     assert "App.tsx" in _run(work, "ls-tree", "--name-only", "HEAD")  # committed locally
 
 
@@ -85,6 +86,7 @@ def test_no_changes_is_a_noop(tmp_path: Path):
     work = _work_repo(tmp_path)
     result = git.commit_and_push(work, "sage: nothing changed")
     assert result.pushed is False and "no changes" in result.detail
+    assert result.rejected is False  # genuinely nothing to do, not a rejection — #234
 
 
 def test_commits_when_identity_unset(tmp_path: Path):
@@ -187,6 +189,8 @@ def test_push_rejected_on_non_fast_forward(tmp_path: Path):
     git.commit_all(work, "sage: local")
     result = git.push(work)
     assert result.pushed is False and "push failed" in result.detail
+    assert result.rejected is True  # a real rejection, not a benign pushed=False — #234
     # After a pull, the push goes through.
     assert git.pull(work).status == "merged"
-    assert git.push(work).pushed is True
+    result = git.push(work)
+    assert result.pushed is True and result.rejected is False
