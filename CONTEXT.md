@@ -89,6 +89,8 @@ teammate
 **LLM Gateway**:
 The deployed Domino App that fronts every language model, whether hosted in Domino or
 external. Both Sage and the apps Sage builds reach language models only through it.
+It is the trusted enforcement point for model requests, permitted to receive sensitive values
+for inspection under its rules ([ADR-0052](docs/adr/0052-the-llm-gateway-is-the-trusted-enforcement-point.md)).
 _Kind_: name
 _Avoid_: gateway, AI Gateway, proxy
 
@@ -254,6 +256,13 @@ columns, a row count, the statement and the date — and holds the rows themselv
 _Kind_: name
 _Avoid_: query, Named query (that is the app's), sample, Sample rows (those are the agent's),
 preview, peek, fetch, lookup
+
+**Data used**:
+The record beside a result that explains which data Sage processed in Domino and which data
+it sent through the [[LLM Gateway]] to a model. It describes recorded actions, not a sharing
+permission ([ADR-0052](docs/adr/0052-the-llm-gateway-is-the-trusted-enforcement-point.md)).
+_Kind_: name
+_Avoid_: consent, approval, sensitivity classification
 
 **Kept rows**:
 The Project's standing answer to whether real data rows may be committed into its files. On

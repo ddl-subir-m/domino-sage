@@ -19,6 +19,7 @@
 // the app's Resources change, and an edit here is overwritten.
 import { appLlmConfig } from "./appLlm.config";
 
+// SAGE_MODEL_OUTCOME_V1: seeded into new apps; older helpers keep their existing contract.
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
 /** What `checkModel` found. `ok: false` carries the sentence to show the viewer, already written. */
@@ -27,8 +28,10 @@ export type ModelStatus =
   | { ok: false; message: string };
 
 export type AskOptions = {
-  /** Called with each chunk of text as it arrives. Passing it turns on streaming. */
+  /** Provisional text only. Mark it incomplete until askModel resolves. Enables streaming. */
   onToken?: (chunk: string) => void;
+  /** One final outcome per request. Missing gateway evidence stays null. */
+  onOutcome?: (outcome: ModelOutcome) => void;
   maxTokens?: number;
   temperature?: number;
   /** Abort the request — pass `AbortController.signal` to cancel on unmount. */
@@ -145,7 +148,7 @@ function httpMessage(status: number, called: Model | null = models[0] || null): 
     return `${model} is no longer registered in Domino's LLM Gateway. Whoever built this app needs to point it at another model.`;
   }
   if (status === 429) return "The model is busy right now. Wait a moment and try again.";
-  return `The model did not answer (error ${status}). Try again in a moment.`;
+  return `The model did not answer (error ${status}).`;
 }
 
 /**
@@ -184,6 +187,84 @@ export async function checkModel(alias?: string): Promise<ModelStatus> {
   return { ok: true, alias: model.alias, displayName: labelOf(model) };
 }
 
+export type ModelEvidence = {
+  requestedAlias: string;
+  requestId: string | null;
+  responseId: string | null;
+  responseModel: string | null;
+  fallbackServedBy: string | null;
+  fallbackReason: string | null;
+  cacheStatus: string | null;
+  // The legacy gateway does not establish these facts. A model name is not a receipt.
+  servingModel: string | null;
+  providerReceipt: string | null;
+  decisionStage: string | null;
+  finishReason: string | null;
+};
+
+export type ModelFailure = "refused" | "authentication" | "access" | "rate_limit" |
+  "provider" | "http" | "transport" | "cancelled" | "incomplete" | "invalid_response";
+export type ModelOutcome = {
+  status: "complete" | ModelFailure;
+  evidence: ModelEvidence;
+};
+
+/** A rejected answer is never a final result. partialText may be displayed as incomplete only. */
+export class ModelError extends Error {
+  kind: ModelFailure;
+  partialText: string;
+  evidence: ModelEvidence;
+  reason: string | null;
+  constructor(kind: ModelFailure, message: string, evidence: ModelEvidence,
+              partialText = "", reason: string | null = null) {
+    super(message);
+    this.name = kind === "cancelled" ? "AbortError" : "ModelError";
+    this.kind = kind;
+    this.partialText = partialText;
+    this.evidence = evidence;
+    this.reason = reason;
+  }
+}
+
+type Json = Record<string, any>;
+const INCOMPLETE = "The answer is incomplete. Do not use it as a final result.";
+
+// Only the gateway's structured refusal category and bounded guardrail-name sentence are safe
+// viewer details. Arbitrary provider messages can quote the request; never echo that raw body.
+function responseError(body: Json, evidence: ModelEvidence, partial = ""): ModelError | null {
+  const error = body?.detail?.error ?? body?.error;
+  if (!error) return null;
+  if (error.type === "gateway_transport_error") {
+    return new ModelError("transport", `The preview could not reach the gateway. Receipt is unknown. ${INCOMPLETE}`,
+      evidence, partial);
+  }
+  const named = typeof error.message === "string" &&
+    /^Blocked by guardrail: [^\r\n<>]{1,120}$/.test(error.message) ? error.message : null;
+  const refused = error.type === "guardrail_blocked" || error.code === "content_filter" || named !== null;
+  return new ModelError(refused ? "refused" : "provider",
+    refused ? `${named || "The gateway refused this request."} Change the request before sending it again. ${INCOMPLETE}`
+      : `The model could not finish the answer. ${INCOMPLETE}`,
+    evidence, partial, refused ? (error.code === "content_filter" ? "content_filter" : "guardrail_blocked") : null);
+}
+
+function recordBody(body: Json, evidence: ModelEvidence): void {
+  if (typeof body?.model === "string") evidence.responseModel = body.model;
+  if (typeof body?.id === "string") evidence.responseId = body.id;
+}
+
+function checkChoice(choice: Json, evidence: ModelEvidence, partial: string): void {
+  if (choice?.finish_reason != null) evidence.finishReason = String(choice.finish_reason);
+  const message = choice?.delta ?? choice?.message;
+  if (message?.refusal || choice?.finish_reason === "content_filter") {
+    throw new ModelError("refused", `The model refused this request. Change the request before sending it again. ${INCOMPLETE}`,
+      evidence, partial, "content_filter");
+  }
+  if (choice?.finish_reason != null) {
+    // This helper returns text, so tool calls and output caps are not finished text answers.
+    if (choice.finish_reason !== "stop") throw new ModelError("incomplete", INCOMPLETE, evidence, partial);
+  }
+}
+
 /**
  * Ask one of this app's models a question, and resolve with its whole answer.
  *
@@ -208,71 +289,130 @@ export async function askModel(messages: ChatMessage[], opts: AskOptions = {}): 
   const model = pick(opts.alias);
   if (!model) throw new Error(unknownModel(opts.alias as string));
   const stream = typeof opts.onToken === "function";
-  let res: Response;
+  const evidence: ModelEvidence = {
+    requestedAlias: model.alias, requestId: null, responseId: null, responseModel: null, fallbackServedBy: null,
+    fallbackReason: null, cacheStatus: null, servingModel: null, providerReceipt: null,
+    decisionStage: null, finishReason: null,
+  };
+  let answer: string;
   try {
-    res = await fetch(endpoint("/chat/completions"), {
+    const res = await fetch(endpoint("/chat/completions"), {
       method: "POST",
       credentials: CREDENTIALS,
       signal: opts.signal,
       headers: { "Content-Type": "application/json", ...tagHeaders() },
       body: JSON.stringify({
-        model: model.alias,
-        messages,
-        stream,
+        model: model.alias, messages, stream,
         ...(opts.maxTokens === undefined ? {} : { max_tokens: opts.maxTokens }),
         ...(opts.temperature === undefined ? {} : { temperature: opts.temperature }),
       }),
     });
-  } catch (e) {
-    // An abort is the caller's own doing, not a failure to report to the viewer.
-    if ((e as { name?: string })?.name === "AbortError") throw e;
-    throw new Error("Domino's LLM Gateway is not answering. Check your connection and try again.");
+    evidence.requestId = res.headers.get("x-request-id");
+    evidence.fallbackServedBy = res.headers.get("x-llm-fallback-served-by");
+    evidence.fallbackReason = res.headers.get("x-llm-fallback-reason");
+    evidence.cacheStatus = res.headers.get("x-cache");
+    if (!res.ok) {
+      let body: Json = {};
+      try { body = await res.json(); } catch { /* Status remains useful without a JSON body. */ }
+      const error = responseError(body, evidence);
+      if (error?.kind === "refused" || error?.kind === "transport") throw error;
+      const kind: ModelFailure = res.status === 401 ? "authentication" : res.status === 403 ? "access"
+        : res.status === 429 ? "rate_limit" : error ? "provider" : "http";
+      throw new ModelError(kind, httpMessage(res.status, model), evidence);
+    }
+    answer = stream ? await readStream(res, opts, evidence) : await readWhole(res, evidence);
+    if (opts.signal?.aborted) throw new ModelError("cancelled", `The request was cancelled. ${INCOMPLETE}`, evidence);
+  } catch (error) {
+    const failure = error instanceof ModelError ? error : new ModelError(
+      opts.signal?.aborted ? "cancelled" : "transport",
+      opts.signal?.aborted ? `The request was cancelled. ${INCOMPLETE}`
+        : `The connection to the gateway failed. Receipt is unknown. ${INCOMPLETE}`, evidence);
+    opts.onOutcome?.({ status: failure.kind, evidence });
+    throw failure;
   }
-  if (!res.ok) throw new Error(httpMessage(res.status, model));
-  return stream ? readStream(res, opts.onToken!) : readWhole(res);
+  opts.onOutcome?.({ status: "complete", evidence });
+  return answer;
 }
 
-async function readWhole(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    return String(body?.choices?.[0]?.message?.content ?? "");
-  } catch {
-    throw new Error("The model's answer could not be read. Try again in a moment.");
+async function readWhole(res: Response, evidence: ModelEvidence): Promise<string> {
+  let body: Json;
+  try { body = await res.json(); } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new ModelError("invalid_response", `The model's answer could not be read. ${INCOMPLETE}`, evidence);
   }
+  recordBody(body, evidence);
+  const error = responseError(body, evidence);
+  if (error) throw error;
+  const choice = body?.choices?.[0];
+  const text = choice?.message?.content;
+  checkChoice(choice, evidence, typeof text === "string" ? text : "");
+  if (choice?.finish_reason !== "stop" || typeof text !== "string") {
+    throw new ModelError("incomplete", INCOMPLETE, evidence, typeof text === "string" ? text : "");
+  }
+  return text;
 }
 
-// Server-sent events: `data: {json}` per chunk, `data: [DONE]` to finish. Split on the blank line
-// that terminates an event, and keep the tail — a chunk boundary lands mid-event often enough that
-// parsing whatever arrived would drop text at random.
-async function readStream(res: Response, onToken: (chunk: string) => void): Promise<string> {
-  if (!res.body) return readWhole(res);
+// An SSE event ends with a blank line, not a network chunk. A finish_reason alone is not enough:
+// the gateway can send an error after it. Require [DONE], and reject any unfinished event at EOF.
+async function readStream(res: Response, opts: AskOptions, evidence: ModelEvidence): Promise<string> {
+  if (!res.body) throw new ModelError("incomplete", INCOMPLETE, evidence);
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let answer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() ?? "";
-    for (const event of events) {
-      for (const line of event.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
-        try {
-          const chunk = JSON.parse(data);
-          const text = chunk?.choices?.[0]?.delta?.content;
-          if (typeof text === "string" && text) {
-            answer += text;
-            onToken(text);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // Accept LF and CRLF, including a CR/LF split between network chunks.
+      let boundary: RegExpExecArray | null;
+      while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+        const event = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        const data = event.split(/\r?\n/).filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart()).join("\n");
+        if (!data) continue;
+        if (data.trim() === "[DONE]") {
+          if (evidence.finishReason !== "stop") throw new ModelError("incomplete", INCOMPLETE, evidence, answer);
+          return answer;
+        }
+        let chunk: Json;
+        try { chunk = JSON.parse(data); } catch {
+          throw new ModelError("invalid_response", INCOMPLETE, evidence, answer);
+        }
+        recordBody(chunk, evidence);
+        const error = responseError(chunk, evidence, answer);
+        if (error) throw error;
+        if (event.split(/\r?\n/).some((line) => line.startsWith("event:") && line.slice(6).trim() === "error")) {
+          throw new ModelError("provider", `The model could not finish the answer. ${INCOMPLETE}`, evidence, answer);
+        }
+        const choice = chunk?.choices?.[0];
+        if (evidence.finishReason && choice?.delta?.content) {
+          throw new ModelError("invalid_response", INCOMPLETE, evidence, answer);
+        }
+        checkChoice(choice, evidence, answer);
+        const text = choice?.delta?.content;
+        if (text != null && typeof text !== "string") {
+          throw new ModelError("invalid_response", INCOMPLETE, evidence, answer);
+        }
+        if (typeof text === "string" && text) {
+          answer += text;
+          opts.onToken!(text);
+          if (opts.signal?.aborted) {
+            throw new ModelError("cancelled", `The request was cancelled. ${INCOMPLETE}`, evidence, answer);
           }
-        } catch {
-          // One unparseable event is not worth losing the answer already streamed.
         }
       }
     }
+    throw new ModelError("incomplete", INCOMPLETE, evidence, answer);
+  } catch (error) {
+    if (error instanceof ModelError) throw error;
+    throw new ModelError(opts.signal?.aborted ? "cancelled" : "transport",
+      opts.signal?.aborted ? `The request was cancelled. ${INCOMPLETE}`
+        : `The connection ended before the answer was complete. ${INCOMPLETE}`, evidence, answer);
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-  return answer;
 }

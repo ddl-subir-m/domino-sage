@@ -132,3 +132,23 @@ def test_the_turn_is_told_that_what_it_prints_it_pays_for_again():
                   "never the script itself"):
         assert probe in md, probe
         assert probe in prompt, probe
+
+
+def test_the_turn_is_told_to_format_numeric_diagnostics_before_printing():
+    """The consumer-book VLTA diagnosis printed raw pandas slices.
+
+    The file had no person-shaped columns in the reported transcript, but raw financial floats can
+    carry 10 or 11 digits after a decimal point. The gateway's PII rule reads that as a phone
+    number, and then the useful answer is lost. The prompt cannot change the policy, so it teaches
+    the chat agent to keep stdout small and fixed precision.
+    """
+    root = Path(__file__).resolve().parents[2]
+    md = (root / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
+    prompt = json.loads((root / "opencode.json").read_text(encoding="utf-8"))[
+        "agent"]["sage-chat"]["prompt"]
+    for probe in ("Format numeric diagnostics before printing them.",
+                  "10 or 11 digits in a row",
+                  "to_string(float_format=...)",
+                  "small summary dict with fixed precision"):
+        assert probe in md, probe
+        assert probe in prompt, probe

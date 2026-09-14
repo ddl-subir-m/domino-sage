@@ -1,0 +1,4204 @@
+{
+  "kind": "synthetic_design_experiment_not_production_benchmark",
+  "sage_commit": "3e39a3636ff0f698f2b8e210405ecd92600c9155",
+  "gateway_commit": "4387d1b0df5693d6dec36cf65e12a9fb5a8e67db",
+  "opencode_version": "1.18.4",
+  "runs": [
+    {
+      "run": "run-13347a19",
+      "results": [
+        {
+          "model": "sonnet",
+          "variant": "baseline",
+          "task": "sales",
+          "calls": [
+            {
+              "bytes": 77273,
+              "model": "sonnet",
+              "first_s": 3.0489950419869274,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 3.2306678749155253
+            },
+            {
+              "bytes": 78011,
+              "model": "sonnet",
+              "first_s": null,
+              "error": "GatewayUpstreamError",
+              "finish": [],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": true,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 0.28595504187978804
+            }
+          ],
+          "workspace_init_s": 1.2599630830809474,
+          "work": "/tmp/sage-pii-prototype/run-13347a19/0-baseline",
+          "elapsed_s": 56.876793125178665,
+          "first_artifact_s": null,
+          "artifact_correct": false,
+          "timeout": false,
+          "artifacts": [],
+          "raw_ui_contains_email": true
+        },
+        {
+          "model": "sonnet",
+          "variant": "receipts",
+          "task": "sales",
+          "calls": [
+            {
+              "bytes": 84040,
+              "model": "sonnet",
+              "first_s": 3.145182542037219,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 5.265152167063206
+            },
+            {
+              "bytes": 85395,
+              "model": "sonnet",
+              "first_s": 1.4375607080291957,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 2.878159041982144
+            },
+            {
+              "bytes": 86146,
+              "model": "sonnet",
+              "first_s": 1.4875042920466512,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "total_s": 2.635026916861534
+            }
+          ],
+          "workspace_init_s": 0.23169179214164615,
+          "work": "/tmp/sage-pii-prototype/run-13347a19/0-receipts",
+          "elapsed_s": 12.650520666968077,
+          "first_artifact_s": 6.4089402090758085,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Total Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "South",
+                    420
+                  ],
+                  [
+                    "North",
+                    360
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "domino/gemini-3.7-flash",
+          "variant": "receipts",
+          "task": "sales",
+          "calls": [
+            {
+              "bytes": 84098,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 3.256935792043805,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 174,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 20824,
+                "total_tokens": 20998
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 3.2747477921657264
+            },
+            {
+              "bytes": 85535,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 2.049826125148684,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 47,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21060,
+                "total_tokens": 21107
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 2.173661416163668
+            },
+            {
+              "bytes": 86740,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 1.9696450838819146,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 63,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21175,
+                "prompt_tokens_details": {
+                  "cached_tokens": 15885
+                },
+                "total_tokens": 21238
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "total_s": 2.0664872089400887
+            },
+            {
+              "bytes": 87732,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 3.1912709169555455,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 44,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21300,
+                "prompt_tokens_details": {
+                  "cached_tokens": 15846
+                },
+                "total_tokens": 21344
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null,
+                null
+              ],
+              "total_s": 3.509316625073552
+            }
+          ],
+          "workspace_init_s": 0.2406347501091659,
+          "work": "/tmp/sage-pii-prototype/run-13347a19/1-receipts",
+          "elapsed_s": 12.934476249851286,
+          "first_artifact_s": 4.247270083986223,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "North",
+                    360
+                  ],
+                  [
+                    "South",
+                    420
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "domino/gemini-3.7-flash",
+          "variant": "baseline",
+          "task": "sales",
+          "calls": [
+            {
+              "bytes": 82675,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 2.8334094169549644,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 147,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 20562,
+                "total_tokens": 20709
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 3.2534817499108613
+            },
+            {
+              "bytes": 83554,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 1.6804559580050409,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 39,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 20729,
+                "total_tokens": 20768
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 2.0835083751007915
+            }
+          ],
+          "workspace_init_s": 0.2419817498885095,
+          "work": "/tmp/sage-pii-prototype/run-13347a19/1-baseline",
+          "elapsed_s": 6.62245966703631,
+          "first_artifact_s": 3.797748167067766,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Total Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "North",
+                    360
+                  ],
+                  [
+                    "South",
+                    420
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "Gemma 4 31B",
+          "variant": "baseline",
+          "task": "sales",
+          "calls": [
+            {
+              "bytes": 83108,
+              "model": "Gemma 4 31B",
+              "first_s": 3.364363999804482,
+              "error": null,
+              "finish": [
+                "tool_calls",
+                "tool_calls"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 20940,
+                "completion_tokens": 102,
+                "total_tokens": 21042,
+                "cost": 0.00254952,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00254952,
+                  "upstream_inference_prompt_cost": 0.0025128,
+                  "upstream_inference_completions_cost": 3.672e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 5.293293458875269
+            },
+            {
+              "bytes": 83792,
+              "model": "Gemma 4 31B",
+              "first_s": 7.988630708074197,
+              "error": null,
+              "finish": [
+                "stop",
+                "stop"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21047,
+                "completion_tokens": 20,
+                "total_tokens": 21067,
+                "cost": 0.0021115,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.0021115,
+                  "upstream_inference_prompt_cost": 0.0021047,
+                  "upstream_inference_completions_cost": 6.8e-06
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 8.256232500076294
+            }
+          ],
+          "workspace_init_s": 0.2196081669535488,
+          "work": "/tmp/sage-pii-prototype/run-13347a19/2-baseline",
+          "elapsed_s": 14.857901165960357,
+          "first_artifact_s": 6.190347540890798,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "North",
+                    360
+                  ],
+                  [
+                    "South",
+                    420
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "Gemma 4 31B",
+          "variant": "receipts",
+          "task": "sales",
+          "calls": [
+            {
+              "bytes": 84047,
+              "model": "Gemma 4 31B",
+              "first_s": 2.6030742081347853,
+              "error": null,
+              "finish": [
+                "tool_calls",
+                "tool_calls"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21132,
+                "completion_tokens": 145,
+                "total_tokens": 21277,
+                "cost": 0.00258804,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00258804,
+                  "upstream_inference_prompt_cost": 0.00253584,
+                  "upstream_inference_completions_cost": 5.22e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 5.271179707953706
+            },
+            {
+              "bytes": 85250,
+              "model": "Gemma 4 31B",
+              "first_s": 1.5061024578753859,
+              "error": null,
+              "finish": [
+                "tool_calls",
+                "tool_calls"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21370,
+                "completion_tokens": 56,
+                "total_tokens": 21426,
+                "cost": 0.00195096,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 21120,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00195096,
+                  "upstream_inference_prompt_cost": 0.0019308,
+                  "upstream_inference_completions_cost": 2.016e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 2.1281890419777483
+            },
+            {
+              "bytes": 85890,
+              "model": "Gemma 4 31B",
+              "first_s": 7.937368500046432,
+              "error": null,
+              "finish": [
+                "stop",
+                "stop"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21475,
+                "completion_tokens": 17,
+                "total_tokens": 21492,
+                "cost": 0.00215328,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00215328,
+                  "upstream_inference_prompt_cost": 0.0021475,
+                  "upstream_inference_completions_cost": 5.78e-06
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "total_s": 8.444527791114524
+            }
+          ],
+          "workspace_init_s": 0.28377224993892014,
+          "work": "/tmp/sage-pii-prototype/run-13347a19/2-receipts",
+          "elapsed_s": 17.470221458934247,
+          "first_artifact_s": 6.184798500034958,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "North",
+                    360
+                  ],
+                  [
+                    "South",
+                    420
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        }
+      ]
+    },
+    {
+      "run": "run-29c4d320",
+      "results": [
+        {
+          "model": "sonnet",
+          "variant": "receipts",
+          "task": "sales",
+          "candidate": "combined-explicit-contract",
+          "calls": [
+            {
+              "bytes": 83557,
+              "model": "sonnet",
+              "first_s": 4.789432000136003,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [],
+              "task_offset_s": 90.45926487492397,
+              "total_s": 7.20496154204011
+            },
+            {
+              "bytes": 84869,
+              "model": "sonnet",
+              "first_s": 2.6437178330961615,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "task_offset_s": 98.3352272498887,
+              "total_s": 3.2216211250051856
+            }
+          ],
+          "workspace_init_s": 2.6548590001184493,
+          "task_started": 1110248.639978708,
+          "work": "/tmp/sage-pii-prototype/run-29c4d320/0-receipts",
+          "elapsed_s": 101.78940499993041,
+          "first_artifact_s": 98.3300863748882,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Total Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "South",
+                    420
+                  ],
+                  [
+                    "North",
+                    360
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "domino/gemini-3.7-flash",
+          "variant": "receipts",
+          "task": "sales",
+          "candidate": "combined-explicit-contract",
+          "calls": [
+            {
+              "bytes": 85354,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 2.5866330000571907,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 172,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21006,
+                "total_tokens": 21178
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "task_offset_s": 0.6446907920762897,
+              "total_s": 2.7016503328923136
+            },
+            {
+              "bytes": 86528,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 1.6820378329139203,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 40,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21189,
+                "prompt_tokens_details": {
+                  "cached_tokens": 15944
+                },
+                "total_tokens": 21229
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "task_offset_s": 3.665140167111531,
+              "total_s": 2.016850332962349
+            }
+          ],
+          "workspace_init_s": 0.26391766709275544,
+          "task_started": 1110350.790502833,
+          "work": "/tmp/sage-pii-prototype/run-29c4d320/1-receipts",
+          "elapsed_s": 6.0771433329209685,
+          "first_artifact_s": 3.6749902919400483,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "North",
+                    360
+                  ],
+                  [
+                    "South",
+                    420
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "Gemma 4 31B",
+          "variant": "receipts",
+          "task": "sales",
+          "candidate": "combined-explicit-contract",
+          "calls": [
+            {
+              "bytes": 85268,
+              "model": "Gemma 4 31B",
+              "first_s": 16.07283270917833,
+              "error": null,
+              "finish": [
+                "tool_calls",
+                "tool_calls"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21351,
+                "completion_tokens": 197,
+                "total_tokens": 21548,
+                "cost": 0.00220208,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00220208,
+                  "upstream_inference_prompt_cost": 0.0021351,
+                  "upstream_inference_completions_cost": 6.698e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "task_offset_s": 0.6284724578727037,
+              "total_s": 16.087445417186245
+            },
+            {
+              "bytes": 86459,
+              "model": "Gemma 4 31B",
+              "first_s": 1.0770997919607908,
+              "error": null,
+              "finish": [
+                "stop",
+                "stop"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21622,
+                "completion_tokens": 20,
+                "total_tokens": 21642,
+                "cost": 0.002169,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 21312,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.002169,
+                  "upstream_inference_prompt_cost": 0.0021622,
+                  "upstream_inference_completions_cost": 6.8e-06
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "task_offset_s": 17.134580957936123,
+              "total_s": 1.405356083996594
+            }
+          ],
+          "workspace_init_s": 0.19032358308322728,
+          "task_started": 1110357.145261083,
+          "work": "/tmp/sage-pii-prototype/run-29c4d320/2-receipts",
+          "elapsed_s": 18.895356541965157,
+          "first_artifact_s": 17.1433648748789,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Total Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "North",
+                    360
+                  ],
+                  [
+                    "South",
+                    420
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        }
+      ]
+    },
+    {
+      "run": "run-3f4c6ba1",
+      "results": [
+        {
+          "model": "sonnet",
+          "variant": "receipts",
+          "task": "sales",
+          "calls": [
+            {
+              "bytes": 84041,
+              "model": "sonnet",
+              "first_s": 3.3398272080812603,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 5.084050625097007
+            },
+            {
+              "bytes": 85184,
+              "model": "sonnet",
+              "first_s": 2.4070347920060158,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 3.259455124847591
+            },
+            {
+              "bytes": 85843,
+              "model": "sonnet",
+              "first_s": 2.780708125093952,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "total_s": 3.807231375016272
+            }
+          ],
+          "work": "/tmp/sage-pii-prototype/run-3f4c6ba1/0-receipts",
+          "elapsed_s": 69.6376561250072,
+          "first_artifact_s": 61.82317837513983,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Total Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "South",
+                    420
+                  ],
+                  [
+                    "North",
+                    360
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        }
+      ]
+    },
+    {
+      "run": "run-515536fb",
+      "results": [
+        {
+          "model": "sonnet",
+          "variant": "receipts",
+          "task": "text",
+          "candidate": "combined",
+          "calls": [
+            {
+              "bytes": 83672,
+              "model": "sonnet",
+              "first_s": 3.792173790978268,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 4.726783833000809
+            },
+            {
+              "bytes": 84929,
+              "model": "sonnet",
+              "first_s": 2.865066708996892,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 6.784920749953017
+            },
+            {
+              "bytes": 87014,
+              "model": "sonnet",
+              "first_s": 5.054515458177775,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "total_s": 8.582203750032932
+            },
+            {
+              "bytes": 89342,
+              "model": "sonnet",
+              "first_s": 1.8847251669503748,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null,
+                null
+              ],
+              "total_s": 3.6230729590170085
+            }
+          ],
+          "workspace_init_s": 1.1419012919068336,
+          "work": "/tmp/sage-pii-prototype/run-515536fb/0-receipts",
+          "elapsed_s": 36.440856541041285,
+          "first_artifact_s": 23.2098576661665,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "themes.table.json",
+              "value": {
+                "title": "Complaint Themes (12 records)",
+                "columns": [
+                  "Theme",
+                  "Count"
+                ],
+                "rows": [
+                  [
+                    "Delivery was late",
+                    4
+                  ],
+                  [
+                    "Item arrived broken",
+                    4
+                  ],
+                  [
+                    "Unexpected charge appeared",
+                    4
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "domino/gemini-3.7-flash",
+          "variant": "receipts",
+          "task": "text",
+          "candidate": "combined",
+          "calls": [
+            {
+              "bytes": 84415,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 2.2449564170092344,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 44,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 20862,
+                "total_tokens": 20906
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 2.331482709152624
+            },
+            {
+              "bytes": 85753,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 3.28791366587393,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 207,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21010,
+                "total_tokens": 21217
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 3.697236832929775
+            },
+            {
+              "bytes": 86917,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 3.2028127079829574,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 207,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21213,
+                "prompt_tokens_details": {
+                  "cached_tokens": 15862
+                },
+                "total_tokens": 21420
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "total_s": 3.250771875027567
+            },
+            {
+              "bytes": 88318,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 1.6844074171967804,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 61,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21437,
+                "prompt_tokens_details": {
+                  "cached_tokens": 15816
+                },
+                "total_tokens": 21498
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null,
+                null
+              ],
+              "total_s": 2.2987823330331594
+            }
+          ],
+          "workspace_init_s": 0.22341412492096424,
+          "work": "/tmp/sage-pii-prototype/run-515536fb/1-receipts",
+          "elapsed_s": 13.337467333069071,
+          "first_artifact_s": 6.9320608749985695,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "themes.table.json",
+              "value": {
+                "title": "Complaint Themes",
+                "columns": [
+                  "Theme",
+                  "Count"
+                ],
+                "rows": [
+                  [
+                    "Delivery was late",
+                    4
+                  ],
+                  [
+                    "Item arrived broken",
+                    4
+                  ],
+                  [
+                    "Unexpected charge appeared",
+                    4
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "Gemma 4 31B",
+          "variant": "receipts",
+          "task": "text",
+          "candidate": "combined",
+          "calls": [
+            {
+              "bytes": 84532,
+              "model": "Gemma 4 31B",
+              "first_s": 2.818587499903515,
+              "error": null,
+              "finish": [
+                "tool_calls",
+                "tool_calls"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21265,
+                "completion_tokens": 458,
+                "total_tokens": 21723,
+                "cost": 0.00271668,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00271668,
+                  "upstream_inference_prompt_cost": 0.0025518,
+                  "upstream_inference_completions_cost": 0.00016488
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 15.132871083915234
+            },
+            {
+              "bytes": 86862,
+              "model": "Gemma 4 31B",
+              "first_s": 14.97883995808661,
+              "error": null,
+              "finish": [
+                "stop",
+                "stop"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21769,
+                "completion_tokens": 17,
+                "total_tokens": 21786,
+                "cost": 0.00218268,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00218268,
+                  "upstream_inference_prompt_cost": 0.0021769,
+                  "upstream_inference_completions_cost": 5.78e-06
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 15.501384125091136
+            }
+          ],
+          "workspace_init_s": 0.19012354197911918,
+          "work": "/tmp/sage-pii-prototype/run-515536fb/2-receipts",
+          "elapsed_s": 32.00303979194723,
+          "first_artifact_s": 16.301187874982134,
+          "artifact_correct": false,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "themes.table.json",
+              "value": {
+                "title": "Complaint Themes",
+                "columns": [
+                  "theme",
+                  "count"
+                ],
+                "rows": [
+                  [
+                    "Delivery",
+                    8
+                  ],
+                  [
+                    "Pricing",
+                    4
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        }
+      ]
+    },
+    {
+      "run": "run-6583dc8a",
+      "results": [
+        {
+          "model": "sonnet",
+          "variant": "receipts",
+          "task": "text",
+          "candidate": "combined-explicit-contract",
+          "calls": [
+            {
+              "bytes": 81555,
+              "model": "sonnet",
+              "first_s": 3.250605707988143,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [],
+              "task_offset_s": 52.735852958867326,
+              "total_s": 4.206329582957551
+            },
+            {
+              "bytes": 82831,
+              "model": "sonnet",
+              "first_s": 2.5488380829337984,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "task_offset_s": 57.21219654195011,
+              "total_s": 5.356614500051364
+            },
+            {
+              "bytes": 84261,
+              "model": "sonnet",
+              "first_s": 1.6307578748092055,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "task_offset_s": 62.83334424998611,
+              "total_s": 3.0301883339416236
+            }
+          ],
+          "workspace_init_s": 1.1019386250991374,
+          "task_started": 1110381.750349166,
+          "work": "/tmp/sage-pii-prototype/run-6583dc8a/0-receipts",
+          "elapsed_s": 66.04603024991229,
+          "first_artifact_s": 62.827066958881915,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "themes.table.json",
+              "value": {
+                "title": "Complaint Themes (12 records)",
+                "columns": [
+                  "Theme",
+                  "Count"
+                ],
+                "rows": [
+                  [
+                    "Late Delivery",
+                    4
+                  ],
+                  [
+                    "Damaged Item",
+                    4
+                  ],
+                  [
+                    "Unexpected Charge",
+                    4
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "domino/gemini-3.7-flash",
+          "variant": "receipts",
+          "task": "text",
+          "candidate": "combined-explicit-contract",
+          "calls": [
+            {
+              "bytes": 85351,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 3.020635416964069,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 49,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21001,
+                "total_tokens": 21050
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "task_offset_s": 0.6225492910016328,
+              "total_s": 3.083251625066623
+            },
+            {
+              "bytes": 86731,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 3.7305315830744803,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 294,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21154,
+                "total_tokens": 21448
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "task_offset_s": 3.912675332976505,
+              "total_s": 3.7308189580217004
+            },
+            {
+              "bytes": 88407,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 1.644746334059164,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 55,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21463,
+                "prompt_tokens_details": {
+                  "cached_tokens": 15845
+                },
+                "total_tokens": 21518
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "task_offset_s": 7.904006415978074,
+              "total_s": 2.130864250008017
+            }
+          ],
+          "workspace_init_s": 0.2368597909808159,
+          "task_started": 1110448.128661375,
+          "work": "/tmp/sage-pii-prototype/run-6583dc8a/1-receipts",
+          "elapsed_s": 10.217842124868184,
+          "first_artifact_s": 7.835595832904801,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "themes.table.json",
+              "value": {
+                "title": "Complaint Themes",
+                "columns": [
+                  "Theme",
+                  "Count"
+                ],
+                "rows": [
+                  [
+                    "Late Delivery",
+                    4
+                  ],
+                  [
+                    "Damaged Item",
+                    4
+                  ],
+                  [
+                    "Billing Issue",
+                    4
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "Gemma 4 31B",
+          "variant": "receipts",
+          "task": "text",
+          "candidate": "combined-explicit-contract",
+          "calls": [
+            {
+              "bytes": 85025,
+              "model": "Gemma 4 31B",
+              "first_s": 2.4407599170226604,
+              "error": null,
+              "finish": [
+                "tool_calls",
+                "tool_calls"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21306,
+                "completion_tokens": 50,
+                "total_tokens": 21356,
+                "cost": 0.00257472,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00257472,
+                  "upstream_inference_prompt_cost": 0.00255672,
+                  "upstream_inference_completions_cost": 1.8e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "task_offset_s": 0.6568542909808457,
+              "total_s": 3.8278309169691056
+            },
+            {
+              "bytes": 86279,
+              "model": "Gemma 4 31B",
+              "first_s": 8.980191542068496,
+              "error": null,
+              "finish": [
+                "tool_calls",
+                "tool_calls"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21576,
+                "completion_tokens": 498,
+                "total_tokens": 22074,
+                "cost": 0.00232692,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00232692,
+                  "upstream_inference_prompt_cost": 0.0021576,
+                  "upstream_inference_completions_cost": 0.00016932
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "task_offset_s": 4.720556207932532,
+              "total_s": 9.028438332956284
+            },
+            {
+              "bytes": 88829,
+              "model": "Gemma 4 31B",
+              "first_s": 1.5324352078605443,
+              "error": null,
+              "finish": [
+                "stop",
+                "stop"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 22180,
+                "completion_tokens": 31,
+                "total_tokens": 22211,
+                "cost": 0.00203436,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 21280,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00203436,
+                  "upstream_inference_prompt_cost": 0.0020232,
+                  "upstream_inference_completions_cost": 1.116e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "task_offset_s": 14.366700458107516,
+              "total_s": 2.577755416976288
+            }
+          ],
+          "workspace_init_s": 0.1943047079257667,
+          "task_started": 1110458.635978,
+          "work": "/tmp/sage-pii-prototype/run-6583dc8a/2-receipts",
+          "elapsed_s": 17.12490125000477,
+          "first_artifact_s": 14.36397716589272,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "themes.table.json",
+              "value": {
+                "title": "Complaint Themes",
+                "columns": [
+                  "theme",
+                  "count"
+                ],
+                "rows": [
+                  [
+                    "Late Delivery",
+                    4
+                  ],
+                  [
+                    "Damaged Item",
+                    4
+                  ],
+                  [
+                    "Billing Error",
+                    4
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        }
+      ]
+    },
+    {
+      "run": "run-a69c0f6b",
+      "results": [
+        {
+          "model": "sonnet",
+          "variant": "receipts",
+          "task": "sales",
+          "candidate": "combined",
+          "calls": [
+            {
+              "bytes": 84878,
+              "model": "sonnet",
+              "first_s": 2.9373306669294834,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 5.060032667126507
+            },
+            {
+              "bytes": 85965,
+              "model": "sonnet",
+              "first_s": 2.6895708749070764,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 4.59266662504524
+            },
+            {
+              "bytes": 87223,
+              "model": "sonnet",
+              "first_s": 1.033238667063415,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [],
+              "usage": null,
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "total_s": 1.790804458083585
+            }
+          ],
+          "workspace_init_s": 7.646345834014937,
+          "work": "/tmp/sage-pii-prototype/run-a69c0f6b/0-receipts",
+          "elapsed_s": 88.36075808294117,
+          "first_artifact_s": 81.10915054194629,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Total Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "South",
+                    420
+                  ],
+                  [
+                    "North",
+                    360
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "domino/gemini-3.7-flash",
+          "variant": "receipts",
+          "task": "sales",
+          "candidate": "combined",
+          "calls": [
+            {
+              "bytes": 84868,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 3.0304614580236375,
+              "error": null,
+              "finish": [
+                "tool_calls"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 170,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 20933,
+                "total_tokens": 21103
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 3.1617697081528604
+            },
+            {
+              "bytes": 86050,
+              "model": "domino/gemini-3.7-flash",
+              "first_s": 1.9320348750334233,
+              "error": null,
+              "finish": [
+                "stop"
+              ],
+              "response_models": [
+                "gemini-3.7-flash"
+              ],
+              "usage": {
+                "completion_tokens": 40,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 21114,
+                "prompt_tokens_details": {
+                  "cached_tokens": 15945
+                },
+                "total_tokens": 21154
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 2.3394449579063803
+            }
+          ],
+          "workspace_init_s": 0.22722016694024205,
+          "work": "/tmp/sage-pii-prototype/run-a69c0f6b/1-receipts",
+          "elapsed_s": 6.815404166933149,
+          "first_artifact_s": 4.187184249982238,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Total Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "North",
+                    360
+                  ],
+                  [
+                    "South",
+                    420
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        },
+        {
+          "model": "Gemma 4 31B",
+          "variant": "receipts",
+          "task": "sales",
+          "candidate": "combined",
+          "calls": [
+            {
+              "bytes": 82375,
+              "model": "Gemma 4 31B",
+              "first_s": 2.4909127501305193,
+              "error": null,
+              "finish": [
+                "tool_calls",
+                "tool_calls"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 20725,
+                "completion_tokens": 201,
+                "total_tokens": 20926,
+                "cost": 0.00255936,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00255936,
+                  "upstream_inference_prompt_cost": 0.002487,
+                  "upstream_inference_completions_cost": 7.236e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [],
+              "total_s": 5.68590462510474
+            },
+            {
+              "bytes": 83530,
+              "model": "Gemma 4 31B",
+              "first_s": 1.4147403750102967,
+              "error": null,
+              "finish": [
+                "tool_calls",
+                "tool_calls"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 20996,
+                "completion_tokens": 55,
+                "total_tokens": 21051,
+                "cost": 0.0019182,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 20704,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.0019182,
+                  "upstream_inference_prompt_cost": 0.0018984,
+                  "upstream_inference_completions_cost": 1.98e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null
+              ],
+              "total_s": 2.176819832995534
+            },
+            {
+              "bytes": 84158,
+              "model": "Gemma 4 31B",
+              "first_s": 21.842032792046666,
+              "error": null,
+              "finish": [
+                "stop",
+                "stop"
+              ],
+              "response_models": [
+                "google/gemma-4-31b-it"
+              ],
+              "usage": {
+                "prompt_tokens": 21101,
+                "completion_tokens": 21,
+                "total_tokens": 21122,
+                "cost": 0.00211724,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00211724,
+                  "upstream_inference_prompt_cost": 0.0021101,
+                  "upstream_inference_completions_cost": 7.14e-06
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "email_in_request": false,
+              "tools_in_history": [
+                null,
+                null
+              ],
+              "total_s": 27.155645791906863
+            }
+          ],
+          "workspace_init_s": 0.19661487499251962,
+          "work": "/tmp/sage-pii-prototype/run-a69c0f6b/2-receipts",
+          "elapsed_s": 36.69788537500426,
+          "first_artifact_s": 6.5019995828624815,
+          "artifact_correct": true,
+          "timeout": false,
+          "artifacts": [
+            {
+              "file": "revenue.table.json",
+              "value": {
+                "title": "Total Revenue by Region",
+                "columns": [
+                  "region",
+                  "revenue"
+                ],
+                "rows": [
+                  [
+                    "North",
+                    360
+                  ],
+                  [
+                    "South",
+                    420
+                  ]
+                ]
+              }
+            }
+          ],
+          "raw_ui_contains_email": false
+        }
+      ]
+    },
+    {
+      "run": "run-ffaa8dfa",
+      "results": []
+    }
+  ],
+  "payloads": [
+    {
+      "model": "sonnet",
+      "case": "raw_csv",
+      "request_bytes": 698,
+      "first_frame_s": null,
+      "elapsed_s": 0.7040559998713434,
+      "error": "GatewayUpstreamError",
+      "status": 400,
+      "finish": [],
+      "response_models": [],
+      "usage": null,
+      "correct": false,
+      "answer": ""
+    },
+    {
+      "model": "sonnet",
+      "case": "local_totals",
+      "request_bytes": 345,
+      "first_frame_s": 2.6587408338673413,
+      "elapsed_s": 2.850820834049955,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop"
+      ],
+      "response_models": [],
+      "usage": null,
+      "correct": true,
+      "answer": "```json\n{\"North\": 360, \"South\": 420, \"total\": 780}\n```"
+    },
+    {
+      "model": "sonnet",
+      "case": "selected_text",
+      "request_bytes": 1010,
+      "first_frame_s": 1.2362301249522716,
+      "elapsed_s": 1.501349792117253,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop"
+      ],
+      "response_models": [],
+      "usage": null,
+      "correct": true,
+      "answer": "```json\n{\"delivery\": 4, \"damage\": 4, \"billing\": 4}\n```"
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "case": "selected_text",
+      "request_bytes": 1027,
+      "first_frame_s": 2.6250410419888794,
+      "elapsed_s": 3.13916049990803,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop"
+      ],
+      "response_models": [
+        "gemini-3.7-flash"
+      ],
+      "usage": {
+        "completion_tokens": 283,
+        "completion_tokens_details": {
+          "reasoning_tokens": 252
+        },
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 263,
+        "total_tokens": 546
+      },
+      "correct": true,
+      "answer": "```json\n{\n  \"delivery\": 4,\n  \"damage\": 4,\n  \"billing\": 4\n}\n```"
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "case": "local_totals",
+      "request_bytes": 362,
+      "first_frame_s": 2.936878625070676,
+      "elapsed_s": 3.289362790994346,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop"
+      ],
+      "response_models": [
+        "gemini-3.7-flash"
+      ],
+      "usage": {
+        "completion_tokens": 125,
+        "completion_tokens_details": {
+          "reasoning_tokens": 88
+        },
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 87,
+        "total_tokens": 212
+      },
+      "correct": true,
+      "answer": "```json\n{\n  \"North\": 360,\n  \"South\": 420,\n  \"total\": 780\n}\n```"
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "case": "raw_csv",
+      "request_bytes": 715,
+      "first_frame_s": null,
+      "elapsed_s": 0.3796156249009073,
+      "error": "GatewayUpstreamError",
+      "status": 400,
+      "finish": [],
+      "response_models": [],
+      "usage": null,
+      "correct": false,
+      "answer": ""
+    },
+    {
+      "model": "Gemma 4 31B",
+      "case": "raw_csv",
+      "request_bytes": 703,
+      "first_frame_s": 0.7151286660227925,
+      "elapsed_s": 1.6211392499972135,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop",
+        "stop"
+      ],
+      "response_models": [
+        "google/gemma-4-31b-it"
+      ],
+      "usage": {
+        "prompt_tokens": 227,
+        "completion_tokens": 38,
+        "total_tokens": 265,
+        "cost": 3.335e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 3.335e-05,
+          "upstream_inference_prompt_cost": 2.043e-05,
+          "upstream_inference_completions_cost": 1.292e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "correct": true,
+      "answer": "```json\n{\n  \"North\": 360,\n  \"South\": 420,\n  \"total\": 780\n}\n```"
+    },
+    {
+      "model": "Gemma 4 31B",
+      "case": "local_totals",
+      "request_bytes": 350,
+      "first_frame_s": 1.2037622090429068,
+      "elapsed_s": 1.8233018340542912,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop",
+        "stop"
+      ],
+      "response_models": [
+        "google/gemma-4-31b-it"
+      ],
+      "usage": {
+        "prompt_tokens": 100,
+        "completion_tokens": 38,
+        "total_tokens": 138,
+        "cost": 2.5628e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 4,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 2.5628e-05,
+          "upstream_inference_prompt_cost": 1.1568e-05,
+          "upstream_inference_completions_cost": 1.406e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "correct": true,
+      "answer": "```json\n{\n  \"North\": 360,\n  \"South\": 420,\n  \"total\": 780\n}\n```"
+    },
+    {
+      "model": "Gemma 4 31B",
+      "case": "selected_text",
+      "request_bytes": 1015,
+      "first_frame_s": 0.5651787919923663,
+      "elapsed_s": 1.114918125094846,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop",
+        "stop"
+      ],
+      "response_models": [
+        "google/gemma-4-31b-it"
+      ],
+      "usage": {
+        "prompt_tokens": 276,
+        "completion_tokens": 32,
+        "total_tokens": 308,
+        "cost": 3.444e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 32,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 3.444e-05,
+          "upstream_inference_prompt_cost": 2.356e-05,
+          "upstream_inference_completions_cost": 1.088e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "correct": true,
+      "answer": "```json\n{\n  \"delivery\": 4,\n  \"damage\": 4,\n  \"billing\": 4\n}\n```"
+    }
+  ],
+  "invalid_flash_history": [
+    {
+      "model": "sonnet",
+      "case": "raw_csv",
+      "request_bytes": 877,
+      "first_frame_s": null,
+      "elapsed_s": 0.7834524579811841,
+      "error": "GatewayUpstreamError",
+      "status": 400,
+      "finish": [],
+      "response_models": [],
+      "usage": null,
+      "correct": false,
+      "answer": ""
+    },
+    {
+      "model": "sonnet",
+      "case": "local_totals",
+      "request_bytes": 524,
+      "first_frame_s": 1.0140559999272227,
+      "elapsed_s": 1.2256880418863147,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop"
+      ],
+      "response_models": [],
+      "usage": null,
+      "correct": true,
+      "answer": "```json\n{\"North\": 360, \"South\": 420, \"total\": 780}\n```"
+    },
+    {
+      "model": "sonnet",
+      "case": "selected_text",
+      "request_bytes": 1189,
+      "first_frame_s": 1.8554555419832468,
+      "elapsed_s": 2.04342354205437,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop"
+      ],
+      "response_models": [],
+      "usage": null,
+      "correct": true,
+      "answer": "```json\n{\"delivery\": 4, \"damage\": 4, \"billing\": 4}\n```"
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "case": "selected_text",
+      "request_bytes": 1206,
+      "first_frame_s": 0.9130092079285532,
+      "elapsed_s": 0.9136293749324977,
+      "error": "error_frame",
+      "status": null,
+      "finish": [],
+      "response_models": [],
+      "usage": null,
+      "correct": false,
+      "answer": ""
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "case": "local_totals",
+      "request_bytes": 541,
+      "first_frame_s": 0.4731164579279721,
+      "elapsed_s": 0.4737129579298198,
+      "error": "error_frame",
+      "status": null,
+      "finish": [],
+      "response_models": [],
+      "usage": null,
+      "correct": false,
+      "answer": ""
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "case": "raw_csv",
+      "request_bytes": 894,
+      "first_frame_s": null,
+      "elapsed_s": 0.27044912497512996,
+      "error": "GatewayUpstreamError",
+      "status": 400,
+      "finish": [],
+      "response_models": [],
+      "usage": null,
+      "correct": false,
+      "answer": ""
+    },
+    {
+      "model": "Gemma 4 31B",
+      "case": "raw_csv",
+      "request_bytes": 882,
+      "first_frame_s": 0.8290997080039233,
+      "elapsed_s": 3.0521529170218855,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop",
+        "stop"
+      ],
+      "response_models": [
+        "google/gemma-4-31b-it"
+      ],
+      "usage": {
+        "prompt_tokens": 245,
+        "completion_tokens": 38,
+        "total_tokens": 283,
+        "cost": 3.742e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 3.742e-05,
+          "upstream_inference_prompt_cost": 2.45e-05,
+          "upstream_inference_completions_cost": 1.292e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "correct": true,
+      "answer": "```json\n{\n  \"North\": 360,\n  \"South\": 420,\n  \"total\": 780\n}\n```"
+    },
+    {
+      "model": "Gemma 4 31B",
+      "case": "local_totals",
+      "request_bytes": 529,
+      "first_frame_s": 0.5527824158780277,
+      "elapsed_s": 1.6419820408336818,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop",
+        "stop"
+      ],
+      "response_models": [
+        "google/gemma-4-31b-it"
+      ],
+      "usage": {
+        "prompt_tokens": 114,
+        "completion_tokens": 42,
+        "total_tokens": 156,
+        "cost": 2.454e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 2.454e-05,
+          "upstream_inference_prompt_cost": 1.026e-05,
+          "upstream_inference_completions_cost": 1.428e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "correct": true,
+      "answer": "```json\n{\n  \"North\": 360,\n  \"South\": 420,\n  \"total\": 780\n}\n```"
+    },
+    {
+      "model": "Gemma 4 31B",
+      "case": "selected_text",
+      "request_bytes": 1194,
+      "first_frame_s": 0.6352095420006663,
+      "elapsed_s": 1.075678874971345,
+      "error": null,
+      "status": null,
+      "finish": [
+        "stop",
+        "stop"
+      ],
+      "response_models": [
+        "google/gemma-4-31b-it"
+      ],
+      "usage": {
+        "prompt_tokens": 290,
+        "completion_tokens": 36,
+        "total_tokens": 326,
+        "cost": 3.834e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 3.834e-05,
+          "upstream_inference_prompt_cost": 2.61e-05,
+          "upstream_inference_completions_cost": 1.224e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "correct": true,
+      "answer": "```json\n{\n  \"delivery\": 4,\n  \"damage\": 4,\n  \"billing\": 4\n}\n```"
+    }
+  ],
+  "coverage": [
+    {
+      "model": "sonnet",
+      "elapsed_s": 7.125964124919847,
+      "records": 60,
+      "batches": [
+        {
+          "model": "sonnet",
+          "batch": 0,
+          "input_ids": [
+            "C000",
+            "C001",
+            "C002",
+            "C003",
+            "C004",
+            "C005",
+            "C006",
+            "C007",
+            "C008",
+            "C009",
+            "C010",
+            "C011",
+            "C012",
+            "C013",
+            "C014",
+            "C015",
+            "C016",
+            "C017",
+            "C018",
+            "C019"
+          ],
+          "elapsed_s": 3.8327729168813676,
+          "error": null,
+          "finish": [
+            "stop"
+          ],
+          "coverage_exact": true,
+          "categories_correct": true,
+          "output": [
+            {
+              "id": "C000",
+              "category": "delivery"
+            },
+            {
+              "id": "C001",
+              "category": "damage"
+            },
+            {
+              "id": "C002",
+              "category": "billing"
+            },
+            {
+              "id": "C003",
+              "category": "delivery"
+            },
+            {
+              "id": "C004",
+              "category": "damage"
+            },
+            {
+              "id": "C005",
+              "category": "billing"
+            },
+            {
+              "id": "C006",
+              "category": "delivery"
+            },
+            {
+              "id": "C007",
+              "category": "damage"
+            },
+            {
+              "id": "C008",
+              "category": "billing"
+            },
+            {
+              "id": "C009",
+              "category": "delivery"
+            },
+            {
+              "id": "C010",
+              "category": "damage"
+            },
+            {
+              "id": "C011",
+              "category": "billing"
+            },
+            {
+              "id": "C012",
+              "category": "delivery"
+            },
+            {
+              "id": "C013",
+              "category": "damage"
+            },
+            {
+              "id": "C014",
+              "category": "billing"
+            },
+            {
+              "id": "C015",
+              "category": "delivery"
+            },
+            {
+              "id": "C016",
+              "category": "damage"
+            },
+            {
+              "id": "C017",
+              "category": "billing"
+            },
+            {
+              "id": "C018",
+              "category": "delivery"
+            },
+            {
+              "id": "C019",
+              "category": "damage"
+            }
+          ],
+          "answer": "```json\n[{\"id\":\"C000\",\"category\":\"delivery\"},{\"id\":\"C001\",\"category\":\"damage\"},{\"id\":\"C002\",\"category\":\"billing\"},{\"id\":\"C003\",\"category\":\"delivery\"},{\"id\":\"C004\",\"category\":\"damage\"},{\"id\":\"C005\",\"category\":\"billing\"},{\"id\":\"C006\",\"category\":\"delivery\"},{\"id\":\"C007\",\"category\":\"damage\"},{\"id\":\"C008\",\"category\":\"billing\"},{\"id\":\"C009\",\"category\":\"delivery\"},{\"id\":\"C010\",\"category\":\"damage\"},{\"id\":\"C011\",\"category\":\"billing\"},{\"id\":\"C012\",\"category\":\"delivery\"},{\"id\":\"C013\",\"category\":\"damage\"},{\"id\":\"C014\",\"category\":\"billing\"},{\"id\":\"C015\",\"category\":\"delivery\"},{\"id\":\"C016\",\"category\":\"damage\"},{\"id\":\"C017\",\"category\":\"billing\"},{\"id\":\"C018\",\"category\":\"delivery\"},{\"id\":\"C019\",\"category\":\"damage\"}]\n```"
+        },
+        {
+          "model": "sonnet",
+          "batch": 1,
+          "input_ids": [
+            "C020",
+            "C021",
+            "C022",
+            "C023",
+            "C024",
+            "C025",
+            "C026",
+            "C027",
+            "C028",
+            "C029",
+            "C030",
+            "C031",
+            "C032",
+            "C033",
+            "C034",
+            "C035",
+            "C036",
+            "C037",
+            "C038",
+            "C039"
+          ],
+          "elapsed_s": 3.793267291970551,
+          "error": null,
+          "finish": [
+            "stop"
+          ],
+          "coverage_exact": true,
+          "categories_correct": true,
+          "output": [
+            {
+              "id": "C020",
+              "category": "billing"
+            },
+            {
+              "id": "C021",
+              "category": "delivery"
+            },
+            {
+              "id": "C022",
+              "category": "damage"
+            },
+            {
+              "id": "C023",
+              "category": "billing"
+            },
+            {
+              "id": "C024",
+              "category": "delivery"
+            },
+            {
+              "id": "C025",
+              "category": "damage"
+            },
+            {
+              "id": "C026",
+              "category": "billing"
+            },
+            {
+              "id": "C027",
+              "category": "delivery"
+            },
+            {
+              "id": "C028",
+              "category": "damage"
+            },
+            {
+              "id": "C029",
+              "category": "billing"
+            },
+            {
+              "id": "C030",
+              "category": "delivery"
+            },
+            {
+              "id": "C031",
+              "category": "damage"
+            },
+            {
+              "id": "C032",
+              "category": "billing"
+            },
+            {
+              "id": "C033",
+              "category": "delivery"
+            },
+            {
+              "id": "C034",
+              "category": "damage"
+            },
+            {
+              "id": "C035",
+              "category": "billing"
+            },
+            {
+              "id": "C036",
+              "category": "delivery"
+            },
+            {
+              "id": "C037",
+              "category": "damage"
+            },
+            {
+              "id": "C038",
+              "category": "billing"
+            },
+            {
+              "id": "C039",
+              "category": "delivery"
+            }
+          ],
+          "answer": "```json\n[{\"id\":\"C020\",\"category\":\"billing\"},{\"id\":\"C021\",\"category\":\"delivery\"},{\"id\":\"C022\",\"category\":\"damage\"},{\"id\":\"C023\",\"category\":\"billing\"},{\"id\":\"C024\",\"category\":\"delivery\"},{\"id\":\"C025\",\"category\":\"damage\"},{\"id\":\"C026\",\"category\":\"billing\"},{\"id\":\"C027\",\"category\":\"delivery\"},{\"id\":\"C028\",\"category\":\"damage\"},{\"id\":\"C029\",\"category\":\"billing\"},{\"id\":\"C030\",\"category\":\"delivery\"},{\"id\":\"C031\",\"category\":\"damage\"},{\"id\":\"C032\",\"category\":\"billing\"},{\"id\":\"C033\",\"category\":\"delivery\"},{\"id\":\"C034\",\"category\":\"damage\"},{\"id\":\"C035\",\"category\":\"billing\"},{\"id\":\"C036\",\"category\":\"delivery\"},{\"id\":\"C037\",\"category\":\"damage\"},{\"id\":\"C038\",\"category\":\"billing\"},{\"id\":\"C039\",\"category\":\"delivery\"}]\n```"
+        },
+        {
+          "model": "sonnet",
+          "batch": 2,
+          "input_ids": [
+            "C040",
+            "C041",
+            "C042",
+            "C043",
+            "C044",
+            "C045",
+            "C046",
+            "C047",
+            "C048",
+            "C049",
+            "C050",
+            "C051",
+            "C052",
+            "C053",
+            "C054",
+            "C055",
+            "C056",
+            "C057",
+            "C058",
+            "C059"
+          ],
+          "elapsed_s": 3.3315519590396434,
+          "error": null,
+          "finish": [
+            "stop"
+          ],
+          "coverage_exact": true,
+          "categories_correct": true,
+          "output": [
+            {
+              "id": "C040",
+              "category": "damage"
+            },
+            {
+              "id": "C041",
+              "category": "billing"
+            },
+            {
+              "id": "C042",
+              "category": "delivery"
+            },
+            {
+              "id": "C043",
+              "category": "damage"
+            },
+            {
+              "id": "C044",
+              "category": "billing"
+            },
+            {
+              "id": "C045",
+              "category": "delivery"
+            },
+            {
+              "id": "C046",
+              "category": "damage"
+            },
+            {
+              "id": "C047",
+              "category": "billing"
+            },
+            {
+              "id": "C048",
+              "category": "delivery"
+            },
+            {
+              "id": "C049",
+              "category": "damage"
+            },
+            {
+              "id": "C050",
+              "category": "billing"
+            },
+            {
+              "id": "C051",
+              "category": "delivery"
+            },
+            {
+              "id": "C052",
+              "category": "damage"
+            },
+            {
+              "id": "C053",
+              "category": "billing"
+            },
+            {
+              "id": "C054",
+              "category": "delivery"
+            },
+            {
+              "id": "C055",
+              "category": "damage"
+            },
+            {
+              "id": "C056",
+              "category": "billing"
+            },
+            {
+              "id": "C057",
+              "category": "delivery"
+            },
+            {
+              "id": "C058",
+              "category": "damage"
+            },
+            {
+              "id": "C059",
+              "category": "billing"
+            }
+          ],
+          "answer": "```json\n[{\"id\":\"C040\",\"category\":\"damage\"},{\"id\":\"C041\",\"category\":\"billing\"},{\"id\":\"C042\",\"category\":\"delivery\"},{\"id\":\"C043\",\"category\":\"damage\"},{\"id\":\"C044\",\"category\":\"billing\"},{\"id\":\"C045\",\"category\":\"delivery\"},{\"id\":\"C046\",\"category\":\"damage\"},{\"id\":\"C047\",\"category\":\"billing\"},{\"id\":\"C048\",\"category\":\"delivery\"},{\"id\":\"C049\",\"category\":\"damage\"},{\"id\":\"C050\",\"category\":\"billing\"},{\"id\":\"C051\",\"category\":\"delivery\"},{\"id\":\"C052\",\"category\":\"damage\"},{\"id\":\"C053\",\"category\":\"billing\"},{\"id\":\"C054\",\"category\":\"delivery\"},{\"id\":\"C055\",\"category\":\"damage\"},{\"id\":\"C056\",\"category\":\"billing\"},{\"id\":\"C057\",\"category\":\"delivery\"},{\"id\":\"C058\",\"category\":\"damage\"},{\"id\":\"C059\",\"category\":\"billing\"}]\n```"
+        }
+      ],
+      "complete": true,
+      "counts": {
+        "delivery": 20,
+        "damage": 20,
+        "billing": 20
+      },
+      "missing_batch_rejected": true,
+      "duplicate_record_rejected": true,
+      "checker_correction": "Expected id dictionary was incorrectly used as Counter counts; corrected to its key list. Rechecked unchanged raw model outputs; no provider rerun."
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "elapsed_s": 10.578447750071064,
+      "records": 60,
+      "batches": [
+        {
+          "model": "domino/gemini-3.7-flash",
+          "batch": 0,
+          "input_ids": [
+            "C000",
+            "C001",
+            "C002",
+            "C003",
+            "C004",
+            "C005",
+            "C006",
+            "C007",
+            "C008",
+            "C009",
+            "C010",
+            "C011",
+            "C012",
+            "C013",
+            "C014",
+            "C015",
+            "C016",
+            "C017",
+            "C018",
+            "C019"
+          ],
+          "elapsed_s": 5.575862666126341,
+          "error": null,
+          "finish": [
+            "stop"
+          ],
+          "coverage_exact": true,
+          "categories_correct": true,
+          "output": [
+            {
+              "id": "C000",
+              "category": "delivery"
+            },
+            {
+              "id": "C001",
+              "category": "damage"
+            },
+            {
+              "id": "C002",
+              "category": "billing"
+            },
+            {
+              "id": "C003",
+              "category": "delivery"
+            },
+            {
+              "id": "C004",
+              "category": "damage"
+            },
+            {
+              "id": "C005",
+              "category": "billing"
+            },
+            {
+              "id": "C006",
+              "category": "delivery"
+            },
+            {
+              "id": "C007",
+              "category": "damage"
+            },
+            {
+              "id": "C008",
+              "category": "billing"
+            },
+            {
+              "id": "C009",
+              "category": "delivery"
+            },
+            {
+              "id": "C010",
+              "category": "damage"
+            },
+            {
+              "id": "C011",
+              "category": "billing"
+            },
+            {
+              "id": "C012",
+              "category": "delivery"
+            },
+            {
+              "id": "C013",
+              "category": "damage"
+            },
+            {
+              "id": "C014",
+              "category": "billing"
+            },
+            {
+              "id": "C015",
+              "category": "delivery"
+            },
+            {
+              "id": "C016",
+              "category": "damage"
+            },
+            {
+              "id": "C017",
+              "category": "billing"
+            },
+            {
+              "id": "C018",
+              "category": "delivery"
+            },
+            {
+              "id": "C019",
+              "category": "damage"
+            }
+          ],
+          "answer": "[{\"id\": \"C000\", \"category\": \"delivery\"}, {\"id\": \"C001\", \"category\": \"damage\"}, {\"id\": \"C002\", \"category\": \"billing\"}, {\"id\": \"C003\", \"category\": \"delivery\"}, {\"id\": \"C004\", \"category\": \"damage\"}, {\"id\": \"C005\", \"category\": \"billing\"}, {\"id\": \"C006\", \"category\": \"delivery\"}, {\"id\": \"C007\", \"category\": \"damage\"}, {\"id\": \"C008\", \"category\": \"billing\"}, {\"id\": \"C009\", \"category\": \"delivery\"}, {\"id\": \"C010\", \"category\": \"damage\"}, {\"id\": \"C011\", \"category\": \"billing\"}, {\"id\": \"C012\", \"category\": \"delivery\"}, {\"id\": \"C013\", \"category\": \"damage\"}, {\"id\": \"C014\", \"category\": \"billing\"}, {\"id\": \"C015\", \"category\": \"delivery\"}, {\"id\": \"C016\", \"category\": \"damage\"}, {\"id\": \"C017\", \"category\": \"billing\"}, {\"id\": \"C018\", \"category\": \"delivery\"}, {\"id\": \"C019\", \"category\": \"damage\"}]"
+        },
+        {
+          "model": "domino/gemini-3.7-flash",
+          "batch": 1,
+          "input_ids": [
+            "C020",
+            "C021",
+            "C022",
+            "C023",
+            "C024",
+            "C025",
+            "C026",
+            "C027",
+            "C028",
+            "C029",
+            "C030",
+            "C031",
+            "C032",
+            "C033",
+            "C034",
+            "C035",
+            "C036",
+            "C037",
+            "C038",
+            "C039"
+          ],
+          "elapsed_s": 6.142993999877945,
+          "error": null,
+          "finish": [
+            "stop"
+          ],
+          "coverage_exact": true,
+          "categories_correct": true,
+          "output": [
+            {
+              "id": "C020",
+              "category": "billing"
+            },
+            {
+              "id": "C021",
+              "category": "delivery"
+            },
+            {
+              "id": "C022",
+              "category": "damage"
+            },
+            {
+              "id": "C023",
+              "category": "billing"
+            },
+            {
+              "id": "C024",
+              "category": "delivery"
+            },
+            {
+              "id": "C025",
+              "category": "damage"
+            },
+            {
+              "id": "C026",
+              "category": "billing"
+            },
+            {
+              "id": "C027",
+              "category": "delivery"
+            },
+            {
+              "id": "C028",
+              "category": "damage"
+            },
+            {
+              "id": "C029",
+              "category": "billing"
+            },
+            {
+              "id": "C030",
+              "category": "delivery"
+            },
+            {
+              "id": "C031",
+              "category": "damage"
+            },
+            {
+              "id": "C032",
+              "category": "billing"
+            },
+            {
+              "id": "C033",
+              "category": "delivery"
+            },
+            {
+              "id": "C034",
+              "category": "damage"
+            },
+            {
+              "id": "C035",
+              "category": "billing"
+            },
+            {
+              "id": "C036",
+              "category": "delivery"
+            },
+            {
+              "id": "C037",
+              "category": "damage"
+            },
+            {
+              "id": "C038",
+              "category": "billing"
+            },
+            {
+              "id": "C039",
+              "category": "delivery"
+            }
+          ],
+          "answer": "[{\"id\": \"C020\", \"category\": \"billing\"}, {\"id\": \"C021\", \"category\": \"delivery\"}, {\"id\": \"C022\", \"category\": \"damage\"}, {\"id\": \"C023\", \"category\": \"billing\"}, {\"id\": \"C024\", \"category\": \"delivery\"}, {\"id\": \"C025\", \"category\": \"damage\"}, {\"id\": \"C026\", \"category\": \"billing\"}, {\"id\": \"C027\", \"category\": \"delivery\"}, {\"id\": \"C028\", \"category\": \"damage\"}, {\"id\": \"C029\", \"category\": \"billing\"}, {\"id\": \"C030\", \"category\": \"delivery\"}, {\"id\": \"C031\", \"category\": \"damage\"}, {\"id\": \"C032\", \"category\": \"billing\"}, {\"id\": \"C033\", \"category\": \"delivery\"}, {\"id\": \"C034\", \"category\": \"damage\"}, {\"id\": \"C035\", \"category\": \"billing\"}, {\"id\": \"C036\", \"category\": \"delivery\"}, {\"id\": \"C037\", \"category\": \"damage\"}, {\"id\": \"C038\", \"category\": \"billing\"}, {\"id\": \"C039\", \"category\": \"delivery\"}]"
+        },
+        {
+          "model": "domino/gemini-3.7-flash",
+          "batch": 2,
+          "input_ids": [
+            "C040",
+            "C041",
+            "C042",
+            "C043",
+            "C044",
+            "C045",
+            "C046",
+            "C047",
+            "C048",
+            "C049",
+            "C050",
+            "C051",
+            "C052",
+            "C053",
+            "C054",
+            "C055",
+            "C056",
+            "C057",
+            "C058",
+            "C059"
+          ],
+          "elapsed_s": 5.002247458091006,
+          "error": null,
+          "finish": [
+            "stop"
+          ],
+          "coverage_exact": true,
+          "categories_correct": true,
+          "output": [
+            {
+              "id": "C040",
+              "category": "damage"
+            },
+            {
+              "id": "C041",
+              "category": "billing"
+            },
+            {
+              "id": "C042",
+              "category": "delivery"
+            },
+            {
+              "id": "C043",
+              "category": "damage"
+            },
+            {
+              "id": "C044",
+              "category": "billing"
+            },
+            {
+              "id": "C045",
+              "category": "delivery"
+            },
+            {
+              "id": "C046",
+              "category": "damage"
+            },
+            {
+              "id": "C047",
+              "category": "billing"
+            },
+            {
+              "id": "C048",
+              "category": "delivery"
+            },
+            {
+              "id": "C049",
+              "category": "damage"
+            },
+            {
+              "id": "C050",
+              "category": "billing"
+            },
+            {
+              "id": "C051",
+              "category": "delivery"
+            },
+            {
+              "id": "C052",
+              "category": "damage"
+            },
+            {
+              "id": "C053",
+              "category": "billing"
+            },
+            {
+              "id": "C054",
+              "category": "delivery"
+            },
+            {
+              "id": "C055",
+              "category": "damage"
+            },
+            {
+              "id": "C056",
+              "category": "billing"
+            },
+            {
+              "id": "C057",
+              "category": "delivery"
+            },
+            {
+              "id": "C058",
+              "category": "damage"
+            },
+            {
+              "id": "C059",
+              "category": "billing"
+            }
+          ],
+          "answer": "[{\"id\": \"C040\", \"category\": \"damage\"}, {\"id\": \"C041\", \"category\": \"billing\"}, {\"id\": \"C042\", \"category\": \"delivery\"}, {\"id\": \"C043\", \"category\": \"damage\"}, {\"id\": \"C044\", \"category\": \"billing\"}, {\"id\": \"C045\", \"category\": \"delivery\"}, {\"id\": \"C046\", \"category\": \"damage\"}, {\"id\": \"C047\", \"category\": \"billing\"}, {\"id\": \"C048\", \"category\": \"delivery\"}, {\"id\": \"C049\", \"category\": \"damage\"}, {\"id\": \"C050\", \"category\": \"billing\"}, {\"id\": \"C051\", \"category\": \"delivery\"}, {\"id\": \"C052\", \"category\": \"damage\"}, {\"id\": \"C053\", \"category\": \"billing\"}, {\"id\": \"C054\", \"category\": \"delivery\"}, {\"id\": \"C055\", \"category\": \"damage\"}, {\"id\": \"C056\", \"category\": \"billing\"}, {\"id\": \"C057\", \"category\": \"delivery\"}, {\"id\": \"C058\", \"category\": \"damage\"}, {\"id\": \"C059\", \"category\": \"billing\"}]"
+        }
+      ],
+      "complete": true,
+      "counts": {
+        "delivery": 20,
+        "damage": 20,
+        "billing": 20
+      },
+      "missing_batch_rejected": true,
+      "duplicate_record_rejected": true,
+      "checker_correction": "Expected id dictionary was incorrectly used as Counter counts; corrected to its key list. Rechecked unchanged raw model outputs; no provider rerun."
+    },
+    {
+      "model": "Gemma 4 31B",
+      "elapsed_s": 15.574512875173241,
+      "records": 60,
+      "batches": [
+        {
+          "model": "Gemma 4 31B",
+          "batch": 0,
+          "input_ids": [
+            "C000",
+            "C001",
+            "C002",
+            "C003",
+            "C004",
+            "C005",
+            "C006",
+            "C007",
+            "C008",
+            "C009",
+            "C010",
+            "C011",
+            "C012",
+            "C013",
+            "C014",
+            "C015",
+            "C016",
+            "C017",
+            "C018",
+            "C019"
+          ],
+          "elapsed_s": 7.53961933311075,
+          "error": null,
+          "finish": [
+            "stop",
+            "stop"
+          ],
+          "coverage_exact": true,
+          "categories_correct": true,
+          "output": [
+            {
+              "id": "C000",
+              "category": "delivery"
+            },
+            {
+              "id": "C001",
+              "category": "damage"
+            },
+            {
+              "id": "C002",
+              "category": "billing"
+            },
+            {
+              "id": "C003",
+              "category": "delivery"
+            },
+            {
+              "id": "C004",
+              "category": "damage"
+            },
+            {
+              "id": "C005",
+              "category": "billing"
+            },
+            {
+              "id": "C006",
+              "category": "delivery"
+            },
+            {
+              "id": "C007",
+              "category": "damage"
+            },
+            {
+              "id": "C008",
+              "category": "billing"
+            },
+            {
+              "id": "C009",
+              "category": "delivery"
+            },
+            {
+              "id": "C010",
+              "category": "damage"
+            },
+            {
+              "id": "C011",
+              "category": "billing"
+            },
+            {
+              "id": "C012",
+              "category": "delivery"
+            },
+            {
+              "id": "C013",
+              "category": "damage"
+            },
+            {
+              "id": "C014",
+              "category": "billing"
+            },
+            {
+              "id": "C015",
+              "category": "delivery"
+            },
+            {
+              "id": "C016",
+              "category": "damage"
+            },
+            {
+              "id": "C017",
+              "category": "billing"
+            },
+            {
+              "id": "C018",
+              "category": "delivery"
+            },
+            {
+              "id": "C019",
+              "category": "damage"
+            }
+          ],
+          "answer": "```json\n[\n  {\"id\": \"C000\", \"category\": \"delivery\"},\n  {\"id\": \"C001\", \"category\": \"damage\"},\n  {\"id\": \"C002\", \"category\": \"billing\"},\n  {\"id\": \"C003\", \"category\": \"delivery\"},\n  {\"id\": \"C004\", \"category\": \"damage\"},\n  {\"id\": \"C005\", \"category\": \"billing\"},\n  {\"id\": \"C006\", \"category\": \"delivery\"},\n  {\"id\": \"C007\", \"category\": \"damage\"},\n  {\"id\": \"C008\", \"category\": \"billing\"},\n  {\"id\": \"C009\", \"category\": \"delivery\"},\n  {\"id\": \"C010\", \"category\": \"damage\"},\n  {\"id\": \"C011\", \"category\": \"billing\"},\n  {\"id\": \"C012\", \"category\": \"delivery\"},\n  {\"id\": \"C013\", \"category\": \"damage\"},\n  {\"id\": \"C014\", \"category\": \"billing\"},\n  {\"id\": \"C015\", \"category\": \"delivery\"},\n  {\"id\": \"C016\", \"category\": \"damage\"},\n  {\"id\": \"C017\", \"category\": \"billing\"},\n  {\"id\": \"C018\", \"category\": \"delivery\"},\n  {\"id\": \"C019\", \"category\": \"damage\"}\n]\n```"
+        },
+        {
+          "model": "Gemma 4 31B",
+          "batch": 1,
+          "input_ids": [
+            "C020",
+            "C021",
+            "C022",
+            "C023",
+            "C024",
+            "C025",
+            "C026",
+            "C027",
+            "C028",
+            "C029",
+            "C030",
+            "C031",
+            "C032",
+            "C033",
+            "C034",
+            "C035",
+            "C036",
+            "C037",
+            "C038",
+            "C039"
+          ],
+          "elapsed_s": 13.690212832996622,
+          "error": null,
+          "finish": [
+            "stop",
+            "stop"
+          ],
+          "coverage_exact": true,
+          "categories_correct": true,
+          "output": [
+            {
+              "id": "C020",
+              "category": "billing"
+            },
+            {
+              "id": "C021",
+              "category": "delivery"
+            },
+            {
+              "id": "C022",
+              "category": "damage"
+            },
+            {
+              "id": "C023",
+              "category": "billing"
+            },
+            {
+              "id": "C024",
+              "category": "delivery"
+            },
+            {
+              "id": "C025",
+              "category": "damage"
+            },
+            {
+              "id": "C026",
+              "category": "billing"
+            },
+            {
+              "id": "C027",
+              "category": "delivery"
+            },
+            {
+              "id": "C028",
+              "category": "damage"
+            },
+            {
+              "id": "C029",
+              "category": "billing"
+            },
+            {
+              "id": "C030",
+              "category": "delivery"
+            },
+            {
+              "id": "C031",
+              "category": "damage"
+            },
+            {
+              "id": "C032",
+              "category": "billing"
+            },
+            {
+              "id": "C033",
+              "category": "delivery"
+            },
+            {
+              "id": "C034",
+              "category": "damage"
+            },
+            {
+              "id": "C035",
+              "category": "billing"
+            },
+            {
+              "id": "C036",
+              "category": "delivery"
+            },
+            {
+              "id": "C037",
+              "category": "damage"
+            },
+            {
+              "id": "C038",
+              "category": "billing"
+            },
+            {
+              "id": "C039",
+              "category": "delivery"
+            }
+          ],
+          "answer": "```json\n[\n  {\"id\": \"C020\", \"category\": \"billing\"},\n  {\"id\": \"C021\", \"category\": \"delivery\"},\n  {\"id\": \"C022\", \"category\": \"damage\"},\n  {\"id\": \"C023\", \"category\": \"billing\"},\n  {\"id\": \"C024\", \"category\": \"delivery\"},\n  {\"id\": \"C025\", \"category\": \"damage\"},\n  {\"id\": \"C026\", \"category\": \"billing\"},\n  {\"id\": \"C027\", \"category\": \"delivery\"},\n  {\"id\": \"C028\", \"category\": \"damage\"},\n  {\"id\": \"C029\", \"category\": \"billing\"},\n  {\"id\": \"C030\", \"category\": \"delivery\"},\n  {\"id\": \"C031\", \"category\": \"damage\"},\n  {\"id\": \"C032\", \"category\": \"billing\"},\n  {\"id\": \"C033\", \"category\": \"delivery\"},\n  {\"id\": \"C034\", \"category\": \"damage\"},\n  {\"id\": \"C035\", \"category\": \"billing\"},\n  {\"id\": \"C036\", \"category\": \"delivery\"},\n  {\"id\": \"C037\", \"category\": \"damage\"},\n  {\"id\": \"C038\", \"category\": \"billing\"},\n  {\"id\": \"C039\", \"category\": \"delivery\"}\n]\n```"
+        },
+        {
+          "model": "Gemma 4 31B",
+          "batch": 2,
+          "input_ids": [
+            "C040",
+            "C041",
+            "C042",
+            "C043",
+            "C044",
+            "C045",
+            "C046",
+            "C047",
+            "C048",
+            "C049",
+            "C050",
+            "C051",
+            "C052",
+            "C053",
+            "C054",
+            "C055",
+            "C056",
+            "C057",
+            "C058",
+            "C059"
+          ],
+          "elapsed_s": 8.034287249902263,
+          "error": null,
+          "finish": [
+            "stop",
+            "stop"
+          ],
+          "coverage_exact": true,
+          "categories_correct": true,
+          "output": [
+            {
+              "id": "C040",
+              "category": "damage"
+            },
+            {
+              "id": "C041",
+              "category": "billing"
+            },
+            {
+              "id": "C042",
+              "category": "delivery"
+            },
+            {
+              "id": "C043",
+              "category": "damage"
+            },
+            {
+              "id": "C044",
+              "category": "billing"
+            },
+            {
+              "id": "C045",
+              "category": "delivery"
+            },
+            {
+              "id": "C046",
+              "category": "damage"
+            },
+            {
+              "id": "C047",
+              "category": "billing"
+            },
+            {
+              "id": "C048",
+              "category": "delivery"
+            },
+            {
+              "id": "C049",
+              "category": "damage"
+            },
+            {
+              "id": "C050",
+              "category": "billing"
+            },
+            {
+              "id": "C051",
+              "category": "delivery"
+            },
+            {
+              "id": "C052",
+              "category": "damage"
+            },
+            {
+              "id": "C053",
+              "category": "billing"
+            },
+            {
+              "id": "C054",
+              "category": "delivery"
+            },
+            {
+              "id": "C055",
+              "category": "damage"
+            },
+            {
+              "id": "C056",
+              "category": "billing"
+            },
+            {
+              "id": "C057",
+              "category": "delivery"
+            },
+            {
+              "id": "C058",
+              "category": "damage"
+            },
+            {
+              "id": "C059",
+              "category": "billing"
+            }
+          ],
+          "answer": "```json\n[\n  {\"id\": \"C040\", \"category\": \"damage\"},\n  {\"id\": \"C041\", \"category\": \"billing\"},\n  {\"id\": \"C042\", \"category\": \"delivery\"},\n  {\"id\": \"C043\", \"category\": \"damage\"},\n  {\"id\": \"C044\", \"category\": \"billing\"},\n  {\"id\": \"C045\", \"category\": \"delivery\"},\n  {\"id\": \"C046\", \"category\": \"damage\"},\n  {\"id\": \"C047\", \"category\": \"billing\"},\n  {\"id\": \"C048\", \"category\": \"delivery\"},\n  {\"id\": \"C049\", \"category\": \"damage\"},\n  {\"id\": \"C050\", \"category\": \"billing\"},\n  {\"id\": \"C051\", \"category\": \"delivery\"},\n  {\"id\": \"C052\", \"category\": \"damage\"},\n  {\"id\": \"C053\", \"category\": \"billing\"},\n  {\"id\": \"C054\", \"category\": \"delivery\"},\n  {\"id\": \"C055\", \"category\": \"damage\"},\n  {\"id\": \"C056\", \"category\": \"billing\"},\n  {\"id\": \"C057\", \"category\": \"delivery\"},\n  {\"id\": \"C058\", \"category\": \"damage\"},\n  {\"id\": \"C059\", \"category\": \"billing\"}\n]\n```"
+        }
+      ],
+      "complete": true,
+      "counts": {
+        "delivery": 20,
+        "damage": 20,
+        "billing": 20
+      },
+      "missing_batch_rejected": true,
+      "duplicate_record_rejected": true,
+      "checker_correction": "Expected id dictionary was incorrectly used as Counter counts; corrected to its key list. Rechecked unchanged raw model outputs; no provider rerun."
+    }
+  ],
+  "published_helper": {
+    "generatedAt": "2026-09-14T16:26:09.821Z",
+    "sourcePath": "/Users/subirmansukhani/.codex/worktrees/40c0/domino-sage/template/react-vite/src/appLlm.ts",
+    "sourceSha256": "6b4c1bea7b05a2d17bea6ced91c91137ee241715c21a82e2390521fc53ca537e",
+    "sourceUnchanged": true,
+    "typescriptPath": "/tmp/sage-latency-larger/workflow-a8a4ae/build-0-after/node_modules/typescript/lib/typescript.js",
+    "typescriptVersion": "6.0.3",
+    "method": "Actual appLlm.ts compiled with TypeScript; only config import and Vite environment constants injected. Every fetch mocked locally. Assertions describe observed existing behavior, not desired acceptance criteria.",
+    "limits": [
+      "No live gateway/browser/production execution.",
+      "Transpile-only; not a full TypeScript typecheck.",
+      "No provider receipt can be established by mock responses.",
+      "No proposed implementation is included."
+    ],
+    "verdicts": {
+      "normalCompletion": "returned",
+      "guardrailBody": "discarded; generic retry message",
+      "streamError": "ignored; partial answer returned as success",
+      "truncatedStream": "accepted; partial answer returned as success",
+      "fallbackEvidence": "response model and headers discarded by public helper; only answer string returned"
+    },
+    "observations": [
+      {
+        "name": "normal_completion",
+        "mockedFetchCalls": 1,
+        "submitted": {
+          "url": "https://gateway.invalid/v1/chat/completions",
+          "request": {
+            "model": "synthetic-requested-model",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize synthetic text."
+              }
+            ],
+            "stream": false
+          },
+          "credentials": "include"
+        },
+        "returned": "Complete synthetic answer.",
+        "error": null,
+        "displayedChunks": []
+      },
+      {
+        "name": "http_400_guardrail",
+        "mockedFetchCalls": 1,
+        "submitted": {
+          "url": "https://gateway.invalid/v1/chat/completions",
+          "request": {
+            "model": "synthetic-requested-model",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize synthetic text."
+              }
+            ],
+            "stream": false
+          },
+          "credentials": "include"
+        },
+        "returned": null,
+        "error": {
+          "name": "Error",
+          "message": "The model did not answer (error 400). Try again in a moment."
+        },
+        "displayedChunks": []
+      },
+      {
+        "name": "partial_sse_then_error",
+        "mockedFetchCalls": 1,
+        "submitted": {
+          "url": "https://gateway.invalid/v1/chat/completions",
+          "request": {
+            "model": "synthetic-requested-model",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize synthetic text."
+              }
+            ],
+            "stream": true
+          },
+          "credentials": "include"
+        },
+        "returned": "Partial synthetic answer.",
+        "error": null,
+        "displayedChunks": [
+          "Partial synthetic answer."
+        ]
+      },
+      {
+        "name": "truncated_sse_without_done",
+        "mockedFetchCalls": 1,
+        "submitted": {
+          "url": "https://gateway.invalid/v1/chat/completions",
+          "request": {
+            "model": "synthetic-requested-model",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize synthetic text."
+              }
+            ],
+            "stream": true
+          },
+          "credentials": "include"
+        },
+        "returned": "Partial before truncation.",
+        "error": null,
+        "displayedChunks": [
+          "Partial before truncation."
+        ]
+      },
+      {
+        "name": "complete_sse",
+        "mockedFetchCalls": 1,
+        "submitted": {
+          "url": "https://gateway.invalid/v1/chat/completions",
+          "request": {
+            "model": "synthetic-requested-model",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize synthetic text."
+              }
+            ],
+            "stream": true
+          },
+          "credentials": "include"
+        },
+        "returned": "Complete stream.",
+        "error": null,
+        "displayedChunks": [
+          "Complete stream."
+        ]
+      },
+      {
+        "name": "fallback_header_and_model",
+        "mockedFetchCalls": 1,
+        "submitted": {
+          "url": "https://gateway.invalid/v1/chat/completions",
+          "request": {
+            "model": "synthetic-requested-model",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize synthetic text."
+              }
+            ],
+            "stream": false
+          },
+          "credentials": "include"
+        },
+        "returned": "Fallback synthetic answer.",
+        "error": null,
+        "displayedChunks": []
+      }
+    ]
+  },
+  "redaction": {
+    "generatedAt": "2026-09-14T16:26:09.930597+00:00",
+    "sourcePath": "/tmp/sage-latency-20260914/LLM_gateway/routes/gateway.py",
+    "sourceSha256": "9d688445d157d049ec65ce34544dea6e653ad102c88e03a88f5beac610be46ac",
+    "sourceUnchanged": true,
+    "sourceFunction": "_redact_user_content",
+    "sourceStartLine": 622,
+    "sourceEndLine": 641,
+    "method": "AST extraction executes the existing function with a synthetic redaction result. No gateway imports or network. Assertions describe current behavior.",
+    "limits": [
+      "Function-level probe; no HTTP or deployed gateway test.",
+      "Assumes an input rule already returned action=redact; does not test rule matching."
+    ],
+    "verdict": "All three synthetic strings remain in the body after redaction.",
+    "observations": [
+      {
+        "name": "tool_result",
+        "before": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "Summarize the synthetic file."
+            },
+            {
+              "role": "tool",
+              "content": "synthetic-tool-person@example.invalid"
+            }
+          ]
+        },
+        "after": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "[REDACTED]"
+            },
+            {
+              "role": "tool",
+              "content": "synthetic-tool-person@example.invalid"
+            }
+          ]
+        },
+        "unchangedSyntheticString": "synthetic-tool-person@example.invalid",
+        "unchangedStringStillPresent": true
+      },
+      {
+        "name": "second_user_message",
+        "before": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "First synthetic question."
+            },
+            {
+              "role": "assistant",
+              "content": "Synthetic context."
+            },
+            {
+              "role": "user",
+              "content": "synthetic-later-person@example.invalid"
+            }
+          ]
+        },
+        "after": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "[REDACTED]"
+            },
+            {
+              "role": "assistant",
+              "content": "Synthetic context."
+            },
+            {
+              "role": "user",
+              "content": "synthetic-later-person@example.invalid"
+            }
+          ]
+        },
+        "unchangedSyntheticString": "synthetic-later-person@example.invalid",
+        "unchangedStringStillPresent": true
+      },
+      {
+        "name": "second_text_part",
+        "before": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First synthetic text part."
+                },
+                {
+                  "type": "text",
+                  "text": "synthetic-part-person@example.invalid"
+                }
+              ]
+            }
+          ]
+        },
+        "after": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[REDACTED]"
+                },
+                {
+                  "type": "text",
+                  "text": "synthetic-part-person@example.invalid"
+                }
+              ]
+            }
+          ]
+        },
+        "unchangedSyntheticString": "synthetic-part-person@example.invalid",
+        "unchangedStringStillPresent": true
+      }
+    ]
+  },
+  "hooks": {
+    "plugin_sha256_before": "c7325d653ae986a3ab3980c84f97f457e75bdc7b7cbc6fd4b89b76a0ae4cb019",
+    "plugin_sha256_after": "c7325d653ae986a3ab3980c84f97f457e75bdc7b7cbc6fd4b89b76a0ae4cb019",
+    "cases": [
+      {
+        "case": "read",
+        "elapsed_s": 15.284626957960427,
+        "requests": 2,
+        "ui_email": true,
+        "next_request_email": false,
+        "next_request_receipt": true,
+        "next_request_source": false,
+        "done": true
+      },
+      {
+        "case": "bash",
+        "elapsed_s": 0.5213700411841273,
+        "requests": 2,
+        "ui_email": true,
+        "next_request_email": false,
+        "next_request_receipt": true,
+        "next_request_source": false,
+        "done": true
+      },
+      {
+        "case": "source",
+        "elapsed_s": 0.5271246670745313,
+        "requests": 2,
+        "ui_email": false,
+        "next_request_email": false,
+        "next_request_receipt": false,
+        "next_request_source": true,
+        "done": true
+      },
+      {
+        "case": "error",
+        "elapsed_s": 0.3115319579374045,
+        "requests": 2,
+        "ui_email": false,
+        "next_request_email": false,
+        "next_request_receipt": true,
+        "next_request_source": false,
+        "done": true
+      },
+      {
+        "case": "task",
+        "elapsed_s": 1.0262330418918282,
+        "requests": 2,
+        "ui_email": true,
+        "next_request_email": false,
+        "next_request_receipt": true,
+        "next_request_source": false,
+        "done": true
+      },
+      {
+        "case": "selection",
+        "elapsed_s": 0.7506273749750108,
+        "requests": 2,
+        "ui_email": true,
+        "next_request_email": true,
+        "next_request_receipt": false,
+        "next_request_source": false,
+        "done": true
+      }
+    ],
+    "counts": {
+      "read": 2,
+      "bash": 2,
+      "source": 2,
+      "error": 2,
+      "task": 2,
+      "child": 2,
+      "selection": 2
+    },
+    "child_check": {
+      "requests": 2,
+      "next_request_email": false,
+      "next_request_receipt": true
+    },
+    "source_hashes": {
+      "/tmp/sage-pii-prototype/hook-probes/probe.py": "51981e800c3698e7bb70e372b5df2134549438235b237a1e5945056ce5866ad7",
+      "/tmp/sage-pii-prototype/receipts.js": "c7325d653ae986a3ab3980c84f97f457e75bdc7b7cbc6fd4b89b76a0ae4cb019",
+      "/Users/subirmansukhani/Desktop/domino-sage/node_modules/opencode-darwin-arm64/bin/opencode": "9449af91f517eacc2b0742fa93ae0da64fa6e5db7b714e30c62edea2a8de3f98",
+      "/tmp/sage-pii-prototype/hook-probes/workspace/sales.csv": "41130395afcedd0c89fbb491ebe3dc90669efe6d88e9001d93ebcf4cbf427dbe",
+      "/tmp/sage-pii-prototype/hook-probes/workspace/code.py": "bdc1476f612d58ec8dd680b97f077f3bacb4af5fb1542f577bde4d9a3131dc1b"
+    }
+  },
+  "hook_gaps": [
+    {
+      "case": "background_synthetic_user",
+      "email_remains": true,
+      "output": {
+        "messages": [
+          {
+            "info": {
+              "role": "user"
+            },
+            "parts": [
+              {
+                "type": "text",
+                "synthetic": true,
+                "text": "Background task completed: synthetic-person@example.invalid"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "interrupted_bash_error",
+      "email_remains": false,
+      "output": {
+        "messages": [
+          {
+            "info": {
+              "role": "assistant"
+            },
+            "parts": [
+              {
+                "type": "tool",
+                "tool": "bash",
+                "sessionID": "synthetic",
+                "callID": "synthetic",
+                "state": {
+                  "status": "error",
+                  "input": {
+                    "command": "cat sales.csv"
+                  },
+                  "error": "{\"kind\":\"local_execution_receipt\",\"tool\":\"bash\",\"status\":\"error\",\"note\":\"Full tool output remains local. Inspect source structure below; run local code to calculate and write artifacts. Use data_values only for selected values needed in the answer.\",\"sources\":[{\"path\":\"sales.csv\",\"columns\":[\"region\",\"revenue\",\"email\"],\"rows\":1}],\"artifacts\":[],\"exit\":null}",
+                  "metadata": {
+                    "interrupted": true,
+                    "output": "{\"kind\":\"local_execution_receipt\",\"tool\":\"bash\",\"status\":\"error\",\"note\":\"Full tool output remains local. Inspect source structure below; run local code to calculate and write artifacts. Use data_values only for selected values needed in the answer.\",\"sources\":[{\"path\":\"sales.csv\",\"columns\":[\"region\",\"revenue\",\"email\"],\"rows\":1}],\"artifacts\":[],\"exit\":null}"
+                  },
+                  "attachments": []
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "tool_argument",
+      "email_remains": true,
+      "output": {
+        "messages": [
+          {
+            "info": {
+              "role": "assistant"
+            },
+            "parts": [
+              {
+                "type": "tool",
+                "tool": "bash",
+                "sessionID": "synthetic",
+                "callID": "synthetic",
+                "state": {
+                  "status": "completed",
+                  "input": {
+                    "command": "echo synthetic-person@example.invalid"
+                  },
+                  "output": "{\"kind\":\"local_execution_receipt\",\"tool\":\"bash\",\"status\":\"completed\",\"note\":\"Full tool output remains local. Inspect source structure below; run local code to calculate and write artifacts. Use data_values only for selected values needed in the answer.\",\"sources\":[{\"path\":\"sales.csv\",\"columns\":[\"region\",\"revenue\",\"email\"],\"rows\":1}],\"artifacts\":[],\"exit\":null}",
+                  "attachments": []
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "gateway_snapshot": {
+    "captured_utc": "2026-09-14T16:39:22.907578+00:00",
+    "http_status": 200,
+    "rules": [
+      {
+        "name": "Block PII",
+        "enabled": true,
+        "action": "deny",
+        "check_type": "regex",
+        "rule_type": "input",
+        "model_alias_names": [
+          "gpt-5.4",
+          "sonnet",
+          "haiku",
+          "domino/gemini-3.7-flash",
+          "gemini-2.5-flash"
+        ],
+        "updated_at": "2026-09-12T19:46:29.699668"
+      },
+      {
+        "name": "Block prompt injection attacks",
+        "enabled": true,
+        "action": "deny",
+        "check_type": "regex",
+        "rule_type": "input",
+        "model_alias_names": [
+          "gpt-5.4"
+        ],
+        "updated_at": "2026-09-11T03:11:38.455631"
+      },
+      {
+        "name": "topic_alignment_evaluator",
+        "enabled": true,
+        "action": "log",
+        "check_type": "llm_evaluator",
+        "rule_type": "input",
+        "model_alias_names": [],
+        "updated_at": "2026-09-12T18:15:49.500248"
+      }
+    ]
+  },
+  "source_hashes": {
+    "backend/sage/driver/opencode.py": "5ceae2f873eaa3fb3c386a56dcc5eac4335c86e10f5dfb1565788e9ed80de848",
+    "backend/sage/shim/enforcement.py": "a9d0cd9abca8671734fdd0488f8c4501bb9e3828a5a928e533c2c3bdc62f97db",
+    "backend/sage/gateway/client.py": "2d89ca91dec460fb62c4f32ad9a516d807319c74086a9d459513d0080f4e72dc",
+    "template/react-vite/src/appLlm.ts": "6b4c1bea7b05a2d17bea6ced91c91137ee241715c21a82e2390521fc53ca537e",
+    "opencode.json": "98e90d6fa42179a90609365d2e358f428a352449ef110e1e6e6ec94a2f78d038"
+  }
+}
