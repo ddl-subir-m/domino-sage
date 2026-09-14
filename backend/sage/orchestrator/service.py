@@ -2196,6 +2196,17 @@ def _looks_like_question(prompt: str) -> bool:
     return words[0] in _QUESTION_LEAD or text.endswith("?")
 
 
+_CHAT_ARTIFACT_OR_DATA_ASK = re.compile(
+    r"\b(?:chart|plot|graph|table|matrix|heatmap|csv|dataset|data|rows?|columns?|sample)\b",
+    re.IGNORECASE,
+)
+
+
+def _plain_chat_answer_only(prompt: str) -> bool:
+    """True when Chat should answer in prose, without shell/write/sub-task tools."""
+    return _looks_like_question(prompt) and _CHAT_ARTIFACT_OR_DATA_ASK.search(prompt or "") is None
+
+
 # Asking to throw the app away and start over (#36). Two shapes, both requiring the WHOLE app as the
 # object: "start over"/"start from scratch" as a standalone phrase, or a removal verb reaching a
 # whole-app noun ("delete everything", "wipe the app", "remove everything you have built").
@@ -9890,6 +9901,9 @@ class Orchestrator:
         # and an un-armed restart would refuse every turn all over again.
         withheld_token = project.control.arm_withheld(recall.withheld(history))
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
+        plain_answer_token = (
+            project.control.arm_read_only("question") if _plain_chat_answer_only(prompt) else None
+        )
         # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
         # Chat and Build cannot drift: `llm_router` applies it outside their fork, and this is the
         # Chat half of putting it there. A refusal ends the turn before OpenCode is even started.
@@ -9899,6 +9913,8 @@ class Orchestrator:
             project.control.disarm_withheld(withheld_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
+            if plain_answer_token is not None:
+                project.control.disarm_read_only(plain_answer_token)
             yield from refuse_before_the_turn(chat_refusal)
             return
         chat_sens_token = None
@@ -9920,6 +9936,8 @@ class Orchestrator:
                 project.control.disarm_withheld(withheld_token)
                 if web_token is not None:
                     project.control.disarm_web(web_token)
+                if plain_answer_token is not None:
+                    project.control.disarm_read_only(plain_answer_token)
                 yield from refuse_before_the_turn(unrecorded_lock_refusal())
                 return
             chat_sens_token = project.control.arm_sensitivity(
@@ -10604,6 +10622,8 @@ class Orchestrator:
             project.control.disarm_withheld(withheld_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
+            if plain_answer_token is not None:
+                project.control.disarm_read_only(plain_answer_token)
             if chat_sens_token is not None:
                 project.control.disarm_sensitivity(chat_sens_token)
             # Reads ~0ms now, and that is the honest number: what it measures is the person

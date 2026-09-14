@@ -31,6 +31,18 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
+class ObservedControlOpenCode(FakeOpenCode):
+    def __init__(self, workspace: Path, turns: list[Turn] | None = None) -> None:
+        super().__init__(workspace, turns)
+        self.control = None
+        self.snapshots = []
+
+    def send_prompt(self, *args, **kwargs) -> None:
+        if self.control is not None:
+            self.snapshots.append(self.control.snapshot())
+        super().send_prompt(*args, **kwargs)
+
+
 def _catalog() -> ModelCatalog:
     return ModelCatalog(sovereign_plan="s", sovereign_implement="s", sovereign_ask="s",
                         plan="p", implement="i", ask="a")
@@ -122,6 +134,38 @@ def test_chat_turn_uses_sage_chat_skips_plan_and_tsc(tmp_path: Path):
     assert "typecheck" not in kinds
     assert next(e for e in events if e["type"] == "done")["decision"] == "answered"
     assert orch.project(start_preview=False).workspace.read_history() == []
+
+
+@pytest.mark.parametrize("prompt", [
+    "Explain how rainbows form.",
+    "what's our gross exposure by desk?",
+])
+def test_plain_chat_question_is_armed_read_only_before_it_reaches_opencode(
+    tmp_path: Path, prompt: str,
+):
+    orch, oc = _orch(tmp_path, [Turn(text="Plain answer.")],
+                     client=lambda ws: ObservedControlOpenCode(
+                         ws, [Turn(text="Plain answer.")]))
+    oc.control = orch.project(start_preview=False).control
+    tid = orch.create_thread()["id"]
+
+    list(orch.chat_stream(tid, prompt))
+
+    assert oc.snapshots
+    assert oc.snapshots[0].read_only_turn
+    assert oc.snapshots[0].read_only_reason == "question"
+
+
+def test_chat_data_artifact_question_keeps_normal_chat_tools(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="Here is the table.")],
+                     client=lambda ws: ObservedControlOpenCode(ws, [Turn(text="Here is the table.")]))
+    oc.control = orch.project(start_preview=False).control
+    tid = orch.create_thread()["id"]
+
+    list(orch.chat_stream(tid, "what's in this CSV?"))
+
+    assert oc.snapshots
+    assert not oc.snapshots[0].read_only_turn
 
 
 def test_chat_turn_records_artifact_and_reverts_a_write_outside_its_thread(tmp_path: Path):
