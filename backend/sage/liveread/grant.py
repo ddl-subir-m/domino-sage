@@ -42,8 +42,7 @@ def reachable(kind: str, name: str, *, bound: Iterable[str] = (), chips: Iterabl
     k = (kind or "").replace("_", "").replace("-", "").casefold()
     if k in CALLED:
         return Refusal("not-readable", brand.text(
-            "{assistantName} reads stores and files. A {modelApi} answers a request instead, so it "
-            "is something the app you are building calls, not something to look inside."
+            "A {modelApi} is called by the app, not read like a store or file."
         ))
     if k not in READABLE:
         return Refusal("not-readable", brand.text(
@@ -54,8 +53,7 @@ def reachable(kind: str, name: str, *, bound: Iterable[str] = (), chips: Iterabl
         # Names the thing and the act, never the mechanism. The act is the glossary's own label, so
         # the sentence points at a control the person can actually see (ADR-0015).
         return Refusal("not-in-range", brand.text(
-            "{assistantName} cannot reach {name} from this conversation. Use it in this "
-            "conversation, and ask again.",
+            "{name} isn't in this conversation. Use in this conversation, then ask again.",
             name=name or "that",
         ))
     return None

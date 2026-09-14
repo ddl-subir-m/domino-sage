@@ -67,8 +67,8 @@ def egress_notice(bindings: list[Binding], aliases: list[LlmAlias] | None) -> st
         return None
     models = _phrase(offsite, brand.text("the {llmAlias}"), brand.text("the {llmAliasPlural}"))
     return brand.text(
-        "This app sends data to {models} outside {platformName}. After you publish, that happens "
-        "for every viewer. This doesn't stop the publish.",
+        "This app sends data to {models} outside {platformName}. After publish, that happens "
+        "for every viewer. This does not block publish.",
         models=models,
     )
 

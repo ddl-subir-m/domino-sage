@@ -105,14 +105,10 @@ window.SW = window.SW || {};
         }
         if (key === 'delete') {
           const artifactPath = `examples/${thread.id}/`;
-          // Three clauses, because the act now has three consequences and the person is about to
-          // authorise all of them (ADR-0036). The last one is the uncomfortable one and it stays
-          // in the dialog rather than behind a "learn more": somebody deleting because of what
-          // they pasted is exactly the reader a popover would hide it from.
+          // Messages go; apps and files in this conversation's artifact path stay.
           Modal.confirm({
             title: 'Delete this conversation?',
-            content: 'Messages are deleted for good. Apps it changed stay, including older copies '
-              + `in git. Artifacts an app holds stay in ${artifactPath}.`,
+            content: `Messages are deleted permanently. Apps and files in ${artifactPath} are kept.`,
             okText: 'Delete',
             okButtonProps: { danger: true },
             onOk: async () => {

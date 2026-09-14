@@ -123,7 +123,7 @@ def test_a_data_source_the_conversation_never_named_is_refused_by_name_and_act()
 
     assert refused is not None and refused.tag == "not-in-range"
     assert "Snowflake-Data-Warehouse" in refused.says, "name the missing thing"
-    assert "Use it in this conversation" in refused.says, "and the act that fixes it"
+    assert "Use in this conversation" in refused.says, "and the act that fixes it"
     for mechanism in ("blocked", "unable", "read-only", "tool", "project text"):
         assert mechanism not in refused.says.lower()
 

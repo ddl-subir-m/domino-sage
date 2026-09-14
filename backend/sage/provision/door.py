@@ -77,8 +77,7 @@ class DefaultProjectRepoUnreachable(RuntimeError):
     The remedy is live-verified (2026-09-13, scripts/archived-project-probe.py): an archived Project
     leaves `/api/projects/beta/projects`, so the next open finds no Default and builds a fresh one.
     That is why this says "archive" and not something weaker — and why `list_apps` needs no archived
-    filter. The "remove its workspaces first" hedge is NOT verified: the archive that proved the
-    above held no workspace, because the launch that would have made one is what failed.
+    filter.
     """
 
     def __init__(self, project: ProjectRef) -> None:
@@ -86,11 +85,9 @@ class DefaultProjectRepoUnreachable(RuntimeError):
         # `{project}` is the pack's NOUN, not this project's name — the name is a runtime value and
         # goes in as one (`projectName`), so the paranoid pack never scans it (ADR-0014, #124).
         super().__init__(brand.text(
-            "{assistantName} can't start your Builder. It can't reach the Git repository behind "
-            "{platformName} {project} '{projectName}': {url}. Either that repository was deleted "
-            "or moved, or a credential can no longer see it. Check whether the repository still "
-            "exists. If it is gone, archive the {project} in {platformName} — you may need to "
-            "remove its workspaces first — and open {assistantName} again to get a new one.",
+            "{assistantName} can't reach the Git repository for {project} '{projectName}' ({url}). "
+            "It may have been deleted, or a credential can no longer see it. If it's gone, archive "
+            "the {project} in {platformName} and open {assistantName} again.",
             projectName=project.name, url=_without_credentials(project.git_url),
         ))
 

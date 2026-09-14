@@ -165,8 +165,8 @@ def _no_git_credential_text(host: str, creds: list[CredentialRef]) -> str:
     problems with two fixes, and one text for both told a user with three credentials to add one."""
     if not creds:
         return brand.text(
-            "no HTTPS Git credential for {host} in your {platformName} account — add one under "
-            "Account Settings > Git Credentials, then try again",
+            "No HTTPS Git credential for {host} in your {platformName} account. Add one under "
+            "Account Settings > Git Credentials, then try again.",
             host=host,
         )
     return brand.text(

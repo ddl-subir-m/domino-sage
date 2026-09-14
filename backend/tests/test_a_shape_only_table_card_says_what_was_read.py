@@ -97,8 +97,8 @@ def test_the_card_names_the_columns_the_count_and_the_date():
     assert card["said"] == [
         "email, card_number, ssn",
         "5 rows, read March 4, 2026",
-        ('Rows aren\'t kept in this Project\'s files. To keep them, switch on '
-         '"Keep data rows" in Add people.'),
+        ('Rows aren\'t saved in this Project. To keep them, turn on '
+         '"Keep data rows" under Add people.'),
     ]
 
 
@@ -115,8 +115,8 @@ def test_copying_the_card_pastes_the_receipt_and_not_an_empty_table():
         "Sample rows from card_panel_transactions_RAW.csv\n"
         "email, card_number, ssn\n"
         "5 rows, read March 4, 2026\n"
-        'Rows aren\'t kept in this Project\'s files. To keep them, switch on '
-        '"Keep data rows" in Add people.')
+        'Rows aren\'t saved in this Project. To keep them, turn on '
+        '"Keep data rows" under Add people.')
 
 
 @needs_node

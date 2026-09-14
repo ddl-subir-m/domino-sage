@@ -65,9 +65,8 @@ def _refusal(status: int) -> str:
     """One sentence per way a Model API says no, written for whoever pasted the snippet."""
     if status in (401, 403):
         return brand.text(
-            "{platformName} refused that access token. Tokens are regenerated from the {modelApi}'s "
-            "Settings page in {platformName}, and an old snippet carries the old token — copy the "
-            "sample request again and paste the current one."
+            "{platformName} refused that access token. Copy a fresh sample request from the "
+            "{modelApi}'s Overview page and paste it again."
         )
     if status == 404:
         return brand.text(

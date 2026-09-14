@@ -88,7 +88,7 @@ sandbox.SW.store.set({
   membersConnected: spec.connected === true,
   membersError: spec.error || '',
   membersLoading: spec.loading === true,
-  keptRows: spec.keptRows || { on: false, destination: '' },
+  keptRows: spec.keptRows || { on: true, destination: '' },
 });
 
 // Every string in the tree, props included: a caption, an okText and a placeholder are props rather

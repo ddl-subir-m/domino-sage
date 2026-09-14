@@ -114,7 +114,7 @@ def test_the_sentence_says_publishing_is_not_what_is_being_refused():
     notice = egress_notice([STORE, BOUND_SONNET], [SONNET])
 
     assert "for every viewer" in notice
-    assert "This doesn't stop the publish." in notice
+    assert "This does not block publish." in notice
 
 
 # ---- and the four silences ---------------------------------------------------------------------
@@ -426,8 +426,8 @@ needs_node = pytest.mark.skipif(
 )
 
 # The sentence the server would send, as prose the harness has no way to have built itself.
-NOTICE = ("This app sends data to the LLM Alias Claude Sonnet 4.6 outside Domino. After you "
-          "publish, that happens for every viewer. This doesn't stop the publish.")
+NOTICE = ("This app sends data to the LLM Alias Claude Sonnet 4.6 outside Domino. After "
+          "publish, that happens for every viewer. This does not block publish.")
 REFUSED_QUERY = ("The app asks for the query revenue, whose statement uses :since and whose "
                  "declaration does not.")
 

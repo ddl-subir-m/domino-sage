@@ -168,7 +168,7 @@ window.SW = window.SW || {};
     // one that has been unbound sends somebody to remove something already gone (ADR-0043).
     const datasets = SW.util.declaredPhrase(sensitivity);
     const why = SW.util.lockedBySession(sensitivity)
-      ? SW.brand.text("this chat already used {datasets}, so {picked} isn't allowed.",
+      ? SW.brand.text("{picked} isn't allowed — this chat already used {datasets}.",
         { datasets, picked })
       : SW.brand.text("{picked} isn't approved for {datasets}.", { datasets, picked });
     const wayOut = SW.util.lockWayOut(sensitivity, app, chat);
@@ -586,8 +586,7 @@ window.SW = window.SW || {};
     // is losing the attachments and the conversation, and both survive.
     // It NAMES the app (#75). A Project holds many Built Apps and this takes one of them, so "the
     // app" and "the code you have built" both read as all of it — the copy would describe the reset
-    // this stopped being. The other apps are only mentioned when there are some: a Project with one
-    // app gains nothing from being told the apps it does not have are safe.
+    // this stopped being.
     // The name is QUOTED because it is usually a sentence: a display name starts as the title of the
     // plan the app was built from, and those end in a full stop, which unquoted lands one in the
     // middle of this question.
@@ -595,8 +594,8 @@ window.SW = window.SW || {};
       antd.Modal.confirm({
         title: activeApp ? `Reset "${activeApp.name}" to the starter template?`
           : 'Reset this app to the starter template?',
-        content: "The code built in this app is removed and can't be recovered. Your attached files, "
-          + `Resources, and this conversation stay${apps.length > 1 ? ', as do your other apps' : ''}.`,
+        content: "This app's code is removed and can't be recovered. Files, resources, and this "
+          + 'conversation stay.',
         okText: 'Reset app',
         okButtonProps: { danger: true },
         cancelText: 'Cancel',

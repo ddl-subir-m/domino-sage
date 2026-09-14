@@ -324,10 +324,10 @@ class ShadowedSlot:
         # and the panel labels this row "Ask and Chat" precisely because its reader asks about both.
         template = (
             "The {holder} model ({model}) runs every {turn} in this session, so this model only "
-            "runs in {chat}. Change the {holder} model to release the session."
+            "runs in {chat}. Change the {holder} model to switch."
             if self.slot == "ask" else
             "The {holder} model ({model}) runs every {turn} in this session, so this model won't "
-            "run. Change the {holder} model to release the session."
+            "run. Change the {holder} model to switch."
         )
         return brand.text(template, holder=self.holder, model=self.holder_model)
 
