@@ -117,7 +117,28 @@ def test_a_named_query_runs_and_returns_its_rows(app: Path):
     with running(app, fake) as base:
         r = _ask(base, "revenue_by_region", {"region": "EMEA"})
     assert r.status_code == 200
-    assert r.json() == {"columns": ["region", "total"], "rows": [["EMEA", 10]]}
+    body = r.json()
+    assert body["columns"] == ["region", "total"]
+    assert body["rows"] == [["EMEA", 10]]
+    assert body["truncated"] is False
+
+
+def test_a_named_query_reports_data_used_without_copying_row_values(app: Path):
+    _write_queries(app, [REVENUE])
+    fake = FakeExecutor()
+    with running(app, fake) as base:
+        r = _ask(base, "revenue_by_region", {"region": "EMEA"})
+
+    body = r.json()
+    assert body["dataUsed"] == {
+        "kind": "data_source_query",
+        "query": "revenue_by_region",
+        "source": {"id": "ds-dwh", "name": "warehouse", "scope": "ANALYTICS.MARTS"},
+        "coverage": {"columns": ["region", "total"], "returnedRows": 1, "truncated": False},
+        "observedTransfer": "query_result_returned_to_viewer",
+        "modelView": "not_sent_to_model_by_query",
+    }
+    assert "EMEA" not in json.dumps(body["dataUsed"])
 
 
 def test_the_executor_is_handed_the_sql_and_the_params_separately(app: Path):

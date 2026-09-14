@@ -191,7 +191,18 @@ def test_the_query_reaches_the_store_and_its_rows_reach_the_viewer(app: Path):
     with running(app, store) as base:
         r = ask(base, "revenue", {"region": "EMEA"})
     assert r.status_code == 200
-    assert r.json() == {"columns": ["region", "total"], "rows": [["EMEA", 10]], "truncated": False}
+    body = r.json()
+    assert body["columns"] == ["region", "total"]
+    assert body["rows"] == [["EMEA", 10]]
+    assert body["truncated"] is False
+    assert body["dataUsed"] == {
+        "kind": "data_source_query",
+        "query": "revenue",
+        "source": {"id": "ds-dwh", "name": "warehouse", "scope": "ANALYTICS.MARTS"},
+        "coverage": {"columns": ["region", "total"], "returnedRows": 1, "truncated": False},
+        "observedTransfer": "query_result_returned_to_viewer",
+        "modelView": "not_sent_to_model_by_query",
+    }
     assert store.opened == ["warehouse"]     # resolved by NAME, which is what get_datasource takes
 
 

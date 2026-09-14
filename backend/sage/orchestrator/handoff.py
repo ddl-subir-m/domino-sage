@@ -358,6 +358,94 @@ def draft_digest(*, title: str, asked: list[str], context: list[dict],
     return " ".join(bits) or "An empty Chat Thread."
 
 
+def data_use_summaries(history: list[dict]) -> list[str]:
+    """Data used events as short handoff lines.
+
+    The event already has the safe ledger shape: source, columns, coverage, and request evidence. This
+    formatter keeps that metadata and does not copy row values into the Build prompt.
+    """
+    found: dict[str, dict] = {}
+    order: list[str] = []
+    for row in history or []:
+        if not isinstance(row, dict):
+            continue
+        for event in _row_data_used(row):
+            key = str(event.get("operation_id") or "") or f"{event.get('source')}-{len(order)}"
+            if key not in found:
+                order.append(key)
+            found[key] = event
+    lines = [_data_use_line(found[key]) for key in order]
+    return [line for line in lines if line]
+
+
+def _row_data_used(row: dict) -> list[dict]:
+    raw = row.get("dataUsed")
+    if isinstance(raw, list):
+        return [e for e in raw if isinstance(e, dict)]
+    if row.get("type") == "data_used":
+        event = row.get("event")
+        return [event] if isinstance(event, dict) else []
+    return []
+
+
+def _data_use_line(event: dict) -> str:
+    operation = str(event.get("operation") or event.get("purpose") or "data operation").replace("_", " ")
+    source = str(event.get("source") or "unknown source")
+    pieces = [f"{operation} from {source}."]
+    columns = _names_list(event.get("columns"))
+    if columns:
+        pieces.append(f"Columns: {columns}.")
+    selected = _names_list(event.get("selected_fields"))
+    if selected:
+        pieces.append(f"Selected fields: {selected}.")
+    coverage = _coverage_line(event.get("coverage"))
+    if coverage:
+        pieces.append(f"Coverage: {coverage}.")
+    artifact = str(event.get("artifact") or "").strip()
+    if artifact:
+        pieces.append(f"Result Artifact: {artifact}.")
+    requests = _request_lines(event.get("requests"))
+    if requests:
+        pieces.append("Model requests: " + "; ".join(requests) + ".")
+    return " ".join(pieces)
+
+
+def _names_list(raw: object) -> str:
+    if not isinstance(raw, list):
+        return ""
+    names = [str(v) for v in raw if str(v or "").strip()]
+    return ", ".join(names[:12])
+
+
+def _coverage_line(raw: object) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    keys = ("total", "processed", "excluded", "failed", "unfinished")
+    parts = [f"{raw[k]} {k}" for k in keys if isinstance(raw.get(k), int)]
+    return ", ".join(parts)
+
+
+def _request_lines(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for req in raw:
+        if not isinstance(req, dict):
+            continue
+        requested = str(req.get("requested_alias") or req.get("alias") or "unknown")
+        state = str(req.get("state") or "unknown")
+        serving = str(req.get("serving_model") or "unknown")
+        receipt = str(req.get("provider_receipt") or "unknown")
+        decision = str(req.get("decision_stage") or "unknown")
+        cache = str(req.get("cache") or "unknown")
+        fallback = str(req.get("fallback") or "unknown")
+        out.append(
+            f"requested {requested}, state {state}, serving model {serving}, "
+            f"provider receipt {receipt}, decision stage {decision}, cache {cache}, fallback {fallback}"
+        )
+    return out
+
+
 def plan_prompt(thread_id: str, digest: str, *, voice: str, shape: str) -> str:
     """The prompt sage-plan writes the first plan from (docs/workbench/handoff.md §5).
 
@@ -609,7 +697,8 @@ def binding_from_context(item: dict) -> Binding | None:
 
 
 def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
-                   include_artifacts: bool, include_resources: bool) -> str:
+                   include_artifacts: bool, include_resources: bool,
+                   data_used: list[str] | None = None) -> str:
     parts = [draft.strip(), ""]
     if include_artifacts:
         parts.append("Artifacts to treat as examples:")
@@ -626,6 +715,11 @@ def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
         else:
             parts.append("- none")
         parts.append("")
+        lines = [line for line in (data_used or []) if line]
+        if lines:
+            parts.append("Data used in the Chat work:")
+            parts.extend(f"- {line}" for line in lines)
+            parts.append("")
     # No closing "the plan is what to build" line. `implement_note` puts that sentence in front of
     # this file, which is the one place the spec asks for it; having it here too meant the implement
     # turn read the same instruction twice, once at each end of the same block.
