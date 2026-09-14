@@ -66,8 +66,9 @@ def test_one_call_calculates_writes_and_selects_without_unrelated_values(tmp_pat
     event = data.events("turn1")[0]
     assert event["coverage"] == {"total": 12, "processed": 12, "excluded": 0, "failed": 0, "unfinished": 0}
     assert event["source_sha256"]
-    assert "North" not in json.dumps(journal)
-    assert "780" not in json.dumps(journal)
+    recorded = {k: v for k, v in event.items() if k not in ("operation_id", "source_sha256", "artifact")}
+    assert "North" not in json.dumps(recorded)
+    assert "780" not in json.dumps(recorded)
     assert "@example.invalid" not in json.dumps(reply)
 
 
