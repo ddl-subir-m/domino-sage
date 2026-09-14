@@ -307,10 +307,9 @@ def test_change_redoes_the_crossing_the_card_is_showing_not_the_newest_one(tmp_p
     assert not (root / "apps" / second / ".sage" / "handoff-transcript.md").exists()
 
 
-def test_a_crossing_that_stops_carrying_resources_still_names_the_bindings_it_made(tmp_path: Path):
-    """Turning Resources off does not withdraw a Binding already made — the sheet says so, and
-    taking a Resource from an app that may be reading it is a deliberate act. So the receipt goes
-    on naming the file: one that stopped would read as an app connected to nothing."""
+def test_a_crossing_that_stops_carrying_resources_separates_retained_bindings(tmp_path: Path):
+    """Turning Resources off does not withdraw a Binding already made, but the file is not one this
+    crossing wrote. So the receipt names it away from the crossed-files list."""
     orch, root, tid = _a_conversation_with_something_to_carry(tmp_path)
     orch.confirm_handoff(tid, ALL_ON)
     app_id = orch.project(start_preview=False).workspace.app_id
@@ -318,7 +317,9 @@ def test_a_crossing_that_stops_carrying_resources_still_names_the_bindings_it_ma
     orch.recross_handoff(tid, ALL_OFF)
 
     assert json.loads((root / "apps" / app_id / ".sage" / "bindings.json").read_text())
-    assert ".sage/bindings.json" in _receipt(orch, tid)["files"]
+    crossed = _receipt(orch, tid)
+    assert ".sage/bindings.json" not in crossed["files"]
+    assert crossed["retainedBindings"] == [".sage/bindings.json"]
 
 
 def test_change_before_a_handoff_was_ever_confirmed_is_refused(tmp_path: Path):
@@ -447,6 +448,21 @@ _CROSSED = {
     "files": [".sage/plan.md", ".sage/handoff.md", "examples/conv_first/", ".sage/bindings.json"],
 }
 
+_RETAINED_BINDING = {
+    **_CROSSED,
+    "resources": False,
+    "context": [],
+    "files": [".sage/plan.md", ".sage/handoff.md", "examples/conv_first/"],
+    "retainedBindings": [".sage/bindings.json"],
+}
+
+_LEGACY_RETAINED_BINDING = {
+    **_RETAINED_BINDING,
+    "files": [".sage/plan.md", ".sage/handoff.md", "examples/conv_first/",
+              ".sage/bindings.json"],
+    "retainedBindings": [],
+}
+
 
 def _proposed(crossed: dict | None) -> list[dict]:
     row = {"type": "plan-proposed", "plan": "A desk exposure dashboard.", "kind": "plan",
@@ -491,6 +507,29 @@ def test_the_detail_expands_to_the_specific_charts_and_context():
     assert "trades" in expanded["text"]
     assert "positions.csv" in expanded["text"]
     assert ".sage/handoff.md" in expanded["text"]
+
+
+@needs_node
+def test_the_card_names_a_retained_binding_away_from_written_files():
+    """Resources off left this binding in the app, not in the crossing. The detail says both facts:
+    the file name, and that turning Resources off did not withdraw the old binding."""
+    expanded = _card(_proposed(_RETAINED_BINDING), press="What was included")
+
+    assert "Already in the app" in expanded["text"]
+    assert ".sage/bindings.json" in expanded["text"]
+    assert "Turning Resources off did not withdraw it" in expanded["text"]
+    assert expanded["text"].count(".sage/bindings.json") == 1
+
+
+@needs_node
+def test_an_old_card_row_with_bindings_in_files_draws_the_retained_binding_line():
+    """Rows written before this change cannot be migrated; the card reads the old shape and renders
+    the same retained-binding line."""
+    expanded = _card(_proposed(_LEGACY_RETAINED_BINDING), press="What was included")
+
+    assert "Already in the app" in expanded["text"]
+    assert "Turning Resources off did not withdraw it" in expanded["text"]
+    assert expanded["text"].count(".sage/bindings.json") == 1
 
 
 @needs_node
