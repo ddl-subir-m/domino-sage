@@ -1418,7 +1418,7 @@ class DominoResourceProvider:
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
                 "{assistantName} isn't connected to the {platformName} API, so it can't tell "
-                "whether a model's endpoint is running."
+                "whether the {hostedGenaiEndpoint} behind a model is running."
             ))
         payload = self._get(
             "/api/gen-ai/beta/endpoints",
