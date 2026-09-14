@@ -1,0 +1,288 @@
+# Tickets for Sage-only data use
+
+Source: [spec #348](https://github.com/ddl-subir-m/domino-sage/issues/348). The user approved a Sage-only first release. There are 11 active Sage tasks and 4 deferred tasks. Existing issue numbers and worktrees are retained.
+
+Start Sage #350 and #358 in parallel. Start later tasks after their blockers land. Keep the current gateway code and configuration. No new gateway contract or full post-publish model-enforcement guarantee is required.
+
+## T01. Calculate from an uploaded CSV and show Data used
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#350](https://github.com/ddl-subir-m/domino-sage/issues/350)
+
+**What to build:** In fresh Chat and Build projects, calculate from a CSV locally, show a table or chart, and return selected totals in the same operation.
+
+**Blocked by:** None
+
+- [ ] Run the real OpenCode flow on synthetic sales data: North 360, South 420, total 780. Display a usable table/chart; capture outgoing traffic and prove the unrelated email column is absent.
+- [ ] Extend existing operations so computation, artifact creation, and selected output need no mandatory extra model round. Model reads of this structured result default to structure, counts, and a local reference.
+- [ ] Validate source authorization, selected fields, result location, and result shape using existing controls. Preserve Kept rows, artifact audiences, explicit user limits, tools, skills, and task/to-do capabilities.
+- [ ] Record operation and per-request identifiers, source references, selected fields, coverage, and observed delivery state without storing raw rows in the new event record.
+- [ ] Render a collapsed, accessible Data used detail with source/model chips in Chat and Build. Distinguish requested alias from confirmed serving model; unknown delivery stays unknown. Preserve the record on refresh under existing retention rules.
+- [ ] Keep existing projects unchanged. Verify source-code reads still work; this first slice does not claim every arbitrary tool path is covered.
+
+Use the existing live-read receipt and browser harness patterns. Keep the glossary distinctions between source files and Artifacts. Related #334 warns against taking the model name from a project-wide last-write record; identify each request directly.
+
+## T02. Use bound tables without a Sample rows approval step
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#351](https://github.com/ddl-subir-m/domino-sage/issues/351)
+
+**What to build:** Apply the same relevant-data behavior to bound Data Source tables and declared Dataset files in fresh projects.
+
+**Blocked by:** [ddl-subir-m/domino-sage#350](https://github.com/ddl-subir-m/domino-sage/issues/350)
+
+- [ ] Resolve and read the intended Binding/table or Dataset file through existing authorization. A positive Sample rows grant is no longer required for necessary model values in fresh projects.
+- [ ] Show local results and Data used for a bound-table calculation and a Dataset-file calculation, including selected output in the same operation.
+- [ ] Preserve administrator-approved model restrictions, explicit withholding, credentials, Kept rows, and table/row access limits. Do not infer classification for Data Sources from Dataset tags.
+- [ ] Use a consistent query result or source snapshot for coverage; report truncation or source change rather than claiming all records were processed.
+- [ ] Verify Chat, Build, and Chat-to-Build handoff retain source identity and restrictions. Existing projects and positive-share records are not migrated or reset.
+- [ ] Do not invent a current sharing toggle: the inspected Sample rows UI is read-only.
+
+This replaces only the old model-value prerequisite. Artifact retention consent remains separate.
+
+## T03. Analyse relevant text with complete record coverage
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#352](https://github.com/ddl-subir-m/domino-sage/issues/352)
+
+**What to build:** Classify or summarise the full relevant text using bounded batches, with correct coverage and visible partial outcomes.
+
+**Blocked by:** [ddl-subir-m/domino-sage#350](https://github.com/ddl-subir-m/domino-sage/issues/350)
+
+- [ ] Select actual complaint text and task-local IDs; do not send an unrelated email column. The labelled 12-record fixture produces four delivery, four damage, and four billing results, including the 'Item arrived broken' regression.
+- [ ] Create a manifest tied to the source snapshot and assign stable task-local IDs when source IDs are missing or duplicated. Require the expected output shape and exact ID coverage where one output per record is requested.
+- [ ] Reject missing, duplicate, unknown, or malformed returned IDs as complete output. Report exclusions, failures, unfinished batches, cancellation, and source changes honestly.
+- [ ] Use bounded concurrency and recorded task-local progress. Ordinary retry must not double-count records; policy denials are not retried unchanged.
+- [ ] Exercise at least 10,000 synthetic records with a controlled provider. If a limit prevents full work, show the limit and offer an explicitly labelled sample instead of silently sampling.
+- [ ] Show coverage in the result and Data used. Keep semantic-quality evaluation separate from coverage checks and avoid an extra model call solely to classify the task.
+
+The experiment's 60-record probe is prior evidence, not large-data acceptance. Use real-model fixtures as evaluation alongside deterministic controlled-provider tests.
+
+## T04. Keep incidental read and execution output out of model context
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#353](https://github.com/ddl-subir-m/domino-sage/issues/353)
+
+**What to build:** A data read, shell command, or Python error can show authorized local output while the next model request receives the intended data view.
+
+**Blocked by:** [ddl-subir-m/domino-sage#350](https://github.com/ddl-subir-m/domino-sage/issues/350)
+
+- [ ] Drive real OpenCode read and bash/Python tools. Retain authorized local results, while known data-bearing results return structure/counts/reference unless values are deliberately selected.
+- [ ] Handle normal stdout, stderr, interrupted-tool errors, and error metadata. Inspect both model requests and browser-visible results rather than only testing a transform function.
+- [ ] Carry source and selection references through supported operations; enforce consistency at the outgoing request boundary without copying gateway PII rules.
+- [ ] Keep valid tool-call/result pairs and provider-specific fields. Track selected values reused in tool arguments; do not treat tool arguments as an unexamined escape path.
+- [ ] Preserve ordinary source-code reads and useful debugging. Do not use a blanket stdout filter, file-extension-only sensitivity rule, or claim arbitrary Python provenance.
+- [ ] Respect explicit restrictions. If a supported operation cannot enforce one, stop that affected model operation and explain it; local unrelated work remains available.
+
+The prototype proved a useful transform hook but exposed metadata and argument gaps. This slice covers direct execution; delegated and external/multimodal paths are separate.
+
+## T05. Preserve data handling through subagents and background results
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#354](https://github.com/ddl-subir-m/domino-sage/issues/354)
+
+**What to build:** Delegating an analysis task preserves local results, deliberate value selection, and accurate Data used for both child and parent.
+
+**Blocked by:** [ddl-subir-m/domino-sage#353](https://github.com/ddl-subir-m/domino-sage/issues/353)
+
+- [ ] Run real child task requests and parent continuation. Inspect outbound requests on both sides and prove incidental fixture values do not enter either by accident.
+- [ ] Cover completed, failed, cancelled, and interrupted child work, including background completion delivered as a synthetic user message.
+- [ ] Carry operation/source/request references across delegation so Data used reports the actual work without assigning a child or summarizer model to the wrong turn.
+- [ ] Retain useful child output and valid provider history. Keep task delegation and to-do support available.
+- [ ] Render a delegated result with correct coverage and delivery evidence; missing child provenance is explicitly unknown rather than claimed local-only.
+
+Related #334 tracks background inference overwriting a turn's model record. Read its current state before editing that area; do not duplicate its isolated fix.
+
+## T06. Apply deliberate data use to MCP and image results
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#355](https://github.com/ddl-subir-m/domino-sage/issues/355)
+
+**What to build:** Supported external tools and images have an explicit model-bound view and an accurate visible data-use record.
+
+**Blocked by:** [ddl-subir-m/domino-sage#353](https://github.com/ddl-subir-m/domino-sage/issues/353)
+
+- [ ] Inventory the actual MCP and image/multimodal carriers supported by the installed OpenCode integration. Record which are covered and which require explicit unsupported-state handling.
+- [ ] Exercise real integration paths for an MCP data result, an MCP error, and an image-bearing result. Select relevant values or image content deliberately and preserve authorized local display.
+- [ ] Carry source/operation references where known; show unknown lineage where it cannot be established. Do not label unknown content safe or local-only.
+- [ ] Preserve multimodal/provider metadata and useful non-data MCP behavior. Do not disable the tool catalog or all image support to pass tests.
+- [ ] An explicit user restriction that cannot be enforced stops the affected model operation clearly. No hidden alternate message carrier may bypass a supported selection.
+
+This is not a general content detector or a promise to infer the sources of arbitrary external-tool output. Gateway policies remain authoritative.
+
+## T07. Preserve data choices through Recall and compaction
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#356](https://github.com/ddl-subir-m/domino-sage/issues/356)
+
+**What to build:** Continuing or compacting a conversation preserves selected-data attribution and explicit restrictions across all supported carriers.
+
+**Blocked by:** [ddl-subir-m/domino-sage#354](https://github.com/ddl-subir-m/domino-sage/issues/354), [ddl-subir-m/domino-sage#355](https://github.com/ddl-subir-m/domino-sage/issues/355)
+
+- [ ] Run multi-turn Chat and Build flows with reads, selected values, delegated/background output, MCP results, and images, followed by compaction and another model request.
+- [ ] Known data retains source/selection attribution; compaction and generated context cannot silently restore explicitly withheld content.
+- [ ] Preserve protocol-valid histories and authorized visible transcripts. When source information cannot be recovered, Data used states the uncertainty instead of asserting complete lineage.
+- [ ] Do not send blocked Recall to a model to create a recovery summary. Clearing or discarding context remains a user-chosen action.
+- [ ] Verify that ordinary continued questions, task delegation, and source-code work still function without a new agent harness.
+
+This completes the supported-path handling required before the feature can make a consistency claim. It does not itself implement the refusal recovery UI.
+
+## T08. Enforce input rules across content carriers and return decision evidence
+
+**Status:** deferred
+
+**Issue:** [etanlightstone/LLM_gateway#32](https://github.com/etanlightstone/LLM_gateway/issues/32)
+
+**What to build:** A caller receives an accurate input decision, and denied or redacted content is handled correctly before provider forwarding.
+
+**Blocked by:** None
+
+- [ ] Exercise the real inference endpoint with a controlled provider. Input denial occurs before forwarding; redaction covers tool results, later user messages, and multiple text parts as well as the first user message.
+- [ ] Preserve provider-specific history and content structure. Define handling for every supported carrier; do not claim an unsupported carrier was redacted while forwarding it unchanged.
+- [ ] Define an additive, versioned caller contract for request/attempt correlation, input/output stage, terminal outcome, requested alias, confirmed serving model/forwarding, cache/fallback evidence, and decision/policy revision where available.
+- [ ] Populate evidence only when observed. Input denial, output denial, transport failure, and unknown receipt must remain distinguishable; later output/cache slices implement their corresponding stages.
+- [ ] Expose safe reasons without matched raw values or unauthorized internal policy details. Do not require administrator log access or a preflight endpoint.
+- [ ] Apply all applicable enforcing rules: a preceding log or redact action must not silently skip a later applicable denial. Verify ordering with a controlled rule set.
+- [ ] Test non-streaming and streaming request entry, legacy callers that ignore new fields, and malformed/unsupported content behavior without modifying shared production policy.
+
+Target repository is etanlightstone/LLM_gateway. Parent spec is ddl-subir-m/domino-sage#348; investigation #346 contains source-probe findings. Inspected source commit was 4387d1b0df5693d6dec36cf65e12a9fb5a8e67db, not a verified live deployment hash.
+
+## T09. Enforce output rules before releasing streamed content
+
+**Status:** deferred
+
+**Issue:** [etanlightstone/LLM_gateway#33](https://github.com/etanlightstone/LLM_gateway/issues/33)
+
+**What to build:** A caller never receives content denied by configured output rules and gets an explicit terminal result.
+
+**Blocked by:** [etanlightstone/LLM_gateway#32](https://github.com/etanlightstone/LLM_gateway/issues/32)
+
+- [ ] Use the real gateway endpoint and a controlled provider to exercise input success followed by output allow, redact, deny, provider error, and truncated completion.
+- [ ] Enforce output denial before releasing the denied content. Use incremental checking only where it can enforce the rule before release; otherwise buffer the relevant output.
+- [ ] Emit correlated terminal success/failure and output-stage decision evidence for streaming and non-streaming responses. HTTP 200 headers or partial provider text alone are not success.
+- [ ] Preserve valid allowed responses and tool content. Do not downgrade configured denial to log-only enforcement after release.
+- [ ] Measure first useful output and total completion with representative rules; record necessary buffering costs explicitly.
+- [ ] Verify cancellation and interrupted provider streams do not produce a false terminal success.
+
+Client-side error copy cannot repair content the gateway already released. This is gateway endpoint behavior, not a Sage UI-only task.
+
+## T10. Apply current rules and restrictions to cache and fallback
+
+**Status:** deferred
+
+**Issue:** [etanlightstone/LLM_gateway#34](https://github.com/etanlightstone/LLM_gateway/issues/34)
+
+**What to build:** A cached answer or fallback request follows current applicable rules and reports its actual route.
+
+**Blocked by:** [etanlightstone/LLM_gateway#33](https://github.com/etanlightstone/LLM_gateway/issues/33)
+
+- [ ] Populate cache under one isolated policy revision, change that policy, and repeat the request. Cached content must satisfy applicable current input/output rules before release.
+- [ ] Test allowed and refused fallback paths. Policy denial is not a reason to try an unguarded model; each attempted target must satisfy applicable model restrictions.
+- [ ] Define a trusted interface for administrator-approved model restrictions that the app runtime can supply or reference. Untrusted browser fields cannot expand the allowed set.
+- [ ] Return accurate requested/served model, provider-forwarding, cache-hit, fallback-attempt, and policy decision evidence. A cache response is not described as fresh model receipt.
+- [ ] Test rule ordering, unsupported/missing evidence, stream/non-stream parity, and terminal failure through the actual endpoint.
+- [ ] Document the deployed gateway version needed by Sage; do not equate source changes with a live rollout.
+
+Gateway groups currently act as labels, not permissions. This ticket must establish enforceable request restrictions for the later app runtime slice rather than assuming group membership already gates inference.
+
+## T11. Recover from refusal without resending blocked Recall
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#357](https://github.com/ddl-subir-m/domino-sage/issues/357)
+
+**What to build:** A refused task keeps its local work, reports the observed outcome, and offers a recovery that preserves user choice.
+
+**Blocked by:** [ddl-subir-m/domino-sage#356](https://github.com/ddl-subir-m/domino-sage/issues/356)
+
+- [ ] Consume the existing gateway responses in Workbench Data used. Preserve trustworthy fields when present; keep missing decision stage, forwarding, serving-model, cache, or fallback evidence unknown. No new gateway contract is required.
+- [ ] Run real multi-turn refusal flows. Complete the same task locally when an available operation can do so; preserve useful artifacts and state unfinished work when it cannot.
+- [ ] Do not resend the unchanged denied payload, including through phase-based routing, user Continue, or Chat-to-Build handoff. Do not switch models to escape refusal.
+- [ ] Ask before changing the task or discarding Recall. Preserve the visible transcript, and verify a subsequent ordinary question works after the user-chosen recovery.
+- [ ] Show partial/interrupted output as incomplete. Preserve safe refusal reasons without reproducing blocked values; distinguish authentication, rate limits, and transport failures.
+- [ ] Exercise no-file, mixed file/text, and all-file refusal presentations and bind recovery to the intended refused task. Reconcile overlapping fixes with the existing issues rather than creating duplicate fixes.
+
+Related existing work: #248 (denied Recall resent after alias changes), #337 (mixed-carrier recovery promise), #313 (refused-turn identity), and #334 (model record ownership). Reuse their landed fixes or coordinate their scope. They are references, not blanket blockers: their historical proposals and labels are not new policy requirements. Gateway-internal output/cache enforcement is deferred. Test existing response shapes with controlled responses; the gateway tickets are not blockers.
+
+## T12. Make new Built Apps report refusal and interrupted answers
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#358](https://github.com/ddl-subir-m/domino-sage/issues/358)
+
+**What to build:** A newly generated app shows a clear error or incomplete answer when its model call fails, in preview and after deployment.
+
+**Blocked by:** None
+
+- [ ] Exercise the actual generated model helper with a controlled HTTP gateway in preview and browser tests.
+- [ ] Preserve a safe structured HTTP refusal reason. Handle a partial SSE answer followed by an error, truncated EOF, cancellation, and valid terminal completion distinctly.
+- [ ] Do not return partial/truncated output as a validated final answer. Visible partial text is marked incomplete and not consumed as successful structured output.
+- [ ] Keep authentication/transport/provider failures distinct where evidence permits. A retry hint must not encourage resending a policy-denied payload.
+- [ ] Preserve available request/model evidence without inventing confirmation when legacy gateways omit it; response headers alone do not prove completion.
+- [ ] Apply to new app generation only. Existing deployed apps are not silently rewritten or migrated.
+
+This can start immediately: the failure shapes are already reproduced and do not require new gateway fields. The later app data-use slice adds complete evidence presentation.
+
+## T13. Carry local analysis and Data used into new Built Apps
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#359](https://github.com/ddl-subir-m/domino-sage/issues/359)
+
+**What to build:** A user builds and runs an app that computes from Domino data, sends selected values when needed, and shows result coverage and Data used.
+
+**Blocked by:** [ddl-subir-m/domino-sage#351](https://github.com/ddl-subir-m/domino-sage/issues/351), [ddl-subir-m/domino-sage#352](https://github.com/ddl-subir-m/domino-sage/issues/352), [ddl-subir-m/domino-sage#357](https://github.com/ddl-subir-m/domino-sage/issues/357), [ddl-subir-m/domino-sage#358](https://github.com/ddl-subir-m/domino-sage/issues/358)
+
+- [ ] Build and run a new app using existing Bindings, Named queries, and runtime data access. Demonstrate a local calculation/table/chart and a text task with selected relevant values.
+- [ ] Use the existing app architecture to execute data processing in Domino where practical; do not introduce a second agent harness or silently move protected row processing into a new audience.
+- [ ] Show source/model chips, observed transfer state, coverage, and partial results using the same semantics as Workbench. Retain safe refusal and interrupted-answer behavior.
+- [ ] Verify Chat-to-Build handoff preserves source references, access restrictions, and the distinction between source files and generated Artifacts.
+- [ ] Preserve app/Binding authorization and Kept rows controls. No upload or selected model transfer grants permission to bundle raw rows into a public artifact.
+- [ ] Exercise the actual preview and deployed Sage runtime paths with synthetic data, including a failed semantic batch and missing gateway metadata. Use a controlled gateway to vary allowed/refused responses between requests without rebuilding; use live gateway checks without modifying its configuration.
+
+Sage #360 and gateway enforcement changes are deferred. Deliver the data workflow and visible evidence on existing authorized resources, preserving current viewer authentication and publish/preview restrictions. Do not claim a new end-to-end restriction guarantee over direct app calls or internal gateway fallback.
+
+## T14. Enforce app model restrictions after publication
+
+**Status:** deferred
+
+**Issue:** [ddl-subir-m/domino-sage#360](https://github.com/ddl-subir-m/domino-sage/issues/360)
+
+**What to build:** A new Built App respects current administrator restrictions and gateway policy after deployment, including fallback.
+
+**Blocked by:** [etanlightstone/LLM_gateway#34](https://github.com/etanlightstone/LLM_gateway/issues/34), [ddl-subir-m/domino-sage#358](https://github.com/ddl-subir-m/domino-sage/issues/358)
+
+- [ ] Check applicable Dataset/model restrictions at a trusted runtime boundary for every relevant inference request; do not rely on browser assertions, a group label, or publish-time approval.
+- [ ] Use the gateway's trusted restriction interface so fallback cannot select a model outside the approved set. Verify direct runtime call attempts cannot bypass this application's enforced restriction path.
+- [ ] Publish an isolated test app, change its applicable policy/approved set, then repeat the request without rebuilding. The next applicable request must show the new allowed/refused outcome.
+- [ ] Include cache and fallback cases against the gateway implementation containing T10. Record actual decision evidence and distinguish unavailable enforcement from a content refusal.
+- [ ] Keep secrets server-side and preserve viewer/application authorization; do not mutate shared production policies or retrofit existing apps.
+- [ ] Record both local integration checks and the deployed test outcome, including the gateway build used.
+
+The existing ADR-0043 promise ends at publish. This slice deliberately extends it for new apps and must prove the runtime boundary, not merely add a browser model check.
+
+## T15. Verify Sage-only data use across models and app runtime
+
+**Status:** active
+
+**Issue:** [ddl-subir-m/domino-sage#361](https://github.com/ddl-subir-m/domino-sage/issues/361)
+
+**What to build:** Demonstrate the integrated feature on fresh projects and new Built Apps, with measured correctness, coverage, and user wait time.
+
+**Blocked by:** [ddl-subir-m/domino-sage#359](https://github.com/ddl-subir-m/domino-sage/issues/359)
+
+- [ ] Run the Sage-only spec scenarios through real OpenCode/Sage, the existing gateway, and a new test app. Capture outgoing traffic, visible results, artifacts, recovery, and Data used. No gateway code change or rollout is required.
+- [ ] Verify all supported Sage message paths, explicit user restrictions, existing administrator controls, honest unknown evidence, browser accessibility, and handling of refused/interrupted responses. Test changed allowed/refused responses with a controlled gateway; do not claim gateway-internal redaction, cache/fallback, or output-release enforcement.
+- [ ] Run repeated fixed tasks with Sonnet, Gemini Flash, and an open-weight model. Use synthetic data, keep failed runs, and separate warm/cold setup, input volume, model calls, first useful output, and whole-task completion.
+- [ ] Verify deterministic totals, labelled semantic regression cases, and 10,000-record controlled-provider coverage failures separately. Do not present ID completeness as semantic correctness.
+- [ ] Compare with the saved baseline and explain latency regressions or enforcement tradeoffs. No universal SLA or p95 claim without suitable measurements; no extra classification/selection round imposed by the design.
+- [ ] Publish a reconciled acceptance report with exact component versions, unresolved limits, and no shared production policy mutation. Use isolated runtime tests; a production rollout still follows the user's separate authorization.
+
+Integrated acceptance for the 11 active Sage tasks. Its direct blocker includes all ten other active tasks transitively. Gateway #32–#34 and Sage #360 are deferred and must not block this release. Existing projects remain outside rollout.
