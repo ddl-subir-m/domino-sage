@@ -9857,6 +9857,61 @@ class Orchestrator:
                 chat_approved.names, chat_approved.order
             )
         tap: _EventTap | None = None
+        from ..workspace.chat_tables import ChatTables, without_failed_tables
+
+        tables: ChatTables | None = None
+        primary_body = ""
+        last_text = ""
+        streamed_body = ""
+        artifacts_finished = False
+
+        def publish_chat_artifacts(outcome: str):
+            """Every active Chat exit validates bytes before retention, text and artifacts."""
+            nonlocal artifacts, immediate, artifacts_finished
+            if tables is None or artifacts_finished:
+                return {}
+            body = primary_body if tables.repair_ran else last_text or streamed_body
+            body = _take_no_build_marker(body)[0]
+            with timing.span("after.artifacts"):
+                revert_denied_writes(project.record.path, thread_id, tables.before)
+                invalid = tables.check(body)
+                tables.diagnose(invalid, outcome)
+                # A failed replacement must not turn an earlier turn's valid card into an empty
+                # receipt. Restore only this turn's damage; unchanged prior files stay untouched.
+                for rel in invalid:
+                    if rel in tables.before and rel not in tables.prior_paths:
+                        path = project.record.path / rel
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(tables.before[rel])
+                withhold_table_rows(project.record.path, thread_id, tables.before,
+                                    kept_rows=project.record.kept_rows())
+                artifacts = [store.record_artifact(thread_id, path=rel)
+                             for rel in new_artifact_paths(project.record.path, thread_id, tables.before)
+                             if rel not in invalid]
+            events = []
+            if body.strip() or invalid:
+                ev = {"type": "agent", "kind": "text",
+                      "text": without_failed_tables(body, set(invalid))}
+                events.append(ev)
+            if artifacts:
+                immediate = immediate or "artifacts"
+                ev = {"type": "artifacts", "items": artifacts}
+                events.append(ev)
+            if invalid:
+                message = ("The chart is ready, but I could not generate the table."
+                           if any(a.get("kind") == "chart" for a in artifacts)
+                           else "I could not generate the table.")
+                if len(invalid) > 1:
+                    message = message.replace("the table", "some tables")
+                ev = {"type": "error", "reason": "table generation failed", "message": message}
+                events.append(ev)
+            # Persist the whole outcome before yielding: a client can disconnect on any event.
+            for ev in events:
+                store.append_history(thread_id, ev)
+            artifacts_finished = True
+            yield from events
+            return invalid
+
         try:
             with timing.span("setup.opencode"):
                 client = self._ensure_opencode()
@@ -9867,6 +9922,7 @@ class Orchestrator:
             project.active_session_id = sid
             with timing.span("setup.snapshot"):
                 before = snapshot_files(project.record.path)
+                tables = ChatTables(project.record.path, thread_id, before)
             # Cleared here so what is read at the end of this turn belongs to this turn. Every build
             # entry point already does this; Chat never did, because Chat never read the field —
             # which is the gap, not the clearing. The turn lock means no other turn is running to
@@ -9972,6 +10028,9 @@ class Orchestrator:
                                "message": brand.text(
                                    "Stopped. Anything {assistantName} had already written is kept.")}
                     done = {"type": "done", "ok": False, "decision": "stopped"}
+                    yield from publish_chat_artifacts("stopped")
+                    if artifacts:
+                        done["artifacts"] = artifacts
                     store.append_history(thread_id, stopped)
                     finish(done)
                     yield stopped
@@ -10034,15 +10093,7 @@ class Orchestrator:
                         # ended a busy turn this way — and it is not this brake's to close.
                         log.error("chat: the session would not confirm it stopped; cleaning up "
                                   "under it anyway — the next turn may meet a live writer")
-                    revert_denied_writes(project.record.path, thread_id, before)
-                    withhold_table_rows(project.record.path, thread_id, before,
-                                        kept_rows=project.record.kept_rows())
-                    timed_out = [
-                        store.record_artifact(thread_id, path=rel)
-                        for rel in new_artifact_paths(project.record.path, thread_id, before)
-                    ]
-                    if timed_out:
-                        immediate = immediate or "artifacts"
+                    yield from publish_chat_artifacts("repeated" if looped else "timeout")
                     # Detect here too, not only after a turn that finished. Asking Chat to build an
                     # app is exactly what runs long — sage-chat writes an Artifact, not an app — so
                     # the turn the person most needs the nudge on is the one that never reaches the
@@ -10098,11 +10149,8 @@ class Orchestrator:
                     # Before the error, as on the path that finishes: what the turn produced, then
                     # why it stopped. `done` still carries them, so a client that reads only the
                     # terminal event sees them too.
-                    if timed_out:
-                        art_ev = {"type": "artifacts", "items": timed_out}
-                        store.append_history(thread_id, art_ev)
-                        yield art_ev
-                        done["artifacts"] = timed_out
+                    if artifacts:
+                        done["artifacts"] = artifacts
                     store.append_history(thread_id, err)
                     finish(done)
                     yield err
@@ -10193,6 +10241,16 @@ class Orchestrator:
                     live = _chat_live_event(ev)
                     if live is not None:
                         answered = answered or bool(live.get("text"))
+                        if live.get("type") == "delta":
+                            if tables.repair_ran:
+                                continue
+                            streamed_body = (live.get("text", "") if live.get("final")
+                                             else streamed_body + live.get("text", ""))
+                            tables.check(streamed_body)
+                            # A table answer is held until its files have been checked. Ordinary
+                            # Chat still streams. Repair prose never replaces the useful answer.
+                            if tables.candidates:
+                                continue
                         yield live
                 # A stream that has said nothing is not a stream. The transcript fallback exists
                 # for a tap that failed to open, and a tap that opened onto silence needs it just as
@@ -10221,9 +10279,17 @@ class Orchestrator:
                     poll_failures += 1
                     log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
                     if poll_failures >= _MAX_POLL_FAILURES:
-                        yield {"type": "error", "message": (
+                        try:
+                            client.interrupt(sid)
+                        except Exception:
+                            log.exception("chat: interrupt after poll failure failed")
+                        yield from publish_chat_artifacts("opencode unresponsive")
+                        err = {"type": "error", "message": (
                             "OpenCode stopped responding, so the turn was halted.")}
-                        yield {"type": "done", "ok": False, "decision": "opencode unresponsive"}
+                        store.append_history(thread_id, err)
+                        yield err
+                        yield finish({"type": "done", "ok": False,
+                                      "decision": "opencode unresponsive", "artifacts": artifacts})
                         return
                     time.sleep(2.0)
                     continue
@@ -10330,16 +10396,45 @@ class Orchestrator:
                     # Thread must not show it either way. Stripped here, where the reply is both
                     # persisted and replayed, so a reload does not bring it back.
                     body = _take_no_build_marker(pending_text)[0] if pending_text else ""
-                    if body.strip():
-                        # Shown either way — a refused turn's half-answer is still worth reading,
-                        # and the Thread keeps the status line under it. But it is not an ANSWER
-                        # when the message it came from is the one that failed: that is narration
-                        # the model wrote on its way to being refused, and counting it would drop
-                        # the refusal on a `done ok: True`.
-                        answered = not turn_failed
-                        ev = {"type": "agent", "kind": "text", "text": body}
-                        store.append_history(thread_id, ev)
-                        yield ev
+                    if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
+                        continue
+                    answered = bool(body.strip()) and not turn_failed
+                    invalid = tables.check(primary_body if tables.repair_ran else body)
+                    repairable = {p: reason for p, reason in invalid.items() if p not in tables.prior_paths}
+                    if (repairable and not tables.repair_ran and not turn_failed and not step_error
+                            and project.last_gateway_error is None):
+                        if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
+                            continue
+                        primary_body = body
+                        tables.repair_ran = True
+                        # Ignore the first request's transcript on the next poll, while keeping
+                        # the same session, Chat enforcement pin and original turn deadline.
+                        for m in msgs:
+                            for i, part in enumerate(m.get("content", [])):
+                                if isinstance(part, dict):
+                                    seen.add(_part_key(m, i, part))
+                        try:
+                            with timing.span("chat.table_repair"):
+                                client.send_prompt(sid, tables.repair_prompt(repairable),
+                                                   agent="sage-chat", chat=True)
+                        except Exception:
+                            log.warning("chat: table repair request failed")
+                            try:
+                                client.interrupt(sid)
+                            except Exception:
+                                log.warning("chat: interrupt after repair request failed")
+                            yield from publish_chat_artifacts("repair request failed")
+                            yield finish({"type": "done", "ok": False,
+                                          "decision": "table repair failed", "artifacts": artifacts})
+                            return
+                        appeared = False
+                        last_text = ""
+                        last_activity = time.monotonic()
+                        running_tools.clear()
+                        running_paths.clear()
+                        pending_calls.clear()
+                        brake = _RepeatBrake()
+                        continue
                     break
                 # Woken by the stream rather than by a timer. NOT `tap.wait`, which Build uses:
                 # that one consumes the frame it wakes on and ignores text deltas, and here the
@@ -10350,22 +10445,7 @@ class Orchestrator:
 
             # Both halves under one span: the revert and the scan walk the same tree, and what a
             # reader wants to know is what the end of a turn costs, not which of the two walks it.
-            with timing.span("after.artifacts"):
-                revert_denied_writes(project.record.path, thread_id, before)
-                # Before the scan below records them, so what the Thread lists and what git takes
-                # are the same file. A table the turn wrote keeps its shape and keeps its rows only
-                # where the Project said so (ADR-0045).
-                withhold_table_rows(project.record.path, thread_id, before,
-                                    kept_rows=project.record.kept_rows())
-                artifacts = [
-                    store.record_artifact(thread_id, path=rel)
-                    for rel in new_artifact_paths(project.record.path, thread_id, before)
-                ]
-            if artifacts:
-                immediate = immediate or "artifacts"
-                art_ev = {"type": "artifacts", "items": artifacts}
-                store.append_history(thread_id, art_ev)
-                yield art_ev
+            invalid = yield from publish_chat_artifacts("step failed" if turn_failed else "completed")
             # The shim's own record of the call that failed, which is the one witness that does not
             # depend on OpenCode reporting anything. The gateway answers 400, /v1/chat/completions
             # sees the body and writes it here — before OpenCode has decided whether to call it a
@@ -10383,6 +10463,8 @@ class Orchestrator:
                     step_reason = recall.reason_key(_error_raw(failed))
                     log.warning("chat: the gateway refused a call this turn — %s", failed)
             done = {"type": "done", "ok": True, "decision": "answered"}
+            if invalid:
+                done.update(ok=False, decision="table generation failed")
             if step_error and not answered:
                 # The turn ended, and the person has nothing. `done ok:True` with an empty Thread is
                 # the shape that sends someone looking for a Sage bug when the provider had already
@@ -10425,7 +10507,28 @@ class Orchestrator:
                 yield suggestion
             with timing.span("after.compact"):
                 self._maybe_compact_chat(client, sid, project)
+        except Exception:
+            if tables is None or artifacts_finished:
+                raise
+            log.exception("chat: session failed before artifact publication")
+            try:
+                client.interrupt(sid)
+            except Exception:
+                log.warning("chat: interrupt after session failure failed")
+            yield from publish_chat_artifacts("session failed")
+            err = {"type": "error", "message": "The Chat session failed before the answer was complete."}
+            store.append_history(thread_id, err)
+            yield err
+            yield finish({"type": "done", "ok": False, "decision": "session failed",
+                          "artifacts": artifacts})
         finally:
+            # Generator close and exceptions also end the retention window. In particular Stop
+            # used to save straight from this finally without removing generated table rows.
+            if tables is not None and not artifacts_finished:
+                # A disconnected reader cannot receive events, but history still needs the
+                # same validated outcome. Consume locally; never yield during generator close.
+                for _ in publish_chat_artifacts("interrupted"):
+                    pass
             if tap is not None:
                 tap.close()
             project.control.disarm_chat(chat_token)
