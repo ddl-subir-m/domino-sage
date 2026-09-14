@@ -8,6 +8,7 @@ renderer on the block it produced, so a fix to only one file cannot pass this al
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 import pytest
 
 _HARNESS = Path(__file__).resolve().parent / "js" / "saved_status_harness.mjs"
+_BUILDER_CSS = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "css" / "builder.css"
 
 needs_node = pytest.mark.skipif(
     shutil.which("node") is None, reason="node is not on PATH (it is in the Sage image)"
@@ -78,3 +80,16 @@ def test_a_sync_conflict_still_reads_as_an_error():
                   "detail": "couldn't sync with the repo — markers left in App.tsx"})
 
     assert row["className"] == "sw-status-line is-err"
+
+
+def test_is_warn_carries_a_colour_the_plain_status_line_does_not():
+    """The className tests above pin `is-warn` as a string. They do not pin the CSS rule that
+    gives that class its meaning — delete or degrade `.sw-status-line.is-warn`'s colour and those
+    assertions still pass while the warning renders identically to a plain save (#234)."""
+    css = _BUILDER_CSS.read_text()
+    plain = css.split(".sw-status-line {", 1)[1].split("}", 1)[0]
+    warn = css.split(".sw-status-line.is-warn {", 1)[1].split("}", 1)[0]
+
+    plain_color = re.search(r"color:\s*([^;]+);", plain).group(1).strip()
+    warn_color = re.search(r"color:\s*([^;]+);", warn).group(1).strip()
+    assert warn_color != plain_color
