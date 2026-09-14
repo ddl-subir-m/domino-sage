@@ -13454,7 +13454,7 @@ class Orchestrator:
                 # guardrail sentence is a paragraph, and a second copy of it directly under the
                 # first explains nothing the first did not.
                 message = (brand.text("{assistantName} was refused the same way again.")
-                           if _said_already(build_history, reason_said)
+                           if refusal and _said_already(build_history, reason_said)
                            else brand.text("{assistantName} couldn't finish — {reason}",
                                            reason=reason_said))
                 # `reason` is what makes this refusal comparable to the last one (ADR-0022). Build
