@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from sage.feedback.runner import FeedbackReport
-from sage.orchestrator import chat_compact
+from sage.orchestrator import chat_compact, recall
 from sage.orchestrator.service import _CHAT_CONTEXT_PREAMBLE, Orchestrator
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
@@ -130,6 +130,22 @@ def test_it_is_the_compaction_modules_summary(tmp_path: Path):
 
     expected = chat_compact.chat_summary(_store(orch).read_history(thread))
     assert f"{_CHAT_CONTEXT_PREAMBLE}\n\n{expected}" in _sent(oc)
+
+
+def test_build_chat_context_does_not_restore_withheld_file_values(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="1. Do it")])
+    thread = _thread(orch)
+    _said(orch, thread, "agent", "raw.csv included J Doe,222-33-4444.")
+    _store(orch).append_history(
+        thread,
+        {"type": recall.WITHHELD, "keys": ["file:raw.csv"], "labels": ["raw.csv"]},
+    )
+
+    _build(orch, "build me a dashboard", conversation=thread)
+
+    sent = _sent(oc)
+    assert "222-33-4444" not in sent
+    assert "raw.csv is not being sent" in sent
 
 
 # ---- rebuilt, not written once ------------------------------------------------------------------
