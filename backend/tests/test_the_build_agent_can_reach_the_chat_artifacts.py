@@ -174,6 +174,41 @@ def test_a_confirmed_handoff_does_not_link_other_threads_artifacts(tmp_path: Pat
     assert not (app / "examples" / other / "private.png").exists()
 
 
+def test_a_second_handoff_into_the_same_app_removes_the_first_threads_link(tmp_path: Path):
+    """A per-Thread link must also be removed when the same app gets a new handoff.
+
+    Without this, the second digest is narrow but the app still has yesterday's symlink on disk, so
+    the build agent can open `examples/<first Thread>/...` by exact path.
+    """
+    orch, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN),
+                                  Turn(text="Built first.", writes={"src/App.tsx": "// first\n"}),
+                                  Turn(text="Another dashboard."), Turn(text=_PLAN),
+                                  Turn(text="Built second.", writes={"src/App.tsx": "// second\n"})])
+    first = orch.create_thread()["id"]
+    second = orch.create_thread()["id"]
+
+    list(orch.chat_stream(first, "build me a desk dashboard"))
+    first_artifact = _artifact(root, first, "first.png")
+    orch.draft_handoff_plan(first)
+    orch.confirm_handoff(first, {"resources": False, "artifacts": True, "transcript": False})
+    list(orch.build_stream("build it", conversation=first))
+
+    app = orch.project(start_preview=False).workspace.path
+    app_id = orch.project(start_preview=False).workspace.app_id
+    assert (app / "examples" / first / "first.png").read_bytes() == first_artifact.read_bytes()
+
+    list(orch.chat_stream(second, "build me a margin dashboard"))
+    second_artifact = _artifact(root, second, "second.png")
+    orch.draft_handoff_plan(second)
+    orch.confirm_handoff(second, {"resources": False, "artifacts": True, "transcript": False},
+                         {"appId": app_id})
+    list(orch.build_stream("build that", conversation=second))
+
+    assert (app / "examples" / second / "second.png").read_bytes() == second_artifact.read_bytes()
+    assert not (app / "examples" / first).exists()
+    assert first_artifact.read_bytes() == ARTIFACT
+
+
 def test_an_app_seeded_before_this_change_gains_the_link_on_its_next_turn(tmp_path: Path):
     """No app on disk today has the link, and none of them is going to be re-seeded to get one."""
     orch, root = _orch(tmp_path, [Turn(text=_PLAN)])
@@ -283,6 +318,25 @@ def test_reset_leaves_the_link_working_when_the_next_turn_runs(tmp_path: Path):
     assert (app / "examples" / "thr_a" / "revenue.png").read_bytes() == ARTIFACT
     # And the Artifacts themselves are the Project's, so Reset never had a claim on them.
     assert (root / "examples" / "thr_a" / "revenue.png").read_bytes() == ARTIFACT
+
+
+def test_reset_without_a_build_conversation_still_restores_the_app_examples_rule(tmp_path: Path):
+    """Reset can run before a fresh process has chosen a Build conversation.
+
+    There is no per-Thread link to make in that window, but the app still needs the ignore rule
+    restored before a later turn creates the link.
+    """
+    orch, _root = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    app = project.workspace.path
+    _unlinked(app)
+    project.build_conversation = None
+
+    result = orch.reset_app()
+
+    assert result["ok"] is True
+    assert "/examples" in (app / ".gitignore").read_text().split()
+    assert not (app / "examples").exists()
 
 
 # ---- git ---------------------------------------------------------------------------------------
