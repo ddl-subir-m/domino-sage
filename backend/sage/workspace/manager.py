@@ -39,7 +39,7 @@ from ..orchestrator.brand import apply_voice
 from ..resources.app_helpers import TEMPLATE, HelperNames, helpers_for
 from ..router.models import ASSIGNABLE_SLOTS
 from . import plan_doc
-from .threads import CHAT_WORK, new_id, safe_id
+from .threads import CHAT_WORK, HistoryRows, new_id, safe_id
 
 log = logging.getLogger(__name__)
 
@@ -1517,7 +1517,7 @@ class Workspace:
         with self.history_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
 
-    def _iter_history(self, only: str | None = None) -> Iterator[tuple[int, dict]]:
+    def _iter_history(self, only: str | None = None) -> Iterator[tuple[int, str]]:
         """One line at a time. The log reaches megabytes on a long-lived project (~68KB per user
         turn), and every caller below used to pay a whole-file read plus a parse of every line to
         answer a question most of them could answer from a fraction of it.
@@ -1527,7 +1527,13 @@ class Workspace:
         The position comes out with the row, and it counts every non-blank line whether `only` kept
         it or not — so it stays the position IN THE FILE, which is the only number
         `history_row_detail` can go back and read by. A count of what a filter happened to keep
-        would name a different line on the next read."""
+        would name a different line on the next read.
+
+        Yields the raw line rather than a parsed row: `read_history` needs to count the lines that
+        fail to parse and `render_history_md` does not (ADR-0051), so parsing is left to whichever
+        caller knows what to do with a line it cannot read, and neither carries the other's
+        bookkeeping. A whole-file failure (for example non-UTF-8 bytes) still raises out of this
+        generator into whichever caller is driving it, the same as it always has."""
         if not self.history_path.exists():
             return
         with self.history_path.open() as f:
@@ -1537,7 +1543,7 @@ class Workspace:
                     continue
                 i += 1
                 if only is None or only in line:
-                    yield i, json.loads(line)
+                    yield i, line
 
     @staticmethod
     def _tag_text(conversation: str | None = None) -> str:
@@ -1550,8 +1556,8 @@ class Workspace:
             return json.dumps("conversation") + ":"
         return json.dumps({"conversation": conversation})[1:-1]
 
-    def read_history(self, conversation: str | None = None,
-                     tool_detail: bool = True) -> list[dict]:
+    def read_history(self, conversation: str | None = None, tool_detail: bool = True, *,
+                     strict: bool = False) -> HistoryRows:
         """No conversation means this app's whole log: history.md and any caller that wants the
         log as written. Naming one filters to it. Every row is this app's either way — the file is
         the app's — so there is nothing to filter on that side.
@@ -1565,33 +1571,70 @@ class Workspace:
 
         The row still SAYS the detail is elsewhere rather than reading as a tool nobody recorded
         the input of: `detailRow` is where to go and get it. The card tells those two apart, and
-        an empty `detail` already means the second thing to every reader of this log."""
+        an empty `detail` already means the second thing to every reader of this log.
+
+        `strict` is for a caller that REWRITES from this read (ADR-0051) — `adopt_history` is that
+        caller. It raises rather than returning a lossy `HistoryRows`, on a whole unreadable file
+        AND on any line that failed to parse: rewriting the log from 9 of its 10 lines is the same
+        silent loss as rewriting it from zero. A non-strict caller — every DISPLAY site — proceeds
+        with what it read and can check `.dropped` / `.unreadable` to say why a line is missing.
+        """
         if conversation is None:
-            rows: Iterator[tuple[int, dict]] = self._iter_history()
+            pairs: Iterator[tuple[int, str]] = self._iter_history()
         else:
             # The pre-filter can only over-select (the equality check below still decides), so an
             # app with several conversations parses its own turns instead of everyone's.
             tag = self._tag_text(conversation)
-            rows = ((i, r) for i, r in self._iter_history(only=tag)
-                    if r.get("conversation") == conversation)
+            pairs = self._iter_history(only=tag)
+        rows: list[tuple[int, dict]] = []
+        dropped = 0
+        try:
+            for i, line in pairs:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    dropped += 1
+                    continue
+                if conversation is not None and row.get("conversation") != conversation:
+                    continue
+                rows.append((i, row))
+        except (OSError, ValueError):
+            # `ValueError` covers the non-UTF-8 file as well as bad JSON, raised while iterating
+            # the open file rather than from one line — see threads.ThreadStore.read_history.
+            if strict:
+                raise
+            return HistoryRows(unreadable=True)
+        if dropped and strict:
+            raise ValueError(f"{dropped} line(s) in {self.history_path} could not be parsed")
         if tool_detail:
-            return [r for _, r in rows]
+            return HistoryRows((r for _, r in rows), dropped=dropped)
         # Numbered by POSITION IN THE FILE, which is the id this log already keeps: the stop-button
         # baseline is a position in it and `truncate_history` drops from the end.
-        return [{**r, "detail": "", "detailRow": i} if r.get("detail") else r for i, r in rows]
+        return HistoryRows(
+            ({**r, "detail": "", "detailRow": i} if r.get("detail") else r for i, r in rows),
+            dropped=dropped)
 
     def history_row_detail(self, index: int) -> str | None:
         """What the tool at line `index` was called with, read without parsing the rest of the log.
 
         The other half of `read_history(tool_detail=False)`: one row, asked for at the click that
         opens it. None when the line is not there — a log truncated by the stop button since the
-        list was read — which the caller answers as a 404 rather than as an empty tool call."""
+        list was read — which the caller answers as a 404 rather than as an empty tool call.
+
+        A line that will not parse, or a file that will not read at all (for example non-UTF-8
+        bytes), answers the same 404: this fetch has no third state to show the click behind —
+        only a row's detail or none — and either way the tool call this row named cannot be shown.
+        `(ValueError, OSError)` is the same pair every other reader here takes for that reason
+        (ADR-0051), not the narrower catch a plain `except ValueError` would be."""
         if index < 0 or not self.history_path.exists():
             return None
-        with self.history_path.open() as f:
-            for i, line in enumerate(l for l in f if l.strip()):
-                if i == index:
-                    return str(json.loads(line).get("detail") or "")
+        try:
+            with self.history_path.open() as f:
+                for i, line in enumerate(l for l in f if l.strip()):
+                    if i == index:
+                        return str(json.loads(line).get("detail") or "")
+        except (ValueError, OSError):
+            return None
         return None
 
     def has_untagged_history(self) -> bool:
@@ -1610,8 +1653,14 @@ class Workspace:
     def adopt_history(self, conversation: str) -> None:
         """Give every untagged entry to `conversation`. Build history predates tagging, so an
         upgrade would otherwise blank a project's transcript. Rewrites in place and keeps order,
-        so the positional stop-button baseline survives. Idempotent."""
-        rows = self.read_history()
+        so the positional stop-button baseline survives. Idempotent.
+
+        Reads `strict`: this rewrites the whole log from what it read, so a read that lost a line
+        it could not parse must not be rewritten back missing that line — that is the same silent
+        loss ADR-0051 names in the Chat handoff transcript, on this log instead. Raises rather than
+        adopting from a partial read; `_adopt_legacy_build_history` is the caller and it is the one
+        that decides a failed adoption is not worth failing the turn over."""
+        rows = self.read_history(strict=True)
         if not rows:
             return
         adopted = [r if r.get("conversation") else {**r, "conversation": conversation} for r in rows]
@@ -1654,19 +1703,35 @@ class Workspace:
         """Regenerate history.md from history.jsonl. Full rewrite, never incremental: truncate_history()
         rewinds the JSONL on stop, so a from-scratch render self-heals instead of needing its own
         rollback path. Call BEFORE a turn's tree baseline is taken — writing it mid-turn would read
-        as an agent edit and fail the read-only gate."""
+        as an agent edit and fail the read-only gate.
+
+        This archive is a disposable, regenerated-every-turn aid for the agent (see
+        `history_md_path`), not a durable record, so a read that cannot be fully trusted is
+        answered by leaving the last good render in place rather than by crashing the turn or
+        replacing it with an empty one (ADR-0051) — unlike `read_history`, it has no caller to
+        report `.dropped` / `.unreadable` to, so it logs instead."""
         # Streams, and keeps only the turns it will actually write. The log outgrows the archive
         # early — at 100 turns it is ~6.8MB — and holding all of it to then throw 60% away is the
         # one part of this rewrite that grew without bound.
         turns: deque[list[dict]] = deque(maxlen=self._MAX_ARCHIVED_TURNS)
         total = 0
-        for _, entry in self._iter_history():
-            if entry.get("type") not in self._ARCHIVED_EVENTS:
-                continue
-            if entry.get("type") == "user" or not total:
-                turns.append([])
-                total += 1
-            turns[-1].append(entry)
+        try:
+            for _, line in self._iter_history():
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if entry.get("type") not in self._ARCHIVED_EVENTS:
+                    continue
+                if entry.get("type") == "user" or not total:
+                    turns.append([])
+                    total += 1
+                turns[-1].append(entry)
+        except (OSError, ValueError):
+            # The whole log could not be read (for example non-UTF-8 bytes) — see `read_history`.
+            log.warning("render_history_md: %s could not be read; leaving the archive as is",
+                        self.history_path)
+            return
 
         if not total:
             self.history_md_path.unlink(missing_ok=True)
