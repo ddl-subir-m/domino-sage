@@ -8344,6 +8344,18 @@ class Orchestrator:
         (project.workspace.path / ".sage" / "handoff.md").write_text(digest)
         transcript_path = project.workspace.path / ".sage" / "handoff-transcript.md"
         if include_transcript:
+            # `strict` here is defence in depth, not the guard that holds #331's named trap. The
+            # digest read above is unconditional and runs first, so a lossy history refuses the
+            # whole crossing before this line is reached — and that is what
+            # `test_a_corrupted_conversation_refuses_the_crossing_rather_than_writing_an_empty_transcript`
+            # actually pins. Measured: drop `strict` from the digest read and that test goes red;
+            # drop it from THIS read and the suite stays green, because the condition is unheld.
+            #
+            # So do not read a passing suite as proof that this line is load-bearing, and do not
+            # make the digest read lenient on the strength of this one. If the reads are ever
+            # reordered, or the digest stops needing the whole history, this becomes the only thing
+            # standing between an unreadable log and an empty transcript written into a handoff —
+            # and it will need a test of its own before that is true.
             transcript_path.write_text(
                 chat_handoff.transcript_markdown(store.read_history(thread_id, strict=True)))
         else:
