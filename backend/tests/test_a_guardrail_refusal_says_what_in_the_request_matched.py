@@ -154,3 +154,19 @@ def test_the_separated_phone_is_its_own_rule_and_not_a_digit_run():
     assert digit_runs, "the digit-run rules are what this test is contrasting against"
     assert not any(p.search("555-123-4567") for p in digit_runs)
     assert refusal_scan.candidates({"messages": [{"content": "555-123-4567"}]})
+
+
+def test_full_precision_decimal_output_can_match_the_phone_rule():
+    """This is not personal data; it is why raw financial diagnostics are risky stdout.
+
+    A pandas frame can print a return as `-0.0234567890`. The policy-shaped carrier is the ten
+    fractional digits, not the ticker or the CSV.
+    """
+    hits = refusal_scan.candidates({
+        "messages": [{"role": "tool", "content": "VLTA daily_return_pct -0.0234567890"}],
+    })
+
+    assert len(hits) == 1
+    assert "10-11 digit run (phone)" in hits[0]
+    assert "02########" in hits[0]
+    assert "0234567890" not in hits[0]
