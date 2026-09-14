@@ -19384,8 +19384,17 @@ class Orchestrator:
 
         These are committed to the user's app repo, and a rewrite with identical content would still
         show up as a dirty file in the turn's tree comparison and in their git history.
+
+        A file that will not decode is repaired, not refused (ADR-0051 rule five): Sage owns every
+        byte of `text` and can fully re-derive it, so a read-back it cannot decode is treated as
+        changed rather than left to brick the Binding change that produced `text`.
         """
-        if not path.is_file() or path.read_text() != text:
+        try:
+            unchanged = path.is_file() and path.read_text() == text
+        except (ValueError, OSError):
+            log.warning("generated file: repairing %s, its on-disk copy could not be read", path)
+            unchanged = False
+        if not unchanged:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
 
