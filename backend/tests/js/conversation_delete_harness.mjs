@@ -8,12 +8,13 @@
 // the rail redraws without the row, and a person reading that empty rail would conclude the delete
 // finished. It did not reach the remote, so the next workspace start can bring it back.
 //
-// Input on stdin: `{ "saved": <the `saved` half of the DELETE answer, or null> }`.
+// Input on stdin:
+// `{ "saved": <the `saved` half of the DELETE answer, or null>, "keptArtifacts": [path, ...] }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { saved } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { saved, keptArtifacts = [] } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const THREAD = { id: 't-1', title: 'Desk exposure', updatedAt: '2026-09-01T00:00:00Z', touched: [] };
 
@@ -64,8 +65,12 @@ for (const f of ['util.js', 'prefs.js', 'api.js', 'router.js', 'store.js',
 const SW = sandbox.SW;
 
 SW.store.set({ me: { id: 'u1', name: 'Dana Reed' }, threads: [THREAD], apps: [], thread: THREAD });
-// The answer the route now gives: the delete happened, and `saved` says whether git heard about it.
-SW.api.deleteThread = (id) => { deleted.push(id); return Promise.resolve({ ok: true, saved }); };
+// The answer the route now gives: the delete happened, `saved` says whether git heard about it,
+// and `keptArtifacts` names any folder a live app still holds.
+SW.api.deleteThread = (id) => {
+  deleted.push(id);
+  return Promise.resolve({ ok: true, saved, keptArtifacts });
+};
 SW.store.reloadThreads = () => {};
 SW.store.clearConversation = () => {};
 

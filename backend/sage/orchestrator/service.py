@@ -6224,11 +6224,12 @@ class Orchestrator:
             project = self._ensure_seeded()
             self._pin_turn_app(project)
             self._adopt_legacy_build_history(project.app_for_turn(), project.record)
-            # Same reason as the streaming turns: neither the archive nor the Artifacts link is
-            # committed, so a fresh clone reaching the agent through this route would hand it
-            # files that aren't there.
-            self._refresh_agent_inputs(project)
+        # Same reason as the streaming turns: neither the archive nor the Artifacts link is
+        # committed, so a fresh clone reaching the agent through this route would hand it
+        # files that aren't there.
             client = self._ensure_opencode()
+            self._switch_conversation(project, conversation)
+            self._refresh_agent_inputs(project)
             sid = self._ensure_session(project, conversation)
 
             def send_and_wait(text: str) -> None:
@@ -7068,11 +7069,14 @@ class Orchestrator:
         spoken_for = self._artifacts_are_spoken_for(store, thread_id)
         if not store.delete(thread_id, purge_artifacts=not spoken_for):
             raise KeyError(thread_id)
+        kept_artifacts = ([f"examples/{thread_id}/"]
+                          if spoken_for and store.examples_dir(thread_id).exists() else [])
         for path in paths:
             self._release_chat_file(project, path)
         self._chat_dirty = True
         self._chat_dirty_thread = None  # the Thread it named is gone; nothing is pending on one
-        return {"ok": True, "saved": self._flush_chat_save("delete a conversation")}
+        return {"ok": True, "saved": self._flush_chat_save("delete a conversation"),
+                "keptArtifacts": kept_artifacts}
 
     def _artifacts_are_spoken_for(self, store: ThreadStore, thread_id: str) -> bool:
         """Whether a live Built App's own handoff digest names this Thread's Artifacts by path.
@@ -10555,8 +10559,9 @@ class Orchestrator:
                 project.workspace.clear_resource_usage()
                 project.workspace.append_history({"type": "app-reset"}, project.build_conversation)
                 # Reset took the Artifacts link with the rest of the app, and `examples` is not in
-                # _RESET_KEEP because this seam is what puts it back — the same way it puts back
-                # `.sage/history.md`. One place encodes the invariant.
+                # _RESET_KEEP because this seam puts the ignore rule back now and the per-Thread
+                # link back once a Conversation is known. Same way it puts back `.sage/history.md`.
+                # One place encodes the invariant.
                 self._refresh_agent_inputs(project)
                 return {"ok": True, "status": project.status()}
         finally:
@@ -19625,9 +19630,9 @@ class Orchestrator:
     def _unignore_chat_artifacts(self, project: Project) -> None:
         """Stop the Project root ignoring `examples/` — the Chat Artifacts (#222).
 
-        `/examples` is a real rule, but only for a Built App, where `examples` is a symlink up to
-        this directory (`_ensure_examples_link`). It reached the Project root because one template
-        .gitignore seeds both, and there it ignored the charts and tables themselves. Nothing under
+        `/examples` is a real rule, but only for a Built App, where `examples` is an app-local
+        directory of per-Thread symlinks (`_ensure_examples_link`). It reached the Project root
+        because one template .gitignore seeds both, and there it ignored the charts and tables themselves. Nothing under
         `examples/` was ever committed, so it lived only on the container's own disk: a Builder that
         restarted pulled back a transcript whose every Artifact card pointed at a file the clone did
         not have, and the Conversation came back with all its charts broken.
@@ -19712,8 +19717,7 @@ class Orchestrator:
             log.warning("artifacts: could not untrack the committed charts", exc_info=True)
 
     def _ensure_examples_link(self, project: Project) -> None:
-        """Link the Project's Chat Artifacts into the app a turn runs in, and keep the link out of
-        git while doing it.
+        """Link this turn's Chat Artifacts into the app, and keep the link out of git.
 
         The handoff prompt hands the implement turn `examples/<threadId>/…` (handoff._HANDOFF_LINE),
         but the build agent's cwd is `apps/<appId>/` and the Artifacts live one level above it — so
@@ -19722,18 +19726,23 @@ class Orchestrator:
         this link since it was written, for the same reason and with the same shape
         (`ensure_chat_workdir`); the app directory never got it.
 
-        The ignore rule is anchored and carries NO trailing slash. Git does not follow a symlink, so
-        it records this one as a symlink and not as a directory — `examples/`, which matches
-        directories only, would not cover it. Unignored, `git add -A` commits a link pointing
-        outside the app tree and a fresh clone gets a dangling one. This call is the only thing
-        that writes the rule. The template cannot ship it: the same file seeds the Project root
-        too, where `examples/` is the Chat Artifacts themselves rather than a link to them, and
-        ignoring them there meant no Conversation's charts were ever committed — a Builder that
-        restarted came back to Artifact cards pointing at files no clone had (#222).
+        The ignore rule is anchored and carries NO trailing slash. The app keeps `examples/` as a
+        real directory whose children are symlinks; ignoring the directory keeps both the directory
+        and those per-Thread links out of the app's commit. This call is the only thing that writes
+        the rule. The template cannot ship it: the same file seeds the Project root too, where
+        `examples/` is the Chat Artifacts themselves rather than an app-local directory, and ignoring
+        them there meant no Conversation's charts were ever committed — a Builder that restarted
+        came back to Artifact cards pointing at files no clone had (#222).
 
-        Nothing to do at all when the app IS the Project root, as a legacy single-app Project's
-        is. There is no link to make — `examples/` is already right there — and adding the rule
-        would put it straight back into the one file `_unignore_chat_artifacts` takes it out of.
+        The reason is per-Thread, so the link is too. `apps/<appId>/examples/` is a real ignored
+        directory, and only `examples/<threadId>` is a symlink. A prior whole-directory symlink is
+        replaced, and a prior per-Thread symlink for another Conversation is removed. That keeps the
+        reach exact-path-shaped: a turn can open the paths its own digest names, and not a sibling
+        Conversation's Artifact by guessing its path.
+
+        Nothing to do at all when the app IS the Project root, as a legacy single-app Project's is.
+        There is no link to make — `examples/` is already right there — and adding the rule would
+        put it straight back into the one file `_unignore_chat_artifacts` takes it out of.
 
         No `.ignore` negation, unlike `_refresh_history_archive` above. That one needs it because
         the agent FINDS the archive by grepping, and ripgrep honours `.gitignore`. Nothing here is
@@ -19748,7 +19757,23 @@ class Orchestrator:
         if ws.path == project.record.path:
             return
         self._ensure_gitignored(ws.path, "/examples")
-        _ensure_dir_link(ws.path / "examples", project.record.path / "examples")
+        thread_id = str(project.build_conversation or "").strip()
+        if not thread_id:
+            return
+        examples = ws.path / "examples"
+        if examples.is_symlink():
+            examples.unlink()
+        elif examples.exists() and not examples.is_dir():
+            return
+        examples.mkdir(exist_ok=True)
+        for child in examples.iterdir():
+            if child.name != thread_id and child.is_symlink():
+                child.unlink()
+        try:
+            target = ThreadStore(project.record.path).examples_dir(thread_id)
+        except ValueError:
+            return
+        _ensure_dir_link(examples / thread_id, target)
 
     def shutdown(self) -> None:
         if self._shutdown_done:

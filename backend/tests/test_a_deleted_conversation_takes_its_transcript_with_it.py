@@ -35,11 +35,11 @@ _needs_node = pytest.mark.skipif(
 )
 
 
-def _press_delete(saved: dict | None) -> dict:
+def _press_delete(saved: dict | None, kept_artifacts: list[str] | None = None) -> dict:
     """Press Delete in the rail's menu and answer its DELETE with `saved`."""
     out = subprocess.run(
         ["node", str(_HARNESS)],
-        input=json.dumps({"saved": saved}),
+        input=json.dumps({"saved": saved, "keptArtifacts": kept_artifacts or []}),
         check=False, capture_output=True, text=True, timeout=60,
     )
     assert out.returncode == 0, out.stderr
@@ -159,9 +159,10 @@ def test_the_artifacts_go_when_no_built_app_names_them(tmp_path: Path):
     store = _store(orch)
     tid = _furnish(store)
 
-    orch.delete_thread(tid)
+    out = orch.delete_thread(tid)
 
     assert not store.examples_dir(tid).exists()
+    assert out["keptArtifacts"] == []
 
 
 def test_the_artifacts_stay_when_a_built_app_names_them(tmp_path: Path):
@@ -174,9 +175,10 @@ def test_the_artifacts_stay_when_a_built_app_names_them(tmp_path: Path):
     app_id = orch.create_app()["id"]  # a real directory under apps/, as a handoff would leave
     _hand_off_to(store, tid, app_id)
 
-    orch.delete_thread(tid)
+    out = orch.delete_thread(tid)
 
     assert (store.examples_dir(tid) / "chart.png").exists()
+    assert out["keptArtifacts"] == [f"examples/{tid}/"]
     # The talk still goes. Keeping the charts is not keeping the conversation.
     assert not (store.thread_dir(tid) / "history.jsonl").exists()
 
@@ -386,6 +388,8 @@ def test_the_dialog_says_what_goes_what_stays_and_what_git_keeps(tmp_path: Path)
     assert "deleted for good" in dialog["content"]
     assert "Apps it changed stay" in dialog["content"]
     assert "git" in dialog["content"]
+    assert "Artifacts an app holds stay" in dialog["content"]
+    assert "examples/t-1/" in dialog["content"]
     assert dialog["okText"] == "Delete" and dialog["danger"] is True
 
 
