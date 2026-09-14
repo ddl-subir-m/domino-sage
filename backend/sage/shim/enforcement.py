@@ -558,6 +558,6 @@ class EnforcementShim:
             version=_SAGE_VERSION,
             project_name=self._project_name,
         )
-        request, used = self.data_use.prepare(request)
+        request, used = self.data_use.prepare(request, withheld=state.withheld)
         stream = _capture_refusal(self._gateway.route(request, labels), request, on_refused)
         return self.data_use.observe(stream, request, used)

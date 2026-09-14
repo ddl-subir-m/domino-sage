@@ -2,10 +2,25 @@
 
 import copy
 import json
+import re
 import threading
 from uuid import uuid4
 
-from ..shim.chat_paths import read_path_from_tool_call, withheld_result
+from ..router.phase_classifier import READ_TOOLS, SHELL_TOOLS
+from ..shim.chat_paths import (
+    MENTION_MARK,
+    MENTION_PATH_LINE,
+    content_text,
+    normalize_write_path,
+    read_path_from_tool_call,
+    tool_call_name_and_args,
+    withheld_result,
+)
+
+_EXECUTION_TOOLS = SHELL_TOOLS | frozenset({"python", "python_exec", "python_execute"})
+_PATH_KEYS = ("path", "filePath", "file_path")
+_COMMAND_KEYS = ("command", "cmd", "code")
+_EXIT = "Command exited with code "
 
 
 class DataUse:
@@ -38,21 +53,49 @@ class DataUse:
             return [copy.deepcopy(event) for event, _, _ in self.operations.values()
                     if event["turn_id"] == turn_id]
 
-    def prepare(self, request):
-        """Only known structured results and direct reads of their Artifacts are handled here."""
-        if not self.operations or not isinstance(request.get("messages"), list):
+    def prepare(self, request, withheld=None):
+        """Build the model-facing view of known data-bearing local tool results.
+
+        The transcript still holds the local result the person saw. This rewrites only the request
+        that is leaving Sage, and only for sources Sage can identify from upload descriptors or
+        recorded data operations. It does not inspect values for PII.
+        """
+        if not isinstance(request.get("messages"), list):
             return request, set()
+        sources = _sources_from_messages(request["messages"])
+        with self.lock:
+            sources.extend(_source_from_event(event) for event, _, _ in self.operations.values())
+        sources = [s for s in sources if s.get("path")]
+        hidden = _withheld_sources(withheld)
         calls = {}
+        direct: dict[str, dict] = {}
         used = set()
+        local_texts: list[str] = []
         messages = []
         with self.lock:
             for message in request.get("messages", []):
                 if not isinstance(message, dict):
                     messages.append(message)
                     continue
+                message = copy.deepcopy(message)
+                message = _rewrite_open_code_parts(message, sources, hidden, local_texts)
                 for call in message.get("tool_calls") or []:
                     if isinstance(call, dict):
+                        cid = str(call.get("id") or "")
                         calls[call.get("id")] = call
+                        source = _sources_for_call(call, sources, hidden)
+                        if cid and source:
+                            direct[cid] = source
+                            call = _sanitize_call(call, source)
+                            _replace_call(message, cid, call)
+                        else:
+                            raw_args = _call_arguments_text(call)
+                            if _contains_local_text(raw_args, local_texts):
+                                source = {"sources": [], "withheld": False}
+                                direct[cid] = source
+                                _replace_call(message, cid, _sanitize_call(call, source))
+                            for oid, _event, reply in self._selected_operation_args(raw_args):
+                                used.add(oid)
                 if message.get("role") == "tool":
                     content = message.get("content")
                     try:
@@ -73,8 +116,27 @@ class DataUse:
                                 shape["selected_fields"] = []
                                 message = {**message, "content": json.dumps(shape)}
                                 break
+                    cid = str(message.get("tool_call_id") or "")
+                    if cid in direct:
+                        raw = _tool_content_text(message.get("content"))
+                        if raw:
+                            local_texts.append(raw)
+                        receipt = _local_receipt(calls.get(message.get("tool_call_id"), {}),
+                                                 direct[cid], raw)
+                        message = {**message, "content": _replace_content(message.get("content"),
+                                                                          receipt)}
                 messages.append(message)
         return {**request, "messages": messages}, used
+
+    def _selected_operation_args(self, text):
+        if not text:
+            return []
+        out = []
+        for oid, (event, reply, _persist) in self.operations.items():
+            selected = reply.get("selected") if isinstance(reply, dict) else None
+            if selected and _contains_selected(text, selected):
+                out.append((oid, event, reply))
+        return out
 
     def observe(self, stream, request, used):
         if not used:
@@ -122,3 +184,252 @@ class DataUse:
             if evidence["state"] != "failed":
                 evidence["state"] = "response_completed" if completed else "interrupted"
             save()
+
+
+def _sources_from_messages(messages):
+    sources = []
+    for message in messages:
+        text = content_text(message.get("content")) if isinstance(message, dict) else ""
+        if MENTION_MARK not in text:
+            continue
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if line != MENTION_PATH_LINE.lstrip("\n") and not line.startswith(MENTION_PATH_LINE.lstrip("\n")):
+                continue
+            path = line.split("path:", 1)[1].strip()
+            if not path:
+                continue
+            window = "\n".join(lines[max(0, i - 2): min(len(lines), i + 3)])
+            sources.append({"path": path, **_shape_from_text(window)})
+    return sources
+
+
+def _shape_from_text(text):
+    shape = {}
+    rows = re.search(r"([0-9][0-9,]*)\s+rows?\b", text, re.IGNORECASE)
+    if rows:
+        try:
+            shape["rows"] = int(rows.group(1).replace(",", ""))
+        except ValueError:
+            pass
+    columns = re.search(r"\bcolumns?:\s*([^\n.]+)", text, re.IGNORECASE)
+    if columns:
+        names = [c.strip(" `\"'") for c in columns.group(1).split(",")]
+        names = [c for c in names if c]
+        if names:
+            shape["columns"] = names[:80]
+    return shape
+
+
+def _source_from_event(event):
+    return {"path": str(event.get("source") or event.get("artifact") or ""),
+            "columns": list(event.get("columns") or []),
+            "rows": event.get("coverage", {}).get("processed", event.get("result_rows"))}
+
+
+def _withheld_sources(keys):
+    out = []
+    for key in keys or ():
+        if isinstance(key, str) and key.startswith("file:"):
+            out.append({"path": key[5:], "withheld": True})
+    return out
+
+
+def _same_path(a, b):
+    left, right = normalize_write_path(str(a or "")), normalize_write_path(str(b or ""))
+    if not left or not right:
+        return False
+    return left == right or left.endswith("/" + right) or right.endswith("/" + left)
+
+
+def _path_in_text(text, path):
+    norm = normalize_write_path(str(path or ""))
+    raw = str(text or "").replace("\\", "/")
+    return bool(norm and (norm in raw or str(path) in raw))
+
+
+def _sources_for_call(call, sources, hidden):
+    name, args = tool_call_name_and_args(call)
+    if name in _EXECUTION_TOOLS:
+        text = " ".join(str(args.get(k) or "") for k in _COMMAND_KEYS)
+        found = [s for s in sources + hidden if _path_in_text(text, s.get("path"))]
+    elif name in READ_TOOLS:
+        path = next((str(args.get(k) or "") for k in _PATH_KEYS if args.get(k)), "")
+        found = [s for s in sources + hidden if _same_path(path, s.get("path"))]
+    else:
+        found = []
+    if not found:
+        return {}
+    return {"sources": _dedupe_sources(found), "withheld": any(s.get("withheld") for s in found)}
+
+
+def _dedupe_sources(sources):
+    out = []
+    seen = set()
+    for source in sources:
+        path = normalize_write_path(str(source.get("path") or ""))
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        out.append({k: v for k, v in source.items() if v is not None and k != "withheld"})
+    return out
+
+
+def _replace_call(message, cid, replacement):
+    if not cid:
+        return
+    calls = []
+    changed = False
+    for call in message.get("tool_calls") or []:
+        if isinstance(call, dict) and str(call.get("id") or "") == cid:
+            calls.append(replacement)
+            changed = True
+        else:
+            calls.append(call)
+    if changed:
+        message["tool_calls"] = calls
+
+
+def _sanitize_call(call, source):
+    name, _args = tool_call_name_and_args(call)
+    receipt = {
+        "kind": "local_execution_request",
+        "tool": name,
+        "note": "Full local data arguments remain local.",
+        "sources": source.get("sources", []),
+    }
+    out = copy.deepcopy(call)
+    if isinstance(out.get("function"), dict):
+        raw = out["function"].get("arguments")
+        out["function"]["arguments"] = json.dumps(receipt) if isinstance(raw, str) else receipt
+    elif "input" in out:
+        out["input"] = receipt
+    elif isinstance(out.get("state"), dict):
+        out["state"] = {**out["state"], "input": receipt}
+    return out
+
+
+def _call_arguments_text(call):
+    _name, args = tool_call_name_and_args(call)
+    return json.dumps(args, sort_keys=True, default=str)
+
+
+def _tool_content_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(p.get("text") or "") for p in content
+                         if isinstance(p, dict) and p.get("type") == "text")
+    return ""
+
+
+def _replace_content(content, receipt):
+    text = json.dumps(receipt)
+    if isinstance(content, list):
+        return [{"type": "text", "text": text}]
+    return text
+
+
+def _local_receipt(call, source, raw, status=None):
+    name, _args = tool_call_name_and_args(call or {})
+    if not name:
+        name = "tool"
+    exit_code = _exit_code(raw)
+    withheld = str(raw or "").startswith("[withheld:")
+    return {
+        "kind": "local_execution_receipt",
+        "tool": name,
+        "status": "error" if source.get("withheld") or withheld or status == "error"
+        or exit_code not in (None, 0) else "completed",
+        "note": (
+            "Full tool output remains local. Use source structure and selected operation results; "
+            "do not treat this receipt as row values."
+        ),
+        "sources": source.get("sources", []),
+        "artifacts": sorted(set(re.findall(r"examples/[^\s<>)\"`]+", raw or ""))),
+        "exit": exit_code,
+    }
+
+
+def _exit_code(text):
+    raw = str(text or "")
+    i = raw.rfind(_EXIT)
+    if i < 0:
+        return None
+    digits = ""
+    for ch in raw[i + len(_EXIT):]:
+        if not ch.isdigit():
+            break
+        digits += ch
+    return int(digits) if digits else None
+
+
+def _contains_local_text(text, local_texts):
+    haystack = str(text or "")
+    if not haystack:
+        return False
+    for raw in local_texts:
+        for line in str(raw).splitlines():
+            probes = [line.strip(), *re.split(r"[\s,;|]+", line)]
+            if any(len(probe) >= 8 and probe in haystack for probe in probes):
+                return True
+    return False
+
+
+def _contains_selected(text, selected):
+    haystack = str(text or "")
+    return any(str(value) and str(value) in haystack for value in _flatten(selected))
+
+
+def _flatten(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _flatten(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _flatten(item)
+    else:
+        yield value
+
+
+def _rewrite_open_code_parts(message, sources, hidden, local_texts):
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+    parts = []
+    changed = False
+    for part in content:
+        if not isinstance(part, dict):
+            parts.append(part)
+            continue
+        name = str(part.get("tool") or part.get("name") or "")
+        state = part.get("state") if isinstance(part.get("state"), dict) else {}
+        call = {"tool": name, "state": {"input": state.get("input") or part.get("input") or {}}}
+        source = _sources_for_call(call, sources, hidden)
+        if not source:
+            parts.append(part)
+            continue
+        raw = "\n".join(str(state.get(k) or "") for k in ("output", "error"))
+        if raw:
+            local_texts.append(raw)
+        receipt = _local_receipt(call, source, raw, status=state.get("status"))
+        clean_state = {**state, "input": _sanitize_part_input(call, source)}
+        for key in ("output", "error"):
+            if isinstance(clean_state.get(key), str):
+                clean_state[key] = json.dumps(receipt)
+        meta = clean_state.get("metadata")
+        if isinstance(meta, dict):
+            clean_meta = dict(meta)
+            for key in ("output", "error"):
+                if isinstance(clean_meta.get(key), str):
+                    clean_meta[key] = json.dumps(receipt)
+            clean_state["metadata"] = clean_meta
+        parts.append({**part, "state": clean_state})
+        changed = True
+    return {**message, "content": parts} if changed else message
+
+
+def _sanitize_part_input(call, source):
+    clean = _sanitize_call(call, source)
+    state = clean.get("state") if isinstance(clean, dict) else None
+    return (state or {}).get("input", {})
