@@ -18,6 +18,7 @@ import pytest
 
 from sage import timing
 from sage.feedback.runner import FeedbackReport
+from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode, ModelCatalog
 
@@ -37,10 +38,26 @@ def _catalog() -> ModelCatalog:
 
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
+    """No sleeping, and a handoff classifier that has not already given up (#339).
+
+    `handoff._health` is process-wide on purpose — the thing it tracks is the gateway route, not a
+    Thread — and its `unreadable` count only falls on a readable verdict or an explicit reset. So
+    it ACCUMULATES across tests: three unreadable answers anywhere on an xdist worker, in three
+    different files, trip the breaker, and `wants_an_app` then returns before it records anything.
+    A chat turn still runs and still answers; its record simply carries no handoff call, which is
+    what `test_the_chat_classifier_is_on_the_ledger_like_the_scope_one` reads and fails on.
+
+    That is why the red was invisible to every scoped run and deterministic on the full deal, and
+    why bisecting the order found a boundary but no single culprit: nothing here leaks, the count
+    creeps. Reset on both sides, as the other 23 files that drive the classifier already do.
+    """
     import time
 
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    handoff._health.reset()
+    yield
+    handoff._health.reset()
 
 
 def _orch(tmp_path: Path, turns: list[Turn]) -> Orchestrator:
@@ -181,6 +198,14 @@ def test_the_chat_classifier_is_on_the_ledger_like_the_scope_one(tmp_path: Path)
 
     It runs after the answer is on screen, which is exactly the stretch that reads as time nothing
     can account for."""
+    # Said before the turn runs, because the way this fails otherwise is a record with an empty
+    # `calls` list and nothing to say why (#339). A classifier that has already given up does not
+    # reach its `model_call`, so the turn answers normally and records no inference — the symptom
+    # of a breaker three unreadable verdicts old is indistinguishable from broken ledger wiring,
+    # which is the thing this test exists to catch.
+    assert handoff._health.broken is False, \
+        "the classifier had already given up before this test ran — the ledger is not the suspect"
+
     orch = _chat_orch(tmp_path, [Turn(text="here is the answer")])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "which desk lost the most?"))
