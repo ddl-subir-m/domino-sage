@@ -596,6 +596,23 @@ window.SW = window.SW || {};
     return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
   }
 
+  const BINDINGS_FILE = '.sage/bindings.json';
+
+  function retainedBindingFiles(crossed) {
+    const retained = crossed.retainedBindings || [];
+    const legacy = !crossed.resources && (crossed.files || []).includes(BINDINGS_FILE)
+      ? [BINDINGS_FILE]
+      : [];
+    // Older receipts were already written with the binding inside `files`. The Conversation
+    // history is the receipt, so the card repairs that old shape while leaving the row untouched.
+    return Array.from(new Set([...retained, ...legacy]));
+  }
+
+  function writtenCrossingFiles(crossed) {
+    const retained = new Set(retainedBindingFiles(crossed));
+    return (crossed.files || []).filter((file) => !retained.has(file));
+  }
+
   // The receipt for a handoff (#60). #58 took the four questions off the sheet, so nobody watches
   // the crossing happen any more — and everything that crosses is written to the Project as a real
   // file precisely so it CAN be inspected. This is where a person is told which files those were.
@@ -608,6 +625,8 @@ window.SW = window.SW || {};
   // that survives a re-render, the same way the superseded lines below are the card's own.
   function crossingReceipt({ crossed, open, onToggle }) {
     const named = crossed.appName || crossed.appId || SW.brand.text('the {builtApp}');
+    const files = writtenCrossingFiles(crossed);
+    const retained = retainedBindingFiles(crossed);
     return h(
       'div',
       { className: 'sw-crossing' },
@@ -666,15 +685,29 @@ window.SW = window.SW || {};
                 h('div', { key: name, className: 'sw-crossing-item' }, name)
               )
             ),
-          (crossed.files || []).length > 0 &&
+          files.length > 0 &&
             h(
               'div',
               { className: 'sw-crossing-group' },
               // Not "written into the app": `examples/` is the Project's, and the point of naming
               // paths at all is that a person can go and open exactly what is named.
               h('div', { className: 'sw-field-label' }, 'Files written to the project'),
-              (crossed.files || []).map((file) =>
+              files.map((file) =>
                 h('div', { key: file, className: 'sw-crossing-item' }, h('code', null, file))
+              )
+            ),
+          retained.length > 0 &&
+            h(
+              'div',
+              { className: 'sw-crossing-group' },
+              h('div', { className: 'sw-field-label' }, 'Already in the app'),
+              retained.map((file) =>
+                h(
+                  'div',
+                  { key: file, className: 'sw-crossing-item' },
+                  h('code', null, file),
+                  ' - a binding you made earlier. Turning Resources off did not withdraw it.'
+                )
               )
             ),
           // An Upload the composer wrote crosses by becoming an Attachment (ADR-0023) — named here

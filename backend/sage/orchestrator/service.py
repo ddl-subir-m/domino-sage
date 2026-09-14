@@ -8315,17 +8315,20 @@ class Orchestrator:
         charts = [{"title": str(a.get("title") or a.get("name") or ""),
                    "path": str(a.get("path") or "")}
                   for a in artifacts] if include_artifacts else []
-        # The same list the sheet showed before confirming: where to go and look. Bindings are
-        # named whenever the file is there rather than only when this crossing added a row —
-        # turning Resources off does not withdraw a Binding already made (the sheet says so), and
-        # a receipt that stopped naming the file would read as an app connected to nothing while
-        # it goes on reading those Resources.
+        bindings_path = project.workspace.path / ".sage" / "bindings.json"
+        retained_bindings = (
+            not include_resources
+            and bindings_path.is_file()
+        )
+        # The same list the sheet showed before confirming: where to go and look. Bindings stay in
+        # the crossed-files list only when this crossing carried Resources; when Resources is off,
+        # an already-made binding gets its own receipt line so the file is not misnamed as something
+        # this handoff wrote.
         files = [
             ".sage/plan.md",
             ".sage/handoff.md",
             include_artifacts and charts and f"examples/{thread_id}/",
-            (project.workspace.path / ".sage" / "bindings.json").is_file()
-            and ".sage/bindings.json",
+            include_resources and bindings_path.is_file() and ".sage/bindings.json",
             include_transcript and ".sage/handoff-transcript.md",
         ]
         return {
@@ -8335,6 +8338,7 @@ class Orchestrator:
             "charts": charts,
             "context": [str(i.get("name") or "") for i in context] if include_resources else [],
             "files": [f for f in files if f],
+            "retainedBindings": [".sage/bindings.json"] if retained_bindings else [],
             "uploads": uploads,
         }
 
