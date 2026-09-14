@@ -1,0 +1,231 @@
+{
+  "issues": {
+    "T01": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 350,
+      "database_id": 5452311650,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/350",
+      "title": "Calculate from an uploaded CSV and show Data used",
+      "release_status": "active"
+    },
+    "T02": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 351,
+      "database_id": 5452311786,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/351",
+      "title": "Use bound tables without a Sample rows approval step",
+      "release_status": "active"
+    },
+    "T03": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 352,
+      "database_id": 5452311936,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/352",
+      "title": "Analyse relevant text with complete record coverage",
+      "release_status": "active"
+    },
+    "T04": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 353,
+      "database_id": 5452312057,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/353",
+      "title": "Keep incidental read and execution output out of model context",
+      "release_status": "active"
+    },
+    "T05": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 354,
+      "database_id": 5452312279,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/354",
+      "title": "Preserve data handling through subagents and background results",
+      "release_status": "active"
+    },
+    "T06": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 355,
+      "database_id": 5452312378,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/355",
+      "title": "Apply deliberate data use to MCP and image results",
+      "release_status": "active"
+    },
+    "T07": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 356,
+      "database_id": 5452312484,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/356",
+      "title": "Preserve data choices through Recall and compaction",
+      "release_status": "active"
+    },
+    "T08": {
+      "repo": "etanlightstone/LLM_gateway",
+      "number": 32,
+      "database_id": 5452312601,
+      "url": "https://github.com/etanlightstone/LLM_gateway/issues/32",
+      "title": "Enforce input rules across content carriers and return decision evidence",
+      "release_status": "deferred"
+    },
+    "T09": {
+      "repo": "etanlightstone/LLM_gateway",
+      "number": 33,
+      "database_id": 5452312705,
+      "url": "https://github.com/etanlightstone/LLM_gateway/issues/33",
+      "title": "Enforce output rules before releasing streamed content",
+      "release_status": "deferred"
+    },
+    "T10": {
+      "repo": "etanlightstone/LLM_gateway",
+      "number": 34,
+      "database_id": 5452312839,
+      "url": "https://github.com/etanlightstone/LLM_gateway/issues/34",
+      "title": "Apply current rules and restrictions to cache and fallback",
+      "release_status": "deferred"
+    },
+    "T11": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 357,
+      "database_id": 5452312988,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/357",
+      "title": "Recover from refusal without resending blocked Recall",
+      "release_status": "active"
+    },
+    "T12": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 358,
+      "database_id": 5452313133,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/358",
+      "title": "Make new Built Apps report refusal and interrupted answers",
+      "release_status": "active"
+    },
+    "T13": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 359,
+      "database_id": 5452313245,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/359",
+      "title": "Carry local analysis and Data used into new Built Apps",
+      "release_status": "active"
+    },
+    "T14": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 360,
+      "database_id": 5452313353,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/360",
+      "title": "Enforce app model restrictions after publication",
+      "release_status": "deferred"
+    },
+    "T15": {
+      "repo": "ddl-subir-m/domino-sage",
+      "number": 361,
+      "database_id": 5452313476,
+      "url": "https://github.com/ddl-subir-m/domino-sage/issues/361",
+      "title": "Verify Sage-only data use across models and app runtime",
+      "release_status": "active"
+    }
+  },
+  "relation_errors": [],
+  "parent_before": {
+    "title": "Implement deliberate data use and gateway enforcement across Chat, Build, and Built Apps",
+    "body": "# Data use and gateway enforcement in Chat, Build, and Built Apps\n\nStatus: implementation spec; test boundaries confirmed by the user on 2026-09-14. No production implementation is authorised by this document alone.\n\n## Problem Statement\n\nA person uploads a CSV and asks Sage for analysis. One tool choice displays rows in Domino. Another copies the same rows into a model request, where a gateway guardrail can refuse them. The refusal can then affect later turns because the rows remain in Recall. The person cannot reliably tell which values were used locally, submitted to the gateway, or received by a model.\n\nAvoiding all model access to values is not a solution: some tasks need the actual text. Asking for permission on every transfer adds work without explaining the gateway's changing rules. Local processing also does not guarantee correct output: the experiment processed every complaint but initially assigned some to the wrong category.\n\nBuilt Apps have related faults. The current model helper loses refusal details and can treat an interrupted answer as complete. Gateway source probes also found incomplete redaction and output checks that occur after streamed content is released. These faults require work in both Sage and the gateway.\n\n## Solution\n\nSage chooses local computation, model work through the LLM Gateway, or both to complete the requested task. The gateway is trusted to receive sensitive values for inspection and enforce its current rules. Sage sends relevant data deliberately and avoids unnecessary rows. It does not try to predict the gateway's changing PII rules.\n\nCalculations, tables, and charts use local data processing where practical. Semantic tasks can send the relevant text and record identifiers through the gateway. Users do not approve each necessary transfer. Explicit user limits and administrator restrictions still apply.\n\nAn expandable **Data used** detail explains recorded actions beside the result. It uses file and model chips, clear coverage counts, and honest outcome text. After a refusal, Sage preserves useful local results, avoids repeated blocked requests, and asks before changing the task or discarding Recall.\n\nDeliver this behavior for fresh projects, in both Workbench modes and newly generated Built Apps. Existing projects and apps are not migrated or reset.\n\n## User Stories\n\n1. As a Chat user, I want to calculate from my data locally, so that an unnecessary transfer does not block a simple answer.\n2. As a Chat user, I want tables and charts to remain available, so that I can inspect results in the form I need.\n3. As a user, I want semantic analysis to use the relevant text, so that Sage does not replace understanding with an invented keyword rule.\n4. As a user, I want Sage to choose the necessary computation and model steps, so that I do not approve each routine transfer.\n5. As a user, I want uploading a file to make it available for my task, so that availability does not mean the entire file is sent to a model.\n6. As a user, I want explicit limits on data use to remain effective, so that Sage respects my instructions.\n7. As an administrator, I want Dataset and model restrictions to remain effective, so that automatic data use does not remove existing controls.\n8. As a user, I want all relevant records included by default, so that a summary does not silently describe only a sample.\n9. As a user, I want missing, duplicate, failed, and unprocessed records reported, so that I know the actual coverage.\n10. As a user, I want a sample clearly labelled and offered when a limit prevents full work, so that I can choose whether it meets my need.\n11. As a user, I want accurate calculations and useful semantic results, so that a complete record count is not mistaken for a correct answer.\n12. As a user, I want file and model names shown clearly in Data used, so that I can understand how the result was made.\n13. As a user, I want requested models distinguished from confirmed serving models, so that a fallback or cache hit does not create a false claim.\n14. As a user, I want uncertain transfer outcomes labelled as uncertain, so that a timeout is not shown as proof that no data left Domino.\n15. As a user, I want a clear gateway refusal message, so that I understand why the task stopped and what remains usable.\n16. As a user, I want local completion after a refusal when it can satisfy the same task, so that permitted work is not lost.\n17. As a user, I want to choose before Sage changes my task or clears Recall, so that recovery does not silently discard information.\n18. As a user, I want subagents and background work to follow the same data-use rules, so that delegation does not change the behavior.\n19. As a builder, I want source-code reads and useful errors to remain available, so that data handling does not prevent app development.\n20. As a builder, I want new Built Apps to handle current gateway rules at runtime, so that a rule change after publication has a clear outcome.\n21. As an app user, I want an interrupted or refused response marked incomplete, so that partial text is not presented as a successful answer.\n22. As a user, I want artifact retention and audience controls preserved, so that model data use does not grant permission to store or publish rows.\n23. As a user, I want fast progress across open and closed models, so that the design does not depend on one provider's speed or policy configuration.\n24. As an operator, I want measured call counts and whole-task latency, so that performance claims include startup, recovery, and validation costs.\n\n## Implementation Decisions\n\n### 1. Keep one agent system and one trust boundary\n\n- Extend the existing OpenCode integration, live data tools, enforcement shim, and gateway client. Keep Chat and Build on the existing agent system. Retain task delegation, to-do tools, the skill catalog, tables, and charts.\n- Treat the gateway as the enforcement authority. Do not add a local PII classifier, a copied policy list, or a preflight request for every model call. A gateway policy snapshot is diagnostic evidence, not a future permission decision.\n- Remove the old positive Sample rows grant requirement for automatic relevant-value use in fresh projects. It currently applies to bound Data Source tables, not arbitrary CSV uploads. Do not invent a current sharing switch: the inspected UI has a read-only Sample rows heading.\n- Preserve declared Dataset/model restrictions, explicit withholding, authentication, authorization, and Kept rows controls. Data Source and Dataset remain separate domain concepts.\n\n### 2. Combine local work and selected output\n\n- Extend existing data operations to accept source references, the requested computation or selection, selected result fields, record scope, and purpose. Let one operation compute locally, write an artifact, and return the selected result needed by the model.\n- By default, a data read exposes useful structure, counts, and a local reference to the model. Actual values are selected when they contribute to the task. Column names and metadata can themselves contain sensitive information; gateway enforcement still applies.\n- For semantic work, provide the relevant text and stable record identifiers. Do not substitute unvalidated keyword heuristics merely to avoid a model transfer. Do not require another model call solely to classify the task or fetch a result already returned.\n- Validate source access, result location, requested fields, and output shape. Reuse existing workspace and data-access controls. The prototype's lexical path check and Python execution are not a new sandbox.\n- Preserve source-code reads and diagnostic information needed for Build. Use known source and operation types rather than a blanket stdout filter or file-extension-only sensitivity rule.\n\n### 3. Separate local results from model context across all supported paths\n\n- Preserve authorized local display and artifact behavior while constructing a separate model view of data results. Keep valid tool-call/result pairs and provider-specific message metadata intact.\n- Carry source and operation references through reads, local execution, errors, subagent results, and background results. Process both normal output and error metadata. Apply the same handling before child model calls and parent continuation.\n- Test synthetic background user messages, tool-call arguments, images, MCP output, and compaction explicitly. A tool-result hook alone does not cover them. Previously selected values in history must not lose their attribution when reused.\n- Use the final outgoing request boundary to check that known data-bearing results follow their declared selection and user restrictions. This is a consistency check, not PII detection. Ordinary user-provided task text may go through the gateway under the agreed trust boundary.\n- Do not claim general file lineage for arbitrary code. Record verified inputs and selected outputs from structured operations; mark unsupported lineage unknown. For a supported path that cannot enforce an explicit restriction, stop that affected model operation with a clear explanation. Do not block unrelated local work.\n- Complete the path inventory and behavior tests before claiming consistent handling. Disabling useful agent capabilities is not the proposed fix.\n\n### 4. Record coverage separately from correctness\n\n- Create a record manifest for each full-data task, tied to the actual source snapshot or query result. Give records stable task-local identifiers even when source IDs are absent or duplicated.\n- Batch semantic work within model and gateway limits with bounded concurrency. Persist task-local batch progress so cancellation, retries, and partial failures have an accurate outcome. Do not retry policy denials unchanged.\n- Validate that returned IDs belong to the input and occur exactly once where one output per record is required. Validate the requested output shape. Report excluded, failed, and unfinished records separately from completed ones.\n- A source change during processing invalidates a claim of one consistent full-data result unless the reader provides snapshot semantics. Report the condition and use a consistent read before claiming completion.\n- Use deterministic checks for calculations and schema constraints. Use labelled evaluation fixtures for semantic quality. Full coverage is never labelled proof of semantic accuracy.\n- If resource or time limits prevent full completion, report the limit and offer a clearly labelled sample. Do not silently narrow the task or discard failed batches.\n\n### 5. Make Data used a record of actions\n\n- Record data-use events at data operations and the outgoing gateway boundary. Associate them with the task, result, source references, selection, coverage, and request attempt. Store metadata, not a second copy of raw rows or prompts.\n- Distinguish local computation, request attempt, confirmed gateway response, provider forwarding when confirmed, cache use when confirmed, refusal, interruption, and completed answer. A transport failure can leave receipt unknown. HTTP 200 headers alone do not prove completion.\n- Keep requested alias and confirmed serving model separate. Preserve available request correlation, fallback, cache, refusal direction, and policy decision evidence. Missing fields mean unknown, not allowed or not sent. Version the new contract and tolerate absent fields from older gateways.\n- Render collapsed Data used beside the result. Expansion gives short sentences and accessible file/model chips. Distinguish source files from generated Artifacts. Chips inherit existing access controls; metadata must not expose sources to a new audience.\n- With current evidence, use wording such as: \u201cCalculated from [sales.csv] in Domino. Regional totals submitted through the LLM Gateway. Requested model: [Claude].\u201d Use \u201csent to [Claude]\u201d only when gateway evidence confirms the serving model and forwarding. Do not describe a gateway as cloud unless its destination is known.\n- Keep partial output and uncertain delivery visibly distinct from a complete result. Persist the record with the result under existing access and retention rules; do not let an assistant's narrative overwrite observed events.\n\n### 6. Recover without evading policy or losing context silently\n\n- Classify policy refusals separately from authentication, rate-limit, transport, and provider failures. Preserve a safe, useful gateway reason without copying blocked values into an error message.\n- After a denial, do not resend the same blocked payload or change models to escape the rule. Existing normal routing is not permission to retry a refusal elsewhere.\n- Complete the same task locally when the available data and computation permit it. Preserve already generated artifacts. If local completion is not possible, state what remains unfinished and offer the existing user-chosen Recall recovery path.\n- Do not ask a model to plan recovery by resending poisoned Recall. Ask before discarding Recall or changing the task's meaning. The visible transcript remains distinct from model history.\n- Establish recovery using real multi-turn tests, including a subsequent ordinary question after a refusal. The experiment did not prove general recovery.\n\n### 7. Define and implement the gateway dependency\n\n- Gateway work belongs in the LLM Gateway repository. Sage must consume a caller-visible decision contract instead of depending on administrator-only logs or the guardrail test endpoint.\n- The contract needs correlated attempts, separate input/output decision stages, terminal success/failure, requested/served model evidence, cache/fallback evidence, and a decision or policy revision identifier where available. Do not expose matched raw values or internal rules to unauthorized callers.\n- Fix redaction over every supported content carrier selected for redaction, including later user messages, tool results, and multiple text parts. Preserve provider protocol validity; do not silently forward an unsupported carrier as if it had been redacted.\n- Denying input rules must act before provider forwarding. Configured output denial must prevent denied content from being released. Streaming can use incremental checks only if they enforce the applicable rule before release; otherwise buffer the relevant output. Measure the latency cost explicitly.\n- Cache and fallback paths must not bypass applicable current rules or administrator model restrictions. Distinguish a cache response from fresh provider receipt. Apply current output rules to cached content where required.\n- The current source snapshot is evidence of defects, not proof of the live deployment version. Integration acceptance must use the gateway build containing the fixes. Until then, Sage can improve local handling and honest unknown states, but cannot claim the full enforcement contract is delivered.\n\n### 8. Apply the contract to new Built Apps\n\n- Update the existing generated-app model helper and preview/deployed request path. Parse structured HTTP errors and streaming error events. Require a valid terminal completion; truncated EOF, refusal, or error after partial text is not success.\n- Retain partial text only as explicitly incomplete output and prevent it from being treated as a validated final result. Expose Data used evidence through the existing app integration.\n- Check administrator model restrictions at a trusted runtime boundary on every relevant request, including gateway fallback. Do not rely on a browser assertion, a model-group label alone, or a publish-time check.\n- Verify that a policy change after app publication affects the next applicable request and produces clear UI behavior. This requires an isolated test policy; implementation must not change shared production rules to run the check.\n\n## Testing Decisions\n\nThe proposed primary test boundary is the existing user-task flow through real OpenCode tools, Sage, and a controlled HTTP gateway. Assert the actual outgoing request, visible result, artifact, coverage, and next-turn behavior together. Use a scripted provider for reproducible failures rather than relying on a model to choose the same tool each time.\n\nTwo supporting boundaries are necessary: the gateway's real inference endpoint with a controlled provider, and the actual generated-app helper in preview/browser tests. One Sage test cannot prove server-side policy enforcement or deployed browser behavior. Prefer existing harnesses; do not add a separate agent system for tests.\n\nPrior art includes the live-read receipt/end-to-end tests, enforcement-shim tests using FakeGatewayClient, withheld-file and Recall recovery tests, mid-stream refusal tests, and the preview proxy's loopback gateway. Reuse these patterns, then add real OpenCode and browser coverage where a mocked internal call cannot prove the outcome.\n\nAcceptance checks:\n\n1. **Local calculation:** the synthetic sales fixture produces North 360, South 420, total 780 and a usable table/chart. Requests contain the needed selected totals, not the unrelated email column. Data used agrees with captured operations.\n2. **Semantic analysis:** actual complaint text and task-local IDs reach the model, unrelated email does not, and the labelled fixture yields four records in each of the three expected themes. Include the \u201cItem arrived broken\u201d regression.\n3. **Coverage:** missing batches, duplicate/unknown IDs, malformed output, cancellation, retry, source changes, and resource limits cannot produce a false complete result. Exercise at least 10,000 synthetic records with a controlled provider; do not infer this from the 60-record experiment.\n4. **Message paths:** run actual read, bash/Python output, source-code read, error metadata, child task, background completion, MCP output, image, argument, and compaction cases. Check model requests and preserved authorized local display. Include explicit withholding and provider message validity.\n5. **Recovery:** input refusal, output refusal, unknown refusal stage, and refusal retained in Recall have distinct honest outcomes. No unchanged policy retry or evasion by model switch occurs. Local completion works when possible; lossy context recovery requires user choice.\n6. **Gateway contract:** verify all supported redaction carriers, current rules on cache/fallback, forwarding evidence, terminal events, and output denial before release against the real gateway implementation with a controlled provider.\n7. **App behavior:** test structured HTTP refusal, partial stream plus error, truncated EOF, cancellation, normal completion, fallback, cache, and unknown metadata. Repeat an applicable request after an isolated runtime policy change, without rebuilding the app.\n8. **Presentation and controls:** browser checks cover readable chips, expansion, keyboard access, refresh/history, partial results, both Workbench modes, and a new Built App. Existing source authorization, Dataset restrictions, Kept rows, tables/charts, and task/skill capabilities remain effective.\n9. **Performance:** repeat fixed tasks on Sonnet, Gemini Flash, and an open-weight model through the gateway. Keep failed runs. Record calls, input volume, whole-task time, startup time, first useful output, and completion separately for warm/cold runs. Small calculation should need one compute/selection step, not a mandatory extra selection round. Report regressions and required enforcement tradeoffs; do not invent a universal latency SLA or derive p95 from a few runs.\n\nTests assert externally visible behavior and captured traffic, not private helper layouts. Live model evaluation supplements deterministic regression tests; it does not replace them. Only synthetic data is required for acceptance testing.\n\n## Out of Scope\n\n- Migrating, resetting, deleting, or retrofitting existing projects and already deployed apps.\n- A Sage copy of gateway PII detection, a static guardrail catalogue, or per-transfer user approval.\n- A new agent system, chart language, generic operating-system sandbox, or automatic proof of lineage through arbitrary code.\n- Removing charts, tables, skills, task delegation, or to-do support to simplify data handling.\n- Changing artifact audiences, Kept rows consent, administrator data restrictions, or shared production gateway policies.\n- Guaranteeing semantic correctness on arbitrary data or a fixed response time across all providers.\n- Production implementation, deployment, commit, push, or merge as part of this specification task.\n\n## Further Notes\n\nAccepted product decisions are in ADR-0052 (`docs/adr/0052-the-llm-gateway-is-the-trusted-enforcement-point.md`, worker branch). Preserve the distinctions in ADR-0022 (Recall recovery), ADR-0041 (local rows/model values), ADR-0043 (Dataset/model restrictions), and ADR-0045 (Kept rows).\n\nThe experiment report (`docs/performance/2026-09-14-pii-prototype.md`, worker branch), results (`docs/performance/2026-09-14-pii-results.json`, worker branch), and evidence archive (`docs/performance/2026-09-14-pii-evidence.zip`, worker branch) support this spec. Investigation and limits are recorded in [issue #346](https://github.com/ddl-subir-m/domino-sage/issues/346). Baseline Sage commit: `3e39a3636ff0f698f2b8e210405ecd92600c9155`. Inspected gateway commit: `4387d1b0df5693d6dec36cf65e12a9fb5a8e67db`.\n\nThe experiment established a useful combined data operation, not a completed enforcement system. It found no universal speed gain: Flash's final small sales run took 6.08 seconds versus 6.62 baseline; Gemma took 18.90 versus 14.86. Sonnet had a large unresolved pre-request delay. Full path coverage, generic Recall recovery, browser display, and runtime policy-change behavior remain implementation acceptance work.\n\nSplit delivery into dependency-linked tickets after this spec is accepted: data operations and coverage; outgoing context and recovery; gateway enforcement/evidence; Data used UI; generated-app runtime behavior; integrated acceptance. Gateway contract work blocks claims of confirmed provider receipt and enforced output denial. Final rollout requires the cross-component acceptance checks; isolated passing prototypes do not satisfy them.\n\nLocal design records and experiment evidence remain uncommitted on `codex/pii-design`; the issue contains the full spec and #346 contains the experiment report. Source documents must be landed before dependent implementation sessions rely on repository links.\n",
+    "state": "open",
+    "labels": [
+      "ready-for-agent"
+    ]
+  },
+  "verification": [
+    {
+      "task": "T01",
+      "release_status": "active",
+      "native_dependencies": 0,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T02",
+      "release_status": "active",
+      "native_dependencies": 1,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T03",
+      "release_status": "active",
+      "native_dependencies": 1,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T04",
+      "release_status": "active",
+      "native_dependencies": 1,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T05",
+      "release_status": "active",
+      "native_dependencies": 1,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T06",
+      "release_status": "active",
+      "native_dependencies": 1,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T07",
+      "release_status": "active",
+      "native_dependencies": 2,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T08",
+      "release_status": "deferred",
+      "native_dependencies": 0,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T09",
+      "release_status": "deferred",
+      "native_dependencies": 1,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T10",
+      "release_status": "deferred",
+      "native_dependencies": 1,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T11",
+      "release_status": "active",
+      "native_dependencies": 1,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T12",
+      "release_status": "active",
+      "native_dependencies": 0,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T13",
+      "release_status": "active",
+      "native_dependencies": 4,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T14",
+      "release_status": "deferred",
+      "native_dependencies": 2,
+      "native_dependencies_match": true
+    },
+    {
+      "task": "T15",
+      "release_status": "active",
+      "native_dependencies": 1,
+      "native_dependencies_match": true
+    }
+  ],
+  "native_child_count": 11,
+  "parent_content_unchanged": false,
+  "status": "published-sage-only",
+  "scope": "Sage-only; 11 active tasks; gateway T08-T10 and Sage T14 deferred",
+  "active_dependency_count": 13,
+  "parent_revision_reason": "User approved Sage-only scope; parent revised explicitly."
+}
