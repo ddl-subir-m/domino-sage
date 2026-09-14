@@ -82,6 +82,15 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "token": _TOKEN,
                 "dataset": {"type": "string", "description": "The Dataset name."},
+                "operation": {"type": "string", "enum": ["sum"],
+                              "description": "Fresh projects: calculate a CSV locally and return selected totals."},
+                "group_by": {"type": "string"},
+                "sum_column": {"type": "string"},
+                "selected_fields": {"type": "array", "items": {"type": "string"},
+                                    "description": "Result columns and/or total. Omit for structure only."},
+                "row_limit": {"type": "integer", "description": "Explicit user row limit; omit for all rows."},
+                "result_name": {"type": "string"},
+                "purpose": {"type": "string"},
                 "path": {
                     "type": "string",
                     "description": "One file below it. Omit to list the Dataset instead.",

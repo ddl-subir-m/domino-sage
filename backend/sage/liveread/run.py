@@ -61,6 +61,9 @@ class Turn:
     # another project is reached at all. Only a mounted one can have a file read out of it here.
     list_files: Callable[[str], Any] | None = None
     dataset_root: Callable[[str], Path | None] | None = None
+    data_use_enabled: bool = False
+    upload_for: Callable[[str], Path | None] | None = None
+    record_data_use: Callable[..., None] | None = None
 
 
 def _slug(*parts: str) -> str:
@@ -296,6 +299,9 @@ def _table(args: dict, turn: Turn) -> str:
 
 
 def _files(args: dict, turn: Turn) -> str:
+    if args.get("operation") == "sum":
+        from .calculate import calculate
+        return calculate(args, turn)
     name = str(args.get("dataset") or "")
     rel = str(args.get("path") or "")
     if not rel:

@@ -87,5 +87,16 @@ class FeedbackRunner:
 
         out = (proc.stdout or "") + (proc.stderr or "")
         errors = parse_tsc(out)
+        # The shipped starter typechecks even when every generated component is unused. Feed
+        # that exact unfinished screen into the existing repair loop before accepting the build.
+        entry = workspace / "src" / "App.tsx"
+        if proc.returncode == 0 and entry.is_file():
+            source = entry.read_text()
+            if re.search(r'<main\s+className=[\"\']sage-placeholder[\"\']\s*>', source):
+                errors.append(FeedbackError(
+                    file="src/App.tsx", line=1, col=1, code="SAGE001",
+                    message="The starter placeholder is still the app's screen. Replace it with "
+                            "the requested app and connect the components you wrote.",
+                ))
         # tsc exits non-zero on errors; treat clean only when exit 0 AND no parsed errors.
         return FeedbackReport(ok=(proc.returncode == 0 and not errors), errors=errors, raw=out)

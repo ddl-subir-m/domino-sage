@@ -1498,7 +1498,7 @@ window.SW = window.SW || {};
     };
   }
 
-  async function blocksForArtifacts(items) {
+  async function blocksForArtifacts(items, hiddenTables = new Set()) {
     const blocks = [];
     for (const art of items || []) {
       const path = art.path || '';
@@ -1517,6 +1517,12 @@ window.SW = window.SW || {};
           const res = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`);
           const body = await res.json();
           if (!res.ok) throw new Error((body && body.error) || res.statusText);
+          // Old conversations can name unfinished files. Keep valid zero-row tables and
+          // receipts, but give a blank file neither a card nor an "Open the file" link.
+          if (typeof body.content === 'string' && !body.content.trim()) {
+            hiddenTables.add(path);
+            continue;
+          }
           const data = JSON.parse(body.content || '{}');
           // The contract is `{title, columns, rows}` with a positional array per row. sage-chat
           // misses it two ways, and both showed a chart that plotted fine next to a table that
@@ -1673,6 +1679,15 @@ window.SW = window.SW || {};
     return carriers.length > 0 && carriers.every((c) => keys.has(c && c.key));
   };
 
+  function putDataUsed(messages, ensureAssistant, events) {
+    for (const event of events || []) {
+      const existing = messages.flatMap((m) => m.blocks || [])
+        .find((b) => b.type === 'data_used' && b.event.operation_id === event.operation_id);
+      if (existing) existing.event = event;
+      else ensureAssistant().blocks.push({ type: 'data_used', event });
+    }
+  }
+
   async function historyToMessages(history, handoff) {
     const messages = [];
     let assistant = null;
@@ -1707,8 +1722,10 @@ window.SW = window.SW || {};
     const liveRecall = recallOfferIndex(history, 'chat');
     const withheld = withheldKeys(history);
     const shownArts = new Set();
+    const hiddenTables = new Set();
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
+      if (ev.dataUsed) putDataUsed(messages, ensureAssistant, ev.dataUsed);
       if (ev.type === 'user') {
         assistant = null;
         messages.push({
@@ -1732,7 +1749,7 @@ window.SW = window.SW || {};
           return true;
         });
         if (items.length) {
-          ensureAssistant().blocks.push(...(await blocksForArtifacts(items)));
+          ensureAssistant().blocks.push(...(await blocksForArtifacts(items, hiddenTables)));
         }
       } else if (ev.type === 'error' || ev.type === 'stopped') {
         // Why the turn ended, on reload as well as live. The server has always persisted these —
@@ -1833,6 +1850,19 @@ window.SW = window.SW || {};
           order: pos,
           blocks: [{ type: 'plan_suggestion', reason: ev.reason }],
         });
+      }
+    }
+    if (hiddenTables.size) {
+      for (const message of messages.filter((m) => m.role === 'assistant')) {
+        for (const block of message.blocks.filter((b) => b.type === 'text')) {
+          // A useful total or chart link can share a sentence with the failed offer.
+          block.value = block.value.replace(/!?\[[^\]\n]*\]\([^\n)]*\)|\[file:[^\]\n]*\]|`[^`\n]*`/g,
+            (link) => [...hiddenTables].some((path) => link.includes(path)) ? '' : link);
+          for (const path of hiddenTables) block.value = block.value.split(path).join('');
+          block.value = block.value
+            .replace(/\b(?:and\s+)?(?:(?:the|your|this|a)\s+)?tables?\s+(?:(?:is|are|was|were)\s+)?(?:now\s+)?(?:ready|generated|saved|attached|below)\b\s*[:.!]?/gi, '')
+            .replace(/(?:;\s*)?\btable\s*:\s*(?=$|[.!?;])/gi, '').trim();
+        }
       }
     }
     return withHandoffCallout(messages, handoff);
@@ -2287,6 +2317,7 @@ window.SW = window.SW || {};
     };
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
+      if (ev.dataUsed) putDataUsed(messages, ensureAssistant, ev.dataUsed);
       if (ev.type === 'user') {
         assistant = null;
         messages.push({
@@ -7028,6 +7059,11 @@ window.SW = window.SW || {};
           // nothing is lost — reopening the conversation replays it. What is not wanted is this
           // answer appearing under a different question.
           if (!mine()) return;
+          if (ev.dataUsed && ev.dataUsed.length) {
+            ensurePushed();
+            putDataUsed(state.messages, () => assistant, ev.dataUsed);
+            notify();
+          }
           if (ev.type === 'delta') {
             state.typing = null;
             ensurePushed();
@@ -7047,7 +7083,7 @@ window.SW = window.SW || {};
               streamed += ev.text || '';
               paint();
             }
-          } else if (ev.type === 'agent' && ev.kind === 'text' && ev.text) {
+          } else if (ev.type === 'agent' && ev.kind === 'text') {
             state.typing = null;
             ensurePushed();
             // What streamed was the turn happening. This is the record of it, and it is the only
@@ -7057,7 +7093,7 @@ window.SW = window.SW || {};
             // once liveIndex is -1.
             liveIndex = -1;
             assistant.blocks = [...assistant.blocks.filter((b) => !b.fromStream),
-                                { type: 'text', value: ev.text }];
+                                ...(ev.text ? [{ type: 'text', value: ev.text }] : [])];
             notify();
           } else if (ev.type === 'agent' && ev.kind === 'tool') {
             state.typing = SW.util.activityLabel(ev);

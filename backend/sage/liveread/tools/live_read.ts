@@ -133,10 +133,21 @@ export const files = {
   description:
     "List the files in a bound Dataset, or read the head of one of them. Use this to say what a " +
     "Dataset holds. A listing that stopped short of the end says so — never report a capped " +
-    "listing as all of them.",
+    "listing as all of them. In fresh projects, operation sum calculates a CSV from its authorized path, " +
+    "writes a table and returns selected result fields in the same call. Use dataset=upload for uploads. " +
+    "Use this for CSV totals; do not read unrelated raw rows into model context. Respect explicit user limits.",
   args: {
     token,
     dataset: { type: "string", description: "The Dataset name." },
+    operation: { type: ["string", "null"], enum: ["sum", null],
+      description: "Fresh projects: calculate a CSV locally and return selected totals." + OPTIONAL },
+    group_by: { type: ["string", "null"], description: "The group column for sum." + OPTIONAL },
+    sum_column: { type: ["string", "null"], description: "The numeric column for sum." + OPTIONAL },
+    selected_fields: { type: ["array", "null"], items: { type: "string" },
+      description: "Result columns and/or total. Null returns structure only." },
+    row_limit: { type: ["integer", "null"], description: "Explicit user row limit; null for all rows." },
+    result_name: { type: ["string", "null"], description: "One filename without a directory." + OPTIONAL },
+    purpose: { type: ["string", "null"], description: "Purpose of this calculation." + OPTIONAL },
     path: {
       type: ["string", "null"],
       description: "One file below it." + OPTIONAL + " Then the Dataset is listed instead.",
