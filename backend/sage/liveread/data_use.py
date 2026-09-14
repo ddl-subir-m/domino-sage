@@ -220,7 +220,8 @@ class DataUse:
         request_id = "req_" + uuid4().hex
         evidence = {"request_id": request_id, "requested_alias": request.get("model"),
                     "serving_model": None, "provider_receipt": "unknown", "cache": "unknown",
-                    "decision_stage": "unknown", "delivery": "unknown", "state": "attempted"}
+                    "decision_stage": "unknown", "delivery": "unknown", "fallback": "unknown",
+                    "failure": None, "state": "attempted"}
 
         def save():
             with self.lock:
@@ -248,17 +249,103 @@ class DataUse:
                             continue
                         if body.get("error"):
                             evidence["state"] = "failed"
+                            evidence["failure"] = _failure_kind(body.get("error"))
+                            reason = _safe_refusal_reason(body.get("error"))
+                            if reason:
+                                evidence["refusal_reason"] = reason
                         elif any(c.get("finish_reason") in ("stop", "tool_calls")
                                  for c in body.get("choices", [])):
                             completed = True
+                        evidence.update(_gateway_evidence(body))
                 yield chunk
-        except Exception:
+        except Exception as exc:
             evidence["state"] = "failed"
+            evidence["failure"] = _failure_kind(exc)
             raise
         finally:
             if evidence["state"] != "failed":
                 evidence["state"] = "response_completed" if completed else "interrupted"
             save()
+
+
+def _gateway_evidence(body):
+    """Trust only fields the gateway response actually carries; absent stays unknown."""
+    if not isinstance(body, dict):
+        return {}
+    candidates = [body]
+    for key in ("gateway", "domino_gateway", "sage_gateway", "metadata", "evidence"):
+        nested = body.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    out = {}
+    for candidate in candidates:
+        model = candidate.get("serving_model") or candidate.get("served_model")
+        if not model and candidate is body:
+            model = candidate.get("model")
+        if model and "serving_model" not in out:
+            out["serving_model"] = str(model)
+        receipt = (candidate.get("provider_receipt") or candidate.get("provider_request_id")
+                   or candidate.get("provider_response_id"))
+        if receipt and "provider_receipt" not in out:
+            out["provider_receipt"] = str(receipt)
+        if "cache" in candidate and "cache" not in out:
+            out["cache"] = _word(candidate.get("cache"))
+        if "cache_hit" in candidate and "cache" not in out:
+            out["cache"] = "hit" if candidate.get("cache_hit") else "miss"
+        stage = candidate.get("decision_stage") or candidate.get("policy_stage")
+        if stage and "decision_stage" not in out:
+            out["decision_stage"] = str(stage)
+        delivery = (candidate.get("delivery") or candidate.get("forwarding")
+                    or candidate.get("forwarded"))
+        if delivery is not None and "delivery" not in out:
+            out["delivery"] = _word(delivery)
+        if "fallback" in candidate and "fallback" not in out:
+            out["fallback"] = _word(candidate.get("fallback"))
+        if "fallback_attempt" in candidate and "fallback" not in out:
+            out["fallback"] = _word(candidate.get("fallback_attempt"))
+    return out
+
+
+def _word(value) -> str:
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value)
+
+
+def _failure_kind(error) -> str:
+    status = getattr(error, "status", None)
+    body = getattr(error, "body", "")
+    if isinstance(error, dict):
+        status = error.get("status") or error.get("status_code") or error.get("code")
+        body = json.dumps(error)
+    text = f"{status or ''} {body or error}".lower()
+    try:
+        code = int(status or 0)
+    except (TypeError, ValueError):
+        code = 0
+    if code in (401, 403) or any(w in text for w in ("auth", "unauthorized", "forbidden")):
+        return "authentication"
+    if code == 429 or "rate" in text:
+        return "rate_limited"
+    if "guardrail_blocked" in text or "blocked by guardrail" in text or "policy" in text:
+        return "refused"
+    if code >= 500 or "provider" in text:
+        return "provider"
+    if isinstance(error, OSError) or any(w in text for w in ("connection", "timeout", "transport")):
+        return "transport"
+    return "gateway_error"
+
+
+def _safe_refusal_reason(error) -> str | None:
+    text = ""
+    if isinstance(error, dict):
+        text = str(error.get("message") or error.get("detail") or "")
+    else:
+        text = str(error or "")
+    match = re.search(r"Blocked by guardrail:\s*([^\"'}\\]+)", text)
+    if not match:
+        return None
+    return "Blocked by guardrail: " + " ".join(match.group(1).split()).strip(" .;:")
 
 
 def _sources_from_messages(messages):

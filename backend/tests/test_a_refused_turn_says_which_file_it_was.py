@@ -133,6 +133,19 @@ def test_the_captured_payload_never_outlives_the_search(tmp_path: Path):
     assert orch.project(start_preview=False).last_refused is None
 
 
+def test_a_bare_continue_does_not_resend_the_refused_chat_payload(tmp_path: Path):
+    orch, tid, _out, gw = _run(tmp_path)
+    probes = gw.probes
+
+    out = list(orch.chat_stream(tid, "continue"))
+
+    assert gw.probes == probes
+    kinds = [e["type"] for e in out if e["type"] != "pending"]
+    assert kinds == ["user", "ask-blocked", "done"]
+    blocked = next(e for e in out if e["type"] == "ask-blocked")
+    assert "same content the gateway just refused" in blocked["message"]
+
+
 def test_nothing_captured_means_nothing_claimed(tmp_path: Path):
     """Without a payload there is no honest answer, so the ladder is left to do its job."""
     gw = _Guardrail()
@@ -217,6 +230,17 @@ def test_build_rows_survive_a_reload(tmp_path: Path):
     orch, _out = _run_build(tmp_path)
     kinds = [r["type"] for r in _build_history(orch)]
     assert recall.SEARCH in kinds and recall.FOUND in kinds
+
+
+def test_a_bare_continue_does_not_resend_the_refused_build_payload(tmp_path: Path):
+    orch, _out = _run_build(tmp_path)
+
+    out = list(orch.build_stream("continue"))
+
+    assert [e["type"] for e in out] == ["ask-blocked", "done"]
+    assert "same content the gateway just refused" in out[0]["message"]
+    assert [e["decision"] for e in _build_history(orch) if e.get("type") == "done"][-1] == (
+        "recovery choice required")
 
 
 def test_build_finds_pasted_text_too(tmp_path: Path):

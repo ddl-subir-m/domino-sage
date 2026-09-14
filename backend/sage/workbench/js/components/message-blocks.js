@@ -1108,7 +1108,8 @@ window.SW = window.SW || {};
             // policy matched. One string serves every size, and that is what stops the promise
             // going missing on whichever size a second string was not written for (#309).
             noFileToName
-              ? " — not in a file Sage can name. Sage won't change what it matched. " : '. ',
+              ? " — not in a file Sage can name. Sage won't change what it matched. "
+              : ". Sage won't change what it matched. ",
             // Three facts, each drawn when its own is true, joined rather than branched between.
             // They co-occur in every combination — a turn can have nothing left to answer from AND
             // lose its question, or keep every file AND lose its question. Each earlier shape here
@@ -1963,7 +1964,14 @@ window.SW = window.SW || {};
         h('p', null, request.state === 'response_completed' ? 'Gateway response completed. '
           : request.state === 'failed' ? 'Gateway request failed. '
           : request.state === 'interrupted' ? 'Gateway response interrupted. '
-          : 'Gateway request attempted. ', 'Provider receipt: unknown. Cache: unknown.'),
+          : 'Gateway request attempted. ',
+          `Provider receipt: ${request.provider_receipt || 'unknown'}. ` +
+          `Decision stage: ${request.decision_stage || 'unknown'}. ` +
+          `Delivery: ${request.delivery || 'unknown'}. ` +
+          `Cache: ${request.cache || 'unknown'}. ` +
+          `Fallback: ${request.fallback || 'unknown'}.`),
+        request.failure && h('p', null, `Failure: ${request.failure}.`,
+          request.refusal_reason ? ` ${request.refusal_reason}.` : ''),
         h('p', null, `Request: ${request.request_id}`))),
       !(event.requests || []).length && h('p', null, 'Gateway delivery: unknown.'),
       h('p', null, `Operation: ${event.operation_id}`));
