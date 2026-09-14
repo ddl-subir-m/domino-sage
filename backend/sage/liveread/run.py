@@ -275,6 +275,12 @@ def _source(kind: str, binding: str, limit: int, **named: str) -> dict:
 
 
 def _table(args: dict, turn: Turn) -> str:
+    if args.get("operation") == "sum":
+        from .calculate import calculate
+
+        name, database, schema, table, _ = _scoped({**args, "limit": 1}, turn)
+        return calculate({**args, "source": name, "database": database, "schema": schema,
+                          "table": table, "dataset": ""}, turn)
     name, database, schema, table, limit = _scoped(args, turn)
     read = _table_rows(turn, name, database, schema, table, limit)
     if read.refused:
