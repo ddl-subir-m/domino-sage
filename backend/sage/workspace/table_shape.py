@@ -16,6 +16,35 @@ from typing import Any
 
 SUFFIX = ".table.json"
 
+
+def validation_reason(body: Any) -> str:
+    """Accept the card's table formats, including empty results and deliberate receipts.
+
+    This checks structure before row retention. A recovered count of zero cannot tell an
+    unfinished file from an empty query result. Labelled pandas dumps are readable by the card,
+    even where `columns_and_count` must withhold their ambiguous labels from a saved receipt.
+    """
+    wrapper = body if isinstance(body, dict) else {}
+    source = body if isinstance(body, list) else next(
+        (wrapper[k] for k in ("rows", "data", "records") if isinstance(wrapper.get(k), list)), None)
+    if source is not None:
+        if not source:
+            return ""
+        columns, _ = columns_and_count(body)
+        if all(isinstance(row, dict) for row in source) and any(source):
+            return ""
+        if columns and all(isinstance(row, dict) or
+                           (isinstance(row, list) and len(row) == len(columns)) for row in source):
+            return ""
+        return "rows must be records or positional arrays with column names"
+    for candidate in (_without_receipt_keys(wrapper),
+                      wrapper.get("data"), wrapper.get("rows"), wrapper.get("records")):
+        if isinstance(candidate, dict):
+            objects = [v for v in candidate.values() if isinstance(v, dict)]
+            if objects and all(_series_of_scalars(v) for v in objects):
+                return ""
+    return "unsupported table structure"
+
 # Every key the receipt may carry, and nothing else. A whitelist rather than "drop `rows`", because
 # the shapes below put values under `data`, under `records`, and under the frame's own column names
 # at the top level — a blacklist would have to name each one, and would miss the next.

@@ -179,6 +179,8 @@ class EnforcementShim:
         self._control = control
         self._catalog = catalog
         self._gateway = gateway
+        from ..liveread.data_use import DataUse
+        self.data_use = DataUse()
         # component: the `sage-component` cost tag — which Sage process this shim serves. Lets cost
         # analysis separate real build inference (builder) from orchestration overhead (probe).
         self._component = component
@@ -556,4 +558,6 @@ class EnforcementShim:
             version=_SAGE_VERSION,
             project_name=self._project_name,
         )
-        return _capture_refusal(self._gateway.route(request, labels), request, on_refused)
+        request, used = self.data_use.prepare(request, withheld=state.withheld)
+        stream = _capture_refusal(self._gateway.route(request, labels), request, on_refused)
+        return self.data_use.observe(stream, request, used)
