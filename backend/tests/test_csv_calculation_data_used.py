@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from sage.driver.opencode import with_attachment_listing
 from sage.liveread import run
 from sage.liveread.data_use import DataUse
 
@@ -296,3 +297,162 @@ def test_empty_git_checkout_is_a_fresh_project(tmp_path):
     manager = WorkspaceManager(root, template)
     manager.ensure("new", seed_app=False)
     assert manager.project_record("new").read_settings()["dataUseVersion"] == 1
+
+
+def attachment_prompt(path="public/data/upload/uploads/sales.csv", *, chat=True):
+    return with_attachment_listing(
+        "what is in @sales.csv",
+        [{"path": path, "name": "sales.csv", "summary": "CSV - 3 columns, 12 rows",
+          "detail": "columns: region, revenue, email"}],
+        chat=chat,
+    )
+
+
+def direct_request(tool, arguments, content, *, path="public/data/upload/uploads/sales.csv", chat=True):
+    return {"model": "alias", "messages": [
+        {"role": "user", "content": attachment_prompt(path, chat=chat)},
+        {"role": "assistant", "tool_calls": [{"id": "call1", "type": "function",
+            "function": {"name": tool, "arguments": json.dumps(arguments)}}]},
+        {"role": "tool", "tool_call_id": "call1", "content": content},
+    ]}
+
+
+def test_direct_read_of_an_attached_file_becomes_a_local_execution_receipt():
+    data = DataUse()
+    request = direct_request("read", {"filePath": "public/data/upload/uploads/sales.csv"}, SALES)
+
+    prepared, used = data.prepare(request)
+
+    assert not used
+    assert "person0@example.invalid" in request["messages"][-1]["content"]
+    text = json.dumps(prepared["messages"])
+    assert "person0@example.invalid" not in text
+    assert "local_execution_receipt" in text
+    assert prepared["messages"][1]["tool_calls"][0]["id"] == "call1"
+    receipt = json.loads(prepared["messages"][-1]["content"])
+    assert receipt["sources"][0]["path"] == "public/data/upload/uploads/sales.csv"
+    assert receipt["sources"][0]["columns"] == ["region", "revenue", "email"]
+    assert receipt["sources"][0]["rows"] == 12
+
+
+def test_build_attachment_direct_read_becomes_a_local_execution_receipt():
+    data = DataUse()
+    request = direct_request(
+        "read",
+        {"filePath": "public/data/upload/uploads/sales.csv"},
+        SALES,
+        chat=False,
+    )
+
+    prepared, _used = data.prepare(request)
+
+    text = json.dumps(prepared["messages"])
+    assert "person0@example.invalid" not in text
+    assert json.loads(prepared["messages"][-1]["content"])["sources"][0]["rows"] == 12
+
+
+def test_bash_or_python_output_for_an_attached_file_is_not_sent_back_to_the_model():
+    data = DataUse()
+    request = direct_request(
+        "bash",
+        {"command": "python - <<'PY'\nimport pandas as pd\nprint(pd.read_csv('public/data/upload/uploads/sales.csv'))\nPY"},
+        SALES + "\nCommand exited with code 0.",
+    )
+
+    prepared, _ = data.prepare(request)
+
+    text = json.dumps(prepared["messages"])
+    assert "person0@example.invalid" not in text
+    assert "local_execution_receipt" in prepared["messages"][-1]["content"]
+    assert json.loads(prepared["messages"][-1]["content"])["status"] == "completed"
+
+
+def test_failed_python_output_and_metadata_are_receipts_too():
+    data = DataUse()
+    request = {"messages": [
+        {"role": "user", "content": attachment_prompt()},
+        {"role": "assistant", "content": [{"type": "tool", "tool": "bash", "state": {
+            "status": "error",
+            "input": {"command": "python broken.py public/data/upload/uploads/sales.csv"},
+            "error": SALES + "\nTraceback (most recent call last):",
+            "metadata": {"output": SALES},
+        }}]},
+    ]}
+
+    prepared, _ = data.prepare(request)
+
+    part = prepared["messages"][1]["content"][0]
+    text = json.dumps(part)
+    assert "person0@example.invalid" not in text
+    assert part["state"]["input"]["kind"] == "local_execution_request"
+    assert json.loads(part["state"]["error"])["kind"] == "local_execution_receipt"
+    assert json.loads(part["state"]["metadata"]["output"])["kind"] == "local_execution_receipt"
+
+
+def test_later_tool_arguments_cannot_replay_direct_local_output():
+    data = DataUse()
+    request = {"messages": [
+        {"role": "user", "content": attachment_prompt()},
+        {"role": "assistant", "content": [{"type": "tool", "tool": "bash", "state": {
+            "status": "completed",
+            "input": {"command": "cat public/data/upload/uploads/sales.csv"},
+            "output": SALES,
+        }}]},
+        {"role": "assistant", "tool_calls": [{"id": "call2", "type": "function",
+            "function": {"name": "bash", "arguments": json.dumps({
+                "command": "echo person0@example.invalid",
+            })}}]},
+        {"role": "tool", "tool_call_id": "call2",
+         "content": "person0@example.invalid\nCommand exited with code 0."},
+    ]}
+
+    prepared, _ = data.prepare(request)
+
+    text = json.dumps(prepared["messages"])
+    assert "person0@example.invalid" not in text
+    assert text.count("local_execution_receipt") == 2
+
+
+def test_a_shell_call_for_a_withheld_file_gets_a_refusal_receipt():
+    data = DataUse()
+    request = direct_request(
+        "bash",
+        {"command": "cat public/data/upload/uploads/sales.csv"},
+        SALES + "\nCommand exited with code 0.",
+    )
+
+    prepared, _ = data.prepare(request, withheld={"file:public/data/upload/uploads/sales.csv"})
+
+    text = json.dumps(prepared["messages"])
+    assert "person0@example.invalid" not in text
+    receipt = json.loads(prepared["messages"][-1]["content"])
+    assert receipt["status"] == "error"
+    assert prepared["messages"][1]["tool_calls"][0]["function"]["arguments"].startswith(
+        '{"kind": "local_execution_request"')
+
+
+def test_selected_operation_values_reused_in_tool_arguments_are_tracked(tmp_path):
+    turn, data, _ = setup_turn(tmp_path)
+    reply = run.perform("live_read_files", args(), turn)
+    _first_request, first_used = data.prepare({"messages": [{"role": "tool", "content": reply}]})
+    assert first_used
+    request = {"messages": [
+        {"role": "assistant", "tool_calls": [{"id": "b1", "type": "function",
+            "function": {"name": "bash", "arguments": json.dumps({"command": "echo 780"})}}]},
+        {"role": "tool", "tool_call_id": "b1", "content": "780\nCommand exited with code 0."},
+    ]}
+
+    prepared, used = data.prepare(request)
+
+    assert used == first_used
+    assert "780" in json.dumps(prepared["messages"])
+
+
+def test_source_code_read_stays_available_even_if_it_mentions_sensitive_shapes():
+    data = DataUse()
+    request = direct_request("read", {"filePath": "src/main.py"},
+                             "def email_label():\n    return 'email'\n")
+
+    prepared, _ = data.prepare(request)
+
+    assert prepared["messages"][-1]["content"] == "def email_label():\n    return 'email'\n"
