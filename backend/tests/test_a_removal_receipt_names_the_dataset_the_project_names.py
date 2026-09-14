@@ -64,12 +64,11 @@ def test_the_receipt_keeps_its_promise_when_it_cannot_name_the_dataset():
     for `ds-gone`, so the sentence written for that case is drawn: the bytes are still promised
     safe, the absence is stated, and nothing is filled in from the record."""
     said = _report()["receipts"]["old.csv"]
-    assert "it came from keeps the file" in said
-    # "not to hand" and never a claim about what the manifest holds: `datasetNameNow` answers ''
+    assert "couldn't be named here" in said
+    # Never a claim about what the manifest holds: `datasetNameNow` answers ''
     # for a Dataset nobody lists and for a listing read that failed alike, and `SW.api.resources`
     # swallows the second into an empty list. A sentence saying the record holds only the old name
     # would be false on exactly the occasion the Project's list merely did not arrive.
-    assert "Its current name is not to hand, so it is not named here." in said
     # Never the stale name, never a blank slot where a name was going to go, and never the path.
     assert "Cold archive" not in said
     assert "stays in ." not in said

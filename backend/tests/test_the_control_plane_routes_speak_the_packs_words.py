@@ -80,8 +80,8 @@ def test_the_door_names_the_pack_when_it_cannot_reach_the_platform(acme, client)
 
     assert r.status_code == 503
     assert _error(r) == (
-        "Ada can't reach Acme Cloud from this App, so it can't open your Ada Builder. Check the "
-        "App's Environment has the Acme Cloud API host and a Git credential, then restart it."
+        "Ada can't reach Acme Cloud from this App, so it can't open the Builder. Check the "
+        "App's Environment has the Acme Cloud API host and a Git credential, then restart."
     )
 
 
@@ -120,9 +120,8 @@ def test_the_missing_git_credential_names_the_pack_and_keeps_the_git_host(acme, 
         service._push_token_provider()
 
     assert str(e.value) == (
-        "no HTTPS git credential for github.com in this container (an SSH-key credential can't be "
-        "extracted). Add an HTTPS Git credential under Account Settings > Git Credentials, then "
-        "restart Ada."
+        "No HTTPS Git credential for github.com in this workspace. SSH keys can't be used "
+        "here. Add one under Account Settings > Git Credentials, then restart Ada."
     )
 
 
@@ -179,8 +178,8 @@ def test_binding_refusals_name_the_packs_platform_and_nouns(acme, client, monkey
     r = client.post("/api/bindings", json={"kind": "model_api", "id": "m-1"})
     assert r.status_code == 409
     assert _error(r) == (
-        "Ada needs this Model Endpoint's access token before an app can call it. Open the Model "
-        "Endpoint's Overview page in Acme Cloud, copy the sample request, and paste it into Ada."
+        "Paste the sample request from this Model Endpoint's Overview page in Acme Cloud so "
+        "the app can call it."
     )
 
 

@@ -279,9 +279,9 @@ def _build_provision_service(control_plane):
             # and `Account Settings > Git Credentials` is the platform's own menu path, which
             # Sage renames no more than it renames the page it is sending them to.
             raise RuntimeError(brand_text(
-                "no HTTPS git credential for {host} in this container "
-                "(an SSH-key credential can't be extracted). Add an HTTPS Git credential under "
-                "Account Settings > Git Credentials, then restart {assistantName}.",
+                "No HTTPS Git credential for {host} in this workspace. SSH keys can't be used "
+                "here. Add one under Account Settings > Git Credentials, then restart "
+                "{assistantName}.",
                 host=host,
             ))
         return tok
@@ -672,9 +672,9 @@ async def door_open() -> JSONResponse:
         return JSONResponse(
             status_code=503,
             content={"error": brand_text(
-                "{assistantName} can't reach {platformName} from this App, so it can't open your "
-                "{assistantName} Builder. Check the App's Environment has the {platformName} API "
-                "host and a Git credential, then restart it."
+                "{assistantName} can't reach {platformName} from this App, so it can't open the "
+                "Builder. Check the App's Environment has the {platformName} API host and a Git "
+                "credential, then restart."
             ), "ours": True, "retryable": False},
         )
     from ..provision.door import DefaultProjectRepoUnreachable  # lazy, as every provision import here is
@@ -2285,9 +2285,8 @@ async def add_binding(request: Request) -> JSONResponse:
         # `Overview` is the platform's own page, named the way the platform names it; only the
         # word for the platform itself is ours to replace.
         return JSONResponse(status_code=409, content={"error": brand_text(
-            "{assistantName} needs this {modelApi}'s access token before an app can call it. Open "
-            "the {modelApi}'s Overview page in {platformName}, copy the sample request, and paste "
-            "it into {assistantName}."
+            "Paste the sample request from this {modelApi}'s Overview page in {platformName} so "
+            "the app can call it."
         )})
     except LookupError:
         return JSONResponse(status_code=404, content={"error": missing})
@@ -2596,8 +2595,8 @@ async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
         # Nothing was attached, and nothing was overwritten either — which is the point of saying so
         # instead of writing over it. Named at the path, because that is where the person looks.
         return JSONResponse(status_code=409, content={"error": brand_text(
-            "Nothing was attached. Something already sits at {path} that {assistantName} did not "
-            "put there, and it is not overwritten. Move or remove it, then attach the folder.",
+            "Nothing was attached. {path} already exists and wasn't overwritten. Move or remove "
+            "it, then try again.",
             path=e.path)})
     except AttachSourceMissing as e:
         # The folder is there; a file the listing named is not. Saying "folder not found" would
@@ -3559,8 +3558,8 @@ def archive_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
                 "{assistantName} is working on something else in this project, so this plan "
                 "cannot be put away yet. Try again in a moment."), "reason": e.reason})
         return JSONResponse(status_code=409, content={"error": brand_text(
-            "This plan is the one this {builtApp} is waiting to be built from, so it cannot be put "
-            "away. Approve it or cancel it in the conversation it came from."), "reason": e.reason})
+            "This {builtApp} is waiting to be built from this plan, so it can't be put away. "
+            "Approve or cancel it in the conversation it came from."), "reason": e.reason})
     if doc is None:
         return JSONResponse({"error": "unknown plan"}, status_code=404)
     return JSONResponse(content=doc)

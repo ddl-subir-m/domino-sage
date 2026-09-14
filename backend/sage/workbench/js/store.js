@@ -1292,22 +1292,20 @@ window.SW = window.SW || {};
   // want.
   const UNBIND_COPY = {
     data_source: {
-      stops: 'stops being allowed to read it',
-      cost: 'Pick it again from Project resources and you will choose its table again — the table '
-        + 'goes with the Binding.',
+      stops: 'will no longer read it',
+      cost: 'To use it again, add it from Project resources and pick its table.',
     },
     model_api: {
-      stops: 'stops being allowed to call it',
-      cost: 'Pick it again from Project resources. The access token stays, so it will not ask for '
-        + 'the sample request again.',
+      stops: 'will no longer call it',
+      cost: 'To use it again, add it from Project resources. The access token is kept.',
     },
   };
   // The third kind, and any kind added later. An LLM Alias carries neither a Scope nor a
   // credential, so re-picking it costs the pick and nothing else — which is worth saying plainly
   // rather than leaving the confirm to imply a cost the kind does not have.
   const UNBIND_PLAIN = {
-    stops: 'stops being allowed to use it',
-    cost: 'Pick it again from Project resources.',
+    stops: 'will no longer use it',
+    cost: 'To use it again, add it from Project resources.',
   };
 
   // Whose lists these are. A Build with no selected app draws no section, so the fallback is for
@@ -4144,7 +4142,7 @@ window.SW = window.SW || {};
       setTimeout(() => { state.scopeFlash = false; notify(); }, 500);
 
       if (!options.silent) {
-        antd.message.info(`Switched scope to ${project.name}`);
+        antd.message.info(`Switched to ${project.name}`);
       }
       await Promise.all([loadScopeData(), loadThreadList()]);
     },
@@ -4787,8 +4785,7 @@ window.SW = window.SW || {};
             let result;
             if (!state.activeApp || state.activeApp.id !== asked.id) {
               antd.message.warning(
-                `Nothing was attached. The selected app changed to ${appScopeName()} while this `
-                + `was open, and this attach named ${where}.`
+                'Nothing was attached. The selected app changed while this was open.'
               );
               resolve(false);
               return;
@@ -4810,8 +4807,7 @@ window.SW = window.SW || {};
             // claiming otherwise would be a count nobody could reconcile with the list.
             antd.message.success(result.attached
               ? `${SW.util.number(result.attached)} ${result.attached === 1 ? 'file' : 'files'} `
-                + `from ${label} ${result.attached === 1 ? 'is' : 'are'} in ${where}. `
-                + "Remove one from the app's own list."
+                + `from ${label} ${result.attached === 1 ? 'is' : 'are'} now in ${where}.`
               : `${where} already carries every file in ${label}.`);
             resolve(true);
           },
@@ -4847,16 +4843,15 @@ window.SW = window.SW || {};
           // Sage's to remove, and the folder can be attached again from the same tree — so this
           // says what it costs rather than warning about an act that is cheap to undo.
           content: SW.brand.text(
-            `${where} stops carrying them and stops shipping them when you publish it. The files `
-            + 'stay in the {dataset}, and the folder can be attached again from here.'
+            `${where} will no longer include these files when you publish. They stay in the `
+            + '{dataset} and can be attached again.'
           ),
           okText: `Remove folder from ${where}`,
           okButtonProps: { danger: true },
           onOk: async () => {
             if (!state.activeApp || state.activeApp.id !== asked.id) {
               antd.message.warning(
-                `Nothing was removed. The selected app changed to ${appScopeName()} while this was `
-                + `open, and this removal named ${where}.`
+                'Nothing was removed. The selected app changed while this was open.'
               );
               resolve(false);
               return;
@@ -5361,8 +5356,7 @@ window.SW = window.SW || {};
             // rather than a guard.
             if (!asked || !state.activeApp || state.activeApp.id !== asked.id) {
               antd.message.warning(
-                `Nothing was removed. The selected app changed to ${appScopeName()} while this was `
-                + `open, and this removal named ${asked ? asked.name : 'another app'}.`
+                'Nothing was removed. The selected app changed while this was open.'
               );
               resolve(false);
               return;
@@ -5462,8 +5456,7 @@ window.SW = window.SW || {};
         : held
           ? `The app's copy is gone and the file stays in ${held}.`
           : SW.brand.text(
-            "The app's copy is gone and the {dataset} it came from keeps the file. Its current "
-            + 'name is not to hand, so it is not named here.'
+            "The app's copy is gone. The file stays in its {dataset}, which couldn't be named here."
           );
       const leaked = result.removed_copies || [];
       const copies = leaked.length ? ` A copy left in ${leaked.join(', ')} went with it.` : '';
@@ -5485,8 +5478,8 @@ window.SW = window.SW || {};
       // record — but it is read rather than assumed, because a receipt that hardcoded the likelier
       // half would point somebody at a chip that does not exist.
       const fetched = result.kept_fetch === 'conversation'
-        ? ` A copy ${SW.brand.assistant()} fetched for a conversation stays until you close the `
-          + 'chip there.'
+        ? ` A copy ${SW.brand.assistant()} fetched for a conversation stays until you close that `
+          + 'chip.'
         : result.kept_fetch
           ? ` A copy ${SW.brand.assistant()} fetched stays — another file in this app is standing `
             + 'on the same data.'
@@ -7629,7 +7622,7 @@ window.SW = window.SW || {};
       // The plan is an artifact in the project the moment it exists, so the
       // panel has to hear about it.
       await Promise.all([loadThreadList(), loadScopeData()]);
-      antd.message.success('Plan drafted — it is in the panel under Artifacts');
+      antd.message.success('Plan drafted. Find it in the side panel under Artifacts.');
       return plan;
     },
 

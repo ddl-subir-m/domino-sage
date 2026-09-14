@@ -5721,19 +5721,18 @@ class Orchestrator:
             log.exception("rename_app: Domino App %s answered 404 but is still there",
                           deployed_app_id)
             return {"dominoApp": "failed", "dominoAppError": brand.text(
-                "{assistantName} renamed this {builtApp}, but couldn't rename its published "
-                "{platformName} App ({deployed}). The App is still serving at the same URL under "
-                "its old name — rename it in {platformName}, or rename this one again to retry.",
+                "{assistantName} renamed this {builtApp}, but the published {platformName} App "
+                "({deployed}) still has the old name. Rename it in {platformName}, or try renaming "
+                "here again.",
                 deployed=deployed_app_id)}
         except Exception as e:
             log.exception("rename_app: couldn't rename Domino App %s", deployed_app_id)
             # `reason` is the platform's own words, so it rides in as a value and is left exactly as
             # it arrived — only the sentence around it is ours to re-brand.
             return {"dominoApp": "failed", "dominoAppError": brand.text(
-                "{assistantName} renamed this {builtApp}, but couldn't rename its published "
-                "{platformName} App ({deployed}): {reason}. The App is still serving at the same "
-                "URL under its old name — rename it in {platformName}, or rename this one again to "
-                "retry.", deployed=deployed_app_id, reason=e)}
+                "{assistantName} renamed this {builtApp}, but the published {platformName} App "
+                "({deployed}) still has the old name: {reason}. Rename it in {platformName}, or try "
+                "renaming here again.", deployed=deployed_app_id, reason=e)}
         return {"dominoApp": "renamed"}
 
     def delete_app(self, app_id: str, *, delete_domino_app: bool = False) -> dict:
@@ -5784,10 +5783,9 @@ class Orchestrator:
                     # `reason` is the platform's own words, so it rides in as a value and is left
                     # exactly as it arrived — only the sentence around it is ours to re-brand.
                     raise RuntimeError(brand.text(
-                        "{assistantName} couldn't delete this app's {platformName} App "
-                        "({deployed}): {reason}. The {builtApp} is still here, so nothing is "
-                        "stranded — try again, or delete the App in {platformName} first and then "
-                        "delete this one.",
+                        "{assistantName} couldn't delete the {platformName} App "
+                        "({deployed}): {reason}. This {builtApp} is still here. Try again, or "
+                        "delete the App in {platformName} first.",
                         deployed=deployed, reason=e)) from e
                 deleted_domino_app = True
             # From here down is the part a switch must not interleave with. The control-plane call
@@ -14502,14 +14500,12 @@ class Orchestrator:
         """
         if not publish_available(self._wm.path):
             raise RuntimeError(brand.text(
-                "Publish is only available in a {assistantName} Builder workspace whose app repo is "
-                "/mnt/code. This {productName} App is {assistantName} itself, not a {builtApp}."
+                "This is {assistantName} itself, not a {builtApp}, so it can't be published from "
+                "here."
             ))
         if self._control_plane is None or not self._domino_project_id:
-            # DOMINO_PROJECT_ID is an env var name, so it is named, not renamed.
             raise RuntimeError(brand.text(
-                "Publish is only available when this builder runs on {platformName} (missing "
-                "control-plane or DOMINO_PROJECT_ID)."
+                "Publish is only available when this builder runs on {platformName}."
             ))
         # One operation owns the working tree at a time (see `_turn_lock`). Publishing is not a
         # read: `_save_to_git` commits the PROJECT ROOT — one repo holds every Built App — then
@@ -14555,10 +14551,8 @@ class Orchestrator:
                     # only id Sage has, so neither Publish nor Delete could reach the old App again, and
                     # it would go on serving old code at a URL people already hold.
                     raise RuntimeError(brand.text(
-                        "This app's published App is still there, so {assistantName} won't publish a "
-                        "second one beside it — that would leave the first serving at a URL nothing "
-                        "here could reach again. Publish normally to ship a new version to it. If "
-                        "you want a fresh App, delete that one in {platformName} first."
+                        "This app already has a published App. Publish to update it, or delete "
+                        "that App in {platformName} first to create a new one."
                         if gone is False else
                         "{assistantName} couldn't reach {platformName} to confirm that this app's "
                         "published App is really gone, and it won't create a second one on a guess. "
@@ -15242,8 +15236,8 @@ class Orchestrator:
                 # No "until the next save" on this branch: a save over a file that would not parse
                 # is refused, so there is no next save to wait for until the file itself is fixed.
                 template = (
-                    "{file} couldn't be read, so the {slot} assignment in it was not applied and "
-                    "this slot is following the default. Fix that file."
+                    "{file} couldn't be read, so the {slot} assignment was ignored and this slot "
+                    "is using the default. Fix that file."
                     if following else
                     "{file} couldn't be read, so the {slot} assignment in it was not applied. This "
                     "slot is still running {model}. Fix that file.")
@@ -18721,14 +18715,14 @@ class Orchestrator:
             return ""
         if len(unasked) == 1:
             return brand.text(
-                "This {builtApp} lists {named} but never queries it, so the screens don't use "
-                "that data. Ask {assistantName} to query it, or remove it from the app.",
+                "This {builtApp} lists {named} but never queries it. Ask {assistantName} to query "
+                "it, or remove it.",
                 named=unasked[0].display_name,
             )
         labels = [b.display_name for b in unasked]
         return brand.text(
-            "This {builtApp} lists {named} but never queries them, so the screens don't use "
-            "that data. Ask {assistantName} to query them, or remove them from the app.",
+            "This {builtApp} lists {named} but never queries them. Ask {assistantName} to query "
+            "them, or remove them.",
             named=", ".join(labels[:-1]) + f" and {labels[-1]}",
         )
 

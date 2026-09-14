@@ -616,8 +616,8 @@ def safe_identifier(name: str) -> str:
     """
     if not _IDENTIFIER.fullmatch(name or ""):
         raise ValueError(brand.text(
-            "{assistantName} will not send {name} to a database as a name. A database, schema or "
-            "table name may hold letters, digits, underscores and $ only.",
+            "{name} isn't a valid database, schema, or table name. Use letters, digits, "
+            "underscores, or $.",
             name=repr(name[:60]),
         ))
     return name
@@ -682,9 +682,8 @@ def dialect_for(source: DataSource) -> SqlDialect:
     if dialect is None:
         known = source.connector or source.connector_type or "this kind of"
         raise ResourceUnavailable(brand.text(
-            "{assistantName} cannot list what is inside a {kind} {dataSource} yet, so it cannot "
-            "offer its databases and schemas. You can still record that the app uses this "
-            "{dataSource}.",
+            "{assistantName} can't look inside this {kind} {dataSource} yet. You can still add "
+            "it to the app.",
             kind=known,
         ))
     return dialect
@@ -1418,9 +1417,8 @@ class DominoResourceProvider:
         """
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
-                "{assistantName} reads {hostedGenaiEndpoint} status from the {platformName} API, "
-                "and it is not running against one, so it cannot tell whether the endpoint behind "
-                "a model is running."
+                "{assistantName} isn't connected to the {platformName} API, so it can't tell "
+                "whether a model's endpoint is running."
             ))
         payload = self._get(
             "/api/gen-ai/beta/endpoints",
@@ -1836,8 +1834,8 @@ class DominoResourceProvider:
         """
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
-                "{assistantName} lists {dataSourcePlural} from the {platformName} API, and it is "
-                "not configured to reach one, so it cannot tell which {dataSourcePlural} you have."
+                "{assistantName} isn't configured to reach the {platformName} API, so it can't "
+                "list {dataSourcePlural}."
             ))
         path = "/api/datasource/v1/datasources"
         rows: list[DataSource] = []
@@ -1993,9 +1991,8 @@ class DominoResourceProvider:
             from domino_data.data_sources import DataSourceClient
         except ImportError as e:
             raise ResourceUnavailable(brand.text(
-                "{assistantName} reads a {dataSource}'s contents through the {platformName} data "
-                "library, which is not installed here. {dataSourcePlural} will still list, but "
-                "{assistantName} cannot look inside one."
+                "The {platformName} data library isn't installed here, so {assistantName} can "
+                "list {dataSourcePlural} but not look inside them."
             )) from e
         try:
             client = DataSourceClient()
@@ -2108,8 +2105,8 @@ class DominoResourceProvider:
             return r.json()
         except ValueError as e:
             raise ResourceUnavailable(brand.text(
-                "{service} returned a non-JSON body at {path}. That is what a signed-out "
-                "session looks like, so this builder's token for it may have expired.",
+                "{service} didn't return a valid response at {path}. This builder's token may "
+                "have expired.",
                 service=service, path=path,
             )) from e
 

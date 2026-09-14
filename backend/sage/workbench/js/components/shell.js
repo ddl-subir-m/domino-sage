@@ -11,12 +11,12 @@ window.SW = window.SW || {};
   // Project-scoped work. Everything here is read through the scope chip that
   // sits to its left.
   const MODES = [
-    { id: 'chat', label: '{chat}', hint: 'Explore data and think out loud' },
+    { id: 'chat', label: '{chat}', hint: 'Explore data' },
     // "Turn" was the first word here until ADR-0026 gave `Turn` a noun key. It was the
     // English verb, but the check matches a whole word and cannot tell the two apart, so
     // the copy moves rather than the rule.
-    { id: 'build', label: 'Build', hint: 'Go from a plan to a working app' },
-    { id: 'code', label: 'Code', hint: 'Work in your own editor' },
+    { id: 'build', label: 'Build', hint: 'Turn a plan into an app' },
+    { id: 'code', label: 'Code', hint: 'Open in your editor' },
   ];
 
   // Concepts that span every project, so they live in the platform bar rather
@@ -24,7 +24,7 @@ window.SW = window.SW || {};
   // The label is a template, resolved where the row is drawn: this list is built when the file is
   // evaluated, which is before GET /api/brand has answered.
   const GLOBAL_NAV = [
-    { id: 'gallery', label: '{gallery}', hint: 'Find what your organization already built', path: '#/gallery' },
+    { id: 'gallery', label: '{gallery}', hint: 'Apps your organization already built', path: '#/gallery' },
   ];
 
   // Switching mode should move you sideways, not send you back to the start.
@@ -60,11 +60,11 @@ window.SW = window.SW || {};
     if (!found.length) return null;
 
     const label = found.length === 1
-      ? '1 problem needs your attention'
-      : `${found.length} problems need your attention`;
+      ? '1 problem'
+      : `${found.length} problems`;
     return h(
       Tooltip,
-      { title: `${label}. Open to read ${found.length === 1 ? 'it' : 'them'}.` },
+      { title: label },
       h(
         'button',
         {
@@ -504,9 +504,8 @@ window.SW = window.SW || {};
       antd.Modal.confirm({
         title: 'Rename the assistant?',
         content: SW.brand.text(
-          '{assistantName} restarts so that it answers to the new name, which makes your next '
-          + 'message take a moment longer to start. A build that is already running is never '
-          + 'interrupted — the new name reaches it once that build finishes.'
+          '{assistantName} restarts to use the new name, so the next message takes a moment '
+          + 'longer. A running build is not interrupted.'
         ),
         okText: 'Rename and restart',
         onOk: () => save(names),
@@ -603,7 +602,7 @@ window.SW = window.SW || {};
     // because that is true of all of them.
     const save = (name, value) => {
       if (!SW.prefs.set(name, value)) {
-        antd.message.warning('This browser is not storing the choice, so it will not be here next time.');
+        antd.message.warning("This browser isn't saving the choice, so it won't persist next time.");
       }
     };
 

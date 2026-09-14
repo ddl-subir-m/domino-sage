@@ -164,11 +164,11 @@ def test_a_200_is_a_pass(monkeypatch):
     assert verify_credential(URL, TOKEN).ok
 
 
-def test_a_401_is_refused_and_says_the_token_may_have_been_regenerated(monkeypatch):
+def test_a_401_is_refused_and_says_to_paste_a_fresh_sample_request(monkeypatch):
     _answers(monkeypatch, _Response(401, ""))
     result = verify_credential(URL, TOKEN)
     assert not result.ok
-    assert "regenerated" in result.message
+    assert "fresh sample request" in result.message
 
 
 def test_a_stopped_model_says_to_start_it_rather_than_blaming_the_token(monkeypatch):
@@ -362,7 +362,7 @@ def test_a_refused_token_is_reported_and_not_stored(tmp_path: Path, monkeypatch)
     _answers(monkeypatch, _Response(401, ""))
     orch = _orch(tmp_path)
     result = orch.save_model_api_credential(MODEL_ID, JQUERY)
-    assert not result["ok"] and "regenerated" in result["error"]
+    assert not result["ok"] and "fresh sample request" in result["error"]
     assert orch.model_api_credential_ids() == []
 
 
@@ -422,4 +422,4 @@ def test_binding_without_a_credential_is_a_409_that_says_what_to_paste(tmp_path:
 
     res = client.post("/api/bindings", json={"kind": KIND_MODEL_API, "id": MODEL_ID})
     assert res.status_code == 409
-    assert "copy the sample request" in res.json()["error"]
+    assert "Paste the sample request" in res.json()["error"]
