@@ -466,14 +466,23 @@ def _status_hint(raw, call=None):
     name, _args = tool_call_name_and_args(call or {})
     if name and name != "task":
         return None
-    text = str(raw or "").lower()
-    if "cancelled" in text or "canceled" in text:
+    text = "\n".join(str(raw or "").lower().strip().splitlines()[:3])
+    if _has_status_hint(text, "cancelled") or _has_status_hint(text, "canceled"):
         return "cancelled"
-    if "interrupted" in text or "aborted" in text:
+    if _has_status_hint(text, "interrupted") or _has_status_hint(text, "aborted"):
         return "interrupted"
-    if "failed" in text or "error" in text:
+    if _has_status_hint(text, "failed") or _has_status_hint(text, "error"):
         return "failed"
     return None
+
+
+def _has_status_hint(text, status):
+    return any(re.search(pattern, text) for pattern in (
+        rf"^(child|task|background task)?\s*{status}\b",
+        rf"^(status|state)\s*[:=]\s*{status}\b",
+        rf"\b(child|task|background task)\s+(was\s+)?{status}\b",
+        rf"\b(status|state)\s*[:=]\s*{status}\b",
+    ))
 
 
 def _rewrite_image_result(message, call):

@@ -653,6 +653,21 @@ def test_failed_cancelled_and_interrupted_task_results_stay_local(child_text, st
     assert receipt["status"] == status
 
 
+def test_successful_task_result_that_mentions_errors_stays_completed():
+    data = DataUse()
+    request = direct_request(
+        "task",
+        {"description": "Inspect sales", "prompt": "Use public/data/upload/uploads/sales.csv"},
+        "Child completed. No errors found.\n" + SALES,
+    )
+
+    prepared, _ = data.prepare(request)
+
+    receipt = json.loads(prepared["messages"][-1]["content"])
+    assert receipt["kind"] == "local_execution_receipt"
+    assert receipt["status"] == "completed"
+
+
 def test_background_completion_repeating_child_output_stays_local():
     data = DataUse()
     request = direct_request(
