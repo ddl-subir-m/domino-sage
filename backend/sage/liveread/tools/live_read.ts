@@ -108,7 +108,9 @@ export const table = {
     "Read a few real rows out of one bound table and show them to the person as a table card. " +
     "Use this whenever they ask what the data looks like, or to see a sample row. You get back the " +
     "columns, a row count and a path — not the rows themselves, which go straight to the card the " +
-    "person sees. Say what the table holds; do not claim to be quoting values you were not given.",
+    "person sees. Say what the table holds; do not claim to be quoting values you were not given. " +
+    "In fresh projects, operation sum calculates a bound table locally and returns selected totals " +
+    "in the same call without needing a Sample rows approval step.",
   args: {
     token,
     source: { type: "string", description: "The Data Source name." },
@@ -121,6 +123,15 @@ export const table = {
     // reached the warehouse as `..TABLE`.
     database: { type: ["string", "null"], description: "The database. Send null to read it where the table was picked." },
     schema: { type: ["string", "null"], description: "The schema. Send null to read it where the table was picked." },
+    operation: { type: ["string", "null"], enum: ["sum", null],
+      description: "Fresh projects: calculate a table locally and return selected totals." + OPTIONAL },
+    group_by: { type: ["string", "null"], description: "The group column for sum." + OPTIONAL },
+    sum_column: { type: ["string", "null"], description: "The numeric column for sum." + OPTIONAL },
+    selected_fields: { type: ["array", "null"], items: { type: "string" },
+      description: "Result columns and/or total. Null returns structure only." },
+    row_limit: { type: ["integer", "null"], description: "Explicit user row limit; null for all rows." },
+    result_name: { type: ["string", "null"], description: "One filename without a directory." + OPTIONAL },
+    purpose: { type: ["string", "null"], description: "Purpose of this calculation." + OPTIONAL },
     limit: { type: ["integer", "null"], description: "Rows to read. Default 5, capped." + OPTIONAL },
     title: { type: ["string", "null"], description: "A short title for the card." + OPTIONAL },
   },
@@ -133,10 +144,30 @@ export const files = {
   description:
     "List the files in a bound Dataset, or read the head of one of them. Use this to say what a " +
     "Dataset holds. A listing that stopped short of the end says so — never report a capped " +
-    "listing as all of them.",
+    "listing as all of them. In fresh projects, operation sum calculates a CSV from its authorized path, " +
+    "and operation analyze_text sends only the selected text column with stable record ids through the LLM Gateway, " +
+    "validates exact id coverage, writes a result table and returns coverage. Use dataset=upload for uploads. " +
+    "Use this for CSV totals and complaint analysis; do not read unrelated raw rows into model context. " +
+    "Respect explicit user limits.",
   args: {
     token,
     dataset: { type: "string", description: "The Dataset name." },
+    operation: { type: ["string", "null"], enum: ["sum", "analyze_text", null],
+      description: "Fresh projects: calculate CSV totals or analyze CSV text." + OPTIONAL },
+    group_by: { type: ["string", "null"], description: "The group column for sum." + OPTIONAL },
+    sum_column: { type: ["string", "null"], description: "The numeric column for sum." + OPTIONAL },
+    text_column: { type: ["string", "null"], description: "The CSV column containing text for analyze_text." + OPTIONAL },
+    id_column: { type: ["string", "null"], description: "Optional source id column for analyze_text." + OPTIONAL },
+    labels: { type: ["array", "null"], items: { type: "string" },
+      description: "Allowed labels for analyze_text classification, or null for summaries." },
+    output_field: { type: ["string", "null"], description: "The result field name, such as label or summary." + OPTIONAL },
+    batch_size: { type: ["integer", "null"], description: "Records per gateway batch. Null uses the default." },
+    max_concurrency: { type: ["integer", "null"], description: "Parallel gateway batches. Null uses one at a time." },
+    selected_fields: { type: ["array", "null"], items: { type: "string" },
+      description: "Result columns and/or total. Null returns structure only." },
+    row_limit: { type: ["integer", "null"], description: "Explicit user row limit; null for all rows." },
+    result_name: { type: ["string", "null"], description: "One filename without a directory." + OPTIONAL },
+    purpose: { type: ["string", "null"], description: "Purpose of this calculation." + OPTIONAL },
     path: {
       type: ["string", "null"],
       description: "One file below it." + OPTIONAL + " Then the Dataset is listed instead.",

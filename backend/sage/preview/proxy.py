@@ -169,7 +169,7 @@ async def _forward_llm(request: Request, path: str, get_llm, approve_model=None)
     except (httpx.HTTPError, OSError) as e:
         await client.aclose()
         log.warning("preview llm: %s %s failed: %s", request.method, url, e)
-        return JSONResponse(status_code=502, content={"error": {"message": brand.text(
+        return JSONResponse(status_code=502, content={"error": {"type": "gateway_transport_error", "message": brand.text(
             "The preview could not reach {platformName}'s {llmGateway}."
         )}})
 
