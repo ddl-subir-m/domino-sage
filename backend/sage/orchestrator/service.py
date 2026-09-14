@@ -2305,6 +2305,13 @@ _RETRY_ONLY = re.compile(
     re.IGNORECASE,
 )
 
+_CONTINUE_ONLY = re.compile(
+    r"^(?:ok(?:ay)?|yes|yep|yeah|sure|please)?[\s,.!]*"
+    r"(?:(?:please|now|then|just|lets|let's)\s+)*"
+    r"(?:continue|proceed|go(?:\s+ahead|\s+on)?|carry\s+on|keep\s+going|do\s+it)[\s,.!]*$",
+    re.IGNORECASE,
+)
+
 
 def _looks_like_retry(prompt: str) -> bool:
     """True when the whole prompt is the user saying "run that again".
@@ -2321,6 +2328,45 @@ def _looks_like_retry(prompt: str) -> bool:
     if not text or len(text) > 40:
         return False
     return bool(_RETRY_ONLY.match(text)) and bool(re.search(r"[a-z]", text, re.IGNORECASE))
+
+
+def _looks_like_recovery_retry(prompt: str) -> bool:
+    text = prompt.strip()
+    if not text or len(text) > 40:
+        return False
+    return (_looks_like_retry(text)
+            or (bool(_CONTINUE_ONLY.match(text)) and bool(re.search(r"[a-z]", text, re.IGNORECASE))))
+
+
+def _pending_refusal_recovery_message(history: list[dict], prompt: str) -> str:
+    """Ask for the recovery choice before a bare retry can resend the same refused Recall."""
+    if not _looks_like_recovery_retry(prompt):
+        return ""
+    rows = [row for row in (history or []) if isinstance(row, dict)]
+    last_done = next((i for i in range(len(rows) - 1, -1, -1)
+                      if rows[i].get("type") == "done"), -1)
+    if last_done < 0 or rows[last_done].get("ok") is True:
+        return ""
+    # A recovery click writes after the failed turn's done row. Once that exists, the next turn is
+    # allowed to run because the payload is no longer unchanged.
+    if any(row.get("type") in {recall.CLEARED, recall.WITHHELD} for row in rows[last_done + 1:]):
+        return ""
+    previous_done = next((i for i in range(last_done - 1, -1, -1)
+                          if rows[i].get("type") == "done"), -1)
+    window = rows[previous_done + 1:last_done]
+    guardrail = any(row.get("type") == "error"
+                    and str(row.get("reason") or "").startswith("guardrail:")
+                    for row in window)
+    if not guardrail:
+        return ""
+    if any(row.get("type") == recall.FOUND and row.get("complete")
+           and row.get("carriers") for row in window):
+        return ("Choose the recovery card first. Continuing now would send the same content the "
+                "gateway just refused.")
+    if any(row.get("type") == recall.SUGGEST for row in window):
+        return ("Choose whether to start over first. Continuing now would send the same content "
+                "the gateway just refused.")
+    return ""
 
 
 # Phrases that signal the user wants Sage to reach the internet this turn, in three parts: an
@@ -6850,6 +6896,18 @@ class Orchestrator:
             self._slot_listings_due()
             plan_app = project.app_for_turn()
             live_plan = (plan_app.read_plan() or "").strip()
+            recovery_message = _pending_refusal_recovery_message(
+                plan_app.read_history(project.build_conversation), prompt)
+            if recovery_message:
+                for ev in ({"type": "user", "text": prompt},
+                           {"type": "ask-blocked", "prompt": prompt,
+                            "message": brand.text(recovery_message)},
+                           {"type": "done", "ok": False,
+                            "decision": "recovery choice required"}):
+                    plan_app.append_history(ev, project.build_conversation)
+                    if ev["type"] != "user":
+                        yield ev
+                return
             # And a bare "try again" means the same thing again, when the live plan is one an
             # approve turn already started building and gave up on (a gateway error, a session that
             # went quiet). That plan has been approved; sending it back through the gate proposes a
@@ -9792,6 +9850,18 @@ class Orchestrator:
         if asking:
             store.append_history(thread_id, user_ev)
             yield user_ev
+
+        recovery_message = _pending_refusal_recovery_message(
+            store.read_history(thread_id), prompt)
+        if recovery_message:
+            blocked = {"type": "ask-blocked", "prompt": prompt,
+                       "message": brand.text(recovery_message)}
+            store.append_history(thread_id, blocked)
+            yield blocked
+            done = finish({"type": "done", "ok": False,
+                           "decision": "recovery choice required"})
+            yield done
+            return
 
         # A Data Source on this Thread whose table nobody has chosen (#188)? The same search Build
         # runs, from the mode the person happens to be standing in — a question does not deserve a

@@ -230,6 +230,54 @@ def test_each_request_has_its_own_alias_and_unknown_provider_evidence(tmp_path, 
     assert "person0" not in json.dumps(journal)
 
 
+def test_gateway_evidence_is_preserved_when_the_response_carries_it(tmp_path):
+    turn, data, _journal = setup_turn(tmp_path)
+    reply = run.perform("live_read_files", args(), turn)
+    request, used = data.prepare({"model": "requested-alias", "messages": [{"role": "tool", "content": reply}]})
+    frame = {
+        "model": "served-alias",
+        "gateway": {
+            "provider_request_id": "prov_123",
+            "decision_stage": "input",
+            "delivery": "forwarded",
+            "cache_hit": False,
+            "fallback": False,
+        },
+        "choices": [{"finish_reason": "stop"}],
+    }
+
+    list(data.observe(iter([("data: " + json.dumps(frame) + "\n\n").encode()]), request, used))
+
+    recorded = data.events("turn1")[0]["requests"][0]
+    assert recorded["requested_alias"] == "requested-alias"
+    assert recorded["serving_model"] == "served-alias"
+    assert recorded["provider_receipt"] == "prov_123"
+    assert recorded["decision_stage"] == "input"
+    assert recorded["delivery"] == "forwarded"
+    assert recorded["cache"] == "miss"
+    assert recorded["fallback"] == "no"
+
+
+@pytest.mark.parametrize("error,kind", [
+    ({"status": 401, "message": "invalid token"}, "authentication"),
+    ({"status": 429, "message": "rate limit"}, "rate_limited"),
+    ({"message": "Blocked by guardrail: Block phone numbers", "type": "guardrail_blocked"},
+     "refused"),
+])
+def test_gateway_failures_are_distinguished_without_replaying_values(tmp_path, error, kind):
+    turn, data, _journal = setup_turn(tmp_path)
+    reply = run.perform("live_read_files", args(), turn)
+    request, used = data.prepare({"model": "alias", "messages": [{"role": "tool", "content": reply}]})
+
+    list(data.observe(iter([("data: " + json.dumps({"error": error}) + "\n\n").encode()]),
+                      request, used))
+
+    recorded = data.events("turn1")[0]["requests"][0]
+    assert recorded["state"] == "failed"
+    assert recorded["failure"] == kind
+    assert "person0" not in json.dumps(recorded)
+
+
 @pytest.mark.parametrize("mode", ["chat", "build"])
 def test_upload_access_and_persistent_record_use_existing_conversation_controls(tmp_path, mode):
     orch, _ = _orch(tmp_path, Warehouse())
@@ -368,6 +416,7 @@ def test_transport_failure_keeps_delivery_unknown(tmp_path):
         list(data.observe(fail(), request, used))
     event = journal[-1]["dataUsed"][0]
     assert event["requests"][0]["state"] == "failed"
+    assert event["requests"][0]["failure"] == "transport"
     assert event["requests"][0]["delivery"] == "unknown"
 
 
