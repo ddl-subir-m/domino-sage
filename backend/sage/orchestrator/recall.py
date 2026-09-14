@@ -91,7 +91,9 @@ def _last_refusal(rows: list[dict]) -> tuple[int, str] | None:
     if last < 0 or rows[last].get("type") != "error":
         return None
     key = str(rows[last].get("reason") or "")
-    return (last, key) if key else None
+    # A repeated transport failure says nothing about the content in Recall. Older histories
+    # also carry these keys, so filter when reading rather than only when recording new errors.
+    return (last, key) if key.startswith("guardrail:") else None
 
 
 def offer(history: list[dict]) -> str | None:

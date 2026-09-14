@@ -28,7 +28,7 @@ function serve(url) {
   if ((m = path.match(/^\/threads\/([^/]+)$/))) return json(THREADS[m[1]] || { id: m[1], history: [] });
   if ((m = path.match(/^\/project\/file\?path=(.+)$/))) {
     const filePath = decodeURIComponent(m[1]);
-    return json({ content: FILES[filePath] || '{}' });
+    return json({ content: FILES[filePath] ?? '{}' });
   }
   return json({});
 }
@@ -74,7 +74,7 @@ const report = [];
 for (const step of steps) {
   if (step.thread) {
     THREADS[step.thread.id] = step.thread;
-    if (step.file) FILES[step.file.path] = JSON.stringify(step.file.body);
+    if (step.file) FILES[step.file.path] = step.file.content ?? JSON.stringify(step.file.body);
     report.push({ step: `seed ${step.thread.id}` });
   } else if (step.open) {
     await SW.store.openThread(step.open);
@@ -83,6 +83,7 @@ for (const step of steps) {
     // Charts too, since #255: what a restored transcript knows about a PNG this clone does not
     // have is decided on the same walk, and this is the harness that walks it.
     report.push({ step: `open ${step.open}`,
+                  blocks,
                   tables: blocks.filter((b) => b.type === 'table'),
                   images: blocks.filter((b) => b.type === 'image') });
   } else {

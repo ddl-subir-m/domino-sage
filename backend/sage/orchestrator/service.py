@@ -4603,6 +4603,7 @@ class Orchestrator:
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
         self._live_read: dict[str, tuple[str, float]] = {}
         self._live_read_lock = threading.Lock()
+        self._data_use_turns: dict[str, str] = {}
         # Reads that ended in the model querying the table itself. ADR-0041 permits it — "a
         # read-only turn may read the world", and Chat queries Data Sources every day — but it is a
         # DIFFERENT door from the one the person bound the table for, and rows go into the model's
@@ -9292,6 +9293,17 @@ class Orchestrator:
 
     def _mint_live_read_token(self, thread_id: str) -> str:
         token = "lrt_" + secrets.token_urlsafe(15)
+        self._data_use_turns[thread_id] = new_id("du_turn")
+        project = self._chat_project()
+        if project.record.read_settings().get("dataUseVersion") == 1:
+            if project.control.snapshot().chat_thread_id:
+                store = ThreadStore(project.record.path)
+                project.shim.data_use.restore(store.read_history(thread_id),
+                                              lambda ev: store.append_history(thread_id, ev))
+            else:
+                workspace = project.app_for_turn()
+                project.shim.data_use.restore(workspace.read_history(thread_id),
+                                              lambda ev: workspace.append_history(ev, thread_id))
         with self._live_read_lock:
             self._live_read[thread_id] = (token, time.monotonic())
         return token
@@ -9401,6 +9413,46 @@ class Orchestrator:
             asset = datasets.get(name)
             return self._assets.list_files(asset) if asset else None
 
+        def upload_for(source: str) -> Path | None:
+            # Exact authorized references, then resolved containment. A sibling file is not a grant.
+            chat = bool(project.control.snapshot().chat_thread_id)
+            root = project.record.path if chat else project.app_for_turn().path
+            candidates = (store.read_context(thread_id).get("items", []) if chat
+                          else project.app_for_turn().read_attachments())
+            for item in candidates:
+                if chat and item.get("kind") != "file":
+                    continue
+                rel = str(item.get("path") or "")
+                if not rel or source not in (rel, str(root / rel)):
+                    continue
+                target = (root / rel).resolve()
+                allowed_root = root.resolve()
+                if not chat:
+                    asset = next((asset for asset in datasets.values()
+                                  if asset.id == item.get("dataset_id")), None)
+                    if asset is None or not asset.mount_path:
+                        return None
+                    allowed_root = Path(asset.mount_path).resolve()
+                    if target != (allowed_root / str(item.get("file") or "")).resolve():
+                        return None
+                if (not target.is_relative_to(allowed_root) or not target.is_file()
+                        or target.suffix.lower() != ".csv"):
+                    return None
+                withheld = project.control.snapshot().withheld
+                if any("file:" + path in withheld for path in (source, rel, str(target))):
+                    return None
+                return target
+            return None
+
+        def record_data_use(event, reply):
+            turn_id = self._data_use_turns.get(thread_id, "")
+            if project.control.snapshot().chat_thread_id:
+                persist = lambda ev: store.append_history(thread_id, ev)
+            else:
+                workspace = project.app_for_turn()
+                persist = lambda ev: workspace.append_history(ev, thread_id)
+            project.shim.data_use.record(event, reply, persist, turn_id)
+
         return live_read.Turn(
             thread_id=thread_id,
             examples_dir=store.examples_dir(thread_id),
@@ -9417,6 +9469,9 @@ class Orchestrator:
             sample_rows=self._resources.sample_rows,
             list_files=list_files,
             dataset_root=dataset_root,
+            data_use_enabled=project.record.read_settings().get("dataUseVersion") == 1,
+            upload_for=upload_for,
+            record_data_use=record_data_use,
         )
 
     def live_read_again(self, thread_id: str, source: dict) -> dict:
@@ -9534,6 +9589,16 @@ class Orchestrator:
                      "a /api/diag probe, not OpenCode" if probe else "OpenCode connected", method)
         return live_mcp.handle(message, run=run)
 
+    def _data_use_note(self) -> str:
+        if self._chat_project().record.read_settings().get("dataUseVersion") != 1:
+            return ""
+        return ("For CSV totals use live_read_files with operation=sum, dataset=upload, the authorized "
+                "path, group_by, sum_column, and selected_fields (result columns and/or total). "
+                "This one call calculates locally, writes a table, and returns the selected result. "
+                "Omit selected_fields for structure only. Respect explicit user limits; row_limit "
+                "is only for a requested limit. Do not read unrelated raw rows into model context. "
+                "Source-code reads, tools, skills and task/to-do work remain available.")
+
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
                      urls: list[str] | None = None, workspace: Path | None = None,
                      artifacts: list[dict] | None = None,
@@ -9551,6 +9616,7 @@ class Orchestrator:
              "than telling the person you cannot see their data. If they are not in your tool list "
              "this turn, query the data with Python instead — a missing tool is never a reason to "
              "tell someone you cannot see their data."),
+            self._data_use_note(),
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]
@@ -9667,6 +9733,9 @@ class Orchestrator:
             sites for a fact that belongs to one of them.
             """
             done.update(project.resolved_row())
+            data_used = project.shim.data_use.events(self._data_use_turns.get(thread_id, ""))
+            if data_used:
+                done["dataUsed"] = data_used
             store.append_history(thread_id, done)
             return done
 
@@ -9857,6 +9926,61 @@ class Orchestrator:
                 chat_approved.names, chat_approved.order
             )
         tap: _EventTap | None = None
+        from ..workspace.chat_tables import ChatTables, without_failed_tables
+
+        tables: ChatTables | None = None
+        primary_body = ""
+        last_text = ""
+        streamed_body = ""
+        artifacts_finished = False
+
+        def publish_chat_artifacts(outcome: str):
+            """Every active Chat exit validates bytes before retention, text and artifacts."""
+            nonlocal artifacts, immediate, artifacts_finished
+            if tables is None or artifacts_finished:
+                return {}
+            body = primary_body if tables.repair_ran else last_text or streamed_body
+            body = _take_no_build_marker(body)[0]
+            with timing.span("after.artifacts"):
+                revert_denied_writes(project.record.path, thread_id, tables.before)
+                invalid = tables.check(body)
+                tables.diagnose(invalid, outcome)
+                # A failed replacement must not turn an earlier turn's valid card into an empty
+                # receipt. Restore only this turn's damage; unchanged prior files stay untouched.
+                for rel in invalid:
+                    if rel in tables.before and rel not in tables.prior_paths:
+                        path = project.record.path / rel
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(tables.before[rel])
+                withhold_table_rows(project.record.path, thread_id, tables.before,
+                                    kept_rows=project.record.kept_rows())
+                artifacts = [store.record_artifact(thread_id, path=rel)
+                             for rel in new_artifact_paths(project.record.path, thread_id, tables.before)
+                             if rel not in invalid]
+            events = []
+            if body.strip() or invalid:
+                ev = {"type": "agent", "kind": "text",
+                      "text": without_failed_tables(body, set(invalid))}
+                events.append(ev)
+            if artifacts:
+                immediate = immediate or "artifacts"
+                ev = {"type": "artifacts", "items": artifacts}
+                events.append(ev)
+            if invalid:
+                message = ("The chart is ready, but I could not generate the table."
+                           if any(a.get("kind") == "chart" for a in artifacts)
+                           else "I could not generate the table.")
+                if len(invalid) > 1:
+                    message = message.replace("the table", "some tables")
+                ev = {"type": "error", "reason": "table generation failed", "message": message}
+                events.append(ev)
+            # Persist the whole outcome before yielding: a client can disconnect on any event.
+            for ev in events:
+                store.append_history(thread_id, ev)
+            artifacts_finished = True
+            yield from events
+            return invalid
+
         try:
             with timing.span("setup.opencode"):
                 client = self._ensure_opencode()
@@ -9867,6 +9991,7 @@ class Orchestrator:
             project.active_session_id = sid
             with timing.span("setup.snapshot"):
                 before = snapshot_files(project.record.path)
+                tables = ChatTables(project.record.path, thread_id, before)
             # Cleared here so what is read at the end of this turn belongs to this turn. Every build
             # entry point already does this; Chat never did, because Chat never read the field —
             # which is the gap, not the clearing. The turn lock means no other turn is running to
@@ -9972,6 +10097,9 @@ class Orchestrator:
                                "message": brand.text(
                                    "Stopped. Anything {assistantName} had already written is kept.")}
                     done = {"type": "done", "ok": False, "decision": "stopped"}
+                    yield from publish_chat_artifacts("stopped")
+                    if artifacts:
+                        done["artifacts"] = artifacts
                     store.append_history(thread_id, stopped)
                     finish(done)
                     yield stopped
@@ -10034,15 +10162,7 @@ class Orchestrator:
                         # ended a busy turn this way — and it is not this brake's to close.
                         log.error("chat: the session would not confirm it stopped; cleaning up "
                                   "under it anyway — the next turn may meet a live writer")
-                    revert_denied_writes(project.record.path, thread_id, before)
-                    withhold_table_rows(project.record.path, thread_id, before,
-                                        kept_rows=project.record.kept_rows())
-                    timed_out = [
-                        store.record_artifact(thread_id, path=rel)
-                        for rel in new_artifact_paths(project.record.path, thread_id, before)
-                    ]
-                    if timed_out:
-                        immediate = immediate or "artifacts"
+                    yield from publish_chat_artifacts("repeated" if looped else "timeout")
                     # Detect here too, not only after a turn that finished. Asking Chat to build an
                     # app is exactly what runs long — sage-chat writes an Artifact, not an app — so
                     # the turn the person most needs the nudge on is the one that never reaches the
@@ -10098,11 +10218,8 @@ class Orchestrator:
                     # Before the error, as on the path that finishes: what the turn produced, then
                     # why it stopped. `done` still carries them, so a client that reads only the
                     # terminal event sees them too.
-                    if timed_out:
-                        art_ev = {"type": "artifacts", "items": timed_out}
-                        store.append_history(thread_id, art_ev)
-                        yield art_ev
-                        done["artifacts"] = timed_out
+                    if artifacts:
+                        done["artifacts"] = artifacts
                     store.append_history(thread_id, err)
                     finish(done)
                     yield err
@@ -10193,6 +10310,16 @@ class Orchestrator:
                     live = _chat_live_event(ev)
                     if live is not None:
                         answered = answered or bool(live.get("text"))
+                        if live.get("type") == "delta":
+                            if tables.repair_ran:
+                                continue
+                            streamed_body = (live.get("text", "") if live.get("final")
+                                             else streamed_body + live.get("text", ""))
+                            tables.check(streamed_body)
+                            # A table answer is held until its files have been checked. Ordinary
+                            # Chat still streams. Repair prose never replaces the useful answer.
+                            if tables.candidates:
+                                continue
                         yield live
                 # A stream that has said nothing is not a stream. The transcript fallback exists
                 # for a tap that failed to open, and a tap that opened onto silence needs it just as
@@ -10221,9 +10348,17 @@ class Orchestrator:
                     poll_failures += 1
                     log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
                     if poll_failures >= _MAX_POLL_FAILURES:
-                        yield {"type": "error", "message": (
+                        try:
+                            client.interrupt(sid)
+                        except Exception:
+                            log.exception("chat: interrupt after poll failure failed")
+                        yield from publish_chat_artifacts("opencode unresponsive")
+                        err = {"type": "error", "message": (
                             "OpenCode stopped responding, so the turn was halted.")}
-                        yield {"type": "done", "ok": False, "decision": "opencode unresponsive"}
+                        store.append_history(thread_id, err)
+                        yield err
+                        yield finish({"type": "done", "ok": False,
+                                      "decision": "opencode unresponsive", "artifacts": artifacts})
                         return
                     time.sleep(2.0)
                     continue
@@ -10330,16 +10465,45 @@ class Orchestrator:
                     # Thread must not show it either way. Stripped here, where the reply is both
                     # persisted and replayed, so a reload does not bring it back.
                     body = _take_no_build_marker(pending_text)[0] if pending_text else ""
-                    if body.strip():
-                        # Shown either way — a refused turn's half-answer is still worth reading,
-                        # and the Thread keeps the status line under it. But it is not an ANSWER
-                        # when the message it came from is the one that failed: that is narration
-                        # the model wrote on its way to being refused, and counting it would drop
-                        # the refusal on a `done ok: True`.
-                        answered = not turn_failed
-                        ev = {"type": "agent", "kind": "text", "text": body}
-                        store.append_history(thread_id, ev)
-                        yield ev
+                    if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
+                        continue
+                    answered = bool(body.strip()) and not turn_failed
+                    invalid = tables.check(primary_body if tables.repair_ran else body)
+                    repairable = {p: reason for p, reason in invalid.items() if p not in tables.prior_paths}
+                    if (repairable and not tables.repair_ran and not turn_failed and not step_error
+                            and project.last_gateway_error is None):
+                        if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
+                            continue
+                        primary_body = body
+                        tables.repair_ran = True
+                        # Ignore the first request's transcript on the next poll, while keeping
+                        # the same session, Chat enforcement pin and original turn deadline.
+                        for m in msgs:
+                            for i, part in enumerate(m.get("content", [])):
+                                if isinstance(part, dict):
+                                    seen.add(_part_key(m, i, part))
+                        try:
+                            with timing.span("chat.table_repair"):
+                                client.send_prompt(sid, tables.repair_prompt(repairable),
+                                                   agent="sage-chat", chat=True)
+                        except Exception:
+                            log.warning("chat: table repair request failed")
+                            try:
+                                client.interrupt(sid)
+                            except Exception:
+                                log.warning("chat: interrupt after repair request failed")
+                            yield from publish_chat_artifacts("repair request failed")
+                            yield finish({"type": "done", "ok": False,
+                                          "decision": "table repair failed", "artifacts": artifacts})
+                            return
+                        appeared = False
+                        last_text = ""
+                        last_activity = time.monotonic()
+                        running_tools.clear()
+                        running_paths.clear()
+                        pending_calls.clear()
+                        brake = _RepeatBrake()
+                        continue
                     break
                 # Woken by the stream rather than by a timer. NOT `tap.wait`, which Build uses:
                 # that one consumes the frame it wakes on and ignores text deltas, and here the
@@ -10350,22 +10514,7 @@ class Orchestrator:
 
             # Both halves under one span: the revert and the scan walk the same tree, and what a
             # reader wants to know is what the end of a turn costs, not which of the two walks it.
-            with timing.span("after.artifacts"):
-                revert_denied_writes(project.record.path, thread_id, before)
-                # Before the scan below records them, so what the Thread lists and what git takes
-                # are the same file. A table the turn wrote keeps its shape and keeps its rows only
-                # where the Project said so (ADR-0045).
-                withhold_table_rows(project.record.path, thread_id, before,
-                                    kept_rows=project.record.kept_rows())
-                artifacts = [
-                    store.record_artifact(thread_id, path=rel)
-                    for rel in new_artifact_paths(project.record.path, thread_id, before)
-                ]
-            if artifacts:
-                immediate = immediate or "artifacts"
-                art_ev = {"type": "artifacts", "items": artifacts}
-                store.append_history(thread_id, art_ev)
-                yield art_ev
+            invalid = yield from publish_chat_artifacts("step failed" if turn_failed else "completed")
             # The shim's own record of the call that failed, which is the one witness that does not
             # depend on OpenCode reporting anything. The gateway answers 400, /v1/chat/completions
             # sees the body and writes it here — before OpenCode has decided whether to call it a
@@ -10383,6 +10532,8 @@ class Orchestrator:
                     step_reason = recall.reason_key(_error_raw(failed))
                     log.warning("chat: the gateway refused a call this turn — %s", failed)
             done = {"type": "done", "ok": True, "decision": "answered"}
+            if invalid:
+                done.update(ok=False, decision="table generation failed")
             if step_error and not answered:
                 # The turn ended, and the person has nothing. `done ok:True` with an empty Thread is
                 # the shape that sends someone looking for a Sage bug when the provider had already
@@ -10425,7 +10576,28 @@ class Orchestrator:
                 yield suggestion
             with timing.span("after.compact"):
                 self._maybe_compact_chat(client, sid, project)
+        except Exception:
+            if tables is None or artifacts_finished:
+                raise
+            log.exception("chat: session failed before artifact publication")
+            try:
+                client.interrupt(sid)
+            except Exception:
+                log.warning("chat: interrupt after session failure failed")
+            yield from publish_chat_artifacts("session failed")
+            err = {"type": "error", "message": "The Chat session failed before the answer was complete."}
+            store.append_history(thread_id, err)
+            yield err
+            yield finish({"type": "done", "ok": False, "decision": "session failed",
+                          "artifacts": artifacts})
         finally:
+            # Generator close and exceptions also end the retention window. In particular Stop
+            # used to save straight from this finally without removing generated table rows.
+            if tables is not None and not artifacts_finished:
+                # A disconnected reader cannot receive events, but history still needs the
+                # same validated outcome. Consume locally; never yield during generator close.
+                for _ in publish_chat_artifacts("interrupted"):
+                    pass
             if tap is not None:
                 tap.close()
             project.control.disarm_chat(chat_token)
@@ -12163,6 +12335,7 @@ class Orchestrator:
         # and a compaction that dropped the first send would otherwise leave the agent holding a
         # tool it can no longer name a turn for. Repeating one line is the cheaper mistake.
         live_read_note = (
+            self._data_use_note() + "\n" +
             f"Read token: {self._mint_live_read_token(project.build_conversation)}. Pass it as "
             "`token` on every `live_read_table` or `live_read_files` call. Use those tools to look "
             "at a bound table "
@@ -12373,6 +12546,10 @@ class Orchestrator:
             # long since built or replaced, and the person is one new turn away from a card that is
             # right.
             if ev["type"] == "done":
+                data_used = project.shim.data_use.events(
+                    self._data_use_turns.get(project.build_conversation, ""))
+                if data_used:
+                    ev["dataUsed"] = data_used
                 # WHICH model this turn actually ran on, and which rule chose it (#316). Here for
                 # the reason the two records above give: every terminal `done` passes through
                 # persist(), and the yield sites that can end a turn are that many chances to
@@ -13454,7 +13631,7 @@ class Orchestrator:
                 # guardrail sentence is a paragraph, and a second copy of it directly under the
                 # first explains nothing the first did not.
                 message = (brand.text("{assistantName} was refused the same way again.")
-                           if _said_already(build_history, reason_said)
+                           if refusal and _said_already(build_history, reason_said)
                            else brand.text("{assistantName} couldn't finish — {reason}",
                                            reason=reason_said))
                 # `reason` is what makes this refusal comparable to the last one (ADR-0022). Build
