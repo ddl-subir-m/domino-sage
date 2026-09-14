@@ -9543,7 +9543,8 @@ class Orchestrator:
                     lines.append(f"- {kind}: {title}")
             lines.append("")
         lines.append(
-            "This turn answers a question about data. Do not greet by asking what to build, "
+            "Answer general questions directly; data questions can use the Session context above. "
+            "Do not require data for a general question. Do not greet by asking what to build, "
             "and do not offer an app unless the person asked to make one that other people would use. "
             "If a chart or table would help, write it without being asked — one PNG or one "
             f".table.json at examples/{thread_id}/, not both. A matrix is a heatmap PNG. "
@@ -12034,6 +12035,23 @@ class Orchestrator:
             kind="built" if _crossing_minted_app(project.app_for_turn(), thread_id) else "changed",
         )
 
+    @staticmethod
+    def _build_source_note(root: Path) -> str:
+        """Supply exact source paths without reading source or attached data."""
+        try:
+            paths = sorted(p.relative_to(root).as_posix() for p in (root / "src").rglob("*")
+                           if p.is_file() and not any(part.startswith(".")
+                                                      for part in p.relative_to(root).parts))
+        except OSError:
+            return ""
+        if not paths:
+            return ""
+        return ("Existing source paths (JSON array, relative to the app directory):\n"
+                + json.dumps(paths[:60])
+                + ("\nListing limited to the first 60 paths." if len(paths) > 60 else "")
+                + "\nOpen the relevant files together before editing. "
+                "Search only if the needed path is not listed.")
+
     def _build_stream(self, prompt: str, mentions: list[str] | None = None,
                       resources: list[dict] | None = None, *, is_approval: bool = False,
                       user_text: str | None = None, mode: Mode | None = None,
@@ -12903,10 +12921,14 @@ class Orchestrator:
         # Set by that retry, cleared by the send that carries it, so it rides the retry only and no
         # later nudge in the same turn repeats it.
         broken_retry_note = ""
-        # The five blocks that ride the FIRST send only; each is cleared right after it, so a nudge
+        # Source paths cost one local listing instead of a model round trip spent discovering
+        # where to read. This is orientation, not file contents; the agent must still read before
+        # editing. Only the current app's src/ is listed, never attached data or sibling apps.
+        source_note = self._build_source_note(project.app_for_turn().path)
+        # The blocks that ride the FIRST send only; each is cleared right after it, so a nudge
         # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
         # it re-sends the same turn into a session that heard none of this — so it puts them back.
-        first_send_extras = (mention_files, resource_note, chat_note, unusable_note, ambiguous_note)
+        first_send_extras = (mention_files, resource_note, chat_note, unusable_note, ambiguous_note, source_note)
         # (b) Retry budget, measured. One pass of this loop is one send_prompt and everything the
         # agent does before Sage decides whether to nudge it again, so the spans it opens ARE the
         # answer to "how many model turns does a build spend, and where do they go". Named by what
@@ -12979,12 +13001,12 @@ class Orchestrator:
                                # bearing: the forks below wrap `current` in their own preamble and
                                # a turn with no notes must still end on the person's own sentence.
                                # The token is a standing fact about the turn, so it goes in front.
-                               "\n\n".join(p for p in (live_read_note, current, chat_note,
+                               "\n\n".join(p for p in (live_read_note, source_note, current, chat_note,
                                                        resource_note,
                                                        unusable_note, ambiguous_note,
                                                        broken_retry_note) if p),
                                agent=agent, attachments=mention_files)
-            # All five ride the first (user) turn only, not the nudge/fix follow-ups: those carry
+            # These ride the first (user) turn only, not the nudge/fix follow-ups: those carry
             # no new user reference, and a repeated block reads as a second request for the same
             # Resource. The Chat background goes with them — a nudge is Sage talking to itself
             # about the code it just failed to write, and the conversation behind it hasn't moved.
@@ -12992,6 +13014,7 @@ class Orchestrator:
             # typed, and a nudge mentions nothing.
             mention_files = None
             resource_note = ""
+            source_note = ""
             chat_note = ""
             unusable_note = ""
             ambiguous_note = ""
@@ -13431,7 +13454,7 @@ class Orchestrator:
                     project.session_id = sid
                     project.record.write_session_id(sid, project.build_conversation,
                                                     project.app_for_turn().app_id)
-                mention_files, resource_note, chat_note, unusable_note, ambiguous_note = first_send_extras
+                mention_files, resource_note, chat_note, unusable_note, ambiguous_note, source_note = first_send_extras
                 broken_retry_note = BROKEN_CALL_RETRY_NOTE.format(tool=broken_call)
                 yield {"type": "iterate",
                        "reason": f"the model's {broken_call} call arrived broken — starting it again"}
@@ -19803,3 +19826,10 @@ class Orchestrator:
                 self._oc_server.stop()
             except Exception:
                 log.exception("shutdown: failed to stop opencode server")
+        # The save above can still make model calls. Close its shared connections last.
+        close_gateway = getattr(self._gateway, "close", None)
+        if close_gateway is not None:
+            try:
+                close_gateway()
+            except Exception:
+                log.exception("shutdown: failed to close gateway connections")

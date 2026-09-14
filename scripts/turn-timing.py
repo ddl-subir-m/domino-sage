@@ -17,15 +17,16 @@ and prints them largest first, so the ranking comes off the numbers rather than 
              LEFT of the three gates that now start at the top of the turn and are joined further
              down (the `git fetch`, the Alias listing, the scope classifier's own model call). What
              those three cost end to end is listed separately, under "beside the turn".
-    model    time inside inferences: the irreducible part, and the denominator for everything else
+    model    time inside inferences, including gateway wait and generation. This can change with
+             the model, provider, request size, output length, caching, and number of calls.
     polling  what the sampling loop costs — the second it sleeps between looks, plus the lag
              between a tool finishing inside OpenCode and Sage noticing (emit.lag)
     other    the remainder: typecheck, git, and whatever is not yet instrumented
 
 Exits 1 when the MEDIAN turn's pre-model overhead is over budget, so it can be run as a check
-rather than read. The default of 2.5s is evidenced, not chosen: a median turn measured 1.9s on
-2026-09-07 after the gate work, and the floor under that is a gateway round trip the scope
-classifier has to make (~1s), so a budget near 1s is one no code change can reach.
+rather than read. The default of 2.5s follows a median turn measured at 1.9s on 2026-09-07
+after the gate work. Reassess it against the current gateway and workload: a historical
+round-trip measurement is not a lower bound on what a later implementation can achieve.
 """
 from __future__ import annotations
 

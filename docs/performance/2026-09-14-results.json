@@ -1,0 +1,4770 @@
+{
+  "date": "2026-09-14",
+  "note": "Synthetic gateway probes from the developer machine. Original field names retained. gateway-results has repeated exact prompts: some text results are response-cache hits; do not use their median as generation latency. Other copy probes use a nonce. These are not end-to-end Sage build timings.",
+  "experiments": {
+    "gateway-results": [
+      {
+        "rep": 0,
+        "shape": "text",
+        "model": "sonnet",
+        "status": 200,
+        "first_s": 3.309653042,
+        "useful_s": 3.3098712089999998,
+        "total_s": 6.687171584,
+        "max_gap_s": 1.323488791,
+        "chunks": 59,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 0,
+        "shape": "text",
+        "model": "gpt-5.4",
+        "status": 200,
+        "first_s": 3.0145300829999995,
+        "useful_s": 3.0172086659999993,
+        "total_s": 4.6956057499999995,
+        "max_gap_s": 0.11548379200000092,
+        "chunks": 364,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "prompt_tokens": 378,
+          "completion_tokens": 363,
+          "total_tokens": 741,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      },
+      {
+        "rep": 0,
+        "shape": "text",
+        "model": "haiku",
+        "status": 200,
+        "first_s": 1.1821418749999992,
+        "useful_s": 1.1821418749999992,
+        "total_s": 2.5833337079999996,
+        "max_gap_s": 0.22648575000000015,
+        "chunks": 53,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 0,
+        "shape": "text",
+        "model": "domino/gemini-3.7-flash",
+        "status": 200,
+        "first_s": 2.4832824580000015,
+        "useful_s": 2.4832824580000015,
+        "total_s": 4.633067624999999,
+        "max_gap_s": 0.2333235000000009,
+        "chunks": 21,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "completion_tokens": 475,
+          "completion_tokens_details": {
+            "reasoning_tokens": 45
+          },
+          "extra_properties": {
+            "google": {
+              "traffic_type": "ON_DEMAND"
+            }
+          },
+          "prompt_tokens": 443,
+          "total_tokens": 918
+        }
+      },
+      {
+        "rep": 0,
+        "shape": "tool",
+        "model": "sonnet",
+        "status": 200,
+        "first_s": 2.729352167000002,
+        "useful_s": 2.872020750000001,
+        "total_s": 6.790565333,
+        "max_gap_s": 3.6700216250000004,
+        "chunks": 197,
+        "chars": 1345,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 0,
+        "shape": "tool",
+        "model": "gpt-5.4",
+        "status": 200,
+        "first_s": 2.004679499999998,
+        "useful_s": 2.006328791999998,
+        "total_s": 4.068828125,
+        "max_gap_s": 0.179681875,
+        "chunks": 412,
+        "chars": 1342,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "prompt_tokens": 507,
+          "completion_tokens": 420,
+          "total_tokens": 927,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      },
+      {
+        "rep": 0,
+        "shape": "tool",
+        "model": "haiku",
+        "status": 200,
+        "first_s": 1.4477733750000006,
+        "useful_s": 1.670240875000001,
+        "total_s": 4.596953375000002,
+        "max_gap_s": 2.670295333000002,
+        "chunks": 197,
+        "chars": 1345,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 0,
+        "shape": "tool",
+        "model": "domino/gemini-3.7-flash",
+        "status": 200,
+        "first_s": 3.9589434999999966,
+        "useful_s": 3.9589434999999966,
+        "total_s": 4.029841542,
+        "max_gap_s": 0.03531312499999473,
+        "chunks": 3,
+        "chars": 1342,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "completion_tokens": 506,
+          "completion_tokens_details": {
+            "reasoning_tokens": 53
+          },
+          "extra_properties": {
+            "google": {
+              "traffic_type": "ON_DEMAND"
+            }
+          },
+          "prompt_tokens": 478,
+          "total_tokens": 984
+        }
+      },
+      {
+        "rep": 1,
+        "shape": "text",
+        "model": "sonnet",
+        "status": 200,
+        "first_s": 2.5332578749999968,
+        "useful_s": 2.5337143749999953,
+        "total_s": 5.403731999999998,
+        "max_gap_s": 0.7212267080000032,
+        "chunks": 59,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 1,
+        "shape": "text",
+        "model": "gpt-5.4",
+        "status": 200,
+        "first_s": 1.3070823750000002,
+        "useful_s": 1.3072498749999966,
+        "total_s": 2.987256957999996,
+        "max_gap_s": 0.11401245799999771,
+        "chunks": 364,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "prompt_tokens": 378,
+          "completion_tokens": 363,
+          "total_tokens": 741,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      },
+      {
+        "rep": 1,
+        "shape": "text",
+        "model": "haiku",
+        "status": 200,
+        "first_s": 0.6802642919999968,
+        "useful_s": 0.6802642919999968,
+        "total_s": 0.6816554579999945,
+        "max_gap_s": 8.504099999839809e-05,
+        "chunks": 3,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 1,
+        "shape": "text",
+        "model": "domino/gemini-3.7-flash",
+        "status": 200,
+        "first_s": 0.6278224160000008,
+        "useful_s": 0.6278224160000008,
+        "total_s": 0.6300800409999994,
+        "max_gap_s": 0.00040741699999813363,
+        "chunks": 3,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 1,
+        "shape": "tool",
+        "model": "sonnet",
+        "status": 200,
+        "first_s": 2.666324084000003,
+        "useful_s": 2.875740959000005,
+        "total_s": 5.9664867090000016,
+        "max_gap_s": 2.836304708,
+        "chunks": 197,
+        "chars": 1347,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 1,
+        "shape": "tool",
+        "model": "gpt-5.4",
+        "status": 200,
+        "first_s": 1.5612376249999969,
+        "useful_s": 1.568927666999997,
+        "total_s": 3.4126559589999985,
+        "max_gap_s": 0.15612483399999633,
+        "chunks": 412,
+        "chars": 1342,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "prompt_tokens": 507,
+          "completion_tokens": 420,
+          "total_tokens": 927,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      },
+      {
+        "rep": 1,
+        "shape": "tool",
+        "model": "haiku",
+        "status": 200,
+        "first_s": 1.30230375,
+        "useful_s": 1.5724113750000015,
+        "total_s": 4.493416042,
+        "max_gap_s": 2.6777002080000045,
+        "chunks": 197,
+        "chars": 1345,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 1,
+        "shape": "tool",
+        "model": "domino/gemini-3.7-flash",
+        "status": 200,
+        "first_s": 4.635037208,
+        "useful_s": 4.635037208,
+        "total_s": 4.733071457999998,
+        "max_gap_s": 0.07092600000000004,
+        "chunks": 3,
+        "chars": 1342,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "completion_tokens": 496,
+          "completion_tokens_details": {
+            "reasoning_tokens": 43
+          },
+          "extra_properties": {
+            "google": {
+              "traffic_type": "ON_DEMAND"
+            }
+          },
+          "prompt_tokens": 478,
+          "total_tokens": 974
+        }
+      },
+      {
+        "rep": 2,
+        "shape": "text",
+        "model": "sonnet",
+        "status": 200,
+        "first_s": 2.106841458000005,
+        "useful_s": 2.1069647919999994,
+        "total_s": 4.997878958000001,
+        "max_gap_s": 1.1488329590000035,
+        "chunks": 60,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 2,
+        "shape": "text",
+        "model": "gpt-5.4",
+        "status": 200,
+        "first_s": 1.994163959000005,
+        "useful_s": 2.0059107090000055,
+        "total_s": 4.362342959000003,
+        "max_gap_s": 0.14637629100000993,
+        "chunks": 364,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "prompt_tokens": 378,
+          "completion_tokens": 363,
+          "total_tokens": 741,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      },
+      {
+        "rep": 2,
+        "shape": "text",
+        "model": "haiku",
+        "status": 200,
+        "first_s": 0.6331399169999941,
+        "useful_s": 0.6331399169999941,
+        "total_s": 0.6353624589999924,
+        "max_gap_s": 0.00023550000000227556,
+        "chunks": 3,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 2,
+        "shape": "text",
+        "model": "domino/gemini-3.7-flash",
+        "status": 200,
+        "first_s": 0.6886342500000069,
+        "useful_s": 0.6886342500000069,
+        "total_s": 0.6917987920000002,
+        "max_gap_s": 6.954200000564015e-05,
+        "chunks": 3,
+        "chars": 1270,
+        "finish": "stop",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 2,
+        "shape": "tool",
+        "model": "sonnet",
+        "status": 200,
+        "first_s": 2.5656771250000077,
+        "useful_s": 2.73535612500001,
+        "total_s": 5.615725792000006,
+        "max_gap_s": 2.631283625000009,
+        "chunks": 197,
+        "chars": 1345,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 2,
+        "shape": "tool",
+        "model": "gpt-5.4",
+        "status": 200,
+        "first_s": 1.677553458999995,
+        "useful_s": 1.7526682919999956,
+        "total_s": 6.172452624999991,
+        "max_gap_s": 0.33082254199999284,
+        "chunks": 412,
+        "chars": 1342,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "prompt_tokens": 507,
+          "completion_tokens": 420,
+          "total_tokens": 927,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      },
+      {
+        "rep": 2,
+        "shape": "tool",
+        "model": "haiku",
+        "status": 200,
+        "first_s": 1.462055540999998,
+        "useful_s": 1.783796541000001,
+        "total_s": 4.6509142910000065,
+        "max_gap_s": 2.6219282090000036,
+        "chunks": 197,
+        "chars": 1345,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 2,
+        "shape": "tool",
+        "model": "domino/gemini-3.7-flash",
+        "status": 200,
+        "first_s": 3.8085188750000043,
+        "useful_s": 3.8085188750000043,
+        "total_s": 3.9484805830000056,
+        "max_gap_s": 0.1383545830000088,
+        "chunks": 3,
+        "chars": 1342,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "completion_tokens": 453,
+          "extra_properties": {
+            "google": {
+              "traffic_type": "ON_DEMAND"
+            }
+          },
+          "prompt_tokens": 478,
+          "total_tokens": 931
+        }
+      }
+    ],
+    "unique-small": {
+      "run_id": "62d2bd641a1e418c94e995c60e3cc7d1",
+      "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway/v1",
+      "context_lines": 0,
+      "rows": [
+        {
+          "round": 0,
+          "shape": "tool",
+          "model": "Gemma 4 31B",
+          "request_bytes": 1841,
+          "status": 200,
+          "first_frame_s": 5.131704,
+          "first_output_s": 5.133055625000001,
+          "max_gap_s": 0.010525707999999412,
+          "chunks": 5,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 568,
+            "completion_tokens": 452,
+            "total_tokens": 1020,
+            "cost": 0.000878,
+            "is_byok": false,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_tokens": 0,
+              "video_tokens": 0
+            },
+            "cost_details": {
+              "upstream_inference_cost": 0.000878,
+              "upstream_inference_prompt_cost": 0.000426,
+              "upstream_inference_completions_cost": 0.000452
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "image_tokens": 0,
+              "audio_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 5.151835625,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 0,
+          "shape": "tool",
+          "model": "sonnet",
+          "request_bytes": 1836,
+          "status": 200,
+          "first_frame_s": 1.8515039169999996,
+          "first_output_s": 2.0827392919999994,
+          "max_gap_s": 2.7175038749999993,
+          "chunks": 197,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": null,
+          "error": null,
+          "total_s": 5.049408832999999,
+          "output_chars": 1347,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 0,
+          "shape": "tool",
+          "model": "gpt-5.4",
+          "request_bytes": 1837,
+          "status": 200,
+          "first_frame_s": 1.9963789999999992,
+          "first_output_s": 2.0027641660000004,
+          "max_gap_s": 0.2325071249999997,
+          "chunks": 412,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 541,
+            "completion_tokens": 420,
+            "total_tokens": 961,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 4.635203582999999,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "model": "Gemma 4 31B",
+          "request_bytes": 1841,
+          "status": 200,
+          "first_frame_s": 6.091295917000002,
+          "first_output_s": 6.101860583999999,
+          "max_gap_s": 0.01056466699999703,
+          "chunks": 5,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 568,
+            "completion_tokens": 452,
+            "total_tokens": 1020,
+            "cost": 0.000878,
+            "is_byok": false,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_tokens": 0,
+              "video_tokens": 0
+            },
+            "cost_details": {
+              "upstream_inference_cost": 0.000878,
+              "upstream_inference_prompt_cost": 0.000426,
+              "upstream_inference_completions_cost": 0.000452
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "image_tokens": 0,
+              "audio_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 6.107582667000001,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "model": "sonnet",
+          "request_bytes": 1836,
+          "status": 200,
+          "first_frame_s": 2.014453249999999,
+          "first_output_s": 2.498717415999998,
+          "max_gap_s": 2.6254311669999986,
+          "chunks": 197,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": null,
+          "error": null,
+          "total_s": 5.370742249999999,
+          "output_chars": 1345,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "model": "gpt-5.4",
+          "request_bytes": 1837,
+          "status": 200,
+          "first_frame_s": 1.5328104160000002,
+          "first_output_s": 1.54510625,
+          "max_gap_s": 0.14048850000000002,
+          "chunks": 412,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 541,
+            "completion_tokens": 420,
+            "total_tokens": 961,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 3.5379682499999987,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        }
+      ]
+    },
+    "large-context-results": [
+      {
+        "rep": 0,
+        "shape": "tool",
+        "model": "sonnet",
+        "status": 200,
+        "first_s": 4.198657417000001,
+        "useful_s": 4.766270167,
+        "total_s": 6.593474792,
+        "max_gap_s": 1.5853266250000004,
+        "chunks": 199,
+        "chars": 1345,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 0,
+        "shape": "tool",
+        "model": "gpt-5.4",
+        "status": 200,
+        "first_s": 2.167685875,
+        "useful_s": 2.1709517910000002,
+        "total_s": 3.9885915,
+        "max_gap_s": 0.1665324160000008,
+        "chunks": 412,
+        "chars": 1342,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "prompt_tokens": 37271,
+          "completion_tokens": 420,
+          "total_tokens": 37691,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      },
+      {
+        "rep": 0,
+        "shape": "tool",
+        "model": "haiku",
+        "status": 200,
+        "first_s": 2.3248634999999993,
+        "useful_s": 2.5455635,
+        "total_s": 4.06341325,
+        "max_gap_s": 1.269791541,
+        "chunks": 197,
+        "chars": 1345,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 0,
+        "shape": "tool",
+        "model": "Gemma 4 31B",
+        "status": 200,
+        "first_s": 18.724423291999997,
+        "useful_s": 18.741073667000002,
+        "total_s": 18.773205667,
+        "max_gap_s": 0.016650375000004658,
+        "chunks": 5,
+        "chars": 1342,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "prompt_tokens": 49007,
+          "completion_tokens": 452,
+          "total_tokens": 49459,
+          "cost": 0.00505438,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00505438,
+            "upstream_inference_prompt_cost": 0.0049007,
+            "upstream_inference_completions_cost": 0.00015368
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      {
+        "rep": 1,
+        "shape": "tool",
+        "model": "sonnet",
+        "status": 200,
+        "first_s": 3.083798833000003,
+        "useful_s": 3.2413003750000016,
+        "total_s": 7.287656042000002,
+        "max_gap_s": 3.7977023340000002,
+        "chunks": 197,
+        "chars": 1345,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 1,
+        "shape": "tool",
+        "model": "gpt-5.4",
+        "status": 200,
+        "first_s": 2.2436248329999984,
+        "useful_s": 2.243731582999999,
+        "total_s": 5.919892040999997,
+        "max_gap_s": 0.14982704100000177,
+        "chunks": 412,
+        "chars": 1342,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": {
+          "prompt_tokens": 37271,
+          "completion_tokens": 420,
+          "total_tokens": 37691,
+          "prompt_tokens_details": {
+            "cached_tokens": 36480,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      },
+      {
+        "rep": 1,
+        "shape": "tool",
+        "model": "haiku",
+        "status": 200,
+        "first_s": 2.316805584000001,
+        "useful_s": 2.3865570000000034,
+        "total_s": 4.014152459000002,
+        "max_gap_s": 1.3800677090000022,
+        "chunks": 197,
+        "chars": 1345,
+        "finish": "tool_calls",
+        "done": true,
+        "correct": true,
+        "error": null,
+        "usage": null
+      },
+      {
+        "rep": 1,
+        "shape": "tool",
+        "model": "Gemma 4 31B",
+        "status": 200,
+        "first_s": null,
+        "useful_s": null,
+        "total_s": 56.039729375,
+        "max_gap_s": 0,
+        "chunks": 0,
+        "chars": 0,
+        "finish": null,
+        "done": false,
+        "correct": false,
+        "error": "timeout",
+        "usage": null
+      }
+    ],
+    "medium-context": {
+      "run_id": "1dfed5b9866347358f08e0000c8e2f25",
+      "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway/v1",
+      "context_lines": 450,
+      "rows": [
+        {
+          "round": 0,
+          "shape": "tool",
+          "model": "Gemma 4 31B",
+          "request_bytes": 30527,
+          "status": 200,
+          "first_frame_s": 14.51027575,
+          "first_output_s": 14.516218209,
+          "max_gap_s": 0.14205483299999955,
+          "chunks": 443,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 12083,
+            "completion_tokens": 452,
+            "total_tokens": 12535,
+            "cost": 0.00187242,
+            "is_byok": false,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_tokens": 0,
+              "video_tokens": 0
+            },
+            "cost_details": {
+              "upstream_inference_cost": 0.00187242,
+              "upstream_inference_prompt_cost": 0.00169162,
+              "upstream_inference_completions_cost": 0.0001808
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "image_tokens": 0,
+              "audio_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 16.234239667,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 0,
+          "shape": "tool",
+          "model": "sonnet",
+          "request_bytes": 30522,
+          "status": 200,
+          "first_frame_s": 1.9555242499999999,
+          "first_output_s": 2.184525666999999,
+          "max_gap_s": 2.728446124999998,
+          "chunks": 197,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": null,
+          "error": null,
+          "total_s": 5.155477459,
+          "output_chars": 1345,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 0,
+          "shape": "tool",
+          "model": "gpt-5.4",
+          "request_bytes": 30523,
+          "status": 200,
+          "first_frame_s": 1.686137875,
+          "first_output_s": 1.7037017500000005,
+          "max_gap_s": 0.10663337500000125,
+          "chunks": 412,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 9476,
+            "completion_tokens": 420,
+            "total_tokens": 9896,
+            "prompt_tokens_details": {
+              "cached_tokens": 6784,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 3.624099459,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "model": "Gemma 4 31B",
+          "request_bytes": 30527,
+          "status": 200,
+          "first_frame_s": 11.074092500000003,
+          "first_output_s": 11.082564958000003,
+          "max_gap_s": 0.4709463749999969,
+          "chunks": 443,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 12083,
+            "completion_tokens": 452,
+            "total_tokens": 12535,
+            "cost": 0.00187242,
+            "is_byok": false,
+            "prompt_tokens_details": {
+              "cached_tokens": 12064,
+              "cache_write_tokens": 0,
+              "audio_tokens": 0,
+              "video_tokens": 0
+            },
+            "cost_details": {
+              "upstream_inference_cost": 0.00187242,
+              "upstream_inference_prompt_cost": 0.00169162,
+              "upstream_inference_completions_cost": 0.0001808
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "image_tokens": 0,
+              "audio_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 14.486065749999998,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "model": "sonnet",
+          "request_bytes": 30522,
+          "status": 200,
+          "first_frame_s": 2.211893625000002,
+          "first_output_s": 2.4217740420000027,
+          "max_gap_s": 2.6649545830000037,
+          "chunks": 191,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": null,
+          "error": null,
+          "total_s": 5.364115709000004,
+          "output_chars": 1345,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "model": "gpt-5.4",
+          "request_bytes": 30523,
+          "status": 200,
+          "first_frame_s": 2.848954874999997,
+          "first_output_s": 2.849142041999997,
+          "max_gap_s": 0.12134600000000262,
+          "chunks": 412,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 9476,
+            "completion_tokens": 420,
+            "total_tokens": 9896,
+            "prompt_tokens_details": {
+              "cached_tokens": 8832,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 4.815944166999998,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        }
+      ]
+    },
+    "short-output": {
+      "run_id": "9f16bee86625439884853f5a6ab01ec3",
+      "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway/v1",
+      "context_lines": 450,
+      "output_lines": 4,
+      "rows": [
+        {
+          "round": 0,
+          "shape": "tool",
+          "model": "Gemma 4 31B",
+          "request_bytes": 29344,
+          "status": 200,
+          "first_frame_s": 10.714077,
+          "first_output_s": 10.722161541,
+          "max_gap_s": 0.08570341599999942,
+          "chunks": 52,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 11690,
+            "completion_tokens": 61,
+            "total_tokens": 11751,
+            "cost": 0.001661,
+            "is_byok": false,
+            "prompt_tokens_details": {
+              "cached_tokens": 11616,
+              "cache_write_tokens": 0,
+              "audio_tokens": 0,
+              "video_tokens": 0
+            },
+            "cost_details": {
+              "upstream_inference_cost": 0.001661,
+              "upstream_inference_prompt_cost": 0.0016366,
+              "upstream_inference_completions_cost": 2.44e-05
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "image_tokens": 0,
+              "audio_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 10.960584333,
+          "output_chars": 159,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 0,
+          "shape": "tool",
+          "model": "sonnet",
+          "request_bytes": 29339,
+          "status": 200,
+          "first_frame_s": 3.2409969579999984,
+          "first_output_s": 3.352413415999999,
+          "max_gap_s": 0.5340670420000002,
+          "chunks": 28,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": null,
+          "error": null,
+          "total_s": 4.010813749999999,
+          "output_chars": 164,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 0,
+          "shape": "tool",
+          "model": "gpt-5.4",
+          "request_bytes": 29340,
+          "status": 200,
+          "first_frame_s": 2.0489510420000006,
+          "first_output_s": 2.0490769999999987,
+          "max_gap_s": 0.10568049999999829,
+          "chunks": 52,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 9149,
+            "completion_tokens": 60,
+            "total_tokens": 9209,
+            "prompt_tokens_details": {
+              "cached_tokens": 8832,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 2.359812374999999,
+          "output_chars": 159,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "model": "Gemma 4 31B",
+          "request_bytes": 29344,
+          "status": 200,
+          "first_frame_s": 20.612874417,
+          "first_output_s": 21.235767250000002,
+          "max_gap_s": 0.6227566670000044,
+          "chunks": 6,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 11689,
+            "completion_tokens": 61,
+            "total_tokens": 11750,
+            "cost": 0.001424818,
+            "is_byok": false,
+            "prompt_tokens_details": {
+              "cached_tokens": 4,
+              "cache_write_tokens": 0,
+              "audio_tokens": 0,
+              "video_tokens": 0
+            },
+            "cost_details": {
+              "upstream_inference_cost": 0.001424818,
+              "upstream_inference_prompt_cost": 0.001402248,
+              "upstream_inference_completions_cost": 2.257e-05
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "image_tokens": 0,
+              "audio_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 21.265778167,
+          "output_chars": 162,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "model": "sonnet",
+          "request_bytes": 29339,
+          "status": 200,
+          "first_frame_s": 3.5010594170000005,
+          "first_output_s": 3.600060374999998,
+          "max_gap_s": 0.9722832910000037,
+          "chunks": 28,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": null,
+          "error": null,
+          "total_s": 4.695530584000004,
+          "output_chars": 164,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "model": "gpt-5.4",
+          "request_bytes": 29340,
+          "status": 200,
+          "first_frame_s": 1.5183354999999992,
+          "first_output_s": 1.5281839160000033,
+          "max_gap_s": 0.07465987499999471,
+          "chunks": 52,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "prompt_tokens": 9149,
+            "completion_tokens": 60,
+            "total_tokens": 9209,
+            "prompt_tokens_details": {
+              "cached_tokens": 8832,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 0,
+              "rejected_prediction_tokens": 0
+            }
+          },
+          "error": null,
+          "total_s": 1.8562488330000022,
+          "output_chars": 159,
+          "correct": true,
+          "ok": true
+        }
+      ]
+    },
+    "route-results": [
+      {
+        "round": 0,
+        "route": "default",
+        "model": "Gemma 4 31B",
+        "request_bytes": 30525,
+        "status": 200,
+        "first_frame_s": 26.867270542,
+        "first_output_s": 26.867374917,
+        "max_gap_s": 0.00010437499999937927,
+        "chunks": 5,
+        "finish": "tool_calls",
+        "done": true,
+        "usage": {
+          "prompt_tokens": 12078,
+          "completion_tokens": 451,
+          "total_tokens": 12529,
+          "cost": 0.00360382,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00360382,
+            "upstream_inference_prompt_cost": 0.00326106,
+            "upstream_inference_completions_cost": 0.00034276
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null,
+        "total_s": 26.868419375000002,
+        "output_chars": 1342,
+        "correct": true,
+        "ok": true
+      },
+      {
+        "round": 0,
+        "route": "latency",
+        "model": "Gemma 4 31B",
+        "request_bytes": 30558,
+        "status": 200,
+        "first_frame_s": 43.376320500000006,
+        "first_output_s": 43.376434333000006,
+        "max_gap_s": 0.014480249999991202,
+        "chunks": 5,
+        "finish": "tool_calls",
+        "done": true,
+        "usage": {
+          "prompt_tokens": 12075,
+          "completion_tokens": 452,
+          "total_tokens": 12527,
+          "cost": 0.0018713,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0018713,
+            "upstream_inference_prompt_cost": 0.0016905,
+            "upstream_inference_completions_cost": 0.0001808
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null,
+        "total_s": 43.395352833000004,
+        "output_chars": 1345,
+        "correct": true,
+        "ok": true
+      },
+      {
+        "round": 1,
+        "route": "latency",
+        "model": "Gemma 4 31B",
+        "request_bytes": 30558,
+        "status": 200,
+        "first_frame_s": 6.301214999999999,
+        "first_output_s": 6.308659917,
+        "max_gap_s": 0.007444917000000828,
+        "chunks": 5,
+        "finish": "tool_calls",
+        "done": true,
+        "usage": {
+          "prompt_tokens": 12080,
+          "completion_tokens": 452,
+          "total_tokens": 12532,
+          "cost": 0.009512,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.009512,
+            "upstream_inference_prompt_cost": 0.00906,
+            "upstream_inference_completions_cost": 0.000452
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null,
+        "total_s": 6.313233791999991,
+        "output_chars": 1342,
+        "correct": true,
+        "ok": true
+      },
+      {
+        "round": 1,
+        "route": "default",
+        "model": "Gemma 4 31B",
+        "request_bytes": 30525,
+        "status": 200,
+        "first_frame_s": 11.629184292000005,
+        "first_output_s": 11.691470582999997,
+        "max_gap_s": 0.20368983400000218,
+        "chunks": 443,
+        "finish": "tool_calls",
+        "done": true,
+        "usage": {
+          "prompt_tokens": 12078,
+          "completion_tokens": 452,
+          "total_tokens": 12530,
+          "cost": 0.00187172,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00187172,
+            "upstream_inference_prompt_cost": 0.00169092,
+            "upstream_inference_completions_cost": 0.0001808
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null,
+        "total_s": 14.253177582999996,
+        "output_chars": 1342,
+        "correct": true,
+        "ok": true
+      },
+      {
+        "round": 2,
+        "route": "default",
+        "model": "Gemma 4 31B",
+        "request_bytes": 30525,
+        "status": 200,
+        "first_frame_s": 23.222040957999994,
+        "first_output_s": 28.980221125,
+        "max_gap_s": 5.757870208,
+        "chunks": 6,
+        "finish": "tool_calls",
+        "done": true,
+        "usage": {
+          "prompt_tokens": 12078,
+          "completion_tokens": 452,
+          "total_tokens": 12530,
+          "cost": 0.001616168,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 4,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.001616168,
+            "upstream_inference_prompt_cost": 0.001448928,
+            "upstream_inference_completions_cost": 0.00016724
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null,
+        "total_s": 29.658880166999992,
+        "output_chars": 1345,
+        "correct": true,
+        "ok": true
+      },
+      {
+        "round": 2,
+        "route": "latency",
+        "model": "Gemma 4 31B",
+        "request_bytes": 30558,
+        "status": 200,
+        "first_frame_s": 3.1173405419999938,
+        "first_output_s": 13.385724374999995,
+        "max_gap_s": 10.268250042000005,
+        "chunks": 6,
+        "finish": "tool_calls",
+        "done": true,
+        "usage": {
+          "prompt_tokens": 12079,
+          "completion_tokens": 452,
+          "total_tokens": 12531,
+          "cost": 0.000317264,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 12032,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.000317264,
+            "upstream_inference_prompt_cost": 0.000150024,
+            "upstream_inference_completions_cost": 0.00016724
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null,
+        "total_s": 13.677674124999982,
+        "output_chars": 1345,
+        "correct": true,
+        "ok": true
+      }
+    ],
+    "native-results": [
+      {
+        "round": 0,
+        "mode": "control",
+        "status": 200,
+        "first_s": 2.487274292,
+        "first_args_s": 3.015925709,
+        "first_100_arg_chars_s": 8.340671292,
+        "total_s": 8.470584375,
+        "max_gap_s": 4.093914915999999,
+        "correct": true,
+        "finish": "tool_use",
+        "error": null,
+        "usage": {
+          "input_tokens": 12127,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 0
+          },
+          "output_tokens": 973,
+          "service_tier": "standard",
+          "inference_geo": "global",
+          "output_tokens_details": {
+            "thinking_tokens": 21
+          }
+        },
+        "chunks": 392
+      },
+      {
+        "round": 0,
+        "mode": "cache-eager",
+        "status": 200,
+        "first_s": 2.929962208000001,
+        "first_args_s": 2.9314639170000003,
+        "first_100_arg_chars_s": 3.3346927920000002,
+        "total_s": 8.296751582999999,
+        "max_gap_s": 0.5835880420000006,
+        "correct": true,
+        "finish": "tool_use",
+        "error": null,
+        "usage": {
+          "input_tokens": 1020,
+          "cache_creation_input_tokens": 11108,
+          "cache_read_input_tokens": 0,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 11108,
+            "ephemeral_1h_input_tokens": 0
+          },
+          "output_tokens": 951,
+          "service_tier": "standard",
+          "inference_geo": "global",
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          }
+        },
+        "chunks": 121
+      },
+      {
+        "round": 1,
+        "mode": "cache-eager",
+        "status": 200,
+        "first_s": 1.900982625000001,
+        "first_args_s": 2.495548750000001,
+        "first_100_arg_chars_s": 3.5169219170000012,
+        "total_s": 7.740755375000003,
+        "max_gap_s": 1.0208691670000007,
+        "correct": true,
+        "finish": "tool_use",
+        "error": null,
+        "usage": {
+          "input_tokens": 1023,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 11108,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 0
+          },
+          "output_tokens": 979,
+          "service_tier": "standard",
+          "inference_geo": "global",
+          "output_tokens_details": {
+            "thinking_tokens": 27
+          }
+        },
+        "chunks": 125
+      },
+      {
+        "round": 1,
+        "mode": "control",
+        "status": 200,
+        "first_s": 2.0527227910000008,
+        "first_args_s": 2.6256595409999974,
+        "first_100_arg_chars_s": 7.903703124999996,
+        "total_s": 8.039972416000001,
+        "max_gap_s": 4.056849291999999,
+        "correct": true,
+        "finish": "tool_use",
+        "error": null,
+        "usage": {
+          "input_tokens": 12128,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 0
+          },
+          "output_tokens": 975,
+          "service_tier": "standard",
+          "inference_geo": "global",
+          "output_tokens_details": {
+            "thinking_tokens": 23
+          }
+        },
+        "chunks": 392
+      }
+    ],
+    "connection-results": [
+      {
+        "round": 0,
+        "mode": "fresh",
+        "status": 200,
+        "total_s": 0.8116527500096709
+      },
+      {
+        "round": 0,
+        "mode": "reused",
+        "status": 200,
+        "total_s": 0.6567869998980314
+      },
+      {
+        "round": 1,
+        "mode": "reused",
+        "status": 200,
+        "total_s": 0.2730677919462323
+      },
+      {
+        "round": 1,
+        "mode": "fresh",
+        "status": 200,
+        "total_s": 0.6696790831629187
+      },
+      {
+        "round": 2,
+        "mode": "fresh",
+        "status": 200,
+        "total_s": 0.668275082949549
+      },
+      {
+        "round": 2,
+        "mode": "reused",
+        "status": 200,
+        "total_s": 0.3531416659243405
+      },
+      {
+        "round": 3,
+        "mode": "reused",
+        "status": 200,
+        "total_s": 0.27013954194262624
+      },
+      {
+        "round": 3,
+        "mode": "fresh",
+        "status": 200,
+        "total_s": 0.6579621660057455
+      }
+    ],
+    "pooled-live-results": [
+      {
+        "round": 0,
+        "model": "sonnet",
+        "total_s": 2.6337592089548707,
+        "first_s": 2.0294942089822143,
+        "connect_events": [
+          "connection.connect_tcp.started",
+          "connection.start_tls.started"
+        ],
+        "correct": true,
+        "error": null
+      },
+      {
+        "round": 0,
+        "model": "gpt-5.4",
+        "total_s": 1.0351724999491125,
+        "first_s": 0.987673208815977,
+        "connect_events": [],
+        "correct": true,
+        "error": null
+      },
+      {
+        "round": 0,
+        "model": "Gemma 4 31B",
+        "total_s": 1.062204624991864,
+        "first_s": 0.937161915935576,
+        "connect_events": [],
+        "correct": false,
+        "error": null
+      },
+      {
+        "round": 1,
+        "model": "sonnet",
+        "total_s": 1.593717500101775,
+        "first_s": 1.1280307499691844,
+        "connect_events": [],
+        "correct": true,
+        "error": null
+      },
+      {
+        "round": 1,
+        "model": "gpt-5.4",
+        "total_s": 1.3429370410740376,
+        "first_s": 1.3385209999978542,
+        "connect_events": [],
+        "correct": true,
+        "error": null
+      },
+      {
+        "round": 1,
+        "model": "Gemma 4 31B",
+        "total_s": 0.6689707909245044,
+        "first_s": 0.617532332893461,
+        "connect_events": [],
+        "correct": true,
+        "error": null
+      }
+    ],
+    "gemma-budget-results": [
+      {
+        "budget": 16,
+        "total_s": 1.3757346249185503,
+        "content": "READY",
+        "finish": "stop",
+        "usage": {
+          "prompt_tokens": 48,
+          "completion_tokens": 2,
+          "total_tokens": 50,
+          "cost": 5e-06,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 5e-06,
+            "upstream_inference_prompt_cost": 4.32e-06,
+            "upstream_inference_completions_cost": 6.8e-07
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null
+      },
+      {
+        "budget": 256,
+        "total_s": 0.5815788749605417,
+        "content": "READY.",
+        "finish": "stop",
+        "usage": {
+          "prompt_tokens": 50,
+          "completion_tokens": 3,
+          "total_tokens": 53,
+          "cost": 5.52e-06,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 5.52e-06,
+            "upstream_inference_prompt_cost": 4.5e-06,
+            "upstream_inference_completions_cost": 1.02e-06
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null
+      },
+      {
+        "budget": 256,
+        "total_s": 0.580591042060405,
+        "content": "READY.",
+        "finish": "stop",
+        "usage": {
+          "prompt_tokens": 49,
+          "completion_tokens": 3,
+          "total_tokens": 52,
+          "cost": 5.43e-06,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 5.43e-06,
+            "upstream_inference_prompt_cost": 4.41e-06,
+            "upstream_inference_completions_cost": 1.02e-06
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null
+      },
+      {
+        "budget": 16,
+        "total_s": 0.8359221250284463,
+        "content": "READY.",
+        "finish": "stop",
+        "usage": {
+          "prompt_tokens": 50,
+          "completion_tokens": 3,
+          "total_tokens": 53,
+          "cost": 5.52e-06,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 5.52e-06,
+            "upstream_inference_prompt_cost": 4.5e-06,
+            "upstream_inference_completions_cost": 1.02e-06
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "error": null
+      }
+    ],
+    "opencode-workflows-initial": {
+      "note": "Local OpenCode 1.18.4 and the changed Sage gateway client; synthetic files; not the full Workbench orchestrator. First case in each process includes cold startup. Title calls are separate. One sample per case. Failed file checks are retained.",
+      "rows": [
+        {
+          "mode": "chat",
+          "model": "gpt-5.4",
+          "variant": "before",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 3.2968666250817478,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 3.4164335830137134
+            },
+            {
+              "title": false,
+              "bytes": 81880,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 1.850176207954064,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 19052,
+                "completion_tokens": 245,
+                "total_tokens": 19297,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 3.3183974579442292
+            },
+            {
+              "title": false,
+              "bytes": 82970,
+              "tools": [],
+              "first_s": 2.9321207078173757,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 19311,
+                "completion_tokens": 11,
+                "total_tokens": 19322,
+                "prompt_tokens_details": {
+                  "cached_tokens": 18048,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 3.058122457936406
+            }
+          ],
+          "total_s": 23.460488833952695,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "gpt-5.4",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 0.8624311671592295,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 0.9824305830989033
+            },
+            {
+              "title": false,
+              "bytes": 24736,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 1.4440432500559837,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 5574,
+                "completion_tokens": 256,
+                "total_tokens": 5830,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 2.7589984592050314
+            },
+            {
+              "title": false,
+              "bytes": 25830,
+              "tools": [],
+              "first_s": 1.08654654212296,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 5844,
+                "completion_tokens": 11,
+                "total_tokens": 5855,
+                "prompt_tokens_details": {
+                  "cached_tokens": 4736,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.362955833086744
+            }
+          ],
+          "total_s": 5.4351739168632776,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "Gemma 4 31B",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 0.9286732911132276,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 0.9960737910587341
+            },
+            {
+              "title": false,
+              "bytes": 24740,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 14.045241291867569,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 5892,
+                "completion_tokens": 329,
+                "total_tokens": 6221,
+                "cost": 0.00095648,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00095648,
+                  "upstream_inference_prompt_cost": 0.00082488,
+                  "upstream_inference_completions_cost": 0.0001316
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 17.516619249945506
+            },
+            {
+              "title": false,
+              "bytes": 26126,
+              "tools": [],
+              "first_s": 10.499585167039186,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 6234,
+                "completion_tokens": 13,
+                "total_tokens": 6247,
+                "cost": 0.00087796,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 5888,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00087796,
+                  "upstream_inference_prompt_cost": 0.00087276,
+                  "upstream_inference_completions_cost": 5.2e-06
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 10.619764624862
+            }
+          ],
+          "total_s": 29.76965312496759,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "Gemma 4 31B",
+          "variant": "before",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 0.8825319590978324,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 0.9655518750660121
+            },
+            {
+              "title": false,
+              "bytes": 81934,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 38.292539790971205,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 20680,
+                "completion_tokens": 126,
+                "total_tokens": 20806,
+                "cost": 0.00567936,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00567936,
+                  "upstream_inference_prompt_cost": 0.0055836,
+                  "upstream_inference_completions_cost": 9.576e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 38.29331800015643
+            },
+            {
+              "title": false,
+              "bytes": 82581,
+              "tools": [],
+              "first_s": 27.63924229191616,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 20816,
+                "completion_tokens": 12,
+                "total_tokens": 20828,
+                "cost": 0.00562944,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00562944,
+                  "upstream_inference_prompt_cost": 0.00562032,
+                  "upstream_inference_completions_cost": 9.12e-06
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 27.639841708820313
+            }
+          ],
+          "total_s": 67.69342420808971,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "sonnet",
+          "variant": "before",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 1.4893117500469089,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.6451880410313606
+            },
+            {
+              "title": false,
+              "bytes": 83039,
+              "tools": [
+                "glob"
+              ],
+              "first_s": 3.857848084066063,
+              "error": null,
+              "usage": null,
+              "total_s": 4.032996666850522
+            },
+            {
+              "title": false,
+              "bytes": 83387,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 3.3437499578576535,
+              "error": null,
+              "usage": null,
+              "total_s": 4.242178000044078
+            },
+            {
+              "title": false,
+              "bytes": 83949,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 2.008388000074774,
+              "error": null,
+              "usage": null,
+              "total_s": 3.706767875002697
+            },
+            {
+              "title": false,
+              "bytes": 84793,
+              "tools": [],
+              "first_s": 2.0682997091207653,
+              "error": null,
+              "usage": null,
+              "total_s": 2.599387750029564
+            }
+          ],
+          "total_s": 16.74355070805177,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "sonnet",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 1.1041260831989348,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.2032575001940131
+            },
+            {
+              "title": false,
+              "bytes": 24735,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 4.078975583892316,
+              "error": null,
+              "usage": null,
+              "total_s": 4.863147417083383
+            },
+            {
+              "title": false,
+              "bytes": 25085,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 1.7750690830871463,
+              "error": null,
+              "usage": null,
+              "total_s": 1.8939611671958119
+            },
+            {
+              "title": false,
+              "bytes": 25410,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 2.2762184171006083,
+              "error": null,
+              "usage": null,
+              "total_s": 3.9622786671388894
+            },
+            {
+              "title": false,
+              "bytes": 26244,
+              "tools": [],
+              "first_s": 1.218762292061001,
+              "error": null,
+              "usage": null,
+              "total_s": 1.705462499987334
+            }
+          ],
+          "total_s": 14.444132624892518,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "build",
+          "model": "gpt-5.4",
+          "variant": "before",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2654,
+              "tools": [],
+              "first_s": 1.4018446248956025,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 558,
+                "completion_tokens": 9,
+                "total_tokens": 567,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.5686727920547128
+            },
+            {
+              "title": false,
+              "bytes": 70100,
+              "tools": [
+                "glob",
+                "grep"
+              ],
+              "first_s": 2.476272542029619,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 16227,
+                "completion_tokens": 95,
+                "total_tokens": 16322,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 2.5996779170818627
+            },
+            {
+              "title": false,
+              "bytes": 70967,
+              "tools": [
+                "read"
+              ],
+              "first_s": 1.0996468749362975,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 16414,
+                "completion_tokens": 42,
+                "total_tokens": 16456,
+                "prompt_tokens_details": {
+                  "cached_tokens": 16000,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.2272732080891728
+            },
+            {
+              "title": false,
+              "bytes": 71542,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 1.6967234581243247,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 16534,
+                "completion_tokens": 67,
+                "total_tokens": 16601,
+                "prompt_tokens_details": {
+                  "cached_tokens": 16000,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 2.221958457957953
+            },
+            {
+              "title": false,
+              "bytes": 72068,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 0.9489916658494622,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 16626,
+                "completion_tokens": 58,
+                "total_tokens": 16684,
+                "prompt_tokens_details": {
+                  "cached_tokens": 16000,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.1875090829562396
+            },
+            {
+              "title": false,
+              "bytes": 72477,
+              "tools": [],
+              "first_s": 1.1744250000920147,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 16697,
+                "completion_tokens": 38,
+                "total_tokens": 16735,
+                "prompt_tokens_details": {
+                  "cached_tokens": 16000,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.6728949169628322
+            }
+          ],
+          "total_s": 12.927268291823566,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "build",
+          "model": "gpt-5.4",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 3328,
+              "tools": [],
+              "first_s": 0.9850152500439435,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 720,
+                "completion_tokens": 9,
+                "total_tokens": 729,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.1104500000365078
+            },
+            {
+              "title": false,
+              "bytes": 74117,
+              "tools": [
+                "read",
+                "read",
+                "read"
+              ],
+              "first_s": 1.7936286670155823,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 17134,
+                "completion_tokens": 133,
+                "total_tokens": 17267,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 2.015348207904026
+            },
+            {
+              "title": false,
+              "bytes": 75737,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 1.7306963340379298,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 17516,
+                "completion_tokens": 67,
+                "total_tokens": 17583,
+                "prompt_tokens_details": {
+                  "cached_tokens": 17024,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 2.2529085841961205
+            },
+            {
+              "title": false,
+              "bytes": 76263,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 1.0334033339750022,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 17608,
+                "completion_tokens": 58,
+                "total_tokens": 17666,
+                "prompt_tokens_details": {
+                  "cached_tokens": 17024,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.322922166902572
+            },
+            {
+              "title": false,
+              "bytes": 76671,
+              "tools": [],
+              "first_s": 1.8759032499510795,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 17679,
+                "completion_tokens": 40,
+                "total_tokens": 17719,
+                "prompt_tokens_details": {
+                  "cached_tokens": 17024,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 2.504339874954894
+            }
+          ],
+          "total_s": 11.332712165778503,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "build",
+          "model": "Gemma 4 31B",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 3328,
+              "tools": [],
+              "first_s": 0.9445706671103835,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 720,
+                "completion_tokens": 9,
+                "total_tokens": 729,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.0638579591177404
+            },
+            {
+              "title": false,
+              "bytes": 69498,
+              "tools": [
+                "read"
+              ],
+              "first_s": 6.595632541924715,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 17560,
+                "completion_tokens": 18,
+                "total_tokens": 17578,
+                "cost": 0.002113212,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 6,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.002113212,
+                  "upstream_inference_prompt_cost": 0.002106552,
+                  "upstream_inference_completions_cost": 6.66e-06
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 6.865837542107329
+            },
+            {
+              "title": false,
+              "bytes": 70008,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 2.6128706668969244,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 17663,
+                "completion_tokens": 77,
+                "total_tokens": 17740,
+                "cost": 0.000252002,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 17556,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.000252002,
+                  "upstream_inference_prompt_cost": 0.000223512,
+                  "upstream_inference_completions_cost": 2.849e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 18.980176333803684
+            },
+            {
+              "title": false,
+              "bytes": 70653,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 28.767007041955367,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 17803,
+                "completion_tokens": 77,
+                "total_tokens": 17880,
+                "cost": 0.01342925,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.01342925,
+                  "upstream_inference_prompt_cost": 0.01335225,
+                  "upstream_inference_completions_cost": 7.7e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 29.519183499971405
+            },
+            {
+              "title": false,
+              "bytes": 71325,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 18.79694225010462,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 17946,
+                "completion_tokens": 66,
+                "total_tokens": 18012,
+                "cost": 0.000255216,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 17803,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.000255216,
+                  "upstream_inference_prompt_cost": 0.000230796,
+                  "upstream_inference_completions_cost": 2.442e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 20.477121332893148
+            },
+            {
+              "title": false,
+              "bytes": 71849,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 28.072178500005975,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18033,
+                "completion_tokens": 31,
+                "total_tokens": 18064,
+                "cost": 0.01355575,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 17792,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.01355575,
+                  "upstream_inference_prompt_cost": 0.01352475,
+                  "upstream_inference_completions_cost": 3.1e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 28.26849799999036
+            },
+            {
+              "title": false,
+              "bytes": 72186,
+              "tools": [],
+              "first_s": 28.051697458140552,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18077,
+                "completion_tokens": 70,
+                "total_tokens": 18147,
+                "cost": 0.01362775,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 16384,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.01362775,
+                  "upstream_inference_prompt_cost": 0.01355775,
+                  "upstream_inference_completions_cost": 7e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 28.663300625048578
+            }
+          ],
+          "total_s": 136.84462487488054,
+          "correct": false,
+          "error": null
+        },
+        {
+          "mode": "build",
+          "model": "Gemma 4 31B",
+          "variant": "before",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2654,
+              "tools": [],
+              "first_s": 1.036912249866873,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 558,
+                "completion_tokens": 8,
+                "total_tokens": 566,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.3221417078748345
+            },
+            {
+              "title": false,
+              "bytes": 73415,
+              "tools": [
+                "grep"
+              ],
+              "first_s": 14.04564412496984,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18583,
+                "completion_tokens": 15,
+                "total_tokens": 18598,
+                "cost": 0.002234862,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 6,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.002234862,
+                  "upstream_inference_prompt_cost": 0.002229312,
+                  "upstream_inference_completions_cost": 5.55e-06
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 14.430352124851197
+            },
+            {
+              "title": false,
+              "bytes": 73860,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 11.896669124951586,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18661,
+                "completion_tokens": 77,
+                "total_tokens": 18738,
+                "cost": 0.001382426,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 8198,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.001382426,
+                  "upstream_inference_prompt_cost": 0.001353936,
+                  "upstream_inference_completions_cost": 2.849e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 16.422841790830716
+            },
+            {
+              "title": false,
+              "bytes": 74506,
+              "tools": [
+                "read"
+              ],
+              "first_s": 5.9988551249261945,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18801,
+                "completion_tokens": 48,
+                "total_tokens": 18849,
+                "cost": 0.001388496,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 8198,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.001388496,
+                  "upstream_inference_prompt_cost": 0.001370736,
+                  "upstream_inference_completions_cost": 1.776e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 7.2945914580486715
+            },
+            {
+              "title": false,
+              "bytes": 75081,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 1.9343521250411868,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18934,
+                "completion_tokens": 73,
+                "total_tokens": 19007,
+                "cost": 0.000268582,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 18801,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.000268582,
+                  "upstream_inference_prompt_cost": 0.000241572,
+                  "upstream_inference_completions_cost": 2.701e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 4.2315242500044405
+            },
+            {
+              "title": false,
+              "bytes": 75727,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 3.6778704579919577,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 19074,
+                "completion_tokens": 77,
+                "total_tokens": 19151,
+                "cost": 0.000264722,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 19006,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.000264722,
+                  "upstream_inference_prompt_cost": 0.000236232,
+                  "upstream_inference_completions_cost": 2.849e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 5.844739624997601
+            },
+            {
+              "title": false,
+              "bytes": 76373,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 4.403870165813714,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 19214,
+                "completion_tokens": 66,
+                "total_tokens": 19280,
+                "cost": 0.000270108,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 19074,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.000270108,
+                  "upstream_inference_prompt_cost": 0.000245688,
+                  "upstream_inference_completions_cost": 2.442e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 6.0130707079079
+            },
+            {
+              "title": false,
+              "bytes": 76897,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 4.284592624986544,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 19303,
+                "completion_tokens": 31,
+                "total_tokens": 19334,
+                "cost": 0.000252718,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 19214,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.000252718,
+                  "upstream_inference_prompt_cost": 0.000241248,
+                  "upstream_inference_completions_cost": 1.147e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 5.351317041087896
+            },
+            {
+              "title": false,
+              "bytes": 77207,
+              "tools": [],
+              "first_s": 3.2052390000317246,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 19344,
+                "completion_tokens": 32,
+                "total_tokens": 19376,
+                "cost": 0.000248396,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 19303,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.000248396,
+                  "upstream_inference_prompt_cost": 0.000236556,
+                  "upstream_inference_completions_cost": 1.184e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 4.175115542020649
+            }
+          ],
+          "total_s": 68.08230537502095,
+          "correct": false,
+          "error": null
+        },
+        {
+          "mode": "build",
+          "model": "sonnet",
+          "variant": "before",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2654,
+              "tools": [],
+              "first_s": 0.882864834042266,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 558,
+                "completion_tokens": 9,
+                "total_tokens": 567,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.001240124925971
+            },
+            {
+              "title": false,
+              "bytes": 73403,
+              "tools": [
+                "grep"
+              ],
+              "first_s": 2.096260125050321,
+              "error": null,
+              "usage": null,
+              "total_s": 2.2171353751327842
+            },
+            {
+              "title": false,
+              "bytes": 73850,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 1.7333281659521163,
+              "error": null,
+              "usage": null,
+              "total_s": 2.3641075829509646
+            },
+            {
+              "title": false,
+              "bytes": 74373,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 1.6426328748930246,
+              "error": null,
+              "usage": null,
+              "total_s": 2.4783382499590516
+            },
+            {
+              "title": false,
+              "bytes": 74765,
+              "tools": [],
+              "first_s": 3.3267564999405295,
+              "error": null,
+              "usage": null,
+              "total_s": 3.679441708140075
+            }
+          ],
+          "total_s": 14.209116708021611,
+          "correct": false,
+          "error": null
+        },
+        {
+          "mode": "build",
+          "model": "sonnet",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 3328,
+              "tools": [],
+              "first_s": 0.9729533749632537,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 720,
+                "completion_tokens": 9,
+                "total_tokens": 729,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.092161332955584
+            },
+            {
+              "title": false,
+              "bytes": 72037,
+              "tools": [
+                "read"
+              ],
+              "first_s": 1.656175957992673,
+              "error": null,
+              "usage": null,
+              "total_s": 2.980147915892303
+            },
+            {
+              "title": false,
+              "bytes": 72612,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 1.523728874977678,
+              "error": null,
+              "usage": null,
+              "total_s": 2.369880083017051
+            },
+            {
+              "title": false,
+              "bytes": 73135,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 1.7369322499725968,
+              "error": null,
+              "usage": null,
+              "total_s": 2.387342041125521
+            },
+            {
+              "title": false,
+              "bytes": 73526,
+              "tools": [],
+              "first_s": 1.4250215420033783,
+              "error": null,
+              "usage": null,
+              "total_s": 1.8101502920035273
+            }
+          ],
+          "total_s": 12.953780292067677,
+          "correct": false,
+          "error": null
+        }
+      ],
+      "final_scope_note": "Any Chat variant disabling skill/task/todowrite is rejected and not shipped. Build measurements remain applicable to the indicated fixture/instructions."
+    },
+    "opencode-build-json-paths-and-patch-example": {
+      "note": "Local OpenCode 1.18.4 and the changed Sage gateway client; synthetic files; not the full Workbench orchestrator. First case in each process includes cold startup. Title calls are separate. One sample per case. Failed file checks are retained.",
+      "rows": [
+        {
+          "mode": "build",
+          "model": "gpt-5.4",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2942,
+              "tools": [],
+              "first_s": 2.3284006658941507,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 632,
+                "completion_tokens": 9,
+                "total_tokens": 641,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 2.442636457970366
+            },
+            {
+              "title": false,
+              "bytes": 61059,
+              "tools": [
+                "read",
+                "read",
+                "read",
+                "read",
+                "read",
+                "read",
+                "read"
+              ],
+              "first_s": 3.082764375023544,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 14152,
+                "completion_tokens": 292,
+                "total_tokens": 14444,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 3.4131387919187546
+            },
+            {
+              "title": false,
+              "bytes": 64524,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 1.3004580000415444,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 14959,
+                "completion_tokens": 67,
+                "total_tokens": 15026,
+                "prompt_tokens_details": {
+                  "cached_tokens": 13952,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.6138885419350117
+            },
+            {
+              "title": false,
+              "bytes": 65050,
+              "tools": [
+                "read",
+                "bash"
+              ],
+              "first_s": 1.4868991661351174,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 15051,
+                "completion_tokens": 115,
+                "total_tokens": 15166,
+                "prompt_tokens_details": {
+                  "cached_tokens": 13952,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.6122248331084847
+            },
+            {
+              "title": false,
+              "bytes": 65975,
+              "tools": [],
+              "first_s": 1.0497137501370162,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 15261,
+                "completion_tokens": 40,
+                "total_tokens": 15301,
+                "prompt_tokens_details": {
+                  "cached_tokens": 14976,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.3384733751881868
+            }
+          ],
+          "total_s": 29.989342249929905,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "build",
+          "model": "Gemma 4 31B",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2942,
+              "tools": [],
+              "first_s": 1.4239316671155393,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 632,
+                "completion_tokens": 9,
+                "total_tokens": 641,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.5136834580916911
+            },
+            {
+              "title": false,
+              "bytes": 73362,
+              "tools": [
+                "read"
+              ],
+              "first_s": 30.540715916082263,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18498,
+                "completion_tokens": 18,
+                "total_tokens": 18516,
+                "cost": 0.0138915,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.0138915,
+                  "upstream_inference_prompt_cost": 0.0138735,
+                  "upstream_inference_completions_cost": 1.8e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 30.572931458009407
+            },
+            {
+              "title": false,
+              "bytes": 73890,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 28.654672084143385,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18600,
+                "completion_tokens": 84,
+                "total_tokens": 18684,
+                "cost": 0.014034,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 18432,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.014034,
+                  "upstream_inference_prompt_cost": 0.01395,
+                  "upstream_inference_completions_cost": 8.4e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 29.09245187509805
+            },
+            {
+              "title": false,
+              "bytes": 74422,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 29.030026791151613,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18695,
+                "completion_tokens": 68,
+                "total_tokens": 18763,
+                "cost": 0.01408925,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 18560,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.01408925,
+                  "upstream_inference_prompt_cost": 0.01402125,
+                  "upstream_inference_completions_cost": 6.8e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 29.378634541062638
+            },
+            {
+              "title": false,
+              "bytes": 74978,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 0.7022196671459824,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18787,
+                "completion_tokens": 31,
+                "total_tokens": 18818,
+                "cost": 0.01412125,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 18688,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.01412125,
+                  "upstream_inference_prompt_cost": 0.01409025,
+                  "upstream_inference_completions_cost": 3.1e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 0.86041891714558
+            },
+            {
+              "title": false,
+              "bytes": 75315,
+              "tools": [],
+              "first_s": 1.5419605411589146,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 18829,
+                "completion_tokens": 30,
+                "total_tokens": 18859,
+                "cost": 0.01415175,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.01415175,
+                  "upstream_inference_prompt_cost": 0.01412175,
+                  "upstream_inference_completions_cost": 3e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 1.7184123750776052
+            }
+          ],
+          "total_s": 96.00969074992463,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "build",
+          "model": "sonnet",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2942,
+              "tools": [],
+              "first_s": 1.1039931669365615,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 632,
+                "completion_tokens": 9,
+                "total_tokens": 641,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.2143296250142157
+            },
+            {
+              "title": false,
+              "bytes": 73767,
+              "tools": [
+                "read"
+              ],
+              "first_s": 2.8270122909452766,
+              "error": null,
+              "usage": null,
+              "total_s": 4.061081707943231
+            },
+            {
+              "title": false,
+              "bytes": 74342,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 1.2298524589277804,
+              "error": null,
+              "usage": null,
+              "total_s": 2.07188408379443
+            },
+            {
+              "title": false,
+              "bytes": 74870,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 1.195892124902457,
+              "error": null,
+              "usage": null,
+              "total_s": 1.8022274170070887
+            },
+            {
+              "title": false,
+              "bytes": 75261,
+              "tools": [],
+              "first_s": 1.079247625079006,
+              "error": null,
+              "usage": null,
+              "total_s": 1.598745958181098
+            }
+          ],
+          "total_s": 12.92335950001143,
+          "correct": true,
+          "error": null
+        }
+      ],
+      "final_scope_note": "Any Chat variant disabling skill/task/todowrite is rejected and not shipped. Build measurements remain applicable to the indicated fixture/instructions."
+    },
+    "opencode-chat-warm-repeat": {
+      "note": "Local OpenCode 1.18.4 and the changed Sage gateway client; synthetic files; not the full Workbench orchestrator. First case in each process includes cold startup. Title calls are separate. One sample per case. Failed file checks are retained.",
+      "rows": [
+        {
+          "mode": "chat",
+          "model": "gpt-5.4",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 1.4513623339589685,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.6280921250581741
+            },
+            {
+              "title": false,
+              "bytes": 24736,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 1.6254720001015812,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 5571,
+                "completion_tokens": 215,
+                "total_tokens": 5786,
+                "prompt_tokens_details": {
+                  "cached_tokens": 2688,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 2.560583917191252
+            },
+            {
+              "title": false,
+              "bytes": 25708,
+              "tools": [],
+              "first_s": 0.9376443750225008,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 5800,
+                "completion_tokens": 11,
+                "total_tokens": 5811,
+                "prompt_tokens_details": {
+                  "cached_tokens": 4736,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 0.9983933339826763
+            }
+          ],
+          "total_s": 20.820664167171344,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "gpt-5.4",
+          "variant": "before",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 0.8542327079921961,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 8,
+                "total_tokens": 597,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 0.9413924999535084
+            },
+            {
+              "title": false,
+              "bytes": 83375,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 2.5597134579438716,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 19360,
+                "completion_tokens": 235,
+                "total_tokens": 19595,
+                "prompt_tokens_details": {
+                  "cached_tokens": 2688,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 3.8561438750475645
+            },
+            {
+              "title": false,
+              "bytes": 84465,
+              "tools": [],
+              "first_s": 1.188698833109811,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 19609,
+                "completion_tokens": 11,
+                "total_tokens": 19620,
+                "prompt_tokens_details": {
+                  "cached_tokens": 19072,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.4732840000651777
+            }
+          ],
+          "total_s": 6.717749584000558,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "gpt-5.4",
+          "variant": "after-again",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 0.9434068340342492,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.287007624981925
+            },
+            {
+              "title": false,
+              "bytes": 24754,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 1.181698292028159,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 5577,
+                "completion_tokens": 273,
+                "total_tokens": 5850,
+                "prompt_tokens_details": {
+                  "cached_tokens": 2688,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 2.920554333133623
+            },
+            {
+              "title": false,
+              "bytes": 25936,
+              "tools": [],
+              "first_s": 1.712342041078955,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 5864,
+                "completion_tokens": 11,
+                "total_tokens": 5875,
+                "prompt_tokens_details": {
+                  "cached_tokens": 4736,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.8544757079798728
+            }
+          ],
+          "total_s": 6.075487333815545,
+          "correct": true,
+          "error": null
+        }
+      ],
+      "final_scope_note": "Any Chat variant disabling skill/task/todowrite is rejected and not shipped. Build measurements remain applicable to the indicated fixture/instructions."
+    },
+    "opencode-chat-input-capture": {
+      "note": "Local installed skill catalogue, not a measurement of the deployed catalogue. Same OpenCode binary and fixture. Captured before the general-purpose wording change.",
+      "before_request_bytes": 83991,
+      "after_request_bytes": 25543,
+      "before_system_json_chars": 64151,
+      "after_system_json_chars": 13029,
+      "disabled_chat_tools": [
+        "skill",
+        "task",
+        "todowrite"
+      ],
+      "retained_tools": [
+        "apply_patch",
+        "bash",
+        "glob",
+        "grep",
+        "read",
+        "webfetch"
+      ],
+      "web_note": "Normal Sage web gate still applies. Workflow comparisons stripped web tools in both conditions.",
+      "final_scope_note": "Any Chat variant disabling skill/task/todowrite is rejected and not shipped. Build measurements remain applicable to the indicated fixture/instructions."
+    },
+    "opencode-general-chat": {
+      "note": "New Chat profile, general sky-color question, no requested artifact. All answered correctly in at most two sentences, without tools. First GPT case includes process startup. Not a before/after speed comparison.",
+      "rows": [
+        {
+          "mode": "chat",
+          "model": "gpt-5.4",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2560,
+              "tools": [],
+              "first_s": 1.8360409578308463,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 538,
+                "completion_tokens": 8,
+                "total_tokens": 546,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.999533124966547
+            },
+            {
+              "title": false,
+              "bytes": 24505,
+              "tools": [],
+              "first_s": 0.9971799170598388,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 5523,
+                "completion_tokens": 46,
+                "total_tokens": 5569,
+                "prompt_tokens_details": {
+                  "cached_tokens": 2688,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.6805642079561949
+            }
+          ],
+          "total_s": 25.451508166035637,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "Gemma 4 31B",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2560,
+              "tools": [],
+              "first_s": 1.2646826668642461,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 538,
+                "completion_tokens": 8,
+                "total_tokens": 546,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.3205822089221328
+            },
+            {
+              "title": false,
+              "bytes": 24509,
+              "tools": [],
+              "first_s": 1.688950875075534,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 5837,
+                "completion_tokens": 25,
+                "total_tokens": 5862,
+                "cost": 0.00440275,
+                "is_byok": false,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0,
+                  "audio_tokens": 0,
+                  "video_tokens": 0
+                },
+                "cost_details": {
+                  "upstream_inference_cost": 0.00440275,
+                  "upstream_inference_prompt_cost": 0.00437775,
+                  "upstream_inference_completions_cost": 2.5e-05
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "image_tokens": 0,
+                  "audio_tokens": 0
+                }
+              },
+              "total_s": 2.3905649171210825
+            }
+          ],
+          "total_s": 3.5140810841694474,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "sonnet",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2560,
+              "tools": [],
+              "first_s": 0.9681103751063347,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 538,
+                "completion_tokens": 8,
+                "total_tokens": 546,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.0133579159155488
+            },
+            {
+              "title": false,
+              "bytes": 24504,
+              "tools": [],
+              "first_s": 3.1247245830018073,
+              "error": null,
+              "usage": null,
+              "total_s": 3.6932989999186248
+            }
+          ],
+          "total_s": 4.804556292016059,
+          "correct": true,
+          "error": null
+        }
+      ],
+      "final_scope_note": "Any Chat variant disabling skill/task/todowrite is rejected and not shipped. Build measurements remain applicable to the indicated fixture/instructions."
+    },
+    "gemini-small": {
+      "run_id": "f82255c784d541dea0d8823f5b06120b",
+      "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway/v1",
+      "context_lines": 0,
+      "output_lines": 40,
+      "rows": [
+        {
+          "round": 0,
+          "shape": "tool",
+          "provider_sort": null,
+          "model": "domino/gemini-3.7-flash",
+          "request_bytes": 1853,
+          "status": 200,
+          "first_frame_s": 4.802531459135935,
+          "first_output_s": 4.802531459135935,
+          "first_100_output_chars_s": 4.802531459135935,
+          "max_gap_s": 0.06043133302591741,
+          "chunks": 3,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "completion_tokens": 594,
+            "completion_tokens_details": {
+              "reasoning_tokens": 141
+            },
+            "extra_properties": {
+              "google": {
+                "traffic_type": "ON_DEMAND"
+              }
+            },
+            "prompt_tokens": 521,
+            "total_tokens": 1115
+          },
+          "error": null,
+          "total_s": 4.8962564170360565,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "provider_sort": null,
+          "model": "domino/gemini-3.7-flash",
+          "request_bytes": 1853,
+          "status": 200,
+          "first_frame_s": 4.7083990829996765,
+          "first_output_s": 4.7083990829996765,
+          "first_100_output_chars_s": 4.7083990829996765,
+          "max_gap_s": 0.058413000078871846,
+          "chunks": 3,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "completion_tokens": 582,
+            "completion_tokens_details": {
+              "reasoning_tokens": 129
+            },
+            "extra_properties": {
+              "google": {
+                "traffic_type": "ON_DEMAND"
+              }
+            },
+            "prompt_tokens": 521,
+            "total_tokens": 1103
+          },
+          "error": null,
+          "total_s": 4.802485249936581,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        }
+      ]
+    },
+    "gemini-added-context": {
+      "run_id": "219c6f025a834b189507c28f7ad742db",
+      "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway/v1",
+      "context_lines": 450,
+      "output_lines": 40,
+      "rows": [
+        {
+          "round": 0,
+          "shape": "tool",
+          "provider_sort": null,
+          "model": "domino/gemini-3.7-flash",
+          "request_bytes": 30539,
+          "status": 200,
+          "first_frame_s": 5.0861934998538345,
+          "first_output_s": 5.0861934998538345,
+          "first_100_output_chars_s": 5.0861934998538345,
+          "max_gap_s": 0.056350375059992075,
+          "chunks": 3,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "completion_tokens": 527,
+            "completion_tokens_details": {
+              "reasoning_tokens": 74
+            },
+            "extra_properties": {
+              "google": {
+                "traffic_type": "ON_DEMAND"
+              }
+            },
+            "prompt_tokens": 12036,
+            "total_tokens": 12563
+          },
+          "error": null,
+          "total_s": 5.177491624839604,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        },
+        {
+          "round": 1,
+          "shape": "tool",
+          "provider_sort": null,
+          "model": "domino/gemini-3.7-flash",
+          "request_bytes": 30539,
+          "status": 200,
+          "first_frame_s": 4.8328182499390095,
+          "first_output_s": 4.8328182499390095,
+          "first_100_output_chars_s": 4.8328182499390095,
+          "max_gap_s": 5.1958952099084854e-05,
+          "chunks": 3,
+          "finish": "tool_calls",
+          "done": true,
+          "usage": {
+            "completion_tokens": 509,
+            "completion_tokens_details": {
+              "reasoning_tokens": 56
+            },
+            "extra_properties": {
+              "google": {
+                "traffic_type": "ON_DEMAND"
+              }
+            },
+            "prompt_tokens": 12036,
+            "total_tokens": 12545
+          },
+          "error": null,
+          "total_s": 4.835097667062655,
+          "output_chars": 1342,
+          "correct": true,
+          "ok": true
+        }
+      ]
+    },
+    "gemini-workflow-setup-failure": {
+      "model": "domino/gemini-3.7-flash",
+      "mode": "chat",
+      "variant": "after",
+      "error": "OpenCode /session/status ReadTimeout during first-session setup",
+      "correct": false,
+      "note": "First attempt was aborted. Durable log contained the user message and title startup only, with no main-model part. No Gemini latency or quality conclusion is drawn from this attempt."
+    },
+    "opencode-gemini-workflows": {
+      "note": "Pinned OpenCode, production EnforcementShim and pooled gateway client. Chat comparisons hold the experimental shim filter constant and vary the catalogue/config; this restriction was later restored. Request bytes precede shim rewriting. First completed Chat case includes startup. Not a full Workbench run.",
+      "rows": [
+        {
+          "mode": "chat",
+          "model": "domino/gemini-3.7-flash",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 1.7633651250507683,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 8,
+                "total_tokens": 597,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.8833100839983672
+            },
+            {
+              "title": false,
+              "bytes": 24752,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 2.851631958037615,
+              "error": null,
+              "usage": {
+                "completion_tokens": 213,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 65
+                },
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 5776,
+                "total_tokens": 5989
+              },
+              "total_s": 2.9673914581071585
+            },
+            {
+              "title": false,
+              "bytes": 26020,
+              "tools": [],
+              "first_s": 2.4045817079022527,
+              "error": null,
+              "usage": {
+                "completion_tokens": 114,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 106
+                },
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 5994,
+                "total_tokens": 6108
+              },
+              "total_s": 2.507018707925454
+            }
+          ],
+          "total_s": 29.46034870808944,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "domino/gemini-3.7-flash",
+          "variant": "before",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 0.9135582498274744,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.032526166876778
+            },
+            {
+              "title": false,
+              "bytes": 83401,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 3.1926721250638366,
+              "error": null,
+              "usage": {
+                "completion_tokens": 168,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 19357,
+                "total_tokens": 19525
+              },
+              "total_s": 3.33419420896098
+            },
+            {
+              "title": false,
+              "bytes": 84281,
+              "tools": [],
+              "first_s": 1.893478750018403,
+              "error": null,
+              "usage": {
+                "completion_tokens": 8,
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 19530,
+                "total_tokens": 19538
+              },
+              "total_s": 2.017303999979049
+            }
+          ],
+          "total_s": 6.711950375000015,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "chat",
+          "model": "domino/gemini-3.7-flash",
+          "variant": "after-again",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2791,
+              "tools": [],
+              "first_s": 1.1399897078517824,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 589,
+                "completion_tokens": 9,
+                "total_tokens": 598,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.3098321659490466
+            },
+            {
+              "title": false,
+              "bytes": 24770,
+              "tools": [
+                "bash"
+              ],
+              "first_s": 4.580413042102009,
+              "error": null,
+              "usage": {
+                "completion_tokens": 443,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 158
+                },
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 5782,
+                "total_tokens": 6225
+              },
+              "total_s": 4.672387833008543
+            },
+            {
+              "title": false,
+              "bytes": 27141,
+              "tools": [],
+              "first_s": 2.644924374995753,
+              "error": null,
+              "usage": {
+                "completion_tokens": 146,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 138
+                },
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 6266,
+                "total_tokens": 6412
+              },
+              "total_s": 2.7210267910268158
+            }
+          ],
+          "total_s": 8.749970542034134,
+          "correct": true,
+          "error": null
+        },
+        {
+          "mode": "build",
+          "model": "domino/gemini-3.7-flash",
+          "variant": "after",
+          "calls": [
+            {
+              "title": true,
+              "bytes": 2942,
+              "tools": [],
+              "first_s": 1.024354042019695,
+              "error": null,
+              "usage": {
+                "prompt_tokens": 632,
+                "completion_tokens": 9,
+                "total_tokens": 641,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0,
+                  "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 0,
+                  "audio_tokens": 0,
+                  "accepted_prediction_tokens": 0,
+                  "rejected_prediction_tokens": 0
+                }
+              },
+              "total_s": 1.1631148329470307
+            },
+            {
+              "title": false,
+              "bytes": 69692,
+              "tools": [
+                "read"
+              ],
+              "first_s": 2.6163920830003917,
+              "error": null,
+              "usage": {
+                "completion_tokens": 157,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 113
+                },
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 17351,
+                "total_tokens": 17508
+              },
+              "total_s": 2.775412749964744
+            },
+            {
+              "title": false,
+              "bytes": 70957,
+              "tools": [
+                "apply_patch"
+              ],
+              "first_s": 2.4655932078603655,
+              "error": null,
+              "usage": {
+                "completion_tokens": 77,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 13
+                },
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 17585,
+                "total_tokens": 17662
+              },
+              "total_s": 2.5300419158302248
+            },
+            {
+              "title": false,
+              "bytes": 71693,
+              "tools": [
+                "read",
+                "bash"
+              ],
+              "first_s": 2.215982957975939,
+              "error": null,
+              "usage": {
+                "completion_tokens": 84,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 12
+                },
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 17678,
+                "prompt_tokens_details": {
+                  "cached_tokens": 11972
+                },
+                "total_tokens": 17762
+              },
+              "total_s": 2.4059359999373555
+            },
+            {
+              "title": false,
+              "bytes": 72716,
+              "tools": [],
+              "first_s": 2.2121758330613375,
+              "error": null,
+              "usage": {
+                "completion_tokens": 61,
+                "completion_tokens_details": {
+                  "reasoning_tokens": 34
+                },
+                "extra_properties": {
+                  "google": {
+                    "traffic_type": "ON_DEMAND"
+                  }
+                },
+                "prompt_tokens": 17842,
+                "total_tokens": 17903
+              },
+              "total_s": 2.540114250034094
+            }
+          ],
+          "total_s": 13.829389374936,
+          "correct": true,
+          "error": null
+        }
+      ]
+    },
+    "opencode-final-tools-capture": {
+      "note": "Final restored Chat config, pinned OpenCode, fake READY response, local fixture containing the bundled data-table skill. This checks offered capabilities, not task quality. The developer catalogue remains large; no input-size saving is claimed.",
+      "tools": [
+        "apply_patch",
+        "bash",
+        "glob",
+        "grep",
+        "read",
+        "skill",
+        "task",
+        "todowrite",
+        "webfetch"
+      ],
+      "data_table_skill_advertised": true,
+      "request_bytes": 84976
+    }
+  },
+  "final_scope_note": "Chat skill/task/todowrite removal was rejected and restored. Measurements of that restricted profile are experiments, not performance gains from the final code. Final changes: connection reuse, general-purpose Chat wording, Build source paths and valid patch guidance. No PII behavior change."
+}
