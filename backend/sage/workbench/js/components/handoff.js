@@ -161,14 +161,14 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-handoff-files' },
-          h('div', { className: 'sw-field-label' }, 'Always written to the project'),
+          h('div', { className: 'sw-field-label' }, 'Always saved to the project'),
           alwaysFiles.map(fileRow)
         ),
 
         h(
           'div',
           { className: 'sw-handoff-files' },
-          h('div', { className: 'sw-field-label' }, 'Written from your handoff preferences'),
+          h('div', { className: 'sw-field-label' }, 'Included from your Chat settings'),
           preferenceFiles.length
             ? preferenceFiles.map(fileRow)
             : h('div', { className: 'sw-caption' }, 'No optional files will be written.')

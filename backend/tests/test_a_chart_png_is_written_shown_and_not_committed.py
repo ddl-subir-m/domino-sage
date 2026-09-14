@@ -45,6 +45,7 @@ def test_a_chart_is_written_and_not_committed_while_kept_rows_is_off(tmp_path: P
     session that drew it still shows the chart — and `ls-files` does not know about it."""
     orch, root = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.record.set_kept_rows(False)
     _repo(root)
     _chart(root)
 
@@ -61,7 +62,9 @@ def test_a_savefig_from_the_agents_shell_is_covered_too(tmp_path: Path):
     write tool: the bytes land the way `matplotlib.savefig` lands them, and the answer is the same
     because the rule matches on path."""
     orch, root = _orch(tmp_path)
-    orch._unignore_chat_artifacts(orch.project(start_preview=False))
+    project = orch.project(start_preview=False)
+    project.record.set_kept_rows(False)
+    orch._unignore_chat_artifacts(project)
     _repo(root)
 
     drawn = root / "examples" / "thr_shell" / "spend_by_month.png"
@@ -78,6 +81,7 @@ def test_the_table_beside_the_chart_still_commits(tmp_path: Path):
     line `_unignore_chat_artifacts` owns still has to come out."""
     orch, root = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.record.set_kept_rows(False)
     _repo(root)
     _chart(root)
     for name in ("events.table.json", "events.sql"):
@@ -173,7 +177,9 @@ def test_a_workspace_inside_somebody_elses_repo_does_not_touch_its_index(tmp_pat
     assert tracked in set(_git(outer, "ls-files").split())
 
     orch = _orch(outer)[0]
-    orch.project(start_preview=False)
+    project = orch.project(start_preview=False)
+    project.record.set_kept_rows(False)
+    orch._unignore_chat_artifacts(project)
 
     assert tracked in set(_git(outer, "ls-files").split())
     # And the guard is what does it: `ls-files` run from the workspace root DOES see the enclosing
@@ -187,6 +193,8 @@ def test_the_rule_is_applied_on_the_way_in_rather_than_only_on_the_toggle(tmp_pa
     of the committed settings file and writes the rule its own working tree needs."""
     orch, root = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.record.set_kept_rows(False)
+    orch._unignore_chat_artifacts(project)
     assert RULE in _ignored(root)
 
     project.record.set_kept_rows(True)
@@ -215,6 +223,7 @@ def test_toggling_either_way_leaves_the_rest_of_the_ignore_file_alone(tmp_path: 
 def test_the_rule_is_written_once_however_many_times_it_is_asked_for(tmp_path: Path):
     orch, root = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.record.set_kept_rows(False)
     orch._unignore_chat_artifacts(project)
     orch._unignore_chat_artifacts(project)
     assert _ignored(root).count(RULE) == 1
@@ -239,6 +248,7 @@ def test_a_read_only_volume_does_not_take_the_project_down(tmp_path: Path, monke
     
     orch, _root = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.record.set_kept_rows(False)
 
     def refuse(*_a, **_kw):
         raise OSError("read-only file system")
@@ -263,6 +273,7 @@ def test_only_a_chart_a_project_declined_to_keep_is_given_the_reason(tmp_path: P
     store.record_artifact(thread, path=f"examples/{thread}/spend_by_month.png")
     store.record_artifact(thread, path=f"examples/{thread}/spend.table.json")
 
+    orch.set_kept_rows(False)
     off = {r["name"]: r.get("notKept") for r in orch.get_thread(thread)["artifacts"]}
     orch.set_kept_rows(True)
     on = {r["name"]: r.get("notKept") for r in orch.get_thread(thread)["artifacts"]}

@@ -94,7 +94,7 @@ def test_a_green_build_over_an_unqueried_store_does_not_finish_in_silence(tmp_pa
     assert "Snowflake-Data-Warehouse" in message
     assert "never queries it" in message
     # A remedy, or the person who owns one — the sentence is useless without it.
-    assert "remove it from the app" in message
+    assert "or remove it" in message
 
 
 def test_the_notice_comes_before_the_turn_ends(tmp_path: Path):

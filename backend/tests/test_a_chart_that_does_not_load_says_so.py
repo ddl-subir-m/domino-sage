@@ -61,8 +61,7 @@ def test_a_chart_this_project_never_committed_says_so_and_names_the_day():
     assert card["links"] == []  # no link to a file this clone does not have
     assert card["said"] == [
         "Drawn March 4, 2026",
-        ("This Project doesn't keep chart images in its files, so this one didn't survive a "
-         "restart. Ask for it again to see it."),
+        ("This chart wasn't saved, so it didn't survive a restart. Ask for it again."),
     ]
 
 

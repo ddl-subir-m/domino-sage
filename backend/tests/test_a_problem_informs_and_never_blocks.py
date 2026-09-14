@@ -82,7 +82,7 @@ def test_a_problem_that_cleared_takes_the_chip_with_it():
     lit, cleared = _run([{"problems": BOTH}, {"problems": []}])
     assert lit["chip"] is not None
     assert cleared["chip"] is None
-    assert cleared["drawer"]["empty"] == ["Nothing needs your attention right now."]
+    assert cleared["drawer"]["empty"] == ["No problems right now."]
 
 
 # ---- the toast points, and points once ----------------------------------------------------------
@@ -95,7 +95,7 @@ def test_the_toast_fires_once_for_a_problem_and_not_again_this_session():
     assert third["toasts"] == []
     # The chip is still lit through all three. Silence is about the toast, never about the fault.
     assert [step["chip"]["ariaLabel"] for step in (first, second, third)] == (
-        ["2 problems need your attention"] * 3)
+        ["2 problems"] * 3)
 
 
 def test_a_second_problem_arriving_toasts_for_itself_alone():
@@ -107,7 +107,7 @@ def test_a_second_problem_arriving_toasts_for_itself_alone():
     assert second["toasts"] == [
         "1 problem needs attention. Open Problems in the top bar."]
     # Two on the chip, one in the toast: the chip holds the standing count, the toast the new one.
-    assert second["chip"]["ariaLabel"] == "2 problems need your attention"
+    assert second["chip"]["ariaLabel"] == "2 problems"
 
 
 def test_the_toast_carries_a_count_and_never_the_problems_words():
@@ -128,15 +128,15 @@ def test_the_chip_carries_a_count_and_never_the_problems_words_either():
     """Icon-only, so the count is in the tooltip and in the label a screen reader gets. The row is
     chrome; a sentence somebody has to read belongs in the drawer."""
     (lit,) = _run([{"problems": BOTH}])
-    assert lit["chip"]["tooltip"] == "2 problems need your attention. Open to read them."
+    assert lit["chip"]["tooltip"] == "2 problems"
     for problem in BOTH:
         assert problem["message"] not in " ".join(lit["topnavWords"])
 
 
 def test_one_problem_is_counted_in_the_singular():
     (one,) = _run([{"problems": [MINE]}])
-    assert one["chip"]["ariaLabel"] == "1 problem needs your attention"
-    assert one["chip"]["tooltip"] == "1 problem needs your attention. Open to read it."
+    assert one["chip"]["ariaLabel"] == "1 problem"
+    assert one["chip"]["tooltip"] == "1 problem"
 
 
 # ---- the drawer groups by owner -----------------------------------------------------------------
@@ -148,15 +148,15 @@ def test_the_drawer_groups_by_who_owns_the_remedy():
     on is the one they meet."""
     (lit,) = _run([{"problems": BOTH}])
     groups = lit["drawer"]["groups"]
-    assert [g["title"] for g in groups] == ["Yours to fix", "Your administrator's to fix"]
+    assert [g["title"] for g in groups] == ["You can fix", "An administrator can fix"]
     assert groups[0]["said"] == [MINE["message"], MINE["fix"]]
     assert groups[1]["said"] == [THEIRS["message"], THEIRS["fix"]]
 
 
 def test_a_group_with_nothing_in_it_is_not_drawn():
-    """"Yours to fix — none" is a heading that promises a reader something to read."""
+    """"You can fix — none" is a heading that promises a reader something to read."""
     (admin_only,) = _run([{"problems": [THEIRS]}])
-    assert [g["title"] for g in admin_only["drawer"]["groups"]] == ["Your administrator's to fix"]
+    assert [g["title"] for g in admin_only["drawer"]["groups"]] == ["An administrator can fix"]
 
 
 def test_the_platforms_own_words_stay_inside_the_quotation():
@@ -201,8 +201,8 @@ def test_the_chip_is_the_only_thing_a_problem_adds_to_the_row():
     clean, lit = _run([{"problems": []}, {"problems": BOTH}])
     added = [w for w in lit["topnavWords"] if w not in clean["topnavWords"]]
     assert added == [
-        "2 problems need your attention. Open to read them.",
-        "2 problems need your attention",
+        "2 problems",
+        "2 problems",
     ]
 
 

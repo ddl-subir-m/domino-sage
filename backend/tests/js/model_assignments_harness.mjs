@@ -139,7 +139,7 @@ const shadow = (slot) => (signingSlot && slot !== signingSlot
   && model(slot) !== model(signingSlot)
   ? `The ${signingSlot} model (${model(signingSlot)}) runs every Turn in this session, so this `
     + (slot === 'ask' ? 'model only runs in Chat. ' : "model won't run. ")
-    + `Change the ${signingSlot} model to release the session.`
+    + `Change the ${signingSlot} model to switch.`
   : null);
 
 const panel = () => ({

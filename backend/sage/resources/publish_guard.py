@@ -212,8 +212,8 @@ def _credential_problem(b: Binding, sources: list[DataSource] | None) -> Publish
         ), b.kind, b.id)
     if source.credential_type != SHARED:
         return PublishProblem(INDIVIDUAL_CREDENTIAL, brand.text(
-            "{name} uses a personal credential. Publishing would share that person's access with "
-            "everyone who opens the app. Use a shared credential, or remove it from this app.",
+            "{name} uses a personal credential. Publishing would share that access with "
+            "every viewer. Use a shared credential, or remove it from this app.",
             name=b.display_name,
         ), b.kind, b.id)
     return None
@@ -235,8 +235,8 @@ def _open_message(bindings: list[Binding], visibility: str) -> str:
     # gets the report of a wrongly-refused publish sees the spelling to add to ALLOWED_VISIBILITY,
     # which is the whole cost of failing closed on a value this list has not met.
     return brand.text(
-        "This app is open to people who aren't signed in, and it reads {sources}. Anyone who "
-        "opened it would see that data. Restrict sharing in {platformName}, then publish again.",
+        "This app is public and reads {sources}. Anyone with the URL would see that data. "
+        "Restrict sharing in {platformName}, then publish again.",
         visibility=visibility,
         sources=_names(bindings),
     )

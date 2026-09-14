@@ -84,7 +84,8 @@ def test_an_app_open_to_people_who_never_signed_in_refuses_even_on_a_shared_cred
     (problem,) = publish_problems([SHARED_BINDING], SOURCES, "PUBLIC")
     assert problem.reason == OPEN_APP
     assert "Snowflake-Data-Warehouse" in problem.message
-    assert "aren't signed in" in problem.message
+    assert "is public" in problem.message
+    assert "Anyone with the URL" in problem.message
 
 
 @pytest.mark.parametrize("allowed", ["GRANT_BASED", "AUTHENTICATED", "PRIVATE", "grant-based"])
@@ -291,7 +292,7 @@ def test_publish_from_the_workbench_app_is_refused(tmp_path: Path, monkeypatch):
     cp = FakeControlPlane()
     orch = _orch(tmp_path, cp)
 
-    with pytest.raises(RuntimeError, match="Workbench App"):
+    with pytest.raises(RuntimeError, match="can't be published from here"):
         orch.publish()
     assert not cp.published
 

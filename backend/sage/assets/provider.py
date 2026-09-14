@@ -194,8 +194,8 @@ class UnconfiguredAssetProvider:
 
     def list_datasets(self, project_id: str | None) -> list[Asset]:
         raise ResourceUnavailable(brand.text(
-            "{assistantName} lists {datasetPlural} from the {platformName} API, and it is not "
-            "configured to reach one, so it cannot tell which {datasetPlural} you have."
+            "{assistantName} isn't configured to reach the {platformName} API, so it can't "
+            "list {datasetPlural}."
         ))
 
     def list_files(self, asset: Asset) -> FileListing:
@@ -203,8 +203,8 @@ class UnconfiguredAssetProvider:
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
         raise ResourceUnavailable(brand.text(
-            "{assistantName} reads {dataset} files through the {platformName} API, and it is not "
-            "configured to reach one."
+            "{assistantName} isn't configured to reach the {platformName} API, so it can't "
+            "read {dataset} files."
         ))
 
 
@@ -339,9 +339,8 @@ class DominoAssetProvider:
             from domino_data.datasets import DatasetClient
         except ImportError as e:
             raise ResourceUnavailable(brand.text(
-                "{assistantName} reads {dataset} files through the {platformName} data library, "
-                "which is not installed here. {datasetPlural} will still list, but "
-                "{assistantName} cannot look inside one."
+                "The {platformName} data library isn't installed here, so {assistantName} can "
+                "list {datasetPlural} but not look inside them."
             )) from e
         return DatasetClient().get_dataset(dataset_unique_name(asset))
 
@@ -357,8 +356,8 @@ class DominoAssetProvider:
 
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
-                "{assistantName} lists {datasetPlural} from the {platformName} API, and it is not "
-                "configured to reach one, so it cannot tell which {datasetPlural} you have."
+                "{assistantName} isn't configured to reach the {platformName} API, so it can't "
+                "list {datasetPlural}."
             ))
         url = f"{self._api_host}/api/datasetrw/v2/datasets"
         found: list[Asset] = []
@@ -393,9 +392,8 @@ class DominoAssetProvider:
                 data = r.json()
             except ValueError as e:
                 raise ResourceUnavailable(brand.text(
-                    "The {platformName} API returned a non-JSON body listing {datasetPlural}. "
-                    "That is what a signed-out session looks like, so this builder's token for it "
-                    "may have expired."
+                    "{platformName} didn't return a valid response listing {datasetPlural}. "
+                    "This builder's token may have expired."
                 )) from e
             items = data.get("datasets") or data.get("data") or []
             for item in items:
@@ -460,8 +458,8 @@ class DominoAssetProvider:
             return {}
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
-                "{assistantName} lists {datasetPlural} from the {platformName} API, and it is not "
-                "configured to reach one, so it cannot tell which {datasetPlural} you have."
+                "{assistantName} isn't configured to reach the {platformName} API, so it can't "
+                "list {datasetPlural}."
             ))
         url = f"{self._api_host}/v4/datasetrw/datasets-v2"
         try:

@@ -378,17 +378,13 @@ def test_an_upload_another_conversation_still_names_is_kept(tmp_path: Path):
 # ---- what the person is told ----
 
 @_needs_node
-def test_the_dialog_says_what_goes_what_stays_and_what_git_keeps(tmp_path: Path):
-    """"Removed for good" is a promise the old delete did not keep. The git-history clause is the
-    limit of that promise and stays in the dialog: the person deleting because of what they pasted
-    is exactly the reader a "learn more" popover would hide it from."""
+def test_the_dialog_says_messages_go_and_apps_and_files_stay(tmp_path: Path):
+    """Messages go; apps and files in the conversation's artifact path stay."""
     dialog = _press_delete({"ok": True, "pushed": True, "detail": "pushed"})
 
     assert dialog["title"] == "Delete this conversation?"
-    assert "deleted for good" in dialog["content"]
-    assert "Apps it changed stay" in dialog["content"]
-    assert "git" in dialog["content"]
-    assert "Artifacts an app holds stay" in dialog["content"]
+    assert "deleted permanently" in dialog["content"]
+    assert "Apps and files" in dialog["content"]
     assert "examples/t-1/" in dialog["content"]
     assert dialog["okText"] == "Delete" and dialog["danger"] is True
 

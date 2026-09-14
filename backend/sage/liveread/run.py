@@ -351,8 +351,8 @@ def _file_rows(turn: Turn, name: str, rel: str) -> Read:
     root = turn.dataset_root(name) if turn.dataset_root else None
     if root is None or not Path(root).is_dir():
         return Read(refused=brand.text(
-            "{assistantName} can say what {name} holds, but cannot read a file out of it here — "
-            "its files are not mounted in this workspace. Ask about the listing instead.",
+            "{name} isn't mounted here, so files in it can't be opened. Ask about the listing "
+            "instead.",
             name=name or "that {dataset}",
         ))
 

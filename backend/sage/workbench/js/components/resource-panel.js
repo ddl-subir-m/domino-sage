@@ -36,8 +36,8 @@ window.SW = window.SW || {};
         'div',
         null,
         h('p', { style: { margin: '0 0 12px' } }, SW.brand.text(
-          'The file is copied onto {dataset}, where this app and anything else that mounts it can '
-          + 'read it.', { dataset: target.name })),
+          'Copies the file onto {dataset}. Anything that mounts {dataset} can read it.',
+          { dataset: target.name })),
         h(
           Checkbox,
           { onChange: (e) => { declare = e.target.checked; } },
@@ -1053,7 +1053,7 @@ window.SW = window.SW || {};
               'p',
               { className: 'sw-panel-empty-text' },
               SW.brand.text(
-                'Bring in the {dataSourcePlural}, models and files this project builds with.'
+                'Add {dataSourcePlural}, models, and files this project builds with.'
               )
             ),
             h(
