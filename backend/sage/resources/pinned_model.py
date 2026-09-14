@@ -168,7 +168,7 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
         ]
     code += [
         "",
-        "// Streams instead, when you want the answer to appear as it is written:",
+        "// Stream provisional text. Mark it incomplete until this promise resolves:",
         "await askModel(messages, { onToken: (t) => setAnswer((a) => a + t) });",
         "```", "",
     ]
@@ -191,6 +191,14 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
          + (" Each Alias is a separate answer: check the ones a screen actually uses." if several else "")),
         ("- **`askModel` throws an `Error` whose `message` is written for the viewer.** Catch it and "
          "show that message as it is; do not replace it with your own wording."),
+        ("- **Streamed text is provisional.** Mark it incomplete until `askModel` resolves. "
+         "Only parse or use the resolved answer as a final result. On failure or cancellation, "
+         "keep visible partial text labelled incomplete and clear any successful structured result. "
+         "For new apps, `ModelError.kind`, `partialText`, and `evidence` describe the failure; "
+         "`onOutcome` records completion or failure with the requested Alias and available gateway "
+         "evidence. Missing evidence stays unknown. A response model name does not prove receipt. "
+         "After a refusal, change the request before another call; do not retry it unchanged or "
+         "switch models to escape the refusal."),
         brand.text(
             "- The call goes from the viewer's browser to {platformName}'s {llmGateway} under the "
             "viewer's own {platformName} identity. There is no key to add, no server to write, and "
