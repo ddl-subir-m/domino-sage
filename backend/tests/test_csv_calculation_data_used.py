@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from sage.driver.opencode import with_attachment_listing
-from sage.liveread import run
-from sage.liveread.data_use import DataUse
+from sage.liveread import mcp, run
+from sage.liveread.data_use import OPEN_CODE_DATA_CARRIERS, DataUse
 
 from .test_a_live_read_reaches_the_person_end_to_end import Warehouse, _call, _orch
 
@@ -57,7 +57,7 @@ def setup_turn(tmp_path, **over):
 
 
 def test_one_call_calculates_writes_and_selects_without_unrelated_values(tmp_path):
-    turn, data, journal = setup_turn(tmp_path)
+    turn, data, _journal = setup_turn(tmp_path)
     reply = json.loads(run.perform("live_read_files", args(), turn))
     assert reply["selected"] == {"rows": [["North", "360"], ["South", "420"]], "total": "780"}
     table = json.loads((tmp_path / reply["local_reference"]).read_text())
@@ -592,3 +592,177 @@ def test_source_code_read_stays_available_even_if_it_mentions_sensitive_shapes()
     prepared, _ = data.prepare(request)
 
     assert prepared["messages"][-1]["content"] == "def email_label():\n    return 'email'\n"
+
+
+def test_supported_mcp_and_image_carriers_are_inventoried():
+    rows = {row["carrier"]: row for row in OPEN_CODE_DATA_CARRIERS}
+
+    assert rows["live_read MCP text result"]["coverage"] == "covered"
+    assert rows["live_read MCP error"]["coverage"] == "covered"
+    assert rows["user image attachment"]["model_view"] == "image content reaches only vision-capable models"
+    assert rows["tool-result image part"]["coverage"] == "unsupported-state handled"
+    assert rows["tool-result image part"]["lineage"] == "unknown unless a supported data operation recorded it"
+
+
+def test_mcp_text_result_parts_track_the_selected_data_operation(tmp_path):
+    turn, data, journal = setup_turn(tmp_path)
+    reply = run.perform("live_read_files", args(), turn)
+    request = {"model": "alias", "messages": [
+        {"role": "assistant", "tool_calls": [{"id": "mcp1", "type": "function",
+            "function": {"name": "sage-live-read_live_read_files",
+                         "arguments": json.dumps(args(path="sales.csv"))}}]},
+        {"role": "tool", "tool_call_id": "mcp1",
+         "content": [{"type": "text", "text": '{"status": "metadata"}'},
+                     {"type": "text", "text": reply}]},
+    ]}
+
+    prepared, used = data.prepare(request)
+    list(data.observe(iter([b'data: {"choices":[{"finish_reason":"stop"}]}\n\n']),
+                      prepared, used))
+
+    assert used == {json.loads(reply)["data_use"]}
+    assert "780" in json.dumps(prepared["messages"])
+    event = journal[-1]["dataUsed"][0]
+    assert event["requests"][0]["state"] == "response_completed"
+    assert event["requests"][0]["requested_alias"] == "alias"
+
+
+def test_mcp_json_rpc_result_parts_track_the_selected_data_operation(tmp_path):
+    turn, data, journal = setup_turn(tmp_path)
+    framed = mcp.handle({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "live_read_files", "arguments": args()},
+    }, run=lambda name, tool_args: run.perform(name, tool_args, turn))
+    request = {"model": "alias", "messages": [
+        {"role": "assistant", "tool_calls": [{"id": "mcp1", "type": "function",
+            "function": {"name": "sage-live-read_live_read_files",
+                         "arguments": json.dumps(args(path="sales.csv"))}}]},
+        {"role": "tool", "tool_call_id": "mcp1",
+         "content": framed["result"]["content"]},
+    ]}
+
+    prepared, used = data.prepare(request)
+    list(data.observe(iter([b'data: {"choices":[{"finish_reason":"stop"}]}\n\n']),
+                      prepared, used))
+
+    assert used == {json.loads(framed["result"]["content"][0]["text"])["data_use"]}
+    assert journal[-1]["dataUsed"][0]["requests"][0]["state"] == "response_completed"
+
+
+def test_mcp_error_text_parts_preserve_the_error_without_inventing_lineage():
+    data = DataUse()
+    request = {"messages": [
+        {"role": "assistant", "tool_calls": [{"id": "mcp1", "type": "function",
+            "function": {"name": "sage-live-read_live_read_files",
+                         "arguments": json.dumps({"dataset": "upload", "path": "sales.csv"})}}]},
+        {"role": "tool", "tool_call_id": "mcp1",
+         "content": [{"type": "text", "text": (
+             "The live read did not happen: source failed. Nothing was put on the person's screen."
+         )}]},
+    ]}
+
+    prepared, used = data.prepare(request)
+
+    assert not used
+    assert prepared == request
+
+
+def test_mcp_json_rpc_error_parts_preserve_the_error_without_data_use():
+    data = DataUse()
+    framed = mcp.handle({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "live_read_files", "arguments": {"dataset": "upload"}},
+    }, run=lambda _name, _tool_args: (_ for _ in ()).throw(RuntimeError("source failed")))
+    request = {"messages": [
+        {"role": "assistant", "tool_calls": [{"id": "mcp1", "type": "function",
+            "function": {"name": "sage-live-read_live_read_files",
+                         "arguments": json.dumps({"dataset": "upload"})}}]},
+        {"role": "tool", "tool_call_id": "mcp1",
+         "content": framed["result"]["content"]},
+    ]}
+
+    prepared, used = data.prepare(request)
+
+    assert framed["result"]["isError"] is True
+    assert not used
+    assert "source failed" in prepared["messages"][-1]["content"][0]["text"]
+
+
+def test_user_image_attachment_is_left_for_the_vision_policy():
+    data = DataUse()
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": attachment_prompt("public/data/design/uploads/shot.png")},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,USERIMAGE"}},
+    ]}]
+
+    prepared, used = data.prepare({"messages": messages})
+
+    assert not used
+    assert prepared["messages"] == messages
+
+
+def test_withheld_user_image_attachment_gets_a_clear_receipt():
+    data = DataUse()
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": attachment_prompt("public/data/design/uploads/shot.png")},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,USERIMAGE"}},
+    ]}]
+
+    prepared, used = data.prepare(
+        {"messages": messages},
+        withheld={"file:public/data/design/uploads/shot.png"},
+    )
+
+    assert not used
+    text = json.dumps(prepared["messages"])
+    assert "USERIMAGE" not in text
+    receipt = json.loads(prepared["messages"][0]["content"][1]["text"])
+    assert receipt["kind"] == "withheld_image_receipt"
+    assert receipt["sources"][0]["path"] == "public/data/design/uploads/shot.png"
+
+
+def test_tool_result_image_bytes_become_an_unknown_lineage_receipt():
+    data = DataUse()
+    request = {"messages": [
+        {"role": "assistant", "tool_calls": [{"id": "img1", "type": "function",
+            "function": {"name": "external_mcp_draw",
+                         "arguments": json.dumps({"prompt": "draw the row"})}}]},
+        {"role": "tool", "tool_call_id": "img1", "content": [
+            {"type": "text", "text": "Image generated."},
+            {"type": "image", "mimeType": "image/png", "data": "SECRETIMAGEBYTES"},
+        ]},
+    ]}
+
+    prepared, used = data.prepare(request)
+
+    assert not used
+    text = json.dumps(prepared["messages"])
+    assert "SECRETIMAGEBYTES" not in text
+    assert "Image generated." in text
+    receipt = json.loads(prepared["messages"][-1]["content"][1]["text"])
+    assert receipt["kind"] == "external_image_receipt"
+    assert receipt["tool"] == "external_mcp_draw"
+    assert receipt["lineage"] == "unknown"
+
+
+def test_opencode_tool_state_image_output_is_not_replayed_to_the_model():
+    data = DataUse()
+    request = {"messages": [
+        {"role": "user", "content": attachment_prompt()},
+        {"role": "assistant", "content": [{"type": "tool", "tool": "bash", "state": {
+            "status": "completed",
+            "input": {"command": "python chart.py public/data/upload/uploads/sales.csv"},
+            "output": [{"type": "image", "mimeType": "image/png", "data": "SECRETIMAGEBYTES"}],
+        }}]},
+    ]}
+
+    prepared, _used = data.prepare(request)
+
+    state = prepared["messages"][1]["content"][0]["state"]
+    assert state["input"]["kind"] == "local_execution_request"
+    assert "SECRETIMAGEBYTES" not in json.dumps(prepared["messages"])
+    assert json.loads(state["output"][0]["text"])["kind"] == "external_image_receipt"

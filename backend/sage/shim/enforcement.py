@@ -462,6 +462,8 @@ class EnforcementShim:
                             "than repeating the change that just failed."),
             }]}
 
+        request = self.data_use.apply_restrictions(request, withheld=state.withheld)
+
         # Attached images against a non-vision model: strip them here rather than switch models or
         # let it fly. The resolved model is only known at this point (per request). Passing an image
         # through is worse: bedrock-qwen3-coder (the default implement model) hard-400s, killing
