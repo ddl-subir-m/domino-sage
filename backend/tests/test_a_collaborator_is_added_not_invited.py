@@ -691,8 +691,8 @@ def test_the_dialog_names_the_place_the_rows_would_go():
 
 @needs_node
 def test_a_destination_nobody_can_read_is_said_rather_than_left_blank():
-    """The case the safe default exists for. A sentence naming nothing would read as though the
-    rows went nowhere, which is the one reading that would make turning it on feel free."""
+    """The case the opt-out exists for. A sentence naming nothing would read as though the
+    rows went nowhere, which is the one reading that would make leaving it on feel free."""
     said = " ".join(modal(connected=True, keptRows={"on": False, "destination": ""})["said"])
     assert "can't read where this Project pushes" in said
 
@@ -708,8 +708,8 @@ def test_the_dialog_says_a_later_delete_cannot_undo_it():
 
 
 @needs_node
-def test_a_project_that_was_never_asked_reads_as_off():
-    assert modal(connected=True)["keptRowsOn"] is False
+def test_a_project_that_was_never_asked_reads_as_on():
+    assert modal(connected=True)["keptRowsOn"] is True
 
 
 @needs_node

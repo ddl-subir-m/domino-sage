@@ -154,7 +154,7 @@ honestly rather than as a broken image.
 
 ## Where the opt-in lives
 
-**Once per Project, off by default, in the Add-people modal**, beside the destination:
+**Once per Project, on by default, in the Add-people modal**, beside the destination:
 
 > Keep data rows in this Project's files? They are committed and pushed to
 > `github.com/acme/analytics`.
@@ -166,8 +166,9 @@ about who gets in (ADR-0021 — each scope's door lives on the surface that owns
 name in the sentence is the thing that makes the choice informed; a toggle without it is a
 setting nobody can weigh.
 
-Off by default because the default must be the safe one when the destination is unknown, and it
-is unknown until someone looks.
+On by default so a Conversation's tables and charts survive a restart without a second trip to
+this modal. The person can still turn it off beside the destination, which is the case that
+must stay weighable when Sage cannot name where the Project pushes.
 
 The setting carries one more sentence for the same reason it carries the host name — this is where
 somebody is weighing where these rows go. Rows can reach a card without reaching a model, so the

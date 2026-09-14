@@ -1,6 +1,6 @@
 """**Kept rows**: the Project's standing answer to whether real data rows may be committed.
 
-Off until somebody turns it on, and turned on beside the name of the git remote they would be
+On until somebody turns it off, and turned off beside the name of the git remote they would be
 pushed to, because that name is the only part of the audience Sage can read
 ([ADR-0045](../../docs/adr/0045-an-artifact-commits-the-shape-and-the-rows-only-by-consent.md)).
 
@@ -97,11 +97,11 @@ def test_a_directory_that_is_no_repo_at_all_answers_nothing(tmp_path: Path):
 # ---- the answer, kept where the next Builder reads it -------------------------------------------
 
 
-def test_a_project_that_was_never_asked_is_off(tmp_path: Path):
-    """Off by default because the default has to be the safe one when the destination is unknown,
-    and it is unknown until somebody looks."""
+def test_a_project_that_was_never_asked_is_on(tmp_path: Path):
+    """On by default so tables and charts survive a restart without a second trip to Add people.
+    A Project that was never asked is treated as having said yes; turning it off is the opt-out."""
     orch, _oc = _orch(tmp_path)
-    assert orch.kept_rows()["on"] is False
+    assert orch.kept_rows()["on"] is True
 
 
 def test_the_answer_given_is_the_answer_read_back(tmp_path: Path):
@@ -167,7 +167,7 @@ def test_the_route_carries_no_project_id(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(appmod, "orchestrator", orch)
     client = TestClient(appmod.control_app)
 
-    assert client.get("/api/project/kept-rows").json() == {"on": False, "destination": ""}
+    assert client.get("/api/project/kept-rows").json() == {"on": True, "destination": ""}
 
     written = client.post("/api/project/kept-rows", json={"on": True}).json()
     assert written["on"] is True

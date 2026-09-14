@@ -170,6 +170,7 @@ def test_a_phase_of_an_approved_plan_leaves_no_rows_behind(tmp_path: Path, _no_w
     orch, oc = _orch(tmp_path)
     project = orch.project(start_preview=False)
     project.record.write_settings({"phased_build": True})
+    project.record.set_kept_rows(False)
     project.control.set_mode(Mode.AUTO)
     tid = orch.create_thread()["id"]
     oc.turns = [
@@ -207,6 +208,7 @@ def test_a_phase_of_an_approved_plan_leaves_no_rows_behind(tmp_path: Path, _no_w
 def test_a_stopped_build_turn_leaves_no_rows_behind(tmp_path: Path, _no_waiting):
     orch, oc = _orch(tmp_path)
     project = orch.project(start_preview=False)
+    project.record.set_kept_rows(False)
     tid = orch.create_thread()["id"]
     oc.turns = [Turn(text="Here are five rows.",
                      writes={f"examples/{tid}/sample-rows.table.json": TABLE,
@@ -228,6 +230,7 @@ def test_a_stopped_phase_leaves_no_rows_behind(tmp_path: Path, _no_waiting):
     orch, oc = _orch(tmp_path)
     project = orch.project(start_preview=False)
     project.record.write_settings({"phased_build": True})
+    project.record.set_kept_rows(False)
     project.control.set_mode(Mode.AUTO)
     tid = orch.create_thread()["id"]
     oc.turns = [

@@ -142,10 +142,11 @@ window.SW = window.SW || {};
     membersConnected: false,
     membersError: '',
     membersLoading: true,
-    // Whether this Project commits real data rows, and where they would be pushed (ADR-0045). Off
-    // and unnamed until the read lands, which is the safe pair to paint on: the default has to
-    // hold while the destination is still unknown.
-    keptRows: { on: false, destination: '' },
+    // Whether this Project commits real data rows, and where they would be pushed (ADR-0045). On
+    // until the read lands, matching the Project default; destination stays unnamed until the
+    // server names it. A failed read still paints off (api.keptRows's catch), so a fault does
+    // not look like consent.
+    keptRows: { on: true, destination: '' },
     // The two rows the People modal must not offer Remove on, in Domino's id space. `state.me`
     // cannot stand in for `selfId`: it is read off the viewer JWT, whose subject is the identity
     // provider's id and does not join against a collaborator row.
