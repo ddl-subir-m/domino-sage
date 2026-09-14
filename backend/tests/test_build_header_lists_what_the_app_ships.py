@@ -239,7 +239,7 @@ def test_the_tooltip_says_what_the_mark_means_and_that_it_blocks_nothing():
     the tooltip has only the one job left."""
     title = next(t for t in _build(select="app_a")["titles"] if "not used" in t)
     assert "last build" in title
-    assert "publishes either way" in title
+    assert "still publishes" in title
     # No pointer any more: the act is on this row's own menu, which is the half the reader can act
     # on and no longer somewhere else.
     assert "Project resources" not in title

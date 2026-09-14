@@ -15,7 +15,7 @@ window.SW = window.SW || {};
     // "Turn" was the first word here until ADR-0026 gave `Turn` a noun key. It was the
     // English verb, but the check matches a whole word and cannot tell the two apart, so
     // the copy moves rather than the rule.
-    { id: 'build', label: 'Build', hint: 'Turn a plan into an app' },
+    { id: 'build', label: 'Build', hint: 'Go from a plan to an app' },
     { id: 'code', label: 'Code', hint: 'Open in your editor' },
   ];
 

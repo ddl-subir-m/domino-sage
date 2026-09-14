@@ -1116,7 +1116,7 @@ window.SW = window.SW || {};
         mark &&
           h(
             Tooltip,
-            { title: '"Not used" is from the last build. It still publishes.' },
+            { title: '"not used" is from the last build. It still publishes.' },
             h('span', { className: 'sw-appdeps-unused' }, ' (not used)')
           ),
         h(
