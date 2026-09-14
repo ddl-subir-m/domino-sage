@@ -59,6 +59,12 @@ def test_react_stays_deduped():
     assert 'dedupe: ["react", "react-dom"]' in CONFIG
 
 
+def test_vite_accepts_domino_workspace_hosts():
+    # Domino sends the workspace run host in the Host header. Without this, Vite returns
+    # "Blocked request. This host is not allowed" before the preview can load.
+    assert "allowedHosts: true" in CONFIG
+
+
 def test_the_agent_is_told_not_to_import_from_inside_a_package():
     # The one hole pre-bundling cannot close: a subpath (`date-fns/format`) is its own optimize
     # entry, so importing one re-runs the optimizer exactly as an unknown package would. Verified
@@ -115,3 +121,17 @@ def test_an_unchanged_preview_config_is_not_rewritten(tmp_path: Path):
     orch.project(start_preview=False)
 
     assert config.stat().st_mtime_ns == before
+
+
+def test_refreshing_preview_config_restarts_the_vite_supervisor(tmp_path: Path):
+    """A running Vite server does not re-read vite.config.ts after Sage repairs it."""
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    first_supervisor = project.supervisor
+    config = project.workspace.path / "vite.config.ts"
+    config.write_text("// old config without allowedHosts\n")
+
+    orch._ensure_seeded()
+
+    assert config.read_text() == "// template v2\n"
+    assert project.supervisor is not first_supervisor
