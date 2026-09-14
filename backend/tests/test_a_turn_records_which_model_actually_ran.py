@@ -28,6 +28,7 @@ from sage.router.models import Mode, ModelCatalog, Phase
 from sage.shim.enforcement import EnforcementShim
 
 from .fake_opencode import FakeOpenCode, Turn
+from .ledger import needs_ledger
 
 
 def _catalog(**over) -> ModelCatalog:
@@ -151,6 +152,7 @@ def test_the_veto_is_told_apart_from_the_fallback_it_lands_on():
     assert plain_reason == "chat-default", f"an ordinary turn reads as a veto: {plain_reason!r}"
 
 
+@needs_ledger
 def test_the_turns_ledger_names_the_model_that_ran_not_the_one_asked_for(monkeypatch):
     """The /v1 wiring: one inference, and both readers of "which model ran" hear the same answer.
 
@@ -189,8 +191,8 @@ def test_the_turns_ledger_names_the_model_that_ran_not_the_one_asked_for(monkeyp
     timing.start_turn("build", "who ran this")
     TestClient(orchmod.control_app).post("/v1/chat/completions",
                                          json={"model": "gemini-3.7-flash", "messages": []})
-    timing.finish_turn(ok=True, decision="-")
-    rec = timing.recent(1)[0]
+    rec = timing.finish_turn(ok=True, decision="-")
+    assert rec is not None, "the turn was never opened"
 
     call = timing.as_dict(rec)["calls"][0]
     assert call["model"] == "gpt-5.4", "the ledger kept the model OpenCode asked for"

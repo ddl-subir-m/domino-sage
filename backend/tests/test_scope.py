@@ -15,6 +15,8 @@ from sage.orchestrator import scope
 from sage.orchestrator.service import _scope_gate_applies
 from sage.router.models import Mode, ModelCatalog
 
+from .ledger import needs_ledger
+
 CATALOG = ModelCatalog(
     sovereign_plan="sov-plan", sovereign_implement="sov-implement", sovereign_ask="sov-ask",
     plan="plan-model", implement="implement-model", ask="ask-model",
@@ -400,6 +402,7 @@ def test_a_classifier_already_declared_broken_starts_nothing():
     assert len(gw.seen) == calls
 
 
+@needs_ledger
 def test_the_classifier_puts_its_own_inference_on_the_turns_ledger():
     """The scope call is ~1s of a turn's critical path (measured live 2026-09-07), and it reached
     the timing readout through nothing at all: the ledger is filled by the /v1 shim handler, and
@@ -420,6 +423,7 @@ def test_the_classifier_puts_its_own_inference_on_the_turns_ledger():
         timing.finish_turn()
 
 
+@needs_ledger
 def test_a_failed_classify_still_closes_its_ledger_entry():
     """An entry left open reads as a call still in flight, which on the readout is indistinguishable
     from a gateway that hung — the exact fault someone would be looking at the ledger to diagnose."""
