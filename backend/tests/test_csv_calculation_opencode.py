@@ -336,3 +336,133 @@ def test_real_opencode_direct_read_and_python_output_stay_local_on_next_requests
         server.server_close()
         server_thread.join(timeout=5)
         project.control.disarm_chat(control_token)
+
+
+@pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")
+def test_real_opencode_task_result_stays_local_on_parent_continuation(tmp_path):
+    orch, _ = _orch(tmp_path, Warehouse())
+    project = orch.project(start_preview=False)
+    tid = orch.create_thread()["id"]
+    upload = orch.upload_scratch("sales.csv", SALES.encode())
+    orch.add_thread_context(tid, {"kind": "file", "path": upload["path"], "name": "sales.csv"})
+    project.build_conversation = tid
+    control_token = project.control.arm_chat(tid)
+    calls = []
+
+    class Gateway:
+        def route(self, body, labels):
+            calls.append(body)
+            text = json.dumps(body["messages"])
+            assert "person0@example.invalid" not in text
+            if len(calls) == 1:
+                tools = {t["function"]["name"] for t in body.get("tools", [])}
+                assert "task" in tools and "todowrite" in tools
+                delta = {"tool_calls": [{"index": 0, "id": "delegate_sales", "type": "function",
+                         "function": {"name": "task", "arguments": json.dumps({
+                             "description": "Inspect the sales upload",
+                             "subagent_type": "general",
+                             "prompt": f"Read {upload['path']} and report the full CSV.",
+                         })}}]}
+                finish = "tool_calls"
+            elif len(calls) == 2:
+                tools = {t["function"]["name"] for t in body.get("tools", [])}
+                assert "read" in tools
+                delta = {"tool_calls": [{"index": 0, "id": "child_read", "type": "function",
+                         "function": {"name": "read",
+                                      "arguments": json.dumps({"filePath": upload["path"]})}}]}
+                finish = "tool_calls"
+            elif len(calls) == 3:
+                assert "local_execution_receipt" in text
+                delta = {"content": "Child result:\n" + SALES}
+                finish = "stop"
+            else:
+                assert len(calls) == 4
+                assert "local_execution_receipt" in text
+                delta = {"content": "The child inspected the upload without resending local rows."}
+                finish = "stop"
+            frame = {"id": "controlled", "object": "chat.completion.chunk", "model": "alias",
+                     "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
+            yield ("data: " + json.dumps(frame) + "\n\n").encode()
+            frame["choices"] = [{"index": 0, "delta": {}, "finish_reason": finish}]
+            yield ("data: " + json.dumps(frame) + "\n\ndata: [DONE]\n\n").encode()
+
+    project.shim._gateway = Gateway()
+    failures = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            try:
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                if "title generator" in str(body.get("messages", [{}])[0].get("content", "")).lower():
+                    frame = {"id": "title", "choices": [{"index": 0,
+                             "delta": {"content": "Sales task"}, "finish_reason": "stop"}]}
+                    self.wfile.write(("data: " + json.dumps(frame) + "\n\ndata: [DONE]\n\n").encode())
+                    return
+                for chunk in project.shim.handle(body, project="synthetic", session="controlled"):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except Exception as error:
+                failures.append(repr(error))
+
+        def log_message(self, *ignored):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    config = json.loads((REPO / "opencode.json").read_text())
+    config["provider"]["sage-gateway"]["options"]["baseURL"] = f"http://127.0.0.1:{server.server_port}/v1"
+    config["plugin"] = []
+    config["mcp"] = {}
+    config["permission"] = {"*": "allow"}
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    config_path = runtime / "opencode.json"
+    config_path.write_text(json.dumps(config))
+    env = dict(os.environ)
+    env.update(OPENCODE_CONFIG=str(config_path), OPENCODE_DISABLE_AUTOUPDATE="true",
+               XDG_CONFIG_HOME=str(runtime / "config"), XDG_DATA_HOME=str(runtime / "data"),
+               XDG_CACHE_HOME=str(runtime / "cache"), XDG_STATE_HOME=str(runtime / "state"),
+               OPENCODE_CONFIG_DIR=str(runtime / "config" / "opencode"))
+    try:
+        with _opencode_server(runtime, env) as url:
+            client = OpenCodeClient(url)
+            directory = str(project.record.path)
+            sid = client.create_session(directory)
+            attachment = {"path": upload["path"], "name": "sales.csv",
+                          "summary": "CSV - 3 columns, 12 rows",
+                          "detail": "columns: region, revenue, email"}
+            client.send_prompt(
+                sid,
+                "Delegate inspection of @sales.csv, then summarize what the child found.",
+                agent="sage-chat",
+                attachments=[attachment],
+                chat=True,
+            )
+            deadline = time.monotonic() + 150
+            messages = []
+            while time.monotonic() < deadline:
+                assert not failures, failures
+                try:
+                    messages = client.messages(sid)
+                except httpx.ReadTimeout:
+                    continue
+                if len(calls) >= 4 and not client.is_running(sid, directory=directory):
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail(f"OpenCode task did not complete: {failures}; {len(calls)} calls; {messages}")
+
+            assert not failures, failures
+            assert len(calls) == 4
+            assert "person0@example.invalid" in json.dumps(messages)
+            assert "person0@example.invalid" not in json.dumps(calls)
+            (runtime / "requests.json").write_text(json.dumps(calls, indent=2))
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+        project.control.disarm_chat(control_token)

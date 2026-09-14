@@ -18,6 +18,7 @@ from ..shim.chat_paths import (
 )
 
 _EXECUTION_TOOLS = SHELL_TOOLS | frozenset({"python", "python_exec", "python_execute"})
+_DELEGATION_TOOLS = frozenset({"task"})
 _PATH_KEYS = ("path", "filePath", "file_path")
 _COMMAND_KEYS = ("command", "cmd", "code")
 _EXIT = "Command exited with code "
@@ -59,12 +60,14 @@ OPEN_CODE_DATA_CARRIERS = (
 class DataUse:
     def __init__(self):
         self.operations = {}
+        self.sources = []
         self.lock = threading.RLock()
 
     def record(self, event, reply, persist, turn_id):
         with self.lock:
             event = {**event, "turn_id": turn_id}
             self.operations[event["operation_id"]] = (event, copy.deepcopy(reply), persist)
+            self._remember_sources([_source_from_event(event)])
             persist({"type": "data_used", "dataUsed": [copy.deepcopy(event)]})
 
     def restore(self, history, persist):
@@ -80,6 +83,7 @@ class DataUse:
                          "local_reference": event["artifact"], "coverage": event["coverage"],
                          "selected_fields": []}
                 self.operations[oid] = (copy.deepcopy(event), reply, persist)
+                self._remember_sources([_source_from_event(event)])
 
     def events(self, turn_id):
         with self.lock:
@@ -112,6 +116,8 @@ class DataUse:
             return request, set()
         sources = _sources_from_messages(request["messages"])
         with self.lock:
+            self._remember_sources(sources)
+            sources.extend(copy.deepcopy(source) for source in self.sources)
             sources.extend(_source_from_event(event) for event, _, _ in self.operations.values())
         sources = [s for s in sources if s.get("path")]
         hidden = _withheld_sources(withheld)
@@ -167,14 +173,33 @@ class DataUse:
                         raw = _tool_content_text(message.get("content"))
                         if raw:
                             local_texts.append(raw)
-                        receipt = _local_receipt(calls.get(message.get("tool_call_id"), {}),
-                                                 direct[cid], raw)
+                        call = calls.get(message.get("tool_call_id"), {})
+                        receipt = _local_receipt(call, direct[cid], raw,
+                                                 status=_status_hint(raw, call))
                         message = {**message, "content": _replace_content(message.get("content"),
                                                                           receipt)}
                     else:
                         message = _rewrite_image_result(message, calls.get(message.get("tool_call_id"), {}))
+                else:
+                    text = _tool_content_text(message.get("content"))
+                    source = _source_for_local_text(text, local_texts, direct.values())
+                    if source:
+                        receipt = _local_receipt({"tool": "background", "state": {"input": {}}},
+                                                 source, text, status=_status_hint(text))
+                        message = {**message, "content": _replace_content(message.get("content"),
+                                                                          receipt)}
                 messages.append(message)
         return {**request, "messages": messages}, used
+
+    def _remember_sources(self, sources):
+        by_path = {normalize_write_path(str(s.get("path") or "")): copy.deepcopy(s)
+                   for s in self.sources if s.get("path")}
+        for source in sources:
+            path = normalize_write_path(str(source.get("path") or ""))
+            if path:
+                by_path[path] = {k: copy.deepcopy(v) for k, v in source.items()
+                                 if v is not None and k != "withheld"}
+        self.sources = list(by_path.values())
 
     def _selected_operation_args(self, text):
         if not text:
@@ -301,6 +326,9 @@ def _sources_for_call(call, sources, hidden):
     if name in _EXECUTION_TOOLS:
         text = " ".join(str(args.get(k) or "") for k in _COMMAND_KEYS)
         found = [s for s in sources + hidden if _path_in_text(text, s.get("path"))]
+    elif name in _DELEGATION_TOOLS:
+        text = json.dumps(args, sort_keys=True, default=str)
+        found = [s for s in sources + hidden if _path_in_text(text, s.get("path"))]
     elif name in READ_TOOLS:
         path = next((str(args.get(k) or "") for k in _PATH_KEYS if args.get(k)), "")
         found = [s for s in sources + hidden if _same_path(path, s.get("path"))]
@@ -406,19 +434,55 @@ def _local_receipt(call, source, raw, status=None):
         name = "tool"
     exit_code = _exit_code(raw)
     withheld = str(raw or "").startswith("[withheld:")
+    receipt_status = _receipt_status(source, withheld, status, exit_code)
     return {
         "kind": "local_execution_receipt",
         "tool": name,
-        "status": "error" if source.get("withheld") or withheld or status == "error"
-        or exit_code not in (None, 0) else "completed",
+        "status": receipt_status,
         "note": (
             "Full tool output remains local. Use source structure and selected operation results; "
             "do not treat this receipt as row values."
         ),
         "sources": source.get("sources", []),
         "artifacts": sorted(set(re.findall(r"examples/[^\s<>)\"`]+", raw or ""))),
+        "provider_receipt": "unknown",
+        "decision_stage": "unknown",
         "exit": exit_code,
     }
+
+
+def _receipt_status(source, withheld, status, exit_code):
+    status = str(status or "").lower()
+    if source.get("withheld") or withheld or status in ("error", "failed") or exit_code not in (None, 0):
+        return "error"
+    if status in ("cancelled", "canceled"):
+        return "cancelled"
+    if status == "interrupted":
+        return "interrupted"
+    return "completed"
+
+
+def _status_hint(raw, call=None):
+    name, _args = tool_call_name_and_args(call or {})
+    if name and name != "task":
+        return None
+    text = "\n".join(str(raw or "").lower().strip().splitlines()[:3])
+    if _has_status_hint(text, "cancelled") or _has_status_hint(text, "canceled"):
+        return "cancelled"
+    if _has_status_hint(text, "interrupted") or _has_status_hint(text, "aborted"):
+        return "interrupted"
+    if _has_status_hint(text, "failed") or _has_status_hint(text, "error"):
+        return "failed"
+    return None
+
+
+def _has_status_hint(text, status):
+    return any(re.search(pattern, text) for pattern in (
+        rf"^(child|task|background task)?\s*{status}\b",
+        rf"^(status|state)\s*[:=]\s*{status}\b",
+        rf"\b(child|task|background task)\s+(was\s+)?{status}\b",
+        rf"\b(status|state)\s*[:=]\s*{status}\b",
+    ))
 
 
 def _rewrite_image_result(message, call):
@@ -506,6 +570,13 @@ def _contains_local_text(text, local_texts):
             if any(len(probe) >= 8 and probe in haystack for probe in probes):
                 return True
     return False
+
+
+def _source_for_local_text(text, local_texts, sources):
+    if not _contains_local_text(text, local_texts):
+        return {}
+    out = _dedupe_sources(source for source in sources for source in source.get("sources", []))
+    return {"sources": out, "withheld": any(source.get("withheld") for source in sources)}
 
 
 def _contains_selected(text, selected):
