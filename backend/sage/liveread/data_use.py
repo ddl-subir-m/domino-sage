@@ -22,6 +22,39 @@ _PATH_KEYS = ("path", "filePath", "file_path")
 _COMMAND_KEYS = ("command", "cmd", "code")
 _EXIT = "Command exited with code "
 
+OPEN_CODE_DATA_CARRIERS = (
+    {
+        "carrier": "live_read custom tool result",
+        "coverage": "covered",
+        "model_view": "selected values only, with Data used evidence",
+        "lineage": "source and operation known",
+    },
+    {
+        "carrier": "live_read MCP text result",
+        "coverage": "covered",
+        "model_view": "selected values only, with Data used evidence",
+        "lineage": "source and operation known",
+    },
+    {
+        "carrier": "live_read MCP error",
+        "coverage": "covered",
+        "model_view": "error text only; no row values are restored",
+        "lineage": "operation unknown when the tool failed before recording",
+    },
+    {
+        "carrier": "user image attachment",
+        "coverage": "covered",
+        "model_view": "image content reaches only vision-capable models",
+        "lineage": "attachment path known from the prompt descriptor",
+    },
+    {
+        "carrier": "tool-result image part",
+        "coverage": "unsupported-state handled",
+        "model_view": "unknown-lineage receipt; image bytes are not replayed",
+        "lineage": "unknown unless a supported data operation recorded it",
+    },
+)
+
 
 class DataUse:
     def __init__(self):
@@ -53,6 +86,21 @@ class DataUse:
             return [copy.deepcopy(event) for event, _, _ in self.operations.values()
                     if event["turn_id"] == turn_id]
 
+    def apply_restrictions(self, request, withheld=None):
+        if not isinstance(request.get("messages"), list):
+            return request
+        hidden = _withheld_sources(withheld)
+        if not hidden:
+            return request
+        return {
+            **request,
+            "messages": [
+                _rewrite_withheld_image_attachments(message, hidden)
+                if isinstance(message, dict) else message
+                for message in request["messages"]
+            ],
+        }
+
     def prepare(self, request, withheld=None):
         """Build the model-facing view of known data-bearing local tool results.
 
@@ -78,6 +126,7 @@ class DataUse:
                     messages.append(message)
                     continue
                 message = copy.deepcopy(message)
+                message = _rewrite_withheld_image_attachments(message, hidden)
                 message = _rewrite_open_code_parts(message, sources, hidden, local_texts)
                 for call in message.get("tool_calls") or []:
                     if isinstance(call, dict):
@@ -98,10 +147,7 @@ class DataUse:
                                 used.add(oid)
                 if message.get("role") == "tool":
                     content = message.get("content")
-                    try:
-                        body = json.loads(content) if isinstance(content, str) else {}
-                    except ValueError:
-                        body = {}
+                    body = _content_json(content)
                     oid = body.get("data_use") if isinstance(body, dict) else None
                     entry = self.operations.get(oid) if isinstance(oid, str) else None
                     if entry:
@@ -125,6 +171,8 @@ class DataUse:
                                                  direct[cid], raw)
                         message = {**message, "content": _replace_content(message.get("content"),
                                                                           receipt)}
+                    else:
+                        message = _rewrite_image_result(message, calls.get(message.get("tool_call_id"), {}))
                 messages.append(message)
         return {**request, "messages": messages}, used
 
@@ -323,6 +371,28 @@ def _tool_content_text(content):
     return ""
 
 
+def _content_json(content):
+    bodies = []
+    if isinstance(content, str):
+        bodies.append(content)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                bodies.append(part["text"])
+    candidate = {}
+    for raw in bodies:
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(body, dict):
+            if body.get("data_use"):
+                return body
+            if not candidate:
+                candidate = body
+    return candidate
+
+
 def _replace_content(content, receipt):
     text = json.dumps(receipt)
     if isinstance(content, list):
@@ -349,6 +419,68 @@ def _local_receipt(call, source, raw, status=None):
         "artifacts": sorted(set(re.findall(r"examples/[^\s<>)\"`]+", raw or ""))),
         "exit": exit_code,
     }
+
+
+def _rewrite_image_result(message, call):
+    content = message.get("content")
+    if not isinstance(content, list) or not any(_is_image_part(p) for p in content):
+        return message
+    name, _args = tool_call_name_and_args(call or {})
+    receipt = {
+        "kind": "external_image_receipt",
+        "tool": name or "tool",
+        "status": "unsupported",
+        "note": (
+            "This tool returned image content with unknown lineage. The local transcript may keep "
+            "the image, but the model-bound view carries only this receipt."
+        ),
+        "sources": [],
+        "lineage": "unknown",
+    }
+    parts = []
+    for part in content:
+        if _is_image_part(part):
+            parts.append({"type": "text", "text": json.dumps(receipt)})
+        else:
+            parts.append(part)
+    return {**message, "content": parts}
+
+
+def _rewrite_withheld_image_attachments(message, hidden):
+    content = message.get("content")
+    if not hidden or not isinstance(content, list) or not any(_is_image_part(p) for p in content):
+        return message
+    text = content_text(content)
+    found = [s for s in hidden if _path_in_text(text, s.get("path"))]
+    if not found:
+        return message
+    receipt = {
+        "kind": "withheld_image_receipt",
+        "status": "error",
+        "note": (
+            "Image content is not being sent because this conversation has stopped sending the "
+            "attached source. Do not infer its contents."
+        ),
+        "sources": _dedupe_sources(found),
+    }
+    parts = [
+        {"type": "text", "text": json.dumps(receipt)} if _is_image_part(part) else part
+        for part in content
+    ]
+    return {**message, "content": parts}
+
+
+def _is_image_part(part):
+    if not isinstance(part, dict):
+        return False
+    kind = str(part.get("type") or "")
+    mime = str(part.get("mime") or part.get("mimeType") or "")
+    if kind in ("image", "image_url"):
+        return True
+    if kind == "file" and mime.startswith("image/"):
+        return True
+    url = str(part.get("url") or "")
+    return kind == "file" and url.startswith("data:image/")
 
 
 def _exit_code(text):
@@ -424,6 +556,9 @@ def _rewrite_open_code_parts(message, sources, hidden, local_texts):
                 if isinstance(clean_meta.get(key), str):
                     clean_meta[key] = json.dumps(receipt)
             clean_state["metadata"] = clean_meta
+        for key in ("output", "error"):
+            if isinstance(clean_state.get(key), list):
+                clean_state[key] = _replace_image_parts(clean_state[key], call)
         parts.append({**part, "state": clean_state})
         changed = True
     return {**message, "content": parts} if changed else message
@@ -433,3 +568,8 @@ def _sanitize_part_input(call, source):
     clean = _sanitize_call(call, source)
     state = clean.get("state") if isinstance(clean, dict) else None
     return (state or {}).get("input", {})
+
+
+def _replace_image_parts(parts, call):
+    message = _rewrite_image_result({"role": "tool", "content": parts}, call)
+    return message.get("content", parts)
