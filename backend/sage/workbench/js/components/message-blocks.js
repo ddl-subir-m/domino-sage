@@ -1947,9 +1947,10 @@ window.SW = window.SW || {};
 
   function DataUsed({ event }) {
     const coverage = event.coverage || {};
+    const textOperation = event.operation === 'text_analysis';
     return h('details', { className: 'sw-data-used' },
       h('summary', null, 'Data used'),
-      h('p', null, 'Calculated in Domino from ',
+      h('p', null, textOperation ? 'Analyzed through the LLM Gateway from ' : 'Calculated in Domino from ',
         h(Tag, { 'aria-label': `Source file: ${event.source}` }, event.source.split('/').pop()), '.'),
       h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +
         `${coverage.excluded} excluded; ${coverage.failed} failed; ${coverage.unfinished} unfinished.`),

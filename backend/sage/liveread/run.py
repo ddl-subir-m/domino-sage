@@ -64,6 +64,7 @@ class Turn:
     data_use_enabled: bool = False
     upload_for: Callable[[str], Path | None] | None = None
     record_data_use: Callable[..., None] | None = None
+    analyze_text_batch: Callable[[dict[str, Any]], Any] | None = None
 
 
 def _slug(*parts: str) -> str:
@@ -308,6 +309,9 @@ def _files(args: dict, turn: Turn) -> str:
     if args.get("operation") == "sum":
         from .calculate import calculate
         return calculate(args, turn)
+    if args.get("operation") == "analyze_text":
+        from .text_analysis import analyze
+        return analyze(args, turn)
     name = str(args.get("dataset") or "")
     rel = str(args.get("path") or "")
     if not rel:

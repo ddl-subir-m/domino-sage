@@ -9453,6 +9453,10 @@ class Orchestrator:
                 persist = lambda ev: workspace.append_history(ev, thread_id)
             project.shim.data_use.record(event, reply, persist, turn_id)
 
+        def analyze_text_batch(request: dict):
+            return project.shim.handle(request, project=project.id,
+                                       session=f"{thread_id}:text-analysis")
+
         return live_read.Turn(
             thread_id=thread_id,
             examples_dir=store.examples_dir(thread_id),
@@ -9472,6 +9476,7 @@ class Orchestrator:
             data_use_enabled=project.record.read_settings().get("dataUseVersion") == 1,
             upload_for=upload_for,
             record_data_use=record_data_use,
+            analyze_text_batch=analyze_text_batch,
         )
 
     def live_read_again(self, thread_id: str, source: dict) -> dict:
@@ -9595,6 +9600,11 @@ class Orchestrator:
         return ("For CSV totals use live_read_files with operation=sum, dataset=upload, the authorized "
                 "path, group_by, sum_column, and selected_fields (result columns and/or total). "
                 "This one call calculates locally, writes a table, and returns the selected result. "
+                "For complaint classification or summary, use operation=analyze_text, dataset=upload, "
+                "the authorized path, text_column, optional id_column, labels when classifying, "
+                "and a bounded batch_size. It sends only the selected text and stable task-local IDs "
+                "through the LLM Gateway, rejects missing, duplicate, unknown or malformed returned "
+                "IDs as incomplete, writes a result table, and reports coverage. "
                 "Omit selected_fields for structure only. Respect explicit user limits; row_limit "
                 "is only for a requested limit. Do not read unrelated raw rows into model context. "
                 "Source-code reads, tools, skills and task/to-do work remain available.")
