@@ -150,6 +150,10 @@ for, what you proposed, which steps ran.
   file whose arguments the model has to emit as a single unbroken string, and that is where builds
   break — a call cut mid-string drops the session and loses the turn. It also freezes the data at
   the moment you wrote it, so a re-attached or corrected file changes nothing on screen.
+  Format numeric diagnostics before printing them. Raw pandas output and full-precision floats can
+  print 10 or 11 digits in a row, including digits after a decimal point, and the gateway's PII
+  rule treats that shape as a phone number. Use `round()`, `to_string(float_format=...)`, or build
+  a small summary dict with fixed precision instead of printing a frame slice.
 - TypeScript everywhere. Small, typed components. Plain React + CSS is the default, and the
   installed packages are the whole toolbox — there is no adding to it mid-build.
 - **Style with the CSS design tokens** defined in `src/index.css` `:root` (listed below). Reuse
