@@ -181,7 +181,7 @@ class _Handler(SimpleHTTPRequestHandler):
             self.log_message("query %s failed: %s: %s", name, type(e).__name__, e)
             return self._send_json(HTTPStatus.BAD_GATEWAY,
                                    {"error": "This app could not read its data source."})
-        return self._send_json(HTTPStatus.OK, result)
+        return self._send_json(HTTPStatus.OK, query_response(query, result))
 
     def _is_query_path(self) -> bool:
         return urlsplit(self.path).path.startswith(_API_PREFIX)
@@ -499,6 +499,8 @@ class Query:
     sql: str
     params: tuple = ()
     problem: str = ""
+    source_name: str = ""
+    source_scope: str = ""
 
     def bind(self, supplied: object) -> dict:
         """The supplied parameters, checked against what this query declares. Values only — the SQL
@@ -613,6 +615,7 @@ def load_sources(project_root: Path) -> dict:
 def _one_query(entry: dict, name: str, sources: dict) -> Query:
     """One catalog entry as a Query, usable or with the reason it is not."""
     binding = str(entry.get("binding") or "")
+    source = sources.get(binding)
     sql = entry.get("sql")
     params, bad = _params_of(entry.get("params"))
     placeholders = set(_PLACEHOLDER.findall(sql)) if isinstance(sql, str) else set()
@@ -624,7 +627,7 @@ def _one_query(entry: dict, name: str, sources: dict) -> Query:
         problem = f"The query {name} declares a parameter Sage cannot read: {bad}."
     elif not binding:
         problem = f"The query {name} does not say which Data Source it reads."
-    elif binding not in sources:
+    elif source is None:
         problem = (f"The query {name} reads the Data Source {binding}, which this app is no longer "
                    f"recorded as using.")
     elif placeholders - declared:
@@ -634,8 +637,45 @@ def _one_query(entry: dict, name: str, sources: dict) -> Query:
         problem = (f"The query {name} declares {', '.join(sorted(declared - placeholders))}, which "
                    f"its statement never uses.")
     else:
-        problem = _scope_problem(name, sql, sources[binding])
-    return Query(name, binding, sql if isinstance(sql, str) else "", tuple(params), problem)
+        problem = _scope_problem(name, sql, source)
+    return Query(name, binding, sql if isinstance(sql, str) else "", tuple(params), problem,
+                 source.name if source else "", _source_scope(source) if source else "")
+
+
+def _source_scope(source: Source) -> str:
+    """The recorded Scope as one label for Data used evidence."""
+    return ".".join(p for p in (source.database, source.schema) if p)
+
+
+def query_response(query: Query, result: dict) -> dict:
+    """A query answer with the Data used record a Built App can show.
+
+    The rows are already the answer, so the evidence describes the query boundary and the coverage. It
+    does not copy row values into a second place.
+    """
+    body = dict(result) if isinstance(result, dict) else {}
+    columns = [str(c) for c in body.get("columns", [])] if isinstance(body.get("columns"), list) else []
+    rows = body.get("rows", [])
+    returned = len(rows) if isinstance(rows, list) else 0
+    truncated = bool(body.get("truncated"))
+    body["truncated"] = truncated
+    body["dataUsed"] = {
+        "kind": "data_source_query",
+        "query": query.name,
+        "source": {
+            "id": query.binding,
+            "name": query.source_name or query.binding,
+            "scope": query.source_scope or None,
+        },
+        "coverage": {
+            "columns": columns,
+            "returnedRows": returned,
+            "truncated": truncated,
+        },
+        "observedTransfer": "query_result_returned_to_viewer",
+        "modelView": "not_sent_to_model_by_query",
+    }
+    return body
 
 
 def _scope_problem(name: str, sql: str, source: Source) -> str:

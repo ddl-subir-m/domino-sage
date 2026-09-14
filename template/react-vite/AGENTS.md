@@ -150,6 +150,18 @@ for, what you proposed, which steps ran.
   file whose arguments the model has to emit as a single unbroken string, and that is where builds
   break — a call cut mid-string drops the session and loses the turn. It also freezes the data at
   the moment you wrote it, so a re-attached or corrected file changes nothing on screen.
+  Format numeric diagnostics before printing them. Raw pandas output and full-precision floats can
+  print 10 or 11 digits in a row, including digits after a decimal point, and the gateway's PII
+  rule treats that shape as a phone number. Use `round()`, `to_string(float_format=...)`, or build
+  a small summary dict with fixed precision instead of printing a frame slice.
+- **Carry Data used into the app UI.** When a local calculation, table, or chart comes from
+  `runQuery`, keep `result.dataUsed` with the derived view. Show the {dataSource} name, query name,
+  row coverage, and truncated state near the output. The query result is local app data:
+  `dataUsed.modelView` tells you it was not sent to a model by the query itself. If you later pass
+  selected values to `askModel`, use `onOutcome` and show that model state separately. Missing
+  serving model, provider receipt, decision stage, cache, or fallback evidence means **unknown**;
+  never turn it into proof of policy coverage. If a model response is refused, interrupted, or
+  partial, keep that state visible and do not present the partial text as complete.
 - TypeScript everywhere. Small, typed components. Plain React + CSS is the default, and the
   installed packages are the whole toolbox — there is no adding to it mid-build.
 - **Style with the CSS design tokens** defined in `src/index.css` `:root` (listed below). Reuse

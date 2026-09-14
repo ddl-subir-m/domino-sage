@@ -361,3 +361,12 @@ def test_the_promise_not_to_alter_anything_holds_at_every_size_of_a_set_with_no_
         # all — a bound that reads as holding over a card the assertion never reached (#292).
         assert "card_panel_transactions_RAW.csv" in said, carriers
         assert "not in a file Sage can name" not in said, carriers
+
+
+def test_the_do_not_alter_promise_also_holds_for_file_sets_and_mixed_sets():
+    """#357 takes over the #337 gap: the pre-click card must say the same non-redaction promise
+    the receipt says after the click, even when one of the matched things is a named file."""
+    for carriers in ([FILE], [FILE, EXPORT], [FILE, TEXT], [FILE, TOOL]):
+        said = _text(_render(_card(carriers=carriers, surviving=0)))
+        assert "Sage won't change what it matched" in said, carriers
+        assert "Nothing was changed or deleted" not in said, "that exact phrase belongs to receipts"

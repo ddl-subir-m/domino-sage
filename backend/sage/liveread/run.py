@@ -61,6 +61,10 @@ class Turn:
     # another project is reached at all. Only a mounted one can have a file read out of it here.
     list_files: Callable[[str], Any] | None = None
     dataset_root: Callable[[str], Path | None] | None = None
+    data_use_enabled: bool = False
+    upload_for: Callable[[str], Path | None] | None = None
+    record_data_use: Callable[..., None] | None = None
+    analyze_text_batch: Callable[[dict[str, Any]], Any] | None = None
 
 
 def _slug(*parts: str) -> str:
@@ -272,6 +276,12 @@ def _source(kind: str, binding: str, limit: int, **named: str) -> dict:
 
 
 def _table(args: dict, turn: Turn) -> str:
+    if args.get("operation") == "sum":
+        from .calculate import calculate
+
+        name, database, schema, table, _ = _scoped({**args, "limit": 1}, turn)
+        return calculate({**args, "source": name, "database": database, "schema": schema,
+                          "table": table, "dataset": ""}, turn)
     name, database, schema, table, limit = _scoped(args, turn)
     read = _table_rows(turn, name, database, schema, table, limit)
     if read.refused:
@@ -296,6 +306,12 @@ def _table(args: dict, turn: Turn) -> str:
 
 
 def _files(args: dict, turn: Turn) -> str:
+    if args.get("operation") == "sum":
+        from .calculate import calculate
+        return calculate(args, turn)
+    if args.get("operation") == "analyze_text":
+        from .text_analysis import analyze
+        return analyze(args, turn)
     name = str(args.get("dataset") or "")
     rel = str(args.get("path") or "")
     if not rel:

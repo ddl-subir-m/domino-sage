@@ -16,12 +16,41 @@ import { appBase } from "./appBase";
 /** A parameter value, in the types a declared parameter may take. A date is written `YYYY-MM-DD`. */
 export type QueryParam = string | number | boolean;
 
+/** Evidence about the data this query used. It describes the boundary and coverage, not row values. */
+export type QueryDataUse = {
+  kind: "data_source_query";
+  query: string;
+  source: {
+    id: string | null;
+    name: string | null;
+    scope: string | null;
+  };
+  coverage: {
+    columns: string[];
+    returnedRows: number;
+    truncated: boolean;
+  };
+  observedTransfer: "query_result_returned_to_viewer" | "unknown";
+  modelView: "not_sent_to_model_by_query" | "unknown";
+};
+
 /** One query's answer. `columns` names them in order; each row has one value per column, by
- * position. `truncated` is true when the store had more rows than this app will return. */
+ * position. `truncated` is true when the store had more rows than this app will return.
+ * `dataUsed` is the source and coverage evidence to show beside local tables, charts and
+ * model-assisted text. */
 export type QueryResult = {
   columns: string[];
   rows: (string | number | boolean | null)[][];
   truncated: boolean;
+  dataUsed: QueryDataUse;
+};
+
+type QueryDataUsePayload = {
+  query?: unknown;
+  source?: { id?: unknown; name?: unknown; scope?: unknown };
+  coverage?: { columns?: unknown; returnedRows?: unknown };
+  observedTransfer?: unknown;
+  modelView?: unknown;
 };
 
 // Since #24 the preview answers queries too — Sage runs the very same `serve.py` beside the dev
@@ -71,5 +100,36 @@ export async function runQuery(
   if (!result || !Array.isArray(result.columns) || !Array.isArray(result.rows)) {
     throw new Error("This app's data came back in a form it could not read.");
   }
-  return { columns: result.columns, rows: result.rows, truncated: Boolean(result.truncated) };
+  const truncated = Boolean(result.truncated);
+  return {
+    columns: result.columns,
+    rows: result.rows,
+    truncated,
+    dataUsed: normalizeDataUsed(name, result, truncated),
+  };
+}
+
+function normalizeDataUsed(name: string, result: QueryResult, truncated: boolean): QueryDataUse {
+  const raw = result.dataUsed as QueryDataUsePayload | undefined;
+  const source = raw?.source ?? {};
+  const coverage = raw?.coverage ?? {};
+  return {
+    kind: "data_source_query",
+    query: typeof raw?.query === "string" && raw.query ? raw.query : name,
+    source: {
+      id: typeof source.id === "string" && source.id ? source.id : null,
+      name: typeof source.name === "string" && source.name ? source.name : null,
+      scope: typeof source.scope === "string" && source.scope ? source.scope : null,
+    },
+    coverage: {
+      columns: Array.isArray(coverage.columns) ? coverage.columns.map(String) : result.columns,
+      returnedRows: typeof coverage.returnedRows === "number" ? coverage.returnedRows : result.rows.length,
+      truncated,
+    },
+    observedTransfer:
+      raw?.observedTransfer === "query_result_returned_to_viewer"
+        ? "query_result_returned_to_viewer"
+        : "unknown",
+    modelView: raw?.modelView === "not_sent_to_model_by_query" ? "not_sent_to_model_by_query" : "unknown",
+  };
 }
