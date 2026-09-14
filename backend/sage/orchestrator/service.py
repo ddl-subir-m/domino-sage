@@ -19072,13 +19072,68 @@ class Orchestrator:
         block = (f"{self._AGENTS_BEGIN}\n" + "\n".join(lines) + f"\n{self._AGENTS_END}") \
             if lines else ""
         with self._agents_lock:  # serialize with write_instructions — same file, distinct regions
-            existing = agents.read_text() if agents.exists() else ""
-            b, e = existing.find(self._AGENTS_BEGIN), existing.find(self._AGENTS_END)
-            if b != -1 and e != -1:
-                existing = existing[:b] + block + existing[e + len(self._AGENTS_END):]
-            elif block:
-                existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
-            agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
+            try:
+                existing = agents.read_text() if agents.exists() else ""
+            except (ValueError, OSError):
+                # `ValueError` for the non-UTF-8 file: it arrives as `UnicodeDecodeError`, which is
+                # a `ValueError` and NOT an `OSError` (#303, #325). The decision is to write
+                # nothing at all — not to read the file as `""` and splice into that, which is the
+                # shape this guard most has to rule out. `existing` would be empty, the whole file
+                # would be replaced by this one block, and the template body, the person's
+                # instructions block and every other managed region would be gone. That is the
+                # regression #303 shipped and caught one layer up: a shrug that ACTS on a falsehood
+                # is worse than the crash it replaced.
+                #
+                # Shrugging rather than raising, which is the other half of the decision and the
+                # less obvious one:
+                #  * Every attach and detach caller runs this BEFORE `write_attachments`, so a
+                #    raise here leaves the symlink on disk and the manifest not updated — the
+                #    record NOT describing a file the preview does serve. That split is exactly
+                #    what `detach_folder` goes to some length to avoid, and today's crash causes
+                #    it: `detach_folder` catches the decode error in its own `except (OSError,
+                #    ValueError)` and reports a removal that stopped part way, when in fact every
+                #    file came out.
+                #  * The routes above catch bare `ValueError`, so the decode error does not even
+                #    reach the person as a 500: `attach_file` answers 400 "invalid file path" for a
+                #    path that was perfectly valid (measured, #325). Blaming their input for a file
+                #    they never chose to edit is the falsehood worth removing, and a wider refusal
+                #    would only reword it.
+                #  * Nothing of the person's is lost by skipping. This block is a RENDERING of the
+                #    manifest, rebuilt on every act, so repairing the encoding and attaching again
+                #    restores it. `write_instructions` refuses instead (`strict`) because there the
+                #    thing at stake is the words they just typed.
+                #  * The file is unreadable to the agent too — OpenCode reads these same bytes — so
+                #    a stale block is a second-order loss on a file already not doing its job.
+                # `OSError` rides along for the same trade rather than by inheritance from the
+                # idiom: a read that fails for any reason leaves us equally unable to preserve what
+                # is in the file, and rewriting on top of a read we did not get is the one outcome
+                # ruled out above. What retires either half is a read that SUCCEEDS, which is why
+                # this asks by catching rather than by testing the file first.
+                #
+                # Two residuals, both left standing on purpose rather than missed:
+                #  * This is invisible to the person — the same residual #327 records for the shrug
+                #    on the instructions block, and that surface belongs there, not in this write.
+                #  * It reads worse on a REMOVAL than on an attach. Skipping after a detach leaves
+                #    the block naming a disk path and served URL for a file that is now gone, so
+                #    the agent is pointed at data it cannot read, where skipping after an attach
+                #    only withholds a path. Still not worth refusing the act for: the removal
+                #    already happened, and refusing would put the manifest and the disk back into
+                #    the split the bullet above is about.
+                # Only the READ is guarded here. A file that decodes but will not take a write —
+                # mode 0444, a read-only mount — still raises out of `write_text` below, and that
+                # is a different fault with a different right answer (an app repo we cannot write
+                # to is not a thing to shrug at). Do not read this catch as covering it.
+                log.warning("attached data: leaving %s as it is, it could not be read", agents)
+            else:
+                b, e = existing.find(self._AGENTS_BEGIN), existing.find(self._AGENTS_END)
+                if b != -1 and e != -1:
+                    existing = existing[:b] + block + existing[e + len(self._AGENTS_END):]
+                elif block:
+                    existing = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
+                agents.write_text(existing.strip("\n") + "\n" if existing.strip() else "")
+        # Outside the `else`: the act wrote more than this block. `_ensure_gitignored` has already
+        # touched `.gitignore`, which is tracked, so a running turn's baseline has to move whether
+        # or not the block was rendered — skipping it would blame the agent for Sage's own write.
         self._rebaseline_turn(project)
 
     _MODEL_BEGIN = "<!-- sage:app-model:begin -->"
@@ -19313,7 +19368,16 @@ class Orchestrator:
             block = f"{begin}\n" + block + f"\n{end}"
         agents = project.workspace.path / "AGENTS.md"
         with self._agents_lock:  # serialize with the other managed regions in this file
-            existing = agents.read_text() if agents.exists() else ""
+            try:
+                existing = agents.read_text() if agents.exists() else ""
+            except (ValueError, OSError):
+                # Same file, same trade, decided in full at `_write_agents_data_block` — both
+                # halves of the catch: a file we cannot READ, for any reason, is one we cannot
+                # rewrite without destroying it, and every region here is a rendering of the
+                # Bindings that is rebuilt on the next change anyway. Nothing follows the write in
+                # this one, so unlike its twin the guard can leave by the door.
+                log.warning("app resources: leaving %s as it is, it could not be read", agents)
+                return
             b, e = existing.find(begin), existing.find(end)
             if b != -1 and e != -1:
                 existing = existing[:b] + block + existing[e + len(end):]
