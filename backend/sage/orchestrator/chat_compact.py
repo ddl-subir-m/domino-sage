@@ -13,10 +13,12 @@ compacted yet.
 from __future__ import annotations
 
 import logging
+from pathlib import PurePosixPath
 from typing import Any
 
 from ..router import llm_router
 from ..router.models import ModelCatalog, SessionState
+from ..shim.chat_paths import text_key, withheld_result
 
 log = logging.getLogger(__name__)
 
@@ -289,10 +291,11 @@ def chat_summary(history: list[dict]) -> str:
     Empty string for a Conversation with no Chat turns, so the caller can leave the section out
     entirely rather than write an empty heading.
     """
+    restrictions = _summary_restrictions(history)
     lines: list[str] = []
     used = 0
     for entry in reversed(history or []):
-        line = _said(entry)
+        line = _said(entry, restrictions)
         if not line:
             continue
         # Counting the newline that will join it keeps `used` equal to the length of the string
@@ -306,7 +309,35 @@ def chat_summary(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _said(entry: dict) -> str:
+def _summary_restrictions(history: list[dict]) -> dict[str, set[str]]:
+    text_keys: set[str] = set()
+    labels: set[str] = set()
+    for entry in history or []:
+        if not isinstance(entry, dict) or entry.get("type") != "recall-withheld":
+            continue
+        row_keys = [str(k) for k in (entry.get("keys") or []) if k]
+        text_keys.update(k for k in row_keys if k.startswith("text:"))
+        for key in row_keys:
+            if key.startswith("file:"):
+                path = key[5:]
+                labels.add(path)
+                name = PurePosixPath(path).name
+                if name:
+                    labels.add(name)
+        labels.update(str(label) for label in (entry.get("labels") or []) if label)
+    return {"text": text_keys, "labels": labels}
+
+
+def _withheld_summary_label(text: str, restrictions: dict[str, set[str]]) -> str:
+    if text_key({"content": text}) in restrictions["text"]:
+        return "a message in this conversation"
+    for label in sorted(restrictions["labels"], key=len, reverse=True):
+        if label and label in text:
+            return label
+    return ""
+
+
+def _said(entry: dict, restrictions: dict[str, set[str]] | None = None) -> str:
     """One transcript line, or "" for an entry that is not something somebody said."""
     if not isinstance(entry, dict):
         return ""
@@ -318,9 +349,15 @@ def _said(entry: dict) -> str:
         return ""
     # Collapsed to one line: a pasted table or a multi-paragraph answer would otherwise spend the
     # budget on its own blank lines, and the bullet list has to stay readable as a list.
-    text = " ".join(str(entry.get("text") or "").split())
+    raw_text = str(entry.get("text") or "")
+    text = " ".join(raw_text.split())
     if not text:
         return ""
+    if restrictions:
+        label = (_withheld_summary_label(raw_text, restrictions)
+                 or _withheld_summary_label(text, restrictions))
+        if label:
+            text = withheld_result(label)
     if len(text) > SUMMARY_TURN_CHARS:
         text = text[: SUMMARY_TURN_CHARS - 1].rstrip() + "…"
     return f"- {who}: {text}"

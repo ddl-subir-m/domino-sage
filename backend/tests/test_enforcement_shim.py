@@ -338,6 +338,25 @@ def test_images_pass_through_untouched_to_a_vision_capable_model():
     assert gw.seen[-1][0]["messages"] == _image_messages()  # byte-for-byte, no marker injected
 
 
+def test_withheld_images_do_not_pass_through_a_vision_capable_model():
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    control.arm_withheld({"file:public/data/design/uploads/shot.png"})
+    gw = FakeGatewayClient()
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": (
+            "The user @mentioned these files.\n\n"
+            "- shot.png - PNG image\n  path: public/data/design/uploads/shot.png"
+        )},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,USERIMAGE"}},
+    ]}]
+
+    list(_vision_shim(control, gw).handle({"messages": messages}, project="p"))
+
+    text = str(gw.seen[-1][0]["messages"])
+    assert "USERIMAGE" not in text
+    assert "withheld_image_receipt" in text
+
+
 def test_plain_string_content_is_never_rewritten():
     for shim_factory in (_shim, _vision_shim):
         control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)

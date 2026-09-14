@@ -171,6 +171,10 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   need and no more — never a whole frame, and at most a handful of rows. `df.head()` on a wide
   frame is a page of text you pay for again on every step after it. Summarise in the reply, and
   write the chart or table file for the detail.
+  Format numeric diagnostics before printing them. Raw pandas output and full-precision floats can
+  print 10 or 11 digits in a row, including digits after a decimal point, and the gateway's PII
+  rule treats that shape as a phone number. Use `round()`, `to_string(float_format=...)`, or build
+  a small summary dict with fixed precision instead of printing a frame slice.
 - After writing a file, the reply is a sentence or two about what it shows — not a recap of the
   code you ran, and never the script itself. Nobody asked to read it, and it is repeated back
   to you on every step that follows.
