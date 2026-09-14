@@ -1679,6 +1679,15 @@ window.SW = window.SW || {};
     return carriers.length > 0 && carriers.every((c) => keys.has(c && c.key));
   };
 
+  function putDataUsed(messages, ensureAssistant, events) {
+    for (const event of events || []) {
+      const existing = messages.flatMap((m) => m.blocks || [])
+        .find((b) => b.type === 'data_used' && b.event.operation_id === event.operation_id);
+      if (existing) existing.event = event;
+      else ensureAssistant().blocks.push({ type: 'data_used', event });
+    }
+  }
+
   async function historyToMessages(history, handoff) {
     const messages = [];
     let assistant = null;
@@ -1716,6 +1725,7 @@ window.SW = window.SW || {};
     const hiddenTables = new Set();
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
+      if (ev.dataUsed) putDataUsed(messages, ensureAssistant, ev.dataUsed);
       if (ev.type === 'user') {
         assistant = null;
         messages.push({
@@ -2307,6 +2317,7 @@ window.SW = window.SW || {};
     };
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
+      if (ev.dataUsed) putDataUsed(messages, ensureAssistant, ev.dataUsed);
       if (ev.type === 'user') {
         assistant = null;
         messages.push({
@@ -7048,6 +7059,11 @@ window.SW = window.SW || {};
           // nothing is lost — reopening the conversation replays it. What is not wanted is this
           // answer appearing under a different question.
           if (!mine()) return;
+          if (ev.dataUsed && ev.dataUsed.length) {
+            ensurePushed();
+            putDataUsed(state.messages, () => assistant, ev.dataUsed);
+            notify();
+          }
           if (ev.type === 'delta') {
             state.typing = null;
             ensurePushed();

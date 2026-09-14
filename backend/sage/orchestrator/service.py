@@ -4603,6 +4603,7 @@ class Orchestrator:
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
         self._live_read: dict[str, tuple[str, float]] = {}
         self._live_read_lock = threading.Lock()
+        self._data_use_turns: dict[str, str] = {}
         # Reads that ended in the model querying the table itself. ADR-0041 permits it — "a
         # read-only turn may read the world", and Chat queries Data Sources every day — but it is a
         # DIFFERENT door from the one the person bound the table for, and rows go into the model's
@@ -9292,6 +9293,17 @@ class Orchestrator:
 
     def _mint_live_read_token(self, thread_id: str) -> str:
         token = "lrt_" + secrets.token_urlsafe(15)
+        self._data_use_turns[thread_id] = new_id("du_turn")
+        project = self._chat_project()
+        if project.record.read_settings().get("dataUseVersion") == 1:
+            if project.control.snapshot().chat_thread_id:
+                store = ThreadStore(project.record.path)
+                project.shim.data_use.restore(store.read_history(thread_id),
+                                              lambda ev: store.append_history(thread_id, ev))
+            else:
+                workspace = project.app_for_turn()
+                project.shim.data_use.restore(workspace.read_history(thread_id),
+                                              lambda ev: workspace.append_history(ev, thread_id))
         with self._live_read_lock:
             self._live_read[thread_id] = (token, time.monotonic())
         return token
@@ -9401,6 +9413,46 @@ class Orchestrator:
             asset = datasets.get(name)
             return self._assets.list_files(asset) if asset else None
 
+        def upload_for(source: str) -> Path | None:
+            # Exact authorized references, then resolved containment. A sibling file is not a grant.
+            chat = bool(project.control.snapshot().chat_thread_id)
+            root = project.record.path if chat else project.app_for_turn().path
+            candidates = (store.read_context(thread_id).get("items", []) if chat
+                          else project.app_for_turn().read_attachments())
+            for item in candidates:
+                if chat and item.get("kind") != "file":
+                    continue
+                rel = str(item.get("path") or "")
+                if not rel or source not in (rel, str(root / rel)):
+                    continue
+                target = (root / rel).resolve()
+                allowed_root = root.resolve()
+                if not chat:
+                    asset = next((asset for asset in datasets.values()
+                                  if asset.id == item.get("dataset_id")), None)
+                    if asset is None or not asset.mount_path:
+                        return None
+                    allowed_root = Path(asset.mount_path).resolve()
+                    if target != (allowed_root / str(item.get("file") or "")).resolve():
+                        return None
+                if (not target.is_relative_to(allowed_root) or not target.is_file()
+                        or target.suffix.lower() != ".csv"):
+                    return None
+                withheld = project.control.snapshot().withheld
+                if any("file:" + path in withheld for path in (source, rel, str(target))):
+                    return None
+                return target
+            return None
+
+        def record_data_use(event, reply):
+            turn_id = self._data_use_turns.get(thread_id, "")
+            if project.control.snapshot().chat_thread_id:
+                persist = lambda ev: store.append_history(thread_id, ev)
+            else:
+                workspace = project.app_for_turn()
+                persist = lambda ev: workspace.append_history(ev, thread_id)
+            project.shim.data_use.record(event, reply, persist, turn_id)
+
         return live_read.Turn(
             thread_id=thread_id,
             examples_dir=store.examples_dir(thread_id),
@@ -9417,6 +9469,9 @@ class Orchestrator:
             sample_rows=self._resources.sample_rows,
             list_files=list_files,
             dataset_root=dataset_root,
+            data_use_enabled=project.record.read_settings().get("dataUseVersion") == 1,
+            upload_for=upload_for,
+            record_data_use=record_data_use,
         )
 
     def live_read_again(self, thread_id: str, source: dict) -> dict:
@@ -9534,6 +9589,16 @@ class Orchestrator:
                      "a /api/diag probe, not OpenCode" if probe else "OpenCode connected", method)
         return live_mcp.handle(message, run=run)
 
+    def _data_use_note(self) -> str:
+        if self._chat_project().record.read_settings().get("dataUseVersion") != 1:
+            return ""
+        return ("For CSV totals use live_read_files with operation=sum, dataset=upload, the authorized "
+                "path, group_by, sum_column, and selected_fields (result columns and/or total). "
+                "This one call calculates locally, writes a table, and returns the selected result. "
+                "Omit selected_fields for structure only. Respect explicit user limits; row_limit "
+                "is only for a requested limit. Do not read unrelated raw rows into model context. "
+                "Source-code reads, tools, skills and task/to-do work remain available.")
+
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
                      urls: list[str] | None = None, workspace: Path | None = None,
                      artifacts: list[dict] | None = None,
@@ -9551,6 +9616,7 @@ class Orchestrator:
              "than telling the person you cannot see their data. If they are not in your tool list "
              "this turn, query the data with Python instead — a missing tool is never a reason to "
              "tell someone you cannot see their data."),
+            self._data_use_note(),
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]
@@ -9667,6 +9733,9 @@ class Orchestrator:
             sites for a fact that belongs to one of them.
             """
             done.update(project.resolved_row())
+            data_used = project.shim.data_use.events(self._data_use_turns.get(thread_id, ""))
+            if data_used:
+                done["dataUsed"] = data_used
             store.append_history(thread_id, done)
             return done
 
@@ -12266,6 +12335,7 @@ class Orchestrator:
         # and a compaction that dropped the first send would otherwise leave the agent holding a
         # tool it can no longer name a turn for. Repeating one line is the cheaper mistake.
         live_read_note = (
+            self._data_use_note() + "\n" +
             f"Read token: {self._mint_live_read_token(project.build_conversation)}. Pass it as "
             "`token` on every `live_read_table` or `live_read_files` call. Use those tools to look "
             "at a bound table "
@@ -12476,6 +12546,10 @@ class Orchestrator:
             # long since built or replaced, and the person is one new turn away from a card that is
             # right.
             if ev["type"] == "done":
+                data_used = project.shim.data_use.events(
+                    self._data_use_turns.get(project.build_conversation, ""))
+                if data_used:
+                    ev["dataUsed"] = data_used
                 # WHICH model this turn actually ran on, and which rule chose it (#316). Here for
                 # the reason the two records above give: every terminal `done` passes through
                 # persist(), and the yield sites that can end a turn are that many chances to
