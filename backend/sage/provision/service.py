@@ -19,7 +19,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,7 @@ from urllib.parse import quote
 from ..orchestrator import brand
 from . import naming
 from .domino import BUILDER_WORKSPACE_NAME, BuiltApp, ControlPlane, CredentialRef, ProjectRef
-from .github import RepoInfo, RepoNameConflict, RepoProvider
+from .github import RepoInfo, RepoNameConflict, RepoProvider, repo_full_name
 from .seed import seed_and_push
 
 log = logging.getLogger("sage.provision.service")
@@ -36,6 +37,26 @@ log = logging.getLogger("sage.provision.service")
 # The seed step: materialize the template into the new repo and push it. Injectable so fake-mode and
 # tests can no-op it (a real git push would otherwise need a live remote).
 Seeder = Callable[..., None]
+
+
+class WorkspaceLaunchFailed(RuntimeError):
+    """Starting or resuming a builder refused — as opposed to anything else `open_app` does.
+
+    `open_app` also lists projects and workspaces, and a Domino outage during either of those has
+    nothing to do with git. Without this marker a caller reinterpreting the failure would rewrite a
+    transient, retriable 503 into permanent advice about a repository.
+    """
+
+
+@contextmanager
+def _launching() -> Iterator[None]:
+    """Tag whatever the launch call raises, preserving it as the cause."""
+    try:
+        yield
+    except Exception as e:
+        # `or ...`: an exception with an empty str() would reach the door route as {"error": ""},
+        # which renders as a blank failure.
+        raise WorkspaceLaunchFailed(str(e) or f"{type(e).__name__} (no message)") from e
 
 
 @dataclass(frozen=True)
@@ -352,10 +373,40 @@ class ProvisionService:
         ]
         if restartable:
             target = max(restartable, key=lambda w: w.get("createdAt") or "")
-            self._cp.resume_workspace(project_id, str(target["id"]))
+            with _launching():
+                self._cp.resume_workspace(project_id, str(target["id"]))
             return self._open_result(target, name, launched=True)
-        ws = self._cp.create_workspace(project_id, branch=self._branch)
+        with _launching():
+            ws = self._cp.create_workspace(project_id, branch=self._branch)
         return self._open_result(ws, name, launched=True)
+
+    def repo_is_unreachable(self, project: ProjectRef) -> bool | None:
+        """Can the configured provider still reach this Project's repo? None when it can't be asked.
+
+        Deliberately weaker than "is it gone". GitHub answers 404 both for a deleted repo and for a
+        private one this token cannot see, so `True` here means unreachable and nothing more — the
+        caller must not upgrade it to a claim about who deleted what, or about whether a credential
+        is healthy. Two different credentials are in play: Domino launches with the one
+        stored on the Project, this asks with the container's own token.
+
+        It is still worth asking, because Domino's refusal (ADR-0033 forbids reading its text) says
+        nothing at all, and this at least names the repository as the thing to go and look at.
+
+        Called only after a launch has already failed, which keeps it off the hot path — a working
+        open pays nothing for it. It never raises, for the same reason: the caller is holding the
+        real error and this must not replace it.
+        """
+        # The host the control plane is configured for is the one the provider holds a token for;
+        # a Project on any other host is not ours to judge (see repo_full_name).
+        full_name = repo_full_name(project.git_url, host=self._cp.git_host)
+        if not full_name:
+            return None
+        try:
+            exists = self._repo.repo_exists(full_name)
+        except Exception:
+            log.warning("couldn't check whether repo %s is reachable", full_name, exc_info=True)
+            return None
+        return None if exists is None else not exists
 
     def _reachable(self, running: bool, open_url: str | None) -> bool:
         """`running` narrowed by whether that workspace's own web server answers yet.

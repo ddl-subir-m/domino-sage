@@ -3,9 +3,11 @@
 Driven at the service seam against the Fake Control Plane and a fake git provider, per the spec's
 testing decision — no UI, no HTTP client, no browser.
 """
+import pytest
+
 from sage.provision import naming
 from sage.provision.domino import FakeControlPlane, ProjectRef, UserRef
-from sage.provision.door import Door
+from sage.provision.door import DefaultProjectRepoUnreachable, Door
 from sage.provision.github import FakeRepoProvider
 from sage.provision.service import ProvisionService
 
@@ -174,3 +176,135 @@ def test_nothing_provisions_without_a_domino_control_plane(monkeypatch):
     monkeypatch.setattr(appmod, "proxy_is_app", lambda: True)
     assert appmod._build_provision_service(None) is None
     assert appmod._build_door(None, None) is None
+
+
+class _UnaskableRepoProvider(FakeRepoProvider):
+    """A provider that cannot answer: GitHub unreachable, rate-limited, or the token expired."""
+
+    def repo_exists(self, full_name: str) -> bool | None:
+        return None
+
+
+def _default_whose_launch_fails(tmp_path, *, repo, git_url=None, cp_cls=FakeControlPlane):
+    """A Default Project still in Domino whose workspace launch refuses, over `repo`.
+
+    The live shape: the person deleted the GitHub repo by hand, the Domino Project outlived it
+    (Sage has no path that archives one), and `_find_default` matches on the Domino name — so the
+    door lands on the broken Project on every open, forever.
+    """
+    expected = naming.default_project_name("alice", ALICE.id)
+    git_url = git_url or f"https://github.com/test-owner/{expected}.git"
+    cp = cp_cls(user=ALICE)
+    cp.projects.append(ProjectRef(id="p-1", name=expected, git_url=git_url))
+    cp.workspace_launch_error = (
+        f"POST /v4/workspace/project/p-1/workspace -> 500: "
+        f'{{"message":"Cannot access Git repository with URI: {git_url}. This may be due to '
+        f'invalid Git credentials.","success":false}}'
+    )
+    door, _ = _door(tmp_path, cp, repo)
+    return door, expected
+
+
+def test_a_default_whose_repo_is_gone_says_so_instead_of_blaming_credentials(tmp_path):
+    # Domino's refusal names Git credentials, which are fine — it means the repo. Sage asks the
+    # provider rather than reading Domino's copy (ADR-0033), so it can say which one it was.
+    repo = FakeRepoProvider()
+    door, expected = _default_whose_launch_fails(tmp_path, repo=repo)
+
+    with pytest.raises(DefaultProjectRepoUnreachable) as caught:
+        door.ensure_default()
+
+    message = str(caught.value)
+    assert expected in message            # WHICH Project is broken
+    assert "archive" in message.lower()   # a way out, not just a diagnosis
+    # It names BOTH causes a 404 can mean. Claiming the credentials are fine would be the same
+    # confident wrong answer as Domino's, pointed the other way: Domino launched with the
+    # credential stored on the Project, this check used the container's own token.
+    assert "deleted" in message.lower() and "credential" in message.lower()
+    # The fake answers False for any name it does not hold, so the name itself has to be pinned —
+    # a wrong `owner/name` would pass every other assertion here.
+    assert repo.existence_checks == [f"test-owner/{expected}"]
+
+
+def test_a_launch_failure_over_a_live_repo_keeps_dominos_own_words(tmp_path):
+    # The repo is there, so this really is the credential failure Domino describes. Saying "your
+    # repo is gone" here would send the person to the wrong fix — the exact fault being closed.
+    alive = FakeRepoProvider()
+    alive.create_repo(naming.default_project_name("alice", ALICE.id))
+    door, _ = _default_whose_launch_fails(tmp_path, repo=alive)
+
+    with pytest.raises(Exception) as caught:
+        door.ensure_default()
+
+    assert not isinstance(caught.value, DefaultProjectRepoUnreachable)
+    assert "Cannot access Git repository" in str(caught.value)
+
+
+def test_a_provider_that_cannot_be_asked_leaves_dominos_words_standing(tmp_path):
+    # "Couldn't check" must never read as "it's gone". A person whose credential really is dead
+    # would otherwise be told to archive a Project that is fine, and the repo with it.
+    door, _ = _default_whose_launch_fails(tmp_path, repo=_UnaskableRepoProvider())
+
+    with pytest.raises(Exception) as caught:
+        door.ensure_default()
+
+    assert not isinstance(caught.value, DefaultProjectRepoUnreachable)
+    assert "Cannot access Git repository" in str(caught.value)
+
+
+def test_a_default_on_another_git_host_is_never_judged_by_our_provider(tmp_path):
+    # A Default pointing somewhere this provider holds no token for. Asking GitHub about a GitLab
+    # path gets a 404 that means "not on GitHub", not "gone" — and archiving a healthy Project on
+    # that advice cannot be undone. The provider is only ever asked about its own host.
+    door, _ = _default_whose_launch_fails(
+        tmp_path,
+        repo=FakeRepoProvider(),  # empty: it would answer "gone" for any path it is handed
+        git_url="https://gitlab.com/test-owner/sage-alice-elsewhere.git",
+    )
+
+    with pytest.raises(Exception) as caught:
+        door.ensure_default()
+
+    assert not isinstance(caught.value, DefaultProjectRepoUnreachable)
+    assert "Cannot access Git repository" in str(caught.value)
+
+
+class _OutageControlPlane(FakeControlPlane):
+    """Domino is down for the listing `open_app` does before any launch — nothing to do with git."""
+
+    def list_workspaces(self, project_id):
+        raise RuntimeError(f"GET /v4/workspace/project/{project_id}/workspace -> 503: unavailable")
+
+
+def test_a_failure_that_isnt_the_launch_is_never_reinterpreted(tmp_path):
+    # `open_app` also lists projects and workspaces. A transient Domino outage in either is
+    # retriable and has nothing to do with the repository — rewriting it into permanent-sounding
+    # advice to archive the Project would lose the Project over a blip.
+    door, _ = _default_whose_launch_fails(
+        tmp_path, repo=FakeRepoProvider(), cp_cls=_OutageControlPlane,
+    )
+
+    with pytest.raises(Exception) as caught:
+        door.ensure_default()
+
+    assert not isinstance(caught.value, DefaultProjectRepoUnreachable)
+    assert "503" in str(caught.value)
+
+
+def test_a_stored_uri_carrying_a_token_never_reaches_the_card_or_the_log(tmp_path):
+    """`list_apps` selects on the repo-NAME prefix and never reads the rest of the URI, so a
+    credentialed `mainRepository.uri` arrives here intact — and this message is drawn on a page
+    and written to the container log."""
+    door, _ = _default_whose_launch_fails(
+        tmp_path,
+        repo=FakeRepoProvider(),
+        git_url="https://sage-bot:ghp_realsecretvalue@github.com/test-owner/sage-alice-tok.git",
+    )
+
+    with pytest.raises(DefaultProjectRepoUnreachable) as caught:
+        door.ensure_default()
+
+    message = str(caught.value)
+    assert "ghp_realsecretvalue" not in message
+    assert "sage-bot" not in message
+    assert "https://github.com/test-owner/sage-alice-tok.git" in message  # still says WHICH repo

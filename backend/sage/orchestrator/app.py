@@ -666,16 +666,29 @@ async def door_open() -> JSONResponse:
     than the browser holding a blank tab.
     """
     if _door is None:
+        # Ours, and not retryable: the resolution is an Environment change and a restart, so the
+        # page prints this as our own sentence with no Try again button (same contract as the
+        # unreachable-repo branch below).
         return JSONResponse(
             status_code=503,
             content={"error": brand_text(
                 "{assistantName} can't reach {platformName} from this App, so it can't open your "
                 "{assistantName} Builder. Check the App's Environment has the {platformName} API "
                 "host and a Git credential, then restart it."
-            )},
+            ), "ours": True, "retryable": False},
         )
+    from ..provision.door import DefaultProjectRepoUnreachable  # lazy, as every provision import here is
+
     try:
         target = await run_in_threadpool(_door.ensure_default)
+    except DefaultProjectRepoUnreachable as e:
+        # Sage wrote this sentence, so it is NOT a passed-through platform body: the page prints it
+        # as ours rather than quoting it (ADR-0014, #121). And it cannot be retried — the same
+        # Project fails identically every time — so the page drops its Try again button too.
+        # exc_info: `from e` carries Domino's refusal, and this is the one path that
+        # replaces it in the UI — without this it is written down nowhere.
+        log.warning("door: %s", e, exc_info=True)
+        return JSONResponse(status_code=502, content={"error": str(e), "ours": True, "retryable": False})
     except Exception as e:
         log.exception("door: couldn't open the viewer's Sage Builder")
         return JSONResponse(status_code=502, content={"error": str(e)})

@@ -799,6 +799,7 @@ class FakeControlPlane:
     deleted_apps: list[str] = field(default_factory=list)  # app_ids a deployment delete was asked for
     renamed_apps: list[tuple[str, str]] = field(default_factory=list)  # (app_id, name) renames asked for
     rename_failures: set[str] = field(default_factory=set)  # app_ids whose deployment rename refuses
+    workspace_launch_error: str | None = None  # if set, launching/resuming a builder raises it
     user: UserRef = UserRef(id="user-1", name="tester")  # who the fake token acts as (the viewer)
     credentials: list[CredentialRef] = field(default_factory=lambda: [
         CredentialRef(id="cred-1", label="test PAT (github.com)", domain="github.com",
@@ -836,6 +837,8 @@ class FakeControlPlane:
         return ref
 
     def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
+        if self.workspace_launch_error:
+            raise RuntimeError(self.workspace_launch_error)
         ws = {
             "id": f"ws-{project_id}",
             "projectId": project_id,
@@ -861,6 +864,8 @@ class FakeControlPlane:
         return {"id": workspace_id, "state": "Unknown"}
 
     def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
+        if self.workspace_launch_error:
+            raise RuntimeError(self.workspace_launch_error)
         for ws in self.workspaces.get(project_id, []):
             if ws.get("id") == workspace_id:
                 ws["state"] = "running"

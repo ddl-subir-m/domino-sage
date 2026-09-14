@@ -18,10 +18,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
+from ..orchestrator import brand
 from . import naming
 from .domino import ProjectRef, UserRef
-from .service import AppCreated, ProvisionService, workspace_is_running
+from .service import AppCreated, ProvisionService, WorkspaceLaunchFailed, workspace_is_running
 
 log = logging.getLogger("sage.provision.door")
 
@@ -38,6 +40,61 @@ class DoorTarget:
     workspace_id: str | None  # the builder to poll while it boots
 
 
+def _without_credentials(url: str) -> str:
+    """`url` with any embedded userinfo removed.
+
+    `list_apps` picks a Project by its repo-NAME prefix and never looks at the rest of the URI, so
+    a `mainRepository.uri` of the form https://user:token@host/o/sage-x.git reaches this error
+    intact — and this error is drawn on a page and written to the container log.
+    """
+    parts = urlsplit(url or "")
+    if not parts.hostname or "@" not in parts.netloc:
+        return url
+    host = parts.hostname + (f":{parts.port}" if parts.port else "")
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+
+
+class DefaultProjectRepoUnreachable(RuntimeError):
+    """The viewer's Default Project is still in Domino, and its Git repo cannot be reached.
+
+    Deleting the repo by hand leaves the Domino Project behind — no Sage path archives one, so this
+    cannot happen through Sage and Sage does not clean it up either. (`archive_project` and
+    `delete_workspace` both exist on the control plane and neither has a caller, so doing it for
+    the person is a capability Sage has and has not been given: a separate decision, because it
+    destroys a Domino Project.) `_find_default` matches on the Domino name alone, so the door lands
+    on the same broken Project on every open, forever, while Domino's refusal blames Git
+    credentials.
+
+    Raised instead of that refusal to name the Project and the repository. It deliberately does NOT
+    say the credentials are fine: the check behind it is a 404 from the container's own token, and
+    GitHub answers 404 both for a deleted repo and for one the token cannot see — while Domino
+    launched with a *different* credential, the one stored on the Project. Both causes are named
+    because the signal cannot separate them.
+
+    Sage stops here rather than creating a replacement: a second Default would split the viewer
+    across two Projects, which is the thing `_find_default` exists to prevent.
+
+    The remedy is live-verified (2026-09-13, scripts/archived-project-probe.py): an archived Project
+    leaves `/api/projects/beta/projects`, so the next open finds no Default and builds a fresh one.
+    That is why this says "archive" and not something weaker — and why `list_apps` needs no archived
+    filter. The "remove its workspaces first" hedge is NOT verified: the archive that proved the
+    above held no workspace, because the launch that would have made one is what failed.
+    """
+
+    def __init__(self, project: ProjectRef) -> None:
+        self.project = project
+        # `{project}` is the pack's NOUN, not this project's name — the name is a runtime value and
+        # goes in as one (`projectName`), so the paranoid pack never scans it (ADR-0014, #124).
+        super().__init__(brand.text(
+            "{assistantName} can't start your Builder. It can't reach the Git repository behind "
+            "{platformName} {project} '{projectName}': {url}. Either that repository was deleted "
+            "or moved, or a credential can no longer see it. Check whether the repository still "
+            "exists. If it is gone, archive the {project} in {platformName} — you may need to "
+            "remove its workspaces first — and open {assistantName} again to get a new one.",
+            projectName=project.name, url=_without_credentials(project.git_url),
+        ))
+
+
 class Door:
     def __init__(self, service: ProvisionService, viewer: Callable[[], UserRef]) -> None:
         self._service = service
@@ -49,7 +106,15 @@ class Door:
         expected = naming.default_project_name(who.name, who.id)
         existing = self._find_default(expected)
         if existing is not None:
-            opened = self._service.open_app(existing.id, owner=who.name)
+            try:
+                opened = self._service.open_app(existing.id, owner=who.name)
+            except WorkspaceLaunchFailed as e:
+                # Only the launch is reinterpreted, and only when the provider positively reports
+                # the repo unreachable. "Couldn't check" (None) leaves Domino's own words standing:
+                # guessing would replace a transient failure with permanent-sounding advice.
+                if self._service.repo_is_unreachable(existing) is True:
+                    raise DefaultProjectRepoUnreachable(existing) from e
+                raise
             return DoorTarget(
                 project=existing,
                 open_url=opened["open_url"],

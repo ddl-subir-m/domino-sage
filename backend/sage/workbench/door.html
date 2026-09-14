@@ -161,6 +161,7 @@
       var detail = document.getElementById('detail');
       var quote = document.getElementById('quote');
       var quoteBody = document.getElementById('quote-body');
+      var actions = document.querySelector('.actions');
       var api = new URL('.', location.href).pathname.replace(/\/$/, '') + '/api';
       // Our half of an error names us, so the name is substituted into this page by the route that
       // serves it (#116) rather than written here. The fetch below still refreshes it, because
@@ -178,12 +179,18 @@
       // (#121). Nothing here can tell our word for the platform from a project a user named after
       // the company, so nothing here rewrites it. `message` is ours, and the Try again button below
       // is the resolution step.
-      function fail(message, said) {
+      //
+      // `retryable: false` withdraws that button. A failure the next press fails identically — a
+      // Default whose repo is gone — needs the resolution the message itself carries, and offering
+      // a button that cannot work is the dead end the message exists to replace. Set as an inline
+      // style, not `hidden`: `.is-error .actions { display: block }` would win over the attribute.
+      function fail(message, said, retryable) {
         card.classList.add('is-error');
         title.textContent = pack.assistantName + ' couldn’t open your workspace';
         detail.textContent = message;
         quoteBody.textContent = said || '';
         quote.hidden = !said;
+        actions.style.display = retryable === false ? 'none' : '';
       }
 
       // A running builder lives on the MAIN Domino host. A published App is served from
@@ -243,6 +250,7 @@
 
       async function open() {
         card.classList.remove('is-error');
+        actions.style.display = '';
         say('Opening your workspace…', 'Finding your Default project.');
         var r, data;
         try {
@@ -253,8 +261,12 @@
           return;
         }
         if (!r.ok) {
-          fail('Setting it up failed. Try again — if it keeps failing, ask your administrator.',
-               data.error || 'Request failed (' + r.status + ')');
+          // `ours` marks a sentence Sage wrote about a condition it understands. It is not the
+          // platform's words, so it must not be quoted (ADR-0014) — it replaces our own line, and
+          // carries its own resolution step in place of Try again.
+          if (data.ours) fail(data.error, null, data.retryable !== false);
+          else fail('Setting it up failed. Try again — if it keeps failing, ask your administrator.',
+                    data.error || 'Request failed (' + r.status + ')');
           return;
         }
 

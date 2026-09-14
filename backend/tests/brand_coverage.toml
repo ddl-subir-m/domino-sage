@@ -209,6 +209,11 @@ shows_pack = true
 
 [[surface]]
 kind = "python-prose"
+module = "sage/provision/door.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
 module = "sage/provision/service.py"
 shows_pack = true
 
