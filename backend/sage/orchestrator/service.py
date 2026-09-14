@@ -8401,6 +8401,7 @@ class Orchestrator:
         context = store.read_context(thread_id).get("items") or []
         artifacts = _artifacts_present(project.record.path, store.read_artifacts(thread_id))
         thread = store.get(thread_id) or {}
+        history = store.read_history(thread_id, strict=True)
         # Both reads below are strict (ADR-0051): this method writes `.sage/handoff.md` and, when
         # asked, `.sage/handoff-transcript.md` FROM what it reads here, and a lenient read that
         # swallowed a bad line or a whole unreadable file would carry that loss straight into a
@@ -8409,7 +8410,7 @@ class Orchestrator:
         digest = chat_handoff.confirm_digest(
             chat_handoff.draft_digest(
                 title=thread.get("title") or "",
-                asked=chat_handoff.user_texts(store.read_history(thread_id, strict=True)),
+                asked=chat_handoff.user_texts(history),
                 context=context if include_resources else [],
                 artifacts=artifacts if include_artifacts else [],
             ),
@@ -8417,6 +8418,7 @@ class Orchestrator:
             context=context,
             include_artifacts=include_artifacts,
             include_resources=include_resources,
+            data_used=chat_handoff.data_use_summaries(history) if include_resources else [],
         )
         (project.workspace.path / ".sage" / "handoff.md").write_text(digest)
         transcript_path = project.workspace.path / ".sage" / "handoff-transcript.md"

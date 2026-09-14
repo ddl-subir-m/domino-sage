@@ -88,6 +88,24 @@ def test_a_named_query_answers_before_the_app_is_published(tmp_path: Path):
     assert r.json()["rows"] == [["a-1"]]
 
 
+def test_preview_query_reports_the_same_data_used_shape_as_publish(tmp_path: Path):
+    pq = _started(_workspace(tmp_path, [SOUND]), _Recorder())
+    try:
+        r = _ask(pq, "usage", {"since": "2026-01-01"})
+    finally:
+        pq.stop()
+
+    data_used = r.json()["dataUsed"]
+    assert data_used["source"] == {"id": SOURCE_ID, "name": "DWH", "scope": "DWH.MARTS"}
+    assert data_used["coverage"] == {
+        "columns": ["ACCOUNT_ID"],
+        "returnedRows": 1,
+        "truncated": False,
+    }
+    assert data_used["observedTransfer"] == "query_result_returned_to_viewer"
+    assert data_used["modelView"] == "not_sent_to_model_by_query"
+
+
 def test_a_broken_query_refuses_in_the_words_the_published_app_would_use(tmp_path: Path):
     # Criterion 3, and the reason `serve.py` runs here rather than something like it: the catalog
     # check that refuses this is the published app's, so the sentence cannot drift from it.

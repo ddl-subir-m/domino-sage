@@ -174,6 +174,43 @@ def test_the_receipt_lists_the_specific_charts_and_context_that_crossed(tmp_path
     assert ".sage/bindings.json" in crossed["files"]
 
 
+def test_the_handoff_file_carries_data_used_evidence_not_selected_values(tmp_path: Path):
+    orch, root, tid = _a_conversation_with_something_to_carry(tmp_path)
+    store = _store(orch)
+    store.append_history(tid, {"type": "done", "dataUsed": [{
+        "operation_id": "du_359",
+        "operation": "text_analysis",
+        "source": "tickets.csv",
+        "artifact": f"examples/{tid}/ticket-summary.table.json",
+        "columns": ["ticket_id", "body"],
+        "selected_fields": ["ticket_id", "summary"],
+        "coverage": {"total": 4, "processed": 3, "excluded": 0, "failed": 1, "unfinished": 0},
+        "requests": [{
+            "requested_alias": "policy-model",
+            "state": "refused",
+            "serving_model": "unknown",
+            "provider_receipt": "unknown",
+            "decision_stage": "unknown",
+            "cache": "unknown",
+            "fallback": "unknown",
+        }],
+        "selected": [{"region": "North", "total": 780}],
+    }]})
+
+    orch.confirm_handoff(tid, ALL_ON)
+
+    app_id = orch.project(start_preview=False).workspace.app_id
+    handoff_md = (root / "apps" / app_id / ".sage" / "handoff.md").read_text()
+    assert "Data used in the Chat work:" in handoff_md
+    assert "text analysis from tickets.csv" in handoff_md
+    assert "Coverage: 4 total, 3 processed, 0 excluded, 1 failed, 0 unfinished." in handoff_md
+    assert "provider receipt unknown" in handoff_md
+    assert "decision stage unknown" in handoff_md
+    assert "cache unknown" in handoff_md
+    assert "North" not in handoff_md
+    assert "780" not in handoff_md
+
+
 def test_the_receipt_names_the_built_app_and_says_it_is_a_new_one(tmp_path: Path):
     """Criterion 3, the New app half. The name is the app's, not the Project's — a Project holds
     many (ADR-0008), so "your app" would name nothing."""

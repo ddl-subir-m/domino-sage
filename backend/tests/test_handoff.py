@@ -317,6 +317,89 @@ def test_a_file_in_context_is_still_just_its_name():
     assert "In context: notes.csv." in text
 
 
+def _data_used_event() -> dict:
+    return {
+        "operation_id": "du_1",
+        "operation": "text_analysis",
+        "source": "support.csv",
+        "artifact": "examples/thr_1/support-summary.table.json",
+        "columns": ["ticket_id", "body"],
+        "selected_fields": ["ticket_id", "summary"],
+        "coverage": {"total": 3, "processed": 2, "excluded": 0, "failed": 1, "unfinished": 0},
+        "requests": [{
+            "requested_alias": "policy-model",
+            "state": "refused",
+            "serving_model": "unknown",
+            "provider_receipt": "unknown",
+            "decision_stage": "unknown",
+            "cache": "unknown",
+            "fallback": "unknown",
+        }],
+        "selected": [{"region": "North", "total": 780}],
+    }
+
+
+def test_data_used_summaries_keep_evidence_but_not_selected_values():
+    lines = handoff.data_use_summaries([{"type": "done", "dataUsed": [_data_used_event()]}])
+
+    assert len(lines) == 1
+    line = lines[0]
+    assert "text analysis from support.csv" in line
+    assert "Coverage: 3 total, 2 processed, 0 excluded, 1 failed, 0 unfinished." in line
+    assert "requested policy-model, state refused" in line
+    assert "provider receipt unknown" in line
+    assert "decision stage unknown" in line
+    assert "cache unknown" in line
+    assert "fallback unknown" in line
+    assert "North" not in line
+    assert "780" not in line
+
+
+def test_confirm_digest_carries_data_used_only_with_resources_selected():
+    lines = handoff.data_use_summaries([{"type": "done", "dataUsed": [_data_used_event()]}])
+    with_resources = handoff.confirm_digest(
+        "Thread background.",
+        artifacts=[],
+        context=[],
+        include_artifacts=False,
+        include_resources=True,
+        data_used=lines,
+    )
+    without_resources = handoff.confirm_digest(
+        "Thread background.",
+        artifacts=[],
+        context=[],
+        include_artifacts=False,
+        include_resources=False,
+        data_used=lines,
+    )
+
+    assert "Data used in the Chat work:" in with_resources
+    assert "support.csv" in with_resources
+    assert "North" not in with_resources and "780" not in with_resources
+    assert "Data used in the Chat work:" not in without_resources
+
+
+def test_implement_note_carries_data_used_from_the_digest(tmp_path: Path):
+    digest = handoff.confirm_digest(
+        "Thread background.",
+        artifacts=[],
+        context=[],
+        include_artifacts=False,
+        include_resources=True,
+        data_used=handoff.data_use_summaries([{"type": "done", "dataUsed": [_data_used_event()]}]),
+    )
+    (tmp_path / ".sage").mkdir()
+    (tmp_path / ".sage" / "handoff.md").write_text(digest)
+
+    note = handoff.implement_note(tmp_path)
+
+    assert "Data used in the Chat work:" in note
+    assert "support.csv" in note
+    assert "unknown" in note
+    assert "North" not in note and "780" not in note
+
+
 def _plan_prompt(digest: str = "Thread background.") -> str:
     return handoff.plan_prompt("thr_1", digest, voice=_PLAN_VOICE, shape=_PLAN_SHAPE)
 
