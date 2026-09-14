@@ -57,7 +57,7 @@ def setup_turn(tmp_path, **over):
 
 
 def test_one_call_calculates_writes_and_selects_without_unrelated_values(tmp_path):
-    turn, data, journal = setup_turn(tmp_path)
+    turn, data, _journal = setup_turn(tmp_path)
     reply = json.loads(run.perform("live_read_files", args(), turn))
     assert reply["selected"] == {"rows": [["North", "360"], ["South", "420"]], "total": "780"}
     table = json.loads((tmp_path / reply["local_reference"]).read_text())
@@ -592,3 +592,83 @@ def test_source_code_read_stays_available_even_if_it_mentions_sensitive_shapes()
     prepared, _ = data.prepare(request)
 
     assert prepared["messages"][-1]["content"] == "def email_label():\n    return 'email'\n"
+
+
+def test_task_result_for_an_attached_file_becomes_a_local_execution_receipt():
+    data = DataUse()
+    request = direct_request(
+        "task",
+        {"description": "Inspect sales", "prompt": "Read public/data/upload/uploads/sales.csv"},
+        "Child result:\n" + SALES,
+    )
+
+    prepared, _ = data.prepare(request)
+
+    text = json.dumps(prepared["messages"])
+    assert "person0@example.invalid" not in text
+    assert "local_execution_receipt" in prepared["messages"][-1]["content"]
+    assert prepared["messages"][1]["tool_calls"][0]["id"] == "call1"
+    assert json.loads(prepared["messages"][-1]["content"])["tool"] == "task"
+
+
+def test_child_request_can_use_the_parent_source_descriptor():
+    data = DataUse()
+    parent = {"messages": [{"role": "user", "content": attachment_prompt()}]}
+    data.prepare(parent)
+    child = {"messages": [
+        {"role": "assistant", "tool_calls": [{"id": "child_read", "type": "function",
+            "function": {"name": "read",
+                         "arguments": json.dumps({"filePath": "public/data/upload/uploads/sales.csv"})}}]},
+        {"role": "tool", "tool_call_id": "child_read", "content": SALES},
+    ]}
+
+    prepared, _ = data.prepare(child)
+
+    text = json.dumps(prepared["messages"])
+    assert "person0@example.invalid" not in text
+    receipt = json.loads(prepared["messages"][-1]["content"])
+    assert receipt["sources"][0]["path"] == "public/data/upload/uploads/sales.csv"
+    assert receipt["provider_receipt"] == "unknown"
+
+
+@pytest.mark.parametrize("child_text,status", [
+    ("Child failed after reading data:\n" + SALES, "error"),
+    ("Child cancelled after reading data:\n" + SALES, "cancelled"),
+    ("Child interrupted after reading data:\n" + SALES, "interrupted"),
+])
+def test_failed_cancelled_and_interrupted_task_results_stay_local(child_text, status):
+    data = DataUse()
+    request = direct_request(
+        "task",
+        {"description": "Inspect sales", "prompt": "Use public/data/upload/uploads/sales.csv"},
+        child_text,
+    )
+
+    prepared, _ = data.prepare(request)
+
+    text = json.dumps(prepared["messages"])
+    assert "person0@example.invalid" not in text
+    receipt = json.loads(prepared["messages"][-1]["content"])
+    assert receipt["kind"] == "local_execution_receipt"
+    assert receipt["status"] == status
+
+
+def test_background_completion_repeating_child_output_stays_local():
+    data = DataUse()
+    request = direct_request(
+        "task",
+        {"description": "Inspect sales", "prompt": "Read public/data/upload/uploads/sales.csv"},
+        "Child result:\n" + SALES,
+    )
+    request["messages"].append({
+        "role": "user",
+        "content": "Background task completed with:\n" + SALES,
+    })
+
+    prepared, _ = data.prepare(request)
+
+    text = json.dumps(prepared["messages"])
+    assert "person0@example.invalid" not in text
+    receipt = json.loads(prepared["messages"][-1]["content"])
+    assert receipt["tool"] == "background"
+    assert receipt["sources"][0]["path"] == "public/data/upload/uploads/sales.csv"
