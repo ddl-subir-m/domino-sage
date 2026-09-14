@@ -19391,6 +19391,7 @@ class Orchestrator:
         try:
             unchanged = path.is_file() and path.read_text() == text
         except (ValueError, OSError):
+            log.warning("generated file: repairing %s, its on-disk copy could not be read", path)
             unchanged = False
         if not unchanged:
             path.parent.mkdir(parents=True, exist_ok=True)
