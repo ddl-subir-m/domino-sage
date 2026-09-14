@@ -17,8 +17,28 @@ SALES = "region,revenue,email\n" + "".join(
     for i in range(12))
 
 
+class Rows:
+    def __init__(self, columns, rows):
+        self.columns = columns
+        self.rows = rows
+
+
+class SalesWarehouse(Warehouse):
+    def sample_rows(self, source, database, schema, table, limit=5):
+        self.asked.append((source.name, database, schema, table, limit))
+        rows = [line.split(",") for line in SALES.splitlines()[1:]]
+        return Rows(["region", "revenue", "email"], rows[:limit])
+
+
 def args(**over):
     return {"operation": "sum", "dataset": "upload", "path": "sales.csv",
+            "group_by": "region", "sum_column": "revenue",
+            "selected_fields": ["region", "revenue", "total"], **over}
+
+
+def table_args(**over):
+    return {"operation": "sum", "source": "Snowflake-Data-Warehouse",
+            "database": "DWH", "schema": "MARTS", "table": "SALES",
             "group_by": "region", "sum_column": "revenue",
             "selected_fields": ["region", "revenue", "total"], **over}
 
@@ -48,6 +68,88 @@ def test_one_call_calculates_writes_and_selects_without_unrelated_values(tmp_pat
     assert "North" not in json.dumps(journal)
     assert "780" not in json.dumps(journal)
     assert "@example.invalid" not in json.dumps(reply)
+
+
+def test_bound_table_calculates_without_a_shared_sample_rows_grant(tmp_path):
+    source = object()
+    seen = []
+    turn, data, journal = setup_turn(
+        tmp_path, bound={"datasource": ("Snowflake-Data-Warehouse",)},
+        source_for=lambda name: source if name == "Snowflake-Data-Warehouse" else None,
+        sample_rows=lambda s, db, sc, t, lim: (
+            seen.append((s, db, sc, t, lim)) or Rows(
+                ["region", "revenue", "email"],
+                [line.split(",") for line in SALES.splitlines()[1:]][:lim],
+            )
+        ),
+        upload_for=lambda _p: None,
+    )
+
+    reply = json.loads(run.perform("live_read_table", table_args(), turn))
+
+    assert reply["selected"] == {"rows": [["North", "360"], ["South", "420"]], "total": "780"}
+    assert seen == [(source, "DWH", "MARTS", "SALES", 501)]
+    assert data.events("turn1")[0]["source"] == "DWH.MARTS.SALES"
+    assert "North" not in json.dumps(journal)
+
+
+def test_dataset_file_calculates_from_the_mounted_dataset_without_upload_context(tmp_path):
+    root = tmp_path / "mounts" / "sales"
+    root.mkdir(parents=True)
+    (root / "sales.csv").write_text(SALES)
+    turn, data, _ = setup_turn(
+        tmp_path, bound={"dataset": ("sales",)},
+        dataset_root=lambda name: root if name == "sales" else None,
+        upload_for=lambda _p: None,
+    )
+
+    reply = json.loads(run.perform("live_read_files", args(dataset="sales", path="sales.csv"), turn))
+
+    assert reply["selected"]["total"] == "780"
+    assert data.events("turn1")[0]["source"] == "sales/sales.csv"
+
+
+def test_bound_table_out_of_range_is_refused_before_the_source_is_touched(tmp_path):
+    turn, _, journal = setup_turn(
+        tmp_path, bound={"datasource": ()},
+        source_for=lambda _name: (_ for _ in ()).throw(AssertionError("source touched")),
+        sample_rows=lambda *_a: (_ for _ in ()).throw(AssertionError("rows touched")),
+    )
+
+    said = run.perform("live_read_table", table_args(), turn)
+
+    assert "Use in this conversation" in said
+    assert journal == []
+
+
+def test_bound_table_refuses_a_partial_unlimited_calculation(tmp_path):
+    turn, _, journal = setup_turn(
+        tmp_path, bound={"datasource": ("Snowflake-Data-Warehouse",)},
+        source_for=lambda _name: object(),
+        sample_rows=lambda *_a: Rows(["region", "revenue"], [["North", "1"]] * 501),
+        upload_for=lambda _p: None,
+    )
+
+    said = run.perform("live_read_table", table_args(), turn)
+
+    assert "500 row calculation limit" in said
+    assert journal == []
+
+
+def test_bound_table_explicit_limit_reports_unfinished_coverage(tmp_path):
+    turn, data, _ = setup_turn(
+        tmp_path, bound={"datasource": ("Snowflake-Data-Warehouse",)},
+        source_for=lambda _name: object(),
+        sample_rows=lambda *_a: Rows(["region", "revenue"], [["North", "1"], ["South", "2"]]),
+        upload_for=lambda _p: None,
+    )
+
+    reply = json.loads(run.perform("live_read_table", table_args(row_limit=1), turn))
+
+    assert reply["selected"]["total"] == "1"
+    assert data.events("turn1")[0]["coverage"] == {
+        "total": 2, "processed": 1, "excluded": 1, "failed": 0, "unfinished": 1,
+    }
 
 
 def test_default_selection_is_structure_and_kept_rows_still_controls_artifact(tmp_path):
@@ -155,6 +257,39 @@ def test_upload_access_and_persistent_record_use_existing_conversation_controls(
             assert "not available" in _call(orch, "live_read_files", args(token=token, path=source))
         finally:
             project.control.disarm_withheld(withheld)
+    finally:
+        if control_token:
+            project.control.disarm_chat(control_token)
+
+
+@pytest.mark.parametrize("mode", ["chat", "build"])
+def test_bound_table_access_and_persistent_record_use_existing_conversation_controls(tmp_path, mode):
+    warehouse = SalesWarehouse()
+    orch, _ = _orch(tmp_path, warehouse)
+    project = orch.project(start_preview=False)
+    assert project.record.read_settings().get("dataUseVersion") == 1
+    tid = orch.create_thread()["id"]
+    if mode == "chat":
+        orch.add_thread_context(tid, {"kind": "data_source", "id": "ds1",
+                                      "name": "Snowflake-Data-Warehouse"})
+        control_token = project.control.arm_chat(tid)
+    else:
+        project.workspace.bindings_path.parent.mkdir(parents=True, exist_ok=True)
+        project.workspace.bindings_path.write_text(json.dumps([{
+            "kind": "data_source", "id": "ds1", "name": "Snowflake-Data-Warehouse",
+            "display_name": "Snowflake-Data-Warehouse", "database": "DWH",
+            "schema": "MARTS", "table": "SALES",
+        }]))
+        project.build_conversation = tid
+        control_token = None
+    try:
+        token = orch._mint_live_read_token(tid)
+        reply = json.loads(_call(orch, "live_read_table", table_args(token=token)))
+        assert reply["selected"]["total"] == "780"
+        history = (orch.thread_history(tid) if mode == "chat"
+                   else project.workspace.read_history(tid))
+        assert history[-1]["dataUsed"][0]["source"] == "DWH.MARTS.SALES"
+        assert warehouse.asked == [("Snowflake-Data-Warehouse", "DWH", "MARTS", "SALES", 501)]
     finally:
         if control_token:
             project.control.disarm_chat(control_token)
