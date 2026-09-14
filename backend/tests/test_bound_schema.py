@@ -99,7 +99,7 @@ def test_a_connector_with_no_cascade_at_all_refuses_before_it_gets_to_columns():
     provider = FakeResourceProvider()
     with pytest.raises(ResourceUnavailable) as caught:
         provider.list_columns(source(provider, "ds-oracle"), "", "anything")
-    assert "cannot list what is inside" in str(caught.value)
+    assert "can't look inside this" in str(caught.value)
 
 
 def test_a_connector_that_can_list_tables_but_not_columns_says_which_it_is(monkeypatch):

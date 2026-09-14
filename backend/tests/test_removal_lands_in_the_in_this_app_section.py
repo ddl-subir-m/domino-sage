@@ -273,7 +273,7 @@ def test_the_binding_confirm_says_the_model_api_token_does_not_go():
     step = _remove("Churn risk", confirm=True)
     content = step["confirm"]["content"]
     assert "token" in content
-    assert "sample request" in content
+    assert "kept" in content
     # The Scope belongs to a Data Source Binding. Saying it here would be a cost that is not real.
     assert "table" not in content
 
@@ -284,7 +284,7 @@ def test_a_binding_confirm_over_a_kind_with_neither_cost_claims_neither():
     this the two sentences above could be the only two written and every Alias would be told it was
     losing something it never had."""
     content = _remove("Claude Sonnet 4", confirm=True)["confirm"]["content"]
-    assert "Pick it again from Project resources." in content
+    assert "To use it again, add it from Project resources." in content
     assert "table" not in content and "token" not in content
 
 
@@ -361,8 +361,7 @@ def test_the_attachment_report_promises_the_data_stays_without_naming_it_stale()
     assert "dataset:as_desks" not in step["datasetsHeld"]
     notice = " ".join(_texts(step, "sw-appdeps-notice-text"))
     assert "margins.csv is out of Desk dashboard." in notice
-    assert "it came from keeps the file" in notice
-    assert "Its current name is not to hand, so it is not named here." in notice
+    assert "couldn't be named here" in notice
     assert "desks" not in notice
     assert "src/data/margins.csv" in notice  # the leaked copy that went with it
     assert "src/load.py" in notice  # the inlined use that did not

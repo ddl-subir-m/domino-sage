@@ -118,7 +118,7 @@ def test_a_running_build_closes_the_rows_and_says_why():
     assert drawn["rows"] and all(r["disabled"] for r in drawn["rows"])
     assert drawn["labels"] == ["Plan", "Implement", "Ask and Chat"]
     (alert,) = [a for a in drawn["alerts"] if a["message"] == "A build is running"]
-    assert "Wait for the turn to finish" in alert["description"]
+    assert "Wait for this build to finish" in alert["description"]
 
 
 def test_a_gateway_that_will_not_list_models_says_so_and_offers_a_retry():
@@ -142,7 +142,7 @@ def test_a_gateway_that_lists_no_models_at_all_still_explains_itself():
     (drawn,) = _drawn([{"listing": "empty"}])
     (alert,) = [a for a in drawn["alerts"] if a["type"] == "warning"]
     assert alert["message"] == "No models available to you"
-    assert "administers the LLM Gateway" in alert["description"]
+    assert "Ask an administrator for access" in alert["description"]
     # `CONTEXT.md` puts bare "gateway" on the _Avoid_ list of both LLM Gateway and AI Gateway, and
     # `tools/brand_lint.py` only reaches `SW.brand.*` call sites — a plain literal like this one is
     # exactly where the term drifts back in.
@@ -299,10 +299,10 @@ _LOCKED = {
 }
 
 _SHADOW = ("The implement model (coder) runs every Turn in this session, so this model won't run."
-           " Change the implement model to release the session.")
+           " Change the implement model to switch.")
 # The `ask` row's own sentence: the pin does not reach Chat, so that slot still drives a model.
 _SHADOW_ASK = ("The implement model (coder) runs every Turn in this session, so this model only"
-               " runs in Chat. Change the implement model to release the session.")
+               " runs in Chat. Change the implement model to switch.")
 # The lock that closes every model. `_locked_slot_models` returns nothing at all when the approved
 # set resolves to none, so this is the lock holding with no substitute to name.
 _LOCKED_DEAD = dict(_LOCKED, approved=[], slot_models={},

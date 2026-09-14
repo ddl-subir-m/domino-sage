@@ -345,7 +345,7 @@ def test_the_build_receipt_says_the_fetched_copy_stayed():
     """The receipt's first clause is a promise — "the app's copy is gone" — so the one case where
     bytes are left behind has to be said in the same breath, or the promise does the harm."""
     said = _drawn()["receipts"]["conversation"]
-    assert "A copy Sage fetched for a conversation stays until you close the chip there." in said
+    assert "A copy Sage fetched for a conversation stays until you close that chip." in said
 
 
 @needs_node

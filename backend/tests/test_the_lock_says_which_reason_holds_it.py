@@ -55,7 +55,7 @@ def test_the_sticky_lock_names_the_reading_and_not_a_dataset():
     # its own subject, and the first version of this carried one too — "this chat already used this
     # chat already used", which every substring assertion passed.
     assert got["reason"] == (
-        "gpt-5.4 isn't allowed in this chat — it already used sensitive data. Ask an admin to "
+        "gpt-5.4 isn't allowed here — this chat already used sensitive data. Ask an admin to "
         "approve it, or start a new chat."
     )
 

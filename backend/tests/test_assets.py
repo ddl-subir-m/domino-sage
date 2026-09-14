@@ -43,7 +43,7 @@ def test_fake_provider_seeds_named_datasets():
 
 
 def test_unconfigured_provider_does_not_invent_datasets():
-    with pytest.raises(ResourceUnavailable, match="not configured"):
+    with pytest.raises(ResourceUnavailable, match="isn't configured"):
         UnconfiguredAssetProvider().list_datasets(None)
 
 
@@ -388,11 +388,10 @@ def test_the_unconfigured_providers_refusals_name_the_packs_brands(_oem_pack):
         UnconfiguredAssetProvider().download_file(Asset(id="i1", name="ds"), "a.csv", Path("a.csv"))
 
     assert str(listing.value) == (
-        "Ada lists Cubes from the Acme Cloud API, and it is not configured to reach one, "
-        "so it cannot tell which Cubes you have."
+        "Ada isn't configured to reach the Acme Cloud API, so it can't list Cubes."
     )
     assert str(reading.value) == (
-        "Ada reads Cube files through the Acme Cloud API, and it is not configured to reach one."
+        "Ada isn't configured to reach the Acme Cloud API, so it can't read Cube files."
     )
 
 
@@ -420,7 +419,7 @@ def test_a_non_json_listing_body_renames_the_platform_and_the_noun(_oem_pack, mo
     with pytest.raises(ResourceUnavailable) as e:
         provider.list_datasets(None)
 
-    assert str(e.value).startswith("The Acme Cloud API returned a non-JSON body listing Cubes.")
+    assert str(e.value).startswith("Acme Cloud didn't return a valid response listing Cubes.")
 
 
 # --- The Taxonomy API: a second, unrelated tag system (ADR-0043) --------------------------------

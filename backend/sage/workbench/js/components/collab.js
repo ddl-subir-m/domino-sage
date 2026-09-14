@@ -235,8 +235,8 @@ window.SW = window.SW || {};
           // No role picker. The roles differ in ways a creator cannot judge from the Workbench,
           // and one of them silently cannot open the App they are being added to see.
           h('div', { className: 'sw-caption' }, SW.brand.text(
-            "They're added as a contributor and can open this {project} and its published apps "
-            + 'right away.'
+            'Added as a contributor. They can open this {project} and its published apps '
+            + 'immediately.'
           ))
         ),
         h(
@@ -266,14 +266,14 @@ window.SW = window.SW || {};
     // {project} pushes through whatever git credential is present.
     //
     // Read from the server already stripped of any credential the remote URL carried. "" is not a
-    // blank to hide: a destination nobody has looked up is exactly the case the safe default is
-    // for, and saying so is more use than a sentence that names nothing.
+    // blank to hide: a destination nobody has looked up is the case the opt-out is for, and saying
+    // so is more use than a sentence that names nothing.
     const destination = (keptRows && keptRows.destination) || '';
     const goes = destination
       ? SW.brand.text("They're committed and pushed to {destination}.", { destination })
       : SW.brand.text(
-        "{assistantName} can't read where this {project} pushes, so it can't name who would be "
-        + 'able to read them.'
+        "{assistantName} can't tell where this {project} pushes, so it can't say who else could "
+        + 'read these rows.'
       );
 
     // Rendered in every state of the read above, including the two that replace the people list: a
@@ -317,21 +317,19 @@ window.SW = window.SW || {};
       // `write` call put rows through the gateway that the card then shows. Scope is the one claim
       // that holds in every state, and it is the claim a person needs.
       h('div', { className: 'sw-caption' }, SW.brand.text(
-        "Rows can reach a card without reaching a model, so the {llmGateway}'s checks don't cover "
-        + 'what you see — they cover what reaches a model.'
+        '{llmGateway} checks apply to data sent to a model, not to rows shown on a card.'
       )),
       // What OFF costs, said beside what ON costs (#255). A chart of the rows is the rows, so the
       // PNG follows them out of git — and this is the one effect a person notices without looking
       // at a commit. Saying it here is what makes the opt-in an offer rather than a surprise.
       h('div', { className: 'sw-caption' },
-        'Charts follow the rows. While this is off, a chart is drawn and shown but not kept, so a '
-        + 'Conversation reopened after a restart shows its title and date with no image.'),
+        'While this is off, charts are shown but not saved. After a restart they appear as a '
+        + 'title with no image.'),
       // ADR-0046's half sentence, said where the choice is made. The delete dialog is too late for
       // it: by then the rows are pushed, and saying it there explains a loss rather than offering
       // a choice.
       h('div', { className: 'sw-caption' },
-        "Turning this on can't be undone by a later delete — once rows are committed and pushed, "
-        + 'git history keeps them.')
+        'Once on, a later delete cannot remove rows already committed and pushed.')
     );
 
     return h(

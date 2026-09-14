@@ -203,7 +203,7 @@ def test_a_signed_out_gateway_is_an_error_and_not_an_empty_list():
     # Verified live: an unauthenticated call returns 200 carrying a Keycloak LOGIN PAGE, so status is
     # not proof of an answer. Reporting "no models" here would blame the user's permissions.
     with stub_gateway({"data": []}, REGISTERED, html_at="/v1/models") as (base, _), \
-            pytest.raises(ResourceUnavailable, match="non-JSON"):
+            pytest.raises(ResourceUnavailable, match="didn't return a valid response"):
         DominoResourceProvider(base, lambda: "tok").list_llm_aliases()
 
 
@@ -901,7 +901,7 @@ def test_data_sources_are_unlistable_rather_than_empty_off_domino():
     # "Sage could not ask" and "you have none" send the creator to different places, and only one of
     # them is true here.
     p = DominoResourceProvider("http://gw/v1", lambda: "tok")
-    with pytest.raises(ResourceUnavailable, match="not configured to reach one"):
+    with pytest.raises(ResourceUnavailable, match="isn't configured to reach"):
         p.list_data_sources()
 
 
@@ -1231,7 +1231,7 @@ def test_the_cascade_cannot_look_inside_a_source_without_the_domino_data_library
     # same on both machines.
     monkeypatch.setitem(sys.modules, "domino_data.data_sources", None)
     p = DominoResourceProvider("http://gw/v1", lambda: "tok")
-    with pytest.raises(ResourceUnavailable, match="not installed here"):
+    with pytest.raises(ResourceUnavailable, match="isn't installed here"):
         p.list_databases(_source("SnowflakeConfig"))
 
 
