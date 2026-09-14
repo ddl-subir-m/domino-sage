@@ -64,6 +64,15 @@ TOOLS: list[dict[str, Any]] = [
                 # than teaching one screen to disagree with the rest.
                 "table": {"type": "string", "description": "The table. A dotted "
                                                           "database.schema.table is fine."},
+                "operation": {"type": "string", "enum": ["sum"],
+                              "description": "Fresh projects: calculate a table locally and return selected totals."},
+                "group_by": {"type": "string"},
+                "sum_column": {"type": "string"},
+                "selected_fields": {"type": "array", "items": {"type": "string"},
+                                    "description": "Result columns and/or total. Omit for structure only."},
+                "row_limit": {"type": "integer", "description": "Explicit user row limit; omit for all rows."},
+                "result_name": {"type": "string"},
+                "purpose": {"type": "string"},
                 "limit": {"type": "integer", "description": "Rows to read. Default 5, capped."},
                 "title": {"type": "string", "description": "A short title for the card."},
             },
