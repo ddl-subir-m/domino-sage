@@ -42,7 +42,7 @@ def _opencode_server(runtime, env):
                                    cwd=runtime, env=env, stdout=log, stderr=log)
         try:
             url = f"http://127.0.0.1:{port}"
-            for _ in range(150):
+            for _ in range(600):
                 try:
                     if httpx.get(url + "/global/health", timeout=1).status_code == 200:
                         break
