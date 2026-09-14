@@ -170,13 +170,24 @@ def start_turn(kind: str, prompt: str = "") -> None:
         log.debug("timing: start_turn failed", exc_info=True)
 
 
-def finish_turn(ok: bool | None = None, decision: str = "") -> None:
+def finish_turn(ok: bool | None = None, decision: str = "") -> TurnRecord | None:
+    """Close the open turn and hand its record back.
+
+    `None` means there was no turn to close, OR that closing it failed — `_current` is cleared on
+    the first statement under the lock, so a record can be lost after that point and the caller
+    cannot tell the two apart. Everything after the clear is list and deque work under the lock,
+    which is why this is a sentence rather than a branch.
+
+    The return value is the one read that cannot be wrong about WHICH turn it is. `recent()` and
+    `last_finished()` both answer a question about the process; this answers a question about the
+    caller, because the caller is the one that ended it (#339).
+    """
     global _current
     try:
         with _lock:
             rec, _current = _current, None
             if rec is None:
-                return
+                return None
             rec.t1 = time.monotonic()
             for sp in rec.spans:
                 if sp.t1 is None:
@@ -187,8 +198,10 @@ def finish_turn(ok: bool | None = None, decision: str = "") -> None:
             rec.ok = ok if ok is not None else rec.ok
             rec.decision = decision or rec.decision
             _history.append(rec)
+        return rec
     except Exception:
         log.debug("timing: finish_turn failed", exc_info=True)
+        return None
 
 
 def open_span(name: str, **fields) -> Span | None:
@@ -355,13 +368,52 @@ def current() -> TurnRecord | None:
 
 
 def recent(n: int = 5) -> list[TurnRecord]:
-    """Newest first, with a turn still running at the front."""
+    """The readout's view of the process: newest first, with a turn still running at the front.
+
+    It answers "what has this process been doing", and the running turn leads because the record
+    someone most wants is the one they are waiting on. So nothing in the list is promised to be
+    finished, to have recorded a single call yet, or to belong to the caller — a turn opened on
+    another thread a moment ago is newest, and takes the front. The list is empty when nothing has
+    been recorded, which includes every run with `SAGE_TIMING` off, and one longer than the
+    finished turns it found while a turn is running — up to `n` of those, and the live one in
+    front of them.
+
+    A caller that means "the turn I just ran" is asking a different question and must not ask it
+    here (#336, #339): `finish_turn` hands back the record it closed, and `last_finished()` names
+    the newest one that is over.
+    """
     with _lock:
         out = list(_history)[-max(1, n):]
+        # Read under the same lock as the ring, and not after it. A `finish_turn` landing between
+        # the two rings the turn and clears `_current`, so a snapshot taken in two steps can miss
+        # it in both halves — the newest turn, the one this list leads with on purpose, absent
+        # from the readout entirely. One acquisition makes the pair a fact about one moment.
+        cur = _current
     out.reverse()
-    if _current is not None:
-        out.insert(0, _current)
+    if cur is not None:
+        out.insert(0, cur)
     return out
+
+
+def last_finished() -> TurnRecord | None:
+    """The newest turn that is OVER, or `None` if no turn has ended in this process.
+
+    Never the turn still running, so it cannot hand back an empty record that belongs to whoever
+    started a turn since. An abandoned turn counts: `start_turn` closes the one it displaces and
+    rings it, and a turn that died without finishing is still the most interesting one there.
+
+    `None` is the answer before the first turn ends, and so through any run started with
+    `SAGE_TIMING=0`: nothing opens a turn, so nothing ever rings. The flag is not consulted HERE,
+    and deliberately not in `finish_turn` either — a turn already open has to be closed and
+    cleared whatever the flag says now, or `_current` is stranded and every later turn is stamped
+    onto a record nobody can end.
+
+    It is the NEWEST finished turn and not the caller's own — a background turn that both began
+    and ended inside the caller's window would still win. Only `finish_turn`'s return value is
+    proof of identity; use this where the caller cannot hold that.
+    """
+    with _lock:
+        return _history[-1] if _history else None
 
 
 # ---- readout ------------------------------------------------------------------------------------

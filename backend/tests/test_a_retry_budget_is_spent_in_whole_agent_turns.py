@@ -14,6 +14,8 @@ add N inferences, it adds up to N agent turns, and each of those costs whatever 
 WHAT IS ASSERTED HERE AND WHAT IS NOT. The agent-turn count is structural, so it is asserted: it
 comes out of `timing`'s `agent-turn.N` spans and out of `FakeOpenCode.prompts`, and the two are
 cross-checked against each other so a loop that stopped opening spans cannot read as a cheap loop.
+With `SAGE_TIMING=0` there are no spans to cross-check against and the prompt count stands alone —
+the budgets are still asserted, which is the point, but that one guard is gone (#336).
 The inferences INSIDE one agent turn are not: they are how many times OpenCode rounds back to the
 model while working, which depends on the model and the tree, and only the shim on a real
 deployment counts them (`project.model_calls`, /api/diag/timing). So the cost of a nudge reads as
@@ -34,6 +36,7 @@ from sage.resources.provider import FakeResourceProvider, LlmAlias
 from sage.router.models import Mode, ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
+from .ledger import last_turn, own_ledger
 
 REPO_TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
 BASE = "https://apps.example.com/apps/llm_gateway/v1"
@@ -133,12 +136,18 @@ def _orch(tmp_path: Path, turns: list[Turn]) -> tuple[Orchestrator, FakeOpenCode
 
 
 def _agent_turns(oc: FakeOpenCode) -> int:
-    """How many whole model turns the build spent, cross-checked two ways.
+    """How many whole model turns the build spent, cross-checked two ways where there are two.
 
     `timing`'s spans are the number a deployment reads back off /api/diag/timing, and `prompts` is
     the number of times the agent was actually asked. A loop that stopped opening spans would read
-    as a free retry on the first, so neither is trusted alone."""
-    rec = timing.recent(1)[0]
+    as a free retry on the first, so neither is trusted alone — while the ledger is on."""
+    if not timing.enabled():
+        # Off, there is one number rather than two, and a loop that stopped opening spans WOULD
+        # read as a free retry here. Taken on purpose: the budgets are a property of the build
+        # loop, nothing about one depends on the recorder, and skipping the whole test over a
+        # diagnostics flag would delete the coverage this file exists for (#336).
+        return len(oc.prompts)
+    rec = last_turn()
     spans = [s.name for s in rec.spans if s.name.startswith("agent-turn.")]
     assert spans == [f"agent-turn.{i + 1}" for i in range(len(spans))], spans
     assert len(spans) == len(oc.prompts), f"{len(spans)} spans but {len(oc.prompts)} prompts sent"
@@ -163,6 +172,7 @@ def _decision(events: list[dict]) -> str:
 # ---- the nudge: a turn that writes nothing ---------------------------------------------------
 
 
+@own_ledger
 def test_one_nudge_costs_exactly_one_extra_agent_turn(tmp_path: Path):
     orch, oc = _orch(tmp_path, [
         _wrote_nothing(),
@@ -178,6 +188,7 @@ def test_one_nudge_costs_exactly_one_extra_agent_turn(tmp_path: Path):
     assert "IMPLEMENT" in oc.prompts[1]["text"]
 
 
+@own_ledger
 def test_an_agent_that_never_writes_spends_the_whole_nudge_budget_and_stops(tmp_path: Path):
     orch, oc = _orch(tmp_path, [_wrote_nothing()] * 10)
 
@@ -189,6 +200,7 @@ def test_an_agent_that_never_writes_spends_the_whole_nudge_budget_and_stops(tmp_
     assert _decision(events) == "the model replied but didn't change any files — try rephrasing or a smaller step"
 
 
+@own_ledger
 def test_a_nudge_that_lands_on_the_last_try_still_finishes_clean(tmp_path: Path):
     orch, oc = _orch(tmp_path, [
         _wrote_nothing(), _wrote_nothing(), _wrote_nothing(),
@@ -204,6 +216,7 @@ def test_a_nudge_that_lands_on_the_last_try_still_finishes_clean(tmp_path: Path)
 # ---- the runtime fix: an app that typechecks and throws on render ------------------------------
 
 
+@own_ledger
 def test_one_runtime_fix_costs_exactly_one_extra_agent_turn(tmp_path: Path, monkeypatch):
     _crashes(monkeypatch, 1)
     orch, oc = _orch(tmp_path, [
@@ -220,6 +233,7 @@ def test_one_runtime_fix_costs_exactly_one_extra_agent_turn(tmp_path: Path, monk
     assert "toFixed" in oc.prompts[1]["text"]
 
 
+@own_ledger
 def test_a_crash_that_is_never_fixed_spends_the_whole_runtime_budget(tmp_path: Path, monkeypatch):
     _crashes(monkeypatch, 10)
     orch, oc = _orch(tmp_path, [
@@ -237,6 +251,7 @@ def test_a_crash_that_is_never_fixed_spends_the_whole_runtime_budget(tmp_path: P
 # ---- the leak fix: attached data copied into src/ ----------------------------------------------
 
 
+@own_ledger
 def test_a_leak_that_is_never_fixed_spends_the_whole_leak_budget(tmp_path: Path):
     orch, oc = _orch(tmp_path, [
         Turn(text="Built it.", writes={"src/sales.csv": LEAKED_CSV}),
@@ -253,6 +268,7 @@ def test_a_leak_that_is_never_fixed_spends_the_whole_leak_budget(tmp_path: Path)
 # ---- the gateway fix: a raw fetch around askModel -----------------------------------------------
 
 
+@own_ledger
 def test_a_raw_gateway_call_that_is_never_rewritten_spends_the_whole_gateway_budget(tmp_path: Path):
     orch, oc = _orch(tmp_path, [
         Turn(text="Built it.", writes={"src/Chat.tsx": RAW_GATEWAY_CALL}),
@@ -269,6 +285,7 @@ def test_a_raw_gateway_call_that_is_never_rewritten_spends_the_whole_gateway_bud
 # ---- the ceiling: every budget spent on one turn ------------------------------------------------
 
 
+@own_ledger
 def test_the_four_budgets_add_up_and_nothing_bounds_their_sum(tmp_path: Path, monkeypatch):
     """The number that matters for cost, and the one nobody could name before this test.
 
@@ -296,7 +313,9 @@ def test_the_four_budgets_add_up_and_nothing_bounds_their_sum(tmp_path: Path, mo
     # the leak and the raw call sitting in the tree together are never folded into one message. The
     # `why` on each span is what /api/diag/timing shows, so this is also the readout a deployment
     # would be read back from.
-    whys = [s.fields.get("why") or "" for s in timing.recent(1)[0].spans
+    if not timing.enabled():
+        return          # the order below is read off the ledger; the sum above is the test's name
+    whys = [s.fields.get("why") or "" for s in last_turn().spans
             if s.name.startswith("agent-turn.")]
     assert whys[0] == "first send"
     kinds = [next((k for k in ("no code", "runtime", "data/", "askModel") if k in w), None)
