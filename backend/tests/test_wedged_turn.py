@@ -706,7 +706,8 @@ def test_a_stalled_approve_leaves_the_plan_to_be_approved_again(tmp_path: Path):
     just been moved out from under them.
     """
     ws = tmp_path / "mnt" / "code"
-    oc = WedgedOpenCode(ws, [Turn(text="1. Add a table\n2. Wire up the data"), Turn(text="building")])
+    oc = WedgedOpenCode(ws, [Turn(text="# Trades Dashboard\n\n## Plan\n1. Add a table\n2. Wire up the data"),
+                            Turn(text="building")])
     orch = _orch(tmp_path, oc)
     oc.orch = orch
     # The gate back on: the approve turn only exists behind it.
@@ -726,7 +727,9 @@ def test_a_stalled_approve_leaves_the_plan_to_be_approved_again(tmp_path: Path):
 
 # ---- a phase is not a turn ---------------------------------------------------------------------
 
-PHASED_PLAN = """A dashboard for exploring trades.
+PHASED_PLAN = """# Trades Dashboard
+
+A dashboard for exploring trades.
 
 ## Plan
 

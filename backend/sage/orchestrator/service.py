@@ -4294,6 +4294,43 @@ def _warn_if_shapeless(where: str, plan_md: str) -> None:
                     where)
 
 
+_PLAN_HEADING_REPAIR_FAILED = (
+    "Planning wrote a plan without an app name, and the repair couldn't name it. Send the "
+    "request again — adding the app name you want can help."
+)
+_PLAN_HEADING_REPAIR_PROMPT = """\
+The build plan below is missing its required top-level app-name heading.
+
+Write only a 2-4 word app name for this plan.
+No leading A, An, or The, and no trailing full stop.
+Do not write Markdown.
+Do not rewrite, summarize, or explain the plan.
+
+Plan:
+{plan}
+"""
+
+
+def _repair_heading_name(answer: str) -> str:
+    """Return the planner's written app name, or "" when it did not write one."""
+    name = (answer or "").strip()
+    if not 2 <= len(name.split()) <= 4:
+        return ""
+    if name.split()[0].lower() in ("a", "an", "the"):
+        return ""
+    if not name[0].isalnum() or not all(c.isalnum() or c in " -'&" for c in name):
+        return ""
+    return name
+
+
+def _prepend_repaired_heading(plan_md: str, answer: str) -> str:
+    name = _repair_heading_name(answer)
+    if not name:
+        return ""
+    repaired = f"# {name}\n\n{plan_md}"
+    return repaired if chat_handoff.plan_heading(repaired) == name else ""
+
+
 # The plan's voice and shape. Module level because two turns write plans: the gated build turn
 # (build_stream) and the Chat -> Build handoff (_draft_handoff_plan). Both must ask for the same
 # headings, because both produce a plan document that is parsed out of them (plan_doc.SECTIONS).
@@ -8162,8 +8199,8 @@ class Orchestrator:
         # failure recorded nowhere left `recall.offer` counting to one forever while the one thing
         # that would fix it (a fresh session) went unoffered.
         try:
-            plan_md = self._run_sage_plan(
-                project, prompt, self._ensure_thread_session(store, thread_id, project, client))
+            session_id = self._ensure_thread_session(store, thread_id, project, client)
+            plan_md = self._run_sage_plan(project, prompt, session_id)
         except ValueError as e:
             self._record_plan_refusal(store, thread_id, project, str(e))
             raise
@@ -8191,6 +8228,11 @@ class Orchestrator:
                 "Planning didn't produce a plan this time. Try again, or say a bit more in the "
                 "conversation about what the app should show and what someone should be able to "
                 "do with it.")
+        try:
+            plan_md = self._repair_plan_heading(project, plan_md, session_id, "chat handoff")
+        except ValueError as e:
+            self._record_plan_refusal(store, thread_id, project, str(e), offer=False)
+            raise
         # Same document the gate creates, and it records its Thread the same way. No `app_id`: the
         # app does not exist until the handoff is confirmed, and that is what stamps it.
         _warn_if_shapeless("chat handoff", plan_md)
@@ -8272,6 +8314,27 @@ class Orchestrator:
         finally:
             project.control.disarm_read_only(token)
             project.active_session_id = None
+
+    def _repair_plan_heading(self, project: Project, plan_md: str, session_id: str,
+                             where: str) -> str:
+        """Ask the planner for the missing app-name heading, once."""
+        if chat_handoff.plan_heading(plan_md):
+            return plan_md
+        try:
+            answer = self._run_sage_plan(
+                project,
+                _PLAN_HEADING_REPAIR_PROMPT.replace("{plan}", plan_md),
+                session_id,
+            )
+        except ValueError as e:
+            log.warning("%s: plan heading repair failed: %s", where, e)
+            raise ValueError(_PLAN_HEADING_REPAIR_FAILED) from None
+        repaired = _prepend_repaired_heading(plan_md, answer)
+        if not repaired:
+            log.warning("%s: plan heading repair returned no valid app name: %r",
+                        where, answer[:120])
+            raise ValueError(_PLAN_HEADING_REPAIR_FAILED)
+        return repaired
 
     def _confirm_handoff(self, thread_id: str, include: dict, target: dict) -> dict:
         # Read and refuse BEFORE anything is created: this is where a Built App is born (ADR-0008),
@@ -13908,6 +13971,14 @@ class Orchestrator:
                           "again — or switch to Implement to run it directly.")})
                     yield persist({"type": "done", "ok": False, "decision": "no app described"})
                     return
+                if not arch:
+                    try:
+                        plan_md = self._repair_plan_heading(project, plan_md, sid, "plan gate")
+                    except ValueError as e:
+                        yield persist({"type": "error", "message": str(e)})
+                        yield persist({"type": "done", "ok": False,
+                                       "decision": "plan title repair failed"})
+                        return
                 # An architecture is a reference document, not the one-shot plan→implement handoff, so
                 # it goes to its own file: .sage/plan.md is archived the moment a build consumes it
                 # (see archive_plan), and a design the user wants to keep reading must not vanish

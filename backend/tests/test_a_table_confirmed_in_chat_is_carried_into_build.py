@@ -35,7 +35,7 @@ from .fake_opencode import FakeOpenCode, Turn
 PROMPT = "chart me the daily gong calls from Snowflake"
 
 _PLAN = (
-    "A gong call dashboard.\n\n"
+    "# Gong Call Dashboard\n\nA gong call dashboard.\n\n"
     "## Plan\n"
     "1. **Daily calls** — Count calls by day.\n\n"
     "## Open questions\n"

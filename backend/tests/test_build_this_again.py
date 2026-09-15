@@ -91,8 +91,8 @@ def _only_plan_id(orch: Orchestrator) -> str:
 # Conversation it was written in, and "Build this again" runs its rebuild in that one.
 CONVERSATION = "conv_desk"
 
-PLAN = Turn(text="1. Add the table\n2. Wire up the data")
-EDITED = "1. Add the table\n2. Wire up the data\n3. Sort it by date\n"
+PLAN = Turn(text="# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data")
+EDITED = "# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data\n3. Sort it by date\n"
 
 
 def _built_once(tmp_path: Path, extra: list[Turn] | None = None):
@@ -597,7 +597,8 @@ def test_a_plan_stuck_live_names_the_deleted_conversation_not_the_approve_card(t
     """Both refuse, so the order of the two checks only decides which sentence the person reads.
     "Awaiting approval" sends them to an Approve card in a Conversation that is gone; "the
     conversation was deleted" tells them the truth — that door is closed, start a new one."""
-    orch, thread_id = _in_a_real_conversation(tmp_path, [Turn(text="1. Sort it by date")])
+    orch, thread_id = _in_a_real_conversation(
+        tmp_path, [Turn(text="# Consumption Dashboard\n\n## Plan\n1. Sort it by date")])
     # Plan mode, because the automatic gate only fires before the first build — this app has had
     # one, and an ordinary BUILD turn here would write code instead of proposing a plan.
     orch.project(start_preview=False).control.set_mode(Mode.PLAN)
@@ -632,7 +633,9 @@ def test_the_conversation_that_produced_an_archived_plan_still_shows_its_card(tm
 # so, because story 14 asks for it and because the flag could easily have been threaded somewhere
 # that skipped it.
 
-PHASED_PLAN = """A dashboard for exploring trades.
+PHASED_PLAN = """# Trades Dashboard
+
+A dashboard for exploring trades.
 
 ## Plan
 
