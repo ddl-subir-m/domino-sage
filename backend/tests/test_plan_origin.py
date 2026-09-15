@@ -42,16 +42,16 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-def _plan(title: str, step: str) -> str:
-    return (f"{title}\n\n"
+def _plan(title: str, step: str, *, name: str) -> str:
+    return (f"# {name}\n\n{title}\n\n"
             "## Plan\n"
             f"1. **{step}** — Show it.\n\n"
             "## Open questions\n"
             "- None, ready to build.\n")
 
 
-_DESK = _plan("A desk exposure dashboard.", "Desk table")
-_BURNDOWN = _plan("A burndown chart.", "Burndown")
+_DESK = _plan("A desk exposure dashboard.", "Desk table", name="Desk Exposure Dashboard")
+_BURNDOWN = _plan("A burndown chart.", "Burndown", name="Burndown Chart")
 _NOTHING_EXTRA = {"resources": False, "artifacts": False, "transcript": False}
 
 
@@ -198,7 +198,7 @@ def test_the_live_plan_file_stays_one_per_built_app(tmp_path: Path):
 
     _gate_in_build(orch, "now build me a burndown chart", conversation)
 
-    assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith("A desk exposure")
-    assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith("A burndown")
+    assert (root / "apps" / first / ".sage" / "plan.md").read_text().startswith("# Desk Exposure Dashboard")
+    assert (root / "apps" / second / ".sage" / "plan.md").read_text().startswith("# Burndown Chart")
     assert not (root / ".sage" / "threads" / conversation / "plan.md").exists()
     assert not (root / ".sage" / "plan.md").exists()

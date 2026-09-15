@@ -64,7 +64,7 @@ def _orch(tmp: Path):
     (template / "package.json").write_text("{}")
 
     ws = tmp / "mnt" / "code"
-    oc = FakeOpenCode(ws, [Turn(text="1. Add the table")])
+    oc = FakeOpenCode(ws, [Turn(text="# Warehouse Dashboard\n\n## Plan\n1. Add the table")])
     orch = Orchestrator(
         workspace_dir=ws, template=template, gateway=ScriptedGateway(),
         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s", sovereign_ask="s",

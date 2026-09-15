@@ -46,12 +46,12 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-_CHAT_PLAN = ("A desk exposure dashboard.\n\n"
+_CHAT_PLAN = ("# Desk Exposure Dashboard\n\nA desk exposure dashboard.\n\n"
               "## Plan\n"
               "1. **A desk table** — Show notional by desk.\n\n"
               "## Open questions\n"
               "- None, ready to build.\n")
-_BUILD_PLAN = ("A limits monitor.\n\n"
+_BUILD_PLAN = ("# Limits Monitor\n\nA limits monitor.\n\n"
                "## Plan\n"
                "1. **A limits table** — Show desks over limit.\n")
 _NOTHING_EXTRA = {"resources": False, "artifacts": False, "transcript": False}

@@ -40,7 +40,7 @@ class ScriptedGateway:
 
 
 _PLAN = (
-    "A desk exposure dashboard.\n\n"
+    "# Desk Exposure Dashboard\n\nA desk exposure dashboard.\n\n"
     "## Plan\n"
     "1. **Desk table** — Show notional by desk.\n\n"
     "## Open questions\n"
@@ -115,7 +115,7 @@ def test_a_confirmed_handoff_creates_an_app_directory_seeded_from_the_template(t
     assert (app.path / "package.json").read_text() == '{"name": "template"}'
     assert (app.path / "src" / "App.tsx").exists()
     # And the builder's copy of the plan is in there with it, ready for the implement turn.
-    assert app.read_plan().startswith("A desk exposure dashboard.")
+    assert app.read_plan().startswith("# Desk Exposure Dashboard")
 
 
 def test_a_dismissed_handoff_sheet_leaves_no_app_behind(tmp_path: Path):
@@ -129,7 +129,7 @@ def test_a_dismissed_handoff_sheet_leaves_no_app_behind(tmp_path: Path):
     orch.draft_handoff_plan(tid)
 
     assert not (root / "apps").exists()
-    assert orch.read_plan_doc("001")["markdown"].startswith("A desk exposure dashboard.")
+    assert orch.read_plan_doc("001")["markdown"].startswith("# Desk Exposure Dashboard")
     assert orch.get_thread(tid)["handoff"]["status"] == "planned"   # the sheet is still offered
 
 
@@ -137,7 +137,7 @@ def test_a_build_writes_its_code_in_the_app_directory(tmp_path: Path):
     """The app directory is the build agent's working directory, so from the agent's side nothing
     has moved: it writes `src/App.tsx` and that lands one level down."""
     orch, oc, root = _orch(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="# Desk Dashboard\n\nA dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
         Turn(text="Built it.", writes={"src/App.tsx": "// the desk table\n"}),
     ], verdict="BUILD")
     orch.project(start_preview=False)   # no Vite in tests

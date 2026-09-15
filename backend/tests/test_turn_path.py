@@ -110,6 +110,11 @@ def _kinds(events: list[dict]) -> set[str]:
     return {e.get("type") for e in events}
 
 
+TABLE_PLAN = "# Dashboard\n\n## Plan\n1. A table\n2. A chart"
+ADD_TABLE_PLAN = "# Dashboard\n\n## Plan\n1. Add a table\n2. Wire up the data"
+SIMPLE_DASHBOARD_PLAN = "# Dashboard\n\nA dashboard.\n\n## Plan\n1. **Table** — Show it.\n"
+
+
 # --- the answer-only path ------------------------------------------------------------------------
 
 def test_a_question_is_answered_without_building(tmp_path: Path):
@@ -129,7 +134,7 @@ def test_a_question_is_answered_without_building(tmp_path: Path):
 # --- the plan gate -------------------------------------------------------------------------------
 
 def test_a_first_build_gates_and_proposes_a_plan(tmp_path: Path):
-    orch, _oc, _ = _build(tmp_path, [Turn(text="1. Add a table\n2. Wire up the data")])
+    orch, _oc, _ = _build(tmp_path, [Turn(text=ADD_TABLE_PLAN)])
     events = _run(orch, "build me a dashboard")
 
     assert _done(events)["decision"] == "awaiting approval"
@@ -144,6 +149,7 @@ def test_a_gated_turn_writes_a_plan_document_beside_the_handoff(tmp_path: Path):
     """Two files, two jobs. plan.md is the copy the builder consumes; the document is the one people
     come back to, and the card carries its id so they can."""
     orch, _oc, _ = _build(tmp_path, [Turn(text=(
+        "# Desk Dashboard\n\n"
         "A desk dashboard.\n\n"
         "## Problem & outcome\nRisk cannot see notional by desk.\n\n"
         "## Plan\n1. **Desk table** — Show notional by desk.\n"
@@ -166,7 +172,7 @@ def test_the_document_outlives_the_build_that_reads_it(tmp_path: Path):
     agent's view the moment a build consumes it; a document that went with it would be no more
     durable than the file it was copied from."""
     orch, _oc, _ = _build(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=SIMPLE_DASHBOARD_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     list(orch.build_stream("build me a dashboard"))
@@ -186,7 +192,7 @@ def test_approving_marks_the_document_approved(tmp_path: Path):
     Before this, a plan somebody had approved and watched build still read "Draft · Waiting for
     approval" on its own page, because nothing on the approve path ever touched the document."""
     orch, _oc, _ = _build(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=SIMPLE_DASHBOARD_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     list(orch.build_stream("build me a dashboard"))
@@ -207,7 +213,7 @@ def test_approving_a_plan_still_out_for_review_leaves_it_in_review(tmp_path: Pat
     So building signs the builder's name, never theirs: a plan with a reviewer who has not answered
     stays in review, and the page keeps saying so."""
     orch, _oc, _ = _build(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=SIMPLE_DASHBOARD_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     list(orch.build_stream("build me a dashboard"))
@@ -224,11 +230,11 @@ def test_approving_an_edited_plan_puts_the_edit_in_the_document(tmp_path: Path):
     It didn't: plan.md was overwritten and built while the document kept the draft nobody chose,
     leaving the durable record of the app disagreeing with the app."""
     orch, _oc, _ = _build(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=SIMPLE_DASHBOARD_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     list(orch.build_stream("build me a dashboard"))
-    edited = "A dashboard.\n\n## Plan\n1. **Chart** — Show it as a chart.\n"
+    edited = "# Dashboard\n\nA dashboard.\n\n## Plan\n1. **Chart** — Show it as a chart.\n"
 
     list(orch.approve_stream("", edited, None, "001"))
 
@@ -242,7 +248,7 @@ def test_approving_without_a_card_still_finds_the_document(tmp_path: Path):
     """A bare "yes, build it" typed in the composer sends no plan id. The newest document is the
     only answer available there, and it is the right one."""
     orch, _oc, _ = _build(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=SIMPLE_DASHBOARD_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     list(orch.build_stream("build me a dashboard"))
@@ -255,7 +261,7 @@ def test_approving_without_a_card_still_finds_the_document(tmp_path: Path):
 def test_cancelling_a_plan_leaves_its_document_alone(tmp_path: Path):
     """Cancel dismisses the handoff, not the thinking. The plan page still opens on a plan nobody
     built, which is the difference between dismissing a card and deleting a document."""
-    orch, _oc, _ = _build(tmp_path, [Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n")])
+    orch, _oc, _ = _build(tmp_path, [Turn(text=SIMPLE_DASHBOARD_PLAN)])
     list(orch.build_stream("build me a dashboard"))
     project = orch.project(start_preview=False)
     workspace = project.workspace
@@ -286,9 +292,9 @@ def test_an_architecture_gets_no_plan_document(tmp_path: Path):
 
 def test_the_scope_classifier_gates_a_substantial_change_on_a_built_app(tmp_path: Path):
     orch, _oc, gateway = _build(tmp_path, [
-        Turn(text="1. A table\n2. A chart"),
+        Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
-        Turn(text="1. Add an auth provider\n2. Add an orgs page"),
+        Turn(text="# Auth Dashboard\n\n## Plan\n1. Add an auth provider\n2. Add an orgs page"),
     ], verdict="PLAN")
     _get_built(orch)
     events = _run(orch, "add auth, orgs and a billing page")
@@ -300,7 +306,7 @@ def test_the_scope_classifier_gates_a_substantial_change_on_a_built_app(tmp_path
 
 def test_a_small_change_on_a_built_app_just_builds(tmp_path: Path):
     orch, _oc, gateway = _build(tmp_path, [
-        Turn(text="1. A table\n2. A chart"),
+        Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Done.", writes={"src/App.tsx": "// v2, sortable\n"}),
     ], verdict="BUILD")
@@ -319,10 +325,10 @@ def test_a_failed_turn_makes_the_next_one_plan_first(tmp_path: Path):
     # The failure here is a gated turn that produced no plan text — a real, reachable failure ("no
     # plan text" is usually "no inference reached us") rather than an exception injected to force one.
     orch, _oc, _gateway = _build(tmp_path, [
-        Turn(text="1. A table\n2. A chart"),
+        Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text=""),                       # fails: gated, wrote nothing, said nothing
-        Turn(text="1. Check the data source\n2. Then retry"),
+        Turn(text="# Data Repair\n\n## Plan\n1. Check the data source\n2. Then retry"),
     ], verdict="BUILD")
     _get_built(orch)
 
@@ -340,11 +346,11 @@ def test_a_failed_turn_makes_the_next_one_plan_first(tmp_path: Path):
 
 def test_a_question_after_a_failure_does_not_spend_the_gate(tmp_path: Path):
     orch, _oc, _gateway = _build(tmp_path, [
-        Turn(text="1. A table\n2. A chart"),
+        Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text=""),                       # fails
         Turn(text="Because the data source was empty."),
-        Turn(text="1. Fix the data source"),
+        Turn(text="# Data Repair\n\n## Plan\n1. Fix the data source"),
     ], verdict="BUILD")
     _get_built(orch)
     _run(orch, "plan the retraining work", Mode.PLAN)
@@ -369,7 +375,7 @@ def test_a_question_on_a_built_app_is_answered_without_touching_it(tmp_path: Pat
     app doesn't exist yet; this is the case that actually shipped broken, because a built app is the
     only state in which a turn has somewhere to write the answer."""
     orch, oc, _gw = _build(tmp_path, [
-        Turn(text="1. A table\n2. A chart"),
+        Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="There is no clickstream table attached to this project yet."),
     ], verdict="BUILD")
@@ -390,7 +396,7 @@ def test_a_request_that_cannot_be_acted_on_ends_the_turn_instead_of_writing_the_
     to build. Before the marker existed its only legal move was to write its explanation into
     src/App.tsx, and the creator ended up with a dashboard whose UI said their file wasn't showing."""
     orch, _oc, _gw = _build(tmp_path, [
-        Turn(text="1. A table\n2. A chart"),
+        Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="I still can't see a clickstream table in this project. Once it's attached I'll "
                   "build the dashboard on top of it.\nNOTHING_TO_BUILD"),
@@ -419,7 +425,7 @@ def test_a_turn_that_writes_nothing_without_the_marker_is_still_a_failure(tmp_pa
     looks identical from outside — no edits, some prose — and must still be nudged and then reported,
     or #29's fix quietly re-opens the failure AGENTS.md's src/ rule was written against."""
     orch, _oc, _gw = _build(tmp_path, [
-        Turn(text="1. A table\n2. A chart"),
+        Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Here's how I'd approach it: first the schema, then the table."),
     ], verdict="BUILD")
@@ -436,7 +442,7 @@ def test_the_marker_cannot_unmake_edits(tmp_path: Path):
     editing, it can't retroactively excuse the edits it made. Falls through to the normal build
     path so those edits are typechecked and kept like any other build's."""
     orch, _oc, _gw = _build(tmp_path, [
-        Turn(text="1. A table\n2. A chart"),
+        Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Nothing to do here.\nNOTHING_TO_BUILD", writes={"src/App.tsx": "// v2\n"}),
     ], verdict="BUILD")
@@ -454,7 +460,7 @@ def test_a_marker_on_a_plan_turn_is_stripped_from_the_card(tmp_path: Path):
     end the turn with no plan to approve. The gate resolves first; the marker is only stripped, so
     it can't be persisted into plan.md or shown on the approval card."""
     orch, _oc, _gw = _build(tmp_path, [
-        Turn(text="1. Add a table\n2. Wire up the data\nNOTHING_TO_BUILD"),
+        Turn(text="# Dashboard\n\n## Plan\n1. Add a table\n2. Wire up the data\nNOTHING_TO_BUILD"),
     ])
     events = _run(orch, "build me a dashboard")
 
@@ -471,7 +477,7 @@ def test_a_mentioned_resource_reaches_the_agent_as_a_binding_not_a_word(tmp_path
     """What the creator typed is "@sonnet", which is a word. What the agent gets is the record behind
     it — the kind, the Resource, and what the app already does with it — because the word alone is
     what a creator holding several Bindings has no way to disambiguate."""
-    orch, oc, _gw = _build(tmp_path, [Turn(text="1. A table\n2. A chart")])
+    orch, oc, _gw = _build(tmp_path, [Turn(text=TABLE_PLAN)])
     orch.bind_llm_alias("f-sonnet")
 
     _run(orch, "use @sonnet to summarise the rows", resources=[{"kind": "llm_alias", "id": "f-sonnet"}])
@@ -488,7 +494,7 @@ def test_a_mention_rides_the_user_turn_only(tmp_path: Path):
     """Same rule the attached-file listing follows. A nudge carries no new user reference, and the
     block repeated on one reads as a second request for the same Resource."""
     orch, oc, _gw = _build(tmp_path, [
-        Turn(text="1. A table\n2. A chart"),
+        Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Here's how I'd approach it: first the schema, then the table."),  # nothing -> nudged
         Turn(text="Done.", writes={"src/App.tsx": "// v2\n"}),
@@ -517,9 +523,9 @@ def test_an_approved_plan_builds_even_when_the_classifier_would_gate(tmp_path: P
     asks it.
     """
     orch, oc, gateway = _build(tmp_path, [
-        Turn(text="a plan for the dashboard"),
+        Turn(text="# Dashboard\n\na plan for the dashboard"),
         Turn(writes={"src/App.tsx": "export default function App() { return <div>one</div> }\n"}),
-        Turn(text="a plan for the second tab"),
+        Turn(text="# Second Tab\n\na plan for the second tab"),
         Turn(writes={"src/Tab.tsx": "export function Tab() { return <div>two</div> }\n"}),
     ], verdict="PLAN")
     _get_built(orch)

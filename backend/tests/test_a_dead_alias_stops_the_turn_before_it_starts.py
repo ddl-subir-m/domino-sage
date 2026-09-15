@@ -163,7 +163,7 @@ def _error(events: list[dict]) -> str:
     return next(e["message"] for e in events if e["type"] == "error")
 
 
-PLAN = Turn(text="1. Add the table\n2. Wire up the data")
+PLAN = Turn(text="# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data")
 BUILD = Turn(writes={"src/App.tsx": "// the table\n"})
 
 

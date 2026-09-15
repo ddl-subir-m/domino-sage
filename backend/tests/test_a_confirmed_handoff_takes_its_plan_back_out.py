@@ -42,7 +42,7 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-_DESK = ("A desk exposure dashboard.\n\n"
+_DESK = ("# Desk Exposure Dashboard\n\nA desk exposure dashboard.\n\n"
          "## Plan\n"
          "1. **A desk table** — Show it.\n\n"
          "## Open questions\n"
@@ -99,7 +99,7 @@ def test_confirming_a_handoff_takes_the_archived_plan_back_out(tmp_path: Path):
 
     assert orch.read_plan_doc(plan_id)["archived"] is False
     app_id = orch.project(start_preview=False).workspace.app_id
-    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith("A desk exposure")
+    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith("# Desk Exposure Dashboard")
 
 
 def test_the_plan_the_builder_holds_is_still_the_one_edits_reach(tmp_path: Path):
