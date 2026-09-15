@@ -435,15 +435,22 @@ def test_the_glossary_holds_both_kinds():
         "Attach folder",
         "Build this again",
         "Collaborator",
+        "Data",
         "Delete",
+        "File volume",
         "Liveness",
         "Preflight",
         "Problem",
         "Remove",
         "Sovereign",
         "Stop using here",
+        "Tabular",
         "Try again",
         "Use in this conversation",
+        # A shape and a reach, and the reason they are words is that there is nothing to rename
+        # them to: a pack that calls a Dataset a Collection has not stopped it holding files
+        # (ADR-0053). Marked `name`, each would owe a key with nothing to put in it.
+        "connected",
     ]
 
 

@@ -70,12 +70,20 @@ window.SW = window.SW || {};
     {
       key: 'data',
       label: 'Data',
-      // Subgroup labels are templates, resolved where they are drawn: this list is built when the
-      // file is evaluated, which is before GET /api/brand has answered.
-      subgroups: [
-        { kind: 'dataset', label: '{datasetPlural}' },
-        { kind: 'datasource', label: '{dataSourcePlural}' },
-      ],
+      // One section for everything data-like, and the subheads name the SHAPE of what is under
+      // them rather than the Domino thing — File volume, Tabular (ADR-0053). The Domino noun moved
+      // to the row, where it sits beside the row's reach; a subhead per kind said the noun and had
+      // nowhere to say the rest.
+      //
+      // No labels here: `SW.util.dataTypeLabel` holds them, because the catalog's sidebar draws the
+      // same two words and two lists of them would be two places to forget.
+      subgroups: [{ kind: 'dataset' }, { kind: 'datasource' }],
+      // Both subheads are drawn whenever their rows are, even when only one kind is present. Under
+      // the rule below — name a subgroup only when a sibling also has rows — a Project holding just
+      // Datasets drew a list of them headed `Data`, and the same rows read as `Data / File volume`
+      // in the Project next door. The shape is a fact about the rows, not about what else is beside
+      // them.
+      namedSubgroups: true,
     },
     {
       key: 'model_llm',
@@ -327,6 +335,20 @@ window.SW = window.SW || {};
       ? `Used by ${used.length} ${used.length === 1 ? 'app' : 'apps'}`
       : resource.subtitle;
 
+    // What Domino calls this row, and whether the row reaches outside the Project. Data rows only,
+    // and it is the Data section's grouping that owes it (ADR-0053): the subhead above now names a
+    // SHAPE, so without this line nothing on the row says which Domino thing it is — the icon and
+    // the pack's noun were the only two, and one of them is an emoji.
+    //
+    // A line of its own rather than a prefix on `secondary`: that slot already answers a question
+    // somebody came to the panel with — "Required by Sales app" — and these facts must not push it
+    // off the end of a 320px rail. Composed here rather than in `SW.util` so the two words come
+    // from the two places that own them: the noun from the pack, the reach from the shared rule.
+    const meta = SW.util.dataTypeLabel(resource.kind)
+      ? SW.util.labelFor(resource.kind)
+        + (SW.util.isConnected(resource.kind) ? ` · ${SW.util.CONNECTED_WORD}` : '')
+      : null;
+
     return h(
       'div',
       {
@@ -394,6 +416,7 @@ window.SW = window.SW || {};
                 )
               )
           ),
+          meta && h('span', { className: 'sw-res-meta' }, meta),
           secondary &&
             h(
               Tooltip,
@@ -1003,7 +1026,7 @@ window.SW = window.SW || {};
           // it was written for: a kind that errored and has no rows left to hang it over.
           if (count === 0 && !listingError) return null;
           const isCollapsed = collapsed[group.key];
-          const named = items.filter((i) => i.rows.length).length > 1;
+          const named = group.namedSubgroups || items.filter((i) => i.rows.length).length > 1;
 
           return h(
             Fragment,
@@ -1027,11 +1050,15 @@ window.SW = window.SW || {};
                   ? h(
                       Fragment,
                       { key: sub.kind },
-                      sub.label && named &&
+                      SW.util.dataTypeLabel(sub.kind) && named &&
                         h(
                           'div',
                           { className: 'sw-res-subgroup' },
-                          h('span', { className: 'sw-group-label' }, SW.brand.text(sub.label))
+                          h(
+                            'span',
+                            { className: 'sw-group-label' },
+                            SW.util.dataTypeLabel(sub.kind)
+                          )
                         ),
                       subRows.map(rowFor)
                     )
