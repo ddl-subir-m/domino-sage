@@ -26,6 +26,15 @@ window.SW = window.SW || {};
     folder:           { icon: '📁', label: 'folder',         group: 'files' },
   };
 
+  // What a row in the Data section is called on screen, keyed by kind. Held beside RESOURCE_META
+  // rather than inside it: that map answers "what does Domino call this", which a pack renames, and
+  // this one answers "what is it", which a pack does not (ADR-0054).
+  const DATA_TYPES = { dataset: 'File volume', datasource: 'Data connection' };
+
+  // The icon each data kind draws, by name in the bundled set. Read lazily through `icons` so this
+  // map costs nothing at load and cannot depend on script order.
+  const DATA_ICONS = { dataset: 'HddOutlined', datasource: 'ApiOutlined' };
+
   // The Resource kinds that get a membership row of their own, in the UI id space. A Dataset file
   // and a warehouse table hang off one of these and have no row. The same four in Domino's own
   // spelling are `_MEMBERSHIP_PARENT_KINDS` in `sage/orchestrator/service.py`; `uiKind` below is
@@ -484,6 +493,31 @@ window.SW = window.SW || {};
 
     labelFor(kind) {
       return (RESOURCE_META[kind] || RESOURCE_META.file).label;
+    },
+
+    // What a data row is called on screen — `File volume`, `Data connection` — where that differs
+    // from what Domino calls it. Undefined for every other kind, which is also how a caller asks
+    // "is this a data row": a group's subhead and a catalogue row both key off it (ADR-0054).
+    //
+    // Words rather than names (ADR-0026): they say what a person is looking at rather than naming a
+    // Domino primitive, so there is nothing for a pack to rename them TO.
+    dataTypeLabel(kind) {
+      return DATA_TYPES[kind];
+    },
+
+    // The icon as a NODE, for the places that render one. `iconFor` stays the emoji and stays the
+    // answer in a string — a drawer title and a menu label both interpolate it, and an element in a
+    // template literal is the string `[object Object]`.
+    //
+    // The emoji fallback covers a kind with no entry in DATA_ICONS, and nothing else: `theme.js`
+    // proxies `window.icons` so that any capitalised name answers with a blank span, so a missing
+    // name — or a bundle that never loaded — draws nothing here rather than falling back. That is
+    // theme.js's deliberate policy for every icon on the page, not a gap in this one. What stops a
+    // typo reaching it is `test_a_data_row_draws_an_icon_the_bundle_actually_exports`.
+    iconNodeFor(kind) {
+      const name = DATA_ICONS[kind];
+      const glyph = name && typeof icons !== 'undefined' && icons[name];
+      return glyph ? h(glyph) : SW.util.iconFor(kind);
     },
 
     uiKind(kind) {

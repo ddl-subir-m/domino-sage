@@ -29,7 +29,9 @@ _Avoid_: primitive, composable piece, integration, connector
 
 **Data Source**:
 A Domino connector to an external store, such as Snowflake or BigQuery, usable by anyone
-holding permission on it.
+holding permission on it. On screen it sits in the [[Data]] section, where it is called a
+[[Data connection]] — the type a row wears, which does not rename this and which a pack does not
+rename either ([ADR-0054](docs/adr/0054-the-data-section-names-one-type-per-row.md)).
 _Kind_: name
 _Avoid_: database, connection, datasource (one word), data connector
 
@@ -60,10 +62,44 @@ _Avoid_: resource, data source, volume, Dataset (that is the thing; this is the 
 A Domino Dataset mounted into the project container, holding files. It is the one [[Asset]] a
 Project can hold, the one thing a [[Binding]] names that is not a Resource, and what an
 [[Upload]] is written into when it crosses and becomes an [[Attachment]]. The name is Domino's,
-so a pack renames it.
+so a pack renames it. On screen it sits in the [[Data]] section, where it is called a
+[[File volume]] — the type a row wears, never this name ([ADR-0054](docs/adr/0054-the-data-section-names-one-type-per-row.md)).
 _Kind_: name
-_Avoid_: volume, folder (that is a directory inside one), data source, Asset (that is the category
-this is in, not this)
+_Avoid_: volume on its own (Domino sells a thing called Volumes and this is not it — the type label
+is the two words [[File volume]]), folder (that is a directory inside one), data source, Asset (that
+is the category this is in, not this)
+
+**Data**:
+The one section both the [[Resource Browser]] and Browse Domino group every data-like thing under —
+today a [[Dataset]] or a [[Data Source]]. It is a section and not a kind: nothing is *a* Data. Its
+members are told apart by their type, which is [[File volume]] or [[Data connection]]
+([ADR-0054](docs/adr/0054-the-data-section-names-one-type-per-row.md)).
+_Kind_: word
+_Avoid_: Datasets or Data Sources as the section's name (the section holds both and claims neither),
+data resources, storage, sources
+
+**File volume**:
+The type of a data row that holds files: a [[Dataset]] today, and whatever else Domino mounts as
+files tomorrow. What a person is looking at rather than what Domino calls it, so no pack renames it
+— a pack that calls a Dataset a Collection has not stopped it holding files. Two words on purpose:
+Domino sells a product called Volumes, and *volume* alone is also this repo's word for the Project's
+own mounted directory.
+_Kind_: word
+_Avoid_: volume (both other meanings are live), files (that is the [[Upload]] section next door),
+file storage, blob, tabular (that is the other type, named for a shape this one is not)
+
+**Data connection**:
+The type of a data row that reaches a store outside the [[Project]]: a [[Data Source]] today. It
+names the reach and the thing together, because for every row that has this type the two are the
+same fact — a [[Data Source]] is the only kind Sage connects out to, and there is no data row that
+is connected and not one. That is true today and not by construction: a file-shaped connection —
+Domino sells those as External Data Volumes and NetApp volumes — would be reached over a connection
+and would still hold files, and the day Sage models one, this type and [[File volume]] both have a
+claim on it and the section needs a third answer (ADR-0054).
+_Kind_: word
+_Avoid_: Data Source as the type (that is the Domino name for the thing, and this is what the row
+calls it), connection on its own (that word is [[Resource]] reach, ADR-0001), tabular, connector,
+database
 
 **Domino Artifacts**:
 A separate Domino blob store, reachable at `/mnt/artifacts`, that Sage does not use. It is
