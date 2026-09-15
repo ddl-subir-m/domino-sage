@@ -77,7 +77,7 @@ from ..resources.provider import (
 )
 from ..resources.publish_guard import PublishRefused
 from ..resources.sensitivity import declared_turn_refusal_for_model
-from ..router.models import Mode, ModelCatalog, Phase
+from ..router.models import Mode, ModelCatalog, Phase, reasoning_efforts_with_tools
 from ..shim import keepalive as ka
 from ..shim import refusal_scan
 from ..workspace.threads import (
@@ -1682,15 +1682,17 @@ async def set_model(request: Request) -> JSONResponse:
         # Both halves of one act (ADR-0049) — the menu offers a level only under the model it
         # belongs to, so a `pick_effort` without its `pick` is not a thing the control can send.
         #
-        # Not validated here, unlike `chat_model` below, and the asymmetry is deliberate rather than
-        # an omission: `set_catalog` refuses a level its slot's model will not take because that one
-        # is written to `.sage/model_overrides.json`, shared with the Project and inherited by the
-        # next reader — a bad value there is a brick. A Build pick dies with this Sage Builder, and
-        # the send path already re-checks it against the measured table for the alias that actually
-        # resolves, dropping it with a logged line rather than letting the turn 400
-        # (`shim/enforcement.py`, the `dropping reasoning_effort=` branch). Validating here would
-        # cost a gateway listing per pick to reach the same answer one layer earlier.
-        project.control.pick(body["pick"], body.get("pick_effort"))
+        # Build carries tools. Validate explicit levels with the local resolver; stale stored
+        # selections are still checked and dropped on send (#284, #298).
+        pick, effort = body["pick"], body.get("pick_effort")
+        if effort in (None, "", "default"):
+            effort = None
+        elif not isinstance(pick, str) or effort not in reasoning_efforts_with_tools(pick):
+            accepted = reasoning_efforts_with_tools(pick) if isinstance(pick, str) else ()
+            return JSONResponse(status_code=400, content={"error":
+                f"{pick!r} does not accept the reasoning effort {effort!r} beside tools; "
+                f"it accepts {', '.join(accepted) or 'no effort'}"})
+        project.control.pick(pick, effort)
     if "chat_model" in body:
         try:
             orchestrator.set_chat_pick(body.get("chat_model"), body.get("reasoning_effort"))

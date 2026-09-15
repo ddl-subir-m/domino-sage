@@ -162,6 +162,7 @@ from ..router.models import (
     Reason,
     SessionState,
     reasoning_efforts_for,
+    reasoning_efforts_with_tools,
     signing_slot,
 )
 from ..shim.enforcement import EnforcementShim
@@ -6079,11 +6080,12 @@ class Orchestrator:
         caps = alias.get("capabilities") or []
         if caps and "embeddings" in caps and "chat" not in caps:
             raise ValueError(f"{model!r} is not a chat model")
-        efforts = alias.get("reasoning_efforts") or []
+        efforts = alias.get("reasoning_efforts_with_tools") or []
         if effort in ("", None, "default"):
             effort = None
         elif effort not in efforts:
-            raise ValueError(f"invalid reasoning_effort {effort!r}")
+            raise ValueError(f"invalid reasoning_effort {effort!r} for {model!r} beside tools; "
+                             f"it accepts {', '.join(efforts) or 'no effort'}")
         project.control.pick_chat(model, effort)
 
     def _hydrate_untitled(self, record: ProjectRecord) -> None:
@@ -15855,17 +15857,10 @@ class Orchestrator:
                     "capabilities": a.capabilities,
                     # Same reason as `capabilities` above: the row a slot names decides which
                     # efforts that slot may offer, and the join is here or it is a second copy of
-                    # the per-alias table on the panel's side (#280).
-                    #
-                    # Taken as it stands, with no `or alias_reasoning_efforts(a.name)` behind it.
-                    # Every LlmAlias is built carrying this field already narrowed (provider.py's
-                    # two construction sites), so such a fallback could only fire on the EMPTY
-                    # list — and empty is not "nobody filled it in", it is the verdict that the
-                    # gateway's published enum and the measured table have nothing in common.
-                    # Recomputing without the metadata there would answer the full measured list
-                    # and put back exactly the levels the narrowing just refused, which is the one
-                    # case `alias_reasoning_efforts` exists for.
-                    "reasoning_efforts": a.reasoning_efforts,
+                    # the per-alias table on the panel's side (#280). The drawer is a tool-carrying
+                    # assignment surface, so it reads the narrow twin below.
+                    "reasoning_efforts": list(reasoning_efforts_for(a.name)),
+                    "reasoning_efforts_with_tools": a.reasoning_efforts_with_tools,
                     "serving": (problem := alias_problem(a.name, aliases, endpoints)) is None,
                     "problem": problem,
                 }
@@ -15929,24 +15924,11 @@ class Orchestrator:
         # default it falls back to. An effort is legal against THAT, never against the model the row
         # used to hold.
         model = merged["model"] or getattr(self._catalog, slot)
-        # The measured table, not the alias record's `reasoning_efforts` the panel draws its menu
-        # from — ADR-0049 names the table for this check, and reading the record would put a gateway
-        # call on a write path, where an unreachable gateway would stop a person saving.
-        #
-        # The two agree on every alias here, because they differ only for an alias that has a
-        # published enum AND no row in the measured table — and `inference_params` is `{}` for every
-        # alias on this gateway, gpt-5.4 included (#284, read straight off /api/aliases).
-        #
-        # What that pair does when it does arrive is not "a menu with a bad option on it". With no
-        # row there is no intersection, so `alias_reasoning_efforts` passes the RAW enum through to
-        # the panel, while `reasoning_efforts_for` answers `()` — every level the control offers is
-        # refused here, and nothing on that row can be saved at all.
-        #
-        # So the lever is the table's coverage, not #284 landing: what closes it is probing that
-        # alias (scripts/reasoning-probe.py), not a change here. Re-read this if a row ever reports
-        # an effort it cannot save — either that alias needs a probe, or this check has to reach the
-        # same record the panel drew from.
-        accepted = reasoning_efforts_for(model)
+        # The local measured resolver, not the alias record's gateway metadata. Build assignments
+        # are for tool-carrying turns, so the write path uses the same tool-shaped choices the menu
+        # draws and the send path enforces. This stays local: a gateway listing outage must not stop
+        # a person saving a model row that can be validated from Sage's measured table.
+        accepted = reasoning_efforts_with_tools(model)
         if merged["effort"] and merged["effort"] not in accepted:
             # "Did this call CHANGE the effort", not "did it mention one". A drawer that PUTs the
             # whole row on a model change echoes the effort it was already showing, and that is the
@@ -16104,6 +16086,15 @@ class Orchestrator:
         ever has to be dropped and the 409 left as the only teacher.
         """
         rows = self.project(start_preview=False).record.read_project_resources()
+        # Persisted effort lists can outlive a probe result. Resolve on read without a gateway call
+        # or a write to the working set; model identity and cached capabilities stay intact (#284).
+        rows = [
+            {**row,
+             "reasoning_efforts": list(reasoning_efforts_for(row["alias"])),
+             "reasoning_efforts_with_tools": list(reasoning_efforts_with_tools(row["alias"]))}
+            if row.get("kind") in ("llm_alias", "model_llm") and isinstance(row.get("alias"), str) else row
+            for row in rows
+        ]
         scanned = self._app_bindings() if rows else []
         # `store.list()` reads live Threads only, so a deleted conversation's chips — which stay on
         # disk under its tombstone — hold nothing back here, matching the removal guard's own rule.
@@ -16954,18 +16945,9 @@ class Orchestrator:
                 "description": a.description,
                 "capabilities": a.capabilities,
                 "costs": a.costs,
-                # Taken as it stands, for the reason the same field in `model_assignments` is
-                # (#281, #291): every LlmAlias arrives with this already narrowed, so a fallback
-                # behind it could only fire on the EMPTY list — and empty is the verdict that the
-                # gateway's enum and the measured table are disjoint, not an unfilled field.
-                # Recomputing there would offer the full measured table to the one alias whose
-                # every advertised level was probed and refused.
-                "reasoning_efforts": a.reasoning_efforts,
-                # The same list narrowed to what survives beside function tools (#295, ADR-0049).
-                # Beside the wide one rather than replacing it: Chat's chip offers the enum and
-                # Build's menu offers this, because every Build turn carries tools and the send path
-                # enforces exactly this narrowing. Derived on `LlmAlias`, so it cannot drift from the
-                # list above it and no producer has to remember it.
+                # Resolve locally so stale alias rows cannot restore unsupported choices (#284).
+                "reasoning_efforts": list(reasoning_efforts_for(a.name)),
+                # Chat, Build and assignment controls carry tools and read this list (#298).
                 "reasoning_efforts_with_tools": a.reasoning_efforts_with_tools,
             }
             for a in self._resources.list_llm_aliases()

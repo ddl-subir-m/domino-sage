@@ -3766,7 +3766,7 @@ window.SW = window.SW || {};
           // for the same reason the model itself is written here rather than waited for: a reload
           // that never lands must not leave the row offering a level the save has already taken off
           // disk. This is the one prediction on the path — it reads the panel's own
-          // `reasoning_efforts`, the server's narrowed answer for that alias rather than a second
+          // `reasoning_efforts_with_tools`, the server's local answer for that alias rather than a second
           // copy of the measured table (ADR-0049) — and the reload overwrites it either way.
           // Clearing the model clears the whole entry, level included.
           //
@@ -3786,7 +3786,7 @@ window.SW = window.SW || {};
             // panel today, because the row's options are the listing and an empty listing closes
             // the row — delete it if a path ever assigns a model from somewhere else.
             if (!alias) return r.effort;
-            return (alias.reasoning_efforts || []).includes(r.effort) ? r.effort : null;
+            return (alias.reasoning_efforts_with_tools || []).includes(r.effort) ? r.effort : null;
           };
           state.assignments = {
             ...state.assignments,

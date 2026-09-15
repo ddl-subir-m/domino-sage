@@ -89,8 +89,9 @@ class ModelControl:
         as a value the send path drops with a `dropping reasoning_effort=` line naming nothing —
         a log entry about a choice that was never made.
 
-        An unrecognised level is NOT normalised away, and that is the point of the route's comment:
-        it is stored, sent, and dropped by the measured table for the alias that actually resolves.
+        The HTTP route validates new explicit levels locally. This state holder keeps unrecognised
+        values from legacy or internal callers, so the measured send guard can drop a stale level
+        for the alias that actually resolves.
         The menu's `default` key is a MENU key — the browser resolves it to `None` before it sends —
         so it has no meaning here, and teaching this seam to recognise it would tie the router to a
         control's key encoding.

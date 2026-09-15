@@ -38,6 +38,11 @@ class Reason(str, Enum):
     SENSITIVITY = "sensitivity"
 
 
+class ReasoningEffortContext(str, Enum):
+    NO_TOOLS = "no-tools"
+    WITH_TOOLS = "with-tools"
+
+
 # Which gateway models accept OpenAI image_url content parts. Empirical, not advertised: verified by
 # sending a test image through the live Domino gateway on 2026-07-30 — sonnet/gpt-5.4/opus/
 # etan-opus-4.6 described it, bedrock-qwen3-coder returned HTTP 400 ("This model doesn't support the
@@ -134,19 +139,6 @@ REASONING_EFFORTS: dict[str, tuple[str, ...]] = {
 }
 
 
-def reasoning_efforts_for(model: ModelId) -> tuple[str, ...]:
-    """The efforts this alias was measured to accept; empty for one nobody has probed.
-
-    NOT the last word, and not a passthrough either. `alias_reasoning_efforts` lets an alias record
-    that advertises an enum choose which of these levels to offer, and narrows that enum by this
-    row — so a level here can be dropped by the gateway, and a level the gateway advertises but the
-    probe proved broken never reaches a picker. Read that function for the whole rule; it is two
-    sentences and this one cannot state it alone. Today the gateway publishes `{}` for every alias
-    (#284), so in practice this table answers by itself.
-    """
-    return REASONING_EFFORTS.get(model.rsplit("/", 1)[-1], ())
-
-
 # The subset of an alias's levels that survives when the request ALSO carries function tools. An
 # alias absent here keeps its whole row: a tool-carrying request is unremarkable to most aliases,
 # and defaulting to "narrower" is precisely the bug this table ends — the guard it replaced dropped
@@ -165,6 +157,27 @@ EFFORTS_WITH_TOOLS: dict[str, tuple[str, ...]] = {
 }
 
 
+def reasoning_effort_choices(
+    model: ModelId,
+    context: ReasoningEffortContext = ReasoningEffortContext.NO_TOOLS,
+) -> tuple[str, ...]:
+    """The local measured choices Sage may offer or send for this request shape.
+
+    The gateway's `inference_params` contains request defaults, not capability enums (#284).
+    It is not read here. Unknown aliases get no Sage effort control and no automatic
+    Sage-selected effort: a missing control costs a choice, while a wrong level can cost a turn.
+    """
+    alias = model.rsplit("/", 1)[-1]
+    if context is ReasoningEffortContext.WITH_TOOLS and alias in EFFORTS_WITH_TOOLS:
+        return EFFORTS_WITH_TOOLS[alias]
+    return REASONING_EFFORTS.get(alias, ())
+
+
+def reasoning_efforts_for(model: ModelId) -> tuple[str, ...]:
+    """The efforts this alias was measured to accept on a request with no function tools."""
+    return reasoning_effort_choices(model, ReasoningEffortContext.NO_TOOLS)
+
+
 def reasoning_efforts_with_tools(model: ModelId) -> tuple[str, ...]:
     """`reasoning_efforts_for`, narrowed to what the alias keeps on a tool-carrying request.
 
@@ -176,10 +189,7 @@ def reasoning_efforts_with_tools(model: ModelId) -> tuple[str, ...]:
     Never wider than the enum — a level here that `reasoning_efforts_for` does not offer would reach
     the wire on exactly the requests the alias refuses it on. The tests hold the two tables to that.
     """
-    alias = model.rsplit("/", 1)[-1]
-    if alias in EFFORTS_WITH_TOOLS:
-        return EFFORTS_WITH_TOOLS[alias]
-    return reasoning_efforts_for(model)
+    return reasoning_effort_choices(model, ReasoningEffortContext.WITH_TOOLS)
 
 
 @dataclass(frozen=True)
