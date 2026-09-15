@@ -3,7 +3,6 @@
 import json
 from pathlib import Path
 
-
 REPORT = Path(__file__).resolve().parents[2] / "docs/performance/2026-09-14-sage-only-acceptance.json"
 
 

@@ -24,20 +24,21 @@ REPO = Path(__file__).resolve().parents[2]
 BINARY = REPO / "node_modules" / ".bin" / "opencode"
 
 
-COMPLAINTS = "ticket,complaint,email\n" + "\n".join([
-    "A-1,Package arrived late,person0@example.invalid",
-    "A-2,Delivery driver went to the wrong door,person1@example.invalid",
-    "A-3,Tracking said delivered but it was missing,person2@example.invalid",
-    "A-4,Shipment was delayed for three days,person3@example.invalid",
-    "B-1,Item arrived broken,person4@example.invalid",
-    "B-2,The box was crushed and the product cracked,person5@example.invalid",
-    "B-3,Screen was scratched when I opened it,person6@example.invalid",
-    "B-4,One part was dented in transit,person7@example.invalid",
-    "C-1,I was charged twice,person8@example.invalid",
-    "C-2,The refund never posted,person9@example.invalid",
-    "C-3,Invoice shows the wrong tax,person10@example.invalid",
-    "C-4,Promo credit is missing from my bill,person11@example.invalid",
-]) + "\n"
+COMPLAINTS = (
+    "ticket,complaint,email\n"
+    "A-1,Package arrived late,person0@example.invalid\n"
+    "A-2,Delivery driver went to the wrong door,person1@example.invalid\n"
+    "A-3,Tracking said delivered but it was missing,person2@example.invalid\n"
+    "A-4,Shipment was delayed for three days,person3@example.invalid\n"
+    "B-1,Item arrived broken,person4@example.invalid\n"
+    "B-2,The box was crushed and the product cracked,person5@example.invalid\n"
+    "B-3,Screen was scratched when I opened it,person6@example.invalid\n"
+    "B-4,One part was dented in transit,person7@example.invalid\n"
+    "C-1,I was charged twice,person8@example.invalid\n"
+    "C-2,The refund never posted,person9@example.invalid\n"
+    "C-3,Invoice shows the wrong tax,person10@example.invalid\n"
+    "C-4,Promo credit is missing from my bill,person11@example.invalid\n"
+)
 
 
 def analysis_args(**over):
@@ -143,11 +144,12 @@ def test_bad_returned_ids_are_not_complete_output(tmp_path, bad):
 
 
 def test_missing_and_duplicated_source_ids_still_get_task_local_ids(tmp_path):
-    content = "ticket,complaint,email\n" + "\n".join([
-        "DUP,Package arrived late,one@example.invalid",
-        "DUP,Item arrived broken,two@example.invalid",
-        ",I was charged twice,three@example.invalid",
-    ]) + "\n"
+    content = (
+        "ticket,complaint,email\n"
+        "DUP,Package arrived late,one@example.invalid\n"
+        "DUP,Item arrived broken,two@example.invalid\n"
+        ",I was charged twice,three@example.invalid\n"
+    )
     calls = []
 
     def provider(request):
