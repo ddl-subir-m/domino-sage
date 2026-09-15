@@ -377,7 +377,9 @@ def test_the_end_of_turn_repair_rewrites_the_manifest_of_the_app_that_was_built(
     assert not (root / "apps" / first / ".sage" / "attachments.json").exists()
 
 
-_PHASED_PLAN = """A daily P&L report.
+_PHASED_PLAN = """# Daily P&L Report
+
+A daily P&L report.
 
 ## Plan
 

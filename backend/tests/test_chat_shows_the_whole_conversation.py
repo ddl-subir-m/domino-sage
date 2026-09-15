@@ -121,7 +121,7 @@ def test_a_build_turn_leaves_a_record_of_the_app_it_changed(tmp_path: Path):
     """`app_change` had a renderer, styles and a route, and nothing anywhere emitted one. The whole
     card was a drawing until a build turn started writing this."""
     orch = _orch(tmp_path, [
-        Turn(text="A dashboard."),  # the gate turn plans; writing here is a violation
+        Turn(text="# Desk Dashboard\n\nA dashboard."),  # the gate turn plans; writing here is a violation
         Turn(text="Built it.", writes={"src/App.tsx": "// built\n"}),
         Turn(text="Filtered it.", writes={"src/App.tsx": "// filtered\n"}),
     ])
@@ -144,7 +144,7 @@ def test_the_card_says_nothing_about_whether_the_app_is_published(tmp_path: Path
     """Publish state is a now-question. A six-week-old run carrying the answer it had then would
     tell the reader the app is unpublished long after somebody published it."""
     orch = _orch(tmp_path, [
-        Turn(text="A dashboard."),  # the gate turn plans; writing here is a violation
+        Turn(text="# Desk Dashboard\n\nA dashboard."),  # the gate turn plans; writing here is a violation
         Turn(text="Built it.", writes={"src/App.tsx": "// built\n"}),
     ])
     _built(orch)
@@ -158,7 +158,7 @@ def test_a_turn_that_changed_nothing_leaves_no_card(tmp_path: Path):
     """A question is not a change. The card is the receipt for work, and one after every turn would
     make the receipt worthless."""
     orch = _orch(tmp_path, [
-        Turn(text="A dashboard."),  # the gate turn plans; writing here is a violation
+        Turn(text="# Desk Dashboard\n\nA dashboard."),  # the gate turn plans; writing here is a violation
         Turn(text="Built it.", writes={"src/App.tsx": "// built\n"}),
         Turn(text="It uses Highcharts."),
     ])

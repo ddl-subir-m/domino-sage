@@ -37,7 +37,7 @@ from .fake_opencode import FakeOpenCode, Turn
 ARTIFACT = b"\x89PNG revenue by desk"
 
 _PLAN = (
-    "A desk exposure dashboard.\n\n"
+    "# Desk Exposure Dashboard\n\nA desk exposure dashboard.\n\n"
     "## Plan\n"
     "1. **Desk table** — Show notional by desk.\n\n"
     "## Open questions\n"
@@ -137,7 +137,7 @@ def test_a_confirmed_handoff_leaves_the_artifacts_readable_from_the_build_agents
     """The bug, end to end. Chat produces an Artifact, the handoff hands the implement turn a path
     that names it, and the turn runs in `apps/<appId>/` — so the assertion is the read the agent
     would do: same path, from that directory, same bytes."""
-    orch, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN),
+    orch, root = _orch(tmp_path, [Turn(text=_PLAN),
                                   Turn(text="Built it.", writes={"src/App.tsx": "// built\n"})])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a desk dashboard"))
@@ -157,7 +157,7 @@ def test_a_confirmed_handoff_leaves_the_artifacts_readable_from_the_build_agents
 def test_a_confirmed_handoff_does_not_link_other_threads_artifacts(tmp_path: Path):
     """The digest names `examples/<this Thread>/...`; the link must not make another Thread's
     `examples/<other Thread>/...` readable from the same app."""
-    orch, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN),
+    orch, root = _orch(tmp_path, [Turn(text=_PLAN),
                                   Turn(text="Built it.", writes={"src/App.tsx": "// built\n"})])
     tid = orch.create_thread()["id"]
     other = orch.create_thread()["id"]
@@ -180,9 +180,9 @@ def test_a_second_handoff_into_the_same_app_removes_the_first_threads_link(tmp_p
     Without this, the second digest is narrow but the app still has yesterday's symlink on disk, so
     the build agent can open `examples/<first Thread>/...` by exact path.
     """
-    orch, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_PLAN),
+    orch, root = _orch(tmp_path, [Turn(text=_PLAN),
                                   Turn(text="Built first.", writes={"src/App.tsx": "// first\n"}),
-                                  Turn(text="Another dashboard."), Turn(text=_PLAN),
+                                  Turn(text=_PLAN),
                                   Turn(text="Built second.", writes={"src/App.tsx": "// second\n"})])
     first = orch.create_thread()["id"]
     second = orch.create_thread()["id"]

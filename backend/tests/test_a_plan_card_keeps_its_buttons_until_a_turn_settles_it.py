@@ -281,7 +281,7 @@ def test_a_build_turn_that_can_write_carries_no_read_only_mark(tmp_path: Path):
     gated turn is read-only: without that the change request comes back `gate violated` and the mark
     it carries is the honest one."""
     orch, _oc = _build(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="# Desk Dashboard\n\nA dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Done.", writes={"src/App.tsx": "// v2, sortable\n"}),
     ])
