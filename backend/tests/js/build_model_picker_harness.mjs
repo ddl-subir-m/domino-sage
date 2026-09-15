@@ -432,7 +432,8 @@ for (const step of steps) {
         ? { dataset: locked.map((n) => ({ id: `dataset:ds_${n}`, name: n, declared: true })) }
         : {}),
       ...(step.resourceAliases
-        ? { model_llm: step.resourceAliases === 'legacy' ? LEGACY_MEMBER_ROWS() : MEMBER_ROWS() }
+        ? { model_llm: Array.isArray(step.resourceAliases) ? step.resourceAliases
+          : step.resourceAliases === 'legacy' ? LEGACY_MEMBER_ROWS() : MEMBER_ROWS() }
         : {}),
     },
     bindings: step.declaredIn === 'binding' ? held.map(byName) : [],
@@ -457,7 +458,10 @@ for (const step of steps) {
   const button = pickerButton(before);
   const chatEffortDropdown = find(before, (n) => n.t === 'Dropdown' && n.p.menu
     && n.p.menu.items.some((i) => i.key === 'default'));
+  const chatModelMenu = chatMount && find(before, (n) => n.t === 'Dropdown' && n.p.menu
+    && n.p.menu.items.some((i) => i.key === step.chatModel));
   const row = {
+    chatModelKeys: chatModelMenu ? chatModelMenu.p.menu.items.map((i) => i.key) : [],
     step: step.pick ? `${step.mode} → pick ${step.pick}` : step.mode,
     // Every child key drawn anywhere in the menu, so a DUPLICATE is visible. Two items sharing a
     // key is something no `selectedKeys` assertion can see — Ant marks one of them and the other is
