@@ -115,7 +115,7 @@ def _workspace(orch: Orchestrator):
     return orch.project(start_preview=False).workspace
 
 
-PLAN = Turn(text="1. Add the table\n2. Wire up the data")
+PLAN = Turn(text="# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data")
 
 
 def test_a_build_that_hits_a_gateway_error_keeps_the_plan_it_never_built(tmp_path: Path):
@@ -201,7 +201,10 @@ def test_a_retry_that_fails_again_can_still_be_retried(tmp_path: Path):
 def test_try_again_at_a_plan_awaiting_approval_still_plans(tmp_path: Path):
     """The other reading of the same two words, and the reason the flag exists rather than the
     phrase alone: a plan nobody approved has nothing to retry, so "try again" asks for a new one."""
-    orch, _oc = _build(tmp_path, [PLAN, Turn(text="1. Add a chart\n2. Wire up the data")])
+    orch, _oc = _build(tmp_path, [
+        PLAN,
+        Turn(text="# Chart Dashboard\n\n## Plan\n1. Add a chart\n2. Wire up the data"),
+    ])
 
     list(orch.build_stream("build me a consumption dashboard"))
     events = list(orch.build_stream("try again"))
@@ -252,7 +255,9 @@ def test_a_retry_typed_in_implement_mode_still_builds_the_approved_plan(tmp_path
 # redo work that is already there, and each redone phase would be editing files the first attempt
 # wrote. So the retry resumes at the phase that broke.
 
-PHASED_PLAN = """A dashboard for exploring trades.
+PHASED_PLAN = """# Trades Dashboard
+
+A dashboard for exploring trades.
 
 ## Plan
 
@@ -370,7 +375,7 @@ def _phased_run_replaced_by_a_new_request(tmp_path: Path):
         _writes("src/data.ts"),              # 2. phase 1 — lands
         _writes("src/Table.tsx"),            # 3. phase 2, first attempt — gateway dies
         _writes("src/Table.tsx"),            # 4. phase 2, _run_step's own retry — dies too
-        Turn(text="1. A risk heatmap\n2. Wire up data"),   # 5. the replacement plan
+        Turn(text="# Risk Heatmap\n\n## Plan\n1. A risk heatmap\n2. Wire up data"),
     ], break_on={3, 4}, phased=True)
 
 

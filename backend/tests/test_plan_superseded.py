@@ -49,16 +49,17 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-def _plan(title: str, step: str) -> str:
-    return (f"{title}\n\n"
+def _plan(title: str, step: str, *, name: str) -> str:
+    return (f"# {name}\n\n"
+            f"{title}\n\n"
             "## Plan\n"
             f"1. **{step}** — Show it.\n\n"
             "## Open questions\n"
             "- None, ready to build.\n")
 
 
-_DESK = _plan("A desk exposure dashboard.", "Desk table")
-_BURNDOWN = _plan("A burndown chart.", "Burndown")
+_DESK = _plan("A desk exposure dashboard.", "Desk table", name="Desk Exposure Dashboard")
+_BURNDOWN = _plan("A burndown chart.", "Burndown", name="Burndown Chart")
 _NOTHING_EXTRA = {"resources": False, "artifacts": False, "transcript": False}
 
 
@@ -125,8 +126,9 @@ def test_a_second_conversation_archives_the_first_live_plan_rather_than_overwrit
 
     archived = sorted(_plans_dir(root, app_id).glob("*.md"))
     assert [p.name for p in archived] == ["001-superseded.md"]
-    assert archived[0].read_text().startswith("A desk exposure")
-    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith("A burndown")
+    assert archived[0].read_text().startswith("# Desk Exposure Dashboard")
+    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith(
+        "# Burndown Chart")
 
 
 def test_a_superseded_plan_is_not_what_the_app_was_built_from(tmp_path: Path):
@@ -138,7 +140,7 @@ def test_a_superseded_plan_is_not_what_the_app_was_built_from(tmp_path: Path):
     # "draft", not "awaiting": the pin now carries the live document's own status rather than a
     # blanket "not built yet", and nobody has reviewed this one.
     assert orch.read_plan_pin()["status"] == "draft"
-    assert orch.read_plan_pin()["markdown"].startswith("A burndown")
+    assert orch.read_plan_pin()["markdown"].startswith("# Burndown Chart")
 
 
 # ---- the earlier document survives, and says what happened to it --------------------------
@@ -210,8 +212,10 @@ def test_planning_into_a_different_built_app_leaves_the_first_apps_plan_alone(tm
     second = orch.create_thread()["id"]
     _gate_in_build(orch, "build me a burndown chart", second)
 
-    assert (root / "apps" / app_a / ".sage" / "plan.md").read_text().startswith("A desk exposure")
-    assert (root / "apps" / app_b / ".sage" / "plan.md").read_text().startswith("A burndown")
+    assert (root / "apps" / app_a / ".sage" / "plan.md").read_text().startswith(
+        "# Desk Exposure Dashboard")
+    assert (root / "apps" / app_b / ".sage" / "plan.md").read_text().startswith(
+        "# Burndown Chart")
     assert not _plans_dir(root, app_a).exists()
     assert orch.read_plan_doc("001")["status"] == "draft"
 
@@ -249,7 +253,8 @@ def test_a_chat_handoff_into_an_app_whose_plan_awaits_approval_supersedes_it(tmp
     orch.confirm_handoff(chat, _NOTHING_EXTRA, {"appId": app_id})
 
     assert [p.name for p in sorted(_plans_dir(root, app_id).glob("*.md"))] == ["001-superseded.md"]
-    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith("A burndown")
+    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith(
+        "# Burndown Chart")
     doc = orch.read_plan_doc("001")
     assert doc["status"] == "superseded"
     assert doc["supersededBy"] == "002"
@@ -272,7 +277,8 @@ needs_node = pytest.mark.skipif(shutil.which("node") is None,
 
 _PROPOSED = [
     {"type": "user", "text": "build me a desk exposure dashboard"},
-    {"type": "plan-proposed", "plan": "A desk exposure dashboard.", "kind": "plan",
+    {"type": "plan-proposed", "plan": "# Desk Exposure Dashboard\n\nA desk exposure dashboard.",
+     "kind": "plan",
      "planId": "001", "steps": 0},
     {"type": "done", "ok": True, "decision": "awaiting approval"},
 ]
@@ -360,7 +366,8 @@ def test_confirming_the_same_handoff_twice_does_not_archive_its_own_plan(tmp_pat
     orch.confirm_handoff(chat, _NOTHING_EXTRA)
 
     assert not _plans_dir(root, app_id).exists()
-    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith("A desk exposure")
+    assert (root / "apps" / app_id / ".sage" / "plan.md").read_text().startswith(
+        "# Desk Exposure Dashboard")
     assert orch.read_plan_doc("001")["status"] == "draft"
 
 
@@ -377,7 +384,8 @@ def _desk_planned_in_chat_lands_after_a_burndown_planned_in_build(tmp_path: Path
     """Chat drafts first, Build plans second, Chat confirms third. The live plan is then the
     OLDER document, and the newer one is the superseded one."""
     orch, _oc, root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=_DESK),
-                                       Turn(text=_BURNDOWN), Turn(text=_plan("A rota.", "Rota"))])
+                                       Turn(text=_BURNDOWN),
+                                       Turn(text=_plan("A rota.", "Rota", name="Rota Planner"))])
     chat = orch.create_thread()["id"]
     list(orch.chat_stream(chat, "build me a desk exposure dashboard"))
     orch.draft_handoff_plan(chat)                       # 001, drafted first, no app yet
@@ -433,7 +441,7 @@ def test_the_plan_pin_names_the_document_the_live_plan_came_from(tmp_path: Path)
 
     pin = orch.read_plan_pin()
     assert pin["planId"] == "001"
-    assert pin["markdown"].startswith("A desk exposure")
+    assert pin["markdown"].startswith("# Desk Exposure Dashboard")
 
 
 def test_a_live_plan_with_no_document_behind_it_is_still_kept(tmp_path: Path):
@@ -451,4 +459,4 @@ def test_a_live_plan_with_no_document_behind_it_is_still_kept(tmp_path: Path):
     assert [p.name for p in archived] == ["001-superseded.md"]
     assert archived[0].read_text() == "An older plan nobody recorded.\n"
     assert (root / "apps" / workspace.app_id / ".sage" / "plan.md").read_text().startswith(
-        "A desk exposure")
+        "# Desk Exposure Dashboard")

@@ -40,16 +40,16 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-def _plan(title: str, step: str) -> str:
-    return (f"{title}\n\n"
+def _plan(title: str, step: str, *, name: str) -> str:
+    return (f"# {name}\n\n{title}\n\n"
             "## Plan\n"
             f"1. **{step}** — Show it.\n\n"
             "## Open questions\n"
             "None — ready to build.\n")
 
 
-_DESK = _plan("A desk exposure dashboard.", "Desk table")
-_PNL = _plan("A daily P&L report.", "P&L table")
+_DESK = _plan("A desk exposure dashboard.", "Desk table", name="Desk Exposure Dashboard")
+_PNL = _plan("A daily P&L report.", "P&L table", name="Daily P&L Report")
 
 
 @pytest.fixture(autouse=True)
@@ -128,8 +128,8 @@ def test_each_built_app_keeps_its_own_log_and_its_own_archive(tmp_path: Path):
 
     # Each app's plan card is in its own log and in no other.
     assert [r["type"] for r in _log(root, first)] == ["plan-proposed", "done"]
-    assert _log(root, first)[0]["plan"].startswith("A desk exposure dashboard.")
-    assert _log(root, second)[0]["plan"].startswith("A daily P&L report.")
+    assert _log(root, first)[0]["plan"].startswith("# Desk Exposure Dashboard")
+    assert _log(root, second)[0]["plan"].startswith("# Daily P&L Report")
 
 
 def test_the_agent_greps_its_own_apps_archive_and_not_another_apps(tmp_path: Path):

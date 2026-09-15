@@ -21,7 +21,9 @@ from sage.router.models import Mode, ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
 
-PHASED_PLAN = """A dashboard for exploring trades.
+PHASED_PLAN = """# Trades Dashboard
+
+A dashboard for exploring trades.
 
 ## Plan
 
@@ -42,7 +44,9 @@ PHASED_PLAN = """A dashboard for exploring trades.
 - Done when — Picking a currency narrows the visible rows.
 """
 
-PROSE_PLAN = """A dashboard for exploring trades.
+PROSE_PLAN = """# Trades Dashboard
+
+A dashboard for exploring trades.
 
 ## Plan
 1. **Data module** — Export sample rows.

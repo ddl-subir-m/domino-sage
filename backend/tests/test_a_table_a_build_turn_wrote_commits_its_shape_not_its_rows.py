@@ -131,7 +131,9 @@ def test_a_table_an_earlier_turn_wrote_is_not_decided_again(tmp_path: Path):
 
 # ---- the phased build, which owns its own commit ------------------------------------------------
 
-PLAN = """A dashboard for exploring the transactions file.
+PLAN = """# Transactions Dashboard
+
+A dashboard for exploring the transactions file.
 
 ## Plan
 

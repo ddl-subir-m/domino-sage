@@ -56,10 +56,10 @@ def _no_waiting(monkeypatch):
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
 
 
-_DESK = "A desk exposure dashboard.\n\n## Plan\n1. **Table** — Notional by desk.\n"
-_FILTER = "A desk exposure dashboard with a date filter.\n\n## Plan\n1. **Filter** — By date.\n"
-_CHART = "A desk exposure dashboard with a chart.\n\n## Plan\n1. **Chart** — Daily move.\n"
-_BURNDOWN = "A burndown chart.\n\n## Plan\n1. **Burndown** — Remaining by day.\n"
+_DESK = "# Desk Exposure Dashboard\n\nA desk exposure dashboard.\n\n## Plan\n1. **Table** — Notional by desk.\n"
+_FILTER = "# Desk Exposure Dashboard\n\nA desk exposure dashboard with a date filter.\n\n## Plan\n1. **Filter** — By date.\n"
+_CHART = "# Desk Exposure Dashboard\n\nA desk exposure dashboard with a chart.\n\n## Plan\n1. **Chart** — Daily move.\n"
+_BURNDOWN = "# Burndown Chart\n\nA burndown chart.\n\n## Plan\n1. **Burndown** — Remaining by day.\n"
 _NOTHING_EXTRA = {"files": [], "artifacts": [], "resources": []}
 
 CONVERSATION = "conv_desk"

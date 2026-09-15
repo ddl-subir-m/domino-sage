@@ -93,7 +93,7 @@ def _sent(oc) -> str:
 
 
 def test_a_build_turn_carries_its_conversations_chat(tmp_path: Path):
-    orch, oc = _orch(tmp_path, [Turn(text="1. Make the chart bigger")])
+    orch, oc = _orch(tmp_path, [Turn(text="# Revenue Dashboard\n\n## Plan\n1. Make the chart bigger")])
     thread = _thread(orch)
     _said(orch, thread, "user", "which regions sell the most?")
     _said(orch, thread, "agent", "West leads. Here is a bar chart of revenue by region.")
@@ -110,7 +110,7 @@ def test_a_build_turn_carries_its_conversations_chat(tmp_path: Path):
 def test_the_background_is_framed_as_background(tmp_path: Path):
     """The preamble is not decoration. Without it a model reads the questions in a transcript as a
     backlog and starts answering them, on a turn that was asked for one change."""
-    orch, oc = _orch(tmp_path, [Turn(text="1. Sort it")])
+    orch, oc = _orch(tmp_path, [Turn(text="# Revenue Dashboard\n\n## Plan\n1. Sort it")])
     thread = _thread(orch)
     _said(orch, thread, "user", "also, can we add a churn forecast?")
 
@@ -121,7 +121,7 @@ def test_the_background_is_framed_as_background(tmp_path: Path):
 
 def test_it_is_the_compaction_modules_summary(tmp_path: Path):
     """Not a second summariser living in the orchestrator: the block IS chat_compact's output."""
-    orch, oc = _orch(tmp_path, [Turn(text="1. Do it")])
+    orch, oc = _orch(tmp_path, [Turn(text="# Revenue Dashboard\n\n## Plan\n1. Do it")])
     thread = _thread(orch)
     _said(orch, thread, "user", "chart the revenue")
     _said(orch, thread, "agent", "Done — revenue by region.")
@@ -133,7 +133,7 @@ def test_it_is_the_compaction_modules_summary(tmp_path: Path):
 
 
 def test_build_chat_context_does_not_restore_withheld_file_values(tmp_path: Path):
-    orch, oc = _orch(tmp_path, [Turn(text="1. Do it")])
+    orch, oc = _orch(tmp_path, [Turn(text="# Revenue Dashboard\n\n## Plan\n1. Do it")])
     thread = _thread(orch)
     _said(orch, thread, "agent", "raw.csv included J Doe,222-33-4444.")
     _store(orch).append_history(
@@ -155,7 +155,7 @@ def test_the_summary_is_rebuilt_on_every_turn(tmp_path: Path):
     """The whole point of the ticket. A digest written at the crossing cannot contain a chart
     discussed after it; a summary rebuilt per turn can."""
     orch, oc = _orch(tmp_path, [
-        Turn(text="1. **Table** — Show it."),
+        Turn(text="# Revenue Dashboard\n\n## Plan\n1. **Table** — Show it."),
         Turn(text="Built it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Sorted it.", writes={"src/App.tsx": "// v2\n"}),
     ])
@@ -174,7 +174,7 @@ def test_the_summary_is_rebuilt_on_every_turn(tmp_path: Path):
 def test_a_conversation_with_no_chat_turns_adds_no_section(tmp_path: Path):
     """Typed straight into Build. There is nothing to say, so nothing is said — an empty heading
     would be one more thing for the agent to read and account for."""
-    orch, oc = _orch(tmp_path, [Turn(text="1. Add a table")])
+    orch, oc = _orch(tmp_path, [Turn(text="# Revenue Dashboard\n\n## Plan\n1. Add a table")])
     thread = _thread(orch)
 
     _build(orch, "build me a dashboard", conversation=thread)
@@ -187,7 +187,7 @@ def test_a_conversation_with_no_chat_turns_adds_no_section(tmp_path: Path):
 def test_a_turn_with_no_conversation_still_builds(tmp_path: Path):
     """The CLI and the tests pass no conversation. There is no Chat to attribute, and the turn is
     not the place to find that out."""
-    orch, oc = _orch(tmp_path, [Turn(text="1. Add a table")])
+    orch, oc = _orch(tmp_path, [Turn(text="# Revenue Dashboard\n\n## Plan\n1. Add a table")])
 
     _build(orch, "build me a dashboard")
 
@@ -201,7 +201,7 @@ def test_two_conversations_driving_one_app_each_get_their_own(tmp_path: Path):
     """Keyed on the Conversation that drove the turn, never on the Built App. Keyed on the app, the
     second Conversation would resolve "that chart" against a chart it had never seen (#73)."""
     orch, oc = _orch(tmp_path, [
-        Turn(text="1. **Table** — Show it."),
+        Turn(text="# Revenue Dashboard\n\n## Plan\n1. **Table** — Show it."),
         Turn(text="Built it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Changed it.", writes={"src/App.tsx": "// v2\n"}),
     ])
@@ -226,7 +226,8 @@ def test_two_conversations_driving_one_app_each_get_their_own(tmp_path: Path):
 def test_the_summary_does_not_grow_with_the_conversation(tmp_path: Path):
     """Ten times the transcript, the same size prompt. This is what makes the background affordable
     on every turn rather than once at the crossing."""
-    orch, oc = _orch(tmp_path, [Turn(text="1. Do it"), Turn(text="1. Do it")])
+    orch, oc = _orch(tmp_path, [Turn(text="# Revenue Dashboard\n\n## Plan\n1. Do it"),
+                               Turn(text="# Revenue Dashboard\n\n## Plan\n1. Do it")])
     long, longer = _thread(orch), _thread(orch)
     for i in range(60):
         _said(orch, long, "user", f"question {i} about the quarterly revenue numbers")

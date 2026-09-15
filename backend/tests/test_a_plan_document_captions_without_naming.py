@@ -31,9 +31,6 @@ UNNAMED = ("A desk exposure dashboard for exploring notional by desk, book and t
            "## Plan\n1. **A desk table** — Show notional by desk.\n")
 NAMED = ("# Desk Exposure\n\nA desk exposure dashboard.\n\n"
          "## Plan\n1. **A desk table** — Show notional by desk.\n")
-# What `plan_title` makes of UNNAMED's first line, and what a card should still show.
-CAPTION = "A desk exposure dashboard for exploring notional by desk, book and trader."
-
 NOTHING_EXTRA = {"resources": False, "artifacts": False, "transcript": False}
 CONVERSATION = "conv_build"
 
@@ -85,9 +82,12 @@ def _orch(tmp: Path, turns: list[Turn]) -> tuple[Orchestrator, ScriptedGateway, 
     return orch, gateway, root
 
 
-def _handed_off(tmp: Path, plan_md: str) -> Orchestrator:
+def _handed_off(tmp: Path, plan_md: str, repair: str | None = None) -> Orchestrator:
     """A plan drafted in Chat and confirmed into a NEW app, which is the door `_open_app` names."""
-    orch, _gateway, _root = _orch(tmp, [Turn(text="A dashboard, then."), Turn(text=plan_md)])
+    turns = [Turn(text="A dashboard, then."), Turn(text=plan_md)]
+    if repair is not None:
+        turns.append(Turn(text=repair))
+    orch, _gateway, _root = _orch(tmp, turns)
     thread = orch.create_thread()["id"]
     list(orch.chat_stream(thread, "build me a desk exposure dashboard"))
     orch.draft_handoff_plan(thread)
@@ -95,10 +95,13 @@ def _handed_off(tmp: Path, plan_md: str) -> Orchestrator:
     return orch
 
 
-def _gated(tmp: Path, plan_md: str) -> tuple[Orchestrator, Path, str]:
+def _gated(tmp: Path, plan_md: str, repair: str | None = None) -> tuple[Orchestrator, Path, str]:
     """A plan written by the Build gate, so the document is this app's live plan and an edit to it
     is copied back into the `plan.md` the ladder reads."""
-    orch, gateway, root = _orch(tmp, [Turn(text=plan_md)])
+    turns = [Turn(text=plan_md)]
+    if repair is not None:
+        turns.append(Turn(text=repair))
+    orch, gateway, root = _orch(tmp, turns)
     gateway.word = "BUILD"
     list(orch.build_stream("build me a desk exposure dashboard", conversation=CONVERSATION))
     app_id = orch.project(start_preview=False).workspace.app_id
@@ -108,13 +111,14 @@ def _gated(tmp: Path, plan_md: str) -> tuple[Orchestrator, Path, str]:
 # ---- a confirmed handoff ----------------------------------------------------------------------
 
 
-def test_a_handoff_from_an_unnamed_plan_leaves_the_new_app_a_placeholder(tmp_path: Path):
-    """`_open_app` writes the document's title into `displayName`, which is a stored name and not a
-    computed one — so a title seeded from the first line could not even be overtaken by a plan."""
-    workspace = _handed_off(tmp_path, UNNAMED).project(start_preview=False).workspace
+def test_a_handoff_from_an_unnamed_plan_repairs_the_new_apps_name(tmp_path: Path):
+    """The repair pass writes the missing name before `_open_app` stores it on the new app."""
+    workspace = _handed_off(tmp_path, UNNAMED, repair="Desk Exposure").project(
+        start_preview=False).workspace
 
-    assert workspace.display_name() == ""
-    assert _app_display_name(workspace) == "Draft app 1"
+    assert workspace.display_name() == "Desk Exposure"
+    assert _app_display_name(workspace) == "Desk Exposure"
+    assert workspace.read_plan().startswith("# Desk Exposure")
 
 
 def test_a_handoff_from_a_named_plan_gives_the_new_app_that_name(tmp_path: Path):
@@ -128,17 +132,16 @@ def test_a_handoff_from_a_named_plan_gives_the_new_app_that_name(tmp_path: Path)
 # ---- an edit to the plan page -------------------------------------------------------------------
 
 
-def test_editing_an_unnamed_plan_does_not_write_its_first_line_back_as_a_heading(tmp_path: Path):
-    """The round trip. Every edit renders the stored title back as `# <title>` and copies the
-    markdown into `plan.md`, so a title that was a sentence made the ladder read a heading."""
-    orch, plan_md, plan_id = _gated(tmp_path, UNNAMED)
-    assert _app_display_name(orch.project(start_preview=False).workspace) == "Draft app 1"
+def test_editing_a_repaired_plan_keeps_the_heading_the_planner_wrote(tmp_path: Path):
+    """The round trip keeps the repaired title instead of using the old opening sentence."""
+    orch, plan_md, plan_id = _gated(tmp_path, UNNAMED, repair="Desk Exposure")
+    assert _app_display_name(orch.project(start_preview=False).workspace) == "Desk Exposure"
 
     orch.patch_plan_doc(plan_id, {"summary": "A desk exposure dashboard, sorted by date."})
 
     assert "sorted by date" in plan_md.read_text()
-    assert not any(line.startswith("# ") for line in plan_md.read_text().splitlines())
-    assert _app_display_name(orch.project(start_preview=False).workspace) == "Draft app 1"
+    assert plan_md.read_text().startswith("# Desk Exposure")
+    assert _app_display_name(orch.project(start_preview=False).workspace) == "Desk Exposure"
 
 
 def test_editing_a_named_plan_keeps_the_heading_it_was_given(tmp_path: Path):
@@ -154,13 +157,138 @@ def test_editing_a_named_plan_keeps_the_heading_it_was_given(tmp_path: Path):
 # ---- and the card still has a face ---------------------------------------------------------------
 
 
-def test_an_unnamed_plan_is_still_captioned_by_its_first_line(tmp_path: Path):
-    """What the plan page and the plan list draw. The caption is unchanged — it is put on beside the
-    title instead of into it, so nothing downstream can mistake it for a name."""
-    orch, _plan_md, plan_id = _gated(tmp_path, UNNAMED)
+def test_a_repaired_plan_stores_the_heading_as_its_title(tmp_path: Path):
+    """The durable plan document gets the repaired name before the card appears."""
+    orch, _plan_md, plan_id = _gated(tmp_path, UNNAMED, repair="Desk Exposure")
 
-    assert orch.read_plan_doc(plan_id)["caption"] == CAPTION
-    assert [d["caption"] for d in orch.list_plan_docs()] == [CAPTION]
+    assert orch.read_plan_doc(plan_id)["title"] == "Desk Exposure"
+    assert orch.project(start_preview=False).record.read_plan_doc(plan_id)["title"] == "Desk Exposure"
+    assert [d["title"] for d in orch.list_plan_docs()] == ["Desk Exposure"]
+
+
+@pytest.mark.parametrize("repair", [
+    Turn(),
+    Turn(text="Dashboard"),
+    Turn(text="A desk exposure dashboard for traders"),
+    Turn(text="Desk Exposure\nHere is your app name."),
+    Turn(text="Desk Exposure."),
+    Turn(text="[Desk Exposure](https://x)"),
+    Turn(text="Desk <em>Exposure</em>"),
+    Turn(text="- Desk Exposure"),
+    Turn(text="Desk ~~Exposure~~"),
+    Turn(text="The Desk Dashboard"),
+    Turn(text="A Desk Dashboard"),
+    Turn(text="An Exposure Dashboard"),
+    Turn(error={"name": "APIError", "data": {"message": "planner unavailable"}}),
+])
+def test_direct_build_repair_failure_creates_no_plan_card(tmp_path: Path, repair: Turn):
+    orch, gateway, _root = _orch(tmp_path, [Turn(text=UNNAMED), repair])
+    gateway.word = "BUILD"
+
+    events = list(orch.build_stream("build me a desk exposure dashboard", conversation=CONVERSATION))
+
+    assert not any(e.get("type") == "plan-proposed" for e in events)
+    assert "repair couldn't name it" in next(e for e in events if e["type"] == "error")["message"]
+    assert next(e for e in events if e["type"] == "done")["decision"] == "plan title repair failed"
+    assert orch.list_plan_docs() == []
+    assert orch.project(start_preview=False).workspace.read_plan() is None
+    assert len(orch._oc_client.prompts) == 2
+
+
+@pytest.mark.parametrize("repair", [
+    Turn(),
+    Turn(text="Dashboard"),
+    Turn(text="A desk exposure dashboard for traders"),
+    Turn(text="Desk Exposure\nHere is your app name."),
+    Turn(text="[Desk Exposure](https://x)"),
+    Turn(text="Desk <em>Exposure</em>"),
+    Turn(text="- Desk Exposure"),
+    Turn(text="Desk ~~Exposure~~"),
+    Turn(text="The Desk Dashboard"),
+    Turn(text="A Desk Dashboard"),
+    Turn(text="An Exposure Dashboard"),
+    Turn(error={"name": "APIError", "data": {"message": "planner unavailable"}}),
+])
+def test_handoff_repair_failure_creates_no_planned_handoff(tmp_path: Path, repair: Turn):
+    orch, _gateway, _root = _orch(
+        tmp_path,
+        [Turn(text="A dashboard, then."), Turn(text=UNNAMED), repair],
+    )
+    thread = orch.create_thread()["id"]
+    list(orch.chat_stream(thread, "build me a desk exposure dashboard"))
+
+    with pytest.raises(ValueError, match="repair couldn't name it"):
+        orch.draft_handoff_plan(thread)
+
+    assert (orch.get_thread(thread)["handoff"] or {}).get("status") != "planned"
+    assert orch.list_plan_docs() == []
+    assert len(orch._oc_client.prompts) == 3
+
+
+@pytest.mark.parametrize("name", ["Desk Exposure", "Desk Exposure Dashboard", "Desk Risk Exposure Dashboard"])
+def test_direct_build_repairs_once_and_preserves_the_existing_plan(tmp_path: Path, name: str):
+    plan = "\n" + UNNAMED + "\n"
+    orch, gateway, _root = _orch(tmp_path, [Turn(text=plan), Turn(text=name)])
+    gateway.word = "BUILD"
+
+    events = list(orch.build_stream("build me a desk exposure dashboard", conversation=CONVERSATION))
+
+    proposed = next(e for e in events if e["type"] == "plan-proposed")
+    assert proposed["plan"] == f"# {name}\n\n" + plan.strip()
+    workspace = orch.project(start_preview=False).workspace
+    assert orch._app_row(workspace.app_id, workspace.app_id, {})["name"] == name
+    prompts = orch._oc_client.prompts
+    assert len(prompts) == 2
+    assert prompts[1]["agent"] == "sage-plan"
+    assert "Write only a 2-4 word app name" in prompts[1]["text"]
+    assert plan.strip() in prompts[1]["text"]
+
+
+def test_handoff_repairs_once_with_the_same_name_only_prompt(tmp_path: Path):
+    orch = _handed_off(tmp_path, UNNAMED, repair="Desk Exposure")
+
+    assert orch.project(start_preview=False).workspace.read_plan() == "# Desk Exposure\n\n" + UNNAMED.strip()
+    prompts = orch._oc_client.prompts
+    assert len(prompts) == 3
+    assert prompts[2]["agent"] == "sage-plan"
+    assert "Write only a 2-4 word app name" in prompts[2]["text"]
+    assert UNNAMED.strip() in prompts[2]["text"]
+
+
+def test_named_plans_do_not_run_a_repair_pass(tmp_path: Path):
+    direct, _plan_md, _plan_id = _gated(tmp_path / "direct", NAMED)
+    chat = _handed_off(tmp_path / "chat", NAMED)
+
+    assert len(direct._oc_client.prompts) == 1
+    assert len(chat._oc_client.prompts) == 2
+
+
+@pytest.mark.parametrize("path", ["direct", "handoff"])
+def test_a_failed_repair_call_reports_a_planning_error(tmp_path: Path, monkeypatch, path: str):
+    turns = [Turn(text=UNNAMED)] if path == "direct" else [
+        Turn(text="A dashboard, then."), Turn(text=UNNAMED),
+    ]
+    orch, gateway, _root = _orch(tmp_path, turns)
+    original = orch._run_sage_plan
+
+    def fail_repair(project, prompt, session):
+        if "Write only a 2-4 word app name" in prompt:
+            raise ValueError("model call failed: planner unavailable")
+        return original(project, prompt, session)
+
+    monkeypatch.setattr(orch, "_run_sage_plan", fail_repair)
+    if path == "direct":
+        gateway.word = "BUILD"
+        events = list(orch.build_stream("build me a desk dashboard", conversation=CONVERSATION))
+        assert not any(e.get("type") == "plan-proposed" for e in events)
+        assert "repair couldn't name it" in next(e for e in events if e["type"] == "error")["message"]
+    else:
+        thread = orch.create_thread()["id"]
+        list(orch.chat_stream(thread, "build me a desk dashboard"))
+        with pytest.raises(ValueError, match="repair couldn't name it"):
+            orch.draft_handoff_plan(thread)
+        assert (orch.get_thread(thread)["handoff"] or {}).get("status") != "planned"
+    assert orch.list_plan_docs() == []
 
 
 def test_a_plan_that_opens_on_a_section_is_captioned_the_way_the_plan_pin_captions_it(tmp_path):
@@ -170,18 +298,25 @@ def test_a_plan_that_opens_on_a_section_is_captioned_the_way_the_plan_pin_captio
     One document, two surfaces, and `refreshProjectPlan` sets them in one call so they cannot
     differ."""
     shapeless = "## Problem & outcome\n\nNo desk sees its exposure.\n\n## Plan\n1. **A table** — Show it.\n"
-    orch, _plan_md, plan_id = _gated(tmp_path, shapeless)
+    orch, _plan_md, plan_id = _gated(tmp_path, shapeless, repair="Desk Exposure")
 
-    assert orch.read_plan_doc(plan_id)["caption"] == "Problem & outcome"
-    assert orch.list_plan_docs()[0]["caption"] == "Problem & outcome"
+    assert orch.read_plan_doc(plan_id)["caption"] == "Desk Exposure"
+    assert orch.list_plan_docs()[0]["caption"] == "Desk Exposure"
 
 
-def test_the_title_a_caption_stands_in_for_is_not_stored(tmp_path: Path):
-    """The claim the whole change rests on: the record holds no name for a plan nobody named, so
-    the two readers that turn a stored title into a real one find nothing to turn — and the rename
-    box, which opens on `title`, does not offer a sentence back for one Enter."""
-    orch, _plan_md, plan_id = _gated(tmp_path, UNNAMED)
-    project = orch.project(start_preview=False)
+def test_a_repaired_plan_archives_with_the_app_heading(tmp_path: Path):
+    turns = [
+        Turn(text=UNNAMED),
+        Turn(text="Desk Exposure"),
+        Turn(writes={"src/App.tsx": "export default function App() { return null }\n"}),
+    ]
+    orch, gateway, _root = _orch(tmp_path, turns)
+    gateway.word = "BUILD"
+    list(orch.build_stream("build me a desk exposure dashboard", conversation=CONVERSATION))
+    events = list(orch.approve_stream(conversation=CONVERSATION))
 
-    assert project.record.read_plan_doc(plan_id)["title"] == ""
-    assert orch.read_plan_doc(plan_id)["title"] == ""
+    assert next(e for e in events if e["type"] == "done")["ok"] is True
+    archived = orch.project(start_preview=False).workspace.read_archived_plan() or ""
+    assert archived.startswith("# Desk Exposure")
+    workspace = orch.project(start_preview=False).workspace
+    assert orch._app_row(workspace.app_id, workspace.app_id, {})["name"] == "Desk Exposure"

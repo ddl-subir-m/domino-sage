@@ -140,12 +140,14 @@ def test_a_real_first_build_still_gets_its_plan_card(tmp_path: Path):
     so the ordinary path is what it is most likely to break."""
     orch, _oc = _build(tmp_path, [Turn(text=(
         "A desk dashboard.\n\n## Problem & outcome\nRisk cannot see notional by desk.\n\n"
-        "## Plan\n1. **Desk table** — Show notional by desk.\n"))])
+        "## Plan\n1. **Desk table** — Show notional by desk.\n")),
+        Turn(text="Desk Dashboard")])
 
     events = _run(orch, "build me a dashboard of notional by desk")
 
     assert _done(events)["decision"] == "awaiting approval"
     plan = next(e for e in events if e["type"] == "plan-proposed")
+    assert plan["plan"].startswith("# Desk Dashboard")
     assert "Desk table" in plan["plan"]
 
 
@@ -184,8 +186,10 @@ def test_a_built_app_is_not_offered_the_way_out(tmp_path: Path):
     shows something. The filler plan this issue is about needs a blank template to happen."""
     orch, oc = _build(tmp_path, [
         Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Desk Dashboard"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="A fix.\n\n## Plan\n1. **Guard rows** — Handle the undefined case.\n"),
+        Turn(text="Rows Fix"),
     ])
     list(orch.build_stream("build me a dashboard"))
     list(orch.approve_stream())
@@ -413,7 +417,10 @@ def test_a_gated_turn_does_not_take_the_earlier_plan_card_away(tmp_path: Path):
 def test_a_gated_turn_that_does_plan_still_replaces_the_earlier_card(tmp_path: Path):
     """What must survive dropping `plan-stale`: the old card still has to stop offering to build.
     `plan-proposed` is what does it, and it did all along."""
-    orch, _oc = _build(tmp_path, [Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n")])
+    orch, _oc = _build(tmp_path, [
+        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Desk Dashboard"),
+    ])
 
     assert "plan-proposed" in _kinds(_run(orch, "build me a dashboard", Mode.PLAN))
 
@@ -423,6 +430,7 @@ def test_a_build_turn_that_changes_the_app_still_marks_the_plan_stale(tmp_path: 
     clears the card and the app really did change under the plan, so the note is true."""
     orch, _oc = _build(tmp_path, [
         Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text="Desk Dashboard"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Done.", writes={"src/App.tsx": "// v2, sortable\n"}),
     ])
