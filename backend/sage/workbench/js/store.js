@@ -3616,7 +3616,7 @@ window.SW = window.SW || {};
       state.assignmentsLoading = true;
       notify();
       try {
-        const panel = await SW.api.modelAssignments();
+        const panel = await SW.api.modelAssignments((state.thread && state.thread.id) || '');
         state.assignments = panel;
         state.assignmentsError = panel.error || '';
         return true;

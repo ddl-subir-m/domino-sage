@@ -324,10 +324,13 @@ def test_the_lock_takes_the_shadow_off_a_row_it_has_already_moved():
     the lock has moved, "this model won't run" names the wrong cause and sends the reader to a slot
     that changes nothing while the lock holds. The row already says what runs, one line down.
 
-    Plan is assigned an APPROVED model first, so it is the row the lock has NOT moved — the shadow
-    has to survive there, or this would pass by suppressing the sentence everywhere."""
-    _, drawn = _drawn([{"set": ["plan", "opus"]}, {"signing": "implement", "sensitivity": _LOCKED}])
-    assert drawn["problems"] == [_SHADOW]
+    Plan is assigned an APPROVED model first, so the lock moves the pinned turn back onto Plan's own
+    model. That is the case this issue closes: the shadow still exists, but the pin did not decide."""
+    _, drawn = _drawn([{"set": ["plan", "opus"]}, {
+        "signing": "implement", "sensitivity": _LOCKED,
+        "pinDecided": {"plan": False, "ask": False},
+    }])
+    assert drawn["problems"] == []
     assert "This runs opus, not gpt-5.4." in drawn["details"]
 
 
@@ -337,7 +340,8 @@ def test_a_lock_that_closes_every_model_still_takes_the_shadow_off():
     and the row draws no "so this runs X" line. The lock still outranks the pin, so the pin's
     sentence is still false — gating on the substitute rather than on the lock would have let it
     back in at exactly that moment."""
-    (drawn,) = _drawn([{"signing": "implement", "sensitivity": _LOCKED_DEAD}])
+    (drawn,) = _drawn([{"signing": "implement", "sensitivity": _LOCKED_DEAD,
+                      "pinDecided": {"plan": False, "ask": False}}])
     assert drawn["problems"] == []
 
 
@@ -379,7 +383,8 @@ _PIN_MOVED = _lock(model="coder", chat_model="coder",
 # The measured case, built in the harness's own terms: the signing slot holds `gpt-5.4`, which the
 # lock bars, and `plan` holds an approved model of its own.
 _PIN_PAST_APPROVED = [{"set": ["implement", "gpt-5.4"]}, {"set": ["plan", "opus"]},
-                      {"signing": "implement", "sensitivity": _PIN_MOVED}]
+                      {"signing": "implement", "sensitivity": _PIN_MOVED,
+                       "pinDecided": {"plan": False, "ask": False}}]
 
 
 def test_a_row_holding_an_approved_model_still_says_where_its_turn_went():
@@ -426,14 +431,33 @@ _PIN_SURVIVES = [
 ]
 
 
-def test_a_row_the_pin_moved_says_it_once_and_not_twice():
-    """Two true sentences naming one model with two different remedies, where one sends the reader to
-    another row and the other starts the thing they came here to change. The row keeps the one that
-    answers what it runs — which is what the drop has always been for, and it stopped happening here
-    the moment `runs` outgrew `barredNow`."""
+def test_a_row_the_pin_moved_keeps_the_holders_remedy():
+    """The pin's own sentence carries the actionable cure: change the holder's model. It used to be
+    dropped on this row because `runs` was also drawn, which left the correct model visible and the
+    exit missing."""
     *_, drawn = _drawn(_PIN_SURVIVES)
     assert "This runs opus, not coder." in drawn["details"]
-    assert drawn["problems"] == []
+    assert drawn["problems"] == [
+        ("The implement model (opus) runs every Turn in this session, so this model won't run. "
+         "Change the implement model to switch."),
+        ("The implement model (opus) runs every Turn in this session, so this model only runs in "
+         "Chat. Change the implement model to switch."),
+    ]
+
+
+def test_a_pick_that_reselects_a_shadowed_rows_model_defeats_the_pin_sentence():
+    """The measured #302 case. Plan holds an approved model, Implement signs, and the live pick names
+    Plan's own model. The row correctly stays on that model, so the pin sentence would be false."""
+    _, drawn = _drawn([{"set": ["plan", "opus"]}, {
+        "signing": "implement",
+        "pick": "opus",
+        "pinDecided": {"plan": False, "ask": True},
+        "sensitivity": _lock(
+            picked=True, model="opus", chat_model="opus",
+            slot_models={"plan": "opus", "implement": "opus", "ask": "opus"}),
+    }])
+    assert _row(drawn, "Plan")["value"] == "opus"
+    assert not any("won't run" in p for p in drawn["problems"])
 
 
 def test_an_answer_that_no_rule_on_this_row_explains_is_not_drawn():
@@ -879,24 +903,15 @@ def test_the_pin_still_takes_the_row_from_a_dropped_one():
     assert any("runs every Turn in this session" in p for p in shadowed["problems"])
 
 
-def test_a_pinned_and_locked_row_draws_no_sentence_at_all():
-    """The corner this ranking cannot reach, caught rather than assumed. `model-assignments.js:288`
-    drops `problem` on `shadowed && (barredNow || runs)`, and both of those need the sensitivity
-    LOCK rather than the pin alone — so pin plus lock plus a malformed row is a row that says
-    nothing, which is the #289 fault itself surviving in a corner.
-
-    Here so that it is a measured, named residual with a failing test the day somebody fixes it,
-    instead of a silence nobody knows about. Reversing the ranking does not close it: the gate keys
-    on `shadowed`, not on what `problem` holds, so it would drop the other sentence instead. It
-    needs a field saying which KIND `problem` is, and `:288` keying on that.
-
-    The step beside it is the control: take the pin away and the same lock draws the sentence, so
-    this is the two rules compounding and not the lock alone."""
+def test_a_pinned_and_locked_row_keeps_the_pin_sentence_when_the_pin_decided():
+    """The field added by #302 closes this corner. The row still ranks the shadow over the unreadable
+    sentence, but the drawer no longer drops that shadow merely because a lock also holds. It asks
+    whether the server says the pin actually decided."""
     pinned_and_locked, locked_only = _drawn([
         {"unreadable": ["ask"], "signing": "implement", "sensitivity": _lock()},
         {"unreadable": ["ask"], "sensitivity": _lock()},
     ])
-    assert pinned_and_locked["problems"] == []
+    assert any("only runs in Chat" in p for p in pinned_and_locked["problems"])
     assert any("couldn't be read" in p for p in locked_only["problems"])
 
 
