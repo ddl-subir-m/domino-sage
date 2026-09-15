@@ -35,6 +35,10 @@ from sage.router.models import Mode, ModelCatalog, Phase
 from sage.shim.enforcement import EnforcementShim
 
 from .fake_opencode import FakeOpenCode, Turn
+from .test_build_says_which_model_it_will_run import _children
+from .test_build_says_which_model_it_will_run import _drawn as _composer_drawn
+from .test_the_model_panel_lets_a_person_choose import _drawn as _drawer_drawn
+from .test_the_model_panel_lets_a_person_choose import _effort_row
 
 # Real alias names, for the reason `test_an_effort_follows_the_model_that_runs` gives: the tables
 # that decide whether a level survives to the wire are keyed on the name the gateway spells, so a
@@ -64,6 +68,166 @@ ALIASES = [
 ]
 
 TOOLS = [{"function": {"name": "read"}}]
+
+
+@pytest.mark.parametrize("model", ["gpt-5.4", "gemini-3.7-flash", "sonnet", "unprobed"])
+@pytest.mark.parametrize("defaults", [{}, {"reasoning_effort": "medium"},
+    {"reasoning_effort": {"enum": ["minimal", "high"]}}])
+def test_local_choices_agree_across_three_controls_save_and_send(tmp_path, monkeypatch, model, defaults):
+    from sage.resources.provider import join_aliases
+    from sage.router.models import REASONING_EFFORTS, reasoning_efforts_with_tools
+
+    client, orch = _client(tmp_path, monkeypatch)
+    aliases = join_aliases({model}, [{"id": model, "name": model, "capabilities": ["chat"],
+                                    "inference_params": defaults}])
+    orch._resources = FakeResourceProvider(aliases)
+    listed = orch.list_llm_aliases()
+    expected = list(reasoning_efforts_with_tools(model))
+    assert aliases[0].reasoning_efforts == list(REASONING_EFFORTS.get(model, ()))
+    assert aliases[0].reasoning_efforts_with_tools == expected
+    assert listed[0]["reasoning_efforts"] == list(REASONING_EFFORTS.get(model, ()))
+    drawer_aliases = orch.model_assignments()["aliases"]
+    (drawer,) = _drawer_drawn([{"aliases": drawer_aliases,
+                              "seed": {"plan": {"model": model, "effort": None}}}])
+    control = _effort_row(drawer, "Plan")
+    assert ([o["value"] for o in control["options"][1:]] if control else []) == expected
+
+    browser_rows = [{**a, "alias": a["name"]} for a in listed]
+    (chat, build) = _composer_drawn([
+        {"mode": "plan", "chat": True, "chatModel": model, "aliases": browser_rows},
+        {"mode": "plan", "aliases": browser_rows,
+         "slots": {"implement": model}},
+    ])
+    assert ([i["key"] for i in chat["chatEffortItems"][1:]] if chat["chatEffortItems"] else []) == expected
+    children = _children(build, model) or []
+    assert [c["key"].split("::", 1)[1] for c in children[1:]] == expected
+
+    # Save has only tool-carrying surfaces; no-tools listing and send retain the wider choices.
+    for effort in [None, *REASONING_EFFORTS.get(model, ()), "minimal"]:
+        if effort is None or effort in expected:
+            _post(client, pick=None)
+            orch.set_catalog(plan={"model": model, "effort": effort})
+            sent = _sent(orch.project().control, orch.project().shim.catalog, tools=TOOLS)
+            assert sent["model"] == model
+            assert sent.get("reasoning_effort") == effort
+            orch.set_chat_pick(model, effort)
+            _post(client, pick=model, pick_effort=effort)
+            assert orch.project().control.snapshot().picked_effort == effort
+            sent = _sent(orch.project().control, orch.project().shim.catalog, tools=TOOLS)
+            assert sent["model"] == model
+            assert sent.get("reasoning_effort") == effort
+            chat_control = orch.project().control
+            token = chat_control.arm_chat("test-local-choices")
+            try:
+                # Chat's existing low floor still applies when the person selected no override.
+                chat_expected = effort if effort is not None else ("low" if "low" in expected else None)
+                assert _sent(chat_control, orch.project().shim.catalog, tools=TOOLS).get("reasoning_effort") == chat_expected
+            finally:
+                chat_control.disarm_chat(token)
+        else:
+            with pytest.raises(ValueError, match="does not accept"):
+                orch.set_catalog(plan={"model": model, "effort": effort})
+            with pytest.raises(ValueError, match="invalid reasoning_effort"):
+                orch.set_chat_pick(model, effort)
+            answer = client.post("/api/project/model", json={"pick": model, "pick_effort": effort})
+            assert answer.status_code == 400
+            assert "does not accept the reasoning effort" in answer.json()["error"]
+        control = ModelControl(mode=Mode.PLAN, phase=Phase.PLAN)
+        control.pick(model, effort)
+        sent = _sent(control, CATALOG)
+        assert sent.get("reasoning_effort") == (effort if effort in REASONING_EFFORTS.get(model, ()) else None)
+
+
+@pytest.mark.parametrize("echo_effort", [False, True])
+def test_a_shared_measured_effort_survives_a_cross_model_assignment(tmp_path, monkeypatch, echo_effort):
+    from sage.router import models
+
+    # The shipped tool rows are disjoint; inject a second measured row to test the shared-level case.
+    alias = "another-measured-alias"
+    monkeypatch.setitem(models.REASONING_EFFORTS, alias, ("max",))
+    monkeypatch.setitem(models.EFFORTS_WITH_TOOLS, alias, ("max",))
+    client, orch = _client(tmp_path, monkeypatch)
+    _post(client, pick=None)
+    orch.set_catalog(plan={"model": "gemini-3.7-flash", "effort": "max"})
+    orch.set_catalog(plan={"model": alias, "effort": "max"} if echo_effort else alias)
+    catalog = orch.project().shim.catalog
+    assert (catalog.plan, catalog.plan_effort) == (alias, "max")
+    assert orch.project().record.read_catalog_overrides()["plan"] == {"model": alias, "effort": "max"}
+    sent = _sent(orch.project().control, catalog, tools=TOOLS)
+    assert sent["model"] == alias
+    assert sent["reasoning_effort"] == "max"
+
+
+@pytest.mark.parametrize("kind", ["llm_alias", "model_llm"])
+def test_persisted_choices_are_resolved_locally_without_losing_the_model(tmp_path, monkeypatch, kind):
+    from sage.resources.provider import join_aliases
+
+    client, orch = _client(tmp_path, monkeypatch)
+    orch._resources = FakeResourceProvider(join_aliases({"gpt-5.4"}, [
+        {"id": "gpt", "name": "gpt-5.4", "capabilities": ["chat"], "inference_params": {}}]))
+    _post(client, pick=None)
+    orch.set_catalog(plan={"model": "gpt-5.4", "effort": "none"})
+    orch.set_chat_pick("gpt-5.4", "none")
+    assert _sent(orch.project().control, orch.project().shim.catalog, tools=TOOLS)["reasoning_effort"] == "none"
+    orch.add_project_resource({"id": "llm_alias:stale", "kind": kind, "name": "GPT",
+        "alias": "gpt-5.4", "capabilities": ["chat"],
+        "reasoning_efforts": ["high"], "reasoning_efforts_with_tools": ["high"]})
+    from sage.router import models
+    monkeypatch.setitem(models.REASONING_EFFORTS, "gpt-5.4", ())
+    monkeypatch.setitem(models.EFFORTS_WITH_TOOLS, "gpt-5.4", ())
+    # The persisted producer must work even when the alias listing is unavailable.
+    def offline():
+        raise AssertionError("persisted choices must not read the gateway")
+    monkeypatch.setattr(orch._resources, "list_llm_aliases", offline)
+    (row,) = orch.list_project_resources()
+    assert row["alias"] == "gpt-5.4"
+    assert row["capabilities"] == ["chat"]
+    assert row["reasoning_efforts"] == row["reasoning_efforts_with_tools"] == []
+    (chat,) = _composer_drawn([{"mode": "plan", "chat": True, "chatModel": row["alias"],
+                               "chatEffort": "none", "aliases": [row]}])
+    assert [i["key"] for i in chat["chatEffortItems"]] == ["default", "__stranded__"]
+    assert chat["chatEffortItems"][-1]["disabled"] is True
+    assert "not accepted" in chat["chatEffortLabel"]
+    assert "reasoning_effort" not in _sent(orch.project().control, orch.project().shim.catalog, tools=TOOLS)
+    token = orch.project().control.arm_chat("narrowed-effort")
+    try:
+        assert "reasoning_effort" not in _sent(orch.project().control, orch.project().shim.catalog, tools=TOOLS)
+    finally:
+        orch.project().control.disarm_chat(token)
+    assert orch.set_catalog(plan={"model": "gpt-5.4"}).plan_effort is None
+    assert orch.project().record.read_project_resources()[0]["reasoning_efforts_with_tools"] == ["high"]
+
+
+@pytest.mark.parametrize("effort", ["high", "default"])
+def test_stale_chat_effort_is_visible_as_unavailable(tmp_path, monkeypatch, effort):
+    _, orch = _client(tmp_path, monkeypatch)
+    orch._resources = FakeResourceProvider([LlmAlias("gpt", "gpt-5.4", "GPT", None, ["chat"], {})])
+    rows = [{**a, "alias": a["name"]} for a in orch.list_llm_aliases()]
+    (chat,) = _composer_drawn([{"mode": "plan", "chat": True, "chatModel": "gpt-5.4",
+                              "chatEffort": effort, "aliases": rows}])
+    assert [i["key"] for i in chat["chatEffortItems"]] == ["default", "none", "__stranded__"]
+    assert chat["chatEffortItems"][-1]["disabled"] is True
+    assert chat["chatEffortItems"][-1]["label"].endswith(" — not accepted")
+    assert "not accepted" in chat["chatEffortLabel"]
+    control = orch.project().control
+    control.pick_chat("gpt-5.4", effort)
+    token = control.arm_chat("stale-effort")
+    try:
+        assert "reasoning_effort" not in _sent(control, CATALOG, tools=TOOLS)
+    finally:
+        control.disarm_chat(token)
+
+
+def test_local_save_validation_does_not_read_gateway_aliases(tmp_path, monkeypatch):
+    client, orch = _client(tmp_path, monkeypatch)
+    def offline():
+        raise AssertionError("local save validation must not read the gateway")
+    monkeypatch.setattr(orch._resources, "list_llm_aliases", offline)
+    assert orch.set_catalog(plan={"model": "gpt-5.4", "effort": "none"}).plan_effort == "none"
+    with pytest.raises(ValueError, match="does not accept"):
+        orch.set_catalog(plan={"effort": "high"})
+    assert client.post("/api/project/model", json={"pick": "gpt-5.4", "pick_effort": "none"}).status_code == 200
+    assert client.post("/api/project/model", json={"pick": "gpt-5.4", "pick_effort": "high"}).status_code == 400
 
 
 def _sent(control: ModelControl, catalog: ModelCatalog, **request) -> dict:
@@ -162,21 +326,14 @@ def test_the_status_reports_the_level_beside_the_model(tmp_path: Path, monkeypat
     assert polled["picked_effort"] == "high"
 
 
-def test_an_unknown_level_is_not_refused_at_the_route(tmp_path: Path, monkeypatch):
-    """Deliberately unlike `set_chat_pick`, which raises, and unlike `set_catalog`, which refuses.
-
-    Those two write values that OUTLIVE the act: the catalog's lands in
-    `.sage/model_overrides.json`, shared with the Project and inherited by the next reader, so a
-    bad one is a brick. A Build pick dies with this Sage Builder, and the send path re-checks it
-    against the measured table for the alias that actually resolves — see the test below, where
-    the level never reaches the wire. Refusing here would cost a gateway listing per pick to reach
-    the same answer one layer earlier.
-    """
+def test_an_unknown_level_is_refused_locally_at_the_route(tmp_path: Path, monkeypatch):
+    """Direct callers get the same local validation as the tool-carrying menu (#284, #298)."""
     client, orch = _client(tmp_path, monkeypatch)
 
-    _post(client, pick="sonnet", pick_effort="not-a-level")
-
-    assert orch.project().control.snapshot().picked_effort == "not-a-level"
+    answer = client.post("/api/project/model", json={"pick": "sonnet", "pick_effort": "not-a-level"})
+    assert answer.status_code == 400
+    assert "it accepts no effort" in answer.json()["error"]
+    assert orch.project().control.snapshot().picked_effort is None
 
 
 # ---------------------------------------------------------------- what the menu may offer
@@ -184,8 +341,7 @@ def test_an_unknown_level_is_not_refused_at_the_route(tmp_path: Path, monkeypatc
 
 def test_an_alias_publishes_both_effort_lists_and_the_narrow_one_is_never_wider():
     """The server answers two questions because two are asked (#295, ADR-0049): which levels this
-    alias advertises, and which it keeps when the request also carries function tools. Chat's chip
-    reads the first, Build's menu the second, because every Build turn carries tools.
+    alias keeps without tools, and which it keeps beside tools. Chat and Build read the second.
 
     Derived on `LlmAlias` rather than passed in, so the eight places that build one cannot publish a
     narrow list that disagrees with the wide one beside it — and the ninth, added later, gets it for
@@ -213,21 +369,19 @@ def test_an_alias_publishes_both_effort_lists_and_the_narrow_one_is_never_wider(
         assert set(narrow) <= set(wide), name
 
 
-def test_an_unprobed_alias_keeps_the_enum_the_gateway_published():
-    """The trap in narrowing by intersection. `reasoning_efforts_with_tools(name)` answers the
-    whole measured row when an alias has no tool-shape entry — and for an alias nobody probed that
-    row is EMPTY, so intersecting against it would hide every level the gateway actually published.
+def test_an_unprobed_alias_gets_no_sage_effort_control():
+    """Unknown aliases get no Sage-selected effort.
 
-    So the narrowing reads the tool-shape table directly and returns the list untouched where there
-    is no row, which is the same default the table itself takes.
+    That keeps the Build menu, save validation and send path on one local answer. Passing a gateway
+    enum through here would offer levels that the local save path cannot validate.
     """
     from sage.resources.provider import LlmAlias, alias_efforts_with_tools
 
     published = ["low", "high"]
-    assert alias_efforts_with_tools("nobody-probed-this", published) == published
+    assert alias_efforts_with_tools("nobody-probed-this", published) == []
 
     unprobed = LlmAlias("id", "nobody-probed-this", "N", None, ["chat"], {}, None, published)
-    assert unprobed.reasoning_efforts_with_tools == published
+    assert unprobed.reasoning_efforts_with_tools == []
 
 
 def test_the_resources_listing_carries_both_lists(tmp_path: Path, monkeypatch):

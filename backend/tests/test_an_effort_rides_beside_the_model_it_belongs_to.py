@@ -95,8 +95,8 @@ def test_an_effort_survives_a_restart(tmp_path):
     # The assignment is the Project's and is shared with everyone in it, so it has to reach the file
     # and not only the live catalog — the same reason clearing does.
     orch = _orch(tmp_path)
-    orch.set_catalog(implement={"model": "gpt-5.4", "effort": "low"})
-    assert _orch(tmp_path).project().shim.catalog.implement_effort == "low"
+    orch.set_catalog(implement={"model": "gpt-5.4", "effort": "none"})
+    assert _orch(tmp_path).project().shim.catalog.implement_effort == "none"
 
 
 def test_each_slot_carries_its_own_effort(tmp_path):
@@ -107,6 +107,19 @@ def test_each_slot_carries_its_own_effort(tmp_path):
                      implement={"model": "gemini-3.7-flash", "effort": "low"})
     catalog = orch.project().shim.catalog
     assert (catalog.plan_effort, catalog.implement_effort) == ("max", "low")
+
+
+def test_build_assignment_rejects_a_level_the_model_drops_beside_tools(tmp_path):
+    """Build assignments are saved for tool-carrying turns, so save validation must ask the same
+    tool-shaped question the send path asks. `gpt-5.4` accepts High without tools, but drops it
+    beside tools; `none` is the one explicit level it keeps."""
+    orch = _orch(tmp_path)
+
+    with pytest.raises(ValueError, match="gpt-5.4 does not accept the reasoning effort 'high'"):
+        orch.set_catalog(plan={"model": "gpt-5.4", "effort": "high"})
+
+    orch.set_catalog(plan={"model": "gpt-5.4", "effort": "none"})
+    assert orch.project().shim.catalog.plan_effort == "none"
 
 
 # ---- the three cases, one field further in ----------------------------------------------------
@@ -130,7 +143,7 @@ def test_a_key_nobody_mentioned_is_not_a_key_somebody_cleared(tmp_path):
     orch.set_catalog(plan={"model": "gemini-3.7-flash", "effort": "high"})
     orch.set_catalog(plan={"effort": "low"})          # model absent
     assert orch.project().shim.catalog.plan == "gemini-3.7-flash"
-    orch.set_catalog(plan={"model": "gpt-5.4"})       # effort absent
+    orch.set_catalog(plan={"model": "gemini-3.7-flash"})       # effort absent
     assert orch.project().shim.catalog.plan_effort == "low"
 
 
@@ -147,10 +160,10 @@ def test_an_effort_alone_leaves_the_model_following_the_default(tmp_path):
     """A row may carry an effort while its model still follows the deployment default, so
     `assigned` — which has only ever been the model's word — must stay false for it."""
     orch = _orch(tmp_path)
-    orch.set_catalog(plan={"effort": "low"})
+    orch.set_catalog(plan={"effort": "none"})
     row = _slot(orch, "plan")
     assert (row["model"], row["assigned"]) == ("gpt-5.4", False)
-    assert row["effort"] == "low"
+    assert row["effort"] == "none"
 
 
 # ---- validity is per alias, and is measured ---------------------------------------------------
@@ -199,11 +212,11 @@ def test_changing_the_model_drops_an_effort_the_new_one_will_not_take(tmp_path):
     assert (catalog.plan, catalog.plan_effort) == ("sonnet", None)
 
 
-def test_an_effort_the_new_model_does_take_rides_along(tmp_path):
+def test_saving_the_same_model_keeps_its_supported_effort(tmp_path):
     orch = _orch(tmp_path)
-    orch.set_catalog(plan={"model": "gemini-3.7-flash", "effort": "low"})
+    orch.set_catalog(plan={"model": "gpt-5.4", "effort": "none"})
     orch.set_catalog(plan="gpt-5.4")
-    assert orch.project().shim.catalog.plan_effort == "low"
+    assert orch.project().shim.catalog.plan_effort == "none"
 
 
 def test_a_sovereign_slot_carries_no_effort_and_the_refusal_says_why(tmp_path):
@@ -284,11 +297,8 @@ def test_an_alias_row_carries_the_efforts_it_accepts(tmp_path):
     assert by_name["sonnet"]["reasoning_efforts"] == []
 
 
-def test_an_empty_effort_list_is_a_verdict_and_is_not_recomputed(tmp_path):
-    """Empty does not mean "nobody filled it in" — `alias_reasoning_efforts` returns it when the
-    gateway's published enum and the measured table have nothing in common, which is the exact case
-    it exists for. A fallback behind this field would answer the full measured list there and put
-    back the levels the narrowing just refused."""
+def test_the_assignment_payload_uses_the_local_resolver_not_a_stale_alias_row(tmp_path):
+    """A stale alias object must not make the menu disagree with save validation."""
     aliases = [LlmAlias("id-gemini", "gemini-3.7-flash", "Gemini 3.7 Flash", None, ["chat"], {},
                         reasoning_efforts=[])]
     orch = Orchestrator(
@@ -298,14 +308,12 @@ def test_an_empty_effort_list_is_a_verdict_and_is_not_recomputed(tmp_path):
     )
     orch.project(start_preview=False)
     row = next(a for a in orch.model_assignments()["aliases"] if a["name"] == "gemini-3.7-flash")
-    assert row["reasoning_efforts"] == []
+    assert row["reasoning_efforts"] == ["low", "medium", "high", "max"]
+    assert row["reasoning_efforts_with_tools"] == ["low", "medium", "high", "max"]
 
 
-def test_the_chat_picker_reads_the_same_verdict_rather_than_recomputing_it(tmp_path):
-    """The Chat picker holds a second copy of the idiom above (#291), and empty means there the
-    same thing it means in the panel: every level this alias advertises was probed and refused. The
-    two rows differ only for this alias shape — a narrowed list is the same either way — so the
-    empty one is the whole test."""
+def test_the_chat_picker_payload_uses_the_same_local_resolver(tmp_path):
+    """Chat and the assignment drawer get the same local choices from the server."""
     orch = Orchestrator(
         workspace_dir=tmp_path / "mnt" / "code", template=_template(tmp_path),
         gateway=FakeGatewayClient(), catalog=CATALOG, project_id="Sage",
@@ -317,34 +325,29 @@ def test_the_chat_picker_reads_the_same_verdict_rather_than_recomputing_it(tmp_p
         ]),
     )
     by_name = {a["name"]: a for a in orch.list_llm_aliases()}
-    assert by_name["gemini-3.7-flash"]["reasoning_efforts"] == []
-    assert by_name["gpt-5.4"]["reasoning_efforts"] == ["low"]
+    assert by_name["gemini-3.7-flash"]["reasoning_efforts"] == ["low", "medium", "high", "max"]
+    assert by_name["gemini-3.7-flash"]["reasoning_efforts_with_tools"] == [
+        "low", "medium", "high", "max"]
+    assert by_name["gpt-5.4"]["reasoning_efforts"] == ["none", "low", "medium", "high", "xhigh"]
+    assert by_name["gpt-5.4"]["reasoning_efforts_with_tools"] == ["none"]
 
 
-def test_an_effort_the_picker_does_not_offer_is_refused_rather_than_stored(tmp_path):
-    """`set_chat_pick` validates against that same list, so the verdict has to reach it too: an
-    alias narrowed to nothing takes no effort at all, rather than the four the measured table
-    holds."""
-    orch = Orchestrator(
-        workspace_dir=tmp_path / "mnt" / "code", template=_template(tmp_path),
-        gateway=FakeGatewayClient(), catalog=CATALOG, project_id="Sage",
-        resources=FakeResourceProvider([
-            LlmAlias("id-gemini", "gemini-3.7-flash", "Gemini 3.7 Flash", None, ["chat"], {},
-                     reasoning_efforts=[]),
-        ]),
-    )
-    orch.project(start_preview=False)
+def test_an_effort_the_tool_picker_does_not_offer_is_refused_rather_than_stored(tmp_path):
+    """Chat turns carry tools, so `gpt-5.4` takes explicit `none` but not High."""
+    orch = _orch(tmp_path)
     with pytest.raises(ValueError, match="invalid reasoning_effort"):
-        orch.set_chat_pick("gemini-3.7-flash", "max")
+        orch.set_chat_pick("gpt-5.4", "high")
+    orch.set_chat_pick("gpt-5.4", "none")
+    assert orch.project().control.snapshot().reasoning_effort == "none"
 
 
 def test_the_status_carries_each_slots_effort_beside_its_model(tmp_path):
     """Flat `<slot>_effort` keys, so every reader already keyed on `catalog.plan` keeps reading it."""
     orch = _orch(tmp_path)
-    orch.set_catalog(implement={"model": "gpt-5.4", "effort": "low"})
+    orch.set_catalog(implement={"model": "gpt-5.4", "effort": "none"})
     catalog = orch.project().status()["model"]["catalog"]
     assert catalog["implement"] == "gpt-5.4"
-    assert catalog["implement_effort"] == "low"
+    assert catalog["implement_effort"] == "none"
     assert catalog["plan_effort"] is None
 
 

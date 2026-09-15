@@ -39,8 +39,7 @@ const overrides = {};
 // Hosted GenAI Endpoint is stopped is listed anyway (#21) — which is the row the panel has to offer
 // and refuse at the same time.
 //
-// `reasoning_efforts` is the server's narrowed answer per Alias — the gateway's published enum cut
-// down by the measured table (`alias_reasoning_efforts`, #280) — and the rows here are the measured
+// Both effort lists are the server's local measured answers per Alias (#284), and these are measured
 // ones, so the fixture disagrees with the product in no direction that matters. The spread is the
 // point: gpt-5.4 and gemini accept DIFFERENT levels, which is the only way a row can be retargeted
 // at a model that will not take the level it is carrying; `coder` and `opus` accept none, which is
@@ -49,6 +48,7 @@ const ALIASES = [
   {
     name: 'gpt-5.4', display_name: 'GPT-5.4', capabilities: ['chat'], serving: true, problem: null,
     reasoning_efforts: ['none', 'low', 'medium', 'high', 'xhigh'],
+    reasoning_efforts_with_tools: ['none'],
   },
   {
     name: 'gemini-3.7-flash', display_name: 'Gemini 3.7 Flash', capabilities: ['chat'],
@@ -56,29 +56,28 @@ const ALIASES = [
     // `max` is here and `minimal` is not, which is the narrowing itself: the gateway advertises
     // both, and `minimal` 400s at Vertex, so the table takes it off before the panel ever sees it.
     reasoning_efforts: ['low', 'medium', 'high', 'max'],
+    reasoning_efforts_with_tools: ['low', 'medium', 'high', 'max'],
   },
   {
     name: 'coder', display_name: 'Qwen3 Coder', capabilities: ['chat'], serving: true,
-    problem: null, reasoning_efforts: [],
+    problem: null, reasoning_efforts: [], reasoning_efforts_with_tools: [],
   },
   {
     name: 'opus', display_name: 'Claude Opus', capabilities: ['chat'], serving: true,
-    problem: null, reasoning_efforts: [],
+    problem: null, reasoning_efforts: [], reasoning_efforts_with_tools: [],
   },
   {
     name: 'local-llm', display_name: 'Mistral (Domino-hosted)', capabilities: ['chat'],
-    serving: false, reasoning_efforts: [],
+    serving: false, reasoning_efforts: [], reasoning_efforts_with_tools: [],
     problem: 'This model is Stopped, so turns using it will fail. Start that endpoint, or pick a different model.',
   },
   // Never offered: an embeddings-only Alias cannot hold a conversation, and the panel reuses the
   // same rule the Chat picker applies rather than growing a second copy of it.
-  { name: 'embed-3', display_name: 'Embeddings', capabilities: ['embeddings'], serving: true, problem: null, reasoning_efforts: [] },
+  { name: 'embed-3', display_name: 'Embeddings', capabilities: ['embeddings'], serving: true, problem: null, reasoning_efforts: [], reasoning_efforts_with_tools: [] },
 ];
-// What `reasoning_efforts_for` answers — the MEASURED table, which is what `_merge_assignment`
-// validates a saved level against. Read off the Alias rows above rather than written twice: the two
-// agree on every alias on this gateway, because `inference_params` is `{}` for all of them (#284),
-// and a second literal here would be this file inventing the one case where they differ.
-const accepts = (name) => ((ALIASES.find((a) => a.name === name) || {}).reasoning_efforts || []);
+// What `_merge_assignment` validates a saved level against: the tool-carrying local answer.
+const accepts = (name) =>
+  ((ALIASES.find((a) => a.name === name) || {}).reasoning_efforts_with_tools || []);
 
 let listing = 'up';
 let failReloadAfterSave = false;
@@ -295,6 +294,7 @@ const mount = () => SW.ModelAssignmentsDrawer();
 
 const report = [];
 for (const step of steps) {
+  if (step.aliases) ALIASES.splice(0, ALIASES.length, ...step.aliases);
   listing = step.listing || 'up';
   failReloadAfterSave = !!step.failReload;
   failSave = false;

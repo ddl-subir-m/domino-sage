@@ -14,7 +14,7 @@ from sage.resources.provider import (
     join_aliases,
     parse_reasoning_efforts,
 )
-from sage.router.models import REASONING_EFFORTS, reasoning_efforts_for
+from sage.router.models import REASONING_EFFORTS, reasoning_efforts_for, reasoning_efforts_with_tools
 
 
 def test_the_alias_that_honours_the_field_alongside_tools_is_offered_one():
@@ -59,30 +59,35 @@ def test_the_measured_alias_reaches_the_picker_through_the_join():
     assert sonnet.reasoning_efforts == []
 
 
-def test_gateway_metadata_still_chooses_which_levels_an_alias_offers():
-    # Metadata is the live answer and the table is a snapshot, so an advertised enum still decides
-    # the offer. Today every alias publishes `inference_params: {}` (#284), so in practice the
-    # table answers alone.
+def test_gateway_metadata_does_not_choose_which_levels_sage_offers():
+    # Metadata is not the running answer. It can advertise levels the backing model rejects, and an
+    # unprobed alias with an enum would make the menu and the local save validator disagree.
     rec = {"id": "x", "name": "gemini-3.7-flash",
            "inference_params": {"reasoning_effort": ["low", "high"]}}
     (a,) = join_aliases({"gemini-3.7-flash"}, [rec])
-    assert a.reasoning_efforts == ["low", "high"]
-    # An alias nobody probed has no row to narrow by, so its enum passes through whole.
-    assert alias_reasoning_efforts("sonnet", {"reasoning_effort": ["medium"]}) == ["medium"]
+    assert a.reasoning_efforts == ["low", "medium", "high", "max"]
+    # An alias nobody probed gets no Sage effort control, even when the gateway names an enum.
+    assert alias_reasoning_efforts("nobody-probed-this", {"reasoning_effort": ["medium"]}) == []
 
 
 def test_an_advertised_level_the_probe_proved_broken_never_reaches_the_picker():
-    # The half of #284 that would otherwise re-open the trap: the day the gateway starts publishing
-    # `inference_params`, gemini's own enum arrives carrying `minimal`, and a turn that picks it
-    # hard-400s at Vertex. A probed alias has had every spelling tried, so its row may narrow.
-    # The enum as the gateway spells it: alphabetical, and carrying the level Vertex refuses.
+    # Legacy enum-shaped defaults are not capability authority (#284). Gemini's measured local
+    # row excludes minimal, which Vertex refuses, regardless of this legacy shape or its order.
     advertised = {"reasoning_effort": ["high", "low", "max", "medium", "minimal"]}
     # `minimal` gone, and the order is the table's — this list is rendered straight into the effort
     # menu, so obeying the enum's order would read High / Low / Max / Medium.
     assert alias_reasoning_efforts("gemini-3.7-flash", advertised) == ["low", "medium", "high", "max"]
-    # Narrowing only, never inventing: a level the table holds but the gateway stopped offering
-    # goes away with the gateway's word for it.
-    assert alias_reasoning_efforts("gemini-3.7-flash", {"reasoning_effort": ["low"]}) == ["low"]
+    # The gateway cannot narrow the local measured list either: local validation and send rules are
+    # the source of Sage's effort choices.
+    assert alias_reasoning_efforts("gemini-3.7-flash", {"reasoning_effort": ["low"]}) == [
+        "low", "medium", "high", "max"]
+
+
+def test_the_same_local_resolver_answers_no_tools_and_with_tools():
+    assert reasoning_efforts_for("gpt-5.4") == ("none", "low", "medium", "high", "xhigh")
+    assert reasoning_efforts_with_tools("gpt-5.4") == ("none",)
+    assert reasoning_efforts_with_tools("gemini-3.7-flash") == reasoning_efforts_for(
+        "gemini-3.7-flash")
 
 
 def test_every_effort_in_the_table_is_a_legal_spelling():

@@ -279,12 +279,11 @@ window.SW = window.SW || {};
       // but the payload carries no file-side effort, so the level control waits for the catalog to
       // catch up rather than offering levels for the old model.
       //
-      // Server-computed, not a rule restated here: `alias_reasoning_efforts` narrows the gateway's
-      // published enum by the measured table before it is sent (#280), which is the one narrowing
-      // ADR-0049 says must not be copied to this side. This reads its answer.
+      // The server's local resolver supplies tool-compatible choices (#284, #298). The measured
+      // provider table stays server-side, as ADR-0049 requires.
       const efforts = staleAssignment
         ? []
-        : (listed.find((a) => a.name === current.model) || {}).reasoning_efforts || [];
+        : (listed.find((a) => a.name === current.model) || {}).reasoning_efforts_with_tools || [];
       // A level on disk that this row's model does not offer. Reachable without anyone having done
       // anything wrong: the deployment default can move under a stored level long after it was
       // saved and nothing re-validates it (`service._effective_catalog` says so in as many words),

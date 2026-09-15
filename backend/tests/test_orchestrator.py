@@ -1370,10 +1370,10 @@ def test_status_reports_the_pinned_mode_and_the_users_own_choice_separately(tmp_
 
 def test_chat_pick_is_a_standing_choice_on_status(tmp_path: Path):
     orch = _orch(tmp_path)
-    orch.set_chat_pick("gpt-5.4", "medium")
+    orch.set_chat_pick("gpt-5.4", "none")
     m = orch.project(start_preview=False).status()["model"]
     assert m["chat_model"] == "gpt-5.4"
-    assert m["reasoning_effort"] == "medium"
+    assert m["reasoning_effort"] == "none"
     orch.set_chat_pick("auto", None)
     m = orch.project(start_preview=False).status()["model"]
     assert m["chat_model"] is None

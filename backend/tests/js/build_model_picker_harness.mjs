@@ -343,6 +343,7 @@ for (const step of steps) {
         : step.listing ? ALIAS_ROWS() : [],
     });
   }
+  if (step.aliases) SW.store.set({ gatewayAliases: step.aliases });
 
   if ('narrow' in step) {
     // The deployment moving under a live pick: an alias stops advertising a level somebody is
@@ -414,7 +415,8 @@ for (const step of steps) {
   chatMount = !!step.chat;
   // What a Chat turn would run. Build reads its pinned slot or the override; Chat reads the picked
   // Alias, and the notice only draws when the lock moved it — so a Chat step has to name one.
-  if (step.chat) SW.store.set({ model: step.chatModel || CATALOG.plan, catalogAsk: CATALOG.ask });
+  if (step.chat) SW.store.set({ model: step.chatModel || CATALOG.plan, catalogAsk: CATALOG.ask,
+    reasoningEffort: step.chatEffort || null });
   const locked = (step.sensitivity && step.sensitivity.datasets) || [];
   const held = step.declaredIn === 'chip' ? [] : (step.appDatasets || locked);
   const byName = (n) => ({ kind: 'dataset', id: `ds_${n}`, name: n });
@@ -453,6 +455,8 @@ for (const step of steps) {
   const before = mount();
   const menu = pickerMenu(before);
   const button = pickerButton(before);
+  const chatEffortDropdown = find(before, (n) => n.t === 'Dropdown' && n.p.menu
+    && n.p.menu.items.some((i) => i.key === 'default'));
   const row = {
     step: step.pick ? `${step.mode} → pick ${step.pick}` : step.mode,
     // Every child key drawn anywhere in the menu, so a DUPLICATE is visible. Two items sharing a
@@ -496,6 +500,8 @@ for (const step of steps) {
       const notice = lockNotice(before);
       return notice ? strings(notice).join(' ') : null;
     })(),
+    chatEffortItems: chatEffortDropdown ? chatEffortDropdown.p.menu.items.map(itemRow) : null,
+    chatEffortLabel: chatEffortDropdown ? strings(chatEffortDropdown).join(' ') : null,
   };
 
   if (step.pick) {

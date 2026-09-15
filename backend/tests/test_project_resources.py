@@ -388,7 +388,9 @@ def test_a_mention_writes_the_same_row_the_browse_button_writes(tmp_path: Path):
 
     joined = orch.list_project_resources()[0]
     assert joined["alias"] == "f-sonnet"
-    assert joined["reasoning_efforts"] == ["low", "high"]
+    # The model survives, but an unverified alias cannot acquire effort choices from saved metadata.
+    assert joined["reasoning_efforts"] == joined["reasoning_efforts_with_tools"] == []
+    assert orch.project().record.read_project_resources()[0]["reasoning_efforts"] == ["low", "high"]
     assert joined["capabilities"] == ["vision"]
     assert joined["description"] == "Anthropic"
 
@@ -426,7 +428,8 @@ def test_adding_a_resource_again_fills_in_what_the_first_write_left_out(tmp_path
     assert again["added"] is False
     row = orch.list_project_resources()[0]
     assert row["alias"] == "f-sonnet"
-    assert row["reasoning_efforts"] == ["low", "high"]
+    assert row["reasoning_efforts"] == row["reasoning_efforts_with_tools"] == []
+    assert again["item"]["reasoning_efforts"] == ["low", "high"]
     # Present already, so left alone — filling gaps is not a rename.
     assert row["name"] == "Sonnet"
 
