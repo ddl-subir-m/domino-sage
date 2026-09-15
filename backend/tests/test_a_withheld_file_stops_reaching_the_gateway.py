@@ -133,7 +133,8 @@ def test_a_guardrail_refusal_hands_back_what_it_refused():
     captured = _drain(ModelControl(mode=Mode.AUTO, phase=Phase.PLAN), _Refuses())
     assert len(captured) == 1
     model, msgs = captured[0]
-    assert model, "the alias matters: Block PII is on gpt-5.4 alone"
+    assert model, ("the alias matters: a guardrail can be attached per alias, so probing a "
+                   "different one could miss the refusal")
     assert any("222-33-4444" in str(m.get("content")) for m in msgs)
 
 

@@ -9002,9 +9002,11 @@ class Orchestrator:
     def _run_withhold_search(self, project: Project, model: str, payload: list[dict]):
         """The gateway half of the search, kept apart so `withhold.search` stays pure and testable.
 
-        Probes the alias that was refused, never the turn's configured model: a guardrail is attached
-        per alias (measured — `Block PII` covers gpt-5.4 alone), so probing anything else answers
-        CLEAN for every subset and reports that nothing was refused.
+        Probes the alias that was refused, never the turn's configured model: a guardrail can be
+        attached per alias, so probing anything else could answer CLEAN for every subset and report
+        that nothing was refused. Which aliases a guardrail covers belongs to the gateway
+        administrator and changes — never encode that set here, probe it with
+        `scripts/guardrail-probe.py`.
         """
         labels = CostLabels(
             phase="ask", mode="auto",

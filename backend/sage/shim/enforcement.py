@@ -74,10 +74,11 @@ def _capture_refusal(stream: Iterator[bytes], request: dict[str, Any], on_refuse
     reaches the callback. Nothing is copied: the caller owns what it does with the list, and the
     orchestrator drops it as soon as the search is over.
 
-    Hands back the MODEL as well as the messages, and that is not incidental: a guardrail is
-    attached per alias (measured — `Block PII` covers gpt-5.4 and none of sonnet, haiku, Opus-4.8,
-    gemini-3.7-flash or Gemma 4 31B), so a search that probed a different alias would come back
-    clean on every subset and report that nothing was refused.
+    Hands back the MODEL as well as the messages, and that is not incidental: a guardrail can be
+    attached per alias, so a search that probed a different alias than the one that was refused
+    could come back clean on every subset and report that nothing was refused. Which aliases a
+    guardrail covers belongs to the gateway administrator and changes — never encode that set here,
+    probe it with `scripts/guardrail-probe.py`.
 
     A raising callback is logged loudly and swallowed. `on_resolved`'s site downgrades its failures
     to `log.debug`, which is right for telemetry and wrong here — a capture that fails silently
