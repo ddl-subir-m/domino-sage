@@ -1,0 +1,203 @@
+{
+  "issue": 361,
+  "title": "Verify Sage-only data use across models and app runtime",
+  "date": "2026-09-14",
+  "release_scope": "sage-only",
+  "baseline_remote_main": "99a3b83ee878f91fe70f5a45c8142fd81b430447",
+  "gateway_policy_mutation": "none",
+  "production_rollout": "not_performed",
+  "deferred": [
+    "gateway #32",
+    "gateway #33",
+    "gateway #34",
+    "sage #360"
+  ],
+  "unknown_evidence_preserved": [
+    "provider_receipt",
+    "decision_stage",
+    "cache",
+    "fallback",
+    "serving_model_when_absent"
+  ],
+  "component_versions": {
+    "opencode": "1.18.4",
+    "python": "3.11.15",
+    "fastapi": "0.139.2",
+    "httpx": "0.28.1",
+    "pytest": "8.4.2",
+    "node": "v22.22.3"
+  },
+  "focused_test_run": {
+    "command": "SAGE_APP_BROWSER_MODULE=/Users/subirmansukhani/node_modules/playwright/index.mjs uv run --extra dev pytest -q tests/test_csv_calculation_opencode.py tests/test_csv_text_analysis_data_used.py tests/test_new_apps_report_incomplete_model_answers.py tests/test_builtapp_queries.py tests/test_preview_queries.py tests/test_handoff.py tests/test_handoff_receipt.py tests/test_sage_only_acceptance_report.py --override-ini=addopts= -n0",
+    "collected": 178,
+    "passed": 178,
+    "skipped": 0,
+    "warnings": 1,
+    "duration_s": 372.76,
+    "failures": []
+  },
+  "controlled_acceptance": [
+    {
+      "name": "real_opencode_sales_chat_and_build",
+      "test": "backend/tests/test_csv_calculation_opencode.py::test_real_opencode_calculates_sales_without_sending_the_email_column",
+      "result": "passed",
+      "evidence": [
+        "fresh isolated OpenCode runtime",
+        "Sage live_read_files custom tool",
+        "controlled HTTP gateway",
+        "sales totals North 360 South 420 Total 780",
+        "email column absent from the second gateway request",
+        "no extra result-selection model round",
+        "Data used request state response_completed",
+        "provider receipt unknown when missing"
+      ]
+    },
+    {
+      "name": "real_opencode_message_paths",
+      "test": "backend/tests/test_csv_calculation_opencode.py",
+      "result": "passed in final focused run",
+      "evidence": [
+        "read output remains visible locally",
+        "bash and Python output become local_execution_receipt in later model requests",
+        "task child result becomes local_execution_receipt in parent continuation",
+        "source-code reads remain available"
+      ]
+    },
+    {
+      "name": "semantic_coverage",
+      "test": "backend/tests/test_csv_text_analysis_data_used.py",
+      "result": "passed in final focused run",
+      "evidence": [
+        "complaint text and stable ids reach the model path",
+        "email column is absent",
+        "Item arrived broken is labelled damage",
+        "four delivery four damage four billing rows",
+        "10,000 controlled-provider records process in bounded batches",
+        "bad ids, duplicate ids, malformed output, policy denial, interrupted batches, source changes and over-limit data do not produce a false complete result"
+      ]
+    },
+    {
+      "name": "new_built_app_runtime",
+      "test": "backend/tests/test_new_apps_report_incomplete_model_answers.py",
+      "result": "passed in final focused run",
+      "evidence": [
+        "fresh app seeded from template",
+        "preview and deployed helper paths",
+        "controlled gateway can allow then refuse later requests without rebuild",
+        "structured HTTP refusal keeps safe reason",
+        "partial stream plus error and truncated EOF are incomplete",
+        "cache and fallback metadata are recorded only when observed"
+      ]
+    },
+    {
+      "name": "browser_runtime",
+      "test": "backend/tests/test_new_apps_report_incomplete_model_answers.py::test_browser_marks_partial_answers_incomplete",
+      "result": "passed with SAGE_APP_BROWSER_MODULE=/Users/subirmansukhani/node_modules/playwright/index.mjs",
+      "evidence": [
+        "Chromium clicked the app button",
+        "each case rendered an accessible region by name",
+        "visible status stayed Incomplete for refused and interrupted answers",
+        "viewer cookie was present on deployed-path model calls"
+      ]
+    },
+    {
+      "name": "new_built_app_queries",
+      "test": "backend/tests/test_builtapp_queries.py backend/tests/test_preview_queries.py backend/tests/test_handoff.py backend/tests/test_handoff_receipt.py",
+      "result": "passed in final focused run",
+      "evidence": [
+        "named query dataUsed excludes row values",
+        "preview and deployed query paths share semantics",
+        "Chat-to-Build handoff preserves source references and artifact distinction"
+      ]
+    }
+  ],
+  "live_gateway_probe": {
+    "tool": "scripts/latency-probe.py",
+    "env_file": "/Users/subirmansukhani/Desktop/domino-sage/backend/.env",
+    "credential_handling": "loaded in memory only",
+    "rounds_per_shape_per_model": 2,
+    "shapes": [
+      "text",
+      "tool"
+    ],
+    "models": [
+      "sonnet",
+      "gemini-3.7-flash",
+      "Gemma 4 31B"
+    ],
+    "summary": [
+      {
+        "shape": "text",
+        "model": "sonnet",
+        "rounds": 2,
+        "request_bytes": 335,
+        "first_output_s_avg": 2.308479,
+        "total_s_avg": 3.576161729,
+        "ok": true
+      },
+      {
+        "shape": "text",
+        "model": "gemini-3.7-flash",
+        "rounds": 2,
+        "request_bytes": 345,
+        "first_output_s_avg": 3.3689775415,
+        "total_s_avg": 3.608967229,
+        "ok": true
+      },
+      {
+        "shape": "text",
+        "model": "Gemma 4 31B",
+        "rounds": 2,
+        "request_bytes": 340,
+        "first_output_s_avg": 5.4935690835,
+        "total_s_avg": 6.0124257915,
+        "ok": true
+      },
+      {
+        "shape": "tool",
+        "model": "sonnet",
+        "rounds": 2,
+        "request_bytes": 621,
+        "first_output_s_avg": 3.5062718965,
+        "total_s_avg": 4.096324959,
+        "ok": true
+      },
+      {
+        "shape": "tool",
+        "model": "gemini-3.7-flash",
+        "rounds": 2,
+        "request_bytes": 631,
+        "first_output_s_avg": 3.2110438335,
+        "total_s_avg": 3.2911576665,
+        "ok": true
+      },
+      {
+        "shape": "tool",
+        "model": "Gemma 4 31B",
+        "rounds": 2,
+        "request_bytes": 626,
+        "first_output_s_avg": 4.937167292,
+        "total_s_avg": 5.080250208,
+        "ok": true
+      }
+    ]
+  },
+  "baseline_comparison": {
+    "source": "docs/performance/2026-09-14-pii-prototype.md",
+    "sales_baseline": {
+      "sonnet": "baseline refused after rows reached the gateway; final combined experiment was correct but had high startup time",
+      "gemini-3.7-flash": "final combined experiment was 6.08 s versus 6.62 s baseline",
+      "Gemma 4 31B": "final combined experiment was 18.90 s versus 14.86 s baseline"
+    },
+    "release_probe_result": "small live-gateway text and tool probes passed on all three models; this is not a p95 or universal latency claim"
+  },
+  "limits": [
+    "No gateway source, shared gateway rule, policy, deployment, or app audience was changed.",
+    "The controlled gateway proves Sage and app response handling, not gateway-internal policy coverage.",
+    "Missing provider receipt, decision-stage, cache, fallback, and absent serving-model evidence stay unknown.",
+    "Direct deployed-app requests and internal gateway fallback remain outside full runtime restriction guarantees.",
+    "Existing projects and already deployed apps were not migrated.",
+    "The live model probe used small fixed prompts and does not prove semantic correctness for arbitrary data or p95 latency."
+  ],
+  "ready_for_landing": true
+}
