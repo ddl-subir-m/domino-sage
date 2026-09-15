@@ -436,6 +436,10 @@ def test_the_glossary_holds_both_kinds():
         "Build this again",
         "Collaborator",
         "Data",
+        # The two type words a data row wears. They are words and not names because there is
+        # nothing to rename them to: a pack that calls a Dataset a Collection has not stopped it
+        # holding files (ADR-0053). Marked `name`, each would owe a key with nothing to put in it.
+        "Data connection",
         "Delete",
         "File volume",
         "Liveness",
@@ -444,13 +448,8 @@ def test_the_glossary_holds_both_kinds():
         "Remove",
         "Sovereign",
         "Stop using here",
-        "Tabular",
         "Try again",
         "Use in this conversation",
-        # A shape and a reach, and the reason they are words is that there is nothing to rename
-        # them to: a pack that calls a Dataset a Collection has not stopped it holding files
-        # (ADR-0053). Marked `name`, each would owe a key with nothing to put in it.
-        "connected",
     ]
 
 

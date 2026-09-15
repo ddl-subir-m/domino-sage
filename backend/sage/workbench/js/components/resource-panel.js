@@ -70,10 +70,8 @@ window.SW = window.SW || {};
     {
       key: 'data',
       label: 'Data',
-      // One section for everything data-like, and the subheads name the SHAPE of what is under
-      // them rather than the Domino thing — File volume, Tabular (ADR-0053). The Domino noun moved
-      // to the row, where it sits beside the row's reach; a subhead per kind said the noun and had
-      // nowhere to say the rest.
+      // One section for everything data-like, and a subhead says what a person is looking at rather
+      // than which Domino primitive it is — File volume, Data connection (ADR-0053).
       //
       // No labels here: `SW.util.dataTypeLabel` holds them, because the catalog's sidebar draws the
       // same two words and two lists of them would be two places to forget.
@@ -335,20 +333,6 @@ window.SW = window.SW || {};
       ? `Used by ${used.length} ${used.length === 1 ? 'app' : 'apps'}`
       : resource.subtitle;
 
-    // What Domino calls this row, and whether the row reaches outside the Project. Data rows only,
-    // and it is the Data section's grouping that owes it (ADR-0053): the subhead above now names a
-    // SHAPE, so without this line nothing on the row says which Domino thing it is — the icon and
-    // the pack's noun were the only two, and one of them is an emoji.
-    //
-    // A line of its own rather than a prefix on `secondary`: that slot already answers a question
-    // somebody came to the panel with — "Required by Sales app" — and these facts must not push it
-    // off the end of a 320px rail. Composed here rather than in `SW.util` so the two words come
-    // from the two places that own them: the noun from the pack, the reach from the shared rule.
-    const meta = SW.util.dataTypeLabel(resource.kind)
-      ? SW.util.labelFor(resource.kind)
-        + (SW.util.isConnected(resource.kind) ? ` · ${SW.util.CONNECTED_WORD}` : '')
-      : null;
-
     return h(
       'div',
       {
@@ -383,7 +367,7 @@ window.SW = window.SW || {};
       h(
         'button',
         { className: 'sw-res-open', onClick: () => onOpen(resource) },
-        h('span', { className: 'sw-res-icon' }, SW.util.iconFor(resource.kind)),
+        h('span', { className: 'sw-res-icon' }, SW.util.iconNodeFor(resource.kind)),
         h(
           'span',
           { className: 'sw-res-main' },
@@ -416,7 +400,6 @@ window.SW = window.SW || {};
                 )
               )
           ),
-          meta && h('span', { className: 'sw-res-meta' }, meta),
           secondary &&
             h(
               Tooltip,

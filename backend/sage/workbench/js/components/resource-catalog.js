@@ -42,7 +42,7 @@ window.SW = window.SW || {};
       h(
         'button',
         { className: 'sw-cat-open', onClick: () => onOpen(resource) },
-        h('span', { className: 'sw-cat-icon' }, SW.util.iconFor(resource.kind)),
+        h('span', { className: 'sw-cat-icon' }, SW.util.iconNodeFor(resource.kind)),
         h(
           'span',
           { className: 'sw-cat-main' },
@@ -74,16 +74,16 @@ window.SW = window.SW || {};
           h(
             'span',
             { className: 'sw-cat-meta' },
-            h('span', null, SW.util.labelFor(resource.kind)),
-            // Reach, beside the noun rather than as a type of its own: the sidebar's shapes and
-            // this are two axes, and a `Data connection` filter up there would have claimed a Data
-            // Source that is already claimed by `Tabular` (ADR-0053). Said only where it is true.
-            SW.util.isConnected(resource.kind) && h('span', { className: 'sw-cat-dot' }, '·'),
-            SW.util.isConnected(resource.kind) && h('span', null, SW.util.CONNECTED_WORD),
-            h('span', { className: 'sw-cat-dot' }, '·'),
-            h('span', null, resource.originName),
-            h('span', { className: 'sw-cat-dot' }, '·'),
-            h('span', null, resource.ownerName),
+            // What this row is, in the words the sidebar filters by. Every other kind keeps the
+            // Domino noun, which is all `labelFor` was ever answering here.
+            h('span', null,
+              SW.util.dataTypeLabel(resource.kind) || SW.util.labelFor(resource.kind)),
+            // `originName` and `ownerName` were dropped from this line (ADR-0053). A Dataset's
+            // origin is its Project, which `description` above already says as `in <project>`, so
+            // the row printed one project name twice; a Data Source has no Project and fell back to
+            // the platform's own name, which is true of every row in a catalogue of that platform.
+            // `ownerName` has been the empty string since this modal was written, so all it ever
+            // drew was a separator with nothing after it.
             resource.freshness && h('span', { className: 'sw-cat-dot' }, '·'),
             resource.freshness && h('span', null, resource.freshness),
             resource.usedInProjects > 0 && h('span', { className: 'sw-cat-dot' }, '·'),

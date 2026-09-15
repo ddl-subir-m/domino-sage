@@ -26,15 +26,14 @@ window.SW = window.SW || {};
     folder:           { icon: '📁', label: 'folder',         group: 'files' },
   };
 
-  // The two data shapes, keyed by kind. Held beside RESOURCE_META rather than inside it: that map
-  // answers "what is this thing called", which the pack renames, and this one answers "what shape
-  // is it", which the pack does not. See `dataTypeLabel` below for why there are two and not three.
-  const DATA_TYPES = { dataset: 'File volume', datasource: 'Tabular' };
+  // What a row in the Data section is called on screen, keyed by kind. Held beside RESOURCE_META
+  // rather than inside it: that map answers "what does Domino call this", which a pack renames, and
+  // this one answers "what is it", which a pack does not (ADR-0053).
+  const DATA_TYPES = { dataset: 'File volume', datasource: 'Data connection' };
 
-  // The kinds that are a connection to a system outside the Project. One member today; it is a set
-  // because the next member is a file-shaped one, and at that point the Data section's grouping
-  // must not move (ADR-0053).
-  const CONNECTED_KINDS = new Set(['datasource']);
+  // The icon each data kind draws, by name in the bundled set. Read lazily through `icons` so this
+  // map costs nothing at load and cannot depend on script order.
+  const DATA_ICONS = { dataset: 'HddOutlined', datasource: 'ApiOutlined' };
 
   // The Resource kinds that get a membership row of their own, in the UI id space. A Dataset file
   // and a warehouse table hang off one of these and have no row. The same four in Domino's own
@@ -496,28 +495,24 @@ window.SW = window.SW || {};
       return (RESOURCE_META[kind] || RESOURCE_META.file).label;
     },
 
-    // The on-screen type of a row in the Data section, and whether that row reaches outside
-    // (ADR-0053). Shape and reach are two axes, and this is the half that is a label: a Dataset
-    // holds files here, a Data Source holds tables reached over a connection, and the file-shaped
-    // connections Domino also sells — External Data Volumes, NetApp volumes — would be the cell
-    // neither of those covers. A third type label beside these two would have been on the reach
-    // axis, so a Data Source would have qualified for two of them and that cell still for none.
+    // What a data row is called on screen — `File volume`, `Data connection` — where that differs
+    // from what Domino calls it. Undefined for every other kind, which is also how a caller asks
+    // "is this a data row": a group's subhead and a catalogue row both key off it (ADR-0053).
     //
-    // Words rather than names (ADR-0026): these describe the shape of a thing, so there is nothing
-    // for a pack to rename them TO. The pack's own noun stays on the row beside them, which is
-    // what keeps the section from telling a person a type and never the Domino thing.
+    // Words rather than names (ADR-0026): they say what a person is looking at rather than naming a
+    // Domino primitive, so there is nothing for a pack to rename them TO.
     dataTypeLabel(kind) {
       return DATA_TYPES[kind];
     },
 
-    // Reach, said once and the same way in both surfaces. Only where it is true: silence means the
-    // Project holds the thing, and marking that case too would put a word on every data row to
-    // distinguish nothing.
-    isConnected(kind) {
-      return CONNECTED_KINDS.has(kind);
+    // The icon as a NODE, for the places that render one. `iconFor` stays the emoji and stays the
+    // answer in a string — a drawer title and a menu label both interpolate it, and an element in a
+    // template literal is the string `[object Object]`.
+    iconNodeFor(kind) {
+      const name = DATA_ICONS[kind];
+      const glyph = name && typeof icons !== 'undefined' && icons[name];
+      return glyph ? h(glyph) : SW.util.iconFor(kind);
     },
-
-    CONNECTED_WORD: 'connected',
 
     uiKind(kind) {
       if (kind === 'data_source') return 'datasource';

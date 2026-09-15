@@ -1,15 +1,14 @@
 // How the two data surfaces group data-like things, and what a row says about itself (ADR-0053).
 //
 // Three labels stood over two things: the rail drew `Data` over `Datasets` and `Data Sources`, and
-// Browse Domino offered all three as peers with the first count the sum of the next two. The
-// section now groups by SHAPE — File volume, Tabular — and a row carries the Domino noun plus its
-// reach.
+// Browse Domino offered all three as peers with the first count the sum of the next two. One
+// section now, and one type per row — File volume, Data connection — in both surfaces.
 //
-// None of that is greppable. The subhead a Project sees depends on which kinds hold rows, the noun
-// on the row is resolved from the pack at draw time, and the sidebar's nesting is a class on a
-// button. So both components are drawn and read off the tree.
+// None of that is greppable. The subhead a Project sees depended on which kinds hold rows, a row's
+// meta line is composed at draw time, and the sidebar's nesting is a class on a button. So both
+// components are drawn and read off the tree.
 //
-// Input on stdin: `{ "act": "panel-both" | "panel-one-shape" | "catalog" }`.
+// Input on stdin: `{ "act": "panel-both" | "panel-one-type" | "catalog" }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -17,14 +16,14 @@ const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 // A Dataset and a Data Source, plus a model, so the Data section is drawn beside a group that is
-// not it. `panel-one-shape` drops the Data Source: that is the case the old naming rule got wrong,
+// not it. `panel-one-type` drops the Data Source: that is the case the old naming rule got wrong,
 // where the same rows read `Data` here and `Data / File volume` in the Project next door.
 const GROUPS = {
   dataset: [{ id: 'dataset:d1', name: 'Sales rows', kind: 'dataset' }],
   datasource: [{ id: 'data_source:s1', name: 'Warehouse', kind: 'datasource' }],
   model_llm: [{ id: 'llm_alias:m1', name: 'Risk scorer', kind: 'model_llm', alias: 'risk-scorer' }],
 };
-const groupsFor = (which) => (which === 'panel-one-shape'
+const groupsFor = (which) => (which === 'panel-one-type'
   ? { dataset: GROUPS.dataset, model_llm: GROUPS.model_llm }
   : GROUPS);
 
@@ -162,20 +161,30 @@ if (act === 'catalog') {
   const nodes = flatten(SW.ResourcePanel());
   report.heads = nodes.filter((n) => cls(n) === 'sw-res-group-label').map(labelIn);
   report.subheads = nodes.filter((n) => cls(n) === 'sw-res-subgroup').map(labelIn);
-  // Name and meta line together: the meta is what is under test and the name says which row wore
-  // it. A row with no meta line reports `null` rather than being left out, because "every data row
-  // says which Domino thing it is" is a claim about rows that are there.
-  report.rows = [];
+  // Every string a row draws for itself — its name line and whatever subtitle it carries. The
+  // claim is that none of them restates the type the subhead above already said, so this has to be
+  // the row's whole text rather than one class that happens to be empty in this fixture.
+  report.rowText = nodes
+    .filter((n) => cls(n) === 'sw-res-main')
+    .map((n) => flatten(n).map(text).filter(Boolean).join(' | '));
+  // What each row draws in its icon slot: a component (the drawn icon) or a string (the emoji).
+  report.icons = [];
   let name = null;
   for (const node of nodes) {
-    if (cls(node) === 'sw-res-name') name = text(node);
-    if (cls(node) === 'sw-res-meta' && name !== null) {
-      report.rows.push({ name, meta: text(node) });
-      name = null;
+    if (cls(node) === 'sw-res-icon') {
+      const glyph = (node.c || []).flat(Infinity)[0];
+      report.icons.push({
+        kind: typeof glyph === 'string' ? 'emoji' : 'node',
+        // `icons` is a Proxy answering its own key, so a drawn icon reports the name it was
+        // asked for and the assertion can name the icon rather than counting them.
+        glyph: typeof glyph === 'string' ? glyph : String((glyph || {}).t),
+      });
     }
   }
-  report.namesWithoutMeta = nodes.filter((n) => cls(n) === 'sw-res-name').map(text)
-    .filter((n) => !report.rows.some((r) => r.name === n));
+  // Pair each icon with the row name that follows it, so an assertion can say WHICH row drew what.
+  const names = nodes.filter((n) => cls(n) === 'sw-res-name').map(text);
+  report.icons = report.icons.map((icon, i) => ({ ...icon, name: names[i] }));
+  void name;
 }
 
 console.log(JSON.stringify(report));
