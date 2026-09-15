@@ -382,6 +382,77 @@ def test_the_payload_says_whether_a_pick_is_live_for_each_turn_a_row_drives(tmp_
     assert orch.sensitivity_state()["picked"] is False
 
 
+def test_assignment_rows_say_whether_the_pin_decided_this_turn(tmp_path, monkeypatch):
+    """`shadowed` is catalog-derived. This field is the server's turn answer: the pin may be present
+    and still lose to a pick."""
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    project = orch.project(start_preview=False)
+    project.control.set_mode(Mode.PLAN)
+
+    quiet = {r["slot"]: r["pin_decided"] for r in orch.model_assignments()["slots"]}
+    assert quiet["plan"] is True
+    assert quiet["implement"] is False
+
+    project.control.pick("sov-imp")
+    picked = {r["slot"]: r["pin_decided"] for r in orch.model_assignments()["slots"]}
+    assert picked["plan"] is False
+    assert picked["implement"] is False
+    # Ask's sentence describes Build Ask, even though its locked select describes Chat.
+    assert picked["ask"] is True
+
+
+@pytest.mark.parametrize("pick", [None, "sov-plan"])
+def test_a_pick_on_the_rows_own_approved_model_is_not_a_pin_decision(tmp_path, monkeypatch, pick):
+    """The #302 trigger has no model substitution to expose the defeated pin."""
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    orch.set_catalog(plan="sov-plan")
+    control = orch.project(start_preview=False).control
+    control.set_mode(Mode.PLAN)
+    if pick:
+        control.pick(pick)
+    row = next(r for r in orch.model_assignments()["slots"] if r["slot"] == "plan")
+    assert row["shadowed"] is True
+    assert row["model"] == "sov-plan"
+    assert row["pin_decided"] is (pick is None)
+    assert orch.sensitivity_state()["slot_models"]["plan"] == (pick or SIGNING)
+
+
+@pytest.mark.parametrize("approved", [APPROVED - {SIGNING}, frozenset()])
+def test_a_lock_that_defeats_or_refuses_the_pin_reports_no_pin_decision(tmp_path, monkeypatch, approved):
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    monkeypatch.setattr(orch._resources, "list_alias_groups", lambda: [
+        {"name": GROUP, "aliases": [{"id": f"id-{name}"} for name in sorted(approved)]},
+    ])
+    rows = orch.model_assignments()["slots"]
+    assert next(r for r in rows if r["slot"] == "plan")["shadowed"] is True
+    assert all(r["pin_decided"] is False for r in rows)
+    lock = orch.sensitivity_state()
+    assert bool(lock["refusal"]) is (not approved)
+    if approved:
+        assert lock["slot_models"]["plan"] == "sov-plan"
+
+
+def test_assignment_pin_decision_uses_the_conversations_sticky_lock(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    project.record.mark_session_locked("thr_locked")
+    monkeypatch.setattr(orch._resources, "list_alias_groups", lambda: [
+        {"name": GROUP, "aliases": [{"id": "id-sov-plan"}]},
+    ])
+    locked = {r["slot"]: r for r in orch.model_assignments("thr_locked")["slots"]}
+    fresh = {r["slot"]: r for r in orch.model_assignments("thr_fresh")["slots"]}
+    assert locked["plan"]["shadowed"] is fresh["plan"]["shadowed"] is True
+    assert locked["plan"]["pin_decided"] is False
+    assert fresh["plan"]["pin_decided"] is True
+
+
 def test_the_slot_answer_reads_the_snapshot_it_is_handed_and_not_a_fresh_one(tmp_path, monkeypatch):
     """FOUND IN REVIEW. One payload used to take three separate `control.snapshot()` reads.
 
