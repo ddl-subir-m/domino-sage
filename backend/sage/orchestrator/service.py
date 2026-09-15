@@ -15406,7 +15406,9 @@ class Orchestrator:
         seen = {b.id for b in scope}
 
         def add(dataset_id, dataset_name) -> None:
-            did = str(dataset_id or "")
+            # Older attachment records can keep the Resource Browser's `dataset:` prefix.
+            # Taxonomy takes the bare Domino ID, as does the scope's deduplication key.
+            did = _bare_kind_id(str(dataset_id or ""), KIND_DATASET)
             if not did or did in seen:
                 return
             seen.add(did)
@@ -18237,6 +18239,7 @@ class Orchestrator:
         project = self.project()
         asset = self._find_asset(dataset_id)
         rel = _attach_dest(asset.name, file_path)  # workspace-relative posix path
+        dataset_id = asset.id
         already = next((e for e in project.attached if e["path"] == rel), None)
         if already is None:
             total = sum(e["size"] for e in project.attached)
@@ -18294,6 +18297,7 @@ class Orchestrator:
         project = self.project()
         asset = self._find_asset(dataset_id)
         listing = self._assets.list_files(asset)
+        dataset_id = asset.id
         reason = self._folder_act_reason(asset, listing)
         if reason:
             raise FolderActUnavailable(reason)
