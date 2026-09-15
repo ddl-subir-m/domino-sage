@@ -14814,7 +14814,8 @@ class Orchestrator:
         path = project.record.path
         if not git.is_repo_root(path) or not git.has_remote(path):
             return {"status": "no-remote", "conflicts": [], "pushed": False,
-                    "detail": "this app has no git remote to pull from"}
+                    "rejected": False, "detail": "this app has no git remote to pull from",
+                    "pushDetail": ""}
         # The turn lock, for the reasons publish takes it: `commit_all` commits the PROJECT ROOT —
         # one repo holding every Built App (ADR-0008) — so under a streaming build it commits half a
         # turn's writes, and `_integrate_remote` then runs an AGENT over that tree to resolve
@@ -14835,13 +14836,16 @@ class Orchestrator:
             if result is None or result.status in ("conflict-unresolved", "error"):
                 detail = result.detail if result else "no remote to pull from"
                 return {"status": result.status if result else "no-remote",
-                        "conflicts": result.conflicts if result else [], "pushed": False, "detail": detail}
+                        "conflicts": result.conflicts if result else [], "pushed": False,
+                        "rejected": False, "detail": detail, "pushDetail": ""}
             pushed = git.push(path)
             return {"status": result.status, "conflicts": result.conflicts,
-                    "pushed": pushed.pushed, "detail": result.detail}
+                    "pushed": pushed.pushed, "rejected": pushed.rejected,
+                    "detail": result.detail, "pushDetail": pushed.detail}
         except Exception as e:
             log.exception("sync failed")
-            return {"status": "error", "conflicts": [], "pushed": False, "detail": f"{type(e).__name__}: {e}"}
+            return {"status": "error", "conflicts": [], "pushed": False, "rejected": False,
+                    "detail": f"{type(e).__name__}: {e}", "pushDetail": ""}
         finally:
             self._release_turn()
 

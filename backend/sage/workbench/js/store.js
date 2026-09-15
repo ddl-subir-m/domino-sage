@@ -6404,13 +6404,22 @@ window.SW = window.SW || {};
     // ARE the answer: pulling settles the question by merging, keeping building settles it by
     // deciding to merge later. Neither is asked again until somebody pushes something new.
     //
-    // A pull can take a while — it resolves conflicts with the agent — and it can fail on a repo
-    // with no remote, so the build only follows a pull that worked.
+    // A pull can take a while — it resolves conflicts with the agent — and the build only follows
+    // a pull whose merge and post-merge push did not fail. A repo with no remote is still a clean
+    // local success: there is nowhere to pull from and nowhere to push to.
     async pullAndBuild(prompt) {
       const result = await SW.api.syncProject();
       if (result.status === 'conflict-unresolved' || result.status === 'error') {
         throw new Error(
           result.detail || SW.brand.text('{assistantName} could not pull the latest changes.')
+        );
+      }
+      if (result.rejected) {
+        const detail = result.pushDetail || result.detail || '';
+        // Stop here, before starting the build: Pull latest is the person's request to make the
+        // local Project and the remote agree, and a rejected push means that did not happen.
+        throw new Error(
+          `Pull latest merged the changes, but the push was rejected. Your work is committed locally and not on the remote. Pull latest again, then build after the push succeeds.${detail ? ` (${detail})` : ''}`
         );
       }
       await Promise.all([store.loadApps({ cascade: false }), store.loadBuild({ keepPreview: true })]);
