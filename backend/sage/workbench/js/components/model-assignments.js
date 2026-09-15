@@ -262,6 +262,10 @@ window.SW = window.SW || {};
       const picked = locked && (served === undefined ? Boolean(mirror) : Boolean(served));
       const moved = barredNow || Boolean(current.shadowed) || picked;
       const runs = moved && answer !== current.model ? answer : '';
+      // Server-provided beside `shadowed`: the catalog may still cast a shadow after a pick or the
+      // sensitivity lock has defeated the pin. The sentence belongs only to rows where the pin
+      // actually chose the Build turn's model.
+      const pinDecided = Boolean(current.pin_decided);
       const savedModel = current.assigned_model || '';
       // The file and the catalog are two reads. When they disagree, the file names the assignment
       // the next turn will use, while `current.model` is the old catalog still in this Builder.
@@ -320,30 +324,10 @@ window.SW = window.SW || {};
         // greyed menu row cannot carry, because that one says the model is bad and this says the
         // slot is.
         //
-        // Dropped on a row the lock has already moved, but only when it is the signing pin's
-        // sentence: the lock outranks the pin (`llm_router._lock_sensitivity` wraps `_pin_signing`),
-        // so the pin's remedy — switch by changing the holder's model — is not what
-        // frees THIS row while the lock holds. The other two verdicts stay — a model that will not
-        // answer will not answer whatever moved the turn — and the lock's own line, one below, still
-        // says what runs. Which verdict it is comes from the server and not from reading the
-        // sentence, because a sentence is what a brand pack is allowed to change (#276).
-        //
-        // Dropped even where the pin survives the lock, which since #285 is a real case: an approved
-        // signing model IS what these rows run, and the line below now names it. Two sentences
-        // naming one model, with two different remedies, is worse on this row than the one that
-        // starts from the thing the reader came here to change.
-        //
-        // `barredNow` OR `runs`, which is the rule this paragraph always meant: drop the pin's
-        // sentence wherever the line below names what the row runs. The two were the same condition
-        // until #287 widened `runs`, and separating them is what that widening cost. On a row the
-        // pin moved PAST an approved model, `barredNow` is false and the pin's sentence survived
-        // beside the new one — two adjacent sentences naming two different models as what runs, and
-        // the pin's is the false one, because a barred holder means the lock moved the turn on
-        // again. `barredNow` still carries the case with no line below it at all:
-        // `_locked_slot_models` returns nothing when the approved set resolves to none, and gating
-        // on `runs` alone would let the pin's sentence back in at exactly the moment the reader can
-        // act on it least.
-        current.problem && !(current.shadowed && (barredNow || runs))
+        // The row's verdict, unless it is the signing-pin sentence and the server says the pin did
+        // not decide this row's Build turn. `shadowed` is still read by the substitution gate above;
+        // this field is the narrower answer for the sentence.
+        current.problem && !(current.shadowed && !pinDecided)
           ? h('div', { className: 'sw-assignment-problem' }, current.problem)
           : null,
         // What the row would say if the lock were not holding. Not optional once the value above is

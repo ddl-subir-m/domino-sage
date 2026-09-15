@@ -159,6 +159,7 @@ from ..router.models import (
     Mode,
     ModelCatalog,
     Phase,
+    Reason,
     SessionState,
     reasoning_efforts_for,
     signing_slot,
@@ -15507,7 +15508,7 @@ class Orchestrator:
                 fields[f"{slot}_effort"] = assignment["effort"]
         return replace(self._catalog, **fields) if fields else self._catalog
 
-    def model_assignments(self) -> dict:
+    def model_assignments(self, conversation: str | None = None) -> dict:
         """What the model panel is drawn from: the three assignable slots, and the Aliases a person
         may put in them with whether each will actually answer (ADR-0017).
 
@@ -15527,6 +15528,8 @@ class Orchestrator:
         defaults = self._catalog
         project = self.project()
         live = project.shim.catalog
+        approved, lock_refusal = self._sensitivity_for_turn(project, conversation)
+        pick_now = project.control.snapshot()
         # A saved model, not `live != default`. Assigning a slot to the model that happens to BE the
         # deployment default writes an override all the same, and reporting that as "following the
         # default" is a lie with a consequence: the day the deployment default moves, this project
@@ -15631,6 +15634,31 @@ class Orchestrator:
         # those slots are covered.
         unreadable = {slot: _unreadable(slot) for slot in saved.unreadable
                       if slot in ASSIGNABLE_SLOTS}
+
+        def _pin_decided(slot: str) -> bool:
+            if slot not in shadowed or lock_refusal:
+                return False
+            # `shadowed` is a catalog verdict. This is the turn verdict that decides whether the
+            # shadow's sentence is still true after a pick or the sensitivity lock has had its say.
+            # Asked from the router's resolved reason rather than rebuilt here: the row needs to know
+            # whether the signing pin actually chose the model, not why it might have.
+            honours_pick = project.control.selected_mode in (Mode.PLAN, Mode.IMPLEMENT)
+            pick = pick_now.picked_model if honours_pick else None
+            try:
+                state = replace(
+                    pick_now,
+                    picked_model=pick,
+                    chat_thread_id=None,
+                    mode=Mode(slot),
+                    phase=Phase.IMPLEMENT if slot == "implement" else Phase.PLAN,
+                    approved_models=approved.names if approved else None,
+                    approved_order=approved.order if approved else (),
+                )
+                return llm_router.resolve(state, live).reason is Reason.SIGNING_PIN
+            except Exception:
+                log.exception("model assignments: couldn't decide whether the pin holds %s", slot)
+                return False
+
         slots = [
             {
                 "slot": slot,
@@ -15662,6 +15690,10 @@ class Orchestrator:
                 # moved, the shadow's sentence is false while the other two verdicts stay true. The
                 # panel holds the lock's own per-slot answer and this says which line it may drop.
                 "shadowed": slot in shadowed,
+                # Server-computed beside `shadowed`, for the same row and a different question:
+                # `shadowed` says the catalog casts a signing shadow; this says the router's answer
+                # for the Build turn still came from that pin after picks and the lock were applied.
+                "pin_decided": _pin_decided(slot),
             }
             for slot in ASSIGNABLE_SLOTS
         ]
@@ -15703,6 +15735,8 @@ class Orchestrator:
             # the slot still does not run — and the sentence comes back on the next read once the
             # pin is released, which is the shape this comment already ends on.
             #
+            # Historical cost before #302: the new `pin_decided` field now lets the problem gate
+            # keep the remedy when the pin decided, even under a lock. The precedence below stays.
             # The cost, so the next reader is not discovering it, and it is TWO costs because the
             # panel's own gate compounds the ranking. Both measured through the harness rather than
             # read off the gate:

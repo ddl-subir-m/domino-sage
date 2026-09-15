@@ -589,7 +589,7 @@ model only runs in Chat"), and Build's account is complete two controls over. An
 Build instead and Chat is contradicted with nothing on screen to correct it. It costs nothing where
 no pin holds: `_lock_preferences` prefers `sovereign_ask` for an Ask turn and a Chat turn alike.
 
-**Two edges left open, named rather than fixed.** *The first is now decided — see `## Amendment: the row predicts, so it reads the pick (#286)` at the end. The paragraph is kept as written rather than corrected: its argument held where it was made and failed only where it was inherited, which is the part worth recognising.*
+**Two edges left open, named rather than fixed.** *Both are now decided — the first by `## Amendment: the row predicts, so it reads the pick (#286)`, and the second by `## Amendment: the row knows when the pin decided (#302)`. The paragraph is kept as written rather than corrected: its argument held where it was made and failed only where it was inherited, which is the part worth recognising.*
 
 **Two edges, as they stood.** Neither is new here; both are decidable now in a
 way they were not before, which is why they are written down.
@@ -613,7 +613,8 @@ stand.*
 
 ## Amendment: the row predicts, so it reads the pick (#286)
 
-This closes the first of the two edges left open above. The second is untouched and still open.
+This closes the first of the two edges left open above. The second is closed later by
+`## Amendment: the row knows when the pin decided (#302)`.
 
 **The row is a control, not a sentence, so it must predict.** The paragraph above weighs "a sentence a
 beat behind on a row nobody is acting from" — and the row is the closed state of the assignment
@@ -695,12 +696,12 @@ guardrail this router keeps needing: `nearest_approved` is where the lock MOVES 
 docstring is rewritten rather than edited — the old one argues the pick-drop at length, and the right
 function carrying the wrong explanation is a defect this repo has logged more than once.
 
-**The second edge above is still open, and this one comes first.** The panel still cannot tell whether
-the pin survived the lock, so a row's prose can name the right model for the wrong cause. That is a
-field (`model_assignments` sends `shadowed` as a bare boolean), not a rule, and it belongs with the
-gate it feeds. Taken in the other order it would give a confident wrong cause on a row whose model is
-also wrong. *Amended below — the prose no longer names a cause, so this is now about the missing
-CURE alone. The field is still needed, for the remedy rather than for the sentence.*
+**The second edge above is closed by #302, and this one came first.** The panel could not tell whether
+the pin survived the lock, so a row's prose could name the right model for the wrong cause. That was a
+field (`model_assignments` sent `shadowed` as a bare boolean), not a rule, and it belonged with the
+gate it feeds. Taken in the other order it would have given a confident wrong cause on a row whose
+model was also wrong. *Amended below — the prose no longer names a cause, so #302 closes the missing
+cure instead: the row draws `ShadowedSlot.message` only when the server says the pin decided.*
 
 **What shipping this cost in the browser, which the amendment below predicted.** #287 landed first
 and narrowed the drawer's substitution gate to `moved = barredNow || shadowed` — the two rules that
@@ -764,10 +765,10 @@ meaning without a lock. The caller's own preconditions — the forced mode, the 
 
 So one wrongness is traded for another, and deliberately in that direction — #287 settled that a
 wrong model with no sentence gives the reader nothing to doubt, while a wrong explanation beside a
-visible warning at least can be doubted. The row now names the right model. The stale sentence is
-the second edge left open above, reached in one more case rather than in a new way: the fix is still
-the discriminator field, not a fourth conjunct on the drop gate, and it still belongs with the gate
-it feeds rather than here.
+visible warning at least can be doubted. The row now names the right model. The stale sentence was
+the second edge left open above, reached in one more case rather than in a new way. #302 closes it
+with the `pin_decided` assignment-row field and the problem gate that reads it. That field belongs
+with the gate it feeds; `locked_runs_on` and `slot_models` keep the behavior settled here.
 
 ## Amendment: a moved row says so, without claiming a cause (#287)
 
@@ -964,3 +965,27 @@ says as much, and predicted this correctly: #294 changes the COUNT of reads in f
 ordering exactly as it was. The scope shrink recorded under #286 also stands — `_locked_slot_models`
 drops a pick the standing mode will not honour, so a session in Auto never opened this window at all,
 and what was fixed is a session standing in Plan or Implement.
+
+## Amendment: the row knows when the pin decided (#302)
+
+This closes the second of the two edges left open above. `model_assignments` now sends
+`pin_decided` on each assignment row, beside `shadowed`. The two fields are deliberately near each
+other because they describe one row, but they are not the same answer:
+
+- `shadowed` is still the catalog fact from `preflight.shadowed_slots`. Its existing readers stay:
+  `model-assignments.js` uses it as one input to `moved`, which decides whether the select should
+  show `slot_models[slot]`; and it uses it to know that `problem` is the signing-pin sentence rather
+  than an unreadable-row or endpoint verdict.
+- `pin_decided` is the turn fact. The server asks the router for the row's Build turn and sends true
+  only when the resolved reason is `SIGNING_PIN`. A pick that the standing mode honours defeats it,
+  and the sensitivity lock can defeat it too. The browser does not re-derive either rule.
+
+That leaves `locked_runs_on` and `slot_models` exactly where #286 put them. They still answer what a
+slot runs under the lock. `pin_decided` answers a narrower question for the sentence only: should
+`ShadowedSlot.message` be drawn on this row?
+
+The measured case is closed by that split. Plan can hold an approved model, Implement can sign, and
+a live approved pick can re-select Plan's own model. The row then shows the picked model and does not
+draw "this model won't run", because the pin did not decide. In the opposite case, where the holder's
+model is approved and no pick defeated it, `ShadowedSlot.message` reaches the shadowed row again and
+names the real cure: change the holder's model.

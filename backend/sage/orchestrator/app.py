@@ -1715,7 +1715,7 @@ async def set_model(request: Request) -> JSONResponse:
 
 
 @control_app.get("/api/project/model/assignments")
-def model_assignments() -> JSONResponse:
+def model_assignments(conversation: str = "") -> JSONResponse:
     """What the model panel draws: the three assignable slots and the Aliases they can hold (#17).
 
     Its own route rather than a field on `/api/project/status`, which the UI polls: this makes a
@@ -1725,7 +1725,11 @@ def model_assignments() -> JSONResponse:
     It is also what re-verifies a save. The panel writes, then reads this again — so the check runs
     against the assignment that just landed, without a second cache to keep true.
     """
-    return JSONResponse(content=orchestrator.model_assignments())
+    try:
+        asked = safe_id(conversation, "conversation id") if conversation else None
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Invalid conversation id"})
+    return JSONResponse(content=orchestrator.model_assignments(asked))
 
 
 @control_app.post("/api/project/sync")
