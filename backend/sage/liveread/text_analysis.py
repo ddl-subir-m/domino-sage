@@ -316,14 +316,18 @@ def _validated_rows(text: str, records: list[Record], output_field: str,
                     labels: list[str] | None) -> list[list[str]]:
     body = _json_body(text)
     items = body.get("records") if isinstance(body, dict) else body
+    # ValueError and not the TypeError the isinstance suggests, for the reason the sibling at
+    # `service.py:16014` gives: this parses a MODEL's answer, the caller above catches ValueError
+    # for every way that answer can be malformed, and the three raises below are ValueError too.
+    # Splitting one condition across two exception types would let these two escape that handler.
     if not isinstance(items, list):
-        raise ValueError("missing records")
+        raise ValueError("missing records")  # noqa: TRY004
     expected = {r.task_id: r for r in records}
     seen: set[str] = set()
     out: list[list[str]] = []
     for item in items:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            raise ValueError("malformed id")
+            raise ValueError("malformed id")  # noqa: TRY004 — see the note above
         task_id = item["id"]
         if task_id in seen:
             raise ValueError("duplicate id")

@@ -28,7 +28,7 @@ window.SW = window.SW || {};
 
   // What a row in the Data section is called on screen, keyed by kind. Held beside RESOURCE_META
   // rather than inside it: that map answers "what does Domino call this", which a pack renames, and
-  // this one answers "what is it", which a pack does not (ADR-0053).
+  // this one answers "what is it", which a pack does not (ADR-0054).
   const DATA_TYPES = { dataset: 'File volume', datasource: 'Data connection' };
 
   // The icon each data kind draws, by name in the bundled set. Read lazily through `icons` so this
@@ -497,7 +497,7 @@ window.SW = window.SW || {};
 
     // What a data row is called on screen — `File volume`, `Data connection` — where that differs
     // from what Domino calls it. Undefined for every other kind, which is also how a caller asks
-    // "is this a data row": a group's subhead and a catalogue row both key off it (ADR-0053).
+    // "is this a data row": a group's subhead and a catalogue row both key off it (ADR-0054).
     //
     // Words rather than names (ADR-0026): they say what a person is looking at rather than naming a
     // Domino primitive, so there is nothing for a pack to rename them TO.

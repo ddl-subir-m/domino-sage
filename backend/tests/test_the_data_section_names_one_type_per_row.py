@@ -1,4 +1,4 @@
-"""The Data section names one type per row, and says each fact once (ADR-0053).
+"""The Data section names one type per row, and says each fact once (ADR-0054).
 
 Three labels stood over two things. The Resource Browser drew a `Data` group holding `Datasets` and
 `Data Sources`; Browse Domino's sidebar offered `Data`, `Datasets` and `Data Sources` as three

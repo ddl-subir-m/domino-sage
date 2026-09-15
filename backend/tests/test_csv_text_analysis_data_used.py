@@ -24,20 +24,21 @@ REPO = Path(__file__).resolve().parents[2]
 BINARY = REPO / "node_modules" / ".bin" / "opencode"
 
 
-COMPLAINTS = "ticket,complaint,email\n" + "\n".join([
-    "A-1,Package arrived late,person0@example.invalid",
-    "A-2,Delivery driver went to the wrong door,person1@example.invalid",
-    "A-3,Tracking said delivered but it was missing,person2@example.invalid",
-    "A-4,Shipment was delayed for three days,person3@example.invalid",
-    "B-1,Item arrived broken,person4@example.invalid",
-    "B-2,The box was crushed and the product cracked,person5@example.invalid",
-    "B-3,Screen was scratched when I opened it,person6@example.invalid",
-    "B-4,One part was dented in transit,person7@example.invalid",
-    "C-1,I was charged twice,person8@example.invalid",
-    "C-2,The refund never posted,person9@example.invalid",
-    "C-3,Invoice shows the wrong tax,person10@example.invalid",
-    "C-4,Promo credit is missing from my bill,person11@example.invalid",
-]) + "\n"
+COMPLAINTS = (
+    "ticket,complaint,email\n"
+    "A-1,Package arrived late,person0@example.invalid\n"
+    "A-2,Delivery driver went to the wrong door,person1@example.invalid\n"
+    "A-3,Tracking said delivered but it was missing,person2@example.invalid\n"
+    "A-4,Shipment was delayed for three days,person3@example.invalid\n"
+    "B-1,Item arrived broken,person4@example.invalid\n"
+    "B-2,The box was crushed and the product cracked,person5@example.invalid\n"
+    "B-3,Screen was scratched when I opened it,person6@example.invalid\n"
+    "B-4,One part was dented in transit,person7@example.invalid\n"
+    "C-1,I was charged twice,person8@example.invalid\n"
+    "C-2,The refund never posted,person9@example.invalid\n"
+    "C-3,Invoice shows the wrong tax,person10@example.invalid\n"
+    "C-4,Promo credit is missing from my bill,person11@example.invalid\n"
+)
 
 
 def analysis_args(**over):
@@ -143,11 +144,12 @@ def test_bad_returned_ids_are_not_complete_output(tmp_path, bad):
 
 
 def test_missing_and_duplicated_source_ids_still_get_task_local_ids(tmp_path):
-    content = "ticket,complaint,email\n" + "\n".join([
-        "DUP,Package arrived late,one@example.invalid",
-        "DUP,Item arrived broken,two@example.invalid",
-        ",I was charged twice,three@example.invalid",
-    ]) + "\n"
+    content = (
+        "ticket,complaint,email\n"
+        "DUP,Package arrived late,one@example.invalid\n"
+        "DUP,Item arrived broken,two@example.invalid\n"
+        ",I was charged twice,three@example.invalid\n"
+    )
     calls = []
 
     def provider(request):
@@ -181,6 +183,35 @@ def test_ordinary_retry_does_not_double_count_records(tmp_path):
     assert len(calls) == 2
     assert reply["coverage"]["processed"] == 12
     assert reply["coverage"]["failed"] == 0
+
+
+def test_an_answer_carrying_no_records_list_is_retried_then_reported(tmp_path):
+    """Pins `_validated_rows`' first guard, which nothing else reaches.
+
+    The model is asked for `{"records": [...]}` and answers under another key, so
+    `body.get("records")` is None — an ordinary wrong-key mistake, not an exotic one. The guard
+    raises ValueError, `_run_batch` retries once and then reports the batch failed with a reason.
+
+    `error` is asserted and not only the count, because that is what makes this test discriminating.
+    The guard carries a `noqa: TRY004` refusing ruff's advice to raise TypeError, and TypeError is
+    not caught anywhere on this path: the broad `except Exception` above wraps only the model call,
+    and `future.result()` sits under `except CancelledError` alone. So swapping the exception type,
+    or dropping the guard and letting `for item in items` run on None, does not turn this test's
+    assertion red — it makes `run.perform` raise, which is redder still. Either way it is caught
+    here rather than against a live model.
+    """
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        return sse(json.dumps({"result": []}))
+
+    turn, data, _, _ = setup_turn(tmp_path, provider=provider)
+    reply = json.loads(run.perform("live_read_files", analysis_args(batch_size=12), turn))
+    assert len(calls) == 2
+    assert reply["coverage"]["processed"] == 0
+    assert reply["coverage"]["failed"] == 12
+    assert data.events("turn1")[0]["batches"][0]["error"] == "missing records"
 
 
 def test_policy_denial_is_not_retried_unchanged(tmp_path):
@@ -377,7 +408,12 @@ def test_real_opencode_analyzes_complaints_without_sending_email_column(tmp_path
                                cwd=runtime, env=env, stdout=log, stderr=log)
     try:
         url = f"http://127.0.0.1:{port}"
-        for _ in range(150):
+        # 60s, the budget its sibling uses for this identical boot
+        # (`test_csv_calculation_opencode.py`). 15s was enough only when this test happened to run
+        # first in its worker: OpenCode stays alive and simply has not served `/global/health` yet,
+        # so the short budget failed as "did not start". Adding any test re-deals `--dist load`, and
+        # the run where this one lands second is the run it reds.
+        for _ in range(600):
             try:
                 if httpx.get(url + "/global/health", timeout=1).status_code == 200:
                     break

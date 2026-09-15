@@ -31,7 +31,7 @@ _Avoid_: primitive, composable piece, integration, connector
 A Domino connector to an external store, such as Snowflake or BigQuery, usable by anyone
 holding permission on it. On screen it sits in the [[Data]] section, where it is called a
 [[Data connection]] — the type a row wears, which does not rename this and which a pack does not
-rename either ([ADR-0053](docs/adr/0053-the-data-section-names-one-type-per-row.md)).
+rename either ([ADR-0054](docs/adr/0054-the-data-section-names-one-type-per-row.md)).
 _Kind_: name
 _Avoid_: database, connection, datasource (one word), data connector
 
@@ -63,7 +63,7 @@ A Domino Dataset mounted into the project container, holding files. It is the on
 Project can hold, the one thing a [[Binding]] names that is not a Resource, and what an
 [[Upload]] is written into when it crosses and becomes an [[Attachment]]. The name is Domino's,
 so a pack renames it. On screen it sits in the [[Data]] section, where it is called a
-[[File volume]] — the type a row wears, never this name ([ADR-0053](docs/adr/0053-the-data-section-names-one-type-per-row.md)).
+[[File volume]] — the type a row wears, never this name ([ADR-0054](docs/adr/0054-the-data-section-names-one-type-per-row.md)).
 _Kind_: name
 _Avoid_: volume on its own (Domino sells a thing called Volumes and this is not it — the type label
 is the two words [[File volume]]), folder (that is a directory inside one), data source, Asset (that
@@ -73,7 +73,7 @@ is the category this is in, not this)
 The one section both the [[Resource Browser]] and Browse Domino group every data-like thing under —
 today a [[Dataset]] or a [[Data Source]]. It is a section and not a kind: nothing is *a* Data. Its
 members are told apart by their type, which is [[File volume]] or [[Data connection]]
-([ADR-0053](docs/adr/0053-the-data-section-names-one-type-per-row.md)).
+([ADR-0054](docs/adr/0054-the-data-section-names-one-type-per-row.md)).
 _Kind_: word
 _Avoid_: Datasets or Data Sources as the section's name (the section holds both and claims neither),
 data resources, storage, sources
@@ -95,7 +95,7 @@ same fact — a [[Data Source]] is the only kind Sage connects out to, and there
 is connected and not one. That is true today and not by construction: a file-shaped connection —
 Domino sells those as External Data Volumes and NetApp volumes — would be reached over a connection
 and would still hold files, and the day Sage models one, this type and [[File volume]] both have a
-claim on it and the section needs a third answer (ADR-0053).
+claim on it and the section needs a third answer (ADR-0054).
 _Kind_: word
 _Avoid_: Data Source as the type (that is the Domino name for the thing, and this is what the row
 calls it), connection on its own (that word is [[Resource]] reach, ADR-0001), tabular, connector,
@@ -767,3 +767,26 @@ be picked, and says why at the point of picking. See
 _Kind_: word
 _Avoid_: health, status (both belong to [[Problem]]), availability or unavailable (those describe a
 Resource that exists but will not serve), dead, stale, orphaned, existence check, validation
+
+**Incoming changes**:
+Commits already on the Project's git remote that this workspace has not merged. Named by what
+arrived rather than by who pushed it: Sage can read the commits but cannot tell that their author is
+a [[Collaborator]], which means somebody Domino records on the Project, while push access to the
+repo is a separate grant. So no label here names a person-kind. Computed from refs a fetch already
+left behind, never written down. See
+[ADR-0053](docs/adr/0053-a-merge-the-model-resolved-is-undone-not-gated.md).
+_Kind_: word
+_Avoid_: teammate's changes, their changes, somebody else's code (each names a person Sage cannot
+identify), upstream, remote changes (both read as git internals rather than as work someone did)
+
+**Pull and build**:
+One act, not two: taking [[Incoming changes]] into the workspace and then running the build that was
+already asked for. It is never chosen on its own — the only way to it is the offer that appears when
+a build meets incoming changes, so the person's request is the build and the merge is the
+prerequisite Sage adds. That is why nothing here asks them to decide about a merge they did not ask
+for. Where conflicts arise, the model resolves them and the result is reversible rather than held
+(ADR-0053).
+_Kind_: word
+_Avoid_: Pull latest (no control carries that label), Sync (Domino's own word, for [[Domino
+Artifacts]]), merge (it is the prerequisite, not what anybody asked for), Update, Refresh (both hide
+that a build runs)

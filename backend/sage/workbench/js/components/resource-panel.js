@@ -71,7 +71,7 @@ window.SW = window.SW || {};
       key: 'data',
       label: 'Data',
       // One section for everything data-like, and a subhead says what a person is looking at rather
-      // than which Domino primitive it is — File volume, Data connection (ADR-0053).
+      // than which Domino primitive it is — File volume, Data connection (ADR-0054).
       //
       // No labels here: `SW.util.dataTypeLabel` holds them, because the catalog's sidebar draws the
       // same two words and two lists of them would be two places to forget.

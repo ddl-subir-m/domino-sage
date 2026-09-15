@@ -10,7 +10,7 @@ window.SW = window.SW || {};
   // why this is a surface you open rather than a 300px column you live beside.
   const KINDS = [
     { key: null, label: 'Everything' },
-    // One entry for everything data-like, with the two shapes under it (ADR-0053). It is also where
+    // One entry for everything data-like, with the two shapes under it (ADR-0054). It is also where
     // a group's add door lands: without this entry the door opened on Everything, because a single
     // kind would have meant Datasets and hidden Data Sources behind a filter nobody chose (#164).
     //
@@ -78,7 +78,7 @@ window.SW = window.SW || {};
             // Domino noun, which is all `labelFor` was ever answering here.
             h('span', null,
               SW.util.dataTypeLabel(resource.kind) || SW.util.labelFor(resource.kind)),
-            // `originName` and `ownerName` were dropped from this line (ADR-0053). A Dataset's
+            // `originName` and `ownerName` were dropped from this line (ADR-0054). A Dataset's
             // origin is its Project, which `description` above already says as `in <project>`, so
             // the row printed one project name twice; a Data Source has no Project and fell back to
             // the platform's own name, which is true of every row in a catalogue of that platform.

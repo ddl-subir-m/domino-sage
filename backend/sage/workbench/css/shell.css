@@ -874,7 +874,7 @@ a.sw-topnav-link {
 .sw-cat-drill-name { font-weight: 600; flex: 1; min-width: 0; }
 
 .sw-res-icon { font-size: var(--fs-13); width: 16px; flex: none; text-align: center; }
-/* A drawn icon rather than an emoji, for the kinds that have one (ADR-0053). Muted, because it
+/* A drawn icon rather than an emoji, for the kinds that have one (ADR-0054). Muted, because it
    marks the row's kind and is not competing with the name beside it; the SVG is 1em, so both
    surfaces keep sizing their icon exactly as they sized the emoji. */
 .sw-res-icon .anticon, .sw-cat-icon .anticon { color: var(--gray-500); }
