@@ -800,7 +800,8 @@ SW.api = {
   // choice, persisted and shared — which is a different thing from `setBuildModel` above, and the
   // reason they are not folded together. `null` clears one, putting the slot back on the
   // deployment default; the backend tells that from a slot nobody mentioned.
-  modelAssignments: () => request('/project/model/assignments'),
+  modelAssignments: (conversation = '') => request(
+    `/project/model/assignments${conversation ? `?conversation=${encodeURIComponent(conversation)}` : ''}`),
   // The sensitivity lock, for every surface that draws it (ADR-0043). Its own read rather than a
   // field on the status poll, which runs on a timer: a locked Project would pay a gateway listing
   // per tick to answer a question that only moves when an administrator edits a group.
