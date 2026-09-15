@@ -508,6 +508,12 @@ window.SW = window.SW || {};
     // The icon as a NODE, for the places that render one. `iconFor` stays the emoji and stays the
     // answer in a string — a drawer title and a menu label both interpolate it, and an element in a
     // template literal is the string `[object Object]`.
+    //
+    // The emoji fallback covers a kind with no entry in DATA_ICONS, and nothing else: `theme.js`
+    // proxies `window.icons` so that any capitalised name answers with a blank span, so a missing
+    // name — or a bundle that never loaded — draws nothing here rather than falling back. That is
+    // theme.js's deliberate policy for every icon on the page, not a gap in this one. What stops a
+    // typo reaching it is `test_a_data_row_draws_an_icon_the_bundle_actually_exports`.
     iconNodeFor(kind) {
       const name = DATA_ICONS[kind];
       const glyph = name && typeof icons !== 'undefined' && icons[name];

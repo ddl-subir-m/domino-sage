@@ -93,8 +93,9 @@ platform's own name — true of every row in a catalogue of that platform. `owne
 empty string since the modal was written and drew a separator with nothing after it.
 
 All three are gone from the meta line, which now carries the type and what the platform actually
-answered about the row. `api.js` still puts `originName` and `ownerName` on the row object because
-the drawer reads them; this is about what the list draws.
+answered about the row. `api.js` still puts `originName` and `ownerName` on the row object: the
+drawer reads `ownerName`, and `originName` now has no reader at all. Dropping it is a change to
+`api.js` rather than to what the list draws, so it is left for whoever next opens that file.
 
 ## Two icons, drawn rather than typed
 

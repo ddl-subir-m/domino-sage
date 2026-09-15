@@ -1034,7 +1034,7 @@ a.sw-topnav-link {
 .sw-cat-side-btn > span:first-child { flex: 1; }
 /* A shape under the section it is a shape of. Indented rather than dimmed: it is a real filter,
    and the nesting is what stops `Data` reading as a third kind of thing beside its own halves. */
-.sw-cat-side-btn.is-child { padding-left: var(--s4); font-size: var(--fs-12); }
+.sw-cat-side-btn.is-child { padding-left: var(--s4); }
 .sw-cat-side-btn:hover { background: var(--gray-100); }
 .sw-cat-side-btn.is-active { background: var(--purple-100); color: var(--purple-700); font-weight: 600; }
 .sw-cat-side-count { font-size: var(--fs-11); color: var(--gray-500); }

@@ -22,6 +22,7 @@ button. So both components are drawn and the labels are read off the tree.
 """
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -31,6 +32,9 @@ import pytest
 from sage.tools import brand_lint as lint
 
 _HARNESS = Path(__file__).resolve().parent / "js" / "data_grouping_harness.mjs"
+_UTIL = (
+    Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js" / "util.js"
+).read_text()
 
 pytestmark = pytest.mark.skipif(
     shutil.which("node") is None,
@@ -42,10 +46,10 @@ pytestmark = pytest.mark.skipif(
 _OLD_HEADINGS = ["Datasets", "Data Sources", "Dataset", "Data Source", "Tabular"]
 
 
-def _draw(act: str) -> dict:
+def _draw(act: str, **extra) -> dict:
     out = subprocess.run(
         ["node", str(_HARNESS)],
-        input=json.dumps({"act": act}),
+        input=json.dumps({"act": act, **extra}),
         check=False,
         capture_output=True,
         text=True,
@@ -132,6 +136,20 @@ def test_a_catalog_row_says_each_fact_once():
         assert len(row["meta"]) == 1, row
 
 
+@pytest.mark.parametrize(
+    ("kind", "said"),
+    [("dataset", "Pick a File volume to continue"),
+     ("datasource", "Pick a Data connection to continue"),
+     ("model_llm", "Pick a model to continue")],
+)
+def test_the_rail_asks_for_a_kind_by_the_name_it_draws(kind, said):
+    """The sentence points at the section under it. Asked for a `dataset` it used to say `Pick a
+    Dataset`, over rows now headed `Data / File volume` and beside a catalogue whose filter is
+    called the same — a word neither surface draws any more. Kinds with no type word are unchanged:
+    the rail still heads them with the Domino noun, so the sentence still says it."""
+    assert _draw("panel-both", filter=kind)["hint"] == said
+
+
 # ------------------------------------------------------------------ the icons
 
 
@@ -142,6 +160,22 @@ def test_a_data_row_draws_an_icon_rather_than_an_emoji():
     assert icons["Sales rows"]["kind"] == "node"
     assert icons["Sales rows"]["glyph"] == "HddOutlined"
     assert icons["Warehouse"]["glyph"] == "ApiOutlined"
+
+
+def test_a_data_row_draws_an_icon_the_bundle_actually_exports():
+    """The harness cannot answer this one. Its `icons` stub is a Proxy that hands back any name it
+    is asked for, and the app's own `theme.js` proxies a missing name to a blank span, so a rename
+    to a plausible-but-absent icon — `DatabaseFilled` where the bundle has `DatabaseOutlined` —
+    draws an empty slot in the rail and stays green everywhere else. This reads the bundle."""
+    bundle = (
+        Path(__file__).resolve().parents[1]
+        / "sage" / "workbench" / "vendor" / "icons.umd.min.js"
+    ).read_text()
+    names = re.findall(r"DATA_ICONS = \{([^}]*)\}", _UTIL)[0]
+    drawn = re.findall(r"'([A-Z][A-Za-z]+)'", names)
+    assert drawn, "DATA_ICONS no longer reads as a map of quoted icon names"
+    for name in drawn:
+        assert f"{name}:" in bundle, f"{name} is not exported by the bundled icon set"
 
 
 def test_a_kind_with_no_drawn_icon_keeps_its_emoji():

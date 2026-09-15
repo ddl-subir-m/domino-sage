@@ -938,7 +938,15 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-panel-hint' },
-          h('span', null, `Pick a ${SW.util.labelFor(panelFilter)} to continue`),
+          // The type word, where the kind has one: the section this sentence points at is headed
+          // `Data / File volume`, and `Pick a Dataset` sent somebody looking for a word neither
+          // this rail nor the catalogue draws any more (ADR-0054). Every other kind keeps the
+          // Domino noun, which is what `labelFor` still answers for it.
+          h(
+            'span',
+            null,
+            `Pick a ${SW.util.dataTypeLabel(panelFilter) || SW.util.labelFor(panelFilter)} to continue`
+          ),
           h(
             Button,
             {

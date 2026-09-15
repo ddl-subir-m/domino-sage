@@ -8,12 +8,13 @@
 // meta line is composed at draw time, and the sidebar's nesting is a class on a button. So both
 // components are drawn and read off the tree.
 //
-// Input on stdin: `{ "act": "panel-both" | "panel-one-type" | "catalog" }`.
+// Input on stdin: `{ "act": "panel-both" | "panel-one-type" | "catalog", "filter": <kind>? }`.
+// `filter` is the kind the assistant asked somebody to pick, which the rail says a sentence about.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { act, filter } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 // A Dataset and a Data Source, plus a model, so the Data section is drawn beside a group that is
 // not it. `panel-one-type` drops the Data Source: that is the case the old naming rule got wrong,
@@ -156,6 +157,7 @@ if (act === 'catalog') {
     resourceGroups: groupsFor(act),
     resourcesLoading: false,
     resourceErrors: {},
+    panelFilter: filter || null,
   });
   cursor = 0;
   const nodes = flatten(SW.ResourcePanel());
@@ -185,6 +187,10 @@ if (act === 'catalog') {
   const names = nodes.filter((n) => cls(n) === 'sw-res-name').map(text);
   report.icons = report.icons.map((icon, i) => ({ ...icon, name: names[i] }));
   void name;
+  // The sentence the rail says above the rows when the assistant asked for a kind. It points AT the
+  // section below it, so it has to be read off the same draw those subheads came from.
+  const hint = nodes.find((n) => cls(n) === 'sw-panel-hint');
+  report.hint = hint ? text(flatten(hint).find((d) => d.t === 'span' && !cls(d)) || {}) : null;
 }
 
 console.log(JSON.stringify(report));
