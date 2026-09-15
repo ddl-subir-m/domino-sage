@@ -89,6 +89,9 @@ let failSave = false;
 // never derived here: the server owns `signing_slot` (ADR-0032) and a copy of that rule in this file
 // would let the panel agree with a fixture rather than with the product (#276).
 let signingSlot = null;
+// Served on assignment rows since #302: `shadowed` says the catalog casts a pin shadow, while this
+// says the router still let that pin decide after picks and the sensitivity lock had their turn.
+let pinDecidedSlots = {};
 // The slots whose `model_overrides.json` row the server could not read and dropped (#289). Served,
 // never derived from `overrides` above: the drop happens inside `read_catalog_overrides`, so by the
 // time anything panel-shaped sees the file it holds only the rows that parsed. A fixture that tried
@@ -142,6 +145,14 @@ const shadow = (slot) => (signingSlot && slot !== signingSlot
     + `Change the ${signingSlot} model to switch.`
   : null);
 
+const pinDecided = (slot) => {
+  if (!shadow(slot)) return false;
+  if (Object.prototype.hasOwnProperty.call(pinDecidedSlots, slot)) return !!pinDecidedSlots[slot];
+  // A held pin is the default fixture. Defeated pins are explicit server answers in each step;
+  // this harness must not reproduce the router's pick or lock rules.
+  return true;
+};
+
 const panel = () => ({
   slots: ['plan', 'implement', 'ask'].map((slot) => ({
     slot, model: model(slot), default: DEFAULTS[slot],
@@ -153,6 +164,7 @@ const panel = () => ({
     // being equal, because those two can be equal only because `model` is stale.
     assigned_model: assignedModel(slot),
     shadowed: shadow(slot) !== null,
+    pin_decided: pinDecided(slot),
     // Preflight's verdict, which the server recomputes on every read — so a slot assigned to a
     // model that will not answer reports it the moment the panel re-reads after the save.
     // A dropped row ranks between them, which is the server's own order and not this file's
@@ -179,7 +191,7 @@ const panel = () => ({
 
 function serve(url, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
-  const path = String(url).replace(/^\.\/api/, '');
+  const path = String(url).replace(/^\.\/api/, '').split('?')[0];
   // Not the same thing as a gateway that answered "I cannot list": this is the read never landing
   // at all, which leaves the panel with no slots of its own to draw.
   if (path === '/project/model/assignments' && listing === 'throw') throw new Error('network down');
@@ -306,6 +318,7 @@ for (const step of steps) {
   for (const slot of step.noDefault || []) DEFAULTS[slot] = null;
   sensitivity = step.sensitivity || null;
   signingSlot = step.signing || null;
+  pinDecidedSlots = step.pinDecided || {};
   unreadableSlots = step.unreadable || [];
   SW.store.set({
     buildRunning: !!step.running,
