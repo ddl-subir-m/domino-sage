@@ -57,8 +57,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from ..orchestrator import brand
-from ..router.models import EFFORTS_WITH_TOOLS
 from ..router.models import reasoning_efforts_for as measured_reasoning_efforts
+from ..router.models import reasoning_efforts_with_tools as measured_reasoning_efforts_with_tools
 
 
 def _platform_api() -> str:
@@ -124,10 +124,8 @@ class LlmAlias:
         function tools (#280, ADR-0049).
 
         A second answer and not a replacement, because both questions are asked and they differ:
-        Chat's chip offers the enum, Build's menu offers this, because every Build turn carries tools
-        and `enforcement.py` enforces exactly this narrowing on the way out. Offering the wide list
-        in Build names a level the shim then drops — the turn runs at the alias's own default while
-        the control says otherwise (#295).
+        Generic listings retain the no-tools choices. Chat, Build and assignment controls use this
+        tool-compatible list, which `enforcement.py` also checks on the way out (#284, #298).
 
         Computed server-side so the measured table stays in one place; ADR-0049 refuses a second copy
         of it in the browser by name.
@@ -974,15 +972,15 @@ def parse_costs(raw: Any) -> dict[str, float]:
 
 
 # Every legal spelling of `reasoning_effort` across the providers the gateway fronts — the union,
-# so that an enum the gateway does advertise survives the read. Membership here says a value is a
-# value, never that any alias accepts it: `max` is Gemini's top level, `minimal` is one Gemini
+# used only to parse legacy metadata shapes in tests and diagnostics. Membership here says a value
+# is a value, never that any alias accepts it: `max` is Gemini's top level, `minimal` is one Gemini
 # advertises and Vertex then refuses. Which of them an alias can actually run is
 # `router.models.REASONING_EFFORTS`, measured per alias (#280).
 _EFFORT_VALUES = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 
 def parse_reasoning_efforts(raw: Any) -> list[str]:
-    """`inference_params.reasoning_effort` as a list of allowed values, if the alias advertised any."""
+    """Parse legacy enum-shaped data for diagnostics; never use it as capability authority."""
     if not isinstance(raw, dict):
         return []
     value = raw.get("reasoning_effort") or raw.get("reasoning")
@@ -999,49 +997,23 @@ def parse_reasoning_efforts(raw: Any) -> list[str]:
 
 
 def alias_reasoning_efforts(name: str, inference_params: Any = None) -> list[str]:
-    """Gateway enum if present, narrowed by the per-alias measurement where there is one (#280).
+    """The no-tools effort choices Sage has measured locally for this alias (#280, #284).
 
-    Metadata stays the authority over WHICH levels an alias offers — it is the live answer and the
-    table is a snapshot. It is not the authority over which ones RUN: Gemini advertises `minimal`
-    and Vertex behind it answers 400 "Thinking level unsupported: THINKING_LEVEL_MINIMAL", so an
-    enum published verbatim would put a level in the picker that kills the turn that picks it. A
-    probed alias has had every spelling tried against it (scripts/reasoning-probe.py), so its row is
-    complete and may narrow the enum; an alias nobody probed has no row and the enum passes through.
-
-    The cost of narrowing is a level the gateway adds after the probe, which stays hidden until
-    somebody re-probes. That is the trade this whole table already makes: a missing control costs
-    one choice, a level that 400s costs the turn.
-
-    Order comes from the table, never from the enum. This list is rendered straight into the effort
-    menu, and the gateway's enum is alphabetical — obeying it would read High / Low / Max / Medium.
+    `inference_params` is accepted for caller compatibility and deliberately ignored: it contains
+    request defaults, not capability enums. Order and membership come from the local table.
     """
-    listed = parse_reasoning_efforts(inference_params)
-    measured = measured_reasoning_efforts(name)
-    if listed and measured:
-        return [e for e in measured if e in listed]
-    return listed or list(measured)
+    _ = inference_params
+    return list(measured_reasoning_efforts(name))
 
 
 def alias_efforts_with_tools(name: str, efforts: list[str]) -> list[str]:
-    """`efforts` narrowed to what this alias keeps when the request also carries function tools.
+    """The tool-carrying effort choices Sage has measured locally for this alias.
 
-    Takes the already-resolved list rather than recomputing it, so it can never be WIDER than what
-    the alias was published as offering — the invariant `reasoning_efforts_with_tools` is held to in
-    `router/models.py`, kept here by construction instead of by a second comparison.
-
-    An alias with no tool-shape row keeps its whole list, which is the same default the table itself
-    takes: a tool-carrying request is unremarkable to almost every alias, and narrowing on no
-    evidence is precisely the bug the guard this replaced used to have (#282).
-
-    Reads `EFFORTS_WITH_TOOLS` rather than calling `reasoning_efforts_with_tools(name)`, because
-    that helper answers `reasoning_efforts_for(name)` when there is no row — indistinguishable here
-    from a genuine narrowing, and for an alias the gateway published but nobody probed it would
-    intersect the enum against an empty measured list and hide every level.
+    `efforts` is accepted for caller compatibility, but the resolver is local and measured. This
+    keeps the provider, the menus, save validation and the outgoing request path on one answer.
     """
-    row = EFFORTS_WITH_TOOLS.get(name.rsplit("/", 1)[-1])
-    if row is None:
-        return list(efforts)
-    return [e for e in efforts if e in row]
+    _ = efforts
+    return list(measured_reasoning_efforts_with_tools(name))
 
 
 def parse_groups(raw: Any) -> list[str]:
@@ -2116,11 +2088,8 @@ class DominoResourceProvider:
 # tidy: every real record carries `streaming` and `responses` alongside the capabilities that
 # actually tell aliases apart, and several report the gateway's fallback {1.0, 2.0} rate.
 #
-# `reasoning_efforts` is filled the way the live records fill it, rather than left to a default: the
-# gateway publishes `inference_params: {}` for every alias today, so `alias_reasoning_efforts` with
-# no metadata is literally what a real row computes. It is carried because callers read this field
-# as it stands (#291) — a row that left it empty here would say "every level was probed and
-# refused", which is a verdict, not a fixture that has not been filled in.
+# `reasoning_efforts` uses the same local resolver as live records (#284). Gateway request defaults
+# do not change these choices. An empty resolved row means Sage offers no measured effort levels.
 # Evaluated once at import, where the old fallback ran per request. Equivalent only while
 # `REASONING_EFFORTS` (router/models.py) is a dict literal nothing mutates — if it ever becomes
 # loaded, patched or measured at runtime, these rows must go back to computing per call, or they

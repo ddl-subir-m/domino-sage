@@ -29,6 +29,7 @@ from sage.resources.provider import (
     ModelApiListing,
     ResourceUnavailable,
     accessible_ids,
+    alias_reasoning_efforts,
     cascade_levels,
     dialect_for,
     join_aliases,
@@ -134,14 +135,20 @@ def test_a_silent_alias_record_falls_back_to_the_measured_table():
     assert sonnet.reasoning_efforts == []
 
 
-def test_inference_params_win_over_the_measured_table():
+def test_inference_params_do_not_change_the_measured_choices():
     rec = {
         "id": "x", "name": "gpt-5.4", "display_name": "GPT",
         "inference_params": {"reasoning_effort": ["low", "high"]},
     }
     (a,) = join_aliases({"gpt-5.4"}, [rec])
-    assert a.reasoning_efforts == ["low", "high"]
+    assert a.reasoning_efforts == ["none", "low", "medium", "high", "xhigh"]
     assert parse_reasoning_efforts({"reasoning_effort": {"enum": ["low", "medium"]}}) == ["low", "medium"]
+
+
+def test_empty_and_legacy_inference_params_do_not_add_choices():
+    assert parse_reasoning_efforts({}) == []
+    assert parse_reasoning_efforts({"reasoning_effort": {"default": "high"}}) == []
+    assert alias_reasoning_efforts("nobody-probed-this", {"reasoning_effort": ["low"]}) == []
 
 
 def test_costs_keep_the_numbers_and_invent_nothing():

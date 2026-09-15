@@ -352,39 +352,9 @@ window.SW = window.SW || {};
     // predicts, so the answer has one source; two copies of it in one file could only disagree,
     // and a menu offering a level its alias refuses is a 400 on the turn rather than a wrong label.
     const aliasRow = (id) => aliases.find((a) => a.alias === id);
-    const effortsFor = (id) => ((aliasRow(id) || {}).reasoning_efforts) || [];
-    // What BUILD may offer, which is a different question from the enum and has to be (ADR-0049).
-    // Every Build turn carries function tools, and `enforcement.py` drops a level the alias will not
-    // take beside them — `gpt-5.4` advertises five and keeps one. Offering the wide list here puts
-    // `gpt-5.4 · High` on the chip over a turn running at the alias's own default, which is this
-    // ticket's own defect arriving through the control it added (#295).
-    //
-    // A second READER of a distinction the server already draws, not a second rule: the narrowing
-    // is `EFFORTS_WITH_TOOLS` in `router/models.py`, published as its own field rather than copied
-    // into the browser, which ADR-0049 refuses by name. The `length > 0` rule below is still shared
-    // with the Chat chip and still has one copy.
-    //
-    // An ABSENT field is not an empty list — `undefined` means no evidence, `[]` means the alias
-    // really offers none — and the two absences get DIFFERENT treatment here and in `strandedLevel`,
-    // deliberately, because the honest answer to "no evidence" differs by question.
-    //
-    // Asked "may this level stand?", no evidence means YES: `strandedLevel` refuses nothing, because
-    // refusing on an absence is the false claim (#295's second HIGH).
-    //
-    // Asked "which levels may I OFFER?", no evidence means NONE, and that is this function. The list
-    // is what the send path will enforce; without it there is nothing honest to put in a submenu.
-    // Falling back to the wide enum would put `gpt-5.4 · High` on the chip over a turn the shim runs
-    // at the alias default — this ticket's first HIGH, re-entered through the back door. So the
-    // control is absent rather than wrong, which is the trade this whole seam keeps making.
-    //
-    // The cost, stated because it is real: a row from a producer that has not learned this field
-    // offers no submenu at all, and a level already standing can then only be cleared through the
-    // way-back row. Reachable while the gateway leg is refusing AND the membership row predates
-    // #295; the next successful listing carries the field and restores the control.
-    const buildEffortsFor = (id) => {
-      const row = aliasRow(id);
-      return row && row.reasoning_efforts_with_tools ? row.reasoning_efforts_with_tools : [];
-    };
+    const effortsFor = (id) => ((aliasRow(id) || {}).reasoning_efforts_with_tools) || [];
+    // No field means no evidence, not a measured refusal. Offer no levels without evidence;
+    // the separate stranded-level checks keep stored values visible until evidence arrives.
     const efforts = effortsFor(effectiveModel);
 
     // What a chip's click actually did. In Build a mentioned Dataset file is an Attachment — the
@@ -746,21 +716,7 @@ window.SW = window.SW || {};
       // enum and dropped on every Build turn — and the chip would name it over a turn running at the
       // alias default (#295).
       //
-      // NOT identical to what the send path accepts, and the gap is worth naming rather than
-      // implying: for an alias the gateway publishes an enum for but nobody has probed,
-      // `alias_efforts_with_tools` returns that enum untouched while `enforcement.py` asks
-      // `reasoning_efforts_with_tools`, which falls through to the empty measured row and drops
-      // every level. The published list is then wider than the accepted one. Latent while the
-      // gateway reports `inference_params: {}` for every alias (#284), pre-existing on the Chat
-      // chip for the same reason, and tracked on #298 — the surface that can close it is the
-      // provider, not this menu.
-      //
-      // The OTHER direction is latent for the same reason and is named so the next reader does not
-      // assume there is only one: the browser reads `reasoning_efforts ∩ EFFORTS_WITH_TOOLS[alias]`
-      // while `enforcement.py` reads the tool table UN-intersected. Were the gateway ever to publish
-      // an enum excluding a level the measured table holds, this menu would refuse one the send path
-      // accepts — over-refusing rather than over-offering. Both collapse while `inference_params` is
-      // empty, which is why the two lists coincide today.
+      // The server resolves this list with the same local rule as save and send (#284, #298).
       return (alias.reasoning_efforts_with_tools || []).includes(buildEffort) ? '' : buildEffort;
     };
     // The level the live pick is running at, where there is one the alias will take. Empty for no
@@ -860,7 +816,7 @@ window.SW = window.SW || {};
     // not to a control that forgets itself on restart (ADR-0017). Never on a barred row either: it
     // cannot be picked at all, so a submenu under it would be a door into a wall.
     const withEfforts = (row, id) => {
-      const levels = buildEffortsFor(id);
+      const levels = effortsFor(id);
       // A level standing against this row's model that the model will not take. Reachable without
       // anyone having done anything wrong: a deployment default can move under a live pick, and the
       // measured table can narrow when an alias is probed (#280). Dropped from the menu, the level
@@ -995,17 +951,24 @@ window.SW = window.SW || {};
       }),
       onClick: ({ key }) => {
         const next = aliases.find((a) => a.alias === key);
-        const keep = next && (next.reasoning_efforts || []).includes(reasoningEffort)
+        const keep = next && (next.reasoning_efforts_with_tools || []).includes(reasoningEffort)
           ? reasoningEffort
           : null;
         SW.store.setChatModel(key, keep);
       },
     };
 
+    const strandedChatEffort = reasoningEffort && aliasRow(effectiveModel)
+      && aliasRow(effectiveModel).reasoning_efforts_with_tools
+      && !efforts.includes(reasoningEffort) ? reasoningEffort : null;
     const effortMenu = {
       items: [
         { key: 'default', label: effortLabel(null) },
         ...efforts.map((value) => ({ key: value, label: effortLabel(value) })),
+        ...(strandedChatEffort ? [{ key: '__stranded__',
+          label: `${effortLabel(strandedChatEffort)} — not accepted`, disabled: true,
+          title: `${effectiveModel} doesn't accept this level beside tools. Choose Model default or another level.`,
+        }] : []),
       ],
       onClick: ({ key }) => {
         SW.store.setChatModel(model, key === 'default' ? null : key);
@@ -1376,14 +1339,16 @@ window.SW = window.SW || {};
               )
             ),
           !showMode &&
-            efforts.length > 0 &&
+            (efforts.length > 0 || strandedChatEffort) &&
             h(
               Dropdown,
               { menu: effortMenu, trigger: ['click'], placement: 'topLeft' },
               h(
                 Button,
                 { size: 'small' },
-                h(Space, { size: 4 }, effortLabel(reasoningEffort), h(DownOutlined, { style: { fontSize: 9 } }))
+                h(Space, { size: 4 }, strandedChatEffort
+                  ? `${effortLabel(strandedChatEffort)} — not accepted` : effortLabel(reasoningEffort),
+                  h(DownOutlined, { style: { fontSize: 9 } }))
               )
             ),
           h(
@@ -1535,10 +1500,9 @@ window.SW = window.SW || {};
                       && catalog[signingSlot] !== catalog[modeSlot]);
                     const effortSlot = pinMoves ? signingSlot : modeSlot;
                     // Narrowed the SAME way the pick's level is, because the two are about to be
-                    // compared. The pick goes through `buildEffortsFor` before it may appear; the
-                    // assignment was read raw off the catalog — and the drawer validates a slot's
-                    // level against the WIDE enum (`service.py`'s `alias.get("reasoning_efforts")`),
-                    // so a slot can legitimately hold a level the alias drops beside tools.
+                    // compared. The pick goes through `effortsFor` before it may appear; the
+                    // assignment was read raw off the catalog. Save validation now uses the same
+                    // tool-compatible list, but legacy stored levels can still be stranded (#298).
                     //
                     // `plan_effort="high"` on `gpt-5.4` is exactly that: the send path drops it, so
                     // the unpicked slot and a pick carrying no level BOTH run at the model default —

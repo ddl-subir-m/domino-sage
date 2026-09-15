@@ -163,8 +163,7 @@ async function fetchDominoListing() {
         capabilities: a.capabilities || [],
         reasoning_efforts: a.reasoning_efforts || [],
         // The same list narrowed to what survives beside function tools (#295). Carried as well as
-        // the wide one, not instead of it: Chat's chip offers the enum and Build's menu offers this,
-        // because every Build turn carries tools and the send path enforces exactly this narrowing.
+        // the no-tools one: Chat and Build controls carry tools and read this list (#298).
         // NO `|| []`, deliberately, and the same passthrough `rowFromMember` uses. `undefined`
         // means nobody answered and `[]` means the alias answered "none" — the distinction the
         // Build menu is built on. Defaulting here would make a producer that has not learned this

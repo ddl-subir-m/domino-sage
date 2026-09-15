@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from sage.assets.provider import Asset, FakeAssetProvider
 from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
@@ -146,6 +148,77 @@ def test_attaching_an_undeclared_dataset_leaves_every_model_open(tmp_path, monke
     assert state["enabled"] is True
     assert state["locked"] is False
     assert state["datasets"] == []
+
+
+def test_removing_sensitive_data_unlocks_with_a_prefixed_undeclared_attachment(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+
+    def taxonomy(dataset_id):
+        if dataset_id.startswith("dataset:"):
+            raise ValueError("400: entityId must be a bare Dataset ID")
+        return []
+
+    orch._assets.list_taxonomy_labels = taxonomy
+    sensitive = orch.attach_file("ds_claims", "rows.csv")
+    orch.attach_file("dataset:ds_logs", "rows.csv")
+    assert orch.sensitivity_state()["locked"] is True
+
+    orch.detach_file(sensitive["path"])
+
+    state = orch.sensitivity_state()
+    assert state["locked"] is False
+    assert state["datasets"] == []
+    assert state["approved"] == []
+
+
+@pytest.mark.parametrize("door", ["file", "folder", "existing"])
+@pytest.mark.parametrize("classification", ["ordinary", "sensitive", "unavailable"])
+def test_a_prefixed_attachment_checks_the_real_classification(
+    tmp_path, monkeypatch, door, classification
+):
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    asked = []
+
+    def taxonomy(dataset_id):
+        asked.append(dataset_id)
+        if dataset_id.startswith("dataset:"):
+            raise ValueError("400: entityId must be a bare Dataset ID")
+        if classification == "unavailable":
+            raise RuntimeError("Domino is down")
+        return ["sensitive"] if classification == "sensitive" else []
+
+    orch._assets.list_taxonomy_labels = taxonomy
+    if door == "folder":
+        orch.attach_folder("dataset:ds_logs", "")
+    else:
+        orch.attach_file("dataset:ds_logs", "rows.csv")
+    if door == "existing":
+        project = orch.project(start_preview=False)
+        project.attached[0]["dataset_id"] = "dataset:ds_logs"
+        project.workspace.write_attachments(project.attached)
+        orch._project = None
+        orch.project(start_preview=False)
+    else:
+        assert _manifest(orch)[0]["dataset_id"] == "ds_logs"
+
+    state = orch.sensitivity_state()
+    assert state["locked"] is (classification != "ordinary")
+    assert asked and set(asked) == {"ds_logs"}
+
+
+def test_an_existing_prefixed_attachment_joins_its_bare_dataset_binding(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    orch.attach_file("ds_claims", "rows.csv")
+    project = orch.project(start_preview=False)
+    project.attached[0]["dataset_id"] = "dataset:ds_claims"
+    orch.bind_dataset("ds_claims")
+
+    assert orch.sensitivity_state()["datasets"] == ["claims"]
 
 
 def test_an_unreadable_dataset_listing_locks_an_attached_project_too(tmp_path, monkeypatch):

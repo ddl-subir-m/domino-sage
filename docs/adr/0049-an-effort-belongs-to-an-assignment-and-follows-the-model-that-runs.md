@@ -100,7 +100,10 @@ verbatim offers the broken level and hides a working one.
 So "which efforts does this alias accept" is a measured table (#280), not
 `reasoning_efforts_for()`'s `gpt-5`-in-the-name match, and not the gateway's `inference_params` —
 which is `{}` for every alias, gpt-5.4 included, read straight off `/api/aliases` rather than
-through Sage (#284). The data-driven path has never had input.
+through Sage (#284). **Updated 2026-09-15 (#284):** `inference_params` contains request defaults,
+not capability enums. Scalar defaults, empty objects and legacy enum shapes cannot change Sage's
+choices. One local resolver answers both request contexts; unknown aliases get no Sage effort
+control or Sage-selected override. Generic listings retain the no-tools choices.
 
 Nor is validity global. `provider._EFFORT_VALUES` is one union of every value any alias might take,
 and it is the wrong shape for the question a picker asks — a person offered `xhigh` because some
@@ -166,8 +169,11 @@ contains a level its backing model rejects.
   check, not before it. An assignment that is a pick but is refused by the model on the wire leaves
   the turn with no effort at all, which is the state the floor was written for; asked first, the
   floor is skipped by the one assignment already known to be stale.
-- The Chat picker is unchanged. Its effort was always the in-session-act row of the table above,
-  and it keeps behaving as it does today.
+- **Updated 2026-09-15 (#298):** the Chat effort chip, Build effort submenu and assignments drawer
+  all use the resolver's tool-compatible choices because their turns carry tools. Assignment save
+  validation uses the same local answer without a gateway read. Unset and explicit `none` remain
+  distinct. Unsupported explicit selections are refused; stored stale levels remain visible as
+  unavailable and are not reported as effective or sent.
 - `preflight` gains nothing. It answers "can this slot's model be reached", and an effort cannot
   make a reachable alias unreachable. An effort the alias would refuse is refused on save (#281),
   against the per-alias table (#280).

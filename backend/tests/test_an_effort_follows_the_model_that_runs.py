@@ -427,20 +427,10 @@ def test_every_measured_level_reaches_the_wire_on_the_shape_that_accepts_it(alia
 
 
 def test_only_one_level_survives_a_real_build_turn_on_the_deployments_own_plan_model():
-    """The narrowing is right and the reach of it is a gap somebody else has to close.
+    """The send guard still protects legacy stored levels after #298 narrows menu and save.
 
-    `gpt-5.4` is the shipped `plan` and `ask` model, and every Build turn carries tools, so `none`
-    is the only level it can actually run there. Sending any other would be a hard 400 on the whole
-    turn, so this send path is not where the answer is — but `set_catalog` validates against the
-    full enum and the panel draws from it, so a person saves `high`, sees it kept, and gets the
-    alias's own default forever with one deduped INFO line as the only witness.
-
-    Written down as a test rather than a comment because it is a live claim about shipped defaults:
-    the day the write path or the panel narrows by request shape too, this goes red and names them.
-
-    That day is #298, which carries the whole design — narrow `model_assignments()` first, then
-    `_merge_assignment`, both against `reasoning_efforts_with_tools`. Invert or delete this test
-    there. It asserts the gap on purpose and is not an invariant to preserve.
+    The actual menu/save/send agreement is tested through their producers in
+    `test_a_build_pick_carries_its_own_effort.py`; this keeps the send guard covered independently.
     """
     control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
     runs = [e for e in REASONING_EFFORTS["gpt-5.4"]

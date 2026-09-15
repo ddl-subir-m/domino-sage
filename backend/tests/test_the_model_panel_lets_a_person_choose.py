@@ -612,7 +612,7 @@ def test_the_levels_offered_are_the_ones_that_row_s_model_accepts():
         "__model_default__", "low", "medium", "high", "max"]
     # The same panel, one row down, offering a different set off a different model.
     assert [o["value"] for o in _effort_row(drawn, "Ask and Chat")["options"]] == [
-        "__model_default__", "none", "low", "medium", "high", "xhigh"]
+        "__model_default__", "none"]
     # `minimal` is advertised by the gateway and 400s at Vertex, so the narrowing takes it off
     # before the panel ever sees it — asserted because publishing the enum verbatim is the one
     # mistake this list is drawn to avoid.
@@ -623,9 +623,9 @@ def test_setting_a_level_writes_the_level_and_leaves_the_model_alone():
     """Its own call carrying its own key. `set_catalog` reads an ABSENT key as "leave it", so this
     is what stops the two controls on one row clobbering each other — the same argument that keeps
     the panel from posting all three rows whenever one changes."""
-    (drawn,) = _drawn([{"setEffort": ["plan", "high"]}])
-    assert drawn["wrote"] == [{"catalog": {"plan": {"effort": "high"}}}]
-    assert drawn["afterEffort"] == "high"
+    (drawn,) = _drawn([{"setEffort": ["plan", "none"]}])
+    assert drawn["wrote"] == [{"catalog": {"plan": {"effort": "none"}}}]
+    assert drawn["afterEffort"] == "none"
     # The model half untouched, and still following the default it was following.
     assert drawn["after"] == "__default__"
 
@@ -678,12 +678,12 @@ def test_the_row_says_why_even_when_the_control_itself_is_gone():
         'coder doesn\'t accept "Max", so the reasoning effort was cleared.']
 
 
-def test_a_level_the_new_model_accepts_survives_the_change_in_silence():
-    """The sentence is about a drop, not about a model change. Drawn on a row that kept its level it
+def test_saving_the_same_model_keeps_its_supported_effort_in_silence():
+    """The sentence is about a drop. Drawn on a row that kept its level it
     would be a warning about something that did not happen."""
     *_, drawn = _drawn([{"set": ["plan", "gemini-3.7-flash"]},
                         {"setEffort": ["plan", "high"]},
-                        {"set": ["plan", "gpt-5.4"]}])
+                        {"set": ["plan", "gemini-3.7-flash"]}])
     assert drawn["afterEffort"] == "high"
     assert drawn["afterEffortNotes"] == []
 
@@ -769,7 +769,7 @@ def test_a_locked_row_offers_the_levels_of_the_model_it_would_save():
     # `plan` holds `gpt-5.4` and the lock runs it on `opus`, which takes no level at all.
     assert _row(drawn, "Plan")["value"] == "opus"
     assert [o["value"] for o in _effort_row(drawn, "Plan")["options"]] == [
-        "__model_default__", "none", "low", "medium", "high", "xhigh"]
+        "__model_default__", "none"]
 
 
 def test_a_shadowed_row_says_what_runs_and_what_was_saved_without_contradiction():
@@ -860,7 +860,7 @@ def test_a_stranded_level_beside_levels_the_model_does_offer():
     assert control["options"][-1]["label"] == "Max — not accepted"
     # The levels it does offer are all still there, and so is the way back.
     assert [o["value"] for o in control["options"][:-1]] == [
-        "__model_default__", "none", "low", "medium", "high", "xhigh"]
+        "__model_default__", "none"]
 
 
 # ---- a row the file could not hand over (#289) ---------------------------------------------
