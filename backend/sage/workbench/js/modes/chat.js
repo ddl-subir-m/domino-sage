@@ -171,7 +171,13 @@ window.SW = window.SW || {};
                       // The kind's label is a pack noun now, and there is no article engine, so
                       // "one Dataset" rather than "a Dataset" — a pack renaming the noun to
                       // something vowel-initial would have made the article wrong.
-                      `Waiting for you to attach one ${SW.util.labelFor(pendingTurn.turn.waitsForAttachment)}.`,
+                      //
+                      // The type word where the kind has one, because the button below opens the
+                      // rail on this same kind and the rail says `Pick a File volume to continue`
+                      // (ADR-0054). Two words for one thing, three lines apart, is the reading that
+                      // ADR set out to remove.
+                      `Waiting for you to attach one ${SW.util.dataTypeLabel(pendingTurn.turn.waitsForAttachment)
+                        || SW.util.labelFor(pendingTurn.turn.waitsForAttachment)}.`,
                       h(
                         Button,
                         {

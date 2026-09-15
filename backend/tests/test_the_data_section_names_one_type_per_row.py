@@ -36,10 +36,10 @@ _UTIL = (
     Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js" / "util.js"
 ).read_text()
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("node") is None,
-    reason="node is not on PATH (it is in the Sage image)",
-)
+# The gate sits inside `_draw` rather than on the module. A module-level `pytestmark` takes the
+# whole file with it, and the one test here that reads the icon bundle straight off disk needs no
+# node at all — under a module mark it went silent on exactly the laptops the harness went silent
+# on, which is where an icon typo would otherwise have been caught.
 
 # The words the old naming used, which must not survive as a heading in either surface. Kept as a
 # list rather than asserted one at a time so a heading that comes back reports itself by name.
@@ -47,6 +47,8 @@ _OLD_HEADINGS = ["Datasets", "Data Sources", "Dataset", "Data Source", "Tabular"
 
 
 def _draw(act: str, **extra) -> dict:
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH (it is in the Sage image)")
     out = subprocess.run(
         ["node", str(_HARNESS)],
         input=json.dumps({"act": act, **extra}),
@@ -150,6 +152,46 @@ def test_the_rail_asks_for_a_kind_by_the_name_it_draws(kind, said):
     assert _draw("panel-both", filter=kind)["hint"] == said
 
 
+# --------------------------------------------------- every place that names a kind
+
+# Every file that asks `SW.util.labelFor` what to call a kind, and whether it reaches for the type
+# word first. This is a roster and not a rule because the answer is a judgement each time, and the
+# judgement is the thing worth pinning: ADR-0054 moved two surfaces onto the type word and the first
+# pass at it moved ONE, leaving a Chat card saying `attach one Dataset` beside a button that opened
+# a rail saying `Pick a File volume`. A file that starts naming kinds reds this test and has to say
+# which word it says.
+_NAMES_A_KIND = {
+    # The rail's "Pick a X to continue", and the Chat card whose button opens that same rail on that
+    # same kind. They are one sentence split across two surfaces, so they say one word.
+    "components/resource-panel.js": True,
+    "modes/chat.js": True,
+    # The catalogue row's meta line — the other half of the Data section.
+    "components/resource-catalog.js": True,
+    # The `@`-mention row's caption, deliberately NOT type-aware: a type word reads as a type
+    # because a section above it already named the domain, and this list has no section. Somebody
+    # scanning it is looking for a thing they know Domino by name. See ADR-0054.
+    "components/composer.js": False,
+}
+
+
+def test_every_place_that_names_a_kind_has_decided_which_word_it_says():
+    """The defect this catches is a site nobody opened, not a site somebody got wrong."""
+    root = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
+    found = {}
+    for path in sorted(root.rglob("*.js")):
+        if "vendor" in path.parts:
+            continue
+        body = path.read_text()
+        if "SW.util.labelFor(" not in body:
+            continue
+        found[str(path.relative_to(root))] = "SW.util.dataTypeLabel(" in body
+
+    assert set(found) == set(_NAMES_A_KIND), (
+        "a file started or stopped naming a kind; decide which word it says and list it here"
+    )
+    assert found == _NAMES_A_KIND, "a listed file changed which word it says"
+
+
 # ------------------------------------------------------------------ the icons
 
 
@@ -165,14 +207,19 @@ def test_a_data_row_draws_an_icon_rather_than_an_emoji():
 def test_a_data_row_draws_an_icon_the_bundle_actually_exports():
     """The harness cannot answer this one. Its `icons` stub is a Proxy that hands back any name it
     is asked for, and the app's own `theme.js` proxies a missing name to a blank span, so a rename
-    to a plausible-but-absent icon — `DatabaseFilled` where the bundle has `DatabaseOutlined` —
-    draws an empty slot in the rail and stays green everywhere else. This reads the bundle."""
+    to an icon the bundle does not carry draws an empty slot in the rail and stays green everywhere
+    else. This reads the bundle.
+
+    No example name is given on purpose. The first plant written for this test was `DatabaseFilled`,
+    which the bundle exports — the plant passed, and it was right to. An example here would be a
+    name somebody later checks against the bundle instead of running the test."""
     bundle = (
         Path(__file__).resolve().parents[1]
         / "sage" / "workbench" / "vendor" / "icons.umd.min.js"
     ).read_text()
-    names = re.findall(r"DATA_ICONS = \{([^}]*)\}", _UTIL)[0]
-    drawn = re.findall(r"'([A-Z][A-Za-z]+)'", names)
+    blocks = re.findall(r"DATA_ICONS = \{([^}]*)\}", _UTIL)
+    assert len(blocks) == 1, "DATA_ICONS is no longer one brace-delimited map in util.js"
+    drawn = re.findall(r"'([A-Z][A-Za-z]+)'", blocks[0])
     assert drawn, "DATA_ICONS no longer reads as a map of quoted icon names"
     for name in drawn:
         assert f"{name}:" in bundle, f"{name} is not exported by the bundled icon set"

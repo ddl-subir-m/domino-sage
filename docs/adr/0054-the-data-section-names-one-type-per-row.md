@@ -93,9 +93,19 @@ platform's own name — true of every row in a catalogue of that platform. `owne
 empty string since the modal was written and drew a separator with nothing after it.
 
 All three are gone from the meta line, which now carries the type and what the platform actually
-answered about the row. `api.js` still puts `originName` and `ownerName` on the row object: the
-drawer reads `ownerName`, and `originName` now has no reader at all. Dropping it is a change to
-`api.js` rather than to what the list draws, so it is left for whoever next opens that file.
+answered about the row. `api.js` still puts `originName` and `ownerName` on the row object and
+neither now has a reader: the object `catalog()` builds is consumed by `resource-catalog.js` alone,
+and clicking a row hands the drawer an id, which it re-resolves through `SW.api.resource` off
+`resourceIndex` — a different object that never passed through this mapping. Dropping both fields
+is a change to `api.js` rather than to what the list draws, so it is left for whoever next opens
+that file.
+
+The `@`-mention row in the composer still says the Domino noun, and that is deliberate. A type word
+says what shape a thing is; it is readable because the section above it has already said which
+domain we are in. The mention list has no such section, and somebody scanning it is trying to find
+a thing they know Domino by name — `File volume` with no `Data` over it tells them less than
+`Dataset` does. The rule this ADR sets is about the Data section, not about every place a kind is
+ever named. If the mention list grows its own grouping, revisit it.
 
 ## Two icons, drawn rather than typed
 
