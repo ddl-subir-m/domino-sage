@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from sage.gateway.client import FakeGatewayClient
 from sage.router.model_control import ModelControl
 from sage.router.models import Mode, ModelCatalog, Phase
@@ -129,3 +131,52 @@ def test_a_read_only_chat_answer_is_not_offered_agentic_tools(caplog):
     assert {"apply_patch", "bash", "task", "todowrite"}.isdisjoint(names)
     assert {"read", "glob", "grep", "sage-live-read_live_read_table",
             "sage-live-read_live_read_files"} <= names
+
+
+@pytest.mark.parametrize("web_requested", [False, True])
+def test_a_data_artifact_chat_turn_gets_only_read_and_scoped_artifact_tools(caplog, web_requested):
+    """A chart/table Chat turn may write the artifact, but not become a broad agent loop."""
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    shim = EnforcementShim(control, CATALOG, FakeGatewayClient())
+    chat_token = control.arm_chat("thr_artifact")
+    artifact_token = control.arm_chat_artifact()
+    web_token = control.arm_web() if web_requested else None
+
+    with caplog.at_level(logging.INFO, logger="sage.shim"):
+        list(shim.handle(_req(
+            "apply_patch",
+            "bash",
+            "edit",
+            "glob",
+            "grep",
+            "task",
+            "todowrite",
+            "webfetch",
+            "write",
+            "artifact_write",
+            "create_file",
+            "unknown_writer",
+            "sage-live-read_live_read_table",
+            "sage-live-read_live_read_files",
+        ), {}))
+
+    control.disarm_chat_artifact(artifact_token)
+    control.disarm_chat(chat_token)
+    if web_token is not None:
+        control.disarm_web(web_token)
+    sent = shim.gateway.seen[-1][0]
+    names = {t["function"]["name"] for t in sent["tools"]}
+
+    assert {"apply_patch", "bash", "edit", "write", "task", "todowrite", "create_file", "unknown_writer"}.isdisjoint(names)
+    assert ("webfetch" in names) is web_requested
+    assert {"read", "glob", "grep", "artifact_write", "sage-live-read_live_read_table",
+            "sage-live-read_live_read_files"} <= names
+
+
+def test_the_scoped_writer_is_absent_outside_the_artifact_lane():
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    shim = EnforcementShim(control, CATALOG, FakeGatewayClient())
+    list(shim.handle(_req("write", "artifact_write"), {}))
+    names = {t["function"]["name"] for t in shim.gateway.seen[-1][0]["tools"]}
+    assert "write" in names
+    assert "artifact_write" not in names

@@ -189,7 +189,7 @@ from ..workspace.threads import (
     title_from_prompt,
     withhold_table_rows,
 )
-from . import brand, chat_compact, recall, scope, table_rank, withhold
+from . import brand, chat_compact, chat_intent, recall, scope, table_rank, withhold
 from . import handoff as chat_handoff
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
@@ -9683,6 +9683,66 @@ class Orchestrator:
         """
         return tuple((s.binding, s.rows.table) for s in self._shared(project))
 
+    def write_chat_artifact(self, body: dict) -> dict:
+        """The artifact tool cannot select another thread or write outside its examples folder."""
+        project = self.project(start_preview=False, seed_app=False)
+        state = project.control.snapshot()
+        thread_id = body.get("thread_id")
+        if (not state.chat_artifact_turn or state.read_only_turn
+                or not thread_id or thread_id != state.chat_thread_id):
+            raise ValueError("Artifact writes require the active data artifact Chat turn.")
+        path = body.get("path")
+        content = body.get("content")
+        if not isinstance(path, str) or not isinstance(content, str):
+            raise TypeError("Artifact path and content must be strings.")
+        rel = PurePosix(path)
+        if (rel.is_absolute() or ".." in rel.parts or "\\" in path
+                or not path.startswith(f"examples/{thread_id}/")):
+            raise ValueError(f"Artifact writes must stay under examples/{thread_id}/.")
+        folder = project.record.path.resolve() / "examples" / thread_id
+        dest = (project.record.path / path).resolve()
+        if folder.resolve() != folder or dest == folder or not dest.is_relative_to(folder):
+            raise ValueError("Artifact path escapes its thread folder.")
+        if not path.endswith((".png", ".table.json")):
+            raise ValueError("Artifact writes must use .png or .table.json so row protection applies.")
+        encoding = body.get("encoding", "utf8")
+        if encoding == "svg" and path.endswith(".png"):
+            import xml.etree.ElementTree as ET
+
+            import resvg_py
+
+            # SVG is an existing image format, not executable code. Reject external resources
+            # before rendering; the model cannot make a read or web call through its markup.
+            if "<!DOCTYPE" in content.upper():
+                raise ValueError("Chart SVG cannot declare entities.")
+            try:
+                svg = ET.fromstring(content)
+            except ET.ParseError as e:
+                raise ValueError("Chart SVG is not valid XML.") from e
+            shapes = {"svg", "g", "rect", "path", "line", "polyline", "polygon", "text", "tspan",
+                      "circle", "ellipse", "title", "desc"}
+            if svg.tag.rsplit("}", 1)[-1] != "svg":
+                raise ValueError("Chart SVG requires an svg root.")
+            for node in svg.iter():
+                if node.tag.rsplit("}", 1)[-1] not in shapes or any(
+                    key.rsplit("}", 1)[-1] == "href" or "url(" in value.lower()
+                    for key, value in node.attrib.items()
+                ):
+                    raise ValueError("Chart SVG must use inline shapes and text without external resources.")
+            data = resvg_py.svg_to_bytes(svg_string=content, width=1200, height=700)
+        elif encoding == "base64" and path.endswith(".png"):
+            try:
+                data = base64.b64decode(content, validate=True)
+            except ValueError as e:
+                raise ValueError("Artifact content is not valid base64.") from e
+        elif encoding == "utf8" and path.endswith(".table.json"):
+            data = content.encode("utf-8")
+        else:
+            raise ValueError("Use utf8 for table JSON, or svg/base64 for PNG charts.")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        return {"path": path, "bytes": len(data)}
+
     def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
         """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`.
 
@@ -9999,9 +10059,9 @@ class Orchestrator:
         # spends a whole turn and ends exactly where this starts — which is how a build request
         # became 90 seconds of spinner and "ask again with a smaller question".
         #
-        # Only the regex short-circuits. The model classifier still runs after a turn, because
-        # it judges the assistant's reply as well as the ask, and it cannot do that before one
-        # exists.
+        # The regex handles explicit asks without spending a call. The intent classifier below
+        # may also offer Build before Chat runs. The legacy reply classifier remains for uncertain
+        # or other Chat turns, where it judges the reply as well as the ask.
         #
         # NOT under `asking`, which is the guard on echoing the person's sentence back and nothing
         # more. `asking` is false on exactly the turns a card replays into (`skip_table_gate`,
@@ -10026,6 +10086,29 @@ class Orchestrator:
         history = store.read_history(thread_id)
         _warn_if_history_lossy(history, "_chat_stream")
         urls = _urls_in_chat(prompt, history)
+        # Send descriptors only, never file contents or sample rows, to the Ask classifier.
+        intent_context = "\n".join(
+            json.dumps({key: item[key] for key in ("kind", "name", "path", "scope")
+                        if key in item})
+            for item in items
+            if item.get("kind") in {"file", "artifact", "table", "dataset", "data_source", "datasource"}
+        )
+        intent = chat_intent.start(
+            prompt, context=intent_context, has_bound_context=bool(intent_context),
+            gateway=project.shim.gateway, catalog=project.shim.catalog,
+            version=project.shim.version,
+        ).result()
+        bounded_intent = intent.valid and intent.label in {"plain_answer", "data_answer", "data_artifact"}
+        if (intent.valid and intent.label == "build_app"
+                and chat_handoff.should_offer_explicit(store.read_handoffs(thread_id))):
+            store.mark_handoff_suggested(thread_id)
+            offer = {"type": "handoff-suggest", "reason": "classifier"}
+            store.append_history(thread_id, offer)
+            done = {"type": "done", "ok": True, "decision": "handoff"}
+            finish(done)
+            yield offer
+            yield done
+            return
         if self._opencode_mcp_at is None:
             # Counted at the point the turn is pinned as Chat, which is where its tool list is about
             # to be assembled. A turn counted here was handed no Live read, whatever it then said.
@@ -10056,8 +10139,17 @@ class Orchestrator:
         # and an un-armed restart would refuse every turn all over again.
         withheld_token = project.control.arm_withheld(recall.withheld(history))
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
+        artifact_token = (
+            project.control.arm_chat_artifact()
+            if intent.valid and intent.label == "data_artifact" else None
+        )
+        answer_only = (
+            intent.label in {"plain_answer", "data_answer"}
+            if intent.valid and intent.label != "other_chat"
+            else _plain_chat_answer_only(prompt)
+        )
         plain_answer_token = (
-            project.control.arm_read_only("question") if _plain_chat_answer_only(prompt) else None
+            project.control.arm_read_only("question") if answer_only else None
         )
         # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
         # Chat and Build cannot drift: `llm_router` applies it outside their fork, and this is the
@@ -10070,6 +10162,8 @@ class Orchestrator:
                 project.control.disarm_web(web_token)
             if plain_answer_token is not None:
                 project.control.disarm_read_only(plain_answer_token)
+            if artifact_token is not None:
+                project.control.disarm_chat_artifact(artifact_token)
             yield from refuse_before_the_turn(chat_refusal)
             return
         chat_sens_token = None
@@ -10093,6 +10187,8 @@ class Orchestrator:
                     project.control.disarm_web(web_token)
                 if plain_answer_token is not None:
                     project.control.disarm_read_only(plain_answer_token)
+                if artifact_token is not None:
+                    project.control.disarm_chat_artifact(artifact_token)
                 yield from refuse_before_the_turn(unrecorded_lock_refusal())
                 return
             chat_sens_token = project.control.arm_sensitivity(
@@ -10200,6 +10296,15 @@ class Orchestrator:
                                                 handoffs=store.read_handoffs(thread_id),
                                                 history=prompt_history,
                                                 declined=declined)
+                if artifact_token is not None:
+                    turn_prompt += (
+                        "\nThis is a constrained data artifact turn. Use Live read and file read tools. "
+                        f"Write requested artifacts only with artifact_write under examples/{thread_id}/. "
+                        "Pass thread_id exactly as given. Send table JSON as utf8. For a chart, send standard "
+                        "SVG markup with inline shapes and text as encoding=svg; artifact_write renders it "
+                        "to the requested .png path. Include axes, labels and the requested data series. "
+                        "Shell, tasks, patching and app edits are unavailable."
+                    )
             with timing.span("setup.dispatch"):
                 client.send_prompt(sid, turn_prompt, agent="sage-chat",
                                    attachments=mentioned, chat=True)
@@ -10340,7 +10445,8 @@ class Orchestrator:
                     # app is exactly what runs long — sage-chat writes an Artifact, not an app — so
                     # the turn the person most needs the nudge on is the one that never reaches the
                     # end of this loop. Without it the timeout is a dead end they retype into.
-                    suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
+                    suggestion = (None if bounded_intent else
+                                  self._maybe_suggest_handoff(store, project, thread_id, prompt))
                     if looped:
                         # First, because it is the only branch below that knows WHAT the turn was
                         # doing. Every other one reasons from silence; this one was written where
@@ -10743,7 +10849,8 @@ class Orchestrator:
             finish(done)
             yield done
             with timing.span("after.handoff"):
-                suggestion = self._maybe_suggest_handoff(store, project, thread_id, prompt)
+                suggestion = (None if bounded_intent else
+                              self._maybe_suggest_handoff(store, project, thread_id, prompt))
             if suggestion:
                 store.append_history(thread_id, suggestion)
                 yield suggestion
@@ -10779,6 +10886,8 @@ class Orchestrator:
                 project.control.disarm_web(web_token)
             if plain_answer_token is not None:
                 project.control.disarm_read_only(plain_answer_token)
+            if artifact_token is not None:
+                project.control.disarm_chat_artifact(artifact_token)
             if chat_sens_token is not None:
                 project.control.disarm_sensitivity(chat_sens_token)
             # Reads ~0ms now, and that is the honest number: what it measures is the person

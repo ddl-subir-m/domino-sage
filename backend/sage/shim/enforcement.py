@@ -27,7 +27,7 @@ from ..router.models import (
     reasoning_efforts_with_tools,
     supports_vision,
 )
-from ..router.phase_classifier import READ_ONLY_DENIED, TODO_TOOLS, WEB_TOOLS, assess
+from ..router.phase_classifier import READ_ONLY_DENIED, READ_TOOLS, TODO_TOOLS, WEB_TOOLS, assess
 from . import keepalive as ka
 from .chat_paths import apply_withheld, strip_denied_writes
 
@@ -293,6 +293,18 @@ class EnforcementShim:
                 if (t.get("function") or {}).get("name", "").lower() not in denied
             ]
             request = {**request, "tools": tools}
+        if state.chat_artifact_turn and chat_id and isinstance(request.get("tools"), list):
+            allowed = READ_TOOLS | {"glob", "grep", "live_read_table", "live_read_files", "artifact_write"}
+            if state.web_allowed:
+                allowed |= WEB_TOOLS
+            request = {**request, "tools": [
+                tool for tool in request["tools"]
+                if (name := str((tool.get("function") or {}).get("name", "")).lower()) in allowed
+                or name in {"sage-live-read_live_read_table", "sage-live-read_live_read_files"}
+            ]}
+        elif isinstance(request.get("tools"), list):
+            request = {**request, "tools": [tool for tool in request["tools"]
+                if (tool.get("function") or {}).get("name", "").lower() != "artifact_write"]}
         if chat_id and isinstance(request.get("tools"), list):
             # Whether the model was actually OFFERED Live read, which nothing else can say. Sage has
             # told people it could not see their data — naming the `sage-live-read_` tools from its

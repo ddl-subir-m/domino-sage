@@ -3159,6 +3159,14 @@ async def live_read_mcp(request: Request) -> Response:
     return JSONResponse(out if batch else out[0])
 
 
+@control_app.post("/api/chat/artifact")
+def write_chat_artifact(body: dict = Body(default={})) -> JSONResponse:
+    try:
+        return JSONResponse(orchestrator.write_chat_artifact(body))
+    except (TypeError, ValueError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
 @control_app.post("/api/threads/{thread_id}/live-read")
 def read_again(thread_id: str, body: dict = Body(default={})) -> JSONResponse:
     """Read one card's table again and hand the rows back to the browser (#256, ADR-0045).
