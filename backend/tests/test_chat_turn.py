@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.orchestrator import handoff
+from sage.orchestrator import chat_intent, handoff
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
@@ -28,6 +28,21 @@ class ScriptedGateway:
     def route(self, request, labels):
         self.seen.append((request, labels))
         body = json.dumps({"choices": [{"delta": {"content": self.verdict}}]})
+        yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
+
+
+class IntentGateway:
+    def __init__(self, intent: dict | str):
+        self.intent = intent
+        self.seen: list = []
+
+    def route(self, request, labels):
+        self.seen.append((request, labels))
+        if getattr(labels, "component", "") == "chat-intent":
+            verdict = self.intent if isinstance(self.intent, str) else json.dumps(self.intent)
+        else:
+            verdict = "CHAT"
+        body = json.dumps({"choices": [{"delta": {"content": verdict}}]})
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
@@ -156,16 +171,316 @@ def test_plain_chat_question_is_armed_read_only_before_it_reaches_opencode(
     assert oc.snapshots[0].read_only_reason == "question"
 
 
-def test_chat_data_artifact_question_keeps_normal_chat_tools(tmp_path: Path):
+def test_chat_data_answer_is_armed_read_only_before_it_reaches_opencode(tmp_path: Path):
     orch, oc = _orch(tmp_path, [Turn(text="Here is the table.")],
+                     gateway=IntentGateway({"label": "data_answer", "confidence": 0.91}),
                      client=lambda ws: ObservedControlOpenCode(ws, [Turn(text="Here is the table.")]))
     oc.control = orch.project(start_preview=False).control
     tid = orch.create_thread()["id"]
+    ws = orch.project(start_preview=False).workspace.path
+    path = ".sage/scratch/desk.csv"
+    dest = ws / path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("desk,notional\nRates,10\n")
+    orch.add_thread_context(tid, {"kind": "file", "name": "desk.csv", "path": path})
 
     list(orch.chat_stream(tid, "what's in this CSV?"))
 
     assert oc.snapshots
+    assert oc.snapshots[0].read_only_turn
+    assert oc.snapshots[0].read_only_reason == "question"
+
+
+def test_chat_data_artifact_question_gets_the_artifact_lane(tmp_path: Path):
+    gateway = IntentGateway({"label": "data_artifact", "confidence": 0.92})
+    orch, oc = _orch(
+        tmp_path,
+        [Turn(text="Charted.")],
+        gateway=gateway,
+        client=lambda ws: ObservedControlOpenCode(ws, [Turn(text="Charted.")]),
+    )
+    oc.control = orch.project(start_preview=False).control
+    tid = orch.create_thread()["id"]
+    ws = orch.project(start_preview=False).workspace.path
+    path = ".sage/scratch/pnl.csv"
+    dest = ws / path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("date,pnl,ticker\n2026-06-01,-20,VLTA\n")
+    orch.add_thread_context(tid, {"kind": "file", "name": "pnl.csv", "path": path})
+
+    list(orch.chat_stream(
+        tid,
+        "This is the daily profit and loss for my portfolio this year. Give me the quick read "
+        "and chart the running total with VLTA overlaid.",
+    ))
+
+    assert oc.snapshots
+    assert oc.snapshots[0].chat_artifact_turn
     assert not oc.snapshots[0].read_only_turn
+    calls = [request for request, labels in gateway.seen if labels.component == "chat-intent"]
+    assert len(calls) == 1
+    assert len(gateway.seen) == 1, "a confident artifact verdict must not spend another handoff call"
+    assert calls[0]["model"] == "a"
+    assert not calls[0].get("tools")
+    assert calls[0]["response_format"] == {"type": "json_object"}
+    assert "artifact_write" in oc.prompts[0]["text"]
+    assert not oc.control.snapshot().chat_artifact_turn
+
+
+@pytest.mark.parametrize("label", ["plain_answer", "data_answer", "data_artifact", "build_app", "other_chat"])
+def test_chat_intent_accepts_the_suggested_labels(label):
+    assert chat_intent._parse(json.dumps({"label": label, "confidence": 0.91})).valid
+
+
+@pytest.mark.parametrize("raw", [
+    "CHAT", "[]", '{"label":"unknown","confidence":0.9}',
+    '{"label":"data_artifact","confidence":0.2}',
+    '{"label":"data_artifact","confidence":true}',
+    '{"label":"data_artifact","confidence":NaN}',
+    '{"label":"data_artifact","confidence":1.1}',
+])
+def test_invalid_or_uncertain_chat_intent_has_no_new_lane(raw):
+    assert not chat_intent._parse(raw).valid
+
+
+@pytest.mark.parametrize("label", ["plain_answer", "other_chat"])
+def test_plain_answer_classifier_arms_a_read_only_turn(tmp_path, label):
+    orch, oc = _orch(tmp_path, gateway=IntentGateway({"label": label, "confidence": 0.93}),
+                     client=lambda ws: ObservedControlOpenCode(ws, [Turn(text="An explanation.")]))
+    oc.control = orch.project(start_preview=False).control
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "Explain compound interest."))
+    assert oc.snapshots[0].read_only_turn
+    assert not oc.snapshots[0].chat_artifact_turn
+
+
+def test_classifier_result_is_in_diagnostics_log(tmp_path, caplog):
+    import logging
+    orch, _ = _orch(tmp_path, [Turn(text="An answer.")],
+                    gateway=IntentGateway({"label": "plain_answer", "confidence": 0.93}))
+    tid = orch.create_thread()["id"]
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator.chat_intent"):
+        list(orch.chat_stream(tid, "Explain compound interest."))
+    assert any("chat intent: label=plain_answer confidence=0.93 context=no" in r.message
+               for r in caplog.records)
+
+
+def test_artifact_writer_keeps_text_and_png_bytes_in_the_thread_folder(tmp_path, monkeypatch):
+    import base64
+
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as app_module
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    chat = project.control.arm_chat(tid)
+    artifact = project.control.arm_chat_artifact()
+    monkeypatch.setattr(app_module, "orchestrator", orch)
+    client = TestClient(app_module.control_app)
+    try:
+        for name, content, encoding, expected in [
+            ("table.table.json", '{"columns":["pnl"],"rows":[[20]]}', "utf8",
+             b'{"columns":["pnl"],"rows":[[20]]}'),
+            ("chart.png", base64.b64encode(b"\x89PNG\r\n\x1a\n").decode(), "base64", b"\x89PNG\r\n\x1a\n"),
+        ]:
+            path = f"examples/{tid}/{name}"
+            response = client.post("/api/chat/artifact", json={
+                "thread_id": tid, "path": path, "content": content, "encoding": encoding,
+            })
+            assert response.status_code == 200
+            assert (project.record.path / path).read_bytes() == expected
+    finally:
+        project.control.disarm_chat_artifact(artifact)
+        project.control.disarm_chat(chat)
+    assert client.post("/api/chat/artifact", json={
+        "thread_id": tid, "path": f"examples/{tid}/late.txt", "content": "late",
+    }).status_code == 400
+
+
+def test_a_data_artifact_turn_publishes_a_png_from_the_scoped_writer(tmp_path):
+    import io
+
+    from PIL import Image
+
+    orch, oc = _orch(tmp_path, gateway=IntentGateway({"label": "data_artifact", "confidence": 0.92}))
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    data_path = project.record.path / ".sage" / "scratch" / "pnl.csv"
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_text("date,pnl,ticker\n2026-06-01,-20,VLTA\n")
+    orch.add_thread_context(tid, {"kind": "file", "name": "pnl.csv", "path": ".sage/scratch/pnl.csv"})
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="350" viewBox="0 0 1200 700">'
+           '<rect width="1200" height="700" fill="white"/>'
+           '<text x="50" y="50">Running P&amp;L and VLTA</text>'
+           '<line x1="50" y1="100" x2="50" y2="600" stroke="black"/>'
+           '<polyline points="50,200 600,400 1100,300" fill="none" stroke="red" stroke-width="8"/>'
+           '<polyline points="50,200 600,300 1100,250" fill="none" stroke="green" stroke-width="8"/>'
+           '</svg>')
+    path = f"examples/{tid}/pnl.png"
+    oc.turns = [Turn(text=f"The chart is at {path}.")]
+    original_send = oc.send_prompt
+
+    def send_with_artifact(*args, **kwargs):
+        orch.write_chat_artifact({"thread_id": tid, "path": path,
+                                 "content": svg, "encoding": "svg"})
+        original_send(*args, **kwargs)
+
+    oc.send_prompt = send_with_artifact
+    events = list(orch.chat_stream(tid, "Give me the quick read and chart the running total with VLTA overlaid."))
+    artifacts = next(e for e in events if e.get("type") == "artifacts")["items"]
+    assert any(a["path"] == path and a["kind"] == "chart" for a in artifacts)
+    with Image.open(io.BytesIO((project.record.path / path).read_bytes())) as image:
+        assert image.format == "PNG" and image.size == (1200, 700)
+        assert image.getpixel((600, 400))[:3] == (255, 0, 0)
+        assert image.getpixel((600, 300))[:3] == (0, 128, 0)
+
+
+def test_the_artifact_custom_tool_is_installed_and_posts_the_scoped_write(tmp_path):
+    import subprocess
+
+    from sage.orchestrator.app import _install_opencode_tools
+
+    root = Path(__file__).resolve().parents[2]
+    global_dir = tmp_path / "opencode"
+    _install_opencode_tools(root, global_dir)
+    tool = global_dir / "tools" / "artifact_write.ts"
+    script = """
+import { readFileSync } from 'node:fs';
+const source = readFileSync(process.argv[1]);
+const { default: tool } = await import('data:text/javascript;base64,' + source.toString('base64'));
+const args = { thread_id: 'thr_test', path: 'examples/thr_test/chart.png', content: 'png', encoding: 'utf8' };
+globalThis.fetch = async (url, options) => {
+  if (!url.endsWith('/api/chat/artifact') || options.method !== 'POST') throw Error('wrong route');
+  if (JSON.stringify(JSON.parse(options.body)) !== JSON.stringify(args)) throw Error('wrong body');
+  return { ok: true, json: async () => ({ path: args.path }) };
+};
+const result = await tool.execute(args);
+if (result !== 'Artifact written: ' + args.path) throw Error(result);
+globalThis.fetch = async () => { throw Error('offline') };
+if (!(await tool.execute(args)).includes('No artifact was confirmed')) throw Error('missing network failure');
+globalThis.fetch = async () => ({ status: 500, json: async () => { throw Error('not json') } });
+if (!(await tool.execute(args)).includes('unreadable HTTP 500')) throw Error('missing parse failure');
+globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
+if (!(await tool.execute(args)).includes('HTTP 500')) throw Error('missing HTTP failure');
+"""
+    subprocess.run(["node", "--input-type=module", "-e", script, str(tool)], check=True, capture_output=True)
+
+
+@pytest.mark.parametrize("path", [
+    "src/App.tsx", "examples/thr_other/chart.png", ".sage/threads/{tid}/history.jsonl",
+    "examples/{tid}/../outside.txt", "examples/{tid}/nested/../../outside.txt",
+    "/examples/{tid}/chart.png", "examples/{tid}/link/outside.txt",
+    "examples/{tid}/data.csv", "examples/{tid}/table.json", "examples/{tid}/rows.md",
+])
+def test_artifact_writer_rejects_paths_outside_the_thread_before_io(tmp_path, path):
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    folder = project.record.path / "examples" / tid
+    folder.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (folder / "link").symlink_to(outside, target_is_directory=True)
+    chat = project.control.arm_chat(tid)
+    artifact = project.control.arm_chat_artifact()
+    try:
+        with pytest.raises(ValueError):
+            orch.write_chat_artifact({"thread_id": tid, "path": path.format(tid=tid), "content": "bad"})
+        assert list(outside.iterdir()) == []
+    finally:
+        project.control.disarm_chat_artifact(artifact)
+        project.control.disarm_chat(chat)
+
+
+def test_a_long_prompt_falls_back_without_hiding_its_final_instruction():
+    gateway = IntentGateway({"label": "data_artifact", "confidence": 0.99})
+    prompt = "Analyze this data. " * 100 + "Put this on a report colleagues can open."
+    intent = chat_intent.start(prompt, context="file pnl.csv", has_bound_context=True,
+                               gateway=gateway, catalog=_catalog()).result()
+    assert not intent.valid
+    assert intent.fallback == "prompt-too-long"
+    assert gateway.seen == []
+
+
+@pytest.mark.parametrize("svg", [
+    '<svg xmlns="http://www.w3.org/2000/svg"><image href="/etc/passwd"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><path fill="url(https://example.com/image)"/></svg>',
+    '<!DOCTYPE svg><svg xmlns="http://www.w3.org/2000/svg"/>',
+])
+def test_chart_rendering_cannot_read_external_resources(tmp_path, svg):
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    control = orch.project(start_preview=False).control
+    chat = control.arm_chat(tid)
+    artifact = control.arm_chat_artifact()
+    try:
+        with pytest.raises(ValueError):
+            orch.write_chat_artifact({"thread_id": tid, "path": f"examples/{tid}/chart.png",
+                                      "content": svg, "encoding": "svg"})
+    finally:
+        control.disarm_chat_artifact(artifact)
+        control.disarm_chat(chat)
+
+
+def test_low_confidence_chat_intent_falls_back_to_the_current_plain_answer_lane(tmp_path: Path):
+    orch, oc = _orch(
+        tmp_path,
+        [Turn(text="A rainbow is light refracting.")],
+        gateway=IntentGateway({"label": "data_artifact", "confidence": 0.2}),
+        client=lambda ws: ObservedControlOpenCode(ws, [Turn(text="A rainbow is light refracting.")]),
+    )
+    oc.control = orch.project(start_preview=False).control
+    tid = orch.create_thread()["id"]
+
+    path = ".sage/scratch/pnl.csv"
+    dest = orch.project(start_preview=False).record.path / path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("pnl\n20\n")
+    orch.add_thread_context(tid, {"kind": "file", "name": "pnl.csv", "path": path})
+
+    list(orch.chat_stream(tid, "Explain how rainbows form."))
+
+    assert oc.snapshots
+    assert oc.snapshots[0].read_only_turn
+    assert oc.snapshots[0].read_only_reason == "question"
+    assert not oc.snapshots[0].chat_artifact_turn
+
+
+def test_a_classifier_artifact_verdict_without_data_context_falls_back(tmp_path: Path):
+    orch, oc = _orch(
+        tmp_path,
+        [Turn(text="I can explain how to chart that.")],
+        gateway=IntentGateway({"label": "data_artifact", "confidence": 0.94}),
+        client=lambda ws: ObservedControlOpenCode(ws, [Turn(text="I can explain how to chart that.")]),
+    )
+    oc.control = orch.project(start_preview=False).control
+    tid = orch.create_thread()["id"]
+
+    list(orch.chat_stream(tid, "chart my running total"))
+
+    assert oc.snapshots
+    assert not oc.snapshots[0].chat_artifact_turn
+
+
+def test_dashboard_app_asks_still_offer_handoff_before_chat_runs(tmp_path: Path):
+    gateway = IntentGateway({"label": "build_app", "confidence": 0.93})
+    orch, oc = _orch(tmp_path, [Turn(text="should not run")], gateway=gateway)
+    tid = orch.create_thread()["id"]
+
+    events = list(orch.chat_stream(tid, "build me a dashboard for this portfolio"))
+
+    assert any(e.get("type") == "handoff-suggest" for e in events)
+    assert oc.prompts == []
+
+
+def test_a_model_classified_dashboard_ask_offers_handoff_before_chat_runs(tmp_path):
+    gateway = IntentGateway({"label": "build_app", "confidence": 0.93})
+    orch, oc = _orch(tmp_path, [Turn(text="should not run")], gateway=gateway)
+    tid = orch.create_thread()["id"]
+    events = list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+    assert any(e.get("type") == "handoff-suggest" and e.get("reason") == "classifier" for e in events)
+    assert oc.prompts == []
 
 
 def test_chat_turn_records_artifact_and_reverts_a_write_outside_its_thread(tmp_path: Path):
@@ -1129,7 +1444,7 @@ def test_analysis_turns_do_not_suggest_handoff(tmp_path: Path):
         events = list(orch.chat_stream(tid, prompt))
         assert not any(e.get("type") == "handoff-suggest" for e in events)
     assert orch.get_thread(tid)["handoff"] is None
-    assert len(gw.seen) == 3
+    assert len([1 for _, labels in gw.seen if labels.component == "handoff"]) == 3
 
 
 def test_app_shaped_turn_suggests_handoff_once(tmp_path: Path):
@@ -1152,13 +1467,13 @@ def test_app_shaped_turn_suggests_handoff_once(tmp_path: Path):
     assert row["status"] == "suggested"
     assert row["suggestedAt"]
     assert row["suppressed"] is False
-    calls_after_hit = len(gw.seen)
+    calls_after_hit = len([1 for _, labels in gw.seen if labels.component == "handoff"])
 
     gw.verdict = "APP"
     oc.turns.append(Turn(text="More numbers."))
     later = list(orch.chat_stream(tid, "and by product?"))
     assert not any(e.get("type") == "handoff-suggest" for e in later)
-    assert len(gw.seen) == calls_after_hit
+    assert len([1 for _, labels in gw.seen if labels.component == "handoff"]) == calls_after_hit
     assert orch.get_thread(tid)["handoff"]["suggestedAt"] == row["suggestedAt"]
 
 
@@ -1211,9 +1526,9 @@ def test_not_now_suppresses_and_classifier_does_not_run_again(tmp_path: Path):
     row = orch.get_thread(tid)["handoff"]
     assert row["suppressed"] is True
     assert row["status"] == "suppressed"
-    calls = len(gw.seen)
+    calls = len([1 for _, labels in gw.seen if labels.component == "handoff"])
     later = list(orch.chat_stream(tid, "and by region?"))
-    assert len(gw.seen) == calls
+    assert len([1 for _, labels in gw.seen if labels.component == "handoff"]) == calls
     assert not any(e.get("type") == "handoff-suggest" for e in later)
     assert orch.get_thread(tid)["handoff"]["status"] == "suppressed"
 

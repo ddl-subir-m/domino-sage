@@ -300,6 +300,8 @@ class SessionState:
     # Empty is not a contradiction: a deployment whose gateway offers no group listing has an
     # approved set and no ordering for it, and the router falls back the way it always did.
     approved_order: tuple[ModelId, ...] = ()
+    # A bounded data Artifact turn keeps reads and the scoped artifact writer only.
+    chat_artifact_turn: bool = False
 
 
 @dataclass(frozen=True)

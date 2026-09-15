@@ -38,6 +38,7 @@ class ModelControl:
         # Ask turn, and an overlapping disarm cannot drop the allowlist mid-flight.
         self._chat_token: object | None = None
         self._chat_thread_id: str | None = None
+        self._chat_artifact_token: object | None = None
         # And again for the mode a running turn is pinned to. The shim reads snapshot() per REQUEST,
         # so without a pin the picker lands mid-turn: the later inferences of a build lose their edit
         # tools and swap to another model while the earlier tool calls are still in their context.
@@ -181,6 +182,16 @@ class ModelControl:
             self._chat_token = None
             self._chat_thread_id = None
 
+    def arm_chat_artifact(self) -> object:
+        """Mark this Chat turn as a bounded artifact writer."""
+        token = object()
+        self._chat_artifact_token = token
+        return token
+
+    def disarm_chat_artifact(self, token: object) -> None:
+        if self._chat_artifact_token is token:
+            self._chat_artifact_token = None
+
     def arm_withheld(self, keys: frozenset[str] | set[str]) -> object:
         """Pin the content this turn must not send, and return a token.
 
@@ -244,6 +255,7 @@ class ModelControl:
             read_only_turn=self._read_only_token is not None,
             read_only_reason=self._read_only_reason,
             chat_thread_id=self._chat_thread_id if self._chat_token is not None else None,
+            chat_artifact_turn=self._chat_artifact_token is not None,
             withheld=self._withheld if self._withheld_token is not None else frozenset(),
             chat_model=self._chat_model,
             reasoning_effort=self._reasoning_effort,
