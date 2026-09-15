@@ -6074,13 +6074,25 @@ class Orchestrator:
         if model in (None, "", "auto"):
             project.control.pick_chat(None, None)
             return
-        alias = next((a for a in self.list_llm_aliases() if a["name"] == model), None)
+        try:
+            alias = next((a for a in self.list_llm_aliases() if a["name"] == model), None)
+        except ResourceUnavailable as e:
+            if e.status is not None and e.status < 500:
+                raise
+            # Use the same stored models the offline picker offers. Capabilities are last-known
+            # filters, not proof of the provider's current verdict; description is display metadata.
+            # Keep both cached without membership writes. A successful live listing still decides
+            # presence/capabilities. Retire this limit when current capabilities are available
+            # offline without a gateway dependency (#296).
+            alias = next((a for a in self.list_project_resources()
+                          if a.get("kind") in ("llm_alias", "model_llm")
+                          and a.get("alias") == model), None)
         if alias is None:
             raise ValueError(f"unknown model {model!r}")
         caps = alias.get("capabilities") or []
         if caps and "embeddings" in caps and "chat" not in caps:
             raise ValueError(f"{model!r} is not a chat model")
-        efforts = alias.get("reasoning_efforts_with_tools") or []
+        efforts = reasoning_efforts_with_tools(model)
         if effort in ("", None, "default"):
             effort = None
         elif effort not in efforts:
