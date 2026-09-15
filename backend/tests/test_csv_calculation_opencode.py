@@ -186,7 +186,9 @@ def test_real_opencode_calculates_sales_without_sending_the_email_column(tmp_pat
             assert json.loads(tables[0].read_text())["rows"] == [["North", "360"], ["South", "420"]]
             events = project.shim.data_use.events(orch._data_use_turns[tid])
             assert events[0]["requests"][0]["state"] == "response_completed"
-            assert events[0]["requests"][0]["serving_model"] is None
+            assert events[0]["requests"][0]["requested_alias"] == calls[1]["model"]
+            assert events[0]["requests"][0]["serving_model"] == "alias"
+            assert events[0]["requests"][0]["provider_receipt"] == "unknown"
             (runtime / "requests.json").write_text(json.dumps(calls, indent=2))
             (runtime / "data-used.json").write_text(json.dumps(events, indent=2))
     finally:
