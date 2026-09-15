@@ -731,3 +731,26 @@ be picked, and says why at the point of picking. See
 _Kind_: word
 _Avoid_: health, status (both belong to [[Problem]]), availability or unavailable (those describe a
 Resource that exists but will not serve), dead, stale, orphaned, existence check, validation
+
+**Incoming changes**:
+Commits already on the Project's git remote that this workspace has not merged. Named by what
+arrived rather than by who pushed it: Sage can read the commits but cannot tell that their author is
+a [[Collaborator]], which means somebody Domino records on the Project, while push access to the
+repo is a separate grant. So no label here names a person-kind. Computed from refs a fetch already
+left behind, never written down. See
+[ADR-0053](docs/adr/0053-a-merge-the-model-resolved-is-undone-not-gated.md).
+_Kind_: word
+_Avoid_: teammate's changes, their changes, somebody else's code (each names a person Sage cannot
+identify), upstream, remote changes (both read as git internals rather than as work someone did)
+
+**Pull and build**:
+One act, not two: taking [[Incoming changes]] into the workspace and then running the build that was
+already asked for. It is never chosen on its own — the only way to it is the offer that appears when
+a build meets incoming changes, so the person's request is the build and the merge is the
+prerequisite Sage adds. That is why nothing here asks them to decide about a merge they did not ask
+for. Where conflicts arise, the model resolves them and the result is reversible rather than held
+(ADR-0053).
+_Kind_: word
+_Avoid_: Pull latest (no control carries that label), Sync (Domino's own word, for [[Domino
+Artifacts]]), merge (it is the prerequisite, not what anybody asked for), Update, Refresh (both hide
+that a build runs)
