@@ -14,6 +14,7 @@ dependencies = [
     "pillow>=10.0,<13.0",       # shrink oversized images to fit the prompt's inline budget
     "numpy>=2.0,<3.0",          # Chat sage-chat plots and array work (OpenCode bash uses this venv)
     "matplotlib>=3.8,<4.0",     # Chat charts: PNG under examples/<threadId>/
+    "resvg-py>=0.3.4,<0.6",    # Render scoped Chat SVG markup to PNG without shell access
 ]
 
 [project.optional-dependencies]
