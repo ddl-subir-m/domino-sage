@@ -10,13 +10,16 @@ window.SW = window.SW || {};
   // why this is a surface you open rather than a 300px column you live beside.
   const KINDS = [
     { key: null, label: 'Everything' },
-    // The rail groups both of these under `Data`, and its add door has to land somewhere. Without
-    // this entry the door opened on Everything, because a single kind would have meant Datasets and
-    // hidden Data Sources behind a filter nobody chose (#164). The two stay listed below it: a
-    // group is a wider filter than either kind, never a replacement for them.
+    // One entry for everything data-like, with the two shapes under it (ADR-0053). It is also where
+    // a group's add door lands: without this entry the door opened on Everything, because a single
+    // kind would have meant Datasets and hidden Data Sources behind a filter nobody chose (#164).
+    //
+    // The two stay listed, because a shape is a filter somebody wants — but as CHILDREN. As peers
+    // they were three rows whose first count was the sum of the next two, which reads as a third
+    // kind of thing rather than as the pair above its halves.
     { key: 'data', label: 'Data', kinds: ['dataset', 'datasource'] },
-    { key: 'dataset', label: '{datasetPlural}' },
-    { key: 'datasource', label: '{dataSourcePlural}' },
+    { key: 'dataset', under: 'data' },
+    { key: 'datasource', under: 'data' },
     { key: 'model_llm', label: 'Language models' },
     { key: 'model_predictive', label: 'Predictive models' },
     { key: 'agent', label: 'Agents' },
@@ -72,6 +75,11 @@ window.SW = window.SW || {};
             'span',
             { className: 'sw-cat-meta' },
             h('span', null, SW.util.labelFor(resource.kind)),
+            // Reach, beside the noun rather than as a type of its own: the sidebar's shapes and
+            // this are two axes, and a `Data connection` filter up there would have claimed a Data
+            // Source that is already claimed by `Tabular` (ADR-0053). Said only where it is true.
+            SW.util.isConnected(resource.kind) && h('span', { className: 'sw-cat-dot' }, '·'),
+            SW.util.isConnected(resource.kind) && h('span', null, SW.util.CONNECTED_WORD),
             h('span', { className: 'sw-cat-dot' }, '·'),
             h('span', null, resource.originName),
             h('span', { className: 'sw-cat-dot' }, '·'),
@@ -214,13 +222,16 @@ window.SW = window.SW || {};
               'button',
               {
                 key: entry.key || 'all',
-                className: `sw-cat-side-btn${kind === entry.key ? ' is-active' : ''}`,
+                className: `sw-cat-side-btn${kind === entry.key ? ' is-active' : ''}`
+                  + (entry.under ? ' is-child' : ''),
                 onClick: () => {
                   setKind(entry.key);
                   setDrill(null);
                 },
               },
-              h('span', null, SW.brand.text(entry.label)),
+              // A shape's own label comes from the shared rule the rail's subheads read, so the
+              // two surfaces cannot end up calling one shape two things.
+              h('span', null, SW.brand.text(entry.label || SW.util.dataTypeLabel(entry.key))),
               entry.key &&
                 sideCount(entry, counts) !== undefined &&
                 h('span', { className: 'sw-cat-side-count' }, sideCount(entry, counts))
