@@ -1090,6 +1090,67 @@ def _chat_work_dir() -> str | None:
     return str(work) if work.is_dir() else None
 
 
+def _built_app_dir() -> str | None:
+    """Where Build turns run — `apps/<appId>`, the directory a Build session is created in.
+
+    Beside `_chat_work_dir` for the same reason: the two questions on this page that are per
+    directory are Chat's and Build's, and they are not the same directory.
+    """
+    project = orchestrator._project      # None until a project is bound; do NOT create one here
+    if project is None:
+        return None
+    try:
+        path = project.app_for_turn().path
+    except Exception:
+        return None
+    return str(path) if path.is_dir() else None
+
+
+def _skill_diag() -> dict:
+    """Which SKILLs OpenCode would offer, asked THREE times because the answer is per directory.
+
+    The seeded method is only a method if it reaches a turn, and every surface Sage owns can say it
+    did while no turn ever saw it — the ADR-0041 lesson, applied one slot over. `_install_opencode_
+    skills` logs what it copied; this asks OpenCode what it holds, in the directories that matter:
+
+      the server's own  — the control. It answers for an instance no turn ever uses
+      `.sage/chat-work` — does the globally seeded skill reach a CHAT turn
+      `apps/<appId>`    — does `data-table` reach a BUILD turn. That one is NOT global: it ships in
+                          `template/react-vite/.opencode/skills/`, and a Build session finds it by
+                          the up-walk from its own directory. Two different routes, one question.
+
+    Read the control beside the other two. Control full and chat-work empty is discovery, not
+    installation: the files are on disk and that instance is not looking where they are.
+
+    ALL THREE ROWS ARE ALWAYS PRESENT. A row that could be missing is a row whose absence means
+    either "nothing to ask about" or "the ask blew up", and those are the two readings this page
+    exists to separate — so each one carries `asked: False` and a reason instead of vanishing.
+
+    Never raises. A diagnostic must never be the thing that breaks the diagnostics page.
+    """
+    def ask(directory: str | None, why: str = "") -> dict:
+        if why:
+            return {"asked": False, "why": why}
+        try:
+            said = orchestrator.opencode_skill_status(directory)
+        except Exception as e:
+            return {"asked": False, "why": f"{type(e).__name__}: {e}"}
+        return {"directory": directory, **said} if directory else said
+
+    def find(locate, what: str) -> tuple[str | None, str]:
+        try:
+            found = locate()
+        except Exception as e:
+            return None, f"could not find the {what}: {type(e).__name__}: {e}"
+        return (found, "") if found else (None, f"there is no {what} yet")
+
+    work, no_work = find(_chat_work_dir, "chat workdir")
+    built, no_built = find(_built_app_dir, "built app")
+    return {"opencode_says": ask(None),
+            "opencode_says_chat_work": ask(work, no_work),
+            "opencode_says_built_app": ask(built, no_built)}
+
+
 def _resolves_from(start: Path, spec: str) -> str | None:
     """Where a JS runtime would find the package `spec` imported from a file in `start`.
 
@@ -1434,6 +1495,7 @@ def diag() -> JSONResponse:
                          "opencode_version": orchestrator.opencode_version(),
                          "opencode_holds": orchestrator.opencode_tool_registry(_chat_work_dir()),
                          "opencode_log": orchestrator.opencode_log_about_tools()},
+        "skills": _skill_diag(),
         "project": None if p is None else {
             "model_calls": p.model_calls,
             "tool_call_responses": p.tool_call_responses,
@@ -4129,6 +4191,7 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
     except OSError as e:
         log.error("[wiring] could NOT install global opencode config (%s) — OpenCode will use its free tier", e)
     _install_opencode_tools(source_dir, global_dir)
+    _install_opencode_skills(source_dir, global_dir)
 
 
 def _install_opencode_tools(source_dir: Path, global_dir: Path) -> None:
@@ -4167,6 +4230,126 @@ def _install_opencode_tools(source_dir: Path, global_dir: Path) -> None:
     except OSError as e:
         log.error("[wiring] could NOT install Live read tools into %s (%s) — Chat will fall back "
                   "to Python, which puts rows in the model's context", dest, e)
+
+
+def _install_opencode_skills(source_dir: Path, global_dir: Path) -> None:
+    """Put the seeded SKILLs where OpenCode reads them, one directory each.
+
+    Same global slot and the same reasoning as `_install_opencode_tools` above: a Chat session runs
+    under the workspace volume, so the project slot is never ours. Measured on the pinned 1.18.4,
+    `~/.config/opencode` is the FIRST entry of the discovery list and needs no `skills.paths` key —
+    the glob is `{skill,skills}/**/SKILL.md`, so `skills/<name>/SKILL.md` here reaches the model
+    from any session directory. Copied rather than symlinked, for the reason that function gives.
+
+    A SKILL WITH NO `description` IS LOADED AND NEVER OFFERED. 1.18.4 accepts a frontmatter with no
+    description — it is optional in the schema — and then the block that lists skills for the model
+    is `skills.filter((s) => s.description !== undefined)`. So the skill is present in `GET /skill`,
+    present on disk, and absent from every prompt, with nothing logged. That is the `live_read.ts`
+    import failure again, and the only place it can be caught is here, before the copy.
+
+    PRUNES WHAT SAGE INSTALLED, and only that. `_install_opencode_tools` never prunes, which is
+    harmless for a handful of `.ts` files whose names never change. A skill is a DIRECTORY: rename
+    or delete one and the old copy lingers in a slot shared by every checkout on this machine,
+    costing its description on every turn and teaching a method the prompt no longer matches. So
+    each run records the names it wrote, and the next run removes the ones it wrote that are no
+    longer shipped. A skill Sage did not write — a person's own, in the same directory on a dev
+    machine — is never PRUNED, because it is not in the manifest. One whose name collides with a
+    shipped skill is replaced, because a Sage skill that refuses to install is the failure this
+    function exists to prevent; the replacement is said out loud rather than done quietly.
+
+    Best effort and loud on failure: without this the method is simply absent, and an agent with no
+    method still answers, just badly and without saying so.
+    """
+    import json
+    import shutil
+
+    src_dir = source_dir / "template" / "skills"
+    try:
+        names = sorted(p.name for p in src_dir.iterdir() if (p / "SKILL.md").is_file())
+    except OSError as e:
+        log.error("[wiring] could NOT read %s (%s) — Sage skills will be absent", src_dir, e)
+        return
+    if not names:
+        log.error("[wiring] no Sage skills at %s — they will be absent from every turn", src_dir)
+        return
+    dest = global_dir / "skills"
+    manifest = dest / ".sage-installed.json"
+    try:
+        read = json.loads(manifest.read_text())
+    except (OSError, ValueError):
+        read = []
+    # Every entry becomes a path component of an `rmtree`, so anything that is not a plain name is
+    # dropped rather than trusted: `dest / ""` and `dest / "."` are `dest` ITSELF, and `dest / "/x"`
+    # is `/x`. A manifest that had been truncated to `[""]` would take the whole shared directory,
+    # including the skills the warning below exists to protect.
+    was = [n for n in (read if isinstance(read, list) else [])
+           if isinstance(n, str) and n not in ("", ".", "..") and "/" not in n and "\\" not in n]
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        # Widened BEFORE the copies and narrowed after them. A run that dies half way through still
+        # leaves a record of every name it may have put on disk; a name that lands unrecorded can
+        # never be pruned, which is the lingering directory this function exists to prevent.
+        manifest.write_text(json.dumps(sorted(set(was) | set(names))))
+        landed = []
+        for name in names:
+            if not _skill_description(src_dir / name / "SKILL.md"):
+                log.error("[wiring] skill %s has no usable frontmatter description — with none at "
+                          "all OpenCode offers it to NO turn, and with an empty one it offers the "
+                          "model nothing to decide on. Silent either way, until this line is read",
+                          name)
+            if (dest / name).exists() and name not in was:
+                log.warning("[wiring] skill %s in %s was not installed by Sage and is being "
+                            "replaced — that slot is shared by every checkout on this machine",
+                            name, dest)
+            shutil.rmtree(dest / name, ignore_errors=True)
+            # `dirs_exist_ok` because the line above is allowed to fail: a half-removed directory
+            # would otherwise raise `FileExistsError` here and take every skill sorted after this
+            # one with it.
+            shutil.copytree(src_dir / name, dest / name, dirs_exist_ok=True)
+            landed.append(name)
+        gone, stuck = [], []
+        for name in (n for n in was if n not in names):
+            shutil.rmtree(dest / name, ignore_errors=True)
+            (stuck if (dest / name).exists() else gone).append(name)
+        if stuck:
+            # It is still ours, so it stays in the manifest. Dropping it would leave a directory on
+            # disk that no later run will ever prune, and that the collision warning above would
+            # then fire on at every boot.
+            log.error("[wiring] could NOT prune %s from %s — still on disk, still costing its "
+                      "description on every turn", ", ".join(stuck), dest)
+        manifest.write_text(json.dumps(sorted(set(names) | set(stuck))))
+        log.warning("[wiring] installed Sage skills into %s (%s)%s", dest, ", ".join(names),
+                    f"; pruned {', '.join(gone)}" if gone else "")
+    except (OSError, shutil.Error) as e:
+        # `copytree` collects per-file failures into a `shutil.Error`, which is not an OSError.
+        # Uncaught, a half-copied skill would take the whole boot with it. The names that DID land
+        # are in the line, because a partial install and a total one read the same without them.
+        log.error("[wiring] could NOT install Sage skills into %s (%s) — %d of %d landed (%s). "
+                  "Chat will investigate without the rest, and will not say that it is doing so",
+                  dest, e, len(landed), len(names), ", ".join(landed) or "none")
+
+
+def _skill_description(skill_md: Path) -> str:
+    """The frontmatter `description` of a SKILL.md, or "" when there is none.
+
+    The one field OpenCode filters on. Read with a regex rather than a YAML parser because there is
+    no YAML dependency declared in `backend/pyproject.toml` — one that is importable on a laptop and
+    absent in CI is its own silent failure. A block indicator (`>`/`|`) counts as present: what
+    follows it is the description, as are the indented lines of a plain multi-line scalar. CRLF and
+    a closing `---` with nothing after it both read too, because a false alarm about a file that is
+    fine is a witness not worth having.
+    """
+    import re
+
+    try:
+        text = skill_md.read_text()
+    except OSError:
+        return ""
+    front = re.match(r"^---\r?\n(.*?)\r?\n---[ \t]*(\r?\n|\Z)", text, re.DOTALL)
+    if not front:
+        return ""
+    found = re.search(r"^description:[ \t]*(.*(?:\n[ \t]+\S.*)*)$", front.group(1), re.MULTILINE)
+    return found.group(1).strip().strip("\"'") if found else ""
 
 
 def _release_boot_page(host: str, port: int) -> None:
