@@ -1,4 +1,4 @@
-"""Stop is offered while the build this tab started is still running (#126).
+"""Stop is offered while the turn this tab started is still running (#126, #371).
 
 Reported from a real session: "when I start build, the stop button is not visible. When I move to
 chat and then come back to build, I can see the stop button."
@@ -16,6 +16,17 @@ every field the bar compares. It claims that name on the first frame that is nei
 `pending` nor one of the ways a turn ends without running, and gives it back as it unwinds.
 
 The harness holds the stream open mid-turn, because that pause is the whole state under test.
+
+"On the first frame" was still too late, which is #371 and the second half of this file. The
+server's first frame is the `user` one — the person's own question — and Chat's handler skips it,
+so what the claim actually waited on was the gate and the model's first token. The name is taken at
+SEND time now, and handed back by the `pending` frame that says the turn is waiting in line rather
+than running. The tests below the #126 four are that window, one per send and one per way out of it.
+
+One corner of it is NOT closed here, and no test below claims it is: a BUILD that waits in line
+hands its name back at `pending` and has no frame to take it back on, because build never streams
+the `user` frame Chat does. It comes out of the queue into the same silence, and closing that needs
+the server to say when a turn is granted. Chat's queue path is covered — `requeued` below.
 """
 import json
 import shutil
@@ -80,3 +91,68 @@ def test_the_bar_comes_down_when_the_turn_ends(mode: str):
 
     assert out["runningTurnAfter"] is None
     assert out["runningAfter"] is False
+
+
+@pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])
+def test_stop_is_there_before_the_turn_has_anything_to_show_for_itself(mode: str):
+    """The window #126 left behind, and the whole of #371.
+
+    #126 claimed the turn on the first frame, which is right for every frame after it and says
+    nothing about the ones before. In Chat the server's first frame is the `user` one — the
+    person's own question, painted the instant the lock is taken — and the handler skips it, so
+    the claim waits on the gate and on the model's first token. Seconds, tens of seconds on a
+    routed alias, with the question on screen and nothing under it to press.
+
+    Which is worse than nothing to press: `runningTurnElsewhere` has no turn to name, so the bar
+    reads "The workspace is busy." A flat, wrong sentence about somebody else's work, over the
+    question the person just asked.
+
+    Build and approve pause on no frame at all, because they have none to pause on. Each build
+    generator writes its user row with `append_history(ev, ...)` under `if ev["type"] != "user"`,
+    so that row reaches the transcript and never the stream: the next thing down the wire after
+    the POST is the first frame of real work. Their window is therefore the same one Chat's is —
+    the gate and the first token — with nothing arriving inside it at all.
+    """
+    out = _run(mode)
+
+    assert out["midTurn"]["running"] is True
+    assert out["midTurn"]["stopOffered"] is True
+    assert out["midTurn"]["elsewhere"] is None
+    # And claiming this early does not leave the name standing afterwards.
+    assert out["runningTurnAfter"] is None
+
+
+def test_a_turn_let_out_of_the_queue_takes_its_name_back():
+    """The other end of the queue guard. A send names its turn before it knows whether it will run,
+    so a `pending` frame has to hand that name back — and then the turn waits, is granted, and
+    starts streaming into exactly the same silent window this ticket is about. The `user` frame
+    behind the `pending` one is the queue letting go, and it is where the name goes back on."""
+    out = _run("requeued")
+
+    assert out["midTurn"]["stopOffered"] is True
+    assert out["midTurn"]["elsewhere"] is None
+    assert out["runningTurnAfter"] is None
+
+
+def test_a_second_question_does_not_take_the_name_off_the_one_that_is_running():
+    """The cost of naming a turn before the server has said anything, paid in the one case where
+    the send is wrong: a second question goes out while the first is still streaming, and it is
+    going to wait in line. Were it to name itself on the way out, the `pending` frame handing that
+    name back would take the Stop button off the turn that IS running — #126 again, from the
+    direction #371's fix opens. So a send only names its turn when nothing else is named."""
+    out = _run("secondInLine")
+
+    assert out["midTurn"]["stopOffered"] is True
+    assert out["midTurn"]["elsewhere"] is None
+    assert out["runningTurnAfter"] is None
+
+
+@pytest.mark.parametrize("mode", ["queuedChat", "queuedApprove"])
+def test_the_other_two_sends_do_not_claim_a_turn_waiting_in_line_either(mode: str):
+    """The queue guard above has only ever been asked of `sendBuildPrompt`. A send names its turn
+    before it knows whether it will run (#371), so all three sends now have a name to hand back —
+    one guard per send, and Chat is the one the symptom was reported in."""
+    out = _run(mode)
+
+    assert out["midTurn"]["stopOffered"] is False
+    assert out["midTurn"]["elsewhere"] is not None
