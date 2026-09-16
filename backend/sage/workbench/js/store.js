@@ -3274,12 +3274,45 @@ window.SW = window.SW || {};
   // stream open — so a build started here had no named turn to match for its whole length, and the
   // Stop bar under the composer stayed missing until a mode switch reloaded the state behind it.
   // A streaming turn can answer the question itself: it knows its kind, its conversation and its
-  // app, which is every field the bar compares. Claimed on the first frame that is neither the
-  // queue's `pending` nor one of the two ways a turn ends without ever running.
+  // app, which is every field the bar compares.
+  //
+  // Claimed at SEND time rather than on the first frame (#371). On the first frame was still too
+  // late, on every path and for one reason: no frame arrives until the turn has been past the gate
+  // and waited out the model's first token. Chat sends a `user` frame before that and the handler
+  // skips it, so it claims nothing; Build sends nothing at all, because its user row is written
+  // with `append_history` and never streamed. Either way the person's question sat on screen with
+  // no button under it for seconds.
+  //
+  // A send knows every field of the name before it opens the stream, so there is nothing to wait
+  // for. The one thing a send does NOT know is whether its turn will run or wait in line, and that
+  // is what the `pending` frame answers: the queue branch hands the name straight back (#79), and
+  // `nameableTurn` is the other half of the care that takes.
+  //
+  // What it costs, stated rather than hidden: between the send and the stream's first byte the
+  // Stop button is on screen for a turn the server has not admitted yet, and a Stop pressed in
+  // there finds no turn to match, answers `stopped: false` and says "That turn had already
+  // finished." while the turn then runs. That window is one round trip, against the gate and the
+  // whole first-token wait it replaces — and the frame that would close it is a `running` one from
+  // the server, which #371 costed and set aside.
   function claimRunningTurn(kind, conversationId, appId) {
     const claim = { kind, conversation: conversationId || '', app: appId || '' };
     state.runningTurn = claim;
     return claim;
+  }
+
+  // Whether a send may name its turn before it has heard a frame (#371). A name already standing
+  // belongs to a turn that holds the lock — this tab's own, or one a `/build/state` poll read off
+  // the server — and this send will be queued behind it, so the bar is already telling the truth.
+  // Nothing standing means the lock is free as far as this tab knows, which is the uncontended
+  // send the symptom was reported for.
+  //
+  // Asking at all is what keeps the send-time claim from costing more than it buys. A tab can have
+  // several turns alive at once, and the second one is going to wait in line: were it to name
+  // itself over the turn that is actually running, the `pending` frame handing that name back
+  // would blank the bar over the running turn — #126 made from this direction. A send that finds
+  // a name standing stays nameless until the queue lets it through, which is where it was before.
+  function nameableTurn() {
+    return !state.runningTurn;
   }
 
   // Forget it again as the send unwinds — but only while this tab's own claim is still the one
@@ -6379,8 +6412,8 @@ window.SW = window.SW || {};
       // drawn just below has to come back off the screen again.
       let ticket = '';
       let unran = false;
-      // This tab's own name for the turn, once it is actually running. Held so the `finally` can
-      // take back exactly what it put there and nothing else.
+      // This tab's own name for the turn. Held so the `finally` can take back exactly what it put
+      // there and nothing else.
       let claim = null;
       // Whatever card this turn is the answer to has now been answered (#209). Every button on
       // every one of them ends here, so this is where they stop being clickable — the reload each
@@ -6389,6 +6422,11 @@ window.SW = window.SW || {};
       appendBuildRow({ type: 'user', text: bubble });
       liveBuildTurns += 1;
       state.buildRunning = true;
+      // Beside the flag that says the Project is busy, because the two belong together: the bar
+      // reads them as one answer, and a busy flag with no name behind it is the "The workspace is
+      // busy." caption over this tab's own turn (#371). Handed back below if the turn queues.
+      // Skipped when a name is already standing — see nameableTurn.
+      if (nameableTurn()) claim = claimRunningTurn('build', turnThread, turnApp);
       state.buildTyping = 'Working…';
       notify();
       try {
@@ -6415,11 +6453,28 @@ window.SW = window.SW || {};
           if (ev.type === 'stopped') stopped = true;
           // The queue's own two rows, which belong to this send rather than to the app on screen —
           // so they are read before the rail check below, not after it.
-          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev, 'build'); notify(); return; }
+          if (ev.type === 'pending') {
+            ticket = ev.ticket;
+            queueTurn(ev, 'build');
+            // The send named this turn before it could know it would wait in line. This is where
+            // it finds out, so this is where the name goes back (#79, #371) — a queued turn holds
+            // nothing, and a Stop over it would be a Stop over somebody else's work.
+            //
+            // And a build has nothing to take it back ON until its first real frame, which Chat
+            // does not share: Chat's `user` frame arrives as soon as the queue lets go, and is
+            // read below as exactly that. So a build that waits in line still comes out of the
+            // queue into the silence #371 is about. Closing that needs the server to say when a
+            // turn is granted — the alternative #371 costed and set aside.
+            releaseRunningTurn(claim);
+            claim = null;
+            notify();
+            return;
+          }
           if (ev.contextChanged) { unran = true; store.seedComposer(ev.prompt || text); }
           if (ev.type === 'done' && ev.decision === 'cancelled') unran = true;
           // Past the queue and past the two ways a turn ends without running: this turn holds the
-          // lock, so name it, and the Stop bar has something to match against from the first frame.
+          // lock, so name it. Still the whole of the answer for a turn that queued, or that found
+          // another name standing when it was sent; an uncontended one arrives here already named.
           if (!unran && !claim) {
             claim = claimRunningTurn('build', turnThread, turnApp);
           }
@@ -6710,14 +6765,18 @@ window.SW = window.SW || {};
       const turnThread = state.thread.id;
       let ticket = '';
       let unran = false;
-      // This tab's own name for the turn once it is running, so the Stop bar has something to match
-      // (#126). Held so the `finally` takes back exactly what it put there. See claimRunningTurn.
+      // This tab's own name for the turn, so the Stop bar has something to match (#126). Held so
+      // the `finally` takes back exactly what it put there. See claimRunningTurn.
       let claim = null;
       // The same sentence the server writes for this turn, so the optimistic row does not change
       // wording the moment the transcript reloads underneath it.
       appendBuildRow({ type: 'user', text: buildAgain ? BUILD_AGAIN_TEXT : 'Approved the plan.' });
       liveBuildTurns += 1;
       state.buildRunning = true;
+      // Beside the busy flag, for the reason sendBuildPrompt claims beside it (#371). This is the
+      // path from the screenshot in #126: a plan approved, and a build to watch with nothing to
+      // press — and the seconds before its first frame were the last of that still standing.
+      if (nameableTurn()) claim = claimRunningTurn('build', turnThread, turnApp);
       state.buildTyping = 'Building…';
       notify();
       try {
@@ -6740,7 +6799,16 @@ window.SW = window.SW || {};
         await readSSE(res, (ev) => {
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
-          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev, 'build'); notify(); return; }
+          if (ev.type === 'pending') {
+            ticket = ev.ticket;
+            queueTurn(ev, 'build');
+            // Named at send time, and this frame is the answer to the one question a send cannot
+            // ask itself: the turn is waiting in line, so it holds nothing to stop (#79, #371).
+            releaseRunningTurn(claim);
+            claim = null;
+            notify();
+            return;
+          }
           // A refused rebuild is a turn that never ran either, so it reloads for the same reason a
           // cancelled one does: the server persisted no user row, and the optimistic bubble above
           // the error would otherwise sit there claiming a build that never started.
@@ -6749,8 +6817,8 @@ window.SW = window.SW || {};
             unran = true;
           }
           // Past the queue and past every way this turn ends without running: it holds the lock, so
-          // name it, and the Stop bar can match it from the first frame rather than only after a
-          // mode switch has reloaded the state behind it.
+          // name it. Still the whole of the answer for a turn that queued, or that found another
+          // name standing when it was sent; an uncontended one arrives here already named.
           if (!unran && !claim) claim = claimRunningTurn('build', turnThread, turnApp);
           if (movedOn()) return;
           applyBuildEvent(ev);
@@ -7081,12 +7149,17 @@ window.SW = window.SW || {};
       // back off the screen, because the server recorded nothing to replace it with.
       let ticket = '';
       let unran = false;
-      // And this tab's own name for the turn once it is running, so Chat's Stop bar has something
-      // to match while this send holds the only stream there is. See claimRunningTurn.
+      // And this tab's own name for the turn, so Chat's Stop bar has something to match while this
+      // send holds the only stream there is. See claimRunningTurn.
       let claim = null;
       liveChatTurns += 1;
       state.typing = 'Thinking…';
       state.chatRunning = true;
+      // Beside the flag, not on the first frame (#371). This is the longest of the three windows:
+      // Chat's handler skips the `user` frame, so waiting for a frame that claims meant waiting
+      // out the gate and the model's first token with the question already on screen. Handed back
+      // below if the turn turns out to be queued.
+      if (nameableTurn()) claim = claimRunningTurn('chat', turnThread, '');
       notify();
 
       const assistant = {
@@ -7145,11 +7218,48 @@ window.SW = window.SW || {};
           throw new Error(payload.error || payload.message || res.statusText);
         }
         await readSSE(res, async (ev) => {
-          if (!ev || ev.type === 'user') return;
+          if (!ev) return;
+          if (ev.type === 'user') {
+            // The server's first frame, and the one that paints the person's own question. It is
+            // skipped for the transcript's sake — the bubble is already on screen.
+            //
+            // After a `pending` it means one more thing, and only this send can read it: this
+            // stream went through the queue and the queue has let it go. `ticket` is written by
+            // that branch and by nothing else, so a non-empty one is the proof. Without this the
+            // turn would come out of the queue straight into the silent window the send-time
+            // claim exists to close (#371).
+            //
+            // The `ticket` half of that guard is NOT what keeps this from naming a turn the tab
+            // does not hold, and no test separates the two forms — measured, not assumed. The
+            // server orders the frames so that it cannot: `chat_stream` runs `_acquire_turn` to
+            // completion and only then calls `_chat_stream`, which is where `user_ev` is yielded,
+            // so a `pending` always reaches this reader before a `user` does. A queued turn
+            // therefore has `ticket` set by the time this line runs, and an uncontended one is
+            // already holding its send-time claim. Dropping `ticket &&` changes no behaviour
+            // reachable from here. Keep it as the narrower of two equal forms, not as a guard
+            // earning its keep — and if that ordering ever changes, this line is load-bearing
+            // again and there is nothing here to tell you.
+            //
+            // What the guard does cost: a stale name standing (so `nameableTurn` refused at send)
+            // over a lock the server finds free (so no `pending`, so no `ticket`) leaves this turn
+            // running under somebody else's name until the next poll corrects it. Narrow, and no
+            // worse than before #371, where nothing was named until the first frame of real work.
+            if (ticket && !claim) claim = claimRunningTurn('chat', turnThread, '');
+            return;
+          }
           // The queue's rows belong to this send wherever the reader has moved to, so they are read
           // before the `mine()` check rather than after it: a Cancel has to be able to find its
           // ticket, and a question handed back has to reach a composer.
-          if (ev.type === 'pending') { ticket = ev.ticket; queueTurn(ev, 'chat'); notify(); return; }
+          if (ev.type === 'pending') {
+            ticket = ev.ticket;
+            queueTurn(ev, 'chat');
+            // Named at send time, before this send could know it would wait. A queued turn holds
+            // nothing, so the name goes back (#79, #371).
+            releaseRunningTurn(claim);
+            claim = null;
+            notify();
+            return;
+          }
           if (ev.contextChanged) {
             unran = true;
             store.seedComposer(ev.prompt || text);
@@ -7159,7 +7269,9 @@ window.SW = window.SW || {};
           if (ev.type === 'done' && ev.decision === 'cancelled') { unran = true; return; }
           // Past the queue and past the two ways a turn ends without running: this one holds the
           // lock, so name it. Before the `mine()` check below, because a turn whose reader has
-          // walked away is still the turn holding the lock.
+          // walked away is still the turn holding the lock. Reached with no name by a turn that
+          // found another standing when it was sent, and by one out of the queue whose `user`
+          // frame the server did not send — the already-asked paths do skip it.
           if (!claim) claim = claimRunningTurn('chat', turnThread, '');
           // Moved on. The turn is still running and the server is still writing its transcript, so
           // nothing is lost — reopening the conversation replays it. What is not wanted is this
