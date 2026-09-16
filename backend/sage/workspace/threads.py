@@ -258,17 +258,6 @@ class ThreadStore:
         p = self.thread_dir(thread_id) / "session.json"
         p.unlink(missing_ok=True)
 
-    def findings_path(self, thread_id: str) -> Path:
-        """The one file under `.sage/` a Chat turn may write — what a long investigation has
-        already measured (#380, template/chat/AGENTS.md "Keeping findings across turns").
-
-        A path and not a delete, because only one caller has to name the file: a complete Recall
-        clear (`service.clear_recall`, ADR-0055). The other two reach it without naming it —
-        `purge` takes everything beside the tombstone (ADR-0036), and the turn opens it by its
-        workspace-shaped path through the workdir link (#380).
-        """
-        return self.thread_dir(thread_id) / "findings.md"
-
     def history_path(self, thread_id: str) -> Path:
         return self.thread_dir(thread_id) / "history.jsonl"
 

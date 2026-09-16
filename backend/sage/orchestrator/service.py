@@ -9264,7 +9264,8 @@ class Orchestrator:
         """
         if scope not in (recall.SUMMARY, recall.EMPTY):
             raise ValueError(f"unknown scope {scope!r}")
-        store = ThreadStore(self._chat_project().record.path)
+        root = self._chat_project().record.path
+        store = ThreadStore(root)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         if scope == recall.EMPTY:
@@ -9286,13 +9287,17 @@ class Orchestrator:
             # `recall.CLEARED` row: the ladder is derived from those rows, so the spent rung would
             # be offered again and `recall.terminal` would never fire.
             #
+            # `findings_file` rather than a second spelling of the path: its own docstring makes
+            # one definition the rule, because a caller that spells it itself fails by the feature
+            # quietly not working rather than by raising (#381).
+            #
             # Two limits, open rather than handled, both in ADR-0055's consequences. This unlinks
             # the WORKING-TREE copy — git history keeps the log, and the removal itself reaches
             # git only on the next Chat save, not on this click (ADR-0046). And this door holds no
             # turn lock, so a turn streaming in the same Thread can append the file again after
             # the unlink; the session half escapes that only because `session.json` is written
-            # when a session is created (`:8926`) and not at turn end.
-            store.findings_path(thread_id).unlink(missing_ok=True)
+            # when a session is created (`:8930`) and not at turn end.
+            findings_file(root, thread_id).unlink(missing_ok=True)
         store.clear_session_id(thread_id)
         ev = {"type": recall.CLEARED, "scope": scope}
         store.append_history(thread_id, ev)
