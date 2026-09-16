@@ -10,11 +10,16 @@
 //
 // Input on stdin: `{ "act": "panel-both" | "panel-one-type" | "catalog", "filter": <kind>? }`.
 // `filter` is the kind the assistant asked somebody to pick, which the rail says a sentence about.
+//
+// `catalog` also takes `errors` and `groups`, which stand the sidebar in the states a refusal puts
+// it in: a leg that answered nothing, a leg whose previous rows were carried over its refusal, and
+// a read that faulted and left no kind key at all (#368). `groups` REPLACES the fixture below
+// rather than merging into it, because the last of those three is an empty one.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { act, filter } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { act, filter, errors, groups } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 // A Dataset and a Data Source, plus a model, so the Data section is drawn beside a group that is
 // not it. `panel-one-type` drops the Data Source: that is the case the old naming rule got wrong,
@@ -120,7 +125,10 @@ if (act === 'catalog') {
     scope: { id: 'p1', name: 'quick-start' },
     catalogOpen: true,
     catalogKind: null,
-    resourceListing: LISTING,
+    resourceListing: {
+      errors: errors === undefined ? LISTING.errors : errors,
+      groups: groups === undefined ? LISTING.groups : groups,
+    },
     resourceListingScope: 'p1',
     resourceGroups: {},
   });
@@ -134,10 +142,16 @@ if (act === 'catalog') {
     .map((n) => {
       const spans = flatten(n).filter((d) => d.t === 'span');
       const count = spans.find((d) => cls(d) === 'sw-cat-side-count');
+      // The reason under a count that could not be read hangs off a `Tooltip`, which the antd stub
+      // leaves as a node rather than a component — so what it was given to say is readable here.
+      const unread = flatten(n).find((d) => d.t === 'Tooltip');
       return {
         label: text(spans.find((d) => !cls(d))) || '',
         isChild: cls(n).includes('is-child'),
         count: count ? count.c.flat(Infinity)[0] : null,
+        // What a screen reader is handed INSTEAD of the two spans above.
+        aria: (n.p || {})['aria-label'] === undefined ? null : (n.p || {})['aria-label'],
+        unreadTitle: unread ? (unread.p || {}).title : null,
       };
     });
   // The meta line under each row's name, word by word, so the Domino noun and the reach can be
