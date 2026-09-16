@@ -9433,6 +9433,67 @@ class Orchestrator:
         except Exception as e:
             return {"asked": True, "ok": False, "url": url, "error": f"unreadable reply: {e}"}
 
+    def opencode_skill_status(self, directory: str | None = None) -> dict:
+        """Which SKILLs OPENCODE holds for a directory. Asked of OpenCode, not inferred.
+
+        The same shape of question as `opencode_mcp_status` above, and the same reason for asking
+        it: everything else reads what SAGE wrote. `_install_opencode_skills` logs what it copied
+        into `~/.config/opencode/skills/`, and that line can be true while no turn is ever offered
+        the skill — a checkout that installed a different set last, a directory OpenCode never
+        looks under, a server started before the copy landed.
+
+        ASK ABOUT A DIRECTORY, for the reason `opencode_mcp_status` gives. `Skill.discovery` takes
+        `(directory, worktree)` and walks up from `directory`, so the answer genuinely differs
+        between the server's own cwd, the `.sage/chat-work` a Chat turn runs in, and the
+        `apps/<appId>` a Build turn runs in. Measured on the pinned 1.18.4:
+        `GET /skill?directory=X`.
+
+        `no_description` IS THE FIELD THAT COSTS A DAY IF IT IS MISSING. 1.18.4 loads a skill whose
+        frontmatter has no `description` and then drops it from the list shown to the model —
+        `skills.filter((s) => s.description !== undefined)`. Such a skill is present in this reply
+        and absent from every prompt, so `skills` alone would report it healthy. The install-time
+        check in `_install_opencode_skills` is the other half; this is the half that can see a
+        skill that arrived from somewhere else.
+
+        Never raises. A diagnostic must never be the thing that breaks the diagnostics page.
+        """
+        server = self._oc_server
+        if server is None:
+            return {"asked": False, "why": "the OpenCode server is not running"}
+        try:
+            url = server.url().rstrip("/") + "/skill"
+            if directory:
+                url += "?directory=" + urllib.parse.quote(directory, safe="")
+        except Exception as e:
+            # `url()` raises until the server has reported one, which is a real answer here.
+            return {"asked": False, "why": f"{type(e).__name__}: {e}"}
+        try:
+            with self.diagnostic_window():
+                r = httpx.get(url, timeout=3.0, headers={"Accept": "application/json"})
+        except Exception as e:
+            return {"asked": True, "ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
+        if r.status_code != 200:
+            return {"asked": True, "ok": False, "url": url, "status": r.status_code}
+        try:
+            held = r.json()
+        except Exception as e:
+            return {"asked": True, "ok": False, "url": url, "error": f"unreadable reply: {e}"}
+        if not isinstance(held, list):
+            # `GET /mcp` next door answers with an OBJECT, and iterating one yields its keys — which
+            # would filter down to an empty `skills` and report "OpenCode holds no skills" for a
+            # reply nobody could read. A shape we do not recognise is a shape we say we cannot read.
+            return {"asked": True, "ok": False, "url": url,
+                    "error": f"unreadable reply: expected a list, got {type(held).__name__}"}
+        rows = [s for s in held if isinstance(s, dict)]
+        return {"asked": True, "ok": True, "url": url,
+                "skills": sorted(str(s.get("name") or "") for s in rows),
+                # As close as Python gets to OpenCode's `s.description !== undefined`: `.get()`
+                # cannot tell an absent key from an explicit JSON `null`, and a null would pass
+                # that filter while this flags it. An EMPTY description does reach the model, so
+                # flagging THAT would be a false alarm on the one field this row is trusted about.
+                "no_description": sorted(str(s.get("name") or "") for s in rows
+                                         if s.get("description") is None)}
+
     def opencode_version(self) -> dict:
         """Which OpenCode is actually running, asked of the binary rather than assumed.
 
