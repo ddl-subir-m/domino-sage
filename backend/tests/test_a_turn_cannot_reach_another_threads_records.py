@@ -16,6 +16,7 @@ another route and reaches exactly the people most likely to have two Threads ope
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,33 @@ def test_the_previous_threads_link_does_not_survive_into_this_turn(tmp_path: Pat
     ensure_chat_workdir(tmp_path, "# chat", thread_id=YOURS)
     work = ensure_chat_workdir(tmp_path, "# chat", thread_id=MINE)
 
+    assert not (work / ".sage" / "threads" / YOURS).exists()
+    assert (work / ".sage" / "threads" / MINE / "history.jsonl").read_text() == "mine\n"
+
+
+def test_a_tree_wide_link_left_at_the_link_site_is_scoped_down(tmp_path: Path):
+    """A symlink standing at `.sage/chat-work/.sage/threads` defeats the scoping in silence.
+
+    `mkdir(exist_ok=True)` swallows it, because the path exists and `is_dir()` follows the link.
+    The prune then walks the REAL tree, where every entry is a Thread's own record directory and
+    nothing is a symlink, so the guard that exists to protect a real directory removes nothing.
+    `_ensure_dir_link` resolves its link site through the symlink onto a real directory and
+    returns for the same reason. Every one of the three behaves exactly as documented and the
+    scoping does not happen — which is invisible from any one of them.
+
+    This is not a hypothetical shape: it is exactly what the commit that first made the file
+    reachable leaves behind, so it is what an upgrade walks into.
+    """
+    _records(tmp_path, MINE, "mine\n")
+    _records(tmp_path, YOURS, "the other Thread's transcript\n")
+    sage = tmp_path / ".sage" / "chat-work" / ".sage"
+    sage.mkdir(parents=True)
+    (sage / "threads").symlink_to(
+        os.path.relpath(tmp_path / ".sage" / "threads", sage))
+
+    work = ensure_chat_workdir(tmp_path, "# chat", thread_id=MINE)
+
+    assert not (work / ".sage" / "threads").is_symlink()
     assert not (work / ".sage" / "threads" / YOURS).exists()
     assert (work / ".sage" / "threads" / MINE / "history.jsonl").read_text() == "mine\n"
 

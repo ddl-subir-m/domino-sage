@@ -839,6 +839,20 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
     sage.mkdir(exist_ok=True)
     _ensure_dir_link(sage / "scratch", Path(workspace) / ".sage" / "scratch")
     threads = sage / "threads"
+    # A symlink standing HERE defeats the scoping below, silently, and no one of the three lines
+    # after it looks wrong. `mkdir(exist_ok=True)` swallows, because the path exists and `is_dir()`
+    # follows the link. The prune then walks the REAL `.sage/threads`, where every entry is a
+    # Thread's actual record directory and nothing is a symlink, so it removes nothing — the
+    # `is_symlink()` guard that protects a real directory reads here as "leave it all alone".
+    # `_ensure_dir_link` then resolves its link site through the symlink onto a real directory and
+    # returns for the same reason. Three functions behaving exactly as documented, adding up to
+    # the tree-wide link surviving untouched and every Thread's transcript staying in the cwd.
+    #
+    # Nothing in this function can produce that shape, so the population is empty — but it is
+    # empty because of what has been committed, not because of anything enforced here, and the
+    # failure if that stops being true is the exact exposure this scoping exists to close.
+    if threads.is_symlink():
+        threads.unlink()
     threads.mkdir(exist_ok=True)
     for stale in threads.iterdir():
         if stale.is_symlink() and stale.name != thread_id:
