@@ -70,12 +70,18 @@ window.SW = window.SW || {};
     {
       key: 'data',
       label: 'Data',
-      // Subgroup labels are templates, resolved where they are drawn: this list is built when the
-      // file is evaluated, which is before GET /api/brand has answered.
-      subgroups: [
-        { kind: 'dataset', label: '{datasetPlural}' },
-        { kind: 'datasource', label: '{dataSourcePlural}' },
-      ],
+      // One section for everything data-like, and a subhead says what a person is looking at rather
+      // than which Domino primitive it is — File volume, Data connection (ADR-0054).
+      //
+      // No labels here: `SW.util.dataTypeLabel` holds them, because the catalog's sidebar draws the
+      // same two words and two lists of them would be two places to forget.
+      subgroups: [{ kind: 'dataset' }, { kind: 'datasource' }],
+      // Both subheads are drawn whenever their rows are, even when only one kind is present. Under
+      // the rule below — name a subgroup only when a sibling also has rows — a Project holding just
+      // Datasets drew a list of them headed `Data`, and the same rows read as `Data / File volume`
+      // in the Project next door. The shape is a fact about the rows, not about what else is beside
+      // them.
+      namedSubgroups: true,
     },
     {
       key: 'model_llm',
@@ -361,7 +367,7 @@ window.SW = window.SW || {};
       h(
         'button',
         { className: 'sw-res-open', onClick: () => onOpen(resource) },
-        h('span', { className: 'sw-res-icon' }, SW.util.iconFor(resource.kind)),
+        h('span', { className: 'sw-res-icon' }, SW.util.iconNodeFor(resource.kind)),
         h(
           'span',
           { className: 'sw-res-main' },
@@ -932,7 +938,15 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-panel-hint' },
-          h('span', null, `Pick a ${SW.util.labelFor(panelFilter)} to continue`),
+          // The type word, where the kind has one: the section this sentence points at is headed
+          // `Data / File volume`, and `Pick a Dataset` sent somebody looking for a word neither
+          // this rail nor the catalogue draws any more (ADR-0054). Every other kind keeps the
+          // Domino noun, which is what `labelFor` still answers for it.
+          h(
+            'span',
+            null,
+            `Pick a ${SW.util.dataTypeLabel(panelFilter) || SW.util.labelFor(panelFilter)} to continue`
+          ),
           h(
             Button,
             {
@@ -1003,7 +1017,7 @@ window.SW = window.SW || {};
           // it was written for: a kind that errored and has no rows left to hang it over.
           if (count === 0 && !listingError) return null;
           const isCollapsed = collapsed[group.key];
-          const named = items.filter((i) => i.rows.length).length > 1;
+          const named = group.namedSubgroups || items.filter((i) => i.rows.length).length > 1;
 
           return h(
             Fragment,
@@ -1027,11 +1041,15 @@ window.SW = window.SW || {};
                   ? h(
                       Fragment,
                       { key: sub.kind },
-                      sub.label && named &&
+                      SW.util.dataTypeLabel(sub.kind) && named &&
                         h(
                           'div',
                           { className: 'sw-res-subgroup' },
-                          h('span', { className: 'sw-group-label' }, SW.brand.text(sub.label))
+                          h(
+                            'span',
+                            { className: 'sw-group-label' },
+                            SW.util.dataTypeLabel(sub.kind)
+                          )
                         ),
                       subRows.map(rowFor)
                     )
