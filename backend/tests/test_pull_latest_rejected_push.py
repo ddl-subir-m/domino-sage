@@ -1,4 +1,4 @@
-"""#347: Pull latest must not read as clean when the merge works but the push is rejected."""
+"""#347: Pull and build must not read as clean when the merge works but the push is rejected."""
 from __future__ import annotations
 
 import json
@@ -46,14 +46,14 @@ def test_sync_keeps_merge_detail_and_rejected_push_detail_separate(tmp_path: Pat
     _project(orch)
 
     monkeypatch.setattr(orch, "_integrate_remote",
-                        lambda project: git.SyncResult("merged", [], "merged teammate changes"))
+                        lambda project: git.SyncResult("merged", [], "merged the incoming changes"))
     monkeypatch.setattr(git, "push", lambda path: git.SaveResult(
         pushed=False, detail="push failed: rejected non-fast-forward", rejected=True))
 
     result = orch.sync()
 
     assert result["status"] == "merged"
-    assert result["detail"] == "merged teammate changes"
+    assert result["detail"] == "merged the incoming changes"
     assert result["pushed"] is False
     assert result["rejected"] is True
     assert result["pushDetail"] == "push failed: rejected non-fast-forward"
@@ -99,14 +99,17 @@ def test_pull_and_build_stops_and_tells_the_person_when_push_is_rejected():
         "conflicts": [],
         "pushed": False,
         "rejected": True,
-        "detail": "merged teammate changes",
+        "detail": "merged the incoming changes",
         "pushDetail": "push failed: rejected non-fast-forward",
     })
 
     assert result["calls"] == ["syncProject"]
     assert "committed locally" in result["thrown"]
     assert "not on the remote" in result["thrown"]
-    assert "Pull latest again" in result["thrown"]
+    # The button says "Pull and build this", so the sentence says the same (#233): no control
+    # has ever carried the label "Pull latest".
+    assert "Try Pull and build again" in result["thrown"]
+    assert "Pull latest" not in result["thrown"]
     assert "push failed: rejected non-fast-forward" in result["thrown"]
 
 

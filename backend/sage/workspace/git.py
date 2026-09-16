@@ -44,6 +44,18 @@ class Incoming:
     files: list[str]
 
 
+@dataclass
+class ResolvedMerge:
+    """A merge whose conflicts a model resolved, with nobody having read the result (#233).
+
+    `sha` is abbreviated and `files` are the paths the model rewrote. Both are read back out of the
+    commit — there is no second record anywhere (ADR-0053 rule four), because `sha^1` IS the
+    pre-merge state, permanently and in every clone, and a copy under `.sage/` could only disagree
+    with git while being the one that does not survive a clone."""
+    sha: str
+    files: list[str]
+
+
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=str(path), capture_output=True, text=True, check=check
@@ -270,6 +282,128 @@ def finalize_merge(path: Path, message: str) -> None:
 def abort_merge(path: Path) -> None:
     """Roll back an in-progress merge, restoring the pre-pull state."""
     _git(path, "merge", "--abort", check=False)
+
+
+# ---- the three strings the undo offer is derived from (#233, ADR-0053) ---------------------------
+#
+# LOAD-BEARING. These are not descriptions of what happened; they are the record. `resolved_merge`
+# finds a merge by MERGE_SUBJECT plus two parents, reads what was rewritten out of the
+# `_RESOLVED_IN` line, and calls it already taken back when it finds `_UNDO_PREFIX` + that sha
+# nearer HEAD. Change any of them and the offer silently stops appearing for merges made by the old
+# spelling. `test_a_resolved_merge_can_be_undone.py` pins the format for that reason.
+#
+# The subject is what tells a merge a model resolved from one git completed by itself: `pull()`
+# merges with `git merge --no-edit` and git writes its own subject, and `finalize_merge` has exactly
+# one caller. Two parents are required as well as the subject, because `_save_to_git` builds
+# `f"build: {prompt}"` out of what a person typed and somebody could type this.
+MERGE_SUBJECT = "build: merge remote changes"
+# A header line and then one path per line, rather than one comma-joined line. A path may contain a
+# comma — this repo's own charts are named from something somebody typed — and splitting on one
+# would put two invented filenames in front of a person deciding whether to undo. Git quotes a path
+# containing a newline, so one path per line is a partition and not a guess.
+_RESOLVED_IN = "Resolved conflicts in:"
+_UNDO_PREFIX = "build: undo merge "
+# How far back the walk looks. A cap rather than a claim: offering to undo a merge from fifty builds
+# ago is almost certainly wrong, and a revert that no longer applies refuses rather than failing
+# badly. `HEAD` itself is NOT the test — a build commits on top inside the same turn.
+_UNDO_WINDOW = 50
+# Fixed rather than git's own abbreviation, which grows with the repo: the length is part of the
+# marker that `_UNDO_PREFIX` searches for, so an undo written today has to still match a merge read
+# back next year.
+_SHA_LEN = 12
+
+
+def merge_message(files: list[str]) -> str:
+    """The commit message for a merge the model resolved: the marker subject, and under it the files
+    it rewrote.
+
+    The body is the only place that list can live. Git records which files DIFFER, not which ones
+    conflicted (`show --cc` answers a wider question), and the conflict list is a local variable that
+    dies with the process — which is exactly the case the offer has to survive, since `_save_to_git`
+    merges on the way down from a SIGTERM."""
+    named = "\n".join(f for f in files if f.strip())
+    return f"{MERGE_SUBJECT}\n\n{_RESOLVED_IN}\n{named}" if named else MERGE_SUBJECT
+
+
+def _short(sha: str) -> str:
+    return sha[:_SHA_LEN]
+
+
+def resolved_merge(path: Path, window: int = _UNDO_WINDOW) -> ResolvedMerge | None:
+    """The newest merge a model resolved that has not been undone, or None.
+
+    Walks newest-first, so an undo is always met before the merge it took back and the two need no
+    ordering of their own. An undo is nearer HEAD than its merge by construction, so a merge inside
+    the window has its undo inside it too."""
+    r = _git(path, "log", f"-n{window}", "--format=%H%x1f%P%x1f%B%x1e", "HEAD", check=False)
+    if r.returncode != 0:
+        return None
+    undone: set[str] = set()
+    for record in r.stdout.split("\x1e"):
+        lines = record.strip("\n").split("\x1f")
+        if len(lines) != 3:
+            continue
+        sha, parents, body = lines
+        subject = body.splitlines()[0] if body.strip() else ""
+        if subject.startswith(_UNDO_PREFIX):
+            # Shape-checked for the reason the merge subject is parent-checked: `_save_to_git`
+            # builds `build: <prompt>` out of what a person typed, and a revert has one parent so
+            # there is no count to lean on here. A subject that does not end in an abbreviated sha
+            # was not written by `undo_merge`, and taking it for one would silently suppress a real
+            # offer.
+            named = subject[len(_UNDO_PREFIX):].strip()
+            if len(named) == _SHA_LEN and all(c in "0123456789abcdef" for c in named):
+                undone.add(named)
+        elif subject == MERGE_SUBJECT and len(parents.split()) == 2 and _short(sha) not in undone:
+            return ResolvedMerge(sha=_short(sha), files=_resolved_files(body))
+    return None
+
+
+def _resolved_files(body: str) -> list[str]:
+    lines = body.splitlines()
+    for at, line in enumerate(lines):
+        if line.strip() == _RESOLVED_IN:
+            return [f.strip() for f in lines[at + 1:] if f.strip()]
+    return []
+
+
+def undo_merge(path: Path, sha: str) -> bool:
+    """Revert the merge `sha` and commit it under a subject naming what it undid.
+
+    Returns False, with the tree as it found it, when the revert does not apply — which is what a
+    build landing on top makes likely. That refusal is the end of it: handing the conflict to a model
+    would rebuild #233 inside its own fix (ADR-0053 rule five).
+
+    A revert and never a reset, because `sync()` pushes straight after merging: by the time anybody
+    reads the offer the merge may already be on the remote, where rewriting history would take it out
+    from under a clone somebody else is working in.
+
+    `revert --abort` and never `reset --hard` for the rollback, for the same reason one level down.
+    The caller commits first, but `commit_all`'s `exclude` deliberately leaves tracked files
+    MODIFIED in the tree (the attached-data copies that must never be committed), and those are
+    exactly what a dirty-tree revert refuses over. A hard reset would answer "this could not be
+    applied" by destroying the work that stopped it. `--abort` restores the pre-revert state and
+    leaves untouched anything the revert never reached — measured, not assumed.
+
+    The commit is checked like every other call here rather than raising: it comes after the revert
+    is already in the tree, so a failure that escaped would leave the undo applied, unrecorded and
+    still being offered, for the next unrelated build to sweep into its own commit."""
+    r = _git(path, "revert", "-m", "1", "--no-commit", sha, check=False)
+    if r.returncode != 0:
+        _git(path, "revert", "--abort", check=False)
+        return False
+    if _git(path, "diff", "--cached", "--quiet", check=False).returncode == 0:
+        # Nothing to take back — the merge's changes are already gone from the tree. Reported as a
+        # refusal rather than as an undo, because no `undo merge` commit was written and the offer
+        # has to keep matching what git says.
+        _git(path, "revert", "--quit", check=False)
+        return False
+    done = _git(path, *_identity_args(path), "commit", "-m", f"{_UNDO_PREFIX}{_short(sha)}",
+                check=False)
+    if done.returncode != 0:
+        _git(path, "revert", "--abort", check=False)
+        return False
+    return True
 
 
 def fetch(path: Path) -> bool:

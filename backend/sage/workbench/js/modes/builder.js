@@ -568,6 +568,68 @@ window.SW = window.SW || {};
     );
   }
 
+  // The offer to take back a merge the agent resolved the conflicts of (#233, ADR-0053).
+  //
+  // One offer, not a sentence that happens to sit near a button. The file names ARE the offer:
+  // "a merge happened" is nothing a person can weigh, and the names are the only part of it they
+  // can recognise as their own work or not.
+  //
+  // Two names in the strip and the rest in the tooltip, on `sw-build-others`' precedent a few lines
+  // up — the strip is 44px and the app's name has to stay the heaviest thing in it. The tooltip
+  // carries every name the row shipped, so the ellipsis loses nothing.
+  //
+  // No confirm — and NOT because this is reversible, which it is not. The revert leaves the incoming
+  // work at `<sha>^2` and no Workbench control brings it back (#366, ADR-0053). What makes a second
+  // question the wrong shape here is that the tooltip already IS the question: it names the files,
+  // the sha, and what the undo costs, on the control itself. A confirm would ask the same thing
+  // again with less in it.
+  //
+  // That reasoning is load-bearing on the tooltip being reachable. A second entry point for this
+  // undo, anywhere the cost cannot be read before the click, needs the confirm this one does not.
+  function UndoMerge({ merge }) {
+    const [busy, run] = SW.util.useBusyAct();
+    const files = merge.files || [];
+    const shown = files.slice(0, 2);
+    const hidden = (merge.count || files.length) - shown.length;
+    const named = shown.join(', ') + (hidden > 0 ? ` and ${hidden} more` : '');
+    const all = files.join(', ') + (files.length < (merge.count || 0)
+      ? ` and ${merge.count - files.length} more` : '');
+    return h(
+      Tooltip,
+      {
+        // The second sentence is what the undo actually costs, and it took a measurement to get
+        // right. Reverting a merge does NOT re-arm the pull: git still counts those commits as
+        // merged, so the next Pull and build is a no-op and the content stays out. This used to
+        // say "the changes can be taken again with Pull and build", which is the comfortable thing
+        // to say and is false — and a person deciding whether to drop somebody else's work is
+        // exactly who must not be told it.
+        title: SW.brand.text(
+          '{assistantName} resolved the merge conflicts on its own and chose how to combine each ' +
+            'side. It rewrote {files}. Undo reverts merge {sha} and pushes, putting the code back ' +
+            'as it was. The incoming work stays in the history, but Pull and build will not bring ' +
+            'it back — git counts it as already merged.',
+          { files: all || 'files this merge did not record', sha: merge.sha }
+        ),
+      },
+      h(
+        'span',
+        { className: 'sw-build-state is-merged' },
+        // Both clauses, not just the first: what was rewritten, and that the agent — not a person —
+        // decided how. "Sage combined" alone reads as bookkeeping; the second clause is the part
+        // that makes an Undo worth looking at.
+        SW.brand.text('{assistantName} combined incoming changes in {files} — it chose how',
+                      { files: named || 'this Project' }),
+        h(Button, {
+          type: 'link',
+          size: 'small',
+          loading: busy === 'undo',
+          disabled: !!busy,
+          onClick: run('undo', () => SW.store.undoMerge()),
+        }, 'Undo')
+      )
+    );
+  }
+
   // The Build header. It names the app the preview is showing, and it is where the app is chosen
   // now that the rail lists Conversations in both modes.
   function AppBar({ resumed }) {
@@ -674,6 +736,15 @@ window.SW = window.SW || {};
       // The row says it too, but that row is behind a click.
       activeApp && activeApp.behind &&
         h('span', { className: 'sw-build-state is-behind' }, 'Changes to pull'),
+      // A merge the agent resolved the conflicts of, which nobody read before it was committed and
+      // pushed (#233, ADR-0053). Beside `behind` above because the two are one question a step
+      // apart: that one is work waiting to come in, this is work that already did, unread.
+      //
+      // Here rather than in the transcript, and derived from git rather than from a card, because
+      // the case that most needs saying has no transcript to put a card in: `_save_to_git` merges
+      // on the way down from a SIGTERM, and the person's next sight of it is after a restart.
+      activeApp && activeApp.resolvedMerge &&
+        h(UndoMerge, { merge: activeApp.resolvedMerge }),
       // The third producer, and the only one that is about the process rather than the app: your
       // turn can be writing files WHILE the preview restarts to show them, so this is said beside
       // the two above rather than instead of either.
@@ -1430,7 +1501,7 @@ window.SW = window.SW || {};
     const scroller = useRef(null);
 
     // The only thing keeping app state fresh, and it moved here with the rail it used to live in
-    // (#82). The badge is the point of the check being a background one (#78): a teammate's push
+    // (#82). The badge is the point of the check being a background one (#78): somebody else's push
     // has to reach the screen without anyone opening an app to find out. The server does the
     // fetching on its own schedule and this only re-reads the answer, so the interval is cheap.
     useEffect(() => {

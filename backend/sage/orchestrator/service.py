@@ -351,7 +351,7 @@ _PERSISTED_EVENTS = frozenset({
 # this is how stale a badge may be, not how long anything waits: a turn does its own check, because
 # a turn is the moment the answer has to be right (#78).
 _REMOTE_CHECK_SECONDS = 30.0
-# How many incoming file names an offer carries. Enough to recognise what a teammate touched, and
+# How many incoming file names an offer carries. Enough to recognise what was touched, and
 # short of pasting a thousand-file merge into the transcript; the full count rides beside it.
 _INCOMING_FILES_SHOWN = 20
 # How many databases one table search will walk when the Binding names none (#183). One
@@ -4818,6 +4818,13 @@ class Orchestrator:
         # the rail can badge it without anyone clicking, and read again by a turn on its way in.
         # `None` until the first check lands, which is why the rail badges nothing before then.
         self._incoming = None
+        # The merge the undo offer is about (#233), refreshed by the same check as `_incoming` and
+        # under the same lock. None until a check has run, and None again once it has been undone —
+        # it is re-derived from git every time rather than retired by whoever acted on it.
+        self._resolved_merge = None
+        # Claimed by each `_check_remote` on the way in, so a reading taken before a newer one
+        # started cannot land after it (see the comment there).
+        self._incoming_gen = 0
         self._incoming_at = 0.0
         self._incoming_checking = False
         self._incoming_lock = threading.Lock()
@@ -5530,7 +5537,23 @@ class Orchestrator:
 
         from ..workspace import git
 
+        # The newest reader wins, and an older one that was still out drops its answer. The
+        # background check holds a network fetch open for seconds, so without this an undo that
+        # lands inside that window is overwritten by a reading taken before it: the Undo button
+        # comes back for a merge that is already gone, and pressing it says there is nothing to
+        # undo (#233). `_incoming` has always had the same race; it is fixed here for both rather
+        # than for the one field that made it visible.
+        with self._incoming_lock:
+            self._incoming_gen += 1
+            gen = self._incoming_gen
+
         found = git.Incoming("", [])
+        # A merge the model resolved that nobody has read (#233). It rides this check rather than
+        # having one of its own because it answers the same shape of question on the same rail row,
+        # and because the case that matters is a merge made by `_save_to_git` on the way down from a
+        # SIGTERM — nobody was here for it, so the offer has to be waiting when they come back. A
+        # local `git log`, so no fetch of its own and nothing to pay for beside the one above.
+        merge = None
         try:
             root = project.record.path
             if git.is_repo_root(root):
@@ -5539,11 +5562,19 @@ class Orchestrator:
                         git.fetch(root)
                 with timing.span("gate.remote.incoming", beside=1 if beside else 0):
                     found = git.incoming(root)
+                    # Inside the span, not beside it: it is a subprocess on the same local refs,
+                    # and a read the turn waits on that no span covers is wall clock the timing
+                    # readout cannot account for (see scripts/turn-timing.py).
+                    merge = git.resolved_merge(root)
         except Exception:
             log.exception("could not check the remote for incoming changes")
             found = git.Incoming("", [])
+            merge = None
         with self._incoming_lock:
+            if gen != self._incoming_gen:
+                return found
             self._incoming = found
+            self._resolved_merge = merge
             self._incoming_at = time.monotonic()
         return found
 
@@ -5581,12 +5612,34 @@ class Orchestrator:
         """Of an incoming reading, the files that land inside one Built App, named as that app
         names them.
 
-        The repo is the Project, so a teammate's commit can touch another Built App, a Thread, or
+        The repo is the Project, so an incoming commit can touch another Built App, a Thread, or
         the Project's own record. None of those is this app's code, and this app's code is the only
         thing a turn here would be building on top of."""
         found = self._incoming_now() if found is None else found
         prefix = f"{workspace.path.relative_to(self._wm.path).as_posix()}/"
         return [f[len(prefix):] for f in found.files if f.startswith(prefix)]
+
+    def _resolved_merge_row(self) -> dict | None:
+        """The merge a model resolved and nobody has read, for the rail row, or None (#233).
+
+        The PROJECT's, not this app's, and unfiltered where `behind` beside it is filtered. Git is
+        the Project's — one merge can rewrite a file in two Built Apps and one in the Project's own
+        record — and a merge is taken back whole or not at all, so a row that named only its own
+        share would be offering to undo something narrower than what the button does. The files are
+        repo-relative for the same reason: that is what the undo is about.
+
+        Capped like the incoming-changes offer, with the full count beside it, so a merge that
+        rewrote four hundred files does not put four hundred names on a header."""
+        merge = self._resolved_merge_now()
+        if merge is None:
+            return None
+        return {"sha": merge.sha, "files": merge.files[:_INCOMING_FILES_SHOWN],
+                "count": len(merge.files)}
+
+    def _resolved_merge_now(self):
+        """The last reading of the undoable merge, or None before the first check has landed."""
+        with self._incoming_lock:
+            return self._resolved_merge
 
     def _building_app_id(self) -> str:
         """The Built App a turn is streaming into right now, or "" when none is.
@@ -5689,6 +5742,14 @@ class Orchestrator:
             # Somebody else has pushed changes to this app's code (#78). A background check keeps
             # this current, so the rail says which app it is without anyone opening one to find out.
             "behind": bool(self._incoming_files(workspace)),
+            # A merge whose conflicts a model resolved, which nobody read before it was committed
+            # and pushed (#233, ADR-0053). Beside `behind` because it is the same shape of fact on
+            # the same background refresh, and because the header already draws `behind` for the
+            # selected app — which is where the sentence and its Undo belong.
+            #
+            # Project-wide, so every row carries the same one. Only the selected app's row is drawn,
+            # and a merge is the Project's rather than any app's.
+            "resolvedMerge": self._resolved_merge_row(),
         }
 
     def _one_app(self, app_id: str) -> dict:
@@ -14921,7 +14982,7 @@ class Orchestrator:
         leaked = self._kept_out_of_the_commit(project)
         try:
             committed = git.commit_all(path, message, exclude=leaked)
-            # Integrate any teammate changes before pushing, or the push is rejected as non-ff and
+            # Integrate any incoming changes before pushing, or the push is rejected as non-ff and
             # the build's work silently never reaches the repo.
             synced = self._integrate_remote(project)
             if synced is not None and synced.status in ("conflict-unresolved", "error"):
@@ -14981,7 +15042,10 @@ class Orchestrator:
         sid = client.create_session(directory=str(path))
         files = "\n".join(f"- {c}" for c in conflicts)
         prompt = (
-            "A `git pull` brought in changes from a teammate that conflict with the current code. "
+            # "Incoming changes", never a person-kind: push access to the repo and being a
+            # Collaborator on the Project are different grants, so Sage cannot know who pushed
+            # (CONTEXT.md, ADR-0053). The model repeats what it is told, so the ban starts here.
+            "A `git pull` brought in changes that conflict with the current code. "
             f"These files have unresolved merge conflicts:\n{files}\n\n"
             "For each file, resolve every conflict: reconcile the code between the `<<<<<<<`, "
             "`=======`, and `>>>>>>>` markers so both sides' intent is kept where possible, then "
@@ -14999,12 +15063,17 @@ class Orchestrator:
             git.abort_merge(path)
             return git.SyncResult("conflict-unresolved", remaining,
                                   f"conflicts remain in {', '.join(remaining)} — pull was rolled back")
-        git.finalize_merge(path, "build: merge remote changes")
-        return git.SyncResult("merged", conflicts, "merged teammate changes (conflicts resolved)")
+        # The commit message is the whole record of this merge (#233, ADR-0053 rule four). Its
+        # subject is what `git.resolved_merge` finds the undo offer by, and its body carries the
+        # files below — which is the only place they can live, because `conflicts` is a local
+        # variable and the case this has to survive is a restart. See `git.merge_message`.
+        git.finalize_merge(path, git.merge_message(conflicts))
+        return git.SyncResult("merged", conflicts, "merged the incoming changes (conflicts resolved)")
 
     def sync(self) -> dict:
-        """Manual "Pull latest": commit in-progress edits, pull + agent-resolve teammate changes,
-        then push the result so the repo and workspace agree. Returns a UI result dict."""
+        """The merge half of Pull and build: commit in-progress edits, pull + agent-resolve the
+        incoming changes, then push the result so the repo and workspace agree. Returns a UI result
+        dict. No control reaches this on its own — the person asked for a build (ADR-0053)."""
         from ..workspace import git
 
         project = self.project()
@@ -15022,8 +15091,9 @@ class Orchestrator:
         # streaming into app A is stopped by nothing when app B is selected, and this commit takes
         # A's half-written tree with it.
         #
-        # Non-blocking, like publish's and Delete's: there is nothing to wait out, and a Pull latest
-        # that sat silently until a long build finished would look like a control that did nothing.
+        # Non-blocking, like publish's and Delete's: there is nothing to wait out, and a Pull and
+        # build that sat silently until a long build finished would look like a control that did
+        # nothing.
         if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "pull the latest changes")
         try:
@@ -15043,6 +15113,89 @@ class Orchestrator:
             log.exception("sync failed")
             return {"status": "error", "conflicts": [], "pushed": False, "rejected": False,
                     "detail": f"{type(e).__name__}: {e}", "pushDetail": ""}
+        finally:
+            self._release_turn()
+
+    def undo_merge(self) -> dict:
+        """Take back the newest merge a model resolved the conflicts of (#233, ADR-0053).
+
+        The merge is never blocked, so this is the whole of what the person is offered: the promise
+        is that nothing is lost, not that nothing changes unread. A gate was the first design and
+        was rejected for a stated reason — the Workbench cannot edit a file, so a gate would stop a
+        build the person asked for with a task they have no tool to finish (ADR-0053, #366).
+
+        A revert and never a reset: the merge may already be on the remote, and `HEAD^1` of the
+        merge commit stays reachable afterwards. A revert that will not apply refuses, names the
+        merge, and stops — it is not handed to a model, which would be this defect rebuilt one level
+        down.
+
+        What the person gets back is the state before the merge, and that is the whole promise. It
+        is NOT "the incoming work can be taken again": reverting a merge leaves those commits
+        reachable but already-merged, so a later `git merge` of the same branch is a no-op and the
+        content stays out. The work is in the history at `<sha>^2` and nothing in the Workbench will
+        bring it back (#366). Every sentence on this path is written to say that and not more.
+
+        Takes the turn lock for the reasons `sync` does: this commits the Project root and then
+        rewrites files under it, and a build streaming into any app is writing into the same tree.
+        """
+        from ..workspace import git
+
+        project = self.project()
+        path = project.record.path
+        found = git.resolved_merge(path) if git.is_repo_root(path) else None
+        if found is None:
+            # Not an error the person caused: the offer is derived, so it can go out between the
+            # render that drew the button and the click on it.
+            return {"ok": False, "sha": "", "pushed": False, "rejected": False,
+                    "detail": "There is no merge left to undo.", "pushDetail": ""}
+        if not self._acquire_for_door():
+            raise TurnBusy(self._turn_wedged, "undo the merge")
+        try:
+            # The failure window is these two acts and no more. Both leave the merge exactly where
+            # it was, so `ok: False` is true of both. Past them it stops being true: once the revert
+            # has committed, the code IS back, and reporting a failed push as a failed undo would be
+            # a lie with nothing to prompt anybody to check it.
+            try:
+                # NOTHING is committed first, unlike `sync`. `git pull` demands a clean tree and a
+                # revert does not, so a `commit_all` here would only invent the commit that then
+                # makes the revert conflict — turning the person's open edits into "work committed
+                # since then" and making "nothing here has changed" false in the same breath. Left
+                # alone, an edit to a file the revert touches makes git refuse, which is the true
+                # answer, and the edit survives.
+                reverted = git.undo_merge(path, found.sha)
+            except Exception as e:
+                log.exception("undo merge failed")
+                return {"ok": False, "sha": found.sha, "pushed": False, "rejected": False,
+                        "detail": f"{type(e).__name__}: {e}", "pushDetail": ""}
+            if not reverted:
+                return {"ok": False, "sha": found.sha, "pushed": False, "rejected": False,
+                        # Names the merge, because a short sha is the one thing a person with a
+                        # terminal can act on — the Workbench cannot show them a diff (#366).
+                        #
+                        # It does NOT name a cause. `undo_merge` answers False for a conflicting
+                        # revert, an empty one, and a commit that would not be written, and the one
+                        # thing true of all three is the state: the undo is not in the history and
+                        # the tree is as it was. Asserting "somebody else changed it" would be a
+                        # guess in front of the only person who could act on it.
+                        "detail": brand.text(
+                            "{assistantName} couldn't undo merge {sha} — the revert doesn't apply "
+                            "to the code as it stands now. Nothing here has changed.",
+                            sha=found.sha),
+                        "pushDetail": ""}
+            try:
+                pushed = git.push(path)
+            except Exception as e:
+                # Not `rejected`. That word means git received a push and refused it
+                # (`SaveResult`'s own contract), and its remedy — make the two sides agree — is not
+                # the remedy for a push that never ran at all.
+                log.exception("the undo committed but the push did not run")
+                pushed = git.SaveResult(pushed=False,
+                                        detail=f"push failed: {type(e).__name__}: {e}")
+            # The offer is derived, so this is what retires it: a local re-read, no fetch.
+            self._check_remote(project, fetch=False)
+            return {"ok": True, "sha": found.sha, "pushed": pushed.pushed,
+                    "rejected": pushed.rejected, "detail": "undid the merge",
+                    "pushDetail": pushed.detail}
         finally:
             self._release_turn()
 
