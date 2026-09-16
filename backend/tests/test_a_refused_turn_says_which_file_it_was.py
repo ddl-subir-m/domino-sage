@@ -140,7 +140,10 @@ def test_a_bare_continue_does_not_resend_the_refused_chat_payload(tmp_path: Path
     out = list(orch.chat_stream(tid, "continue"))
 
     assert gw.probes == probes
-    kinds = [e["type"] for e in out if e["type"] != "pending"]
+    # Both of the queue's own rows, not just the first: this turn waits behind the one `_run` left
+    # streaming, so it says `pending` and then `running` (#377) before it says anything about
+    # itself. Neither is part of the answer under test.
+    kinds = [e["type"] for e in out if e["type"] not in ("pending", "running")]
     assert kinds == ["user", "ask-blocked", "done"]
     blocked = next(e for e in out if e["type"] == "ask-blocked")
     assert "same content the gateway just refused" in blocked["message"]
