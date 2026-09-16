@@ -845,10 +845,13 @@ SW.api = {
   // #75). Attachments, Resources, the transcript and every other app survive it — see
   // Orchestrator.reset_app.
   resetApp: () => post('/project/reset'),
-  // Pull a teammate's changes into the workspace and push the merged result, so the repo and the
+  // Pull the incoming changes into the workspace and push the merged result, so the repo and the
   // Project agree (#78). Conflicts are resolved by the agent on the way through, so this can take
   // a model turn — see Orchestrator.sync.
   syncProject: () => post('/project/sync'),
+  // Take back the newest merge the agent resolved the conflicts of (#233, ADR-0053). No argument:
+  // the server derives which merge from git, so this cannot be pointed at another commit.
+  undoMerge: () => post('/project/undo-merge'),
 
   buildSteps: () => empty(),
   buildRuns: () => empty(),

@@ -479,8 +479,15 @@
 }
 .sw-build-state.is-building { color: var(--purple-600); font-weight: 600; }
 /* Info blue, not purple, and for the reason the rail's badge is: this one is marked because of
-   what a TEAMMATE did, and the two have to stay tellable apart at a glance (#78). */
+   what somebody else pushed, and the two have to stay tellable apart at a glance (#78). */
 .sw-build-state.is-behind { color: var(--info); font-weight: 600; }
+/* Warning ink, and the third colour in a strip that has two, because it is the third kind of fact
+   (#233): purple is your build, blue is work waiting to come in, and this is work that already
+   came in and changed the code with nobody reading it. Ink rather than a filled pill — the app's
+   name stays the heaviest thing in a 44px strip — but warning rather than grey, because the whole
+   reason it is said is that nobody saw it happen. `--warning-text`, not `--warning`, which is too
+   light to read. The Undo beside it is a link button and keeps its own colour. */
+.sw-build-state.is-merged { color: var(--warning-text); font-weight: 600; }
 
 /* App dependencies modal — what the selected app ships, read on demand rather than in an
    always-open row (#92 revisited). Reached from the header's own menu, so it keeps the app's

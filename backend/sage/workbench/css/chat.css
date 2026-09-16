@@ -104,7 +104,7 @@
   letter-spacing: .04em;
 }
 /* Somebody else has pushed changes to this Built App (#78). Info blue, not the purple the rail uses
-   for your own work: this row is marked because of what a teammate did, and the two facts have to
+   for your own work: this row is marked because of what somebody else pushed, and the two facts have to
    stay tellable apart at a glance. */
 .sw-thread-behind {
   background: var(--info-bg);
@@ -540,7 +540,7 @@
 .sw-nudge-main { flex: 1; min-width: 0; }
 .sw-nudge strong { color: var(--dark-700); }
 
-/* The files a teammate changed, on an incoming-changes offer (#78). Monospace and scrollable: these
+/* The files the incoming changes touched, on an incoming-changes offer (#78). Monospace and scrollable: these
    are paths, they are read by matching them against what you were about to touch, and a long merge
    must not push the two buttons under it off the screen. */
 .sw-incoming-files {

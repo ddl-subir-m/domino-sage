@@ -1736,7 +1736,7 @@ def model_assignments(conversation: str = "") -> JSONResponse:
 
 @control_app.post("/api/project/sync")
 async def sync_project() -> JSONResponse:
-    """Pull teammate changes from the repo into the workspace, resolving any merge conflicts with
+    """Pull incoming changes from the repo into the workspace, resolving any merge conflicts with
     the agent, then push. Offloaded to a thread because a conflict resolution drives a model turn
     (which needs the event loop free to serve the /v1 calls that turn makes)."""
     try:
@@ -1747,6 +1747,28 @@ async def sync_project() -> JSONResponse:
         return JSONResponse(status_code=409, content={"error": str(e)})
     except Exception as e:
         log.exception("sync failed")
+        return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
+    return JSONResponse(content=result)
+
+
+@control_app.post("/api/project/undo-merge")
+async def undo_merge() -> JSONResponse:
+    """Take back the newest merge a model resolved the conflicts of (#233, ADR-0053).
+
+    Takes no body and names no commit. The merge is derived from git on the way in, so a caller
+    cannot ask this to revert some other commit — which is what keeps a route that rewrites the
+    Project's files from being one anybody can point anywhere.
+
+    Offloaded to a thread like `sync` above: it commits, reverts and pushes. A refusal is a 200 with
+    `ok: false` rather than an error status, because "a later build changed the same code" is an
+    answer this route is meant to give (rule five) and not a fault in the request.
+    """
+    try:
+        result = await run_in_threadpool(orchestrator.undo_merge)
+    except TurnBusy as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
+    except Exception as e:
+        log.exception("undo merge failed")
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
     return JSONResponse(content=result)
 

@@ -2188,6 +2188,23 @@ window.SW = window.SW || {};
     liveCards.clear();
   }
 
+  // The one sentence for a push git refused (#347). Two acts end in a push — taking the incoming
+  // changes, and undoing the merge that took them — and the middle of it is the same fact under
+  // both: the work is committed here and is not on the remote. That part is written once.
+  //
+  // The `remedy` is NOT shared, and the difference is not cosmetic. After a pull, trying again is
+  // the way out. After an undo it is not: Pull and build needs a prompt and its job is to merge the
+  // remote in, so telling somebody to "undo again" points at a button that will no longer be there
+  // once the revert is local. A shared tail here would be a second sentence that happens to look
+  // like the first while being wrong.
+  function pushRejected(lead, result, remedy) {
+    const detail = result.pushDetail || result.detail || '';
+    return (
+      `${lead}, but the push was rejected. Your work is committed locally and not on the remote. ` +
+      `${remedy}${detail ? ` (${detail})` : ''}`
+    );
+  }
+
   // One table card per Data Source per turn, replaced in place as the search fills it in (#186).
   //
   // The transcript is derived from the whole event list every time a frame lands, so a search that
@@ -6415,15 +6432,34 @@ window.SW = window.SW || {};
         );
       }
       if (result.rejected) {
-        const detail = result.pushDetail || result.detail || '';
-        // Stop here, before starting the build: Pull latest is the person's request to make the
-        // local Project and the remote agree, and a rejected push means that did not happen.
-        throw new Error(
-          `Pull latest merged the changes, but the push was rejected. Your work is committed locally and not on the remote. Pull latest again, then build after the push succeeds.${detail ? ` (${detail})` : ''}`
-        );
+        // Stop here, before starting the build: the merge is the prerequisite of the build the
+        // person asked for, and a rejected push means the two sides do not agree yet.
+        throw new Error(pushRejected('Pull and build merged the changes', result,
+          'Try Pull and build again once the push can succeed.'));
       }
       await Promise.all([store.loadApps({ cascade: false }), store.loadBuild({ keepPreview: true })]);
       return store.sendBuildPrompt(prompt, { skipIncomingGate: true });
+    },
+
+    // Take back the merge nobody read (#233, ADR-0053). It reverts and pushes; it never resets, and
+    // a revert that will not apply refuses rather than being handed to the agent.
+    //
+    // It starts no build, unlike `pullAndBuild` above: this is not the prerequisite of anything the
+    // person asked for, it IS the thing they asked for. But it reads back BOTH of the things that
+    // one does, and for the same reason — the app list is what retires the offer, since the row's
+    // `resolvedMerge` is derived from git on the server, and the build state is what the revert
+    // just rewrote. Reloading only the list would leave the panel listing a file the undo deleted.
+    async undoMerge() {
+      if (state.buildRunning) throw new Error('A build is running. Stop it first, then undo.');
+      const result = await SW.api.undoMerge();
+      await Promise.all([store.loadApps({ cascade: false }),
+                         store.loadBuild({ keepPreview: true })]);
+      if (!result.ok) throw new Error(result.detail || 'The merge could not be undone.');
+      if (result.rejected) {
+        throw new Error(pushRejected('The merge was undone here', result,
+          'The remote still has it. The next Pull and build that pushes will carry the undo with it.'));
+      }
+      return result;
     },
 
     // The answer to a table candidate card (#183): the click writes the record, then the request

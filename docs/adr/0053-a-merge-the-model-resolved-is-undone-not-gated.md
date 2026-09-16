@@ -99,4 +99,12 @@ A revert that conflicts leaves the person where a gate would have: needing a too
 Rule five makes that honest rather than absent. It is the residue this ADR accepts, and the sibling
 issue is where it goes away.
 
+The promise stops at the pre-merge state, and that has to be said out loud because the comfortable
+reading is wrong. Reverting a merge does NOT re-arm the pull: git still counts those commits as
+merged, so the next `git merge origin/<branch>` is a no-op and the content stays out. Measured, not
+assumed. The incoming work is reachable at `<sha>^2` and no Workbench control brings it back, so
+nothing on this path may say "the changes can be taken again with Pull and build" — the first
+version of the tooltip did, and that is the one sentence a person dropping somebody else's work
+must not be told. It is the same dead end as rule five's, and it goes away with the same surface.
+
 Refs: #233, and #347 for the rejected-push sentence this reuses.
