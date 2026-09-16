@@ -793,11 +793,16 @@ CHAT_WORK = Path(".sage") / "chat-work"
 
 
 def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None = None) -> Path:
-    """OpenCode directory for sage-chat: Chat AGENTS.md plus links into examples/, scratch and data.
+    """OpenCode directory for sage-chat: Chat AGENTS.md plus links into examples/, scratch,
+    this Project's Thread records and data.
 
     Chat must not use the Built App's directory as cwd. Paths in the prompt stay workspace-shaped
-    (`examples/<threadId>/…`, `.sage/scratch/…`, `public/data/<slug>/…`) because those names are
-    linked in here. `workspace` is the Project root, where Chat's own trees live; `data_dir` is the
+    (`examples/<threadId>/…`, `.sage/scratch/…`, `.sage/threads/<threadId>/…`,
+    `public/data/<slug>/…`) because those names are linked in here. The `.sage/threads` link is
+    what makes `.sage/threads/<threadId>/findings.md` reachable: `chat_path_allowed` has always
+    permitted that prefix, but permission is not reach, and without the link the one file under
+    `.sage/` a Chat turn may keep across turns resolves to nothing from this cwd.
+    `workspace` is the Project root, where Chat's own trees live; `data_dir` is the
     app's `public/data/`, which is what an attached Dataset file is named by — the context line
     and the attachment descriptor both hand the agent that path, and without the link it resolves
     to nothing from this cwd, so a file the person can see in the rail cannot be read at all.
@@ -813,6 +818,7 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
     sage = root / ".sage"
     sage.mkdir(exist_ok=True)
     _ensure_dir_link(sage / "scratch", Path(workspace) / ".sage" / "scratch")
+    _ensure_dir_link(sage / "threads", Path(workspace) / ".sage" / "threads")
     public = root / "public"
     public.mkdir(exist_ok=True)
     if data_dir is not None:
