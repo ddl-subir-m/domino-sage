@@ -27,12 +27,79 @@ window.SW = window.SW || {};
     { key: 'mcp', label: 'MCPs' },
   ];
 
-  // What the number beside a sidebar entry says. `catalog` counts kinds, so a group entry adds its
-  // own up rather than asking for a count of a kind that does not exist.
-  function sideCount(entry, counts) {
-    if (!entry.kinds) return counts[entry.key];
-    const under = entry.kinds.filter((k) => counts[k] !== undefined);
-    return under.length ? under.reduce((n, k) => n + counts[k], 0) : undefined;
+  // Whether the count for one kind is a thing Domino said. `catalog` fills every count key
+  // unconditionally, so a kind whose read refused reports `0` — and more often than that
+  // `keepUnreadKinds` carries the PREVIOUS rows over the refusal, so it reports a stale non-zero
+  // instead. Neither is an answer. So the trigger here is the error key and never the value: a
+  // rule written against the `0` would leave the commoner case unmarked (#368).
+  function countState(key, counts, errors) {
+    // The join between the two spellings already exists and is already public — `errors` is keyed
+    // `data_sources` where `counts` is keyed `datasource`. It covers four of the seven count keys:
+    // `agent`, `skill` and `mcp` report no error of their own, so they have no refusal to draw and
+    // this is the whole of the state they can be in.
+    const failed = SW.api.LISTING_ERROR_KEY[key];
+    if (!failed) return counts[key] === undefined ? 'absent' : 'read';
+    // A fault in the read itself is answered with a listing that has no kind key at all, so the
+    // per-kind branch below cannot reach one: without this, the same defect at full width, with
+    // every kind that could have refused reading `0` on its own authority.
+    if (errors.listing || errors[failed]) return 'unread';
+    return counts[key] === undefined ? 'absent' : 'read';
+  }
+
+  // What the number beside a sidebar entry says, and whether it is a number at all. `catalog`
+  // counts kinds, so a group entry adds its own up rather than asking for a count of a kind that
+  // does not exist — and it adds up only the kinds that answered. That leaves the parent honest
+  // without leaving the child lying, because the child that refused is drawing a `—` directly
+  // under the sum, which is what explains it.
+  function sideState(entry, counts, errors) {
+    const kinds = entry.kinds || [entry.key];
+    const read = kinds.filter((k) => countState(k, counts, errors) === 'read');
+    if (read.length) return { state: 'read', count: read.reduce((n, k) => n + counts[k], 0) };
+    // Nothing answered, which is two different facts: every kind under this entry refused, which
+    // is worth saying, or the platform does not offer the kind, which is the silence this slot has
+    // always kept. Collapsing them is how a person gets one explanation over the other's row.
+    if (kinds.some((k) => countState(k, counts, errors) === 'unread')) return { state: 'unread' };
+    return { state: 'absent' };
+  }
+
+  // The reason to hang under the `—`: the same strings the note above the rows joins, cut down to
+  // the legs this one entry stands for.
+  function sideError(entry, errors) {
+    if (errors.listing) return errors.listing;
+    const kinds = entry.kinds || [entry.key];
+    return kinds.map((k) => errors[SW.api.LISTING_ERROR_KEY[k]]).filter(Boolean).join(' ');
+  }
+
+  // What a child row says it is a shape of. `KINDS` stays one flat array carrying `under`, so the
+  // parent's own label is the single place that word is written.
+  function parentLabel(entry) {
+    const parent = KINDS.find((e) => e.key === entry.under);
+    return SW.brand.text(parent.label || SW.util.dataTypeLabel(parent.key));
+  }
+
+  // The count in words. `—` is a mark rather than a word, and a label is handed to a screen reader
+  // INSTEAD of the button's contents — so a state left unspelled here is a row with no count at
+  // all for the people the label exists for (#369).
+  function countWords(drawn) {
+    if (drawn.state === 'read') return String(drawn.count);
+    return drawn.state === 'unread' ? 'not read' : '';
+  }
+
+  // What a screen reader is handed instead of a button's contents, on the two rows that need one.
+  //
+  // A child says what it is a shape OF, because the indent that says it to the eye is the whole of
+  // the nesting and an indent is not read out (#369).
+  //
+  // ANY row says an unread count in words. `—` reaches a reader as nothing wherever it is drawn,
+  // and three of the four kinds that can refuse have no parent — so leaving those to their
+  // contents would have them announce LESS after #368 than the wrong `0` announced before it.
+  //
+  // A row that is neither gets no label at all: its own contents already read correctly, and a
+  // second copy of a word is one more thing to keep in step with the visible one.
+  function ariaLabel(entry, label, drawn) {
+    const words = countWords(drawn);
+    if (entry.under) return [label, `in ${parentLabel(entry)}`, words].filter(Boolean).join(', ');
+    return drawn.state === 'unread' ? `${label}, ${words}` : undefined;
   }
 
   function CatalogRow({ resource, scope, onAdd, onOpen, busy }) {
@@ -163,7 +230,8 @@ window.SW = window.SW || {};
     // What `fetchDominoListing` could not read. Partial is the normal case — Datasets answered and
     // Data Sources did not — so this has to be sayable beside rows, not only instead of them. An
     // outage silently drawn as an empty catalogue tells somebody their platform is bare.
-    const listingErrors = Object.values((view && view.errors) || {}).filter(Boolean).join(' ');
+    const errors = (view && view.errors) || {};
+    const listingErrors = Object.values(errors).filter(Boolean).join(' ');
     // A search box with something in it, or a kind picked in the sidebar. It decides who gets to
     // say why the list is empty: with a filter standing, the answer is the filter, and a refusal
     // that has nothing to do with what was typed must not take that sentence over.
@@ -217,26 +285,41 @@ window.SW = window.SW || {};
           'nav',
           { className: 'sw-cat-side' },
           h('div', { className: 'sw-group-label sw-cat-side-head' }, 'Browse'),
-          KINDS.map((entry) =>
-            h(
+          KINDS.map((entry) => {
+            // A shape's own label comes from the shared rule the rail's subheads read, so the
+            // two surfaces cannot end up calling one shape two things.
+            const label = SW.brand.text(entry.label || SW.util.dataTypeLabel(entry.key));
+            const drawn = entry.key ? sideState(entry, counts, errors) : { state: 'absent' };
+            return h(
               'button',
               {
                 key: entry.key || 'all',
                 className: `sw-cat-side-btn${kind === entry.key ? ' is-active' : ''}`
                   + (entry.under ? ' is-child' : ''),
+                // The indent is the whole of the nesting, and an indent is not read out. This says
+                // the one thing it stands for and stops. Children only: a label REPLACES a
+                // button's contents for the readers it exists for, so one over a row that already
+                // reads correctly can only make it wrong, and is a second copy of a word to keep
+                // in step with the visible one (#369).
+                'aria-label': ariaLabel(entry, label, drawn),
                 onClick: () => {
                   setKind(entry.key);
                   setDrill(null);
                 },
               },
-              // A shape's own label comes from the shared rule the rail's subheads read, so the
-              // two surfaces cannot end up calling one shape two things.
-              h('span', null, SW.brand.text(entry.label || SW.util.dataTypeLabel(entry.key))),
-              entry.key &&
-                sideCount(entry, counts) !== undefined &&
-                h('span', { className: 'sw-cat-side-count' }, sideCount(entry, counts))
-            )
-          )
+              h('span', null, label),
+              drawn.state === 'read' &&
+                h('span', { className: 'sw-cat-side-count' }, drawn.count),
+              // Said where the eye lands, rather than only in the note above the rows: the number
+              // beside the filter is the part a person reads and the part that was unmarked.
+              drawn.state === 'unread' &&
+                h(
+                  Tooltip,
+                  { title: sideError(entry, errors) },
+                  h('span', { className: 'sw-cat-side-count' }, '—')
+                )
+            );
+          })
         ),
         h(
           'div',
