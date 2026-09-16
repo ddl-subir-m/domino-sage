@@ -2202,8 +2202,14 @@ def _looks_like_question(prompt: str) -> bool:
     return words[0] in _QUESTION_LEAD or text.endswith("?")
 
 
+# The nouns that make a question an ask for DATA rather than for prose. Plurals on all of them: five
+# of the eight countable nouns here carried no `s?` while `rows?` and `columns?` did, so "give me the
+# tables" named no data at all and "give me the table" named some. The asymmetry stayed invisible
+# because it only widens `_plain_chat_answer_only` below, which fails toward a prose-only turn — a
+# turn that answers without reading anything looks exactly like a turn that chose to.
 _CHAT_ARTIFACT_OR_DATA_ASK = re.compile(
-    r"\b(?:chart|plot|graph|table|matrix|heatmap|csv|dataset|data|rows?|columns?|sample)\b",
+    r"\b(?:charts?|plots?|graphs?|tables?|matri(?:x|ces)|heatmaps?|csvs?|datasets?"
+    r"|data|rows?|columns?|samples?)\b",
     re.IGNORECASE,
 )
 
