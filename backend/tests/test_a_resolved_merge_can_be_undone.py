@@ -194,10 +194,15 @@ def test_a_refused_undo_commits_nothing_and_eats_nothing(tmp_path: Path):
 
 
 def test_the_offer_survives_a_build_landing_on_top(tmp_path: Path):
-    """`HEAD` IS NOT THE TEST, and this is the only test that says so. `pullAndBuild` builds the
+    """`HEAD` IS NOT THE TEST, and this is the test whose name says so. `pullAndBuild` builds the
     moment the merge lands and a build ends in `commit_all`, so HEAD stops being the merge commit
-    inside the same turn. An implementation that asks "is HEAD a merge" passes every other test in
-    this file."""
+    inside the same turn.
+
+    Measured, because the first version of this docstring claimed the condition rested here alone
+    and that was false: narrowing the walk-back to HEAD reds four tests in this file — this one,
+    `test_two_merges_are_undone_newest_first`, `..._a_build_prompt_that_reads_like_an_undo...`, and
+    `..._a_revert_that_will_not_apply_refuses...`. Over-covered, not under-covered. Delete any of
+    those and this one still holds the line."""
     it = _merged(tmp_path)
     before = _row(it.orch, it.app_id)["resolvedMerge"]
     merge_head = _git(it.root, "rev-parse", "HEAD").strip()

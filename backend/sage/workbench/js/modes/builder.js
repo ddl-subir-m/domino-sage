@@ -578,9 +578,14 @@ window.SW = window.SW || {};
   // up — the strip is 44px and the app's name has to stay the heaviest thing in it. The tooltip
   // carries every name the row shipped, so the ellipsis loses nothing.
   //
-  // No confirm. The undo is a revert: the merge commit stays reachable, and the changes can be
-  // taken again with Pull and build. Guarding a reversible step inside a header where the
-  // irreversible one already happened would put the question in the wrong place.
+  // No confirm — and NOT because this is reversible, which it is not. The revert leaves the incoming
+  // work at `<sha>^2` and no Workbench control brings it back (#366, ADR-0053). What makes a second
+  // question the wrong shape here is that the tooltip already IS the question: it names the files,
+  // the sha, and what the undo costs, on the control itself. A confirm would ask the same thing
+  // again with less in it.
+  //
+  // That reasoning is load-bearing on the tooltip being reachable. A second entry point for this
+  // undo, anywhere the cost cannot be read before the click, needs the confirm this one does not.
   function UndoMerge({ merge }) {
     const [busy, run] = SW.util.useBusyAct();
     const files = merge.files || [];
