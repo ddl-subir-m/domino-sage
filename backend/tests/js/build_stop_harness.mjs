@@ -8,10 +8,12 @@
 // therefore rendered its "the workspace is busy" caption over a build this very tab had just
 // started, and the Stop button appeared only once a mode switch reloaded the state behind it.
 //
-// Input on stdin: `{ "mode": "build" | "approve" | "chat" | "queued" }`. The first three send and
-// then hold the stream open mid-turn, which is where every assertion is taken. The fourth holds it
-// at the `pending` frame instead: a turn waiting in line is NOT the turn holding the lock, and must
-// not claim to be one.
+// Input on stdin: `{ "mode": ... }`, one of the keys of `OPENING` below. Each mode sends and then
+// holds the stream open at a chosen frame, which is where every assertion is taken. `queued` holds
+// it at the `pending` frame: a turn waiting in line is NOT the turn holding the lock, and must not
+// claim to be one. The `opening*` modes hold it EARLIER than any of the others — at the moment the
+// person's question is on screen and the model has not answered yet, which is the window the Stop
+// button used to be missing for (#371).
 //
 // The stubs are the smallest set store.js touches on this path. React is never rendered.
 import fs from 'node:fs';
@@ -26,21 +28,70 @@ const PENDING = {
   prompt: 'build me a dashboard',
   message: 'Waiting on the turn that is running.',
 };
-// The frames each mode streams before the harness pauses. Whatever comes first, it is not the
-// queue, so by then the turn is running and the bar has to be able to say so.
+// The frame the server really sends first on the CHAT path, and only there: it paints the person's
+// own question, and it is yielded as soon as the turn has the lock, long before the model has said
+// anything (`service.py` `_chat_stream`, `yield user_ev`). The store's handler skips it, so it
+// claims nothing — which is the whole of the window #371 is about.
+//
+// The build paths have no equivalent and this file must not invent one. Each of their generators
+// writes the user row with `append_history(ev, ...)` under `if ev["type"] != "user"`, so it reaches
+// the transcript and never the stream. A build's first STREAMED frame is its first real work frame,
+// which is why `openingBuild` and `openingApprove` below pause on no frame at all.
+const USER = { chat: { type: 'user', text: 'how many rows?' } };
+const TOOL = { type: 'agent', kind: 'tool', tool: 'write', detail: 'src/App.tsx' };
+const BUILT = [{ type: 'done', ok: true, decision: 'built' }];
+const ANSWERED = [{ type: 'delta', text: 'Six million rows.', final: true },
+                  { type: 'done', ok: true, decision: 'answered' }];
+// The frames each mode streams before the harness pauses.
+//
+// The `opening*` modes are the ones this file was missing. Every other mode pauses after a frame
+// that claims the turn, so none of them can express the state before one arrives — which is
+// precisely the state a person sits in while Sage runs the gate and waits for a first token.
+//
+// Chat pauses on the `user` frame alone: that frame proves the stream is open and flowing and
+// STILL claims nothing, which is what makes the missing button so clearly wrong. Build and approve
+// pause on no frame at all, because they have none to pause on — their user row never leaves the
+// server, so the next thing down the wire after the POST is the first frame of real work, gate and
+// first token and all.
 const OPENING = {
-  build: [{ type: 'agent', kind: 'tool', tool: 'write', detail: 'src/App.tsx' }],
-  approve: [{ type: 'agent', kind: 'tool', tool: 'write', detail: 'src/App.tsx' }],
-  chat: [{ type: 'delta', text: 'Looking…' }],
+  build: [TOOL],
+  approve: [TOOL],
+  chat: [USER.chat, { type: 'delta', text: 'Looking…' }],
   queued: [PENDING],
+  // The same question of the other two sends. `queued` only ever asked it of sendBuildPrompt,
+  // and each send has a name of its own to hand back now.
+  queuedChat: [PENDING],
+  queuedApprove: [PENDING],
+  opening: [USER.chat],
+  openingBuild: [],
+  openingApprove: [],
+  // Out of the queue and running: the `pending` frame handed the name back, and the `user` frame
+  // behind it is the queue letting go. The wait for a first token starts again here.
+  requeued: [PENDING, USER.chat],
+  // The first of this mode's two turns, and the one that is really running.
+  secondInLine: [USER.chat, { type: 'delta', text: 'Looking…' }],
 }[mode];
 const REST = {
-  build: [{ type: 'done', ok: true, decision: 'built' }],
-  approve: [{ type: 'done', ok: true, decision: 'built' }],
-  chat: [{ type: 'delta', text: 'Six million rows.', final: true },
-         { type: 'done', ok: true, decision: 'answered' }],
-  queued: [{ type: 'agent', kind: 'tool', tool: 'write', detail: 'src/App.tsx' },
-           { type: 'done', ok: true, decision: 'built' }],
+  build: BUILT,
+  approve: BUILT,
+  chat: ANSWERED,
+  queued: [TOOL, ...BUILT],
+  queuedChat: [USER.chat, ...ANSWERED],
+  queuedApprove: [TOOL, ...BUILT],
+  opening: ANSWERED,
+  openingBuild: [TOOL, ...BUILT],
+  openingApprove: [TOOL, ...BUILT],
+  requeued: ANSWERED,
+  secondInLine: ANSWERED,
+}[mode];
+
+// Modes that send TWICE, and what the second send's stream says. One lock means the second turn
+// waits in line, which is what its `pending` frame reports — and a send that named itself before
+// hearing that frame would have named itself OVER the turn that is actually running, so the frame
+// handing the name back would blank the bar for a running turn. That is #126 from this direction,
+// and it is what the send-time claim has to be careful of.
+const SECOND = {
+  secondInLine: { opening: [PENDING], rest: [USER.chat, ...ANSWERED] },
 }[mode];
 
 const frame = (ev) => new TextEncoder().encode(`data: ${JSON.stringify(ev)}\n\n`);
@@ -52,9 +103,26 @@ const join = (evs) => evs.map(frame).reduce(
 let letGo = () => {};
 const gate = new Promise((resolve) => { letGo = resolve; });
 
+// Resolved the moment the reader comes back for a second chunk. `readSSE` drains a chunk into the
+// handler before it reads again, so by then every opening frame has been delivered AND handled —
+// which names the pause exactly, rather than counting ticks and testing the scheduler. It has to
+// be this and not "wait until the turn is claimed": the claim is what is under test, and a mode
+// whose whole point is the window before one would wait for ever.
+//
+// Every stream this mode opens has to be at that pause before the screen is read, which for the
+// two-send modes is both of them.
+let pausesLeft = SECOND ? 2 : 1;
+let reachedPause = () => {};
+const atPause = new Promise((resolve) => {
+  reachedPause = () => { pausesLeft -= 1; if (pausesLeft === 0) resolve(); };
+});
+
 // Answered by every `/build/state` read. Deliberately empty of a running turn: this harness is
 // about what the tab can say for itself, and a poll that supplied the answer would hide the bug.
 const BUILD_STATE = { running: false, wedged: false, pending: 0, running_turn: null };
+
+// Which send each opened stream is answering. Only the two-send modes ever pass 1.
+let posts = 0;
 
 const sandbox = {
   console, JSON, Math, Date, process, Set, Map, Promise, Array, Object, String, Number, Boolean,
@@ -71,11 +139,19 @@ const sandbox = {
     if (options && options.method === 'POST'
         && (href.includes('/build/stream') || href.includes('/build/approve')
             || href.includes('/chat/stream'))) {
+      const first = posts === 0;
+      posts += 1;
+      // Loud on purpose. A mode that opens a stream this file did not plan for would otherwise get
+      // a `TypeError` the send catches into an `error` frame, and the run would still print a
+      // verdict — about a turn that never streamed.
+      if (!first && !SECOND) throw new Error(`mode ${mode} opened a second stream`);
+      const opening = first ? OPENING : SECOND.opening;
+      const rest = first ? REST : SECOND.rest;
       let sent = 0;
       return { ok: true, body: { getReader: () => ({
         read: async () => {
-          if (sent === 0) { sent = 1; return { done: false, value: join(OPENING) }; }
-          if (sent === 1) { sent = 2; await gate; return { done: false, value: join(REST) }; }
+          if (sent === 0) { sent = 1; return { done: false, value: join(opening) }; }
+          if (sent === 1) { sent = 2; reachedPause(); await gate; return { done: false, value: join(rest) }; }
           return { done: true };
         },
       }) } };
@@ -102,20 +178,29 @@ SW.store.set({
   apps: [{ id: 'app_1', name: 'Usage Pulse' }],
 });
 
-const settle = () => new Promise((r) => setTimeout(r, 0));
-const kind = mode === 'chat' ? 'chat' : 'build';
-const turn = mode === 'approve' ? SW.store.approveBuild('')
-  : mode === 'chat' ? SW.store.sendMessage('how many rows?')
+// Which of the three sends each mode drives. Two of them are a build turn and one is a chat turn,
+// and that is the only axis the readout below cares about.
+const SEND = {
+  build: 'build', approve: 'approve', chat: 'chat', queued: 'build',
+  opening: 'chat', openingBuild: 'build', openingApprove: 'approve', requeued: 'chat',
+  secondInLine: 'chat', queuedChat: 'chat', queuedApprove: 'approve',
+}[mode];
+const kind = SEND === 'chat' ? 'chat' : 'build';
+const turn = SEND === 'approve' ? SW.store.approveBuild('')
+  : SEND === 'chat' ? SW.store.sendMessage('how many rows?')
   : SW.store.sendBuildPrompt('build me a dashboard');
+// Sent while the first is still streaming, and synchronously after it: a send takes its name
+// before its first `await`, so which of the two got there first is decided here and not by the
+// scheduler.
+const second = SECOND ? SW.store.sendMessage('and how many columns?') : null;
 
-// Wait for the first frame to land rather than for a tick count: a fixed number of microtasks
-// would be a test of the scheduler.
-// Bounded: with the bug present nothing ever claims the turn, the loop runs out, and the readout
-// below reports the empty screen that was the complaint.
-const arrived = () => (mode === 'queued'
-  ? SW.store.get().queuedTurns.length > 0
-  : SW.store.get().runningTurn !== null);
-for (let i = 0; i < 200 && !arrived(); i += 1) await settle();
+// Bounded, so that a send which never opens a stream at all says so rather than hanging: the
+// timeout is an error about the harness, not a verdict about the store.
+let bail;
+await Promise.race([atPause, new Promise((_, reject) => {
+  bail = setTimeout(() => reject(new Error('the stream never paused: no POST was made')), 10000);
+})]);
+clearTimeout(bail);
 
 // Read out inside the pause. `store.get()` hands back the live state object, so anything held
 // across the `await` below would report the end of the turn rather than the middle of it.
@@ -140,7 +225,7 @@ const midTurn = {
 };
 
 letGo();
-await turn;
+await Promise.all(second ? [turn, second] : [turn]);
 
 console.log(JSON.stringify({
   midTurn,
