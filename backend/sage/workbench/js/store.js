@@ -7160,15 +7160,29 @@ window.SW = window.SW || {};
           if (!ev) return;
           if (ev.type === 'user') {
             // The server's first frame, and the one that paints the person's own question. It is
-            // skipped for the transcript's sake — the bubble is already on screen — and claiming
-            // on it in general would name turns this tab does not hold, because it is replayed on
-            // paths where nothing is running.
+            // skipped for the transcript's sake — the bubble is already on screen.
             //
             // After a `pending` it means one more thing, and only this send can read it: this
             // stream went through the queue and the queue has let it go. `ticket` is written by
             // that branch and by nothing else, so a non-empty one is the proof. Without this the
             // turn would come out of the queue straight into the silent window the send-time
             // claim exists to close (#371).
+            //
+            // The `ticket` half of that guard is NOT what keeps this from naming a turn the tab
+            // does not hold, and no test separates the two forms — measured, not assumed. The
+            // server orders the frames so that it cannot: `chat_stream` runs `_acquire_turn` to
+            // completion and only then calls `_chat_stream`, which is where `user_ev` is yielded,
+            // so a `pending` always reaches this reader before a `user` does. A queued turn
+            // therefore has `ticket` set by the time this line runs, and an uncontended one is
+            // already holding its send-time claim. Dropping `ticket &&` changes no behaviour
+            // reachable from here. Keep it as the narrower of two equal forms, not as a guard
+            // earning its keep — and if that ordering ever changes, this line is load-bearing
+            // again and there is nothing here to tell you.
+            //
+            // What the guard does cost: a stale name standing (so `nameableTurn` refused at send)
+            // over a lock the server finds free (so no `pending`, so no `ticket`) leaves this turn
+            // running under somebody else's name until the next poll corrects it. Narrow, and no
+            // worse than before #371, where nothing was named until the first frame of real work.
             if (ticket && !claim) claim = claimRunningTurn('chat', turnThread, '');
             return;
           }
