@@ -401,9 +401,66 @@ window.SW = window.SW || {};
   let chatConfirmed = { model: '', effort: null };
   let buildConfirmed = { model: '', effort: null };
 
-  function applyModelStatus(status) {
+  // How far the newest answer about the MODEL BLOCK has got (#324). Every field below is written
+  // off whatever payload this is handed, and one caller is a READ that can still be in flight when a
+  // newer answer lands: `loadBuild` issues `/project` and then writes the model block between the
+  // await and the `applyAppScope` guard three lines under it, so a slow answer put the model
+  // somebody had just picked back to the one the server held when that read started — including
+  // `chatConfirmed` and `buildConfirmed` above, which is the pair a later refusal restores (#306,
+  // #323). The comment at that call site says the three parts of one answer must move together or
+  // not at all; the model block was written outside the mechanism that enforces it.
+  //
+  // On `appScopeSeq` rather than a clock of its own, because `loadBuild` already takes an
+  // `appScopeTicket()` one line above that read and so the number is in hand. What this needs
+  // beside it is not a second counter but a second WATERMARK, which is the shape `appScopeApplied`
+  // already keeps PER FIELD and for the same reason: one watermark over both would make every
+  // writer supersede every other. The model block is not one of those fields and must not become
+  // one: `/api/project` is `orchestrator.project().status()`, built from this container, so the
+  // block describes the Builder rather than the selected app, and `APP_SCOPED`'s
+  // clear-on-app-switch would be wrong for it.
+  //
+  // So a read can lose this half and keep the other — the POST callers below raise this watermark
+  // and raise no app-scoped one, so a model save refuses an older read's block while that read's
+  // attachments still land. That is right rather than a gap: the two are separate server facts
+  // under separate rules, and the thing #101 forbids is one READ landing half of its own answer.
+  //
+  // READS carry their seq; ACTS do not. The five POST callers hand nothing and claim the head of the
+  // queue at the moment their route answers, which is what `appScopeTicket` below already says an
+  // act must do: the server has just written the record the route hands back, so it is newer than
+  // any read in flight and must not lose to one that started first. Gating them on a read's
+  // generation would revert a save whose own POST was still out while a poll completed under it —
+  // the defect this guard exists to prevent, arrived at from the other side.
+  //
+  // Two residuals, named rather than implied, because both look like this guard's job and are not.
+  // Acts are not ordered against each OTHER: two saves in flight claim in the order their answers
+  // arrive, so a first pick can land over a second (#374). Measured on this tree and on the one
+  // before it and identical, so it predates the guard — and numbering acts at POST issue time
+  // instead would close it by reopening the case in the paragraph above. And the optimistic write
+  // each setter makes BEFORE its POST is not an answer and claims nothing, so a read landing inside
+  // that window still snaps the control back until the POST answers and takes it again.
+  //
+  // `boot` is the seventh caller and hands nothing either, though it IS a read. It is the only
+  // answer there is at that moment: it runs inside boot's own `Promise.all`, before `ready` flips
+  // and before anything that could issue a second `/project` read, and nothing writes this block
+  // again on the way out of boot. Tag it the day something does.
+  let modelStatusApplied = 0;
+
+  // Which keys make an answer one ABOUT the model block. `loadBuild` substitutes `{}` for a
+  // `/project` read that failed, and `{}` is truthy, so it gets past the exit below on purpose —
+  // see `chatConfirmed` further down, which needs it to arrive and write nothing. An answer that
+  // says nothing must not claim the queue either: letting one 500 take the head of it would throw
+  // away a good read that started earlier and is still in flight, which is the same loss this guard
+  // exists to prevent, reached from a third side. Every key read below is listed; a new one goes in
+  // here too, or a payload carrying only that key claims nothing.
+  const MODEL_KEYS = ['mode', 'selected_mode', 'phase', 'catalog', 'picked_model', 'picked_effort',
+                      'signing_slot', 'chat_model', 'reasoning_effort'];
+
+  function applyModelStatus(status, seq = null) {
+    const claim = seq === null ? ++appScopeSeq : seq;
+    if (claim < modelStatusApplied) return;
     const m = (status && status.model) || status;
     if (!m) return;
+    if (MODEL_KEYS.some((k) => k in m)) modelStatusApplied = claim;
     state.buildMode = m.selected_mode || m.mode || state.buildMode;
     state.buildTurnMode = m.mode || state.buildTurnMode;
     // Kept whole, not reduced to `ask`. Build's picker offers every slot and marks the one the
@@ -6947,7 +7004,11 @@ window.SW = window.SW || {};
       // beat all three of them or none (#101).
       const ticket = appScopeTicket();
       const project = await SW.api.project().catch(() => ({}));
-      applyModelStatus(project);
+      // On the ticket the line above took, so this write is ordered by the same clock as the
+      // attachments below rather than by nothing at all (#324): a newer answer — another
+      // `loadBuild`, or a model save the server has already taken — beats it. Each half beats its
+      // own watermark, not one gate over the two, and `applyModelStatus` says why.
+      applyModelStatus(project, ticket.seq);
       // Off the read that was already happening. The header's row renders per app switch, so it
       // has to answer out of the store rather than fetch (ADR-0010) — and `loadBuild` is what
       // `selectApp` already runs, so the switch reloads it with everything else app-scoped.
