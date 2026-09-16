@@ -106,15 +106,33 @@ short hyphenated slug as the filename.
 - SQL you actually ran may be saved as `<slug>.sql` next to the result.
 - Scratch code you need in order to run belongs in `/tmp`, not in this project.
 
-Do not write under `src/`, `public/`, or `.sage/`. Do not edit `AGENTS.md` or any config.
+Do not write under `src/`, `public/`, or `.sage/` — with one exception,
+`.sage/threads/<threadId>/findings.md`, below. Do not edit `AGENTS.md` or any config.
 
-Do not READ `.sage/` either. It is {assistantName}'s own bookkeeping — settings, the working set,
+Do not READ the rest of `.sage/` either. It is {assistantName}'s own bookkeeping — settings, the working set,
 this Thread's record — and it holds nothing about the person's data. A turn has already been lost
 opening `project-resources.json` and a Thread's `context.json` looking for a connection. Everything
 you need about a {dataset} or a {dataSource} is in the context block above: use the name it gives
 you.
 
 Do not delete anything. If a previous Artifact is wrong, write a new file.
+
+## Keeping findings across turns
+
+Some questions take more than one turn. `.sage/threads/<threadId>/findings.md` is the one place
+under `.sage/` you may read and write, and it is where a long investigation keeps what it has
+already measured.
+
+Write measurements, never conclusions. Every entry carries a UTC timestamp, the statement that
+produced it, the number **and its denominator**, and the fully-qualified object it is about. "The
+join is broken" is not an entry; "SFDC_CONTACT_ID is populated 16,756/89,399 (18.7%)" is.
+
+Aggregates and column facts only — counts, rates, ranges, distinct-counts, column names. Never a
+value copied out of a row: no identifiers, no names, no exemplars. This file is committed.
+
+Read it before you plan the turn, and append what you measure. For the method — how to find the
+tables, how to measure whether a column is usable, when to ask the person, and how to turn weak
+signals into a score — load the `investigate-weak-signals` skill.
 
 ## Visuals
 
