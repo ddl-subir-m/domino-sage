@@ -29,6 +29,7 @@ import weakref
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from pathlib import PurePosixPath as PurePosix
 from typing import TYPE_CHECKING
@@ -177,13 +178,16 @@ from ..workspace.manager import (
 from ..workspace.snapshot import TurnSnapshot
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
+    FINDINGS_MAX,
     HistoryRows,
     ThreadStore,
     _ensure_dir_link,
     ensure_chat_workdir,
+    findings_file,
     new_artifact_paths,
     new_id,
     oversized_artifacts,
+    refuse_oversize_findings,
     revert_denied_writes,
     snapshot_files,
     title_from_prompt,
@@ -9990,6 +9994,42 @@ class Orchestrator:
                 "is only for a requested limit. Do not read unrelated raw rows into model context. "
                 "Source-code reads, tools, skills and task/to-do work remain available.")
 
+    def _findings_note(self, thread_id: str) -> str:
+        """Where this Thread's findings are, and — only if there are any — how old and how big.
+
+        The pinned prompt already says the file MAY be written (#380). It cannot say whether it is
+        there right now, and a turn that continues an investigation needs that before it plans, not
+        after it has re-derived what turn one measured. So the line goes in the block above rather
+        than with the fail-closed rule at the end of the prompt, which is last on purpose.
+
+        Conditional on the file, so a first turn pays nothing but one sentence naming the path. The
+        alternative — telling every Thread to read it — hands most turns a path to nothing, which
+        is the cost `_artifacts_present` exists to avoid a few lines down.
+
+        mtime and size are the staleness lever: this file is committed and workspaces are cloned,
+        so a Thread can be opened a week later in a fresh container with notes older than the
+        question. Handed both, the model judges age without spending a read on it.
+
+        `workspace` on the caller is the chat workdir, not the Project root, so the check reads
+        `record.path` — the same source the Artifact list below uses.
+        """
+        root = self._chat_project().record.path
+        path = findings_file(root, thread_id)
+        # Derived, not spelled again. A second hand-written copy of this path is the drift
+        # `findings_file` exists to stop, and it would be one built from the raw id rather than a
+        # checked segment.
+        rel = path.relative_to(root).as_posix()
+        try:
+            stat = path.stat()
+        except OSError:
+            return (f"If this question takes more than one turn, keep what you measure in {rel} — "
+                    "the one place under .sage/ you may write.")
+        stamp = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(timespec="seconds")
+        return (f"This Thread has findings at {rel}: {stat.st_size:,} bytes, last written {stamp}. "
+                "Read it before you plan this turn — it records what has already been measured and "
+                "what is still open. Append what you measure: the statement that produced it, the "
+                "time, and the numbers with their denominators.")
+
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
                      urls: list[str] | None = None, workspace: Path | None = None,
                      artifacts: list[dict] | None = None,
@@ -9999,6 +10039,7 @@ class Orchestrator:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
+            self._findings_note(thread_id),
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.
             (f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
@@ -10273,6 +10314,8 @@ class Orchestrator:
         history = store.read_history(thread_id)
         _warn_if_history_lossy(history, "_chat_stream")
         urls = _urls_in_chat(prompt, history)
+        # An investigation is open in this Thread. Read once, used at both arming sites below.
+        investigating = findings_file(project.record.path, thread_id).exists()
         # Send descriptors only, never file contents or sample rows, to the Ask classifier.
         intent_context = "\n".join(
             json.dumps({key: item[key] for key in ("kind", "name", "path", "scope")
@@ -10326,15 +10369,31 @@ class Orchestrator:
         # and an un-armed restart would refuse every turn all over again.
         withheld_token = project.control.arm_withheld(recall.withheld(history))
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
+        # `investigating` exempts this Thread from both bounded lanes, and that is a SCOPE decision
+        # before it is a latency one. #364 bounds a turn that only answers a question; once a Thread
+        # has `findings.md`, every later turn in it keeps bash, so the bounding is defeatable within
+        # a Thread and the model can open that door unprompted on any agentic turn. Both lanes have
+        # to fall together or the exemption is not one: `data_answer` arms `arm_read_only`, whose
+        # `READ_ONLY_DENIED = WRITE_TOOLS | SHELL_TOOLS` takes the shell, and `data_artifact` leaves
+        # read plus `artifact_write`, which cannot write outside `examples/<threadId>/`. Either way
+        # the turn loses Python, and Python is the only way to the warehouse — `live_read_table`
+        # accepts no SQL. The third route in is the classifier's own fallback through
+        # `_plain_chat_answer_only`, which is why the gate is on `answer_only` rather than on the
+        # label.
+        #
+        # It is not an escape hatch, and that was checked rather than assumed: `write_chat_artifact`
+        # refuses any path outside `examples/<threadId>/` and any extension but `.png`/`.table.json`,
+        # and a `data_answer` turn holds no write tool at all. So only a turn that was already
+        # unbounded can create the file that widens the turns after it.
         artifact_token = (
             project.control.arm_chat_artifact()
-            if intent.valid and intent.label == "data_artifact" else None
+            if intent.valid and intent.label == "data_artifact" and not investigating else None
         )
         answer_only = (
             intent.label in {"plain_answer", "data_answer"}
             if intent.valid and intent.label != "other_chat"
             else _plain_chat_answer_only(prompt)
-        )
+        ) and not investigating
         plain_answer_token = (
             project.control.arm_read_only("question") if answer_only else None
         )
@@ -10410,6 +10469,7 @@ class Orchestrator:
                         path.write_bytes(tables.before[rel])
                 withhold_table_rows(project.record.path, thread_id, tables.before,
                                     kept_rows=project.record.kept_rows())
+                runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
                 artifacts = [store.record_artifact(thread_id, path=rel)
                              for rel in new_artifact_paths(project.record.path, thread_id, tables.before)
                              if rel not in invalid]
@@ -10430,6 +10490,19 @@ class Orchestrator:
                     message = message.replace("the table", "some tables")
                 ev = {"type": "error", "reason": "table generation failed", "message": message}
                 events.append(ev)
+            if runaway:
+                # Said out loud for the reason the ceiling refuses instead of trimming: a runaway
+                # record is worth seeing. Silence here would leave the next turn planning against
+                # notes it believes were kept.
+                events.append({
+                    "type": "error", "reason": "findings file too large",
+                    "message": (
+                        f"I could not keep this turn's findings: the file would have gone over "
+                        f"{FINDINGS_MAX // 1024} KB, so what this turn added to it was not kept. "
+                        "To record more, rewrite the findings file smaller first — keep the "
+                        "measurements that still matter and drop the rest."
+                    ),
+                })
             # Persist the whole outcome before yielding: a client can disconnect on any event.
             for ev in events:
                 store.append_history(thread_id, ev)

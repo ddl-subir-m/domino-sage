@@ -1018,6 +1018,78 @@ def withhold_table_rows(root: Path, thread_id: str, before: dict[str, bytes], *,
     return rewritten
 
 
+def findings_file(root: Path, thread_id: str) -> Path:
+    """This Thread's `findings.md` — the file the prompt names as the one it may keep across turns.
+
+    One definition, because three sites ask the same question about the same path and a fourth
+    spelling of it is a bug that only shows up as a feature quietly not working: the prompt says
+    whether it is there, the turn's tool arming reads it as "an investigation is open", and the
+    ceiling below puts it back when a turn runs away with it.
+
+    "The one file" is what the pinned prompt asks for, NOT what anything enforces, and the
+    difference matters to every caller here. `chat_path_allowed` permits `.sage/threads/<threadId>/`
+    as a prefix, and `ensure_chat_workdir` links that whole directory in, so a turn may also write
+    `notes.md` beside this one — and that directory is the Thread's own record, `history.jsonl` and
+    `meta.json` included. Nothing below reaches any of that. A ceiling on this name is a ceiling on
+    the file the model was told to use, which is the runaway worth catching, and it should not be
+    read as a bound on what a Chat turn can put under `.sage/`.
+    """
+    return Path(root) / ".sage" / "threads" / safe_id(thread_id, "thread id") / "findings.md"
+
+
+# What `findings.md` may weigh at the end of a turn. A page of measurements is a few KB; over this
+# the file is no longer that, and the two ways it gets here are both worth seeing — rows pasted in
+# against ADR-0045's aggregates-only rule, or the same schema facts appended every turn.
+#
+# It is deliberately a REFUSAL rather than a trim. A trimmed file reads as a whole one to the next
+# turn, which then plans against half a record and cannot tell: the "silently half-recorded" shape,
+# which is worse than no record at all.
+FINDINGS_MAX = 32 * 1024
+
+
+def refuse_oversize_findings(root: Path, thread_id: str, before: dict[str, bytes],
+                             limit: int = FINDINGS_MAX) -> str | None:
+    """Put this turn's `findings.md` back when the turn grew it past `limit`. Returns the path.
+
+    `before` means what it means in `withhold_table_rows` — this turn's writes. A file this turn did
+    not touch is left alone however big it is: it was written under whatever ceiling held then, and
+    refusing it now would keep rewriting notes nobody had reopened, on every turn, forever.
+
+    What it refuses is GROWTH past the ceiling, not size. An oversize file can already be here —
+    #380 made it writable before this ceiling existed, and a turn that dies never reaches this pass
+    at all, the same gap `withhold_table_rows` records for a wedged turn. A turn that reads one of
+    those and compacts it is repairing it, and putting the larger version back would pin the file at
+    its high-water mark and refuse every attempt to bring it down.
+
+    Only growth is watched. A turn that DELETES the file, or writes ten bytes over it, is not
+    refused and not restored — `before` is what the turn is compared against, not a backup, and
+    `revert_denied_writes` never looks at this path because it is an allowed one.
+
+    The `prev is None` branch unlinks, so it is the one that can destroy rather than restore, and
+    what it trusts is that `before` tells the truth about what was on disk. `snapshot_files`
+    swallows `OSError` on a read, so a pre-existing file it could not read arrives here looking
+    like one this turn created. Left that way, because a first turn writing a runaway is the case
+    the branch is for — but it is the assumption to check first if this ever removes a file
+    somebody wanted.
+    """
+    path = findings_file(root, thread_id)
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    rel = path.relative_to(Path(root)).as_posix()
+    prev = before.get(rel)
+    if prev == data or len(data) <= limit:
+        return None
+    if prev is not None and len(data) <= len(prev):
+        return None
+    if prev is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_bytes(prev)
+    return rel
+
+
 # What a single Chat Artifact may weigh and still belong in a commit. A matplotlib PNG at the dpi
 # the Chat prompt asks for is 50-500 KB, so no one writing a chart meets this — it is the ceiling on
 # a runaway. It exists because `examples/` is committed now and git never gives a blob back: the
