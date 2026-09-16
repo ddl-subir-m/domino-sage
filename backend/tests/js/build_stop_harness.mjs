@@ -38,6 +38,12 @@ const PENDING = {
 // the transcript and never the stream. A build's first STREAMED frame is its first real work frame,
 // which is why `openingBuild` and `openingApprove` below pause on no frame at all.
 const USER = { chat: { type: 'user', text: 'how many rows?' } };
+// The queue's other end, and the one frame both modes share (#377). `_acquire_turn` yields it at
+// the fall-through past every refusal, which IS the grant — so it arrives before anything the turn
+// itself sends, on Chat ahead of the `user` frame above and on Build ahead of the first tool call.
+// A turn that never queued never sees one: it sent no `pending`, so its send-time claim never came
+// off. Same ticket as the `pending` it answers.
+const RUNNING = { type: 'running', ticket: PENDING.ticket };
 const TOOL = { type: 'agent', kind: 'tool', tool: 'write', detail: 'src/App.tsx' };
 const BUILT = [{ type: 'done', ok: true, decision: 'built' }];
 const ANSWERED = [{ type: 'delta', text: 'Six million rows.', final: true },
@@ -65,9 +71,16 @@ const OPENING = {
   opening: [USER.chat],
   openingBuild: [],
   openingApprove: [],
-  // Out of the queue and running: the `pending` frame handed the name back, and the `user` frame
-  // behind it is the queue letting go. The wait for a first token starts again here.
-  requeued: [PENDING, USER.chat],
+  // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
+  // behind it is the queue letting go. The wait for a first token starts again here, which is why
+  // the pause is taken ON that frame — the `user` one Chat sends next, and the first tool call
+  // Build sends next, are both the far end of the window, not the near one.
+  requeued: [PENDING, RUNNING],
+  // The same, for the two sends that have no `user` frame to fall back on — the whole of #377.
+  // Nothing follows the grant here because on a build nothing does: the next thing down the wire
+  // after it is the first frame of real work, gate and first token and all.
+  requeuedBuild: [PENDING, RUNNING],
+  requeuedApprove: [PENDING, RUNNING],
   // The first of this mode's two turns, and the one that is really running.
   secondInLine: [USER.chat, { type: 'delta', text: 'Looking…' }],
 }[mode];
@@ -81,7 +94,9 @@ const REST = {
   opening: ANSWERED,
   openingBuild: [TOOL, ...BUILT],
   openingApprove: [TOOL, ...BUILT],
-  requeued: ANSWERED,
+  requeued: [USER.chat, ...ANSWERED],
+  requeuedBuild: [TOOL, ...BUILT],
+  requeuedApprove: [TOOL, ...BUILT],
   secondInLine: ANSWERED,
 }[mode];
 
@@ -183,6 +198,7 @@ SW.store.set({
 const SEND = {
   build: 'build', approve: 'approve', chat: 'chat', queued: 'build',
   opening: 'chat', openingBuild: 'build', openingApprove: 'approve', requeued: 'chat',
+  requeuedBuild: 'build', requeuedApprove: 'approve',
   secondInLine: 'chat', queuedChat: 'chat', queuedApprove: 'approve',
 }[mode];
 const kind = SEND === 'chat' ? 'chat' : 'build';
@@ -214,6 +230,15 @@ const midTurn = {
   elsewhere: kind === 'chat'
     ? SW.store.runningTurnElsewhere('chat', 't1')
     : SW.store.runningTurnElsewhere('build', 't1', 'app_1'),
+  // The composer's own queue rows (#79), which are the other thing a `pending` frame writes and the
+  // `running` frame behind it has to take back: "waiting in line · Cancel" over a turn the bar is
+  // at the same moment offering a Stop for, with a Cancel the server can no longer act on.
+  queued: SW.store.get().queuedTurns.length,
+  // The build transcript, by row type. Here because the `running` frame is a state row and not a
+  // receipt: reach `applyBuildEvent` with one and it falls past every branch to `appendBuildRow`,
+  // which writes it into the transcript the person reads. The claim above would still be right and
+  // the row would still be junk, so the two need separate readouts.
+  rows: SW.store.get().buildHistory.map((r) => r.type),
   // A build in this conversation on a Built App the rail has moved away from is not this screen's
   // turn, so the button must not follow the person over there (#126, #77).
   stopOfferedOnAnotherApp: SW.store.runningTurnHere('build', 't1', 'app_2'),
