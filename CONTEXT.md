@@ -45,7 +45,8 @@ _Avoid_: model, endpoint, prediction API, inference endpoint
 A named model registration in the LLM Gateway. It is the only name by which Sage or a built
 app refers to a language model. Sage's own model controls are the one exception: they say
 "model" in plain language, because a person choosing what Sage runs on is not picking a
-Resource for their app.
+Resource for their app. When the assistant calls one on a person's behalf that call has
+its own name — see [[Delegated model call]] — but the Alias is still what it is called by.
 _Kind_: name
 _Avoid_: model, model name, LLM, deployment
 
@@ -141,6 +142,16 @@ A language model deployed inside Domino. It is reached through an LLM Alias, nev
 directly, so it is a deployment detail rather than something a user picks.
 _Kind_: name
 _Avoid_: model API, endpoint, vLLM endpoint
+
+**Delegated model call**:
+A language model call Sage makes through a bound [[LLM Alias]] on behalf of a Chat turn, as
+against the model the turn itself runs on. Three things say "model" in this codebase, and this
+is the one that is a Resource the person picked being used *by* the assistant rather than being
+the assistant. It counts as a turn for the sensitivity lock: rows reaching a vendor model are
+what [ADR-0043](docs/adr/0043-a-declared-dataset-narrows-the-models-it-can-reach.md) stops, and
+the door they arrived through does not change that.
+_Kind_: name
+_Avoid_: askModel, agent LLM call, sub-model, nested call
 
 ### What Sage produces
 
