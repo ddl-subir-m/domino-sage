@@ -24,7 +24,7 @@ def test_the_turn_reads_this_threads_findings_file_at_its_workspace_shaped_path(
     (tmp_path / ".sage" / "threads" / TID).mkdir(parents=True)
     (tmp_path / REL).write_text("2026-09-16T11:04Z SFDC_CONTACT_ID 16,756/89,399 (18.7%)\n")
 
-    work = ensure_chat_workdir(tmp_path, "# chat")
+    work = ensure_chat_workdir(tmp_path, "# chat", thread_id=TID)
 
     assert (work / REL).read_text().startswith("2026-09-16T11:04Z")
 
@@ -32,7 +32,7 @@ def test_the_turn_reads_this_threads_findings_file_at_its_workspace_shaped_path(
 def test_a_write_from_the_turn_lands_on_the_projects_own_findings_file(tmp_path: Path):
     """Reach has to go both ways. A write through the link must reach the Project's file rather
     than a lookalike under the workdir, or the next turn reads the old bytes back."""
-    work = ensure_chat_workdir(tmp_path, "# chat")
+    work = ensure_chat_workdir(tmp_path, "# chat", thread_id=TID)
 
     (work / REL).parent.mkdir(parents=True, exist_ok=True)
     (work / REL).write_text("2026-09-16T11:12Z DMM accounts 89/1,204 (7.4%)\n")
@@ -45,9 +45,9 @@ def test_a_write_from_the_turn_lands_on_the_projects_own_findings_file(tmp_path:
 def test_the_workdir_link_is_relative_so_a_moved_checkout_still_resolves(tmp_path: Path):
     """Every other link here is relative for this reason — an absolute one breaks when the volume
     is mounted at a different path in the container than it was written at."""
-    work = ensure_chat_workdir(tmp_path, "# chat")
+    work = ensure_chat_workdir(tmp_path, "# chat", thread_id=TID)
 
-    link = work / ".sage" / "threads"
+    link = work / ".sage" / "threads" / TID
     assert link.is_symlink()
     assert not Path(link.readlink()).is_absolute()
-    assert link.resolve() == (tmp_path / ".sage" / "threads").resolve()
+    assert link.resolve() == (tmp_path / ".sage" / "threads" / TID).resolve()

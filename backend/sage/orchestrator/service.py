@@ -8900,7 +8900,8 @@ class Orchestrator:
         has_app = project.workspace.exists()
         work = str(ensure_chat_workdir(
             project.record.path, self._chat_agents_md(),
-            data_dir=project.workspace.path / "public" / "data" if has_app else None))
+            data_dir=project.workspace.path / "public" / "data" if has_app else None,
+            thread_id=thread_id))
         # That link creates `public/data/` in order to point at it, so the tree can now exist
         # before anything has been attached. It must be out of git either way: the gitignore line
         # is what keeps Dataset bytes from ever reaching the app's repo.

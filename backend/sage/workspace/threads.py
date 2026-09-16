@@ -792,7 +792,8 @@ _SKIP_SNAPSHOT_PREFIXES = ("public/data/", ".sage/scratch/", "apps/")
 CHAT_WORK = Path(".sage") / "chat-work"
 
 
-def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None = None) -> Path:
+def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None = None,
+                        thread_id: str | None = None) -> Path:
     """OpenCode directory for sage-chat: Chat AGENTS.md plus links into examples/, scratch,
     this Project's Thread records and data.
 
@@ -802,6 +803,25 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
     what makes `.sage/threads/<threadId>/findings.md` reachable: `chat_path_allowed` has always
     permitted that prefix, but permission is not reach, and without the link the one file under
     `.sage/` a Chat turn may keep across turns resolves to nothing from this cwd.
+
+    Only THIS Thread's record directory is linked, not the `.sage/threads` tree. The tree holds
+    every Thread's `meta.json`, `context.json`, `artifacts.json`, `handoff.json` and its whole
+    `history.jsonl`, and nothing gates a read: `chat_path_allowed` has two call sites and both ask
+    about a write. A tree-wide link would put every other Thread's transcript in this turn's cwd
+    with only a prompt sentence in the way — and that sentence sits in the paragraph recording a
+    turn that already spent itself opening a Thread's `context.json`.
+
+    The workdir outlives the Thread that last used it, so a link left standing from the previous
+    turn is the same leak by another route. Stale links are pruned here, on the way in. The prune
+    only ever unlinks a SYMLINK, because `_ensure_dir_link` promises that a real directory at a
+    link site is left alone, and a prune that broke that promise would make the promise worthless
+    everywhere else it is relied on.
+
+    `thread_id=None` links nothing. A caller that forgot to say which Thread this is has no claim
+    on any Thread's records, and the reading that fails loudly at the read is the safe one — the
+    alternative, falling back to the tree, hands over everything precisely when the caller has
+    shown it does not know what it is asking for.
+
     `workspace` is the Project root, where Chat's own trees live; `data_dir` is the
     app's `public/data/`, which is what an attached Dataset file is named by — the context line
     and the attachment descriptor both hand the agent that path, and without the link it resolves
@@ -818,7 +838,14 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
     sage = root / ".sage"
     sage.mkdir(exist_ok=True)
     _ensure_dir_link(sage / "scratch", Path(workspace) / ".sage" / "scratch")
-    _ensure_dir_link(sage / "threads", Path(workspace) / ".sage" / "threads")
+    threads = sage / "threads"
+    threads.mkdir(exist_ok=True)
+    for stale in threads.iterdir():
+        if stale.is_symlink() and stale.name != thread_id:
+            stale.unlink()
+    if thread_id:
+        name = safe_id(thread_id, "thread id")
+        _ensure_dir_link(threads / name, Path(workspace) / ".sage" / "threads" / name)
     public = root / "public"
     public.mkdir(exist_ok=True)
     if data_dir is not None:
