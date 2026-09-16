@@ -9217,9 +9217,11 @@ class Orchestrator:
 
         Under the turn lock, which Chat's clear does not need: this one pins the Project to a
         conversation (`_switch_conversation`) and drops the cached session id, and a turn streaming
-        in another conversation reads both. Chat's touches one file on disk and nothing shared. A
-        refusal is the normal case here anyway — the offer is drawn on a turn that already failed,
-        so the lock is free by the time anybody can click it.
+        in another conversation reads both. Chat's touches two files in one Thread's own record
+        directory and nothing shared — though see ADR-0055: a complete clear now removes a file a
+        streaming turn in that Thread may write, which is an argument for the lock this comment
+        says Chat does not need. A refusal is the normal case here anyway — the offer is drawn on
+        a turn that already failed, so the lock is free by the time anybody can click it.
         """
         if scope not in (recall.SUMMARY, recall.EMPTY):
             raise ValueError(f"unknown scope {scope!r}")
@@ -9251,12 +9253,42 @@ class Orchestrator:
         the state. The old OpenCode session is left where it is — OpenCode owns it, it is already
         unreachable from here, and a Conversation that has just failed repeatedly is the worst
         possible moment to start deleting things on its behalf.
+
+        The session is no longer the only thing a turn is told, though, so on a COMPLETE clear it
+        is no longer the only thing dropped — see the scope branch below. "Everything the person
+        can see" is still the promise; `findings.md` is exactly what they cannot (ADR-0055).
         """
         if scope not in (recall.SUMMARY, recall.EMPTY):
             raise ValueError(f"unknown scope {scope!r}")
         store = ThreadStore(self._chat_project().record.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
+        if scope == recall.EMPTY:
+            # A complete clear is the person saying START OVER, and dropping the session alone no
+            # longer means it. `findings.md` outlives the session by design — it is committed, and
+            # the turn prompt points the model at it before it plans (#381) — so a cleared
+            # Conversation would be handed every measurement back on its next turn and the clear
+            # would be a clear that did not clear, against ADR-0022.
+            #
+            # Only on the complete clear. A summary-scoped clear trims talk and seeds the model
+            # with what was said; a measurement log is not talk, and taking it would throw away
+            # work the person never asked to lose on the softer of the two rungs.
+            #
+            # FIRST, ahead of the session drop, so the realistic failure is total rather than
+            # half. `missing_ok` covers the absent file and nothing else — a read-only volume or a
+            # directory standing at the name raises, the route (`app.py:3415`) catches only
+            # KeyError and ValueError, and the 500 then lands before anything has changed. Ordered
+            # the other way that same raise leaves the session dropped, the findings kept and NO
+            # `recall.CLEARED` row: the ladder is derived from those rows, so the spent rung would
+            # be offered again and `recall.terminal` would never fire.
+            #
+            # Two limits, open rather than handled, both in ADR-0055's consequences. This unlinks
+            # the WORKING-TREE copy — git history keeps the log, and the removal itself reaches
+            # git only on the next Chat save, not on this click (ADR-0046). And this door holds no
+            # turn lock, so a turn streaming in the same Thread can append the file again after
+            # the unlink; the session half escapes that only because `session.json` is written
+            # when a session is created (`:8926`) and not at turn end.
+            store.findings_path(thread_id).unlink(missing_ok=True)
         store.clear_session_id(thread_id)
         ev = {"type": recall.CLEARED, "scope": scope}
         store.append_history(thread_id, ev)
