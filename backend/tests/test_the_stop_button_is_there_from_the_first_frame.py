@@ -23,10 +23,15 @@ so what the claim actually waited on was the gate and the model's first token. T
 SEND time now, and handed back by the `pending` frame that says the turn is waiting in line rather
 than running. The tests below the #126 four are that window, one per send and one per way out of it.
 
-One corner of it is NOT closed here, and no test below claims it is: a BUILD that waits in line
-hands its name back at `pending` and has no frame to take it back on, because build never streams
-the `user` frame Chat does. It comes out of the queue into the same silence, and closing that needs
-the server to say when a turn is granted. Chat's queue path is covered — `requeued` below.
+The corner that was left open is the third part: a BUILD that waits in line hands its name back at
+`pending` and had no frame to take it back on, because build never streams the `user` frame Chat
+does. #377 closed it by having the server say when a turn is granted — one `running` row from
+`_acquire_turn`, yielded at the fall-through past every refusal, which both modes read the same way.
+The `requeued*` modes below are that row, one per send.
+
+It also took a special case out rather than putting one in. Chat used to retake the name on its
+`user` frame, guarded on `ticket` because that frame is replayed on paths with no turn running. With
+one row for both modes there is nothing for that guard to do, and the retake is gone.
 """
 import json
 import shutil
@@ -122,16 +127,55 @@ def test_stop_is_there_before_the_turn_has_anything_to_show_for_itself(mode: str
     assert out["runningTurnAfter"] is None
 
 
-def test_a_turn_let_out_of_the_queue_takes_its_name_back():
+@pytest.mark.parametrize("mode", ["requeued", "requeuedBuild", "requeuedApprove"])
+def test_a_turn_let_out_of_the_queue_takes_its_name_back(mode: str):
     """The other end of the queue guard. A send names its turn before it knows whether it will run,
     so a `pending` frame has to hand that name back — and then the turn waits, is granted, and
-    starts streaming into exactly the same silent window this ticket is about. The `user` frame
-    behind the `pending` one is the queue letting go, and it is where the name goes back on."""
-    out = _run("requeued")
+    starts streaming into exactly the same silent window this file is about.
 
+    The `running` row behind the `pending` one is the queue letting go, and it is where the name
+    goes back on (#377). The two build modes are why that row had to come from the server at all:
+    each pauses on the grant with nothing behind it, because on a build nothing IS behind it — the
+    next frame down the wire is the first frame of real work, the far side of the gate and the
+    model's first token. Before #377 the readout here was a busy bar with no button, over the
+    person's own turn, for that whole stretch."""
+    out = _run(mode)
+
+    assert out["midTurn"]["running"] is True
     assert out["midTurn"]["stopOffered"] is True
     assert out["midTurn"]["elsewhere"] is None
     assert out["runningTurnAfter"] is None
+    # And the composer stops saying the opposite. The `pending` frame drew a "waiting in line" row
+    # with a Cancel on it; from the grant on, that row is a second sentence about this turn that
+    # contradicts the Stop bar, and its Cancel is a button the server can no longer act on — the
+    # ticket is off the deque, so the click reaches `cancel_pending_turn` and nothing happens.
+    assert out["midTurn"]["queued"] == 0
+
+
+@pytest.mark.parametrize("mode", ["requeuedBuild", "requeuedApprove"])
+def test_the_grant_is_a_state_row_and_not_a_receipt(mode: str):
+    """What the `running` branch buys beyond the name, and the only thing a plant on the name alone
+    would not catch: it RETURNS. Let a `running` frame reach `applyBuildEvent` and it matches none
+    of the branches there and falls through to `appendBuildRow`, which writes it into the transcript
+    the person reads — a blank row in the middle of their build, for a frame that is about the lock
+    and not about the work.
+
+    The optimistic `user` bubble the send drew is the whole of what the transcript should hold at
+    this point: the turn has been granted and has done nothing yet."""
+    out = _run(mode)
+
+    assert out["midTurn"]["rows"] == ["user"]
+
+
+@pytest.mark.parametrize("mode", ["requeuedBuild", "requeuedApprove"])
+def test_the_granted_turn_is_named_no_wider_than_it_is(mode: str):
+    """The grant names one turn, not the mode. Read off the same row #126's rule is read off, and
+    for the same reason: a Stop that followed the person to another Built App or to the other
+    composer would be a Stop over somebody else's work."""
+    out = _run(mode)
+
+    assert out["midTurn"]["stopOfferedInTheOtherMode"] is False
+    assert out["midTurn"]["stopOfferedOnAnotherApp"] is False
 
 
 def test_a_second_question_does_not_take_the_name_off_the_one_that_is_running():
@@ -156,3 +200,6 @@ def test_the_other_two_sends_do_not_claim_a_turn_waiting_in_line_either(mode: st
 
     assert out["midTurn"]["stopOffered"] is False
     assert out["midTurn"]["elsewhere"] is not None
+    # The other half of the pair the grant is read against: while it really is waiting, the
+    # composer's row is the truth and stays up.
+    assert out["midTurn"]["queued"] == 1
