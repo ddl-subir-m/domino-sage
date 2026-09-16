@@ -1,6 +1,6 @@
 ---
 name: investigate-weak-signals
-description: Answer a question no single table answers, where every signal is weak. Covers staging work across turns, two-stage discovery, measuring whether a column is usable before trusting it, when to ask the person instead of querying, the findings file that carries measurements between turns, and fusing weak signals into a score and a confidence.
+description: Investigate a question that spans several sources and that no single table answers. Covers finding the tables without pulling the column catalogue, measuring whether a column is usable before trusting it, staging work across turns in a findings file, when to ask the person instead, and fusing weak signals into a score and a confidence.
 ---
 
 # Investigate weak signals
