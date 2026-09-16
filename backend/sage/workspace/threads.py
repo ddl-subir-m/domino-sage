@@ -313,6 +313,14 @@ class ThreadStore:
         return HistoryRows(rows, dropped=dropped)
 
     def read_context(self, thread_id: str) -> dict:
+        """This Thread's context row: its chips, and the decisions recorded beside them.
+
+        THE WHOLE BODY, not `items` alone. `items` was the only key this record held until the
+        investigation flag joined it (#386), and a reader that rebuilt `{"items": kept}` made every
+        writer below a clobber of anything else stored here — the prune two lines down included, on
+        a read. A sibling key that survives one write and not the next is worse than one that never
+        landed, so the shape is carried through in one place rather than defended at five.
+        """
         p = self.thread_dir(thread_id) / "context.json"
         if not p.exists():
             return {"items": []}
@@ -321,13 +329,15 @@ class ThreadStore:
         except (ValueError, OSError):
             # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_meta`.
             return {"items": []}
-        items = data.get("items") if isinstance(data, dict) else None
-        if not isinstance(items, list):
+        if not isinstance(data, dict):
             return {"items": []}
+        items = data.get("items")
+        if not isinstance(items, list):
+            return {**data, "items": []}
         kept = [i for i in items if not _is_auto_artifact(i)]
         if len(kept) != len(items):
-            self.write_context(thread_id, {"items": kept})
-        return {"items": kept}
+            self.write_context(thread_id, {**data, "items": kept})
+        return {**data, "items": kept}
 
     def write_context(self, thread_id: str, body: dict) -> None:
         self._write_json(self.thread_dir(thread_id) / "context.json", body)
@@ -344,8 +354,34 @@ class ThreadStore:
         kept = [i for i in ctx["items"] if i.get("id") != item_id]
         if len(kept) == len(ctx["items"]):
             return False
-        self.write_context(thread_id, {"items": kept})
+        self.write_context(thread_id, {**ctx, "items": kept})
         return True
+
+    # ---- the investigation flag (#386, ADR-0056) -------------------------------------------------
+
+    def read_investigation(self, thread_id: str) -> dict:
+        """What this Thread has decided about investigating, or `{}` if it has never been asked.
+
+        One record with a `state`, rather than a flag plus a decline plus a close: the three are
+        answers to one question and a Thread can only be on one of them, so splitting them into
+        separate keys would invent a state where two are set at once and leave every reader to pick
+        which wins.
+        """
+        row = self.read_context(thread_id).get("investigation")
+        return dict(row) if isinstance(row, dict) else {}
+
+    def write_investigation(self, thread_id: str, row: dict) -> dict:
+        """Record the decision, keeping the chips beside it.
+
+        Read-then-write, because this is the same `context.json` that `add_context`,
+        `remove_context` and `confirm_thread_table_candidate` each read and write whole. One writer
+        for THIS KEY, not for the file: those three are read-modify-write too, and none of them
+        takes a lock, so two doors pressed in the same instant can still lose one of each other's
+        edits. That race is older than this key and is not narrowed here (ADR-0056).
+        """
+        ctx = self.read_context(thread_id)
+        self.write_context(thread_id, {**ctx, "investigation": row})
+        return row
 
     def update(self, thread_id: str, *, title: str | None = None, pinned: bool | None = None) -> dict | None:
         def edit(row: dict) -> None:

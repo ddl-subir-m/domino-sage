@@ -3211,6 +3211,28 @@ def thread_context(thread_id: str) -> JSONResponse:
     return JSONResponse(orchestrator.thread_context(thread_id))
 
 
+# The investigation card's click, and the bar's (#386, ADR-0056). One route for all three answers,
+# because they are one question: a Thread is open, declined or closed, never two of them.
+@control_app.post("/api/threads/{thread_id}/investigation")
+async def decide_thread_investigation(thread_id: str, request: Request) -> JSONResponse:
+    """Open an investigation on this conversation, decline one, or close the one that is open."""
+    try:
+        # Its own `try`, ahead of the call. A body that is empty or not JSON raises a `ValueError`
+        # here, and the word this door reads lives in the body, so leaving the read outside would
+        # answer that with a 500 — while folding it in beside the call would put every `KeyError`
+        # the orchestrator raises, from any lookup, behind the "unknown thread" arm below.
+        body = await request.json()
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Send a JSON body naming a decision."})
+    try:
+        return JSONResponse(content=orchestrator.decide_thread_investigation(
+            thread_id, str((body or {}).get("decision") or "")))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "unknown thread"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
 @control_app.post("/mcp/live-read")
 async def live_read_mcp(request: Request) -> Response:
     """The Live read tools, as an MCP server OpenCode connects to (ADR-0041).
@@ -3331,7 +3353,8 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
             thread_id, prompt,
             skip_table_gate=bool((body or {}).get("skipTableGate")),
             skip_dataset_gate=bool((body or {}).get("skipDatasetGate")),
-            dismissed_dataset=str((body or {}).get("datasetDismissed") or "")), "chat_stream"),
+            dismissed_dataset=str((body or {}).get("datasetDismissed") or ""),
+            skip_investigation_gate=bool((body or {}).get("investigationAnswered"))), "chat_stream"),
         media_type="text/event-stream")
 
 

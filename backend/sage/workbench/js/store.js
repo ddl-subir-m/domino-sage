@@ -1856,6 +1856,46 @@ window.SW = window.SW || {};
           truncated: !!ev.truncated,
           live: !!ev.live,
         });
+      } else if (ev.type === 'investigation-offer' && ev.message) {
+        // The offer to go and look, drawn instead of an answer (#386, ADR-0056). Same `live` rule
+        // as the two cards above, and for the sharpest version of their reason: these buttons grant
+        // a capability for the rest of the conversation and then re-run a question. A replayed card
+        // would do both out of a message somebody is only scrolling back through.
+        //
+        // Nothing is lost by retiring it. No decision was recorded, so the next question of this
+        // shape is offered again — unlike a decline, which is on the record and retires the card
+        // for good.
+        ensureAssistant().blocks.push({
+          type: 'investigation_offer',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          threadId: ev.threadId || '',
+          live: !!ev.live,
+        });
+      } else if (ev.type === 'investigation-state') {
+        // The grant and its end, in the conversation rather than only in the record. The bar above
+        // the composer says what is true NOW; this says when it changed, which is the half a
+        // transcript read a week later can answer and a bar cannot.
+        //
+        // THREE SENTENCES FOR TWO STATES, because a close has two meanings and only one of them
+        // keeps anything. An ordinary close takes the capability back and leaves the measurements;
+        // the close a complete Recall clear performs happens a moment after that clear deleted them
+        // (ADR-0055), and the reassuring line there would be a promise about a file that is gone.
+        // `reason` is what tells them apart.
+        //
+        // "Later turns" and not "turns", because that is what is true: the flag is read once at the
+        // start of a turn, so a turn already streaming keeps the shell it was armed with.
+        ensureAssistant().blocks.push({
+          type: 'status',
+          ok: true,
+          value: ev.state === 'open'
+            ? SW.brand.text('Investigation opened. {turnPlural} in this conversation can query '
+                            + 'your {dataSourcePlural} until you close it.')
+            : (ev.reason === 'clear'
+              ? SW.brand.text('Investigation closed with the rest of this conversation.')
+              : SW.brand.text('Investigation closed. Later {turnPlural} are bounded again; '
+                              + 'what it measured is kept.')),
+        });
       } else if (ev.type === 'withhold-found' && !isAnswered(ev, withheld)
                  && !dismissedWithholds.has(withholdCardKey(ev))) {
         // Replayed settled, never searching. `live` is absent on a server row, so the buttons do
@@ -6677,6 +6717,37 @@ window.SW = window.SW || {};
       return store.sendMessage(prompt, { echo: false, skipTableGate: true });
     },
 
+    // The investigation card's two buttons (#386, ADR-0056). The same two acts as the table card's
+    // click, for the same reason: the decision is recorded whether or not the turn after it
+    // succeeds, and the turn is an ordinary one taking the turn lock like any other.
+    //
+    // BOTH buttons replay. That is the whole shape of the offer — the card ended a turn that would
+    // otherwise have answered, so an answer that did not run the question would have charged the
+    // person a round trip for a card they did not ask for. `Yes` runs it with a shell; `No` runs
+    // exactly the turn that would have run anyway.
+    //
+    // `echo` off and `investigationAnswered` on for the one reason between them: the question is
+    // already in the transcript above the card, and the server will not write it a second time.
+    async answerInvestigationAndAsk(prompt, threadId, decision) {
+      await SW.api.decideInvestigation(threadId, decision);
+      // Re-read rather than patched in place: the bar below the transcript draws off
+      // `thread.context.investigation`, and the record the server wrote is the one to draw.
+      const opened = await store.openThread(threadId);
+      // The record stands either way — it was written above and belongs to the conversation rather
+      // than to whatever is on screen. What must not follow is the replay: `sendMessage` reads
+      // `state.thread`, so replaying here would post the question into a conversation the person
+      // moved to, and with `echo` off it would never be written under the card they cannot see.
+      if (!opened || !state.thread || state.thread.id !== threadId) return null;
+      return store.sendMessage(prompt, { echo: false, investigationAnswered: true });
+    },
+
+    // The bar's Close. No replay: nothing was asked, and nothing is owed an answer. Closing takes
+    // back the capability and LEAVES the findings where they are — see ADR-0056.
+    async closeInvestigation(threadId) {
+      await SW.api.decideInvestigation(threadId, 'close');
+      return store.openThread(threadId);
+    },
+
     // The Dataset card's click (#196, ADR-0039). Two acts again — the attach stands whether or not
     // the build after it succeeds, and the build is an ordinary turn taking the turn lock — and the
     // attach is the DECLARATION here, not a step before one: a Dataset needs no scope on its
@@ -7127,9 +7198,13 @@ window.SW = window.SW || {};
     // Thread and the question is already in the transcript, so the turn neither re-asks nor
     // re-writes the person's sentence. `echo` is off for the same reason on that path.
     // `skipDatasetGate` says the same of the Dataset card (#196) — the file is pinned by then.
+    // `investigationAnswered` says the same of the investigation card (#386): the decision is on
+    // the conversation's record by the time this runs, so the turn neither re-asks nor re-writes
+    // the sentence. It is the echo it suppresses — the server declines to offer again off the
+    // record itself, on both answers.
     async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride,
                               skipTableGate = false, skipDatasetGate = false,
-                              datasetDismissed = '' } = {}) {
+                              datasetDismissed = '', investigationAnswered = false } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
       // and said so in the transcript — which read as Sage answering a question about data with a
@@ -7235,7 +7310,8 @@ window.SW = window.SW || {};
           headers: { 'Content-Type': 'application/json' },
           // The decline route ignores this and reads the pending question off the Thread, so a
           // stale tab cannot put a turn under a question it does not match.
-          body: JSON.stringify({ prompt: text, skipTableGate, skipDatasetGate, datasetDismissed }),
+          body: JSON.stringify({ prompt: text, skipTableGate, skipDatasetGate, datasetDismissed,
+                               investigationAnswered }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
@@ -7430,6 +7506,14 @@ window.SW = window.SW || {};
             state.typing = null;
             ensurePushed();
             assistant.blocks = [...assistant.blocks, { ...ev, type: 'dataset_files', live: true }];
+            notify();
+          } else if (ev.type === 'investigation-offer') {
+            // The offer to open an investigation, asked before the turn ran (#386). `live` here and
+            // nowhere else, for the reason both cards above it are: this frame arrived over SSE.
+            state.typing = null;
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks,
+                                { ...ev, type: 'investigation_offer', live: true }];
             notify();
           }
         });

@@ -94,18 +94,24 @@ model at this file before it plans (#381). A clear that left it standing handed 
 freshly-cleared model every measurement back on its next turn — a clear that did not clear,
 against ADR-0022.
 
-So `clear_recall` (`service.py:9246`) unlinks the file when — and only when — the scope is
-`recall.EMPTY`:
+So `clear_recall` unlinks the file when — and only when — the scope is `recall.EMPTY`:
 
-| Scope | Session | `findings.md` |
-|---|---|---|
-| `recall.EMPTY` (complete) | dropped | **deleted** |
-| `recall.SUMMARY` (seeded) | dropped | kept |
+| Scope | Session | `findings.md` | The investigation (ADR-0056) |
+|---|---|---|---|
+| `recall.EMPTY` (complete) | dropped | **deleted** | **closed** |
+| `recall.SUMMARY` (seeded) | dropped | kept | kept open |
 
 The asymmetry is the decision, not an oversight. A complete clear is the person saying *start
 over* and it has to mean it. A summary-scoped clear trims talk and seeds the model with what was
 said — and a measurement log is not talk, so taking it there would throw away work nobody asked to
 lose on the softer of the two rungs.
+
+**The fourth column is ADR-0056's, and it is a different act from the third.** Since #386 the file
+is a record and not a permission, so unlinking it no longer stops anything: what decides whether a
+turn keeps its shell is a flag on the Thread's context row. A complete clear takes both, because a
+conversation that started over holding an open grant is one whose turns keep a shell for a reason
+nothing on the record explains any more. Closing an investigation by itself takes only the grant
+and **leaves this file alone** — see ADR-0056, "Closing is not deleting".
 
 ## The cap is a refusal, not a trim
 
@@ -125,25 +131,26 @@ leaves the file both over the ceiling and larger than it was.
 
 ## The continuation rule is a scope decision, not only a latency cost
 
-Shipped in #381: once a Thread has a `findings.md`, every later turn in it keeps `bash` —
-`investigating` gates both arming sites in `_chat_stream`. Without that, a `data_answer` turn is
-armed read-only and `READ_ONLY_DENIED = WRITE_TOOLS | SHELL_TOOLS`
-(`backend/sage/router/phase_classifier.py:48`) takes the shell with it, so the investigation loses
-its only route to Snowflake mid-flight — `live_read_table` accepts no SQL.
+Once an investigation is open in a Thread, every later turn in it keeps `bash` — `investigating`
+gates both arming sites in `_chat_stream`. Without that, a `data_answer` turn is armed read-only and
+`READ_ONLY_DENIED = WRITE_TOOLS | SHELL_TOOLS` (`backend/sage/router/phase_classifier.py:48`) takes
+the shell with it, so the investigation loses its only route to Snowflake mid-flight —
+`live_read_table` accepts no SQL.
 
 §2.6 of #378 prices this as latency. **It is also a scope decision, and that is the half a future
-reader will come here for.** #364 bounds a Chat turn to the tools its intent needs. A Thread
-holding this file is bounded no longer, for every turn it has left, and the model may open that
-door **unprompted** — nothing asks the person before the first `findings.md` is written.
+reader will come here for.** #364 bounds a Chat turn to the tools its intent needs, and a Thread
+with an investigation open is bounded no longer for every turn it has left.
 
-**It is not an escape hatch.** `write_chat_artifact` (`service.py:9872`) refuses any path outside
-`examples/<threadId>/` and any extension but `.png` or `.table.json`, and a `data_answer` turn
-holds no write tool at all. Only a turn that was already unbounded can create the file in the
-first place, so the rule widens what an unbounded Thread keeps — it does not hand a bounded one a
-way out.
+**WHAT IS OPEN, AND WHO OPENED IT, IS ADR-0056'S AND NOT THIS FILE'S.** #381 shipped this rule
+gated on `findings.md` being on disk, and argued it was safe because only a turn that was already
+unbounded could write that file. The argument was true and it made the gate useless: no bounded
+turn could write the file either, so the exemption never fired on any Thread. #386 replaced the
+gate with a flag the PERSON sets, from a card the turn offers — the model cannot set it, the
+conversation shows it while it stands, and closing it puts the bounding back.
 
-Both halves stand. The second does not cancel the first: within a Thread, #364's bounding is
-defeatable, by a decision the model makes and the person is not shown.
+So this file grants nothing. It is what an open investigation keeps its measurements in, and the
+paragraphs above — committed, pushed, invisible, aggregates by prompt rule only, capped by a
+refusal — are all still exactly true of it.
 
 ## Consequences
 
@@ -163,7 +170,9 @@ defeatable, by a decision the model makes and the person is not shown.
   propose that.
 - Neither door is labelled as being about this file, because the file is not shown. The
   `recall.CLEARED` row carries the scope and nothing about the findings, so the transcript cannot
-  answer "where did the measurements go" either. Accepted for now on the grounds that the person
+  answer "where did the measurements go" either. The `investigation-state` row ADR-0056 writes
+  beside it is about the GRANT and says nothing about this file, which is the same gap reached
+  through the newer door. Accepted for now on the grounds that the person
   was never told the file existed, and rejected as a reason to soften the clear.
 - **The clear is scoped to one NAME; the turn's write surface is the whole directory.** The
   prompt asks for `findings.md` and nothing enforces it, so a model that recorded its measurements

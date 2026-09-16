@@ -2219,6 +2219,107 @@ def _plain_chat_answer_only(prompt: str) -> bool:
     return _looks_like_question(prompt) and _CHAT_ARTIFACT_OR_DATA_ASK.search(prompt or "") is None
 
 
+# A question that asks for an INVESTIGATION rather than for one answer (#386, ADR-0056).
+#
+# What this decides is whether a card is DRAWN. It grants nothing. The capability is granted by the
+# person clicking the card, and that is the whole difference from the trigger #381's review rejected:
+# that one read these same words and widened the turn itself, which is inferring a durable grant from
+# wording — the judgement #364 took away on purpose.
+#
+# NEGATION IS NOT SOLVED HERE and must not be attempted. "don't investigate this, just give me the
+# number" draws the card; the person presses `Just answer this`, the decline is recorded, and the
+# turn answers exactly as it would have. A regex cannot read negation, and the rejected trigger's
+# reviewer found four sentences where trying got it wrong.
+#
+# That tolerance is not free and should not be described as free. The card ENDS the turn, so a false
+# positive costs one click and one round trip before the question runs — priced rather than
+# dismissed, which is why the limbs below decline the everyday readings of their own words.
+#
+# IT READS THE QUESTION'S SHAPE AND NEVER THE EVIDENCE'S QUALITY, which is the axis and is worth
+# stating because the obvious other one is already a live defect elsewhere.
+# `template/skills/investigate-weak-signals/SKILL.md` opens *"answer a question no single table
+# answers, where every signal is weak"* — and that second clause is a precondition a model can
+# evaluate and find FALSE. Ask "which customers actually use Model Monitor?", let it glance at the
+# catalogue, let it find a clean-looking `DMM_ENABLED` column, and the signals do not look weak, so
+# the skill is skipped — in exactly the case its own section 3 (existence is not usability) exists
+# to catch. A trigger here that keyed on signal strength or data quality would inherit that, and
+# would inherit it worse: at offer time this turn has measured NOTHING, so how weak the evidence is
+# is not knowable, and guessing it wrong withholds the offer from the question that needed it most.
+# Weak signals are a condition under which fusion pays off. They are not what makes a question an
+# investigation.
+#
+# Three limbs, all of them shape:
+#
+#   the act     — somebody says what they want done. "investigate", "dig into", "get to the bottom
+#                 of". The plainest signal there is, and the one the pinned prompt teaches.
+#   the fusion  — one question put to several stores, naming no verb at all. "across Gong and
+#                 Salesforce", "based on Mixpanel, Gong and Salesforce" — which is #378's own
+#                 example, and is exactly the question that classifies `data_answer` and loses the
+#                 shell it needs.
+#   the doubt   — asking whether something is ACTUALLY true rather than what a column says.
+#                 "which customers ACTIVELY use it", "do they really log in" — a question about a
+#                 population that a flag can only claim, which is what makes it take more than one
+#                 look whether or not any single signal turns out to be weak.
+_INVESTIGATIVE_ACT = re.compile(
+    r"\binvestigat(?:e|es|ed|ing|ion)\b"
+    # `into`, not `(?:in)?to`: the short form also matches the bare preposition, and "which table
+    # should I look to for churn?" is an ordinary question that would have drawn a card and ended
+    # the turn. "get to the bottom of" keeps its own `to` below, where it is part of the phrase.
+    r"|\b(?:dig|digs|digging|delve|delves|delving|drill|drills|drilling|look|looks|looking)"
+    r"\s+into\b"
+    r"|\b(?:figure|figures|work|works)\s+out\b"
+    r"|\bget(?:ting)?\s+to\s+the\s+bottom\s+of\b"
+    r"|\broot[- ]cause\b"
+    r"|\btrack(?:ing)?\s+down\b",
+    re.IGNORECASE,
+)
+
+# The fusion limb, in two halves. Four verbs mean fusion on their own — there is no reading of
+# "reconcile" or "cross-reference" that is one table. The other four are ordinary data words that
+# only mean fusion when they reach a LIST, so they need an "and" beside them, inside the same
+# sentence: "How many users joined last month?" and "revenue across regions" are single-source
+# questions that these words would otherwise have claimed, and each false positive costs the person
+# a click. `based on the CSV` is the same case with the same answer.
+_FUSES_SOURCES = re.compile(
+    r"\b(?:cross[- ]referenc(?:e|es|ed|ing)"
+    r"|correlat(?:e|es|ed|ing|ion)"
+    r"|reconcil(?:e|es|ed|ing)"
+    r"|triangulat(?:e|es|ed|ing))\b"
+    r"|\b(?:across|combin(?:e|es|ed|ing)|join(?:s|ed|ing)?|based\s+on)\b[^.?!\n]*\band\b",
+    re.IGNORECASE,
+)
+
+
+# The doubt limb. Every word here is about the QUESTION — whether the thing asked about is real —
+# rather than about the data that would answer it.
+#
+# THE ADVERB HAS TO REACH A VERB OF DOING, which is the whole limb and not a refinement of it.
+# "really" and "actually" are intensifiers far more often than they are doubt — "can you actually
+# show me revenue by region?", "that's really useful" — so a bare adverb anywhere in the sentence
+# would make the false positive the common case rather than the tail. What the limb is for is
+# "which customers ACTIVELY USE it" and "do they REALLY LOG IN": a question about whether a
+# population does the thing, which a flag can only claim.
+_DOUBTS_THE_COLUMN = re.compile(
+    r"\b(?:actually|actively|really|genuinely|truly|meaningfully)\s+"
+    r"(?:use|uses|used|using|adopt|adopts|adopted|adopting|log|logs|logged|logging"
+    r"|run|runs|ran|running|open|opens|opened|opening|engage|engages|engaged|engaging"
+    r"|touch|touches|touched|touching|active|in\s+use)\b"
+    r"|\bin\s+(?:practice|reality)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_investigative(prompt: str) -> bool:
+    """True when this question names an investigative act, fuses sources, or doubts a column.
+
+    Shape only. Nothing here reads how good or how weak the evidence is, for the reason set out
+    above the patterns: this turn has measured nothing yet, so that is not a fact it has.
+    """
+    text = prompt or ""
+    return any(pattern.search(text) is not None
+               for pattern in (_INVESTIGATIVE_ACT, _FUSES_SOURCES, _DOUBTS_THE_COLUMN))
+
+
 # Asking to throw the app away and start over (#36). Two shapes, both requiring the WHOLE app as the
 # object: "start over"/"start from scratch" as a standalone phrase, or a removal verb reaching a
 # whole-app noun ("delete everything", "wipe the app", "remove everything you have built").
@@ -7440,6 +7541,72 @@ class Orchestrator:
     def thread_context(self, thread_id: str) -> dict:
         return ThreadStore(self._chat_project().record.path).read_context(thread_id)
 
+    # The three answers a person can give about an investigation (#386, ADR-0056). One door, because
+    # they are one question — a Thread is on exactly one of these states and a separate door per
+    # answer is three ways to end up on two of them at once.
+    _INVESTIGATION_DECISIONS = ("open", "decline", "close")
+
+    def decide_thread_investigation(self, thread_id: str, decision: str,
+                                    reason: str = "") -> dict:
+        """Open an investigation on this Thread, decline one, or close the one that is open.
+
+        WHAT OPENING GRANTS is the whole of it: every turn in this Thread keeps its shell and its
+        Python while the flag stands, so a question about data can reach a warehouse instead of
+        being armed read-only and answering from what it was already told (`_chat_stream`'s two
+        arming sites). It is a grant with a person's click behind it, which is the thing #364 asks
+        for and the thing a file on disk could never be.
+
+        WHAT CLOSING DOES NOT DO is delete anything. `findings.md` is a record of what was measured
+        and it stays exactly where it is — closing takes back the capability, not the work. The two
+        were the same thing until this ticket, which is what made "stop investigating" and "throw
+        away the measurements" one act nobody had asked for.
+
+        DECLINING IS REMEMBERED so the card does not come back in this conversation. Closing is not:
+        it returns the Thread to where it started, and a later investigative question may offer
+        again — which is the only way to open a second one.
+        """
+        if decision not in self._INVESTIGATION_DECISIONS:
+            raise ValueError(f"unknown investigation decision: {decision}")
+        store = ThreadStore(self._chat_project().record.path)
+        if store.get(thread_id) is None:
+            raise KeyError(thread_id)
+        # The stamp every other row on this record carries (`threads._now`), so a reader of
+        # `context.json` meets one time format rather than two.
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        current = store.read_investigation(thread_id)
+        if decision == "open":
+            if current.get("state") == "open":
+                # Already granted. Answered rather than re-written, for the reason the close below
+                # is: two tabs on one conversation each hold a clickable card, and the second click
+                # must not move the grant's own timestamp or say in the transcript that it opened
+                # twice.
+                return {"investigation": current}
+            row = {"state": "open", "openedAt": now}
+        elif decision == "decline":
+            row = {"state": "declined", "declinedAt": now}
+        else:
+            if current.get("state") != "open":
+                # Nothing to take back. Answered rather than refused: two tabs on one conversation
+                # both showing the bar is one press each, and the second must not be an error about
+                # a state the first already reached.
+                return {"investigation": current}
+            row = {**current, "state": "closed", "closedAt": now}
+        store.write_investigation(thread_id, row)
+        # In the conversation, not only in the record. The review that rejected #381's design named
+        # this exactly: nothing told the person their Thread was now unbounded, and nothing took it
+        # back. A `decline` writes no row — the card it answers is already in the transcript, and a
+        # line saying a capability was NOT granted is a receipt for nothing happening.
+        if decision in ("open", "close"):
+            ev = {"type": "investigation-state", "state": row["state"]}
+            if reason:
+                # WHY it closed, because the sentence the transcript draws is not the same one in
+                # both cases. An ordinary close keeps `findings.md`; a complete Recall clear deleted
+                # it a moment earlier (ADR-0055), and the reassuring line would then be a promise
+                # about measurements that no longer exist.
+                ev["reason"] = reason
+            store.append_history(thread_id, ev)
+        return {"investigation": row}
+
     def add_thread_context(self, thread_id: str, item: dict) -> dict:
         store = ThreadStore(self._chat_project().record.path)
         if store.get(thread_id) is None:
@@ -7717,7 +7884,7 @@ class Orchestrator:
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                     already_asked: bool = False, skip_table_gate: bool = False,
                     skip_dataset_gate: bool = False, dismissed_dataset: str = "",
-                    declined: bool = False):
+                    skip_investigation_gate: bool = False, declined: bool = False):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
         `already_asked` means this question is on the Thread and was offered Build rather than an
@@ -7732,6 +7899,16 @@ class Orchestrator:
 
         `skip_dataset_gate` says the same of the Dataset card (#196): the file is pinned to the
         Thread by the time this arrives, and the question is already on the record.
+
+        `skip_investigation_gate` says the same of the investigation card (#386): the decision — to
+        open one or to do without — is on the Thread's context row by the time this arrives, and the
+        question is already on the record. It does two things, and the second is belt to the first's
+        braces: it suppresses the echo, so the sentence is not printed twice under one card, and it
+        skips the offer outright. The record alone would already decline to offer — both answers
+        leave a state the gate falls through on — so the skip guards the window where that record is
+        not what this turn reads: a write that did not land, or a second tab whose click landed
+        first. A replay that met its own card again would be the person answering the same question
+        forever.
 
         `declined` says WHY the question is being re-run, which `already_asked` does not. The two
         travel together today and still are not the same fact: `already_asked` means the question is
@@ -7769,6 +7946,7 @@ class Orchestrator:
                                         skip_table_gate=skip_table_gate,
                                         skip_dataset_gate=skip_dataset_gate,
                                         dismissed_dataset=dismissed_dataset,
+                                        skip_investigation_gate=skip_investigation_gate,
                                         declined=declined):
                 if ev.get("type") == "done":
                     # Every way this turn can end passes through a `done`, and there are eight of
@@ -9304,6 +9482,31 @@ class Orchestrator:
             # the unlink; the session half escapes that only because `session.json` is written
             # when a session is created (`:8930`) and not at turn end.
             findings_file(root, thread_id).unlink(missing_ok=True)
+            # And the grant that made the measuring possible (#386, ADR-0056). A complete clear is
+            # START OVER, and a Thread that started over holding an open investigation is a
+            # conversation the model still has a shell in for a reason nothing on the record
+            # explains any more — the card that granted it, and the question it was granted for,
+            # are both behind the clear.
+            #
+            # Not the same act as the unlink above it, and it matters which is which: that one
+            # drops a RECORD of what was measured, this one takes back a CAPABILITY. Closing
+            # deliberately leaves the file; only this clear takes both, because only this clear is
+            # the person asking for neither.
+            #
+            # EVERY state, not only an open one. A Thread that declined once carries `declined` for
+            # good and the card never returns to it — the right answer to "I already said no" and
+            # the wrong one to "start over", where the person is asking to be back where they began.
+            # So the record is DROPPED rather than closed, and a later investigative question may
+            # offer again.
+            state = store.read_investigation(thread_id).get("state")
+            if state == "open":
+                # Closed rather than silently dropped, because this one has to be SAID: the
+                # conversation was unbounded a moment ago and the row is what says it no longer is.
+                # `reason` is what stops that row promising the measurements are kept, two lines
+                # after the unlink above took them.
+                self.decide_thread_investigation(thread_id, "close", reason="clear")
+            if state:
+                store.write_investigation(thread_id, {})
         store.clear_session_id(thread_id)
         ev = {"type": recall.CLEARED, "scope": scope}
         store.append_history(thread_id, ev)
@@ -10152,7 +10355,7 @@ class Orchestrator:
     def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                      already_asked: bool = False, skip_table_gate: bool = False,
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
-                     declined: bool = False):
+                     skip_investigation_gate: bool = False, declined: bool = False):
         import time
 
         project = self._chat_project()
@@ -10212,8 +10415,10 @@ class Orchestrator:
         }
         # `skip_table_gate` joins `already_asked` here for the same reason it joins it below: the
         # turn that drew the candidate card wrote this sentence to the Thread before it drew one, so
-        # writing it again would print the person's question twice under one card.
-        asking = not already_asked and not skip_table_gate and not skip_dataset_gate
+        # writing it again would print the person's question twice under one card. The investigation
+        # card (#386) is a third of the same shape, and both of its answers replay through here.
+        asking = (not already_asked and not skip_table_gate and not skip_dataset_gate
+                  and not skip_investigation_gate)
         if asking:
             store.append_history(thread_id, user_ev)
             yield user_ev
@@ -10325,8 +10530,15 @@ class Orchestrator:
         history = store.read_history(thread_id)
         _warn_if_history_lossy(history, "_chat_stream")
         urls = _urls_in_chat(prompt, history)
-        # An investigation is open in this Thread. Read once, used at both arming sites below.
-        investigating = findings_file(project.record.path, thread_id).exists()
+        # An investigation is open in this Thread — a capability the PERSON granted, recorded on the
+        # Thread's own context row (#386, ADR-0056). Read once, used by the offer below and at both
+        # arming sites under it.
+        #
+        # It used to read `findings.md` off disk, and that gate could never fire: nothing bounded can
+        # write that file, so the condition was one only an already-exempt turn could create. The
+        # file is a record of what was measured and is no longer a permission to measure.
+        investigation = store.read_investigation(thread_id)
+        investigating = investigation.get("state") == "open"
         # Send descriptors only, never file contents or sample rows, to the Ask classifier.
         intent_context = "\n".join(
             json.dumps({key: item[key] for key in ("kind", "name", "path", "scope")
@@ -10350,6 +10562,20 @@ class Orchestrator:
             yield offer
             yield done
             return
+        # The third gate, and the only one that asks about a CAPABILITY rather than about a record
+        # (#386, ADR-0056). The two above ask which table and which file; this one asks whether this
+        # question is worth an investigation, and the answer is a grant the person makes rather than
+        # one the model takes. Below this line the turn is armed, and by then it is too late to ask.
+        #
+        # After the classifier, unlike the two above it, because "would this turn be bounded" is a
+        # fact about `intent.label` and there is no cheaper way to know it. The call is already paid
+        # for by the arming below.
+        if not skip_investigation_gate:
+            offer = self._chat_investigation_offer(store, thread_id, prompt, items, intent,
+                                                   investigation)
+            if offer is not None:
+                yield from offer
+                return
         if self._opencode_mcp_at is None:
             # Counted at the point the turn is pinned as Chat, which is where its tool list is about
             # to be assembled. A turn counted here was handed no Live read, whatever it then said.
@@ -10381,21 +10607,28 @@ class Orchestrator:
         withheld_token = project.control.arm_withheld(recall.withheld(history))
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         # `investigating` exempts this Thread from both bounded lanes, and that is a SCOPE decision
-        # before it is a latency one. #364 bounds a turn that only answers a question; once a Thread
-        # has `findings.md`, every later turn in it keeps bash, so the bounding is defeatable within
-        # a Thread and the model can open that door unprompted on any agentic turn. Both lanes have
-        # to fall together or the exemption is not one: `data_answer` arms `arm_read_only`, whose
-        # `READ_ONLY_DENIED = WRITE_TOOLS | SHELL_TOOLS` takes the shell, and `data_artifact` leaves
-        # read plus `artifact_write`, which cannot write outside `examples/<threadId>/`. Either way
-        # the turn loses Python, and Python is the only way to the warehouse — `live_read_table`
-        # accepts no SQL. The third route in is the classifier's own fallback through
-        # `_plain_chat_answer_only`, which is why the gate is on `answer_only` rather than on the
-        # label.
+        # before it is a latency one. #364 bounds a turn that only answers a question; while an
+        # investigation is open every turn in this Thread keeps bash, so the bounding is set aside
+        # within the Thread for as long as the flag stands. Both lanes have to fall together or the
+        # exemption is not one: `data_answer` arms `arm_read_only`, whose `READ_ONLY_DENIED =
+        # WRITE_TOOLS | SHELL_TOOLS` takes the shell, and `data_artifact` leaves read plus
+        # `artifact_write`, which cannot write outside `examples/<threadId>/`. Either way the turn
+        # loses Python, and Python is the only way to the warehouse — `live_read_table` accepts no
+        # SQL. The third route in is the classifier's own fallback through `_plain_chat_answer_only`,
+        # which is why the gate is on `answer_only` rather than on the label.
         #
-        # It is not an escape hatch, and that was checked rather than assumed: `write_chat_artifact`
-        # refuses any path outside `examples/<threadId>/` and any extension but `.png`/`.table.json`,
-        # and a `data_answer` turn holds no write tool at all. So only a turn that was already
-        # unbounded can create the file that widens the turns after it.
+        # WHAT MAKES THAT SAFE IS THE GRANT, AND NOTHING ELSE (#386, ADR-0056). This used to read
+        # `findings.md` off disk and argue that only an already-unbounded turn could create the file,
+        # so a bounded Thread had no way out. That argument was true and the gate was useless: it
+        # also meant no bounded turn could ever open an investigation, so the exemption never fired
+        # on any Thread. The flag is not a file the model can write. It is set by a click on a card
+        # this turn's own offer drew, it is shown in the conversation for as long as it stands, and
+        # closing it puts the bounding back. The model cannot set it, widen it, or keep it.
+        #
+        # `write_chat_artifact` still refuses any path outside `examples/<threadId>/` and any
+        # extension but `.png`/`.table.json`, and a `data_answer` turn still holds no write tool at
+        # all. That is now a fact about what a bounded turn can write, not the thing holding the
+        # exemption shut.
         artifact_token = (
             project.control.arm_chat_artifact()
             if intent.valid and intent.label == "data_artifact" and not investigating else None
@@ -12223,6 +12456,73 @@ class Orchestrator:
                    "allGroups": table_search.grouped(ranking.candidates),
                    "total": len(ranking.candidates), "matched": ranking.matched},
                   {"type": "done", "ok": False, "decision": "table candidates"})
+        for ev in events:
+            store.append_history(thread_id, ev)
+            yield ev
+
+    # ---- the investigation gate (#386, ADR-0056) -------------------------------------------------
+
+    def _chat_investigation_offer(self, store: ThreadStore, thread_id: str, prompt: str,
+                                  items: list[dict], intent, investigation: dict):
+        """Events offering to open an investigation for this question, or None to let the turn run.
+
+        The two gates above this one ask which record to use. This one asks for a CAPABILITY, and
+        that is why it is a card rather than a rule: #364 bounds a turn to the tools its intent
+        needs, and the only thing that may set that bounding aside for a whole conversation is the
+        person saying so. #381 tried to read the grant off `findings.md` and #381's own review
+        rejected reading it off the prompt's wording; both are the model deciding what it may reach.
+
+        Returns None in five cases, each of which leaves the turn exactly as it was:
+
+        - The decision is already made. `open` means the turn is unbounded and has nothing to ask
+          for; `declined` means this conversation said no, and an offer that came back would be the
+          card asking again until it got the answer it wanted. `closed` is NOT one of them — closing
+          returns the Thread to where it started, and the next investigative question may offer
+          again, which is the only way back in.
+        - The label is not `data_answer` or `data_artifact`. This is the ticket's own narrowing and
+          it is a TRADE, not a statement about which turns are bounded — do not read it as one. Two
+          other paths are bounded and are offered nothing here: `plain_answer` arms
+          `arm_read_only("question")` too, and when the classifier is unavailable or answers
+          `other_chat`, `answer_only` falls back to `_plain_chat_answer_only(prompt)`, which is true
+          of any question carrying none of `_CHAT_ARTIFACT_OR_DATA_ASK`'s nouns. So "dig into why
+          weekly active users fell" with the gateway down is armed read-only and draws no card.
+          What the narrowing buys is most of a prose trigger's false positives for nothing — a
+          classifier saying this is a data question is a second opinion the words alone are not —
+          and what it costs is the offer on those two paths. ADR-0056 records the residual.
+        - Nothing is bound to reach. An investigation is a warehouse act, so a conversation with no
+          data on it is being offered a capability it has nowhere to point.
+        - The sentence does not look investigative — `_looks_investigative`, which is wide on
+          purpose and does not attempt negation.
+        """
+        if str(investigation.get("state") or "") in ("open", "declined"):
+            return None
+        if not (intent.valid and intent.label in {"data_answer", "data_artifact"}):
+            return None
+        if not any(str(i.get("kind") or "") in ("data_source", "datasource", "table")
+                   for i in items):
+            return None
+        if not _looks_investigative(prompt):
+            return None
+        return self._chat_investigation_offer_events(store, thread_id, prompt)
+
+    def _chat_investigation_offer_events(self, store: ThreadStore, thread_id: str, prompt: str):
+        """The card itself, and the `done` that ends the turn without running it.
+
+        The shape `_chat_table_candidates_events` uses, for the reason it uses it: both events go to
+        the Thread before either is yielded, so the card is still there after a reload and the turn
+        settles for every reader of the stream. `ok: False` because nothing was answered — the
+        question is still open, and it is the click that runs it.
+        """
+        message = brand.text(
+            "This question looks like it needs more than one answer. {assistantName} can open an "
+            "investigation for this conversation: {turnPlural} here can query your "
+            "{dataSourcePlural} directly and keep what they measure for the questions that follow. "
+            "Otherwise {assistantName} answers from what is already in this conversation.")
+        events = ({"type": "investigation-offer", "prompt": prompt, "message": message,
+                   # What tells the click which conversation to record the decision on, the way the
+                   # table card carries the same for the same reason.
+                   "threadId": thread_id},
+                  {"type": "done", "ok": False, "decision": "investigation offer"})
         for ev in events:
             store.append_history(thread_id, ev)
             yield ev
@@ -17786,7 +18086,8 @@ class Orchestrator:
         store = ThreadStore(project.record.path)
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
-        items = store.read_context(thread_id).get("items") or []
+        ctx = store.read_context(thread_id)
+        items = ctx.get("items") or []
         rows = [i for i in items
                 if str(i.get("kind") or "") in ("data_source", "datasource", "table")
                 and self._context_source_id(i) == source_id]
@@ -17813,7 +18114,10 @@ class Orchestrator:
         columns = self._columns_for_context(source, scope)
         if columns:
             row["columns"] = columns
-        store.write_context(thread_id, {"items": items})
+        # The whole row back, not `{"items": items}`: this record carries the investigation
+        # decision beside the chips now (#386), and rebuilding it from `items` alone would let a
+        # table pick close an open investigation without anything saying so.
+        store.write_context(thread_id, {**ctx, "items": items})
         return {"items": items}
 
     def confirm_thread_dataset_file(self, thread_id: str, dataset_id: str, path: str) -> dict:

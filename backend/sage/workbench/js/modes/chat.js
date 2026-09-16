@@ -54,6 +54,47 @@ window.SW = window.SW || {};
     );
   }
 
+  // What an open investigation looks like from the composer (#386, ADR-0056).
+  //
+  // The transcript records when the grant was made; this says it is still standing. That is the
+  // half the review of #381's design asked for and the transcript alone cannot give: a line that
+  // scrolls away says a capability was granted, and somebody twenty turns later is looking at a
+  // conversation whose turns keep a shell for a reason nothing on screen mentions.
+  //
+  // CLOSING IS NOT DELETING and the sentence says so, because the two were one act until this
+  // ticket. What was measured stays; what stops is the reaching.
+  //
+  // Drawn off the Thread's own record rather than off a live frame, unlike every card in the
+  // transcript. A card's buttons belong to the person who watched it arrive; this is a fact about
+  // the conversation, true on a reload, in a second tab, and a week later.
+  function InvestigationBar() {
+    const { thread } = SW.store.get();
+    // The same helper the card's two buttons use, and here for the one thing it adds over a local
+    // flag: a failed close SAYS so. Hand-rolled, the spinner stopped, the bar went on reading
+    // "Investigating", and the person believed the capability had been taken back when the POST had
+    // 404'd — the quiet direction, on the control that exists to take it back.
+    const [busy, run] = SW.util.useBusyAct();
+    const open = thread && ((thread.context || {}).investigation || {}).state === 'open';
+    if (!open) return null;
+
+    return h(
+      'div',
+      { className: 'sw-chat-planbar' },
+      h('span', { className: 'sw-caption' },
+        SW.brand.text('Investigating — {turnPlural} here can query your {dataSourcePlural}')),
+      h(
+        Button,
+        {
+          size: 'small',
+          loading: !!busy,
+          disabled: !!busy,
+          onClick: run('close', () => SW.store.closeInvestigation(thread.id)),
+        },
+        'Close investigation'
+      )
+    );
+  }
+
   function Landing({ onSend, compact }) {
     const { starters, me, turnWedged } = SW.store.get();
     const catalogue = (starters && starters.chat) || {};
@@ -222,6 +263,7 @@ window.SW = window.SW || {};
                         thread && (thread.touched || []).length ? 'Open in Build' : 'Build this'
                       )
                     ),
+                  h(InvestigationBar, null),
                   h(TurnBar, null),
                   h(SW.Composer, {
                     onSend: send,

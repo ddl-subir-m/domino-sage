@@ -208,7 +208,8 @@ def test_the_chat_way_past_the_card_names_it_too():
     out = _chat(click={"kind": "past"})
 
     assert out["replay"] == {"prompt": PROMPT, "skipTableGate": False,
-                             "skipDatasetGate": True, "datasetDismissed": "ds_revenue"}
+                             "skipDatasetGate": True, "datasetDismissed": "ds_revenue",
+                             "investigationAnswered": False}
 
 
 @needs_node
@@ -278,7 +279,8 @@ def test_the_chat_click_pins_the_file_and_then_asks_the_question_again():
     # No `datasetDismissed`: the chip is what stops this card coming back, and a Dataset somebody
     # just answered about must not also be recorded as one they wanted nothing from.
     assert out["replay"] == {"prompt": PROMPT, "skipTableGate": False,
-                             "skipDatasetGate": True, "datasetDismissed": ""}
+                             "skipDatasetGate": True, "datasetDismissed": "",
+                             "investigationAnswered": False}
 
 
 @needs_node
