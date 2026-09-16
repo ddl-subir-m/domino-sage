@@ -7957,6 +7957,14 @@ class Orchestrator:
         store = ThreadStore(self._chat_project().record.path)
         if store.get(thread_id) is None:
             yield {"type": "error", "message": "Unknown thread"}
+            # Never written to history, for the same structural reason as its twin in `_chat_stream`
+            # (#335): `ThreadStore.append_history` opens with `p.parent.mkdir(parents=True,
+            # exist_ok=True)` (workspace/threads.py:272), so persisting this row would CREATE a thread
+            # directory for an id the line above just established does not exist — manufacturing the
+            # stray folder #332 had to grow a guard against at the read end.
+            #
+            # The sibling ending below is raw too, but for a different reason: this method records
+            # nothing itself. It delegates to `chat_stream`, which is where a turn's rows are kept.
             yield {"type": "done", "ok": False, "decision": "unknown thread"}
             return
         store.suppress_handoff(thread_id)
@@ -10006,6 +10014,16 @@ class Orchestrator:
         thread = store.get(thread_id)
         if thread is None:
             yield {"type": "error", "message": "Unknown thread"}
+            # Raw on purpose: this row does not pass through `finish()` below and never reaches the
+            # Thread (#335). The reason is structural rather than a judgement about which endings are
+            # worth keeping — there is no thread to append to. `ThreadStore.append_history` opens with
+            # `p.parent.mkdir(parents=True, exist_ok=True)` (workspace/threads.py:272), so routing this
+            # through `finish()` would CREATE a thread directory holding a history file and no meta
+            # record, for an id the line above just established does not exist. That is the stray
+            # folder #332 had to guard the Threads list against, and persisting here would make one.
+            #
+            # It carries no `resolved` either (#316). That is the honest answer rather than a gap: no
+            # model ran.
             yield {"type": "done", "ok": False, "decision": "unknown thread"}
             return
         def finish(done: dict) -> dict:
