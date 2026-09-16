@@ -12492,9 +12492,10 @@ class Orchestrator:
         """Take the turn lock for a streaming turn, waiting in line rather than refusing (#79).
 
         Yields what the wait owes the client — a `pending` row the moment the turn joins the queue,
-        and the refusal if it never gets to run — and sets `ticket.granted`, which is the verdict
-        the entry point reads. The wait is held on the client's own connection: a turn IS its HTTP
-        request here, so a queued turn that nobody was connected to would have nowhere to stream.
+        a `running` row the moment the queue lets it go (#377), and the refusal if it never gets to
+        run — and sets `ticket.granted`, which is the verdict the entry point reads. The wait is held
+        on the client's own connection: a turn IS its HTTP request here, so a queued turn that
+        nobody was connected to would have nowhere to stream.
 
         A wedged workspace is refused at the door instead of queued. The lock is held for good
         there (#39), so a queue behind it is a spinner that never resolves."""
@@ -12534,6 +12535,18 @@ class Orchestrator:
                        "message": turn_context_changed_message()}
                 yield {"type": "done", "ok": False, "decision": "context changed"}
                 return
+            # The grant, said out loud (#377). A queued turn handed its name back on the `pending`
+            # row above, and nothing after it took the name again: Chat had its `user` frame, and
+            # Build has none — every build path writes its user row with `append_history` and does
+            # not stream it. So from the queue letting go until the first frame of real work the
+            # person owned a running turn the bar described as somebody else's, for the whole gate
+            # and first-token wait. The uncontended grant above needs no such row: it sent no
+            # `pending`, so the send-time claim (#371) never came off.
+            #
+            # It carries the ticket and nothing else. What a turn IS — its kind, its Conversation,
+            # its app — the client knew before it opened the stream; the one thing it could not know
+            # is when the lock became its own, and that is the whole of what this says.
+            yield {"type": "running", "ticket": ticket.id}
             ticket.granted = True
             self._begin_model_record()
         finally:
@@ -12541,8 +12554,18 @@ class Orchestrator:
             # stopped reading — is a place in the queue nobody is standing in. Left on the deque it
             # would sit at the head for ever and every turn behind it would wait on it. A no-op on
             # every path that reached the front of the queue under its own steam.
+            #
+            # Which cleanup depends on how far it got, and only the `running` row made that a
+            # question. Before it, the ticket is still on the deque and `cancel` lifts it off.
+            # Abandoned ON it, the ticket has already been popped and is holding the lock, where
+            # `cancel` cannot see it — so hand the lock back, or the queue behind it waits for ever
+            # on a turn nobody is streaming. The snapshot refusal above released it already and is
+            # no longer the running ticket by the time it yields, so it still takes the `cancel`.
             if not ticket.granted:
-                self._turns.cancel(ticket.id)
+                if self._turns.running() is ticket:
+                    self._release_turn()
+                else:
+                    self._turns.cancel(ticket.id)
 
     def _begin_model_record(self) -> None:
         """Forget which model the PREVIOUS turn ran on, now that this one holds the lock (#316).

@@ -236,6 +236,97 @@ def test_a_second_build_on_an_app_that_is_already_building_waits(tmp_path: Path)
     assert (app.path / "src" / "Chart.tsx").read_text() == "chart\n"
 
 
+# ---- the grant, said out loud ------------------------------------------------------------------
+
+
+def test_a_queued_build_says_when_the_queue_lets_it_go(tmp_path: Path):
+    """The row this ticket exists for (#377). A send names its turn so the Stop bar has something to
+    match (#371), and the `pending` row takes that name back off a turn that is only waiting. What
+    put it back was Chat's `user` frame — and Build has none, because every build path writes its
+    user row with `append_history` and does not stream it.
+
+    So a build let out of the queue used to reach the gate and the model's first token with nothing
+    on the wire to say the lock was now its own, and for that whole window the bar read "The
+    workspace is busy." over the person's own turn. The assertion is deliberately about position and
+    not about presence: a `running` row that arrived after the first frame of real work would close
+    nothing."""
+    oc = FakeOpenCode(tmp_path / "mnt" / "code",
+                      [Turn(text="added", writes={"src/Chart.tsx": "chart\n"})])
+    orch = _orch(tmp_path, oc)
+
+    assert orch._turn_lock.acquire(blocking=False)          # a turn is already building
+    events, finished = _stream(orch.build_stream("add another chart"))
+    pending = _pending(events)
+    assert [e["type"] for e in events] == ["pending"]        # waiting, and it has said only that
+    orch._release_turn()
+
+    assert finished.wait(30) is True
+    assert [e["type"] for e in events][:2] == ["pending", "running"]
+    # Named by its ticket, the way `pending` is: a reader with two queued turns on one connection
+    # has to be able to tell which of them was let go.
+    assert events[1]["ticket"] == pending["ticket"]
+    assert _of(events, "done")[0]["ok"] is True
+
+
+def test_a_turn_that_never_waited_says_nothing_about_being_granted(tmp_path: Path):
+    """The uncontended grant stays silent, and that is not an oversight. It sends no `pending`, so
+    the send-time claim (#371) was never handed back and there is nothing to take again — a row
+    here would be a second answer to a question already answered, on every turn in the Project."""
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="Six million rows.")])
+    orch = _orch(tmp_path, oc, verdict="CHAT")
+    tid = orch.create_thread()["id"]
+
+    events, finished = _stream(orch.chat_stream(tid, "how many rows?"))
+
+    assert finished.wait(20) is True
+    assert _of(events, "pending") == []
+    assert _of(events, "running") == []
+    assert _of(events, "done")[0]["ok"] is True
+    orch._cancel_chat_idle_save()
+
+
+def test_a_turn_taken_out_of_the_queue_is_never_said_to_be_running(tmp_path: Path):
+    """`running` means the lock is this turn's, so the ways a queued turn ends without it must not
+    send one. Cancel is the sharp one: a row here would put a Stop button over the very turn the
+    person had just decided not to ask."""
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="Six million rows.")])
+    orch = _orch(tmp_path, oc, verdict="CHAT")
+    tid = orch.create_thread()["id"]
+
+    assert orch._turn_lock.acquire(blocking=False)
+    events, finished = _stream(orch.chat_stream(tid, "asked and then thought better of"))
+    ticket = _pending(events)["ticket"]
+
+    assert orch.cancel_pending_turn(ticket) is True
+    assert finished.wait(20) is True
+    assert _of(events, "running") == []
+    assert _of(events, "done")[0]["decision"] == "cancelled"
+    orch._release_turn()
+
+
+def test_a_build_abandoned_on_the_grant_hands_the_lock_straight_back(tmp_path: Path):
+    """What the new row costs, paid where it is incurred. Before it, the grant and the caller's own
+    `try` were the same instant and nothing could be abandoned between them; a yield there is a
+    place a client can hang up, and by then the ticket has been popped off the deque and is holding
+    the lock — so `cancel` cannot see it and the queue behind it would wait on a turn nobody is
+    streaming. Same failure the `pending` yield already guards, one step further along."""
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="never asked")])
+    orch = _orch(tmp_path, oc)
+
+    assert orch._turn_lock.acquire(blocking=False)          # a turn is already building
+    gen = orch.build_stream("add another chart")
+    assert next(gen)["type"] == "pending"
+    orch._release_turn()
+    assert next(gen)["type"] == "running"
+
+    gen.close()                                             # the browser hangs up on the grant
+
+    assert orch._turns.running() is None
+    assert orch._turn_lock.acquire(blocking=False), "the grant row leaked the turn lock"
+    orch._release_turn()
+    assert oc.prompts == []                                 # and nothing of it ran
+
+
 # ---- the snapshot -------------------------------------------------------------------------------
 
 
