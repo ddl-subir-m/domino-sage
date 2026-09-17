@@ -28,11 +28,9 @@ from .opencode_server import _opencode_server
 TESTS = Path(__file__).resolve().parent
 HELPER = TESTS / "opencode_server.py"
 
-LAUNCHERS = {"Popen", "run", "call", "check_call", "check_output"}
-# The pinned binary's path, taken from the helper rather than spelled here, so this file holds no
+# The binary's path tail, taken from the helper rather than spelled here, so this file holds no
 # literal that its own check could match and so the check follows the binary if it ever moves.
-PATH_PARTS = {opencode_server.BINARY.parent.name, opencode_server.BINARY.name}
-PATH_JOINED = "/".join(opencode_server.BINARY.parts[-2:])
+PATH_TAIL = "/".join(opencode_server.BINARY.parts[-3:])
 
 
 def _stub(tmp_path):
@@ -65,6 +63,13 @@ def _runtime(tmp_path, name):
     runtime = tmp_path / name
     runtime.mkdir()
     return runtime, runtime / "spawned"
+
+
+def _stop(thread):
+    """Join a thread that may never have started — `join` on one of those raises, and the raise
+    would replace the assertion message that says what actually went wrong."""
+    if thread.ident is not None:
+        thread.join(timeout=60)
 
 
 def _booter(runtime, entered, finish, failures):
@@ -100,7 +105,7 @@ def test_a_boot_waits_while_another_holds_the_lock(tmp_path, monkeypatch):
             assert entered.wait(60), f"a boot never ran after the lock was released: {failures}"
     finally:
         finish.set()
-        waiter.join(timeout=60)
+        _stop(waiter)
     assert not waiter.is_alive()
     assert failures == []
 
@@ -133,19 +138,41 @@ def test_the_lock_is_held_until_the_server_is_gone(tmp_path, monkeypatch):
     finally:
         stop_serving.set()
         stop_waiting.set()
-        holder.join(timeout=60)
-        latecomer.join(timeout=60)
+        _stop(holder)
+        _stop(latecomer)
     assert not holder.is_alive() and not latecomer.is_alive()
     assert failures == []
 
 
-def _reaches(node, names):
-    """True when this expression mentions one of `names`, as a bare name or as an attribute.
+def _handed_on(node, names):
+    """Uses of `names` that hand the path ON, rather than ask it a question.
 
-    Attributes matter: `opencode_server.BINARY` is how a file that imports the MODULE reaches the
-    binary, and it is the spelling this very file uses."""
-    return any((isinstance(n, ast.Name) and n.id in names)
-               or (isinstance(n, ast.Attribute) and n.attr in names) for n in ast.walk(node))
+    `BINARY.exists()` is a question. It is how both real call sites gate their skipif and it boots
+    nothing, so it is not an escape. `str(BINARY)`, `[BINARY]`, `Popen(BINARY)` hand the path to
+    something else, which is the first move of every boot — and the only move all of them share.
+
+    This is the whole model of the check, and it replaced a list of launcher names. That list had
+    to grow every time someone found another way to spawn: it read `subprocess.Popen` and missed
+    `asyncio.create_subprocess_exec` and `os.execv`, which is the shape a third boot site in an
+    async backend would actually take. Asking "was the path handed on" needs no such list.
+    Formally: a use that is not the receiver of an attribute access."""
+    receivers = {id(n.value) for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+    return [n for n in ast.walk(node)
+            if ((isinstance(n, ast.Name) and n.id in names)
+                or (isinstance(n, ast.Attribute) and n.attr in names)) and id(n) not in receivers]
+
+
+def _bindings(tree):
+    """Every (value, targets) pair in this module, in all the forms a rename takes."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            yield node.value, node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+            yield node.value, [node.target]
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            yield node.context_expr, [node.optional_vars]
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            yield node.iter, [node.target]
 
 
 def _binary_names(tree):
@@ -156,11 +183,9 @@ def _binary_names(tree):
         # `Path` in with it, and then an unrelated `subprocess.run(["node", ...])` in the same file
         # would be reported as an OpenCode boot — a red whose message points at the wrong repair.
         grown = set(names)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign):
-                continue
-            if _reaches(node.value, names) or _builds_path(node.value):
-                for target in node.targets:
+        for value, targets in _bindings(tree):
+            if _handed_on(value, names) or _builds_path(value):
+                for target in targets:
                     grown |= {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
                     grown |= {n.attr for n in ast.walk(target) if isinstance(n, ast.Attribute)}
         if grown == names:
@@ -169,32 +194,36 @@ def _binary_names(tree):
 
 
 def _builds_path(node):
-    """True when this one expression spells the binary's path, out of parts or joined."""
-    parts = {n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-    return PATH_PARTS <= parts or any(PATH_JOINED in part for part in parts)
+    """True when this one expression spells the binary's path, however it is broken up."""
+    spelled = ast.unparse(node)
+    for quote, replacement in [("'", ""), ('"', ""), (" ", ""), (",", "/")]:
+        spelled = spelled.replace(quote, replacement)
+    return PATH_TAIL in spelled
 
 
 def _escapes(path):
     """Lines in `path` that reach the OpenCode binary without going through the helper.
 
-    Read as a syntax tree, not as lines: the line-matching version of this check could not see
-    a `Popen(` whose argv wrapped onto the next line, which is what any formatter produces.
-    A site that reaches the binary through something this cannot follow — a name it received as
-    an argument, a shell string — is outside its reach. It catches the shapes a boot site is
-    actually written in."""
+    Read as a syntax tree, not as lines: the line-matching version of this check could not see a
+    `Popen(` whose argv wrapped onto the next line, which is what any formatter produces. A site
+    that reaches the binary through something this cannot follow — a name it received as an
+    argument, a shell string built at runtime — is outside its reach. It catches the shapes a boot
+    site is actually written in, and it fails closed: an unfamiliar callee is reported, not passed."""
     tree = ast.parse(path.read_text())
     names = _binary_names(tree)
     found = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.BinOp, ast.Call)) and _builds_path(node):
-            found[node.lineno] = "spells the OpenCode binary's own path"
+            found.setdefault(node.lineno, []).append("spells the OpenCode binary's own path")
         if not isinstance(node, ast.Call):
             continue
-        func = node.func
-        called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        if called in LAUNCHERS and _reaches(node, names):
-            found[node.lineno] = f"launches it with `{called}`"
-    return [f"{path.relative_to(TESTS)}:{line}: {why}" for line, why in sorted(found.items())]
+        handed = [use for argument in [*node.args, *(k.value for k in node.keywords)]
+                  for use in _handed_on(argument, names)]
+        if handed:
+            func = node.func
+            callee = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "a call")
+            found.setdefault(node.lineno, []).append(f"hands it to `{callee}`")
+    return [f"{path.relative_to(TESTS)}:{line}: {', '.join(why)}" for line, why in sorted(found.items())]
 
 
 def test_no_boot_site_sits_outside_the_shared_helper():
