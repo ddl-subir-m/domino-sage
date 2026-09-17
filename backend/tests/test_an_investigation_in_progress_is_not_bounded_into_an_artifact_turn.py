@@ -7,7 +7,7 @@ being writable — `artifact_write` refuses any path outside `examples/<threadId
 warehouse stops being reachable, because reaching it is Python and Python is bash.
 
 Same gate as `data_answer`, at the other arming site: the Artifact token is not minted while this
-Thread has findings on disk.
+Thread holds an open investigation.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .fake_opencode import Turn
 from .test_chat_turn import IntentGateway, ObservedControlOpenCode, _orch
 
 
-def test_a_data_artifact_turn_in_a_thread_with_findings_keeps_the_full_lane(tmp_path: Path):
+def test_a_data_artifact_turn_in_a_thread_with_an_investigation_keeps_the_full_lane(tmp_path: Path):
     turns = [Turn(text="Charted.")]
     orch, oc = _orch(
         tmp_path, turns,
@@ -33,9 +33,7 @@ def test_a_data_artifact_turn_in_a_thread_with_findings_keeps_the_full_lane(tmp_
     bound.parent.mkdir(parents=True, exist_ok=True)
     bound.write_text("account,events\nVLTA,291\n")
     orch.add_thread_context(tid, {"kind": "file", "name": "accounts.csv", "path": path})
-    findings = project.record.path / ".sage" / "threads" / tid / "findings.md"
-    findings.parent.mkdir(parents=True, exist_ok=True)
-    findings.write_text("- 2026-09-16T11:12Z — 291 events, 89 distinct users over 90d.\n")
+    orch.decide_thread_investigation(tid, "open")
 
     list(orch.chat_stream(tid, "give me a table of the top candidates"))
 

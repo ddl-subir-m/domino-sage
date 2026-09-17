@@ -767,6 +767,12 @@ SW.api = {
   confirmThreadTableCandidate: (threadId, resourceId, scope) =>
     post(`/threads/${encodeURIComponent(threadId)}/context/data_source/`
       + `${encodeURIComponent(resourceId)}/candidate`, scope || {}),
+  // The investigation card's buttons, and the bar's Close (#386, ADR-0056). One route for all three
+  // answers because they are one question — a conversation is open, declined or closed, never two
+  // of them — and the answer comes back as the record, so the bar redraws off what was written
+  // rather than off what this tab assumed.
+  decideInvestigation: (threadId, decision) =>
+    post(`/threads/${encodeURIComponent(threadId)}/investigation`, { decision }),
   // The Dataset card's click in Chat (#196, ADR-0039). Its own route rather than the plain context
   // door, because the chip's leaf id, its name and its parent are all derivable from the Dataset id
   // and the file's path — and deriving them here is the second copy that produced the fabricated

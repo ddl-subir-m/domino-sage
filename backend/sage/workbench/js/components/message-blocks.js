@@ -1322,6 +1322,53 @@ window.SW = window.SW || {};
     );
   }
 
+  // The offer to open an investigation, drawn instead of an answer (#386, ADR-0056).
+  //
+  // Both buttons run the question. The card ENDED a turn that would otherwise have answered, so a
+  // `No` that only recorded a decision would have charged the person a round trip for a card they
+  // never asked for. `Yes` runs it with a shell and the record says so until they close it; `No`
+  // runs exactly the turn that would have run anyway, and the offer does not come back here.
+  //
+  // `block.live && block.prompt`, the house rule for every card that can run a turn: the server's
+  // copy carries no `live`, so a reload leaves the sentence with its buttons gone rather than a
+  // grant somebody can make by scrolling back through a conversation.
+  function InvestigationOffer({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+    const answer = (decision) => () =>
+      SW.store.answerInvestigationAndAsk(block.prompt, block.threadId, decision);
+
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        block.live && block.prompt
+          ? h(
+              'div',
+              { style: { marginTop: 8 } },
+              h(Space, { size: 8, wrap: true },
+                h(Button, {
+                  type: 'primary',
+                  size: 'small',
+                  loading: busy === 'open',
+                  disabled: !!busy,
+                  onClick: run('open', answer('open')),
+                }, 'Investigate'),
+                h(Button, {
+                  size: 'small',
+                  loading: busy === 'decline',
+                  disabled: !!busy,
+                  onClick: run('decline', answer('decline')),
+                }, 'Just answer this'))
+            )
+          : null
+      )
+    );
+  }
+
   // The turn asked to start over (#36). The gate stops before any inference and hands the decision
   // back, so this card is the decision: it says what a reset does and does not take, and gives the
   // one-click way to do it. "Reset and build this" exists because "clear everything and build X from
@@ -2047,6 +2094,8 @@ window.SW = window.SW || {};
         return h(TableCandidates, { block });
       case 'dataset_files':
         return h(DatasetFiles, { block });
+      case 'investigation_offer':
+        return h(InvestigationOffer, { block });
       case 'build_stalled':
         return h(BuildStalled, { block });
       case 'plan_suggestion':
