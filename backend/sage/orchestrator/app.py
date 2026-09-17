@@ -1438,6 +1438,66 @@ def _artifacts_diag() -> dict:
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
+def _python_diag() -> dict:
+    """WHICH interpreter answered, and which copy of each data library it imported (#403).
+
+    `data_library` beside this one says whether the import works. It cannot say which python said
+    so, and that is the missing half: `domino_data` ships in the Domino base image's system python
+    while the orchestrator runs from uv's isolated venv (`resources/provider.py:1281` argues the
+    case), so the Builder's `bash` step and Sage's own process can answer differently while every
+    credential between them is byte-identical. Two readings of this block, one from each side, is
+    what turns "a query works there and fails here" into a named cause.
+
+    Read off the LIVE import, never off a path this process computes. A computed path would agree
+    with itself in both interpreters, which is precisely the disagreement being hunted.
+
+    `domino_data` here is the TOP-LEVEL package, while `data_library_ready()` above probes
+    `domino_data.data_sources`. That is deliberate but it has to be read deliberately: a populated
+    path beside `data_library.ok: false` is not a contradiction, it means the package is installed
+    and its submodule is not — a half-built wheel rather than a missing one. The reverse, a reason
+    string here beside `ok: true`, cannot happen.
+
+    Every field is guarded, including the ones that cannot raise today: /api/diag is the only surface a
+    deployed builder has, and one unimportable package must not cost the reader `sage_rev`,
+    `agents`, `mcp` and the log tail as well. `data_library_ready()` is the pattern — the exception
+    text is the answer, not something to propagate.
+    """
+    import sys
+
+    def _guard(read):
+        try:
+            return read()
+        except Exception as e:
+            return f"{type(e).__name__}: {e}"
+
+    def _module(name: str) -> dict:
+        import importlib
+
+        mod = importlib.import_module(name)
+        return {
+            # `__file__` is not the whole location, and reporting it alone would hide the split
+            # this block exists to name. A package assembled with `pkgutil.extend_path` — which is
+            # how one spanning the venv and the base image's system python is built — has a real
+            # `__file__` in whichever directory won and the OTHER in `__path__`, and it is the
+            # second entry the submodules are imported from. A namespace package has no `__file__`
+            # at all and only `__path__`. Both, always, so neither shape reads as one tidy answer.
+            "path": getattr(mod, "__file__", None),
+            "search_paths": _guard(lambda: list(getattr(mod, "__path__", []))),
+            "version": _guard(lambda: str(mod.__version__)),
+        }
+
+    return {
+        "executable": _guard(lambda: sys.executable),
+        "version": _guard(lambda: sys.version.split()[0]),
+        "cwd": _guard(os.getcwd),
+        "domino_data": _guard(lambda: _module("domino_data")),
+        "pyarrow": _guard(lambda: _module("pyarrow")),
+        # null when unset, never "": a venv that never exported VIRTUAL_ENV and one that exported
+        # an empty string are different facts, and the reader has to be able to tell them apart.
+        "virtual_env": _guard(lambda: os.environ.get("VIRTUAL_ENV")),
+    }
+
+
 @control_app.get("/api/diag")
 def diag() -> JSONResponse:
     """Browser-openable build diagnostics (no shell needed in the deployed builder). Reads the CURRENT
@@ -1446,6 +1506,10 @@ def diag() -> JSONResponse:
       - data_library: whether THIS interpreter can read inside a Data Source. The builder has no
         terminal, and the package sits in the image's system python while the orchestrator runs from
         uv's venv, so this is the only place the difference is visible
+      - python: WHICH interpreter that was — executable, version, cwd, VIRTUAL_ENV, and where the
+        `domino_data` and `pyarrow` imports actually resolved to. `data_library` says yes or no;
+        this says who said it, which is the only way to compare Sage's answer against the same
+        question asked from the builder's `bash` step
       - model_calls: how many inferences reached the shim THIS turn. 0 while a turn is live means the
         model call never got to the gateway (OpenCode stuck earlier, e.g. on a tool), not a gateway hang
       - last_gateway_error: set if a model call failed/severed
@@ -1483,6 +1547,9 @@ def diag() -> JSONResponse:
         "sage_rev": _SAGE_REV,
         "gateway_mode": GATEWAY_MODE,
         "data_library": {"ok": not library, "detail": library or "domino_data is importable"},
+        # Directly beneath `data_library`, which answers yes/no where this one answers by name.
+        # They probe different depths of the same package on purpose — see `_python_diag`.
+        "python": _python_diag(),
         "ports": {"control_port": control_port, "base_port": base_port,
                   "match": base_port == control_port},
         "agents": orchestrator.resolved_agents(),
