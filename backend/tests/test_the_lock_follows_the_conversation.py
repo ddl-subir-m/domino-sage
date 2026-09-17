@@ -25,7 +25,7 @@ import sage.orchestrator.app as app_module
 from sage.assets.provider import Asset, FakeAssetProvider
 from sage.orchestrator.service import Orchestrator
 from sage.resources.provider import ApprovedModels, FakeResourceProvider
-from sage.resources.sensitivity import declared_turn_refusal
+from sage.resources.sensitivity import declared_turn_refusal, unnamed_conversation_refusal
 from sage.router.model_control import ModelControl
 from sage.router.models import ModelCatalog
 
@@ -112,7 +112,13 @@ def _unbind_everything(orch: Orchestrator) -> None:
 
 def _locked(orch: Orchestrator, conversation: str | None) -> bool:
     project = orch.project(start_preview=False)
-    approved, refusal = orch._sensitivity_for_turn(project, conversation)
+    # `None` here stands in for the preview proxy and says what the proxy says — not a turn
+    # (ADR-0057). The derivation is this helper standing in for two different callers, and is why
+    # the production sites write the claim as a literal instead. Without it this asks a different
+    # question — the one a turn that forgot to name its conversation asks — and gets its refusal.
+    approved, refusal = orch._sensitivity_for_turn(
+        project, conversation, is_a_turn=conversation is not None
+    )
     return approved is not None or bool(refusal)
 
 
@@ -219,6 +225,35 @@ def test_the_preview_proxy_asks_about_the_bindings_and_not_a_conversation(
 
     assert _locked(orch, None) is False
     assert _locked(orch, "") is True
+
+
+def test_a_caller_that_names_no_conversation_is_refused_rather_than_answered(
+    tmp_path: Path, monkeypatch
+):
+    """The gate's own half of ADR-0057, and the test the whole ticket is for.
+
+    `None` had one meaning and two readers. The preview mount passes it because there is genuinely
+    no conversation in its question; a gateway call that carries a conversation's content and simply
+    never worked out which one would pass exactly the same value and be answered exactly the same
+    way — unlocked, with a declared Dataset in scope. By 2026-09-16 there were three such callers
+    where the gate had been written for one (#373, #318).
+
+    So silence is refused and the claim is what makes `None` an answer. The test beside this one
+    asserts the exemption still stands, and it is the one that would catch a fix which closed this
+    by making every caller name a conversation.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch, _oc = _orch(tmp_path)
+    _bind_declared(orch)
+    project = orch.project(start_preview=False)
+
+    approved, refusal = orch._sensitivity_for_turn(project, None)
+
+    assert approved is None
+    # Its own sentence, and not one of ADR-0043's four: the approved group is healthy here, there is
+    # no Dataset to unbind and no model to switch to. What is wrong is inside Sage, and the two ways
+    # out the other sentences offer would both be false.
+    assert refusal == unnamed_conversation_refusal()
 
 
 def test_the_lock_stays_off_where_the_deployment_never_opted_in(tmp_path: Path, monkeypatch):

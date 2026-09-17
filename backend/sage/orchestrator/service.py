@@ -150,6 +150,7 @@ from ..resources.sensitivity import (
     SensitivityGate,
     declared_turn_refusal,
     group_name,
+    unnamed_conversation_refusal,
     unrecorded_lock_refusal,
 )
 from ..resources.table_search import Candidate
@@ -8206,6 +8207,11 @@ class Orchestrator:
                 gateway=project.shim.gateway,
                 catalog=project.shim.catalog,
                 thread=thread_id,
+                # The gate itself rather than its answer, so the classifier reads the lock of the
+                # Thread its own digest came from (ADR-0057). Computing it here would hand the
+                # classifier a verdict about whatever conversation this method happened to be
+                # holding, which is the shape of the hole rather than the fix.
+                sensitivity=lambda c: self._classify_lock(project, c),
                 session=project.session_id,
                 version=project.shim.version,
             )
@@ -16099,7 +16105,7 @@ class Orchestrator:
         return sensitive_model_problems(recorded, declared, gate.approved())
 
     def _sensitivity_for_turn(
-        self, project: Project, conversation: str | None
+        self, project: Project, conversation: str | None, *, is_a_turn: bool = True
     ) -> tuple[ApprovedModels | None, str]:
         """The approved models to lock this turn to, or the sentence refusing it (ADR-0043).
 
@@ -16117,6 +16123,35 @@ class Orchestrator:
         has to answer it: a default would have made the hole reachable by omission, which is the
         shape the hole had in the first place.
 
+        `is_a_turn` is the claim that has to travel WITH that `None`, and ADR-0057 is why it is a
+        second word rather than something read off the first. A required parameter stops a caller
+        forgetting to pass one; it cannot stop a caller passing the answer that was already sitting
+        there for somebody else, and `None` alone cannot tell "there is genuinely no conversation
+        here" from "nobody worked one out". So a TURN that cannot name its conversation is REFUSED,
+        and only a caller that is not a turn may leave it unnamed. Three say so and mean it: the
+        preview mount, whose app call carries the app's Bindings and no transcript, and the two
+        panel reads, which make no gateway call at all and are asking what the deployment's lock
+        looks like.
+
+        It is a literal at all three, never `conversation is None`. Derived, the claim would attest
+        the very value it is about — inert where it matters, and a line a later gateway caller
+        could copy and exempt itself with, which is the shape of the hole rather than the fix.
+
+        The refusal is unconditional rather than kept for a gate that is switched on: no caller
+        reaches it today, so there is nothing working to break, and a deployment that never opted
+        in is precisely where the omission would sit unseen until the day somebody turned the gate
+        on. `True` is the default for the same reason — omission fails closed.
+
+        The callers that DO arrive here are not the only gateway calls carrying a conversation's
+        content, and this docstring should not be read as if they were. `chat_intent.classify`,
+        `scope` and `table_rank.rank_with_model` each build a request on `_model_for(catalog)` with
+        the person's own prompt and route it straight to the gateway, past the shim and past this.
+        `chat_intent` is the sharp one: `chat_intent.start` fires at the top of a Chat turn, about a
+        hundred lines BEFORE the gate below it, so on a locked conversation the prompt has already
+        reached an unapproved model by the time this refuses the turn. By ADR-0057's own rule all
+        three are turns. None of them was in #373's scope and none is wired here; they are named so
+        that the next reader counts four open doors rather than assuming this method saw them all.
+
         (None, "") is the ordinary answer and the ordinary cost: nothing read when the deployment
         never opted in, and nothing read beyond the Binding manifest when no Dataset is bound.
 
@@ -16131,6 +16166,12 @@ class Orchestrator:
         for somebody's decision. Never returned unusable: that shape is the refusal beside it.
         """
         gate = self._sensitivity_gate()
+        if conversation is None and is_a_turn:
+            # Logged as well as refused because the refusal is not always read out: the handoff
+            # classifier turns it into "no suggestion", which is silence, and a wiring fault whose
+            # only witness is silence is the shape #318 sat in for weeks.
+            log.warning("sensitivity: a turn named no conversation — refused (ADR-0057)")
+            return None, unnamed_conversation_refusal()
         if not gate.enabled:
             return None, ""
         declared = gate.declared(self._datasets_in_scope(project, conversation))
@@ -16402,7 +16443,13 @@ class Orchestrator:
         defaults = self._catalog
         project = self.project()
         live = project.shim.catalog
-        approved, lock_refusal = self._sensitivity_for_turn(project, conversation)
+        # Not a turn, unconditionally: this is a panel read and makes no gateway call at all, so
+        # there is nothing here whose rows could reach a model (ADR-0057). A literal rather than
+        # `conversation is None`, which would be the claim read off the very value it attests — and
+        # a line a later turn-shaped caller could copy and exempt itself with.
+        approved, lock_refusal = self._sensitivity_for_turn(
+            project, conversation, is_a_turn=False
+        )
         pick_now = project.control.snapshot()
         # A saved model, not `live != default`. Assigning a slot to the model that happens to BE the
         # deployment default writes an override all the same, and reporting that as "following the
@@ -17500,7 +17547,11 @@ class Orchestrator:
         # nothing in its return says. The two cannot disagree: both read this one fact and the live
         # declaration beside it, and neither holds a cached verdict of its own.
         sticky = conversation is not None and project.record.session_ran_locked(conversation)
-        approved, refusal = self._sensitivity_for_turn(project, conversation)
+        # As in `model_assignments`: a state read and never a turn, whatever it was asked about
+        # (ADR-0057).
+        approved, refusal = self._sensitivity_for_turn(
+            project, conversation, is_a_turn=False
+        )
         pick_now = project.control.snapshot()
         return {
             "enabled": True,
@@ -17582,13 +17633,42 @@ class Orchestrator:
         if approved is None:
             return None
         try:
-            state = replace(project.control.snapshot(),
-                            chat_thread_id="unarmed" if chat else None,
-                            approved_models=approved.names, approved_order=approved.order)
-            return llm_router.nearest_approved(state, project.shim.catalog)
+            return self._lock_move(project, approved, chat=chat)
         except Exception:
             log.exception("sensitivity: couldn't work out where the lock moves a barred turn to")
             return None
+
+    def _lock_move(self, project: Project, approved: ApprovedModels, *, chat: bool) -> str:
+        """Where the lock moves a barred turn of this kind, RAISING rather than answering None.
+
+        Split out of `_locked_model` for the one caller that wants the opposite failure: a label on
+        a chip must never take the lock down with it, and a classify that could not be told where to
+        go must never fall back to the model it was already barred from. Same answer, two failure
+        directions, and the answer itself lives once — a second rule here could disagree with the
+        chip a person is shown, which is the distinction #285 cost.
+        """
+        state = replace(project.control.snapshot(),
+                        chat_thread_id="unarmed" if chat else None,
+                        approved_models=approved.names, approved_order=approved.order)
+        return llm_router.nearest_approved(state, project.shim.catalog)
+
+    def _classify_lock(self, project: Project, conversation: str) -> tuple[str | None, str]:
+        """The model a straight-to-gateway classify of this Conversation must run on (ADR-0057).
+
+        `(None, "")` is the ordinary answer and means "your own slot model stands": no declared
+        Dataset in scope and no sticky lock, so there is nothing to move. A name means the lock
+        moves this classify there, and it is `nearest_approved`'s name rather than a rule of its own
+        — the sovereign slot for the phase first, THEN the administrator's group order. A classify
+        that picked `order[0]` would send the digest somewhere the deployment's own sovereign
+        assignment says it should not go, and disagree with the "runs on" chip beside it.
+
+        Raises when the move cannot be worked out, which the classifier turns into no suggestion. A
+        lock Sage cannot resolve is the same shape as a gate Sage cannot read, and both are closed.
+        """
+        approved, refusal = self._sensitivity_for_turn(project, conversation)
+        if refusal or approved is None:
+            return None, refusal
+        return self._lock_move(project, approved, chat=True), ""
 
     def _locked_slot_models(
         self, project: Project, approved: ApprovedModels | None, snapshot: SessionState

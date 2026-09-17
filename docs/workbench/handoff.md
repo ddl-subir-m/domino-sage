@@ -41,6 +41,7 @@ Reuse the shape of [backend/sage/orchestrator/scope.py](../../backend/sage/orche
 - **Bias to NO.** A wrong suggestion every three messages is the failure the mock called intolerable. A missed suggestion still leaves **Open in Build** in the Conversation menu.
 - **Timeout:** 8s. **Max prompt:** last user message + last assistant message + the Conversation title, not the whole history.
 - **Output:** one word, `APP` or `CHAT`. Only `APP` counts as a hit.
+- **The sensitivity lock applies.** The call carries a digest of the Conversation, which makes it a turn (ADR-0057), so it reads the lock of the Conversation the digest came from. Under a lock it runs wherever `nearest_approved` moves any other turn of its shape — the sovereign slot for the phase first, then the administrator's group order — so it cannot name a different model from the "runs on" chip beside it. A lock that cannot be read, or a turn the lock refuses, means no suggestion — the one place the classifier fails **closed** rather than open, because what is at stake is where the rows go rather than whether a callout appears.
 
 On `APP`, write:
 
