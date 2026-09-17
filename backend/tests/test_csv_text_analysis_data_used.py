@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import socket
 import subprocess
 import threading
 import time
@@ -18,10 +17,10 @@ from sage.driver.opencode import OpenCodeClient
 from sage.liveread import run
 from sage.liveread.data_use import DataUse
 
+from .opencode_server import BINARY, _opencode_server
 from .test_a_live_read_reaches_the_person_end_to_end import Warehouse, _orch
 
 REPO = Path(__file__).resolve().parents[2]
-BINARY = REPO / "node_modules" / ".bin" / "opencode"
 
 
 COMPLAINTS = (
@@ -400,69 +399,45 @@ def test_real_opencode_analyzes_complaints_without_sending_email_column(tmp_path
                XDG_CACHE_HOME=str(runtime / "cache"), XDG_STATE_HOME=str(runtime / "state"),
                OPENCODE_CONFIG_DIR=str(runtime / "config" / "opencode"),
                SAGE_CONTROL_PORT=str(server.server_port))
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    log = (runtime / "opencode.log").open("w")
-    process = subprocess.Popen([str(BINARY), "serve", "--port", str(port), "--hostname", "127.0.0.1"],
-                               cwd=runtime, env=env, stdout=log, stderr=log)
     try:
-        url = f"http://127.0.0.1:{port}"
-        # 60s, the budget its sibling uses for this identical boot
-        # (`test_csv_calculation_opencode.py`). 15s was enough only when this test happened to run
-        # first in its worker: OpenCode stays alive and simply has not served `/global/health` yet,
-        # so the short budget failed as "did not start". Adding any test re-deals `--dist load`, and
-        # the run where this one lands second is the run it reds.
-        for _ in range(600):
-            try:
-                if httpx.get(url + "/global/health", timeout=1).status_code == 200:
+        with _opencode_server(runtime, env) as url:
+            client = OpenCodeClient(url)
+            directory = str(project.record.path)
+            sid = client.create_session(directory)
+            prompt = (f"Thread id: {tid}. Read token: {token}. Classify every complaint in "
+                      f"{upload['path']} as delivery, damage or billing. Include complete coverage. "
+                      + orch._data_use_note())
+            httpx.get(url + "/agent", params={"directory": directory}, timeout=120).raise_for_status()
+            client.send_prompt(sid, prompt, agent="sage-chat")
+            deadline = time.monotonic() + 150
+            messages = []
+            while time.monotonic() < deadline:
+                assert not failures, failures
+                try:
+                    messages = client.messages(sid)
+                except httpx.ReadTimeout:
+                    continue
+                if len(calls) >= 3 and not client.is_running(sid, directory=directory):
                     break
-            except httpx.HTTPError:
-                pass
-            assert process.poll() is None, (runtime / "opencode.log").read_text()
-            time.sleep(0.1)
-        else:
-            pytest.fail("Isolated OpenCode did not start")
-        client = OpenCodeClient(url)
-        directory = str(project.record.path)
-        sid = client.create_session(directory)
-        prompt = (f"Thread id: {tid}. Read token: {token}. Classify every complaint in "
-                  f"{upload['path']} as delivery, damage or billing. Include complete coverage. "
-                  + orch._data_use_note())
-        httpx.get(url + "/agent", params={"directory": directory}, timeout=120).raise_for_status()
-        client.send_prompt(sid, prompt, agent="sage-chat")
-        deadline = time.monotonic() + 150
-        messages = []
-        while time.monotonic() < deadline:
+                time.sleep(0.1)
+            else:
+                pytest.fail(f"OpenCode task did not complete: {failures}; {len(calls)} calls; {messages}")
             assert not failures, failures
-            try:
-                messages = client.messages(sid)
-            except httpx.ReadTimeout:
-                continue
-            if len(calls) >= 3 and not client.is_running(sid, directory=directory):
-                break
-            time.sleep(0.1)
-        else:
-            pytest.fail(f"OpenCode task did not complete: {failures}; {len(calls)} calls; {messages}")
-        assert not failures, failures
-        assert len(calls) == 3
-        assert "@example.invalid" not in json.dumps(calls)
-        assert not re.search(r'"email"', json.dumps(calls[1]["messages"]))
-        tables = list((project.record.path / "examples" / tid).glob("*.table.json"))
-        assert len(tables) == 1
-        table = json.loads(tables[0].read_text())
-        assert table["rows"].count(["r000005", "damage"]) == 1
-        counts = {}
-        for _, label in table["rows"]:
-            counts[label] = counts.get(label, 0) + 1
-        assert counts == {"delivery": 4, "damage": 4, "billing": 4}
-        events = project.shim.data_use.events(orch._data_use_turns[tid])
-        assert events[0]["coverage"]["processed"] == 12
-        assert events[0]["requests"][0]["state"] == "response_completed"
+            assert len(calls) == 3
+            assert "@example.invalid" not in json.dumps(calls)
+            assert not re.search(r'"email"', json.dumps(calls[1]["messages"]))
+            tables = list((project.record.path / "examples" / tid).glob("*.table.json"))
+            assert len(tables) == 1
+            table = json.loads(tables[0].read_text())
+            assert table["rows"].count(["r000005", "damage"]) == 1
+            counts = {}
+            for _, label in table["rows"]:
+                counts[label] = counts.get(label, 0) + 1
+            assert counts == {"delivery": 4, "damage": 4, "billing": 4}
+            events = project.shim.data_use.events(orch._data_use_turns[tid])
+            assert events[0]["coverage"]["processed"] == 12
+            assert events[0]["requests"][0]["state"] == "response_completed"
     finally:
-        process.terminate()
-        process.wait(timeout=10)
-        log.close()
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)

@@ -3,15 +3,11 @@
 No real credentials or shared runtime state. The installed pinned OpenCode binary is required.
 """
 
-import fcntl
 import json
 import os
 import re
-import socket
-import subprocess
 import threading
 import time
-from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -20,48 +16,11 @@ import pytest
 
 from sage.driver.opencode import OpenCodeClient
 
+from .opencode_server import BINARY, _opencode_server
 from .test_a_live_read_reaches_the_person_end_to_end import Warehouse, _orch
 from .test_csv_calculation_data_used import SALES, args
 
 REPO = Path(__file__).resolve().parents[2]
-BINARY = REPO / "node_modules" / ".bin" / "opencode"
-
-
-@contextmanager
-def _opencode_server(runtime, env):
-    lock_path = Path(os.environ.get("SAGE_OPENCODE_TEST_LOCK", "/tmp/sage-opencode-test.lock"))
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
-            port = sock.getsockname()[1]
-        log = (runtime / "opencode.log").open("w")
-        process = subprocess.Popen([str(BINARY), "serve", "--port", str(port),
-                                    "--hostname", "127.0.0.1"],
-                                   cwd=runtime, env=env, stdout=log, stderr=log)
-        try:
-            url = f"http://127.0.0.1:{port}"
-            for _ in range(600):
-                try:
-                    if httpx.get(url + "/global/health", timeout=1).status_code == 200:
-                        break
-                except httpx.HTTPError:
-                    pass
-                assert process.poll() is None, (runtime / "opencode.log").read_text()
-                time.sleep(0.1)
-            else:
-                pytest.fail("Isolated OpenCode did not start")
-            yield url
-        finally:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=10)
-            log.close()
-            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 @pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")
