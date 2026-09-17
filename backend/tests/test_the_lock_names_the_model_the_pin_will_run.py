@@ -255,6 +255,30 @@ def _bind_sensitive(orch: Orchestrator) -> None:
                     "display_name": "claims"}])
 
 
+def test_a_classify_runs_where_the_lock_moves_every_other_turn_of_its_shape(tmp_path, monkeypatch):
+    """FOUND IN REVIEW of #373. `_classify_lock` names the model the handoff classifier sends a
+    Conversation's digest to, and it has to be the answer `nearest_approved` already gives — the
+    sovereign slot for the phase FIRST, then the administrator's group order.
+
+    A rule of its own reading `approved.order[0]` picks `sov-plan` here, while every other locked
+    Chat turn and the "runs on" chip an inch away both say `sov-ask`. That is #285 again wearing the
+    classifier: two visible answers disagreeing about one lock, and this one disagrees by sending
+    rows somewhere the deployment's own sovereign assignment says they should not go.
+    """
+    monkeypatch.setenv("SAGE_SENSITIVE_MODEL_GROUP", GROUP)
+    orch = _orch(tmp_path)
+    _bind_sensitive(orch)
+    project = orch.project(start_preview=False)
+
+    model, refusal = orch._classify_lock(project, "thr_a")
+
+    assert refusal == ""
+    assert model == CATALOG.sovereign_ask
+    # The premise, asserted rather than assumed: the group's own order would have said otherwise, so
+    # a classifier carrying its own rule fails this and nothing else would have caught it.
+    assert ORDER[0] != CATALOG.sovereign_ask
+
+
 def test_a_pick_the_standing_mode_will_not_honour_is_not_reported_on_any_row(tmp_path, monkeypatch):
     """FOUND IN REVIEW of #286. `_resolve_build` reads `picked_model` in Plan and Implement modes
     only, and `ModelControl.set_mode` does not clear a pick — so one made in Plan survives a switch
@@ -474,7 +498,9 @@ def test_the_slot_answer_reads_the_snapshot_it_is_handed_and_not_a_fresh_one(tmp
     _bind_sensitive(orch)
     project = orch.project(start_preview=False)
     project.control.set_mode(Mode.PLAN)
-    approved, _ = orch._sensitivity_for_turn(project, None)
+    # The approved set alone is wanted here, for a panel read and not a turn — so it says what the
+    # panel says rather than falling through the refusal a nameless turn now gets (ADR-0057).
+    approved, _ = orch._sensitivity_for_turn(project, None, is_a_turn=False)
 
     assert project.control.snapshot().picked_model is None, "the premise: nothing is picked live"
     handed = replace(project.control.snapshot(), picked_model="sov-imp")

@@ -40,6 +40,10 @@ class StubGateway:
 
 
 def _ask(gateway, user="put this on a dashboard colleagues can open", **kw):
+    # `sensitivity` defaults to the answer a deployment that never opted in gives, which is what
+    # every test here but the lock's own is about (ADR-0057).
+    kw.setdefault("sensitivity", lambda _conversation: (None, ""))
+    kw.setdefault("thread", "thr_a")
     return handoff.wants_an_app(
         title="Gross exposure by desk",
         user=user,
@@ -176,6 +180,72 @@ def test_errors_and_timeouts_do_not_count_towards_broken():
     for _ in range(handoff.MAX_UNREADABLE * 2):
         assert _ask(StubGateway(raises=RuntimeError("gateway 502"))) is False
     assert handoff._health.broken is False
+
+
+# ---- the sensitivity lock (ADR-0057, #318) -------------------------------------------------------
+
+
+def test_the_classifier_asks_about_the_thread_its_own_digest_came_from():
+    """The classify carries a digest of the Conversation to the gateway, so it is a turn for the
+    lock however it got here — and the Conversation it reads the lock of has to be the one the
+    digest came out of. Handing it an answer computed elsewhere would let the two drift, which is
+    the shape of the hole rather than the fix."""
+    asked: list[str] = []
+    gw = StubGateway("APP")
+
+    _ask(gw, thread="thr_b", sensitivity=lambda c: asked.append(c) or (None, ""))
+
+    assert asked == ["thr_b"]
+
+
+def test_a_gate_that_raises_stops_the_classify_rather_than_letting_it_through():
+    """FAIL CLOSED, and the deliberate opposite of the preview door meeting the identical raise
+    (`test_the_preview_proxy_gates_the_apps_own_model`). A preview call is not a turn and allowing
+    it costs nothing; this one is, and allowing it puts a conversation's digest on a vendor model on
+    the strength of a read that did not happen. One plant per door: a single test across both would
+    pass on whichever it reached first and say nothing about the other."""
+    gw = StubGateway("APP")
+
+    def boom(_conversation):
+        raise RuntimeError("gateway listing failed")
+
+    assert _ask(gw, sensitivity=boom) is False
+    assert gw.seen == [], "the digest must not leave while the lock is unreadable"
+
+
+def test_a_refused_turn_is_not_classified():
+    """The turn itself is refused — an unusable approved set bars every model — so there is no app
+    to offer and nothing to judge. Silent, because the refusal the person sees is the turn's."""
+    gw = StubGateway("APP")
+
+    assert _ask(gw, sensitivity=lambda _c: (None, "nothing is approved")) is False
+    assert gw.seen == []
+
+
+def test_the_lock_moves_the_classify_to_the_model_the_gate_names():
+    """Locked, not barred. The ask slot's model is Sage's own pick and not something the person
+    asked for, so the lock moves this classify the way it moves any other turn rather than
+    cancelling it.
+
+    WHERE to is not decided here, and that is the point: the gate hands back `nearest_approved`'s
+    own answer, so this cannot carry a second rule that disagrees with the chip beside it. The
+    composition is asserted where the router is — `test_the_lock_names_the_model_the_pin_will_run`.
+    """
+    gw = StubGateway("APP")
+
+    assert _ask(gw, sensitivity=lambda _c: ("qwen-2-5", "")) is True
+
+    assert gw.seen[0][0]["model"] == "qwen-2-5"
+
+
+def test_with_no_lock_the_classify_runs_on_the_ask_slot():
+    """The ordinary answer, and the one every other test here rides on: nothing declared, nothing
+    sticky, so the slot the classifier shares with `scope` stands."""
+    gw = StubGateway("CHAT")
+
+    _ask(gw, sensitivity=lambda _c: (None, ""))
+
+    assert gw.seen[0][0]["model"] == "ask-model"
 
 
 def test_the_prompt_is_title_plus_last_turn_not_the_whole_history():

@@ -4080,10 +4080,21 @@ def _preview_approve_model(model: str) -> str | None:
     try:
         # No conversation: the previewed app's model call carries the app's CURRENT Bindings and no
         # transcript, so the sticky lock a conversation may be carrying is not about this (ADR-0043).
-        approved, refusal = orchestrator._sensitivity_for_turn(project, None)
+        # Said twice on purpose (ADR-0057): the `None` is the answer, and `is_a_turn=False` is the
+        # claim that it IS an answer rather than a question nobody worked out. A preview call is not
+        # a turn — the sentence the `except` below already turns on — while every other gateway
+        # caller of this gate is one, and a turn arriving here with a `None` it never thought about
+        # is refused. That refusal is only possible because this one says what it is out loud.
+        approved, refusal = orchestrator._sensitivity_for_turn(project, None, is_a_turn=False)
     except Exception:
         # A preview call is not a turn, and Sage failing to read its own gate must not take the
         # preview down. The publish guard still refuses, so nothing ships on this path.
+        #
+        # LOAD-BEARING, and no longer the incidental kindness it reads as (ADR-0057). The two other
+        # gateway callers of this gate fail CLOSED on the same read failing, because both are turns
+        # and allowing one moves a person's rows to an unapproved model on the strength of a read
+        # that did not happen. Three doors, two answers. Do not tidy them into one: making this door
+        # refuse takes the preview down over a gateway listing, and making theirs allow is the hole.
         log.exception("preview llm: couldn't resolve the sensitivity gate")
         return None
     if refusal:
