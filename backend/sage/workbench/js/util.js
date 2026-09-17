@@ -1192,6 +1192,10 @@ window.SW = window.SW || {};
         case 'query': return name ? `Querying ${name}…` : 'Running the query…';
         case 'write': return name ? `Saving ${name}…` : 'Saving the results…';
         case 'bash': return 'Running Python…';
+        // A Delegated model call (ADR-0057). `detail` is the Alias and which call this is, and both
+        // halves are the point: one model call is a step, and the twentieth is spend somebody may
+        // want to stop. `split('/')` above is for paths and leaves this string alone.
+        case 'model': return name ? `Asking ${name}…` : 'Asking the model…';
         case 'idle': return 'Thinking…';
         // No `doing` at all is the transcript fallback, which only ever names bash.
         default: return ev.tool === 'bash' ? 'Running Python…' : 'Thinking…';

@@ -1817,6 +1817,12 @@ window.SW = window.SW || {};
           ok: false,
           value: ev.message || (ev.type === 'stopped' ? 'Stopped.' : 'The turn failed.'),
         });
+      } else if (ev.type === 'delegated-calls' && ev.message) {
+        // What a turn spent on a model the person bound (ADR-0057). A status line and not a card,
+        // for the same reason the live step lines are not cards: this is a receipt for spend, and
+        // it sits beside the answer rather than competing with it. `ok: true`, because nothing went
+        // wrong — the error styling on this block is for turns that failed.
+        ensureAssistant().blocks.push({ type: 'status', ok: true, value: ev.message });
       } else if (ev.type === 'table-candidates' && ev.message) {
         // The tables a search found in Chat, for the click that records one (#188). `live` is set
         // only on a frame that arrived over SSE this session, and a reload replaces the history
@@ -7453,6 +7459,16 @@ window.SW = window.SW || {};
               ok: false,
               value: ev.message || (ev.type === 'stopped' ? 'Stopped.' : 'The turn failed.'),
             }];
+            notify();
+          } else if (ev.type === 'delegated-calls' && ev.message) {
+            // The receipt for what this turn spent on a bound model (ADR-0057). Built as the same
+            // status block the reload path builds, so a Thread reads the same either way — the
+            // drift this file has met before is a live branch and a replay branch that agree only
+            // until one of them is edited.
+            state.typing = null;
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks,
+                                { type: 'status', ok: true, value: ev.message }];
             notify();
           } else if (ev.type === 'done') {
             state.typing = null;

@@ -47,6 +47,8 @@ from ..assets.provider import (
     FakeAssetProvider,
     FileListing,
 )
+from ..delegated import call as delegated
+from ..delegated import mcp as delegated_mcp
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
@@ -198,6 +200,11 @@ from . import handoff as chat_handoff
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
 
+# The one reader of a gateway answer, shared rather than written again here. `chat_intent`,
+# `handoff` and `table_rank` all import it from `scope` for the same reason: a second copy is a
+# second reading of the producer's encoding, and the two drift on the day the encoding changes.
+from .scope import _extract
+
 log = logging.getLogger("sage.orchestrator")
 
 # Consecutive OpenCode poll (is_running/messages) failures tolerated before halting a build. Each poll
@@ -257,6 +264,12 @@ _CHAT_TOOL_QUIET_TIMEOUT_S = 240.0
 # it keeps talking. Generous, because by then the person can see the work and can press Stop — this
 # is the backstop for a turn nobody is watching, not the cap for a turn that is going well.
 _CHAT_TURN_MAX_S = 600.0
+# How many Delegated model calls one turn may make (ADR-0057). Beside the wall-clock ceiling on
+# purpose: without it, a delegated loop is a turn that never goes quiet — every call refreshes the
+# activity clock — so the only thing that could end it is the 600 seconds above, and the person
+# waits all of them for nothing. The number is a starting point, not a measured one; what matters is
+# that reaching it is a REFUSAL the assistant reads, not a silent stop.
+_DELEGATED_CALLS_MAX = 25
 # How many of the newest messages a Chat poll reads. The whole transcript came back on every poll,
 # once a second for the length of the turn, so the cost of asking a question grew with the length of
 # the Thread rather than with the question — and it competed for CPU with the agent it was watching,
@@ -3546,6 +3559,32 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             "Say that you cannot open it.",
             name=name, extra=extra,
         )
+    if kind in ("llm_alias", "llmalias", "model_llm"):
+        # The gap #370 opened on. This row used to fall through to the bare line below — `- llm_alias:
+        # opus`, no route, no auth, no statement that it was callable — so an agent asked to run a
+        # classification pass went looking, found `template/react-vite/src/appLlm.ts`, read its
+        # opening lines correctly ("called straight from the viewer's browser … the viewer's own
+        # session cookie authenticates it"), and told the person it could not reach the model
+        # without a browser. It was right about that file. What was missing was a route a turn can
+        # take, and now there is one.
+        #
+        # The tool is named with its BARE name, which is what the custom tool is called; a prefixed
+        # `sage-…_` spelling would be the MCP form, and Sage declares no MCP server for this (see
+        # `delegated/tools/delegated_model_call.ts`). `test_a_delegated_model_call_is_named_the_same_
+        # either_way` pins this sentence to the file and to `delegated/mcp.py`.
+        #
+        # No endpoint and no token in this line, deliberately, and that is not an omission to be
+        # tidied later: ADR-0052 makes the gateway the trusted enforcement point, so what the agent
+        # is given is a tool whose call Sage gates in its own code — never a base URL and never a
+        # key (ADR-0057).
+        return brand.text(
+            "- {llmAlias} {name}. You can call it: `{tool}` with `alias` set to {quoted} and the "
+            "turn token from this prompt. Use it when the work needs a model to read text. Do not "
+            "read src/appLlm.ts for a recipe — that one is the published app's own call from the "
+            "viewer's browser, and this {turn} has no browser. A model that is not in this "
+            "conversation is refused rather than swapped for another one.",
+            name=name, tool=delegated.TOOL_NAME, quoted=repr(name),
+        )
     extra = f" at {path}" if path else ""
     return f"- {kind}: {name}{extra}"
 
@@ -4810,6 +4849,18 @@ class Orchestrator:
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
         self._live_read: dict[str, tuple[str, float]] = {}
         self._live_read_lock = threading.Lock()
+        # Delegated model calls this turn has served, per Conversation, counted by the label the
+        # person reads (ADR-0057). Two readers and one writer: the cap reads the total, and the
+        # receipt written at the end of the turn reads the breakdown. Reset when the turn's token is
+        # minted, so a count is always about one turn.
+        self._delegated_calls: dict[str, dict[str, int]] = {}
+        # The step lines those calls owe the person, waiting for the Chat loop to drain them. The
+        # call is served on a route's own thread and the turn is a generator on another, so a queue
+        # is what makes the count in the line the count the cap enforced rather than a second one
+        # derived from tool events. Bounded: a turn capped at 25 calls cannot fill it, and a reader
+        # that went away must not grow it.
+        self._delegated_lines: dict[str, deque[dict]] = {}
+        self._delegated_lock = threading.Lock()
         self._data_use_turns: dict[str, str] = {}
         # Reads that ended in the model querying the table itself. ADR-0041 permits it — "a
         # read-only turn may read the world", and Chat queries Data Sources every day — but it is a
@@ -9845,6 +9896,13 @@ class Orchestrator:
                                               lambda ev: workspace.append_history(ev, thread_id))
         with self._live_read_lock:
             self._live_read[thread_id] = (token, time.monotonic())
+        # The same token names this turn for a Delegated model call, so this is the moment that
+        # turn's call count starts over (ADR-0057). Reset here rather than at the end of the last
+        # turn: a turn that died — stopped, timed out, or took the process with it — would have left
+        # its count standing, and the next question would meet a cap it never spent.
+        with self._delegated_lock:
+            self._delegated_calls.pop(thread_id, None)
+            self._delegated_lines.pop(thread_id, None)
         return token
 
     def _live_read_thread(self, token: str) -> str | None:
@@ -10193,6 +10251,235 @@ class Orchestrator:
                      "a /api/diag probe, not OpenCode" if probe else "OpenCode connected", method)
         return live_mcp.handle(message, run=run)
 
+    # ---- Delegated model calls (ADR-0057) -------------------------------------------------------
+
+    def delegated_model_call(self, message: dict) -> dict | None:
+        """One MCP message from the `delegated_model_call` custom tool. The rule is in `delegated`.
+
+        Said out loud for the reason `live_read_call` is: this path would otherwise be silent end to
+        end, and "the assistant never asked a bound model" and "the tool never reached the model"
+        leave the same evidence, which is nothing. Never the prompt, never the answer and never the
+        token — the tool, whether the token resolved and which Alias was asked are the diagnosis.
+        """
+        def run(name: str, args: dict) -> str:
+            thread_id = self._live_read_thread(str(args.get("token") or ""))
+            if thread_id is None:
+                # Not a refusal the person is owed — it means the turn moved on. Told to the
+                # assistant plainly so it asks again rather than inventing an answer.
+                log.info("delegated model call: the token is not this turn's, asking again")
+                return "That turn token is not current. Ask again on this turn."
+            log.info("delegated model call: %s asked for %r", name, str(args.get("alias") or ""))
+            return delegated.perform(name, args, self._delegated_turn_for(thread_id))
+
+        return delegated_mcp.handle(message, run=run)
+
+    def _delegated_turn_for(self, thread_id: str) -> delegated.Turn:
+        """What one Delegated model call may see, read from the records as they stand now.
+
+        Fresh rather than captured when the token was minted, for the reason `_live_read_turn` is:
+        a person can put an Alias in front of the Conversation while its turn runs, and "may this be
+        called" deserves the current answer.
+
+        FAILS CLOSED. Every way of not knowing — an unreadable gate, a listing the gateway would not
+        answer — ends as a refusal rather than as an unlocked call. Failing open here moves a
+        person's rows to an unapproved model on the strength of a read that failed, which is the one
+        asymmetry ADR-0057 spells out: the preview door may fail open and this may not.
+        """
+        project = self._chat_project()
+        aliases, labels, unresolved = self._delegated_aliases(project, thread_id)
+
+        # The same gate the turn itself passed, asked again with the Conversation named — which is
+        # the whole of ADR-0057's second decision. Asked again rather than remembered from the top
+        # of the turn because a Dataset can be pinned mid-turn, and because the call this gates is
+        # for a DIFFERENT model from the one the turn runs on.
+        try:
+            approved, refusal = self._sensitivity_for_turn(project, thread_id)
+        except Exception:
+            log.exception("delegated model call: the sensitivity gate could not be read")
+            refusal, approved = brand.text(
+                "{assistantName} couldn't check which models the data in this conversation allows, "
+                "so it did not call one. Try again."), None
+        return delegated.Turn(
+            thread_id=thread_id,
+            max_calls=_DELEGATED_CALLS_MAX,
+            aliases=aliases,
+            unresolved=unresolved,
+            approved=None if approved is None else approved.names,
+            refusal=refusal,
+            reserve=lambda label: self._delegated_reserve(thread_id, label),
+            ask=lambda name, messages, budget: self._delegated_ask(
+                project, thread_id, name, labels.get(name, name), messages, budget),
+            label_for=labels,
+        )
+
+    def _delegated_aliases(
+        self, project: Project, thread_id: str
+    ) -> tuple[tuple[tuple[str, str], ...], dict[str, str], tuple[str, ...]]:
+        """What this Conversation may call: ((call name, label), …), {name: label}, and the labels
+        of anything it names that could not be resolved.
+
+        The bind is the consent, and there are two acts that are one: **Use in this conversation**
+        writes a Session context chip, and **Use in app** writes a Binding the selected app holds.
+        Both are something the person did on this Conversation, so both count — the same pair
+        `liveread.grant.reachable` reads, and for the same reason. Never the Working set, which
+        ADR-0020 fixed as orientation and never context.
+
+        A CHIP CARRIES NO CALLABLE NAME. The panel posts the label and `bindingKey`, and
+        `add_thread_context` strips the catalogue's `alias` field back off before storing (it is a
+        membership field). So a chip is resolved through the live listing, and a listing that will
+        not answer drops chips out of the set — which is the fail-closed direction: Sage will not
+        put a name in `request["model"]` that it could not read. A BINDING is different and keeps
+        its own `name`, exactly as `bindings.py` says it does, so an app's bound Alias survives a
+        gateway that is down.
+        """
+        wanted: list[str] = []
+        labels: dict[str, str] = {}
+        out: list[tuple[str, str]] = []
+        unresolved: list[str] = []
+
+        def add(call_name: str, label: str) -> None:
+            if not call_name or call_name in labels:
+                return
+            labels[call_name] = label or call_name
+            out.append((call_name, labels[call_name]))
+
+        for row in project.workspace.read_bindings():
+            if str(row.get("kind") or "") != KIND_LLM_ALIAS:
+                continue
+            name = str(row.get("name") or "")
+            if name:
+                add(name, str(row.get("display_name") or name))
+
+        chip_labels: dict[str, str] = {}
+        for item in (ThreadStore(project.record.path).read_context(thread_id).get("items") or []):
+            if str(item.get("kind") or "") not in ("llm_alias", "llmalias", "model_llm"):
+                continue
+            key = item.get("bindingKey")
+            alias_id = (str(key[1]) if isinstance(key, (list, tuple)) and len(key) >= 2 and key[1]
+                        else _bare_kind_id(str(item.get("resourceId") or item.get("id") or ""),
+                                           KIND_LLM_ALIAS))
+            if alias_id:
+                wanted.append(alias_id)
+                chip_labels[alias_id] = str(item.get("name") or "")
+        if wanted:
+            try:
+                listed = {a.id: a for a in self._resources.list_llm_aliases()}
+            except ResourceUnavailable as e:
+                # Loud, and the chip simply does not join the set. The refusal the assistant then
+                # reads names the Aliases that DID resolve, which is the honest answer — not "that
+                # model does not exist".
+                log.warning("delegated model call: the Alias listing failed (%s) — chips in this "
+                            "conversation cannot be called this turn", e)
+                listed = {}
+            for alias_id in wanted:
+                alias = listed.get(alias_id)
+                if alias is not None:
+                    add(alias.name, chip_labels.get(alias_id) or alias.display_name or alias.name)
+                else:
+                    unresolved.append(chip_labels.get(alias_id) or alias_id)
+        return tuple(out), labels, tuple(unresolved)
+
+    def _delegated_ask(self, project: Project, thread_id: str, alias_name: str, label: str,
+                       messages: list[dict], budget: int) -> str:
+        """Make one Delegated model call through the gateway, in process.
+
+        In process and never over loopback HTTP, and never by handing the agent a token or a base
+        URL: ADR-0052 makes the LLM Gateway the trusted enforcement point and Sage's job is to reach
+        it through a path that can be gated. `GatewayClient` already supplies the `X-LLM-Tag-sage-*`
+        cost tags, so the only thing to decide here is what they say.
+
+        Already counted by the time this runs: `perform` reserves the call before it asks, because
+        the cap is about SPEND and a call that reached the gateway and failed was spent. Counting
+        successes would let a failing loop run forever.
+        """
+        n = sum((self._delegated_calls.get(thread_id) or {}).values())
+        request = {"model": alias_name, "messages": messages,
+                   "max_tokens": budget, "stream": True}
+        # `chat-delegated`, so `built-app` goes on meaning the previewed or published app and the
+        # two are separable in the gateway's own usage dashboard (ADR-0057). `session` is the
+        # Conversation rather than an OpenCode session id, which is what makes a delegated pass
+        # costable against the Thread that asked for it.
+        cost = CostLabels(phase="ask", mode="auto", component="chat-delegated",
+                          session=thread_id, version=project.shim.version)
+        # On the turn's ledger, for the reason `scope.py` and `handoff.py` both give: this call goes
+        # STRAIGHT to the gateway rather than through the /v1 shim handler that fills the ledger, so
+        # without this line /api/diag/timing under-counts a delegated pass by every call in it.
+        call = timing.model_call(alias_name, "chat-delegated")
+        log.info("delegated model call: asking %s (call %d of %d)", alias_name, n,
+                 _DELEGATED_CALLS_MAX)
+        chunks = []
+        try:
+            for chunk in project.shim.gateway.route(request, cost):
+                call.first_byte()
+                call.chunk()
+                chunks.append(chunk)
+        except BaseException as e:
+            call.done(ok=False, error=f"{type(e).__name__}: {e}")
+            raise
+        call.done()
+        return _extract(b"".join(chunks))
+
+    def _delegated_reserve(self, thread_id: str, label: str) -> int | None:
+        """Take one of this turn's calls, or None once the cap is reached.
+
+        Read and raise in ONE operation under the lock. OpenCode can put several tool calls in a
+        single step, so a caller that read the count, decided, and then counted would let two calls
+        both see "24 so far" — a cap that holds on average. There is one counter, written here and
+        read in two places: this decision, and the receipt at the end of the turn.
+
+        Queuing the step line here is what keeps the number the person reads the number that was
+        enforced. A count derived from tool events instead would be a second counter, and it would
+        differ from this one exactly where it matters — on the calls this refused.
+        """
+        with self._delegated_lock:
+            counts = self._delegated_calls.setdefault(thread_id, {})
+            n = sum(counts.values()) + 1
+            if n > _DELEGATED_CALLS_MAX:
+                return None
+            counts[label] = counts.get(label, 0) + 1
+            # A step line and not a card: this may fire many times in one turn, and a card each time
+            # is not proportionate to one model call. Not silence either — it is spend (ADR-0057).
+            self._delegated_lines.setdefault(thread_id, deque(maxlen=_DELEGATED_CALLS_MAX)).append({
+                "type": "agent", "kind": "tool", "tool": delegated.TOOL_NAME, "doing": "model",
+                "detail": f"{label} ({n} of {_DELEGATED_CALLS_MAX})",
+            })
+        return n
+
+    def _delegated_step_lines(self, thread_id: str) -> list[dict]:
+        """Whatever step lines have arrived since the last drain."""
+        with self._delegated_lock:
+            queue = self._delegated_lines.get(thread_id)
+            if not queue:
+                return []
+            out = list(queue)
+            queue.clear()
+        return out
+
+    def _delegated_receipt(self, thread_id: str) -> dict | None:
+        """The one thing a turn's Delegated model calls leave in the transcript, or None.
+
+        A RECEIPT AND NOT THE EXCHANGES. The agent's own answer persists as ordinary turn content;
+        the individual call and response pairs do not. A pass over several hundred cases would
+        otherwise put several hundred model answers into a transcript that is read back on every
+        later turn — a scope problem before it is a cost one, because those answers are about the
+        person's rows (ADR-0057).
+        """
+        with self._delegated_lock:
+            counts = dict(self._delegated_calls.get(thread_id) or {})
+        if not counts:
+            return None
+        total = sum(counts.values())
+        named = ", ".join(f"{label} ({n})" if len(counts) > 1 else label
+                          for label, n in sorted(counts.items()))
+        return {
+            "type": "delegated-calls",
+            "calls": total,
+            "aliases": sorted(counts),
+            "message": brand.text(
+                "Asked {names} {n} times this {turn}.", names=named, n=str(total)
+            ) if total > 1 else brand.text("Asked {names} once this {turn}.", names=named),
+        }
+
     def _data_use_note(self) -> str:
         if self._chat_project().record.read_settings().get("dataUseVersion") != 1:
             return ""
@@ -10262,6 +10549,18 @@ class Orchestrator:
              "than telling the person you cannot see their data. If they are not in your tool list "
              "this turn, query the data with Python instead — a missing tool is never a reason to "
              "tell someone you cannot see their data."),
+            # The same token, said again where the second tool is taught, because a sentence about
+            # Live read is not one an agent reading about language models will apply to itself
+            # (ADR-0057). What it must not do is go looking: the one auth recipe discoverable in the
+            # workspace is `src/appLlm.ts`, which is correct for a published app's own call from a
+            # browser and unusable from here — and an agent that found it told the person it could
+            # not reach the model at all (#370).
+            (f"To call a language model this conversation has been given, use "
+             f"`{delegated.TOOL_NAME}` with that same token, `alias` set to the model's name as "
+             f"this prompt names it, and your question as `prompt`. Up to "
+             f"{_DELEGATED_CALLS_MAX} calls per turn. A model that is not in this conversation is "
+             "refused and the refusal names the ones that are — never substitute another model for "
+             "the one you were asked for, and never say a model was used when it refused."),
             self._data_use_note(),
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
@@ -10747,6 +11046,14 @@ class Orchestrator:
                         "measurements that still matter and drop the rest."
                     ),
                 })
+            # What this turn spent on models the person bound, as a receipt and never as the
+            # exchanges (ADR-0057). Written here rather than at each exit because this is the one
+            # place every exit passes through — a turn that was stopped or timed out spent what it
+            # spent, and a receipt that only survived the tidy ending would be missing from exactly
+            # the turns somebody is looking at because they went wrong.
+            receipt = self._delegated_receipt(thread_id)
+            if receipt is not None:
+                events.append(receipt)
             # Persist the whole outcome before yielding: a client can disconnect on any event.
             for ev in events:
                 store.append_history(thread_id, ev)
@@ -11104,6 +11411,11 @@ class Orchestrator:
                             if tables.candidates:
                                 continue
                         yield live
+                # The Delegated model calls served since the last pass (ADR-0057). Drained here
+                # rather than read off a tool event, because the count in the line has to be the
+                # count the cap enforced: the call is served on the route's own thread and this
+                # generator is another, so the queue is what keeps one number rather than two.
+                yield from self._delegated_step_lines(thread_id)
                 # A stream that has said nothing is not a stream. The transcript fallback exists
                 # for a tap that failed to open, and a tap that opened onto silence needs it just as
                 # much — without it the turn cannot see its own progress and the quiet cap ends work

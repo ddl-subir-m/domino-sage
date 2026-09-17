@@ -173,6 +173,26 @@ def test_a_data_artifact_chat_turn_gets_only_read_and_scoped_artifact_tools(capl
             "sage-live-read_live_read_files"} <= names
 
 
+def test_a_data_artifact_turn_keeps_the_delegated_model_call(caplog):
+    """The turn #370 opens on IS a data-artifact turn: a classification pass over support-case text,
+    ending in a table. The list above is an allowlist, so a tool absent from it is stripped — and
+    leaving `delegated_model_call` out would take the capability away from exactly the turns that
+    want it, which is the failure mode this lane already has a history of (ADR-0057)."""
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    shim = EnforcementShim(control, CATALOG, FakeGatewayClient())
+    chat_token = control.arm_chat("thr_artifact")
+    artifact_token = control.arm_chat_artifact()
+
+    with caplog.at_level(logging.INFO, logger="sage.shim"):
+        list(shim.handle(_req("bash", "artifact_write", "delegated_model_call"), {}))
+
+    control.disarm_chat_artifact(artifact_token)
+    control.disarm_chat(chat_token)
+    names = {t["function"]["name"] for t in shim.gateway.seen[-1][0]["tools"]}
+    assert "delegated_model_call" in names
+    assert "bash" not in names, "and the lane is still the narrow one it was"
+
+
 def test_the_scoped_writer_is_absent_outside_the_artifact_lane():
     control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
     shim = EnforcementShim(control, CATALOG, FakeGatewayClient())

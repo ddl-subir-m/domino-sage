@@ -295,7 +295,12 @@ class EnforcementShim:
             ]
             request = {**request, "tools": tools}
         if state.chat_artifact_turn and chat_id and isinstance(request.get("tools"), list):
-            allowed = READ_TOOLS | {"glob", "grep", "live_read_table", "live_read_files", "artifact_write"}
+            # `delegated_model_call` belongs on a data-artifact turn and not by extension: the turn
+            # #370 opens on IS one — a classification pass over support-case text, ending in a
+            # table. This list is an allowlist, so a tool absent from it is stripped, and leaving it
+            # out would take the capability away from exactly the turns that want it (ADR-0057).
+            allowed = READ_TOOLS | {"glob", "grep", "live_read_table", "live_read_files",
+                                    "artifact_write", "delegated_model_call"}
             if state.web_allowed:
                 allowed |= WEB_TOOLS
             request = {**request, "tools": [
