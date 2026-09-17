@@ -168,6 +168,31 @@ def test_an_unqueryable_data_source_row_renames_the_noun(acme):
     )
 
 
+def test_a_language_model_row_hands_the_turn_a_way_to_call_it(acme):
+    """#370's gap. This row had no branch at all, so it fell through to `- llm_alias: opus` — a
+    name, no route, and no statement that it was callable. The agent went looking, found
+    `src/appLlm.ts`, read it correctly, and told the person it needed a browser it does not have.
+
+    The noun is the pack's and the TOOL NAME is not: a tool name is an identifier the agent is about
+    to type, which is ADR-0014's second arm, and the alias is the person's own word, which is its
+    third."""
+    line = _chat_context_line({"kind": "llm_alias", "name": "opus",
+                               "resourceId": "llm_alias:al_1"})
+    assert line != "- llm_alias: opus", "the bare line is the whole defect"
+    assert line.startswith("- LLM Alias opus. You can call it: `delegated_model_call`")
+    assert "`alias` set to 'opus'" in line
+    assert "turn token from this prompt" in line
+    assert "Do not read src/appLlm.ts" in line
+
+
+def test_a_language_model_pinned_by_the_catalogue_kind_reaches_the_same_row(acme):
+    """The panel calls this kind `model_llm` and the chip post rewrites it to `llm_alias`
+    (`api.js:528`). Both spellings reach the stored records, so both are answered here rather than
+    one of them falling through to the bare line the test above exists to keep out."""
+    assert _chat_context_line({"kind": "model_llm", "name": "opus"}) == _chat_context_line(
+        {"kind": "llm_alias", "name": "opus"})
+
+
 def test_a_resource_named_after_a_brand_token_is_never_resolved(acme):
     """The reason substitution is author-time. A creator may name a Dataset `{dataset}`; a filter
     over outgoing bytes could not tell that from our own word, and the helper does not have to —

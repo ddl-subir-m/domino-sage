@@ -10,6 +10,7 @@ Run:  uv run python -m sage.orchestrator.app
 """
 from __future__ import annotations
 
+import asyncio
 import collections
 import concurrent.futures
 import contextlib
@@ -3265,6 +3266,52 @@ async def live_read_mcp(request: Request) -> Response:
     return JSONResponse(out if batch else out[0])
 
 
+# How many Delegated model calls may be in the threadpool at once. Held on the event loop, BEFORE
+# the offload, which is the only place it protects anything: a semaphore taken inside a worker still
+# holds that worker. Starlette's pool is ~40 threads and every sync route shares it, including the
+# generator behind `/api/chat/stream` — so a turn allowed 25 concurrent generations could queue its
+# own step lines and its own `done` frame behind the calls they describe. That is the freeze the
+# offload exists to prevent, moved rather than fixed. Four, matching `text_analysis.MAX_CONCURRENCY`,
+# which is the other place Sage fans out over this gateway.
+_DELEGATED_SLOTS = asyncio.Semaphore(4)
+
+
+@control_app.post("/mcp/delegated-model")
+async def delegated_model_mcp(request: Request) -> Response:
+    """The Delegated model call tool, in the framing OpenCode's custom tool posts (ADR-0057).
+
+    Loopback only, and it carries no auth of its own: what gates a call is the per-turn token inside
+    it, not who knocked. A caller with no token can reach this and call nothing — the same shape as
+    `/mcp/live-read`, and it sits under the same `/mcp/` prefix the loopback allowlist already knows
+    about, which is why ADR-0057 leaves `_UNPROXIED` alone.
+
+    Nothing here streams: a Delegated model call returns once, with the answer already collected.
+
+    OFF THE EVENT LOOP, unlike `/mcp/live-read` above, which this is otherwise a copy of. What
+    happens inside is a whole model generation iterated to completion — up to 25 of them in one
+    turn. Left on the loop it would freeze the control app for the length of each: the Chat SSE
+    writes, `/api/diag`, the Workbench. A Live read is one query and gets away with it; this does
+    not, and the shape it was copied from is the reason to say so here rather than leave the
+    difference to be found.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+            status_code=400,
+        )
+    batch = isinstance(body, list)
+    async with _DELEGATED_SLOTS:
+        served = await run_in_threadpool(
+            lambda: [orchestrator.delegated_model_call(m) for m in (body if batch else [body])])
+    out = [r for r in served if r is not None]
+    if not out:
+        # Every message was a notification. 202 with no body is what the transport expects.
+        return Response(status_code=202)
+    return JSONResponse(out if batch else out[0])
+
+
 @control_app.post("/api/chat/artifact")
 def write_chat_artifact(body: dict = Body(default={})) -> JSONResponse:
     try:
@@ -4228,8 +4275,19 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
     _install_opencode_skills(source_dir, global_dir)
 
 
+# Every directory Sage ships OpenCode custom tools from, relative to the source tree. A list rather
+# than one path because the second module arrived (`delegated`, ADR-0057) and putting its tool in
+# the first module's folder would have made the folder name lie about what is in it — which is how
+# `artifact_write.ts` already sits under `liveread/`. The names inside are flat in the destination
+# either way: OpenCode reads ONE directory and names each tool after its file.
+_OPENCODE_TOOL_DIRS = (
+    ("backend", "sage", "liveread", "tools"),
+    ("backend", "sage", "delegated", "tools"),
+)
+
+
 def _install_opencode_tools(source_dir: Path, global_dir: Path) -> None:
-    """Put the Live read CUSTOM tools where OpenCode reads them (ADR-0041).
+    """Put Sage's CUSTOM tools where OpenCode reads them (ADR-0041, ADR-0057).
 
     `~/.config/opencode/tools/` is the global slot, and global is what Sage can fill: a Chat session
     runs under the workspace volume, so the project slot is never ours — the same reasoning that
@@ -4239,30 +4297,51 @@ def _install_opencode_tools(source_dir: Path, global_dir: Path) -> None:
     Copied rather than symlinked, so a checkout that moves or a container that rebuilds cannot leave
     a dangling link that fails the way MCP already fails — silently, with the tools simply absent.
 
-    THE FILENAME CARRIES THE TOOL NAMES. OpenCode names a multi-export tool `<file>_<export>`, so
-    `live_read.ts` is what makes `live_read_table` and `live_read_files`. Copy it under any other
-    name and the prompts teach tools that do not exist.
+    THE FILENAME CARRIES THE TOOL NAMES. OpenCode names a multi-export tool `<file>_<export>` and a
+    default-export one after the file alone, so `live_read.ts` is what makes `live_read_table` and
+    `live_read_files`, and `delegated_model_call.ts` is what makes `delegated_model_call`. Copy one
+    under any other name and the prompts teach tools that do not exist.
+
+    A NAME COLLISION ACROSS TWO SOURCE DIRECTORIES IS A REFUSAL, not a last-writer-wins copy. The
+    destination is flat, so two files called the same thing are one tool whose behaviour depends on
+    iteration order — and the symptom would be a tool that works, does the wrong job, and reports
+    healthy on every surface. Loud and skipped is the only answer that can be debugged.
 
     Best effort and loud on failure: without this the agent falls back to Python, which answers but
     puts every row in the model's context — the thing ADR-0041 exists to avoid.
     """
-    src_dir = source_dir / "backend" / "sage" / "liveread" / "tools"
-    try:
-        names = sorted(p.name for p in src_dir.glob("*.ts"))
-    except OSError as e:
-        log.error("[wiring] could NOT read %s (%s) — Live read tools will be absent", src_dir, e)
-        return
+    found: dict[str, Path] = {}
+    collided: set[str] = set()
+    for parts in _OPENCODE_TOOL_DIRS:
+        src_dir = source_dir.joinpath(*parts)
+        try:
+            files = sorted(src_dir.glob("*.ts"))
+        except OSError as e:
+            log.error("[wiring] could NOT read %s (%s) — its tools will be absent", src_dir, e)
+            continue
+        if not files:
+            log.error("[wiring] no custom tools at %s — they will be absent from every turn", src_dir)
+            continue
+        for path in files:
+            if path.name in found:
+                log.error("[wiring] two custom tools are called %s (%s and %s) — installing "
+                          "neither, because the winner would depend on iteration order",
+                          path.name, found[path.name], path)
+                collided.add(path.name)
+                continue
+            found[path.name] = path
+    names = sorted(name for name in found if name not in collided)
     if not names:
-        log.error("[wiring] no Live read tools at %s — they will be absent from every turn", src_dir)
+        log.error("[wiring] no custom tools to install — they will be absent from every turn")
         return
     dest = global_dir / "tools"
     try:
         dest.mkdir(parents=True, exist_ok=True)
         for name in names:
-            (dest / name).write_text((src_dir / name).read_text())
-        log.warning("[wiring] installed Live read tools into %s (%s)", dest, ", ".join(names))
+            (dest / name).write_text(found[name].read_text())
+        log.warning("[wiring] installed custom tools into %s (%s)", dest, ", ".join(names))
     except OSError as e:
-        log.error("[wiring] could NOT install Live read tools into %s (%s) — Chat will fall back "
+        log.error("[wiring] could NOT install custom tools into %s (%s) — Chat will fall back "
                   "to Python, which puts rows in the model's context", dest, e)
 
 

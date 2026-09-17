@@ -295,7 +295,12 @@ class EnforcementShim:
             ]
             request = {**request, "tools": tools}
         if state.chat_artifact_turn and chat_id and isinstance(request.get("tools"), list):
-            allowed = READ_TOOLS | {"glob", "grep", "live_read_table", "live_read_files", "artifact_write"}
+            # `delegated_model_call` belongs on a data-artifact turn and not by extension: the turn
+            # #370 opens on IS one — a classification pass over support-case text, ending in a
+            # table. This list is an allowlist, so a tool absent from it is stripped, and leaving it
+            # out would take the capability away from exactly the turns that want it (ADR-0057).
+            allowed = READ_TOOLS | {"glob", "grep", "live_read_table", "live_read_files",
+                                    "artifact_write", "delegated_model_call"}
             if state.web_allowed:
                 allowed |= WEB_TOOLS
             request = {**request, "tools": [
@@ -304,8 +309,17 @@ class EnforcementShim:
                 or name in {"sage-live-read_live_read_table", "sage-live-read_live_read_files"}
             ]}
         elif isinstance(request.get("tools"), list):
+            # `artifact_write` is scoped to the artifact lane. `delegated_model_call` is scoped to a
+            # CHAT turn, which is what `chat_id` says: its step line and its receipt are both wired
+            # on the Chat turn, so a Build turn that called it would be gated, counted and capped
+            # and would still spend with nothing on screen and nothing in the transcript — the
+            # silence ADR-0057's last two bounds exist to stop. Build mints a valid turn token of
+            # its own (`service.py`'s build prompt), so this is a reachable path and not a
+            # hypothetical one; if Build should have the capability it needs those two bounds first,
+            # not this line removed.
+            outside = {"artifact_write"} if chat_id else {"artifact_write", "delegated_model_call"}
             request = {**request, "tools": [tool for tool in request["tools"]
-                if (tool.get("function") or {}).get("name", "").lower() != "artifact_write"]}
+                if (tool.get("function") or {}).get("name", "").lower() not in outside]}
         if chat_id and isinstance(request.get("tools"), list):
             # Whether the model was actually OFFERED Live read, which nothing else can say. Sage has
             # told people it could not see their data — naming the `sage-live-read_` tools from its
