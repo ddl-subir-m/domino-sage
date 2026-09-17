@@ -1194,8 +1194,16 @@ window.SW = window.SW || {};
         case 'bash': return 'Running Python…';
         // A Delegated model call (ADR-0057). `detail` is the Alias and which call this is, and both
         // halves are the point: one model call is a step, and the twentieth is spend somebody may
-        // want to stop. `split('/')` above is for paths and leaves this string alone.
-        case 'model': return name ? `Asking ${name}…` : 'Asking the model…';
+        // want to stop.
+        //
+        // `ev.detail` and NOT `name`. The `split('/').pop()` above is for file paths, and a
+        // gateway alias name carries a slash often enough that it is the ordinary case rather than
+        // the edge one — `openai/gpt-4o` would reach the person as "Asking gpt-4o", the vendor half
+        // of the name they picked dropped out of a line whose whole job is naming what was called.
+        case 'model': {
+          const label = String(ev.detail || '').trim();
+          return label ? `Asking ${label}…` : 'Asking the model…';
+        }
         case 'idle': return 'Thinking…';
         // No `doing` at all is the transcript fallback, which only ever names bash.
         default: return ev.tool === 'bash' ? 'Running Python…' : 'Thinking…';

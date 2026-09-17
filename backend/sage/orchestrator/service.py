@@ -9910,12 +9910,27 @@ class Orchestrator:
         if not token:
             return None
         now, found = time.monotonic(), None
+        expired: list[str] = []
         with self._live_read_lock:
             for thread_id, (tok, at) in list(self._live_read.items()):
                 if now - at > _LIVE_READ_TTL_S:
                     self._live_read.pop(thread_id, None)
+                    expired.append(thread_id)
                 elif tok == token:
                     found = thread_id
+        # The Delegated model call state for the same Conversations, swept on the same sweep
+        # (ADR-0057). `_mint_live_read_token` clears a Conversation's counts on its NEXT turn, which
+        # is the only thing that ever cleared them — so a Conversation used once and abandoned left
+        # its counts and a 25-slot deque behind for the life of the process. The token beside them
+        # has carried a timestamp for exactly this since ADR-0041; now they are read off it.
+        #
+        # Outside the lock above rather than nested inside it, so the two locks are never held at
+        # once and the order they are taken in cannot start to matter.
+        if expired:
+            with self._delegated_lock:
+                for thread_id in expired:
+                    self._delegated_calls.pop(thread_id, None)
+                    self._delegated_lines.pop(thread_id, None)
         return found
 
     def _live_read_turn(self, token: str) -> live_read.Turn | None:
@@ -10390,9 +10405,12 @@ class Orchestrator:
 
         Already counted by the time this runs: `perform` reserves the call before it asks, because
         the cap is about SPEND and a call that reached the gateway and failed was spent. Counting
-        successes would let a failing loop run forever.
+        successes would let a failing loop run forever. Which call this is is logged by the
+        reservation and not re-derived here — `sum()` over a dict another delegated call is inserting
+        into raises "dictionary changed size during iteration", and this function's caller turns a
+        raise into "the model was not called", so a healthy call would have been reported as a
+        failure for the sake of a log line.
         """
-        n = sum((self._delegated_calls.get(thread_id) or {}).values())
         request = {"model": alias_name, "messages": messages,
                    "max_tokens": budget, "stream": True}
         # `chat-delegated`, so `built-app` goes on meaning the previewed or published app and the
@@ -10405,8 +10423,6 @@ class Orchestrator:
         # STRAIGHT to the gateway rather than through the /v1 shim handler that fills the ledger, so
         # without this line /api/diag/timing under-counts a delegated pass by every call in it.
         call = timing.model_call(alias_name, "chat-delegated")
-        log.info("delegated model call: asking %s (call %d of %d)", alias_name, n,
-                 _DELEGATED_CALLS_MAX)
         chunks = []
         try:
             for chunk in project.shim.gateway.route(request, cost):
@@ -10437,6 +10453,7 @@ class Orchestrator:
             if n > _DELEGATED_CALLS_MAX:
                 return None
             counts[label] = counts.get(label, 0) + 1
+            log.info("delegated model call: taking call %d of %d", n, _DELEGATED_CALLS_MAX)
             # A step line and not a card: this may fire many times in one turn, and a card each time
             # is not proportionate to one model call. Not silence either — it is spend (ADR-0057).
             self._delegated_lines.setdefault(thread_id, deque(maxlen=_DELEGATED_CALLS_MAX)).append({

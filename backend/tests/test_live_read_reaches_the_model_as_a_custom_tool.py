@@ -98,7 +98,13 @@ def test_a_missing_source_is_reported_and_does_not_stop_the_boot(tmp_path, monke
     with caplog.at_level(logging.ERROR, logger="sage.orchestrator"):
         _install_opencode_config(src_dir, 9999)
 
-    assert any("Live read tools" in r.getMessage() for r in caplog.records)
+    said = [r.getMessage() for r in caplog.records]
+    # Every source directory by name, not one sentence about "the tools". The installer reads
+    # several now (ADR-0057 added `delegated/tools`), and a line that named only the set would go on
+    # reading as correct after one of them stopped being read at all.
+    for module in ("liveread", "delegated"):
+        assert any("no custom tools at" in m and f"sage/{module}/tools" in m for m in said), module
+    assert any("absent from every turn" in m for m in said), "and it says what that costs"
 
 
 # --- the probe's command path --------------------------------------------------------------------

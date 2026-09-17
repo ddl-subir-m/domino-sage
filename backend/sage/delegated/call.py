@@ -138,11 +138,16 @@ def perform(name: str, args: dict, turn: Turn) -> str:
         # The sensitivity lock, named model by name (ADR-0043). The set is in the sentence because
         # the alternative — refusing and saying only that — sends the agent to guess, and a guess
         # that lands is a substitution nobody agreed to.
+        # Both halves in the words on screen. `ApprovedModels.names` holds gateway alias names, and
+        # a sentence that refuses `Claude Opus 4.6` and then offers `gemini-2-5-pro` is naming the
+        # set in a vocabulary the person's chips do not use — which is the guessing this sentence
+        # exists to prevent. A name with no label known travels as itself; that is honest, and it
+        # is the only thing Sage has for a model this Conversation never named.
         return _refused(brand.text(
             "{label} isn't approved for the data in this conversation, so {assistantName} did not "
             "call it. Approved here: {names}.",
             label=turn.label_for.get(resolved, resolved),
-            names=", ".join(sorted(turn.approved)) or "none",
+            names=", ".join(sorted(turn.label_for.get(n, n) for n in turn.approved)) or "none",
         ))
 
     if turn.ask is None or turn.reserve is None:
@@ -167,13 +172,47 @@ def perform(name: str, args: dict, turn: Turn) -> str:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    requested = args.get("max_tokens")
-    budget = DEFAULT_MAX_TOKENS if type(requested) is not int or requested < 1 else requested
-    budget = min(budget, MAX_TOKENS_CEILING)
+    # Coerced rather than type-checked. Nothing enforces a JSON schema on a model's tool arguments,
+    # so `"2048"` and `2048.0` are live shapes for a field the tool declares as an integer — and
+    # dropping either to the default would shorten an answer the caller asked to be longer, with no
+    # word saying so. Anything that is not a whole number at all falls to the default, which is a
+    # ceiling and not a promise.
+    budget = _budget(args.get("max_tokens"))
 
     # Raises on failure rather than being caught here: `mcp.handle` owns what the assistant is told
     # about a broken call, exactly as it does for a Live read, so there is one sentence for it.
-    return turn.ask(resolved, messages, budget)
+    answer = turn.ask(resolved, messages, budget)
+    if not answer.strip():
+        # A successful call whose content is empty, which is the case `scope.py` documents at
+        # length: a route with extended thinking on spends the budget on reasoning tokens and
+        # returns a perfectly successful response with `""` in it. Handed straight back, the
+        # assistant has "the model's answer" and it is nothing — with a call already spent and no
+        # sentence telling it what happened, which is how #29 absorbed four of these into a build.
+        return _refused(brand.text(
+            "{label} answered nothing. The call was made and one of this {turn}'s is spent. Ask "
+            "again with a larger `max_tokens`, or do the work another way — do not report an "
+            "answer it did not give.",
+            label=turn.label_for.get(resolved, resolved),
+        ))
+    return answer
+
+
+def _budget(requested: object) -> int:
+    """The answer budget for one call, from whatever the model sent for it.
+
+    Via `float` and not `int`, because `int("2048.0")` raises and `2048.0` is one of the two shapes
+    this exists to accept — a JSON number with a decimal point. `bool` is excluded before anything
+    else: `True` is an `int` in Python and `max_tokens: 1` is not what `max_tokens: true` meant.
+    """
+    if isinstance(requested, bool) or requested is None:
+        return DEFAULT_MAX_TOKENS
+    try:
+        asked = float(str(requested).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_TOKENS
+    if not asked.is_integer() or asked < 1:
+        return DEFAULT_MAX_TOKENS
+    return min(int(asked), MAX_TOKENS_CEILING)
 
 
 def _resolve(asked: str, turn: Turn) -> str | None:

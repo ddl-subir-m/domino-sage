@@ -350,13 +350,17 @@ def test_a_model_outside_the_sensitivity_lock_is_refused_by_name(tmp_path: Path)
     that Conversation, so the transcript's declared rows are exactly what decides where this call
     may go — the door it arrived through does not change that."""
     gateway = AnswerGateway()
-    orch, oc, tid = _ready(tmp_path, gateway=gateway)
+    orch, oc = _orch(tmp_path, gateway=gateway)
+    tid = orch.create_thread()["id"]
+    _chip(orch, tid)
+    _chip(orch, tid, alias_id="f-sonnet", label=SONNET_LABEL)
+    list(orch.chat_stream(tid, "classify these support cases"))
     asked: list = []
 
     def locked(project, conversation):
         asked.append(conversation)
-        return ApprovedModels(names=frozenset({"qwen-2-5"}), order=("qwen-2-5",),
-                              group_name="approved", members=1), ""
+        return ApprovedModels(names=frozenset({"sonnet", "qwen-2-5"}), order=("sonnet", "qwen-2-5"),
+                              group_name="approved", members=2), ""
 
     orch._sensitivity_for_turn = locked
 
@@ -365,7 +369,11 @@ def test_a_model_outside_the_sensitivity_lock_is_refused_by_name(tmp_path: Path)
     assert asked == [tid], "the gate is asked, and it is asked about THIS Conversation"
     assert gateway.delegated == [], "nothing reached the gateway"
     assert f"{OPUS_LABEL} isn't approved for the data in this conversation" in said
-    assert "Approved here: qwen-2-5" in said
+    # In the words on screen. `ApprovedModels.names` holds gateway alias names, so an unmapped
+    # sentence offers `sonnet` beside a chip the person reads as "Claude Sonnet 4.6" — naming the
+    # set in a vocabulary their chips do not use, which is the guessing it exists to prevent. A
+    # name with no chip travels as itself, because that is all Sage has for it.
+    assert f"Approved here: {SONNET_LABEL}, qwen-2-5" in said
 
 
 def test_a_gate_that_cannot_be_read_refuses_rather_than_calling(tmp_path: Path):
@@ -596,3 +604,169 @@ def test_the_cap_holds_when_several_calls_arrive_at_once(tmp_path: Path):
 
     assert answers.count("REFUND REQUEST") == _DELEGATED_CALLS_MAX
     assert sum("is the limit for one" in a for a in answers) == at_once - _DELEGATED_CALLS_MAX
+
+
+# ---- what a review round added, each with the condition it holds ---------------------------------
+
+
+def test_the_route_answers_off_the_event_loop(tmp_path: Path):
+    """A whole model generation, iterated to completion, up to 25 times in a turn. On the event loop
+    that freezes everything else the control app serves for the length of each one — the Chat SSE
+    writes, `/api/diag`, the Workbench. `/mcp/live-read` gets away with being `async` because a
+    Live read is one query; this does not.
+
+    Asked by looking for a running loop from inside the gateway call. There is one on the loop and
+    there is none in a threadpool, which makes the claim a fact about where the code ran rather than
+    a reading of which keyword the route was declared with."""
+    import asyncio
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as control
+
+    class LoopAware(AnswerGateway):
+        on_loop: bool | None = None
+
+        def route(self, request, labels):
+            if getattr(labels, "component", "") == "chat-delegated":
+                try:
+                    asyncio.get_running_loop()
+                    LoopAware.on_loop = True
+                except RuntimeError:
+                    LoopAware.on_loop = False
+            yield from super().route(request, labels)
+
+    orch, oc, _tid = _ready(tmp_path, gateway=LoopAware())
+    with patch.object(control, "orchestrator", orch), TestClient(control.control_app) as client:
+        r = client.post("/mcp/delegated-model", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": delegated.TOOL_NAME,
+                       "arguments": {"token": _token(oc), "alias": OPUS_NAME, "prompt": "hi"}},
+        })
+
+    assert r.status_code == 200
+    assert r.json()["result"]["content"][0]["text"] == "REFUND REQUEST"
+    assert LoopAware.on_loop is False, "the generation must not run on the event loop"
+
+
+def test_two_models_called_at_once_are_each_counted_under_their_own_name(tmp_path: Path):
+    """Two DIFFERENT Aliases in one turn, which the cap's own concurrency test cannot ask: it uses
+    one, so it would pass over a counter that lumped every call under a single name. The receipt is
+    what the person reads afterwards, and "asked opus 16 times" for a turn that asked two models is
+    a receipt for a turn that did not happen.
+
+    This does NOT hold the race the unlocked read had — see the report. A dict insert only happens
+    on each label's FIRST call, so the window is two moments in a turn and no amount of threads
+    makes landing in one of them reliable. The read was removed rather than tested."""
+    import threading
+
+    gateway = AnswerGateway()
+    orch, oc = _orch(tmp_path, gateway=gateway)
+    tid = orch.create_thread()["id"]
+    _chip(orch, tid)
+    _chip(orch, tid, alias_id="f-sonnet", label=SONNET_LABEL)
+    list(orch.chat_stream(tid, "classify these"))
+    token = _token(oc)
+
+    pairs = 8
+    ready = threading.Barrier(pairs * 2)
+    said: list[str] = []
+    lock = threading.Lock()
+
+    def one(alias):
+        ready.wait()
+        answer = _ask(orch, token, alias=alias, prompt="x")
+        with lock:
+            said.append(answer)
+
+    threads = [threading.Thread(target=one, args=(a,))
+               for a in (OPUS_NAME, "sonnet") for _ in range(pairs)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert said.count("REFUND REQUEST") == pairs * 2, said
+    receipt = orch._delegated_receipt(tid)
+    assert receipt["calls"] == pairs * 2
+    assert receipt["aliases"] == sorted([OPUS_LABEL, SONNET_LABEL])
+
+
+def test_a_model_that_answered_nothing_is_not_reported_as_an_answer(tmp_path: Path):
+    """The case `scope.py` documents at length: a route with extended thinking on spends the budget
+    on reasoning tokens and returns a perfectly successful response whose content is `""`. Handed
+    straight back, the assistant holds "the model's answer" and it is nothing."""
+    class Silent(AnswerGateway):
+        def route(self, request, labels):
+            if getattr(labels, "component", "") == "chat-delegated":
+                self.seen.append((request, labels))
+                yield b'data: {"choices":[{"delta":{"content":""}}]}\n\ndata: [DONE]\n\n'
+                return
+            yield from ScriptedGateway.route(self, request, labels)
+
+    gateway = Silent()
+    orch, oc, _tid = _ready(tmp_path, gateway=gateway)
+
+    said = _ask(orch, _token(oc), alias=OPUS_NAME, prompt="Classify this")
+
+    assert f"{OPUS_LABEL} answered nothing" in said
+    assert "one of this Turn's is spent" in said, "and it says the call was not free"
+    assert "do not report an answer it did not give" in said
+    assert len(gateway.delegated) == 1, "because the call really was made"
+
+
+@pytest.mark.parametrize(("sent", "want"), [
+    (2048, 2048),
+    ("2048", 2048),
+    (2048.0, 2048),
+    (2048.5, delegated.DEFAULT_MAX_TOKENS),
+    (99999, delegated.MAX_TOKENS_CEILING),
+    (None, delegated.DEFAULT_MAX_TOKENS),
+    ("lots", delegated.DEFAULT_MAX_TOKENS),
+    (0, delegated.DEFAULT_MAX_TOKENS),
+    (True, delegated.DEFAULT_MAX_TOKENS),
+])
+def test_the_answer_budget_reads_what_the_model_sent(tmp_path: Path, sent, want):
+    """Nothing enforces a JSON schema on a model's tool arguments, so a string and a float are live
+    shapes for a field the tool declares as an integer. Dropping either to the default would shorten
+    an answer the caller asked to be longer, with no word saying so."""
+    gateway = AnswerGateway()
+    orch, oc, _tid = _ready(tmp_path, gateway=gateway)
+    args = {} if sent is None else {"max_tokens": sent}
+
+    _ask(orch, _token(oc), alias=OPUS_NAME, prompt="hi", **args)
+
+    assert gateway.delegated[0][0]["max_tokens"] == want
+
+
+def test_an_abandoned_conversation_does_not_keep_its_counts_for_ever(tmp_path: Path, monkeypatch):
+    """`_mint_live_read_token` clears a Conversation's counts on its NEXT turn, and for a
+    Conversation nobody comes back to there is no next turn. The token beside them has carried a
+    timestamp since ADR-0041; now these are swept off it."""
+    import sage.orchestrator.service as svc
+
+    orch, oc, tid = _ready(tmp_path)
+    _ask(orch, _token(oc), alias=OPUS_NAME, prompt="hi")
+    assert orch._delegated_calls.get(tid)
+    assert orch._delegated_lines.get(tid)
+
+    monkeypatch.setattr(svc, "_LIVE_READ_TTL_S", -1)
+    orch._live_read_thread("lrt_anything-at-all")
+
+    assert tid not in orch._delegated_calls
+    assert tid not in orch._delegated_lines
+
+
+@needs_node
+def test_the_step_line_keeps_a_vendor_prefixed_alias_whole():
+    """`activityLabel` clips its subject at the last `/` because its other callers pass file paths.
+    A gateway alias name carries a slash often enough that it is the ordinary case, and clipping one
+    drops the vendor half of a name the person picked — out of the one line whose job is naming what
+    was called."""
+    result = _node("chat_stream_harness.mjs", [
+        {"type": "agent", "kind": "tool", "tool": delegated.TOOL_NAME, "doing": "model",
+         "detail": f"openai/gpt-4o (1 of {_DELEGATED_CALLS_MAX})"},
+        {"type": "done", "ok": True},
+    ])
+    assert f"Asking openai/gpt-4o (1 of {_DELEGATED_CALLS_MAX})…" in result["typings"]

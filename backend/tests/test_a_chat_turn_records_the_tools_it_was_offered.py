@@ -193,6 +193,28 @@ def test_a_data_artifact_turn_keeps_the_delegated_model_call(caplog):
     assert "bash" not in names, "and the lane is still the narrow one it was"
 
 
+def test_an_ordinary_chat_turn_keeps_the_delegated_model_call_and_a_build_turn_does_not():
+    """The capability is a CHAT turn's, and `chat_thread_id` is what says so. Its step line and its
+    receipt are both wired on the Chat turn, so a Build turn that called it would be gated, counted
+    and capped — and would still spend with nothing on screen and nothing in the transcript, which
+    is the silence ADR-0057's last two bounds exist to stop. Build mints a valid turn token of its
+    own, so this is a path that exists rather than one somebody might build."""
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    shim = EnforcementShim(control, CATALOG, FakeGatewayClient())
+
+    chat_token = control.arm_chat("thr_plain")
+    list(shim.handle(_req("delegated_model_call", "bash"), {}))
+    control.disarm_chat(chat_token)
+    in_chat = {t["function"]["name"] for t in shim.gateway.seen[-1][0]["tools"]}
+
+    list(shim.handle(_req("delegated_model_call", "bash"), {}))
+    in_build = {t["function"]["name"] for t in shim.gateway.seen[-1][0]["tools"]}
+
+    assert "delegated_model_call" in in_chat, "an ordinary Chat turn is where this belongs"
+    assert "delegated_model_call" not in in_build
+    assert "bash" in in_build, "and nothing else about a Build turn changed"
+
+
 def test_the_scoped_writer_is_absent_outside_the_artifact_lane():
     control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
     shim = EnforcementShim(control, CATALOG, FakeGatewayClient())

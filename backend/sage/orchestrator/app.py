@@ -3275,6 +3275,13 @@ async def delegated_model_mcp(request: Request) -> Response:
     about, which is why ADR-0057 leaves `_UNPROXIED` alone.
 
     Nothing here streams: a Delegated model call returns once, with the answer already collected.
+
+    OFF THE EVENT LOOP, unlike `/mcp/live-read` above, which this is otherwise a copy of. What
+    happens inside is a whole model generation iterated to completion — up to 25 of them in one
+    turn. Left on the loop it would freeze the control app for the length of each: the Chat SSE
+    writes, `/api/diag`, the Workbench. A Live read is one query and gets away with it; this does
+    not, and the shape it was copied from is the reason to say so here rather than leave the
+    difference to be found.
     """
     try:
         body = await request.json()
@@ -3284,8 +3291,9 @@ async def delegated_model_mcp(request: Request) -> Response:
             status_code=400,
         )
     batch = isinstance(body, list)
-    out = [r for r in (orchestrator.delegated_model_call(m) for m in (body if batch else [body]))
-           if r is not None]
+    served = await run_in_threadpool(
+        lambda: [orchestrator.delegated_model_call(m) for m in (body if batch else [body])])
+    out = [r for r in served if r is not None]
     if not out:
         # Every message was a notification. 202 with no body is what the transport expects.
         return Response(status_code=202)
