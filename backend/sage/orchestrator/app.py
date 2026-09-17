@@ -1453,9 +1453,12 @@ def _python_diag() -> dict:
 
     `domino_data` here is the TOP-LEVEL package, while `data_library_ready()` above probes
     `domino_data.data_sources`. That is deliberate but it has to be read deliberately: a populated
-    path beside `data_library.ok: false` is not a contradiction, it means the package is installed
-    and its submodule is not — a half-built wheel rather than a missing one. The reverse, a reason
-    string here beside `ok: true`, cannot happen.
+    path beside `data_library.ok: false` is not a contradiction. It says the top-level import
+    succeeded and the submodule import did not, which is at least three different faults — the
+    submodule absent, the submodule present but raising on a missing transitive dependency, or
+    `DataSourceClient` gone from a version that moved it. Which one is in `data_library.detail`,
+    and `pyarrow` below is the usual second. Do not read it as any single one of them. The
+    reverse, a reason string here beside `ok: true`, cannot happen.
 
     Every field is guarded, including the ones that cannot raise today: /api/diag is the only surface a
     deployed builder has, and one unimportable package must not cost the reader `sage_rev`,
@@ -1470,6 +1473,15 @@ def _python_diag() -> dict:
         except Exception as e:
             return f"{type(e).__name__}: {e}"
 
+    def _text(value):
+        """Coerce here, not at the JSON encoder.
+
+        `_guard` fires when the value is produced; `JSONResponse.render()` runs later, outside
+        every guard in this function. So a location the encoder refuses — a `Path` rather than a
+        `str` is enough — is a 500 on the whole page, from a field that reported itself as fine.
+        """
+        return None if value is None else str(value)
+
     def _module(name: str) -> dict:
         import importlib
 
@@ -1481,8 +1493,8 @@ def _python_diag() -> dict:
             # `__file__` in whichever directory won and the OTHER in `__path__`, and it is the
             # second entry the submodules are imported from. A namespace package has no `__file__`
             # at all and only `__path__`. Both, always, so neither shape reads as one tidy answer.
-            "path": getattr(mod, "__file__", None),
-            "search_paths": _guard(lambda: list(getattr(mod, "__path__", []))),
+            "path": _guard(lambda: _text(getattr(mod, "__file__", None))),
+            "search_paths": _guard(lambda: [str(p) for p in getattr(mod, "__path__", [])]),
             "version": _guard(lambda: str(mod.__version__)),
         }
 

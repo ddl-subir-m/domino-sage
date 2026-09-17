@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -64,8 +65,13 @@ def domino_data_somewhere_odd(tmp_path):
             body += f'__path__.append({extend_with!r})\n'
         init.write_text(body)
         sys.path.insert(0, str(home))
-        for name in list(saved_modules):
-            sys.modules.pop(name, None)
+        # The LIVE dict, not `saved_modules`. That snapshot is taken at fixture setup, and this
+        # tree has no `domino_data` installed, so a snapshot-driven loop is a no-op here and would
+        # stay one — while on the deployed image these tests describe, anything importing the real
+        # package between setup and this call would leave it cached and every assertion below
+        # would be made against the ambient copy. The teardown already reads the live dict.
+        for name in [k for k in sys.modules if k == "domino_data" or k.startswith("domino_data.")]:
+            del sys.modules[name]
         importlib.invalidate_caches()
         return init
 
@@ -190,9 +196,29 @@ def test_a_package_that_spans_two_directories_reports_both_of_them(
 
     block = diag()["python"]
 
+    # The exact list, in order. `len == 2` plus a membership check would pass an implementation
+    # that dropped the winning entry and appended something else in its place.
     assert block["domino_data"]["path"] == str(planted)
-    assert str(other) in block["domino_data"]["search_paths"]
-    assert len(block["domino_data"]["search_paths"]) == 2
+    assert block["domino_data"]["search_paths"] == [str(planted.parent), str(other)]
+
+
+def test_a_location_that_is_not_a_string_does_not_take_the_page_down(diag, monkeypatch, tmp_path):
+    """The guards fire when a value is produced; the JSON encoder runs long after all of them.
+
+    So a `__file__` the encoder refuses is a 500 on the whole page — `sage_rev`, `agents`, `mcp`
+    and the log tail gone with it — raised by a field that reported itself as fine. That is the
+    one failure this block was added not to cause, and no guard in the function is positioned to
+    catch it. Planted with `pathlib.Path`, which `json.dumps` refuses.
+    """
+    odd = types.ModuleType("domino_data")
+    odd.__file__ = tmp_path / "as-a-Path" / "__init__.py"
+    odd.__path__ = [tmp_path / "as-a-Path"]
+    monkeypatch.setitem(sys.modules, "domino_data", odd)
+
+    block = diag()["python"]  # the fixture asserts 200 — that is half of what is under test here
+
+    assert block["domino_data"]["path"] == str(tmp_path / "as-a-Path" / "__init__.py")
+    assert block["domino_data"]["search_paths"] == [str(tmp_path / "as-a-Path")]
 
 
 def test_a_module_that_declares_no_version_says_so_rather_than_breaking_the_field(
