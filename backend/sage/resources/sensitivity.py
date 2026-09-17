@@ -386,6 +386,26 @@ def unrecorded_lock_refusal() -> str:
         "Try again. If it keeps happening, tell a {platformName} administrator.")
 
 
+def unnamed_conversation_refusal() -> str:
+    """The sentence refusing a call that could not say which conversation it is for (ADR-0057).
+
+    Not one of ADR-0043's four reasons, and deliberately not dressed as one: the approved group may
+    be perfectly healthy here. What failed is inside Sage — a caller reached the lock without saying
+    which conversation to consult, so the lock could not be read at all, and a turn that ran anyway
+    would be running unlocked on the strength of a question nobody asked.
+
+    So it names no Dataset and no model. There is nothing for the creator to switch to and nothing
+    to unbind; the two ways out the other sentences offer would both be false here. An administrator
+    is the only honest next step there is.
+
+    One product noun, as everywhere else in this module. `{productName}` alongside
+    `{assistantName}` read as two different things having gone wrong.
+    """
+    return brand.text(
+        "{assistantName} couldn't tell which chat this request belongs to, so it stopped. Nothing "
+        "you did caused this — tell a {platformName} administrator.")
+
+
 def declared_turn_refusal_for_model(model: str, approved: frozenset[str]) -> str:
     """The sentence refusing ONE named model, for the previewed app's own call (ADR-0043).
 

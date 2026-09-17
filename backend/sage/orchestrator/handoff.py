@@ -11,6 +11,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from ..gateway.client import CostLabels, GatewayClient
@@ -207,22 +208,54 @@ def wants_an_app(
     assistant: str,
     gateway: GatewayClient,
     catalog: ModelCatalog,
-    thread: str | None = None,
+    thread: str,
+    sensitivity: Callable[[str], tuple[str | None, str]],
     session: str | None = None,
     version: str | None = None,
     timeout_s: float = TIMEOUT_S,
 ) -> bool:
     """True when this Thread should be offered Open in Build.
 
-    False on timeout or error (fail open). True on an unreadable answer until the breaker trips."""
+    False on timeout or error (fail open). True on an unreadable answer until the breaker trips.
+
+    `thread` is not optional and `sensitivity` is not either (ADR-0057). This call carries a digest
+    of the Conversation straight to the gateway, which makes it a turn for the sensitivity lock
+    however it got here, and a turn that cannot name the Conversation it belongs to has nothing to
+    consult. The gate is asked here rather than handed an answer, so the Conversation the digest
+    came FROM is the one whose lock is read — the two could not drift apart without this line
+    changing."""
     if _health.broken:
         return False
     text = _payload(title, user, assistant).strip()
     if not text:
         return False
 
+    try:
+        locked_model, refusal = sensitivity(thread)
+    except Exception:
+        # FAIL CLOSED, and note that this is the same shape as `_preview_approve_model`'s `except`
+        # with the opposite answer (ADR-0057). That one is not a turn and allows; this one is, and a
+        # gate Sage could not read is not a reason to put a conversation's rows on a vendor model.
+        # The cost of being wrong here is a missed suggestion, which the person can act on anyway by
+        # asking for the app in words.
+        log.exception("handoff: couldn't read the sensitivity lock — no suggestion")
+        return False
+    if refusal:
+        # The turn itself is refused, so there is no app to offer and nothing to classify.
+        log.info("handoff: the sensitivity lock refuses this turn — no suggestion (%s)", refusal)
+        return False
+    model = _model_for(catalog)
+    if locked_model:
+        # Locked, not barred. The ask slot's model is Sage's own pick rather than something the
+        # person asked for, so the lock MOVES this classify the way it moves any other turn rather
+        # than cancelling it. WHERE to is not decided here: the gate hands back the same name
+        # `nearest_approved` gives every other locked turn, so this cannot drift from the "runs on"
+        # chip the person is shown beside it.
+        model = locked_model
+        log.info("handoff: the sensitivity lock moves this classify to %s", model)
+
     request = {
-        "model": _model_for(catalog),
+        "model": model,
         "messages": [
             {"role": "system", "content": _SYSTEM},
             {"role": "user", "content": text},
@@ -242,7 +275,7 @@ def wants_an_app(
     # Deliberately NOT added to `project.model_calls`, again as in scope.py: that counter means
     # "inferences that reached the SHIM", and a by-design bypass inflating it would hide the broken
     # wiring the counter exists to surface.
-    call = model_call(_model_for(catalog), "handoff")
+    call = model_call(model, "handoff")
 
     def _call() -> str:
         chunks = []
