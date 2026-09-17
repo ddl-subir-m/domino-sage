@@ -263,13 +263,19 @@ def _artifact_lane_prompt(tmp_path: Path) -> str:
 @pytest.mark.parametrize("word", [
     "constrained", "unavailable", "Shell, tasks", "Live read and file read",
 ])
-def test_the_artifact_turn_block_does_not_supply_the_words_the_model_hands_back(
+def test_an_artifact_turn_is_never_handed_the_words_the_model_hands_back(
         tmp_path: Path, word: str):
-    """The block is model-facing, so it is also a phrasebook.
+    """The turn prompt is model-facing, so it is also a phrasebook.
 
     Three observed turns answered a person who had asked for a chart with a "constrained turn",
-    a "system-level restriction" and tools being "unavailable". Nothing in the block that framed
-    the turn or listed what it could not do was load-bearing, so none of it is here to be echoed.
+    a "system-level restriction" and tools being "unavailable". Nothing in the appended block
+    that framed the turn or listed what it could not do was load-bearing, so none of it is here
+    to be echoed.
+
+    The assertion is against the WHOLE dispatched prompt, not the appended block alone, because
+    the question is whether the model was handed the word at all — it cannot tell which sentence
+    of one prompt supplied it. A red here therefore means some part of `_chat_prompt` now says
+    it too, which is the same defect wherever it lives.
     """
     assert word not in _artifact_lane_prompt(tmp_path)
 
