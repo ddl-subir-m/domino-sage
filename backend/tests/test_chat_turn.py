@@ -227,6 +227,65 @@ def test_chat_data_artifact_question_gets_the_artifact_lane(tmp_path: Path):
     assert not oc.control.snapshot().chat_artifact_turn
 
 
+def _artifact_lane_prompt(tmp_path: Path) -> str:
+    """Run one turn down the data-artifact lane and hand back the prompt it dispatched.
+
+    Same shape as `test_chat_data_artifact_question_gets_the_artifact_lane`: the lane needs a
+    confident `data_artifact` verdict AND a file to chart, and a turn missing either never arms
+    the token that appends the block.
+    """
+    gateway = IntentGateway({"label": "data_artifact", "confidence": 0.92})
+    orch, oc = _orch(
+        tmp_path,
+        [Turn(text="Charted.")],
+        gateway=gateway,
+        client=lambda ws: ObservedControlOpenCode(ws, [Turn(text="Charted.")]),
+    )
+    oc.control = orch.project(start_preview=False).control
+    tid = orch.create_thread()["id"]
+    ws = orch.project(start_preview=False).workspace.path
+    path = ".sage/scratch/pnl.csv"
+    dest = ws / path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("date,pnl,ticker\n2026-06-01,-20,VLTA\n")
+    orch.add_thread_context(tid, {"kind": "file", "name": "pnl.csv", "path": path})
+
+    list(orch.chat_stream(
+        tid,
+        "This is the daily profit and loss for my portfolio this year. Give me the quick read "
+        "and chart the running total with VLTA overlaid.",
+    ))
+
+    assert oc.snapshots and oc.snapshots[0].chat_artifact_turn, "the turn missed the lane"
+    return oc.prompts[0]["text"]
+
+
+@pytest.mark.parametrize("word", [
+    "constrained", "unavailable", "Shell, tasks", "Live read and file read",
+])
+def test_the_artifact_turn_block_does_not_supply_the_words_the_model_hands_back(
+        tmp_path: Path, word: str):
+    """The block is model-facing, so it is also a phrasebook.
+
+    Three observed turns answered a person who had asked for a chart with a "constrained turn",
+    a "system-level restriction" and tools being "unavailable". Nothing in the block that framed
+    the turn or listed what it could not do was load-bearing, so none of it is here to be echoed.
+    """
+    assert word not in _artifact_lane_prompt(tmp_path)
+
+
+def test_the_artifact_turn_block_keeps_the_arguments_the_calls_need(tmp_path: Path):
+    """The cut is adjectives and the negative inventory, not the call arguments.
+
+    `artifact_write`, the thread folder it writes under, and `encoding=svg` are what the model
+    needs to get the calls right; dropping them would break the turn instead of the leak.
+    """
+    prompt = _artifact_lane_prompt(tmp_path)
+    assert "artifact_write" in prompt
+    assert "thread_id exactly as given" in prompt
+    assert "encoding=svg" in prompt
+
+
 @pytest.mark.parametrize("label", ["plain_answer", "data_answer", "data_artifact", "build_app", "other_chat"])
 def test_chat_intent_accepts_the_suggested_labels(label):
     assert chat_intent._parse(json.dumps({"label": label, "confidence": 0.91})).valid
@@ -986,7 +1045,13 @@ def test_a_build_request_the_regex_misses_still_offers_build_after_a_timeout(
     assert any(e.get("type") == "handoff-suggest" for e in orch.thread_history(tid))
 
 
-def test_a_slow_question_that_is_not_a_build_keeps_the_narrower_query_advice(tmp_path: Path):
+def test_a_slow_question_that_is_not_a_build_still_ends_without_guessing_at_its_size(
+        tmp_path: Path):
+    """Nothing was open, so this branch knows less than the two above it, not more.
+
+    It used to close on "Try a narrower query" — advice about a question size it has no
+    evidence about at all.
+    """
     orch, oc = _orch(tmp_path, [Turn(text="never emitted")])
     oc.stay_running = True
     tid = orch.create_thread()["id"]
@@ -995,7 +1060,9 @@ def test_a_slow_question_that_is_not_a_build_keeps_the_narrower_query_advice(tmp
 
     assert not any(e["type"] == "handoff-suggest" for e in events)
     err = next(e for e in events if e["type"] == "error")
-    assert "narrower query" in err["message"]
+    assert "stopped making progress" in err["message"]
+    assert "narrower" not in err["message"]
+    assert "smaller" not in err["message"]
 
     done = next(e for e in events if e["type"] == "done")
     assert done == {"type": "done", "ok": False, "decision": "timeout"}
@@ -2080,7 +2147,35 @@ def test_a_tool_that_never_comes_back_still_ends_the_turn(tmp_path: Path):
     # The label it died under is the one that names what to do about it.
     assert {"type": "agent", "kind": "tool", "tool": "bash",
             "doing": "query", "detail": "WH"} in out
-    assert "narrower query" in next(e for e in out if e["type"] == "error")["message"]
+    message = next(e for e in out if e["type"] == "error")["message"]
+    assert "didn't finish in time" in message
+    assert "narrower" not in message and "smaller" not in message
+
+
+def test_an_open_call_with_no_name_is_reported_without_one(tmp_path: Path, monkeypatch):
+    """The other arm of the same branch, and the one that knows least.
+
+    `_tool_label` always returns something today — it falls back to "a step" — so nothing
+    reaches this arm through the stream, and forcing the label empty is the only way to hold
+    it. It is aimed here anyway: the arm is one `or "a step"` away from live, and what it must
+    not do is make up for the missing name with advice. It used to close on "Try a smaller file
+    or a narrower query" on the one branch with no fact of its own to report.
+    """
+    from sage.orchestrator import service
+    monkeypatch.setattr(service, "_tool_label", lambda payload: "")
+    started_only = [
+        _live("tool_run", tool="bash", input={"command": "get_datasource('WH')"},
+              status="called"),
+    ]
+    orch, oc = _streamed(tmp_path, started_only, gap=0.1)
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+
+    out = list(orch.chat_stream(tid, "how many rows", timeout_s=0.5))
+
+    assert oc.interrupted == 1
+    message = next(e for e in out if e["type"] == "error")["message"]
+    assert message == "That step didn't finish in time."
 
 
 def test_a_slow_tool_outlives_the_window_that_ends_a_stalled_model(tmp_path: Path, monkeypatch,
@@ -2119,7 +2214,11 @@ def test_a_slow_tool_outlives_the_window_that_ends_a_stalled_model(tmp_path: Pat
     # Named, and named as itself: the command is quoted as the agent ran it, not case-folded into
     # something that no longer matches anything you could search the log for.
     assert 'bash (DatasetClient().get_dataset("dataset-clickstream-ds1")' in err["message"]
-    assert "narrower query" in err["message"]
+    # And nothing past the name. Naming the open call is as far as this branch's facts go: it
+    # knows what was open, not whether the thing could ever have worked, so the size advice it
+    # used to close on was always a guess — about a download that was doing exactly its job.
+    assert "narrower" not in err["message"]
+    assert "smaller" not in err["message"]
     # And in the log, which is what a diagnosis reads. Four live stalls said only "quiet for 241s".
     assert any("still open: bash (DatasetClient()" in r.getMessage()
                for r in caplog.records), [r.getMessage() for r in caplog.records]

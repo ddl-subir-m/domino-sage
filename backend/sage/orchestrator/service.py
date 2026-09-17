@@ -11181,13 +11181,22 @@ class Orchestrator:
                                                 history=prompt_history,
                                                 declined=declined)
                 if artifact_token is not None:
+                    # Says what to do, never what this turn is or cannot do. The block is
+                    # model-facing, so every word in it is a word the model can hand back to the
+                    # person — and three observed turns did exactly that, reporting a "constrained
+                    # turn", a "system-level restriction" and tools being "unavailable" to somebody
+                    # who had asked for a chart. The adjectives and the list of what is missing
+                    # were the whole supply. The call arguments are not: artifact_write, thread_id
+                    # and encoding=svg have to stay, because dropping them breaks the turn rather
+                    # than the leak.
                     turn_prompt += (
-                        "\nThis is a constrained data artifact turn. Use Live read and file read tools. "
-                        f"Write requested artifacts only with artifact_write under examples/{thread_id}/. "
+                        "\nThis turn answers with data and files. Write any table or chart the person "
+                        f"asked for with artifact_write under examples/{thread_id}/. "
                         "Pass thread_id exactly as given. Send table JSON as utf8. For a chart, send standard "
                         "SVG markup with inline shapes and text as encoding=svg; artifact_write renders it "
                         "to the requested .png path. Include axes, labels and the requested data series. "
-                        "Shell, tasks, patching and app edits are unavailable."
+                        "If you can't produce something, say so in one plain sentence and don't describe "
+                        "how you work."
                     )
             with timing.span("setup.dispatch"):
                 client.send_prompt(sid, turn_prompt, agent="sage-chat",
@@ -11358,18 +11367,23 @@ class Orchestrator:
                         # 12KB file, told to make it smaller, on a turn whose open call was not
                         # necessarily reading a file. What was open is the one fact this branch has
                         # that the person does not.
+                        # Naming it is as far as the facts go, so neither arm carries size advice
+                        # any more: the branch knows what was open, not whether the thing could
+                        # ever have worked. The arm without a name is bare for the same reason —
+                        # knowing less is not a licence to guess more.
                         message = brand.text(
-                            "That step didn't finish in time — {step} was still running. Try a "
-                            "smaller file or a narrower query.", step=open_now,
+                            "That step didn't finish in time — {step} was still running when "
+                            "{assistantName} stopped it.", step=open_now,
                         ) if open_now else brand.text(
-                            "That step didn't finish in time. Try a smaller file or a narrower "
-                            "query."
+                            "That step didn't finish in time."
                         )
                     elif quiet:
                         # Say which of the two happened. The turn did not run out of time doing
                         # work — it stopped doing any, with nothing of its own left running.
+                        # And nothing beyond that: with no call open, this branch has even less
+                        # evidence than the two above that the query was the problem.
                         message = brand.text(
-                            "{assistantName} stopped making progress. Try a narrower query."
+                            "{assistantName} stopped making progress."
                         )
                     else:
                         message = (
