@@ -271,6 +271,10 @@ _CHAT_TURN_MAX_S = 600.0
 # waits all of them for nothing. The number is a starting point, not a measured one; what matters is
 # that reaching it is a REFUSAL the assistant reads, not a silent stop.
 _DELEGATED_CALLS_MAX = 25
+# How long the Alias listing a Delegated model call resolves against stays good. Short, because its
+# only job is to keep one classification pass from re-asking the gateway "which models exist" fifty
+# times; it is not a cache anything else reads. See `_alias_listing`.
+_ALIAS_LISTING_TTL_S = 60.0
 # How many of the newest messages a Chat poll reads. The whole transcript came back on every poll,
 # once a second for the length of the turn, so the cost of asking a question grew with the length of
 # the Thread rather than with the question — and it competed for CPU with the agent it was watching,
@@ -4862,6 +4866,10 @@ class Orchestrator:
         # that went away must not grow it.
         self._delegated_lines: dict[str, deque[dict]] = {}
         self._delegated_lock = threading.Lock()
+        # The Alias listing a Delegated model call resolves a chip against, and when it was read.
+        # See `_alias_listing`. Not locked: a stale read costs one extra listing and a torn read is
+        # not possible — the tuple is replaced, never mutated.
+        self._alias_listing_at: tuple[float, dict[str, LlmAlias]] | None = None
         self._data_use_turns: dict[str, str] = {}
         # Reads that ended in the model querying the table itself. ADR-0041 permits it — "a
         # read-only turn may read the world", and Chat queries Data Sources every day — but it is a
@@ -10289,6 +10297,17 @@ class Orchestrator:
                 # assistant plainly so it asks again rather than inventing an answer.
                 log.info("delegated model call: the token is not this turn's, asking again")
                 return "That turn token is not current. Ask again on this turn."
+            if thread_id == self._chat_project().build_conversation:
+                # The same property `enforcement.py` holds by taking the tool off a Build turn's
+                # list, held here as well rather than only there. The shim's filter is a gateway-side
+                # strip and this route answers any socket inside the workspace — which is #373's
+                # whole finding — so one door is not two. A Build turn mints a valid token, and a
+                # call under it would be gated, counted and capped and would still spend with no
+                # step line and no receipt, which is the silence ADR-0057's last two bounds exist
+                # to stop. If Build should have the capability it needs those two first.
+                log.info("delegated model call: refused — this is a build turn, not a conversation")
+                return ("This tool is for a conversation turn. Do the work with the model this "
+                        "turn already runs on.")
             log.info("delegated model call: %s asked for %r", name, str(args.get("alias") or ""))
             return delegated.perform(name, args, self._delegated_turn_for(thread_id))
 
@@ -10384,7 +10403,7 @@ class Orchestrator:
                 chip_labels[alias_id] = str(item.get("name") or "")
         if wanted:
             try:
-                listed = {a.id: a for a in self._resources.list_llm_aliases()}
+                listed = self._alias_listing()
             except ResourceUnavailable as e:
                 # Loud, and the chip simply does not join the set. The refusal the assistant then
                 # reads names the Aliases that DID resolve, which is the honest answer — not "that
@@ -10399,6 +10418,31 @@ class Orchestrator:
                 else:
                     unresolved.append(chip_labels.get(alias_id) or alias_id)
         return tuple(out), labels, tuple(unresolved)
+
+    def _alias_listing(self) -> dict[str, LlmAlias]:
+        """Every Alias this caller can call, by id, read at most once every `_ALIAS_LISTING_TTL_S`.
+
+        `_delegated_turn_for` is built fresh per call on purpose — a person can put an Alias in
+        front of the Conversation while its turn runs, and "may this be called" deserves the current
+        answer. What deserves it is the CHIP, which is a file read. This is two uncached gateway GETs
+        (`/v1/models` and `/api/aliases`), and a 25-call classification pass — the shape ADR-0057 is
+        built for — would put fifty of them on the turn's critical path, serially, for an answer to
+        "which models exist" that changes on the timescale of a deployment.
+
+        So the freshness that matters is kept and this is not. A chip whose Alias is younger than
+        the cache lands in `unresolved`, and the sentence that produces asks the person to try
+        again — which is true, and true again a minute later at the latest.
+
+        Not cached on failure: a gateway that refused once is asked again on the next call, because
+        the alternative is a Conversation that cannot call anything for a minute over one 503.
+        """
+        now = time.monotonic()
+        held = self._alias_listing_at
+        if held is not None and now - held[0] <= _ALIAS_LISTING_TTL_S:
+            return held[1]
+        listed = {a.id: a for a in self._resources.list_llm_aliases()}
+        self._alias_listing_at = (now, listed)
+        return listed
 
     def _delegated_ask(self, project: Project, thread_id: str, alias_name: str, label: str,
                        messages: list[dict], budget: int) -> str:
@@ -10487,8 +10531,14 @@ class Orchestrator:
         later turn — a scope problem before it is a cost one, because those answers are about the
         person's rows (ADR-0057).
         """
+        # POPPED, not read. Clearing only on the next turn's mint was enough right up until a turn
+        # died before it minted one: `tables` is built about thirty lines ahead of the prompt, and
+        # the `finally` below publishes whenever it exists, so a turn that raised in between —
+        # reading the transcript baseline, resolving @mentions, opening the event tap, all I/O —
+        # would append the PREVIOUS turn's receipt to its own history. A second receipt for calls
+        # this turn never made, in exactly the failed turn somebody is reading to find out why.
         with self._delegated_lock:
-            counts = dict(self._delegated_calls.get(thread_id) or {})
+            counts = dict(self._delegated_calls.pop(thread_id, None) or {})
         if not counts:
             return None
         total = sum(counts.values())

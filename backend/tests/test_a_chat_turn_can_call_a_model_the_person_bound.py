@@ -711,7 +711,7 @@ def test_a_model_that_answered_nothing_is_not_reported_as_an_answer(tmp_path: Pa
     said = _ask(orch, _token(oc), alias=OPUS_NAME, prompt="Classify this")
 
     assert f"{OPUS_LABEL} answered nothing" in said
-    assert "one of this Turn's is spent" in said, "and it says the call was not free"
+    assert "it still counts against this Turn's limit" in said, "and it says it was not free"
     assert "do not report an answer it did not give" in said
     assert len(gateway.delegated) == 1, "because the call really was made"
 
@@ -770,3 +770,91 @@ def test_the_step_line_keeps_a_vendor_prefixed_alias_whole():
         {"type": "done", "ok": True},
     ])
     assert f"Asking openai/gpt-4o (1 of {_DELEGATED_CALLS_MAX})…" in result["typings"]
+
+
+def test_a_receipt_is_written_once_and_not_again_by_the_next_turn(tmp_path: Path):
+    """Clearing only on the next turn's MINT was enough right up until a turn died before it minted
+    one. `tables` is built about thirty lines ahead of the prompt and the turn's `finally` publishes
+    whenever it exists, so a turn that raised in between would append the previous turn's receipt to
+    its own history — a second receipt for calls it never made, in exactly the failed turn somebody
+    is reading to find out what went wrong."""
+    orch, tid, _events = _turn_with_calls(tmp_path, calls=2)
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    assert len([e for e in store.read_history(tid) if e.get("type") == "delegated-calls"]) == 1
+
+    assert orch._delegated_receipt(tid) is None, "the row is taken, not left to be read again"
+
+
+def test_the_alias_listing_is_read_once_for_a_pass_and_not_once_per_call(tmp_path: Path):
+    """A 25-call classification pass is the shape ADR-0057 is built for, and resolving a chip means
+    two uncached gateway GETs. Fifty round trips, serially, on the turn's critical path, for an
+    answer to "which models exist" that changes on the timescale of a deployment.
+
+    What has to stay fresh is the CHIP, which is a file read — see the test below."""
+    class Counted(Aliases):
+        reads = 0
+
+        def list_llm_aliases(self):
+            Counted.reads += 1
+            return super().list_llm_aliases()
+
+    orch, oc, _tid = _ready(tmp_path, resources=Counted())
+    before = Counted.reads
+    for _ in range(5):
+        _ask(orch, _token(oc), alias=OPUS_NAME, prompt="x")
+
+    assert Counted.reads - before <= 1, "five calls, at most one listing"
+
+
+def test_a_model_put_in_the_conversation_mid_turn_can_be_called_on_that_turn(tmp_path: Path):
+    """The property the per-call rebuild exists for, kept across the listing cache: a person can put
+    an Alias in front of the Conversation while its turn runs, and "may this be called" deserves the
+    current answer. The chip is a file read, so caching the catalogue does not cost it."""
+    gateway = AnswerGateway()
+    orch, oc = _orch(tmp_path, gateway=gateway)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "classify these"))
+    assert "No language model is in this conversation" in _ask(
+        orch, _token(oc), alias=OPUS_NAME, prompt="x")
+
+    _chip(orch, tid)
+
+    assert _ask(orch, _token(oc), alias=OPUS_NAME, prompt="x") == "REFUND REQUEST"
+
+
+def test_the_route_refuses_a_build_turns_token_as_well_as_the_shim_stripping_the_tool(tmp_path: Path):
+    """One property, two doors. The shim's filter is a gateway-side strip, and this route answers
+    any socket inside the workspace — which is #373's whole finding — so a tool taken off the model's
+    list is not the same as a call that cannot be made."""
+    gateway = AnswerGateway()
+    orch, _oc = _orch(tmp_path, gateway=gateway)
+    project = orch.project(start_preview=False)
+    project.build_conversation = "thr_build"
+    token = orch._mint_live_read_token("thr_build")
+
+    said = _ask(orch, token, alias=OPUS_NAME, prompt="Classify this")
+
+    assert gateway.delegated == [], "nothing reached the gateway"
+    assert "This tool is for a conversation turn" in said
+
+
+def test_the_route_holds_its_slots_before_the_offload_not_inside_it(tmp_path: Path):
+    """A semaphore taken inside a threadpool worker still holds that worker, so it protects nothing.
+    Starlette's pool is shared with every sync route — including the generator behind
+    `/api/chat/stream` — and a turn allowed 25 concurrent generations would queue its own step lines
+    behind the calls they describe. That is the freeze the offload exists to prevent, moved rather
+    than fixed.
+
+    Asked of the SOURCE, which is weaker than asking it of the behaviour and is said out loud rather
+    than dressed up: provoking real pool exhaustion needs 40 live generations and would test anyio's
+    scheduler, not this. What the source can say is the one thing that makes the bound real — which
+    side of the offload it is taken on."""
+    import asyncio
+    import inspect
+
+    from sage.orchestrator import app as control
+
+    source = inspect.getsource(control.delegated_model_mcp)
+    assert isinstance(control._DELEGATED_SLOTS, asyncio.Semaphore)
+    held = source.index("async with _DELEGATED_SLOTS")
+    assert held < source.index("run_in_threadpool"), "taken before the offload, not inside it"

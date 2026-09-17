@@ -10,6 +10,7 @@ Run:  uv run python -m sage.orchestrator.app
 """
 from __future__ import annotations
 
+import asyncio
 import collections
 import concurrent.futures
 import contextlib
@@ -3265,6 +3266,16 @@ async def live_read_mcp(request: Request) -> Response:
     return JSONResponse(out if batch else out[0])
 
 
+# How many Delegated model calls may be in the threadpool at once. Held on the event loop, BEFORE
+# the offload, which is the only place it protects anything: a semaphore taken inside a worker still
+# holds that worker. Starlette's pool is ~40 threads and every sync route shares it, including the
+# generator behind `/api/chat/stream` — so a turn allowed 25 concurrent generations could queue its
+# own step lines and its own `done` frame behind the calls they describe. That is the freeze the
+# offload exists to prevent, moved rather than fixed. Four, matching `text_analysis.MAX_CONCURRENCY`,
+# which is the other place Sage fans out over this gateway.
+_DELEGATED_SLOTS = asyncio.Semaphore(4)
+
+
 @control_app.post("/mcp/delegated-model")
 async def delegated_model_mcp(request: Request) -> Response:
     """The Delegated model call tool, in the framing OpenCode's custom tool posts (ADR-0057).
@@ -3291,8 +3302,9 @@ async def delegated_model_mcp(request: Request) -> Response:
             status_code=400,
         )
     batch = isinstance(body, list)
-    served = await run_in_threadpool(
-        lambda: [orchestrator.delegated_model_call(m) for m in (body if batch else [body])])
+    async with _DELEGATED_SLOTS:
+        served = await run_in_threadpool(
+            lambda: [orchestrator.delegated_model_call(m) for m in (body if batch else [body])])
     out = [r for r in served if r is not None]
     if not out:
         # Every message was a notification. 202 with no body is what the transport expects.

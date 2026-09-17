@@ -189,9 +189,9 @@ def perform(name: str, args: dict, turn: Turn) -> str:
         # assistant has "the model's answer" and it is nothing — with a call already spent and no
         # sentence telling it what happened, which is how #29 absorbed four of these into a build.
         return _refused(brand.text(
-            "{label} answered nothing. The call was made and one of this {turn}'s is spent. Ask "
-            "again with a larger `max_tokens`, or do the work another way — do not report an "
-            "answer it did not give.",
+            "{label} answered nothing. The call was made, so it still counts against this "
+            "{turn}'s limit. Ask again with a larger `max_tokens`, or do the work another way — "
+            "do not report an answer it did not give.",
             label=turn.label_for.get(resolved, resolved),
         ))
     return answer
