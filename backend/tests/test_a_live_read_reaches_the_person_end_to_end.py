@@ -130,7 +130,11 @@ def test_a_token_from_no_turn_at_all_reads_nothing(tmp_path: Path):
 def test_the_tools_are_offered_over_the_wire(tmp_path: Path):
     orch, _ = _orch(tmp_path, Warehouse())
     listed = orch.live_read_call({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-    assert {t["name"] for t in listed["result"]["tools"]} == {"live_read_table", "live_read_files"}
+    # Three since ADR-0058: `live_read_query` works a number out of a bound source rather than
+    # reading rows out of one. Written out rather than derived from `mcp.TOOLS`, which would make
+    # this assertion pass for any list at all.
+    assert {t["name"] for t in listed["result"]["tools"]} == {
+        "live_read_table", "live_read_files", "live_read_query"}
 
 
 def test_a_connection_and_a_read_both_say_so_in_the_log(tmp_path: Path, caplog):

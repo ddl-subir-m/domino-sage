@@ -33,10 +33,17 @@ def test_initialize_answers_with_a_tools_capability():
     assert r["serverInfo"]["name"] == "sage-live-read"
 
 
-def test_both_tools_are_listed_and_each_one_demands_the_turns_token():
+def test_every_tool_is_listed_and_each_one_demands_the_turns_token():
+    """Three now, not two: `live_read_query` joined them for ADR-0058.
+
+    The set is written out rather than derived from `mcp.TOOLS`, which would make this test pass for
+    any list at all. Adding a tool is meant to land here, because the token requirement is what stops
+    one Conversation's assistant naming another's (ADR-0038) and a new tool is exactly the thing that
+    could arrive without it.
+    """
     tools = call("tools/list")["result"]["tools"]
 
-    assert {t["name"] for t in tools} == {"live_read_table", "live_read_files"}
+    assert {t["name"] for t in tools} == {"live_read_table", "live_read_files", "live_read_query"}
     for t in tools:
         assert "token" in t["inputSchema"]["required"], f"{t['name']} must say which turn it is"
 

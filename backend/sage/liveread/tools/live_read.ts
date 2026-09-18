@@ -253,3 +253,41 @@ export const files = {
     return call("live_read_files", args)
   },
 }
+
+// Exported as `query`, so OpenCode names it `live_read_query` — `<file>_<export>`, the contract the
+// header describes and `test_the_live_read_tools_are_named_the_same_either_way` pins. A tool named
+// for what it does rather than for the family it joins would have been clearer and is not reachable
+// from this file; renaming it means renaming the file, which renames the other two.
+//
+// NO ROLLOUT SCOPE IN ANY DESCRIPTION HERE (#423). The sibling above still opens an `operation`
+// description with "Fresh projects: …", which is true of the seeding and reads, in a field only the
+// model sees, as a precondition on the parameter — a model applied it to itself and told a person a
+// working capability belonged to other projects. This tool is gated the same way and says so when
+// the gate actually refuses, which is where that sentence is a fact instead of a warning.
+export const query = {
+  description:
+    "Work out a number from a bound Data Source by writing one SQL statement. Use this whenever " +
+    "the answer needs the numbers WORKED OUT rather than looked at — a count, a total, an average, " +
+    "a ranking, a correlation, a group-by, a join across tables. Sage runs the statement " +
+    "server-side and puts the result on a table card the person sees. You get the numbers back " +
+    "when every column you select is one worked out from the rows — COUNT, SUM, AVG, MEDIAN, CORR " +
+    "and the like, plus whatever you GROUP BY. A column holding values stored in rows stays on the " +
+    "card and does not come back to you; the reply says so and says which column it was, so you " +
+    "can ask for a count instead. Prefer this over reading rows and adding them up yourself.",
+  args: {
+    token,
+    source: { type: "string", description: "The Data Source name." },
+    // Sent as written. Nothing takes this apart the way `table` above is taken apart: that argument
+    // names a table for Sage to build a statement around, and this one IS the statement.
+    sql: { type: "string", description:
+      "One SELECT statement, written for this store's own SQL. Name tables in full, as " +
+      "database.schema.table. One statement: no semicolons, no second query." },
+    title: { type: ["string", "null"], description: "A short title for the card." + OPTIONAL },
+    purpose: { type: ["string", "null"], description:
+      "What this is being worked out for, in a few words. It goes in the record, not to the " +
+      "person." + OPTIONAL },
+  },
+  async execute(args) {
+    return call("live_read_query", args)
+  },
+}

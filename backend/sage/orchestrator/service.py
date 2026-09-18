@@ -10179,6 +10179,7 @@ class Orchestrator:
             scope_for=scope_for,
             source_for=sources.get,
             sample_rows=self._resources.sample_rows,
+            run_statement=self._resources.run_statement,
             list_files=list_files,
             dataset_root=dataset_root,
             data_use_enabled=project.record.read_settings().get("dataUseVersion") == 1,
@@ -10638,7 +10639,16 @@ class Orchestrator:
     def _data_use_note(self) -> str:
         if self._chat_project().record.read_settings().get("dataUseVersion") != 1:
             return ""
-        return ("For CSV totals use live_read_files with operation=sum, dataset=upload, the authorized "
+        return ("To work a number out of a bound Data Source — a count, a total, an average, a "
+                "ranking, a correlation, a group-by, a join — use live_read_query: pass this turn's "
+                "token, the Data Source name, and one SELECT statement as sql. Sage runs it "
+                "server-side and puts the result on a card. Numbers worked out from the rows come "
+                "back to you, along with whatever you GROUP BY; a column of values stored in rows "
+                "stays on the card, and the reply names it so you can ask for a count instead. "
+                "Reach for this rather than reading rows and adding them up, and rather than "
+                "writing Python. If the question cannot be put in one SELECT, say so and say what "
+                "you would need. "
+                "For CSV totals use live_read_files with operation=sum, dataset=upload, the authorized "
                 "path, group_by, sum_column, and selected_fields (result columns and/or total). "
                 "This one call calculates locally, writes a table, and returns the selected result. "
                 "For complaint classification or summary, use operation=analyze_text, dataset=upload, "
@@ -10714,8 +10724,9 @@ class Orchestrator:
             # is why this says "what you would need" and never "which tool", since naming a tool to
             # the person stays forbidden there (:21). Same edit in the pack and in `opencode.json`.
             (f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
-             "`live_read_table` or `live_read_files` call. Use those tools to look at a bound table "
-             "or Dataset rather "
+             "`live_read_table`, `live_read_files` or `live_read_query` call. Use those tools to look "
+             "at a bound table or Dataset, and `live_read_query` to work a number out of one, "
+             "rather "
              "than telling the person you cannot see their data. If they are not in your tool list "
              "this turn, use what you do have; if the answer needs a calculation you have no way to "
              "run, say what you would need in order to answer it and what you would do once it is "
@@ -13842,9 +13853,10 @@ class Orchestrator:
         live_read_note = (
             self._data_use_note() + "\n" +
             f"Read token: {self._mint_live_read_token(project.build_conversation)}. Pass it as "
-            "`token` on every `live_read_table` or `live_read_files` call. Use those tools to look "
-            "at a bound table "
-            "or {dataSource} rather than telling the person you cannot see their data."
+            "`token` on every `live_read_table`, `live_read_files` or `live_read_query` call. Use "
+            "those tools to look at a bound table or {dataSource}, and `live_read_query` to "
+            "work a number out of one, rather than telling the person you cannot see their "
+            "data."
             if owns_turn and project.build_conversation else ""
         )
         live_read_note = brand.text(live_read_note) if live_read_note else ""
