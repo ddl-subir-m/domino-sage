@@ -507,8 +507,19 @@ def _statement(args: dict, turn: Turn) -> str:
         # values to the model, which is the question `dataUseVersion` exists to answer. An ungated
         # disclosure path shipping beside a gated one would be two answers to "may values reach the
         # model in this Project", with the newer one winning by accident.
-        return ("Running a query is available in new projects only. Ask about what the table holds "
-                "instead, or say what you would need in order to answer.")
+        #
+        # Through `grant.data_use_says` and not a sentence of its own: #428 put that helper in one
+        # place on the ground that one sentence with two copies drifts invisibly, and this is its
+        # third caller. It matters here for the reason #428 filed — an old Project reached a person
+        # as "go write the SQL yourself", and a tool whose whole subject IS SQL is the likeliest
+        # place for that to happen again.
+        #
+        # There is no act that fixes this refusal: `dataUseVersion` is written only inside `ensure`'s
+        # `if fresh:` arm and nothing backfills it. Measured on the live dogfood Project 2026-09-18,
+        # which returns this refusal — so the Project where #408 was filed cannot run this tool.
+        return grant.data_use_says(
+            "running a query against a {dataSource}",
+            "read the table and show its columns and a sample row")
 
     name = str(args.get("source") or "")
     sql = str(args.get("sql") or "").strip()

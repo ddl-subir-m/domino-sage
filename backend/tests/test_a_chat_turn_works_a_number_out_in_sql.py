@@ -157,8 +157,14 @@ def test_a_project_without_data_use_is_refused_and_told_what_to_do_instead(tmp_p
     accident, is worse than one restrictive answer."""
     turn, recorded = turn_for(tmp_path, data_use_enabled=False)
     said = _run(turn, "SELECT COUNT(*) FROM E")
-    assert "new projects only" in said
-    assert "say what you would need" in said, "a dead end is the failure this ticket is about"
+
+    # Through `grant.data_use_says` (#428) rather than a third copy of the sentence. Asserted on
+    # what that helper guarantees, not on its exact wording, so rewording it does not redden this —
+    # but the last clause IS asserted, because it is the whole reason #428 exists: an old Project
+    # reached a person as "go write the SQL yourself", and this tool's subject is SQL.
+    assert "created before" in said and "already exists" in said
+    assert "Do not ask the person to write SQL" in said
+    assert "can still" in said, "a dead end is the failure this ticket is about"
     assert not recorded
     assert not (tmp_path / "examples" / "thr_q").exists(), "a refused turn writes nothing"
 
