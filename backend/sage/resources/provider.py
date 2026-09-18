@@ -796,23 +796,29 @@ _FLIGHT_WRAPPER = re.compile(
 # `not found`, `invalid argument` and `internal` are deliberately absent, so they fall through to
 # the payload rather than guess.
 #
-# WHAT IS MEASURED, and what is not. Three strings were captured live from the running Sage process
-# on 2026-09-17 (#399), and all three are category 1 or 2:
+# MEASURED, all of it, against cloud-dogfood. Category 1 and 2 were captured on 2026-09-17 from the
+# running Sage process; category 3 by `spikes/domino-probes/store_rejection_status_probe.py`, six
+# deliberately-bad SELECTs against Postgres and Snowflake:
 #
-#     unavailable      / failed to connect ... Connection refused   -> never_delivered
-#     not found        / no credentials for user <user>             -> setup_fault
-#     invalid argument / Type: configObjectError, Subtype: ...      -> setup_fault
+#     unavailable      / failed to connect ... Connection refused    -> never_delivered
+#     not found        / no credentials for user <user>              -> setup_fault
+#     invalid argument / Type: configObjectError, Subtype: ...       -> setup_fault
+#     invalid argument / Type: internalError, ... ERROR: relation .. -> answered   (Postgres x3)
+#     invalid argument / 002003 (42S02): SQL compilation error: ..   -> answered   (Snowflake x3)
 #
-# NO category-3 string has ever been captured from the real proxy. That `not found` and `invalid
-# argument` also carry genuine store objections is INFERRED from those statuses being the natural
-# gRPC mapping for a rejected statement — it is not a reading. The inference is why they are left
-# out of both tuples rather than assigned, and why `answered` is the default in `failure_kind`: an
-# unclassified message is shown rather than swallowed, so being wrong here costs a clause and not
-# the diagnosis.
+# 6 of 6 store objections classified `answered`, 0 misclassified, so no status listed above is in
+# the wrong tuple. `invalid argument` really does carry both a Domino config fault and a real store
+# objection, which is why it is absent from both tuples and separated on the payload instead.
 #
-# One query retires this. `fpoblete-postgres-service-account` answers 200, so send it bad SQL from
-# the Sage process and read the status off the string it raises. If a real store objection turns
-# out to arrive as a status listed above, that status is wrong here and the capture says so.
+# Two things that probe settled which nothing else would have:
+#
+# 1. A store objection arrives with `__context__` of **ArrowInvalid**, not a Flight class at all —
+#    `domino_data` catches `(flight.FlightError, ArrowException)` and re-raises. So the class tuples
+#    never fire for category 3, and the STATUS is what does the work there. Do not "simplify" this
+#    to a class check.
+# 2. Domino wraps the Postgres family in its own `Type: X, Subtype: Y. Message: <store words>`
+#    envelope — the SAME envelope category 2 arrives in. The two are told apart by the Type value,
+#    not by the shape, so a payload rule keyed on the envelope itself would match both.
 _NEVER_DELIVERED_STATUS = ("unavailable", "deadline exceeded", "cancelled")
 _SETUP_FAULT_STATUS = ("unauthenticated", "permission denied", "unauthorized")
 
