@@ -117,3 +117,41 @@ to be reopened to make once already.
 
 It does not remove `live_read_table`. Showing a few real rows on a card is a different job from
 computing, it keeps its card-only guarantee, and nothing here changes it.
+
+## Amendment: the artifact lane is in scope (2026-09-18)
+
+This ADR is written throughout for "a Chat turn on the read-only lane". The `data_artifact` lane
+has the same hole and is covered by the same decision. Measured on `main@86aae12a`, the two tool
+sets differ by one entry:
+
+    read-only:  delegated_model_call, glob, grep, live_read_files, live_read_table, read, skill
+    artifact:   delegated_model_call, glob, grep, live_read_files, live_read_table, read, artifact_write
+
+Neither can filter, count or join. So the sentence above — *"the lane cannot answer 'How many
+Mixpanel events in the last 30 days, and how many distinct users?' — not badly, but at all"* — is
+true of both, and was measured on the artifact lane a second time before this amendment was
+written: the turn composed the correct statement, reported *"This turn doesn't have the tool to
+execute it and get back numbers"*, and ended `decision="table generation failed"`.
+
+The artifact lane is the worse half, because of what it has already promised. A read-only turn that
+cannot compute answers in prose and disappoints. An artifact turn has been labelled `data_artifact`,
+has armed `artifact_write`, and has been told by its own turn prompt to write the table with it. It
+then cannot produce a number to put in one.
+
+**The decision therefore reads `a Chat data turn` wherever it read `a Chat turn on the read-only
+lane`.** The SQL tool joins the allowlist at `enforcement.py:321` in the same change that gives it
+to the read-only path, and the door below is reachable from both.
+
+Three things do NOT change, and are restated because each looks like it might:
+
+- **The value-return rule is unchanged.** Numerically derived aggregates reach the model;
+  value-selecting ones go to the card. This already covers the artifact case: a chart needs a label
+  and a number per bar, which is exactly the group-by shape the rule admits on purpose.
+- **`artifact_write` keeps its bounds.** `examples/<threadId>/`, `.png` or `.table.json` only. A
+  turn that can now compute is not a turn that can write anywhere.
+- **The read-only lane's guarantee is untouched.** Arming still removes the shell on both lanes,
+  and #400's 400.2 seconds remains the reason.
+
+Recorded as an amendment rather than a new ADR because it changes this decision's scope and nothing
+else; a reader who finds only the body above would build the SQL path into one lane and leave the
+other exactly as this ADR describes it.
