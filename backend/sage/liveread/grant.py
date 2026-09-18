@@ -59,6 +59,35 @@ def reachable(kind: str, name: str, *, bound: Iterable[str] = (), chips: Iterabl
     return None
 
 
+def data_use_says(operation: str, instead: str) -> str:
+    """What to say when a Project predates local data use (#428).
+
+    The one refusal here with NO ACT THAT FIXES IT. `dataUseVersion` is written only inside the
+    `if fresh:` arm of `WorkspaceManager.ensure`, there is no backfill anywhere, and an existing
+    Project therefore cannot gain the capability at all. `Refusal` above requires a refusal to name
+    the missing thing and the act; there is no act, so this names the reason instead, and then what
+    this Project CAN still do — because a dead end is the one thing the sentence must not be.
+
+    IT ALSO INSTRUCTS THE MODEL, which no other refusal in this module needs to. The others reach a
+    person through an assistant with nothing to add. This one reached a person as *"go write the SQL
+    yourself"*: `_data_use_note` returns `""` in an old Project, so the model was never told the
+    operation existed, then got a bare fact about it back mid-turn and improvised an answer that
+    handed the work to the person. A fact alone leaves the improvising open. The last sentence
+    closes it, and it is load-bearing rather than decoration.
+
+    Kept here, and not at the two gates, because one sentence with two copies drifts and the drift
+    is invisible: both callers refuse the same thing for the same reason.
+    """
+    return brand.text(
+        "This {project} was created before {operation} was available, so it cannot run here, and "
+        "there is no way to switch it on for a {project} that already exists. {projectPlural} "
+        "created since then have it. Tell the person that is why. {assistantName} can still "
+        "{instead} — offer that. Do not ask the person to write SQL, and do not ask them to work "
+        "the numbers out by hand.",
+        operation=operation, instead=instead,
+    )
+
+
 def values_allowed(binding: str, table: str, *, shared: Iterable[tuple[str, str]] = ()) -> bool:
     """True where the creator already put THIS table's rows in front of the assistant.
 

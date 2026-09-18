@@ -357,7 +357,13 @@ def test_existing_project_does_not_enable_calculation(tmp_path):
     manager.ensure("old", seed_app=False)
     assert "dataUseVersion" not in manager.project_record("old").read_settings()
     turn, _, journal = setup_turn(tmp_path, data_use_enabled=False)
-    assert "new projects only" in run.perform("live_read_files", args(), turn)
+    said = run.perform("live_read_files", args(), turn)
+    # The refusal, not its wording. This asserted "new projects only" until #428, which is the
+    # phrase a model paraphrased into "go write the SQL yourself" — so the string that used to
+    # stand for the property was the defect. What has to hold is that the gate refuses and nothing
+    # is journalled; what the sentence must say is pinned in
+    # `test_an_old_project_is_told_why_rather_than_sent_to_write_sql.py`.
+    assert "cannot run here" in said, said
     assert journal == []
 
 
