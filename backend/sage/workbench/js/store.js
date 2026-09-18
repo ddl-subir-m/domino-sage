@@ -445,10 +445,11 @@ window.SW = window.SW || {};
   // again on the way out of boot. Tag it the day something does.
   let modelStatusApplied = 0;
 
-  // Which keys make an answer one ABOUT the model block. `loadBuild` substitutes `{}` for a
-  // `/project` read that failed, and `{}` is truthy, so it gets past the exit below on purpose —
-  // see `chatConfirmed` further down, which needs it to arrive and write nothing. An answer that
-  // says nothing must not claim the queue either: letting one 500 take the head of it would throw
+  // Which keys make an answer one ABOUT the model block. A `/project` read that FAILED no longer
+  // reaches this at all — `loadBuild` handed `{}` before #375 and hands `null` now, which stops at
+  // `if (!m) return` below — so what this gate is left covering is the payload that arrives whole
+  // and simply says nothing about the model: a POST body, or boot's `projects[0]`. An answer that
+  // says nothing must not claim the queue: letting one take the head of it would throw
   // away a good read that started earlier and is still in flight, which is the same loss this guard
   // exists to prevent, reached from a third side. Every key read below is listed; a new one goes in
   // here too, or a payload carrying only that key claims nothing.
@@ -491,18 +492,20 @@ window.SW = window.SW || {};
     // Off THIS ANSWER, and only where it carried both halves. A payload with no Chat pair in it
     // writes neither field above, so the store at that moment still holds whatever is on screen —
     // the optimistic pick, if a save is out — and reading the pair from `state` would confirm the
-    // very value the save is waiting on. `loadBuild` hands `{}` here whenever `/project` fails,
-    // which is truthy and so gets past the exit at the top, making that an ordinary Tuesday rather
-    // than an edge. One half without the other is refused for the same reason: it would pair a
+    // very value the save is waiting on. A failed `/project` used to arrive here as `{}`, which is
+    // truthy and so got past the exit at the top; since #375 `loadBuild` hands `null` and it stops
+    // there instead. The rule holds either way and is not written for that case — it is written
+    // for any payload that carries one of these halves and not the other, which is why it asks
+    // what THIS ANSWER holds rather than what the store does. One half without the
+    // other is refused for the same reason: it would pair a
     // model this answer named with a level left over from something else.
     if ('chat_model' in m && 'reasoning_effort' in m) {
       chatConfirmed = { model: state.model, effort: state.reasoningEffort };
     }
     // Build's pair, on the same terms and for the same three reasons — #323 found all three of them
     // live on `setBuildModel`, which #306 had scoped out on a comparison that only asked whether it
-    // reverts at all. Every word above about reading it off THIS ANSWER holds here unchanged,
-    // including the `{}` that `loadBuild` substitutes for a failed `/project`: that body writes
-    // neither `picked_model` nor `picked_effort`, so it may confirm neither.
+    // reverts at all. Every word above about reading it off THIS ANSWER holds here unchanged: a
+    // payload carrying neither `picked_model` nor `picked_effort` may confirm neither.
     //
     // Its own record, gated on its own two keys, rather than a field on the one above. Not because
     // any live answer separates the pairs — `project.status()` writes all four on adjacent lines, so
@@ -511,7 +514,9 @@ window.SW = window.SW || {};
     // agree on every payload that exists; they part on a body carrying Build's halves and not
     // Chat's, and there the shared record would confirm neither, which is a refusal no payload
     // argues for. Same reason the AND here is the rule's shape rather than a case with a witness:
-    // the reachable state is the one where BOTH keys are absent, which is the `{}` above.
+    // the reachable state is the one where BOTH keys are absent, which is any payload that carries
+    // no Build pick — a POST body, or boot's `projects[0]`. The `{}` this used to name was
+    // `loadBuild`'s failed `/project`, and since #375 that arrives as `null` and never gets here.
     if ('picked_model' in m && 'picked_effort' in m) {
       buildConfirmed = { model: state.buildModel, effort: state.buildEffort };
     }
@@ -886,7 +891,11 @@ window.SW = window.SW || {};
     const appTicket = appScopeTicket();
     const listingGen = ++listingRead;
     Promise.all([
-      SW.api.project().catch(() => ({ attached: [] })),
+      // `null`, not an empty body. A failed read keeps what is on screen — the rule
+      // `refreshAppScope` states — and only `null` can say "no read" here: `{ attached: [] }` is a
+      // successful read that never happened, and nothing downstream can tell it apart from a
+      // project that genuinely ships nothing (#375).
+      SW.api.project().catch(() => null),
       SW.api.resourceListing(),
     ]).then(([project, listing]) => {
       if (gen !== scopeLoad) return;
@@ -894,7 +903,10 @@ window.SW = window.SW || {};
       // that has written since holds the newer answer here too, by exactly the Upload that fired
       // it. The listing below is a separate read on a separate ticket, so dropping this half of
       // the answer does not drop that one.
-      if (projectGen === projectRead) applyProjectRead(appTicket, project);
+      // And unless the read failed, which is a third thing again: not a stale answer to drop, but
+      // no answer at all. Writing one would empty the Uploads group and the app's Attachments
+      // together, both off this one read (#375).
+      if (projectGen === projectRead && project) applyProjectRead(appTicket, project);
       // Unless a later read has already landed — the files above are this load's own and are
       // written either way, but the platform's answer is only the newest one's to write.
       if (listingGen === listingRead) {
@@ -1173,7 +1185,9 @@ window.SW = window.SW || {};
     const [resources, activity, project] = await Promise.all([
       SW.api.resources(scope.id),
       SW.api.activity(scope.id),
-      SW.api.project().catch(() => ({ attached: [] })),
+      // `null` for the reason the scope load's copy of this read is: a failed read keeps what is
+      // on screen, and a body caught in its place is a successful read nobody made (#375).
+      SW.api.project().catch(() => null),
     ]);
     // Both reads are taken together and both are written together, so one ticket covers both.
     // Applying half of this read and half of a newer one is how the Uploads group ends up empty:
@@ -1181,7 +1195,19 @@ window.SW = window.SW || {};
     // `file` group back into it.
     if (gen !== scopeLoad || projectGen !== projectRead) return;
     applyResourceGroups(resources.groups, { aliases: resources.aliases, errors: {} });
-    applyProjectRead(appTicket, project);
+    // By the same mechanism the line above names, a `/project` that did not answer costs the
+    // `file` group too, and it is NOT carried across by hand. Two of this function's callers have
+    // just had the server confirm an Upload is GONE — `deleteScratchFile`, and `addScratchToDataset`
+    // moving the bytes onto a Dataset — and neither removes the row optimistically, so this read
+    // is the only thing that takes it off screen. Keeping the rows through a failed read would
+    // leave a deleted file listed under a success toast, and would draw a promoted file twice: once
+    // in Uploads and once under its new Dataset. `collectTurnRefs` walks this group to turn
+    // "@name" into a path a turn carries, so a kept-but-dead row is a path to bytes that are gone.
+    //
+    // So the group empties here on a 502, as it always has. That is the attachments rule pointed
+    // the other way, and it is right for this half: the caller knows the row is stale and the
+    // shared read cannot (#375).
+    if (project) applyProjectRead(appTicket, project);
     state.activity = activity;
     state.resourcesLoading = false;
     // In the window between a project switch and its deferred listing landing there is nothing to
@@ -7104,7 +7130,9 @@ window.SW = window.SW || {};
       // selected app are three parts of one answer taken at one moment, and a newer answer has to
       // beat all three of them or none (#101).
       const ticket = appScopeTicket();
-      const project = await SW.api.project().catch(() => ({}));
+      // `null` rather than `{}`: `{}` got past `applyModelStatus`'s own exit and, worse, reached
+      // the attachments write below as a successful read of an app that ships nothing (#375).
+      const project = await SW.api.project().catch(() => null);
       // On the ticket the line above took, so this write is ordered by the same clock as the
       // attachments below rather than by nothing at all (#324): a newer answer — another
       // `loadBuild`, or a model save the server has already taken — beats it. Each half beats its
@@ -7113,7 +7141,12 @@ window.SW = window.SW || {};
       // Off the read that was already happening. The header's row renders per app switch, so it
       // has to answer out of the store rather than fetch (ADR-0010) — and `loadBuild` is what
       // `selectApp` already runs, so the switch reloads it with everything else app-scoped.
-      applyAppScope(ticket, { appAttachments: project.attached || [] });
+      //
+      // The key is left off entirely when the read failed, not written empty: `applyAppScope`
+      // skips a key it is not handed, which leaves the list AND its watermark alone. Writing an
+      // empty list would claim the field with this ticket's sequence, and a good read issued
+      // earlier and still in flight would then lose to a read that answered nothing (#375, #101).
+      applyAppScope(ticket, project ? { appAttachments: project.attached || [] } : {});
       // No conversation open means a new one: nothing to replay. Asking for the whole project
       // here is what used to make "New conversation" look dead — the transcript never changed.
       const conversation = state.thread && state.thread.id;

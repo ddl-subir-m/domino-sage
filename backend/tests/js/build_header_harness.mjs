@@ -303,6 +303,10 @@ let historyFails = false;
 let rowDetailFails = false;
 // A 500 on the app list, which is not the same answer as a Project with no apps (#95).
 let appsFail = false;
+// A 502 on `/project`, which is not the same answer as a Project whose app ships nothing (#375).
+// Its own switch rather than a hold, because "never" and "later" are different claims: a parked
+// read still writes what it carries when it lands, and a failed one has nothing to write.
+let projectFails = false;
 // A refused publish, as the sentence the server would send with the 409. Nothing is published on
 // this path, and the confirm has to stay open on it.
 let publishFails = '';
@@ -504,7 +508,10 @@ function route(path, init) {
     const db = (TREE[m[1]] || {})[param(path, 'database')] || {};
     return json({ items: db[param(path, 'schema')] || [] });
   }
-  if (path === '/project') return json({ attached: attached[selected] || [] });
+  if (path === '/project') {
+    if (projectFails) return json({ error: 'unavailable' }, 502);
+    return json({ attached: attached[selected] || [] });
+  }
   // Membership, the local file half of the panel. `usedBy` is left off deliberately: this fixture
   // holds no app manifests, so the honest answer is the one an unbound Project gives.
   if (path === '/project/resources') return json({ items: MEMBERSHIP });
@@ -1096,6 +1103,7 @@ async function arrive(threadId, appId, mode) {
   scoped.length = 0;
   bindRefusal = '';
   failLevel = null;
+  projectFails = false;
   holding = null;
   held.length = 0;
   // A Scope door left open by the previous step would still be open here, because the store is one
@@ -1978,6 +1986,48 @@ for (const step of steps) {
       await poll;
       stale.release();
       await read;
+    }
+
+    if (step.race === 'project-read-fails') {
+      // The first of #375's two conditions: `/project` answering 502 under a `loadBuild`. The app
+      // ships two files, all of them on screen before the read goes out, so an implementation
+      // that empties on the failure and one that keeps what is there give different answers.
+      calls.length = 0;
+      projectFails = true;
+      await SW.store.loadBuild();
+      projectFails = false;
+    }
+
+    if (step.race === 'failed-read-then-good-one') {
+      // The second condition, and the one a single plant hides. A good `/project` read issued
+      // FIRST and still in flight; a failed one landing on top of it. The failure must not claim
+      // the field — if it raises the watermark, the good answer loses to a read that answered
+      // nothing, and the store holds an app's model half beside no attachments at all.
+      //
+      // The parked read carries a manifest that is NOT the one on screen — a third file, attached
+      // just before it goes out. That difference is what makes the claim askable: if the good read
+      // won, the new file is listed; if the failure refused it, the screen still says two. Without
+      // it, keeping what is on screen and installing the good answer give the same list, and a
+      // half-fix that kept the value while still claiming the field would read as correct.
+      attached[selected] = [
+        ...attached[selected],
+        { path: 'public/data/desks/q3.csv', file: 'q3.csv',
+          dataset: 'desks', dataset_id: 'as_desks', size: 9 },
+      ];
+      // `route` builds a body when the request ARRIVES, and `projectFails` is off at that moment,
+      // so what is parked is a real answer. The hold is then lifted before the failing read goes
+      // out, so the failure lands FIRST rather than queueing behind it — the interleave the claim
+      // is about.
+      holding = new Set(['/project']);
+      calls.length = 0;
+      const good = SW.store.loadBuild();
+      await settle();
+      holding = null;
+      projectFails = true;
+      await SW.store.loadBuild();
+      projectFails = false;
+      held.shift().release();
+      await good;
     }
 
     if (step.race === 'read-then-act') {
