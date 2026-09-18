@@ -31,7 +31,12 @@ def test_chat_keeps_data_skills_and_delegation_without_rewriting_history_or_the_
     list(shim.handle(request, project="p"))
     sent = gateway.seen[-1][0]
     assert sent["model"] == model
-    assert {t["function"]["name"] for t in sent["tools"]} == set(names)
+    # `todowrite` is the one exception, and only since #400: a Chat turn answers and returns, so a
+    # task list on it promises a build that cannot arrive. It does not weaken what this test is for.
+    # The 2026-09-14 profile this pins was rejected for losing the skill catalogue and preventing
+    # delegation — `skill` and `task`, which both still survive below. The task list is neither.
+    assert {t["function"]["name"] for t in sent["tools"]} == set(names) - {"todowrite"}
+    assert {"skill", "task"} <= {t["function"]["name"] for t in sent["tools"]}
     assert sent["messages"] == original["messages"]
     assert request == original
     control.disarm_chat(token)

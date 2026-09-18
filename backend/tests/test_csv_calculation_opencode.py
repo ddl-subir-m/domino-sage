@@ -43,7 +43,12 @@ def test_real_opencode_calculates_sales_without_sending_the_email_column(tmp_pat
             if len(calls) == 1:
                 tools = {t["function"]["name"] for t in body.get("tools", [])}
                 assert "live_read_files" in tools
-                assert "task" in tools and "todowrite" in tools
+                # Delegation survives on both. The task list does not: a Chat turn answers and
+                # returns, so a list on it promises a build that cannot arrive (#400). Asserted
+                # per mode rather than dropped — this is the only seam that sees the real
+                # OpenCode tool set, so it is the one place the split is worth pinning.
+                assert "task" in tools
+                assert ("todowrite" in tools) is (mode == "build")
                 arguments = args(token=token, path=upload["path"])
                 delta = {"tool_calls": [{"index": 0, "id": "calculate_sales", "type": "function",
                                          "function": {"name": "live_read_files",
@@ -317,7 +322,9 @@ def test_real_opencode_task_result_stays_local_on_parent_continuation(tmp_path):
             assert "person0@example.invalid" not in text
             if len(calls) == 1:
                 tools = {t["function"]["name"] for t in body.get("tools", [])}
-                assert "task" in tools and "todowrite" in tools
+                # `task` is this test's subject — it delegates on the next line, and #400 keeps
+                # delegation on a Chat turn. Only the task list goes.
+                assert "task" in tools and "todowrite" not in tools
                 delta = {"tool_calls": [{"index": 0, "id": "delegate_sales", "type": "function",
                          "function": {"name": "task", "arguments": json.dumps({
                              "description": "Inspect the sales upload",

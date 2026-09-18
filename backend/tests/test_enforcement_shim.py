@@ -201,6 +201,25 @@ def test_an_answering_turn_loses_the_task_list_tool_but_a_plan_turn_keeps_it():
     assert names_after("plan") == ["todowrite", "read"]   # the gate keeps it
 
 
+def test_a_chat_turn_loses_the_task_list_but_keeps_the_sub_task_tool():
+    """A Chat turn answers and returns, and its writes can never leave the Thread's own dirs, so a
+    task list on one promises a build that cannot happen (#400: a 21-call Chat turn spent call 4 on
+    `todowrite`). It is not expressible as a read_only_reason — an unbounded Chat data turn is not
+    read-only, so it carries "", exactly what the Build turn above carries. `task` deliberately
+    stays: the 2026-09-14 latency profile that hid it from Chat was rejected for killing delegation,
+    and a sub-task is work being done rather than work being promised."""
+    tools = [
+        {"type": "function", "function": {"name": "todowrite"}},
+        {"type": "function", "function": {"name": "task"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.IMPLEMENT)
+    control.arm_chat("t1")
+    gw = FakeGatewayClient()
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+    assert [t["function"]["name"] for t in gw.seen[-1][0]["tools"]] == ["task", "read"]
+
+
 def test_an_answering_turn_can_still_read_an_earlier_builds_task_list():
     """Only the write side is stripped. "What's left to do?" is a fair question for an answering turn,
     so a read-side todo tool (1.18.4 has none; a future driver might) must survive."""
