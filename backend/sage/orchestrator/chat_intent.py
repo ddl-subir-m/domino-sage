@@ -53,6 +53,31 @@ class Intent:
     def valid(self) -> bool:
         return bool(self.label) and not self.fallback
 
+    @property
+    def usable_label(self) -> bool:
+        """True when the classifier returned a label it meant, sure of it or not (#401).
+
+        `valid` answers "may this turn be BOUNDED by the label", and confidence belongs in that
+        answer: arming a read-only lane off a guess is how a question ends up on a lane that cannot
+        reach the warehouse. Widening off the same label does not spend anything — it asks the
+        person — and the question the classifier is least sure about is the one most likely to need
+        an investigation. One field was answering both, in opposite directions.
+
+        THE ADMITTED SET IS NAMED, not inferred from `label` being non-empty: `_parse` keeps the
+        label on three fallbacks, and a caller written as `intent.label in {...}` would admit all
+        three. `low-confidence` is the one being admitted on purpose. `unknown-label` is harmless,
+        since every caller tests membership anyway. The one that earns this line is
+        **`invalid-confidence`** — it keeps `label="data_answer"` on a reply that answered `1.7` or
+        `NaN`, so a membership check cannot see that the classifier never scored the turn at all.
+
+        `no-bound-context` is excluded too, for symmetry rather than for effect, and it is worth
+        saying which. It is stamped by `_call` below and not by `_parse`, only `if intent.valid`,
+        and only when nothing is bound — so the population THIS ticket admits can never wear it,
+        and the one caller refuses it on a later condition regardless. Do not reach for it as the
+        justification for this line; reach for `invalid-confidence`.
+        """
+        return bool(self.label) and self.fallback in ("", "low-confidence")
+
 
 def _parse(raw: str) -> Intent:
     try:

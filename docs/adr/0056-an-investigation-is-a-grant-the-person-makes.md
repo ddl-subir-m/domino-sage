@@ -130,12 +130,19 @@ nor a deliberate grant is talk.
 
 ## The offer, and what it costs
 
-An offer fires when the turn **would be bounded** (`intent.valid` and the label is `data_answer` or
-`data_artifact`), a Data Source or table chip is on the Thread, the sentence looks
+An offer fires when the turn **would be bounded** (`intent.usable_label` and the label is
+`data_answer` or `data_artifact`), a Data Source or table chip is on the Thread, the sentence looks
 investigative, and no decision has been recorded. It yields its card and
 `{"type": "done", "ok": False, "decision": "investigation offer"}`, both appended to history so the
 card survives a reload, and **the turn does not run** — the shape `_chat_table_candidates_events`
 already uses for the table card.
+
+Amended while building #401. That first condition read `intent.valid`, which also asks whether the
+classifier cleared `MIN_CONFIDENCE`, and the reported question scored 0.60 — so the person was never
+asked about the turn that most wanted an investigation. `usable_label` asks only whether the
+classifier returned a label it meant. The threshold did not move and the arming sites below still
+read `valid`: putting a card in front of someone is a different bet from arming a read-only lane off
+a guess, and one field was answering both.
 
 **Both buttons replay the question.** The card ended a turn that would otherwise have answered, so
 an answer that only recorded a decision would charge the person a round trip for a card they did
@@ -180,10 +187,10 @@ one without a card — is a surface this record is not the place to design.
   is remembered. Priced rather than dismissed: the opposite failure, a trigger narrow enough never
   to misfire, is the one that produced a gate nothing could open.
 - **Two bounded paths are offered nothing, and that is the narrowing's price.** The offer requires
-  `intent.valid` and a `data_answer` or `data_artifact` label, which buys most of a prose trigger's
-  false positives for free — a classifier saying this is a data question is a second opinion the
-  words alone are not. But `plain_answer` arms `arm_read_only("question")` too, and when the
-  classifier is unavailable or answers `other_chat`, `answer_only` falls back to
+  `intent.usable_label` and a `data_answer` or `data_artifact` label, which buys most of a prose
+  trigger's false positives for free — a classifier saying this is a data question is a second
+  opinion the words alone are not. But `plain_answer` arms `arm_read_only("question")` too, and
+  when the classifier is unavailable or answers `other_chat`, `answer_only` falls back to
   `_plain_chat_answer_only`. So *"dig into why weekly active users fell"* asked while the gateway is
   down is bounded and draws no card. Named rather than closed: widening the gate to those paths
   would put the offer in front of every prose question a classifier could not read, which is the

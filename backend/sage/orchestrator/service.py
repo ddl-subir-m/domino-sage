@@ -10844,7 +10844,102 @@ class Orchestrator:
         # writes the table onto the Thread's own row, so this would not fire again for the Data
         # Source it was about, and the flag stops a SECOND unchosen Data Source turning the answer
         # that click bought into another question.
-        if not skip_table_gate:
+        if dismissed_dataset:
+            # Against the Thread rather than the app, because a Thread is what Chat's account of
+            # "this conversation is about that Dataset" hangs on. Same reason as Build's: the gate
+            # reads the Thread's rows rather than the question's words, so a Dataset nobody wants to
+            # pin from would meet every later question with the same card.
+            #
+            # Recorded ABOVE every gate, not between two of them (#392). It is a record and not a
+            # gate: any card that returns in front of it loses it, and the replay that answers THAT
+            # card carries neither `datasetDismissed` nor `skipDatasetGate`, so the Dataset card the
+            # person dismissed draws again. "Ask without attaching" (`askWithoutAttaching`,
+            # `store.js:6803`) sends this flag and no `investigationAnswered`, so the funnel below
+            # can now be that card. The table gate above could already be — that half was reachable
+            # before this ticket, on an unscoped store named in the same sentence — so this is one
+            # move that closes both rather than a hole the funnel opened.
+            self._dataset_dismissed.add((thread_id, dismissed_dataset))
+
+        # An investigation is open in this Thread — a capability the PERSON granted, recorded on the
+        # Thread's own context row (#386, ADR-0056). Read once, used by the offer below and at both
+        # arming sites under it.
+        #
+        # It used to read `findings.md` off disk, and that gate could never fire: nothing bounded can
+        # write that file, so the condition was one only an already-exempt turn could create. The
+        # file is a record of what was measured and is no longer a permission to measure.
+        investigation = store.read_investigation(thread_id)
+        investigating = investigation.get("state") == "open"
+
+        # The classifier, at most once per turn (#392, ADR-0059). It used to run in one place, below
+        # both record gates; the funnel under this reads it above them. Memoised rather than moved,
+        # so a turn that never asks the funnel's question still pays for nothing here.
+        intent_box: list = []
+
+        def classified():
+            if not intent_box:
+                # Send descriptors only, never file contents or sample rows, to the Ask classifier.
+                intent_context = "\n".join(
+                    json.dumps({key: item[key] for key in ("kind", "name", "path", "scope")
+                                if key in item})
+                    for item in items
+                    if item.get("kind") in {"file", "artifact", "table", "dataset", "data_source",
+                                            "datasource"}
+                )
+                intent_box.append(chat_intent.start(
+                    prompt, context=intent_context, has_bound_context=bool(intent_context),
+                    gateway=project.shim.gateway, catalog=project.shim.catalog,
+                    version=project.shim.version,
+                ).result())
+            return intent_box[0]
+
+        # The broad question before the narrow one (#392, ADR-0059). The table card asks which ONE
+        # table and the investigation card asks whether to look across several: two gates reading
+        # one sentence and holding opposite premises about it, with the narrowing one asked first.
+        # Measured live twice — the pick was then ignored and the turn queried all three sources
+        # anyway, so the single select bought the person a round trip and bound nothing.
+        #
+        # The table gate is NOT moved below the classifier. That ordering is right, and the comment
+        # at the investigation gate below still gives the reason. What moves is the OFFER, behind
+        # the three conditions that are free: a sentence that does not look investigative reaches
+        # its table card with no model call in front of it, exactly as before.
+        #
+        # WHAT THE INVESTIGATIVE ONE PAYS depends on the answer, and only one of the two is free.
+        # Offered, the call is the one this turn was going to make eighty lines later anyway, moved
+        # from leg 2 to leg 1. Not offered — the sub-threshold case, which is the reported prompt
+        # until #401 raises or lowers `MIN_CONFIDENCE` — the turn ends at the table card below and
+        # the call is one it was not going to make at all. ADR-0059 records that cost and calls this
+        # decision inert until #401; it is asserted in the tests rather than left to be found.
+        #
+        # The build-request guard is the pure regex rather than `_explicit_handoff`, which WRITES —
+        # `mark_handoff_suggested` called twice mints two suggestions. `_FUSES_SOURCES` matches
+        # "cross-references", so "build me a dashboard that cross-references Gong and Salesforce" is
+        # both shapes at once; the offer sits above the handoff short-circuit now, and the grant it
+        # offers applies to Chat turns only, while #389 makes declining it permanent.
+        #
+        # It guards THIS site and not the offer as such, and the gate below keeps no such check —
+        # which is not the same as not needing one. `_explicit_handoff` returns None whenever
+        # `should_offer_explicit` is False, a state one click on "stay in Chat" reaches, and a
+        # build-shaped sentence in such a Thread still meets the card at the gate below. That is
+        # what this turn did before this ticket and the ticket did not ask for it to change, so it
+        # is named here rather than quietly widened. What this line stops is the new exposure: a
+        # build request meeting the card one gate EARLIER than Build's own short-circuit.
+        if (not skip_investigation_gate
+                and self._could_offer_an_investigation(prompt, items, investigation)
+                and not chat_handoff.looks_like_build_request(prompt)):
+            offer = self._chat_investigation_offer(store, thread_id, prompt, items,
+                                                   classified(), investigation)
+            if offer is not None:
+                yield from offer
+                return
+
+        # `investigating` skips it for the reason the funnel above exists (#392, ADR-0059): the
+        # narrow question is asked only if the broad one was REFUSED. The accept replay arrives with
+        # `skip_investigation_gate` and no `skipTableGate`, and under the funnel this gate has never
+        # run by then — so without this the person who just said "look across several" meets a
+        # single select, which is the contradiction the funnel removed, restored in the other order.
+        # An open investigation reaches the warehouse per Data Source rather than per table, so the
+        # pick has nothing to hand it; it is the BOUNDED turn the recorded position is for.
+        if not skip_table_gate and not investigating:
             offer = self._chat_table_offer(store, project, thread_id, prompt, items)
             if offer is not None:
                 yield from offer
@@ -10866,12 +10961,6 @@ class Orchestrator:
         # Invisible from the suite, because every Chat test here sends "build me a daily summary of
         # calls", which the regex does not match. A test for this ordering has to assert its own
         # prompt is a build request, or it drifts back into testing nothing.
-        if dismissed_dataset:
-            # Against the Thread rather than the app, because a Thread is what Chat's account of
-            # "this conversation is about that Dataset" hangs on. Same reason as Build's: the gate
-            # reads the Thread's rows rather than the question's words, so a Dataset nobody wants to
-            # pin from would meet every later question with the same card.
-            self._dataset_dismissed.add((thread_id, dismissed_dataset))
         if not skip_dataset_gate:
             with timing.span("gate.dataset"):
                 offer = self._chat_dataset_offer(store, thread_id, prompt, items)
@@ -10911,27 +11000,7 @@ class Orchestrator:
         history = store.read_history(thread_id)
         _warn_if_history_lossy(history, "_chat_stream")
         urls = _urls_in_chat(prompt, history)
-        # An investigation is open in this Thread — a capability the PERSON granted, recorded on the
-        # Thread's own context row (#386, ADR-0056). Read once, used by the offer below and at both
-        # arming sites under it.
-        #
-        # It used to read `findings.md` off disk, and that gate could never fire: nothing bounded can
-        # write that file, so the condition was one only an already-exempt turn could create. The
-        # file is a record of what was measured and is no longer a permission to measure.
-        investigation = store.read_investigation(thread_id)
-        investigating = investigation.get("state") == "open"
-        # Send descriptors only, never file contents or sample rows, to the Ask classifier.
-        intent_context = "\n".join(
-            json.dumps({key: item[key] for key in ("kind", "name", "path", "scope")
-                        if key in item})
-            for item in items
-            if item.get("kind") in {"file", "artifact", "table", "dataset", "data_source", "datasource"}
-        )
-        intent = chat_intent.start(
-            prompt, context=intent_context, has_bound_context=bool(intent_context),
-            gateway=project.shim.gateway, catalog=project.shim.catalog,
-            version=project.shim.version,
-        ).result()
+        intent = classified()
         bounded_intent = intent.valid and intent.label in {"plain_answer", "data_answer", "data_artifact"}
         if (intent.valid and intent.label == "build_app"
                 and chat_handoff.should_offer_explicit(store.read_handoffs(thread_id))):
@@ -12841,8 +12910,15 @@ class Orchestrator:
         """The card itself, written to the Thread rather than to a Built App's transcript."""
         name = binding.display_name
         if ranking.matched:
+            # What the pick actually buys, rather than a fence it does not hold (#392, ADR-0059).
+            # The click records a position — a `database.schema` for bare names to resolve in, and
+            # the chosen table's column names in the turn's prompt — and `live_read_table` takes
+            # its table name from the model's own arguments, so this does not choose what gets
+            # read. "will then answer your question" is dropped rather than reworded: it is a
+            # promise #407 and #408 currently break, and this card has no business making it.
             message = brand.text(
-                "Pick the {scope} to use. {assistantName} will then answer your question.")
+                "Pick a {scope} to start from. {assistantName} reads its columns and can still "
+                "reach others in {name}.", name=name)
         else:
             # Never an invented name, and never the alphabetical top five presented as answers. The
             # list is still shown, because "no name matched" is a fact about the names and not about
@@ -12880,6 +12956,16 @@ class Orchestrator:
         person saying so. #381 tried to read the grant off `findings.md` and #381's own review
         rejected reading it off the prompt's wording; both are the model deciding what it may reach.
 
+        Two call sites, both in `_chat_stream`: the funnel above the two record gates (#392,
+        ADR-0059) and the gate below them. A turn CAN reach both and the second reading cannot
+        differ from the first — every condition here is pure over `prompt`, `items` and
+        `investigation`, none of which the gates between them change, and `intent` is memoised for
+        the turn. So the gate below only ever OFFERS on a turn the funnel never asked about, which
+        after this ticket means the build-shaped sentences the funnel refuses to offer on.
+
+        Three of the four are `_could_offer_an_investigation`, split out because they are the FREE
+        ones and the funnel pays for the classifier only once they hold.
+
         Returns None in five cases, each of which leaves the turn exactly as it was:
 
         - The decision is already made. `open` means the turn is unbounded and has nothing to ask
@@ -12897,21 +12983,48 @@ class Orchestrator:
           What the narrowing buys is most of a prose trigger's false positives for nothing — a
           classifier saying this is a data question is a second opinion the words alone are not —
           and what it costs is the offer on those two paths. ADR-0056 records the residual.
+
+          The label, and NOT how sure the classifier was of it (#401). It reads
+          `intent.usable_label` where it used to read `intent.valid`, which also asks for
+          confidence: the reported question scored 0.60 against `MIN_CONFIDENCE = 0.65`, so the
+          person was never asked about the very turn that most wanted an investigation. The
+          threshold has not moved and the narrowing gates below still read `valid` — arming a
+          read-only lane off a guess is a different bet from putting a card in front of someone.
+          Do not rewrite this as `intent.label in {...}`, and note WHICH fallback makes that so.
+          It is `invalid-confidence`: `_parse` keeps `label="data_answer"` on a reply whose
+          confidence was `1.7` or `NaN`, so a bare membership check admits a turn the classifier
+          never scored. Not `no-bound-context` — that one is stamped by `_call` rather than
+          `_parse`, it needs `has_bound_context` False, and the condition below asks for a
+          `data_source`/`datasource`/`table` item, which is a proper subset of the six kinds
+          `has_bound_context` counts. Reaching that condition therefore implies context was bound,
+          so a stamped intent is refused there whatever this line does. `usable_label` excludes it
+          for symmetry, not for effect.
         - Nothing is bound to reach. An investigation is a warehouse act, so a conversation with no
           data on it is being offered a capability it has nowhere to point.
         - The sentence does not look investigative — `_looks_investigative`, which is wide on
           purpose and does not attempt negation.
         """
-        if str(investigation.get("state") or "") in ("open", "declined"):
+        if not self._could_offer_an_investigation(prompt, items, investigation):
             return None
-        if not (intent.valid and intent.label in {"data_answer", "data_artifact"}):
-            return None
-        if not any(str(i.get("kind") or "") in ("data_source", "datasource", "table")
-                   for i in items):
-            return None
-        if not _looks_investigative(prompt):
+        if not (intent.usable_label and intent.label in {"data_answer", "data_artifact"}):
             return None
         return self._chat_investigation_offer_events(store, thread_id, prompt)
+
+    def _could_offer_an_investigation(self, prompt: str, items: list[dict],
+                                      investigation: dict) -> bool:
+        """Three of the four conditions above, split out because they are the FREE ones (#392).
+
+        The fourth reads `intent`, which costs a classifier call. The funnel in `_chat_stream` asks
+        this first and forces that call only if it answers yes, so the sentence that was never going
+        to be offered an investigation never buys the opinion — and the answer cannot drift from the
+        gate's own, because this is the gate's own reading of them.
+        """
+        if str(investigation.get("state") or "") in ("open", "declined"):
+            return False
+        if not any(str(i.get("kind") or "") in ("data_source", "datasource", "table")
+                   for i in items):
+            return False
+        return _looks_investigative(prompt)
 
     def _chat_investigation_offer_events(self, store: ThreadStore, thread_id: str, prompt: str):
         """The card itself, and the `done` that ends the turn without running it.
@@ -12925,7 +13038,17 @@ class Orchestrator:
             "This question looks like it needs more than one answer. {assistantName} can open an "
             "investigation for this conversation: {turnPlural} here can query your "
             "{dataSourcePlural} directly and keep what they measure for the questions that follow. "
-            "Otherwise {assistantName} answers from what is already in this conversation.")
+            # Under the funnel this card comes FIRST, so the old closing sentence — "answers from
+            # what is already in this conversation" — became false: declining replays the question
+            # into the table gate, which then asks where to start (#392, ADR-0059).
+            #
+            # MAY rather than the ADR's "will", because this method serves both call sites and the
+            # second card is not certain from either. Below the record gates they have already
+            # declined and nothing follows; above them the table gate still needs the store NAMED in
+            # the sentence, and a Thread scoped to one table has no unscoped store left to walk. A
+            # card that promised a question nobody then asked would be the same defect one layer up.
+            "Otherwise {assistantName} answers this one question, and may first ask where to start "
+            "reading.")
         events = ({"type": "investigation-offer", "prompt": prompt, "message": message,
                    # What tells the click which conversation to record the decision on, the way the
                    # table card carries the same for the same reason.
