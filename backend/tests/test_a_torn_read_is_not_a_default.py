@@ -30,7 +30,9 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shutil
 import stat
+import subprocess
 import threading
 from pathlib import Path
 
@@ -57,6 +59,10 @@ def _enclosing_function(tree: ast.AST, target: ast.AST) -> str:
             # Innermost wins: a nested def is a better answer than the method holding it.
             best = node.name
     return best
+
+
+def _is_shutil(func: ast.Attribute) -> bool:
+    return isinstance(func.value, ast.Name) and func.value.id == "shutil"
 
 
 def _mode_of(call: ast.Call, *, builtin: bool) -> str:
@@ -96,8 +102,10 @@ def _writes(*, inside_helper: bool) -> list[tuple[str, str]]:
         if (id(node) in helper_nodes) is not inside_helper:
             continue
         func = node.func
-        if isinstance(func, ast.Attribute) and func.attr == "write_text":
-            found.append((_enclosing_function(tree, node), "write_text"))
+        if isinstance(func, ast.Attribute) and func.attr in ("write_text", "write_bytes"):
+            found.append((_enclosing_function(tree, node), func.attr))
+        elif isinstance(func, ast.Attribute) and func.attr.startswith("copy") and _is_shutil(func):
+            found.append((_enclosing_function(tree, node), f"shutil.{func.attr}"))
         elif isinstance(func, ast.Attribute) and func.attr == "open":
             mode = _mode_of(node, builtin=False)
             if any(c in mode for c in "wax+"):
@@ -109,15 +117,48 @@ def _writes(*, inside_helper: bool) -> list[tuple[str, str]]:
     return found
 
 
+# Writes the census sees and does not require to be atomic. Each is here for a reason about the
+# mechanism, and the reason is what a new entry has to earn — not the inconvenience of the red.
+_EXEMPT = {
+    # An append cannot remove bytes that are already on disk, so no reader can observe the log
+    # missing an entry it previously had. A partial final line is the only artefact, and
+    # `_iter_history` already drops an unparseable line rather than failing the read.
+    ("append_history", "Path.open('a')"),
+    # `copy2` is what preserves the +x bit Domino needs to run `app.sh`, and `_write_atomic` would
+    # drop it: the helper carries the mode from the file being REPLACED, and a seed has none to
+    # carry from, so a fresh file would take whatever the umask says. Converting this trades a
+    # window nobody has hit for an app that cannot start. `_seed_file` takes the same branch for
+    # every template file that is not voiced; the one it DOES voice goes through the helper, and
+    # that file is `AGENTS.md`, which nothing executes.
+    ("_seed_file", "shutil.copy2"),
+    ("refresh_entry_script", "shutil.copy2"),
+    # `copytree` materialises the template into a directory that does not exist yet — `ensure`
+    # seeds it, `reset` re-seeds it after removing everything but `_RESET_KEEP`. There is no
+    # previous content for a reader to lose, the unit is a tree rather than a file, and it carries
+    # the same mode bits `copy2` does one level down. A per-file staged publish here would be a
+    # different operation, not a safer one.
+    ("ensure", "shutil.copytree"),
+    ("reset", "shutil.copytree"),
+}
+
+
 def test_no_whole_file_write_sits_outside_the_atomic_helper():
     """The census. A zero, so a write added later reds this instead of joining a stale number.
 
-    Nineteen sites were routed through the helper for #308: sixteen wrote straight at the
+    Twenty-two sites were routed through the helper for #308: nineteen wrote straight at the
     destination, and three already staged through a temp file but open-coded the staging — two of
     those three shared one temp NAME, which is the same torn read arrived at from the other side
     (see `test_two_writers_to_one_path_do_not_share_a_temp_name`).
+
+    `write_bytes` counts, and leaving it out is how the first version of this test passed over three
+    live counterexamples. `ensure_ignore_line` and `remove_ignore_line` are read-modify-writes on
+    `.gitignore`, which is the path in this module where a torn read costs the most — a reader that
+    sees `b""` republishes the file holding only its own rule, dropping the two lines that keep
+    credentials and sampled rows out of git. A promise the check does not make is worse than no
+    promise, because it reads as covered.
     """
-    truncating = [w for w in _writes(inside_helper=False) if "'a'" not in w[1]]
+    surveyed = _writes(inside_helper=False)
+    truncating = [w for w in surveyed if w not in _EXEMPT]
     assert truncating == [], (
         "These write a file's whole contents without staging through `_write_atomic`, so each "
         "leaves the destination readable-as-empty for the length of the write:\n  "
@@ -125,32 +166,106 @@ def test_no_whole_file_write_sits_outside_the_atomic_helper():
     )
 
 
-def test_the_only_exempt_write_is_the_one_that_appends():
-    """The exemption, named rather than numbered.
+def test_every_exemption_is_still_a_real_write_somebody_chose():
+    """The other direction: an exemption that no longer matches anything is a stale licence.
 
-    `append_history` is safe for a reason that is about the mechanism and not about the file: an
-    append never removes bytes that are already on disk, so no reader can observe the log missing
-    an entry it previously had. A partial final line is the only artefact, and `_iter_history`
-    already drops an unparseable line rather than failing the read.
-
-    Named, so that adding a second append is a deliberate edit to this list and not a silent join.
+    Without this, renaming or deleting an exempt writer would leave its entry in `_EXEMPT` covering
+    a name that could later come back as something else entirely — the list would keep saying yes to
+    a question nobody is asking any more.
     """
-    appends = {fn for fn, what in _writes(inside_helper=False) if "'a'" in what}
-    assert appends == {"append_history"}, (
-        "The set of append-mode writes in workspace/manager.py changed. An append is exempt from "
-        "the atomic rule because it cannot remove existing content — confirm that is true of the "
-        "new one, then add it here."
+    surveyed = set(_writes(inside_helper=False))
+    stale = _EXEMPT - surveyed
+    assert stale == set(), (
+        f"These exemptions match no write in workspace/manager.py any more: {sorted(stale)}. "
+        f"Remove them rather than leaving a licence lying around."
     )
 
 
-def test_the_helper_stages_its_write_somewhere_other_than_the_destination():
+def test_the_helper_stages_its_write_somewhere_other_than_the_destination(tmp_path: Path,
+                                                                         monkeypatch):
     """The inverse of the census: proves the helper is the thing the rule points at.
 
-    Without this, deleting the body of `_write_atomic` would leave every test above green — the
-    census would report a clean zero over a helper that writes nothing.
+    Asserted on the PATHS, not on the presence of a write call. Checking only that `_write_atomic`
+    contains some write leaves the one rewrite that defeats everything above still green: a body of
+    `path.write_text(text)` is a write, and the census excludes the helper's own subtree, so the
+    zero would hold over a helper that truncates exactly like the sites it replaced.
     """
-    staged = _writes(inside_helper=True)
-    assert staged, "`_write_atomic` opens no file for writing. It is not writing anything."
+    dest = tmp_path / "record.json"
+    swaps: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def watching_replace(src, dst, *a, **k):
+        swaps.append((str(src), str(dst)))
+        return real_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(manager.os, "replace", watching_replace)
+    manager._write_atomic(dest, '{"n": 1}')
+
+    assert len(swaps) == 1, f"`_write_atomic` did not publish through one rename: {swaps}"
+    src, dst = swaps[0]
+    assert dst == str(dest), f"published at {dst}, not at {dest}"
+    assert src != dst, "the staged file IS the destination, so the write was never staged at all"
+    assert dest.read_text() == '{"n": 1}'
+
+
+def test_the_ignore_rules_cover_every_staging_name_the_helper_can_make(tmp_path: Path):
+    """The price of a unique staging name, asked of git rather than reasoned about.
+
+    A fixed `<name>.tmp` overwrites itself, so a writer killed mid-write leaves at most one file. A
+    unique name is what stops two writers promoting each other's half-written bytes, and it makes
+    those leftovers ACCUMULATE — inside `.sage/`, which is committed. So the ignore rule is part of
+    this change rather than tidying after it.
+
+    Asked of `git check-ignore` because the first rule written here was `.sage/**/.*.tmp`, which
+    reads as though it covers everything and is short by three: the helper also stages
+    `.AGENTS.md.<hex>.tmp` at the volume root and at the app root, neither under `.sage/`. Reasoning
+    about a glob is how that was missed, and only running it found it.
+
+    The negative half is load-bearing too. A rule broad enough to catch every staging file is broad
+    enough to swallow the records beside them, and a `.sage/settings.json` that silently stops being
+    committed is a worse bug than the one this fixes.
+    """
+    git = shutil.which("git")
+    if not git:
+        pytest.skip("git is not on PATH")
+    subprocess.run([git, "init", "-q", "."], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("\n".join(manager._PROJECT_IGNORE) + "\n")
+
+    staging = [
+        ".sage/.settings.json.a1b2c3d4.tmp",              # a ProjectRecord sidecar
+        ".sage/plan-docs/001/.meta.json.e5f6a7b8.tmp",    # one directory down
+        ".sage/threads/t1/.session.json.c9d0e1f2.tmp",    # two down, per conversation
+        ".AGENTS.md.a3b4c5d6.tmp",                        # volume root, NOT under .sage/
+        "apps/a1/.AGENTS.md.e7f8a9b0.tmp",                # app root, NOT under .sage/
+        "apps/a1/.sage/.bindings.json.c1d2e3f4.tmp",      # the app's own committed .sage/
+        "apps/a1/.sage/.history.jsonl.a5b6c7d8.tmp",
+    ]
+    records = [
+        ".sage/settings.json",
+        ".sage/plan-docs/001/meta.json",
+        "apps/a1/.sage/bindings.json",
+        "apps/a1/AGENTS.md",
+        "AGENTS.md",
+    ]
+    for rel in staging + records:
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+
+    def ignored(rel: str) -> bool:
+        return subprocess.run([git, "check-ignore", "-q", rel],
+                              cwd=tmp_path, check=False).returncode == 0
+
+    missed = [rel for rel in staging if not ignored(rel)]
+    assert missed == [], (
+        f"`_write_atomic` can leave these behind and git would commit them: {missed}. "
+        f"A killed writer drops a fresh one on every attempt."
+    )
+    swallowed = [rel for rel in records if ignored(rel)]
+    assert swallowed == [], (
+        f"The staging rule is too broad — it also hides real records: {swallowed}. "
+        f"These are the files the Project is supposed to keep."
+    )
 
 
 # --------------------------------------------------------------------------------------

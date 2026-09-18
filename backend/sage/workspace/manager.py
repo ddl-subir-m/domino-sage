@@ -144,12 +144,21 @@ def ensure_ignore_line(path: Path, line: str) -> None:
     # cost, stated because it is real: in a file that is not UTF-8 the comparison cannot recognise a
     # rule already written in the file's OWN encoding, so an ASCII copy is appended beside it. A
     # duplicate git ignores is the cheaper half of that trade — the other half is data reaching git.
+    #
+    # Published atomically, and this is the path in the module where a torn read costs the most
+    # (#308). It is a read-modify-write: a reader landing inside another writer's truncation window
+    # sees `b""`, concludes the file holds no rules at all, and republishes it containing only its
+    # own line — dropping `.sage/model-api-credentials.json`, `.sage/samples.json` and whatever the
+    # person put there. `_ensure_project_ignores` runs five of these per `ensure()`, and
+    # `Orchestrator._ensure_gitignored` fires on attach and once a turn against the same files, so
+    # the two writers are real and concurrent. "How data reaches git" is what the paragraph above
+    # calls the failure this function exists to avoid; truncating in place is another way to it.
     existing = path.read_bytes() if path.exists() else b""
     want = line.encode()
     if want in existing.split():
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(existing + (b"" if existing.endswith(b"\n") or not existing else b"\n") + want + b"\n")
+    _write_atomic(path,
+                  existing + (b"" if existing.endswith(b"\n") or not existing else b"\n") + want + b"\n")
 
 
 def remove_ignore_line(path: Path, line: str) -> bool:
@@ -174,7 +183,7 @@ def remove_ignore_line(path: Path, line: str) -> bool:
     kept = [ln for ln in lines if ln.strip() != want]
     if len(kept) == len(lines):
         return False
-    path.write_bytes(b"\n".join(kept))
+    _write_atomic(path, b"\n".join(kept))  # atomic for the reason `ensure_ignore_line` gives
     return True
 
 # Source dirs never copied into a workspace (heavy / regenerated / linked separately). __pycache__
@@ -227,19 +236,28 @@ _PROJECT_IGNORE = (".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/
                    # time rather than overwriting the last — they accumulate, and `git add -A`
                    # would commit every one. `.sage/uploads.json` itself is committed, as intended.
                    ".sage/uploads.json.*.tmp",
-                   # Every `_write_atomic` staging file, at any depth under `.sage/` — the records
-                   # directly in it, `plan-docs/<id>/`, and `threads/<id>/`. Keyed on the helper's
-                   # naming scheme rather than listed per path, because this tuple has now grown
-                   # three times for one reason and the fourth writer cannot know it is missing
-                   # from a list. The two rules above stay: `uploads.json` stages without the
-                   # leading dot, and the threads rule predates the helper.
+                   # Every `_write_atomic` staging file, anywhere in the volume. Keyed on the
+                   # helper's naming scheme — a leading dot, a random suffix, `.tmp` — rather than
+                   # listed per path, because this tuple has now grown three times for one reason
+                   # and the fourth writer cannot know it is missing from a list. The two rules
+                   # above stay: `uploads.json` stages without the leading dot, and the threads
+                   # rule predates the helper.
+                   #
+                   # Unanchored on purpose, and checked with `git check-ignore` rather than
+                   # reasoned about. `.sage/**/.*.tmp` was the first attempt and it is too narrow
+                   # by three: the helper also stages `.AGENTS.md.<hex>.tmp` at the volume ROOT
+                   # (`_voice_legacy_root_agents_md`) and at the APP root (`_seed_file`), neither
+                   # of which is under `.sage/`. The app's own `.sage/` is covered from here too —
+                   # a root rule reaches the whole tree, so this does NOT need the same line added
+                   # to `template/react-vite/.gitignore`. A record that is not staging, such as
+                   # `.sage/settings.json`, still commits.
                    #
                    # #308 is what makes this load-bearing rather than tidy. `update_bindings` and
                    # `update_project_resources` used to stage through a FIXED `<name>.tmp`, so a
                    # writer killed mid-write left at most one file and the next attempt overwrote
                    # it. A unique name is what stops two writers promoting each other's half-
                    # written bytes, and the price is that the leftovers now ACCUMULATE.
-                   ".sage/**/.*.tmp")
+                   "**/.*.tmp")
 # Sage metadata that belongs to the APP, so it goes when the app does. queries.json is the app's SQL;
 # plan.md and architecture.md both describe the code being removed, and AGENTS.md tells the agent
 # plan.md is the live plan — a stale one would aim the next turn at an app that is gone.
@@ -307,8 +325,8 @@ _OWNED_SOURCES = (
 _STEP_NUMBERING = "position"
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    """Publish `text` at `path` in one step, so no reader can observe the file mid-write.
+def _write_atomic(path: Path, data: str | bytes) -> None:
+    """Publish `data` at `path` in one step, so no reader can observe the file mid-write.
 
     Every reader in this module answers a fault with a plausible value — `read_attachments` gives
     `[]`, `read_session_id` gives `None`, `_read_settings_file` gives `{}` — and a plain
@@ -336,8 +354,8 @@ def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
     try:
-        with open(tmp, "w") as f:
-            f.write(text)
+        with open(tmp, "wb" if isinstance(data, bytes) else "w") as f:
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
         # `os.replace` swaps the INODE, so the destination carries the temp file's mode rather than
@@ -2360,6 +2378,5 @@ class WorkspaceManager:
             return False
         if dst.is_file() and (not refresh or dst.read_bytes() == payload):
             return False
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(payload)
+        _write_atomic(dst, payload)
         return True
