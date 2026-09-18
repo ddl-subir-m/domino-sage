@@ -27,14 +27,30 @@ from sage.resources.provider import (
     DataSource,
     DominoResourceProvider,
     ResourceUnavailable,
+    failure_kind,
     readable_error,
-    store_was_reached,
 )
 
 FLIGHT = (
     "Flight returned unavailable error, with message: failed to connect to all addresses; "
     "last error: UNKNOWN: ipv4:10.0.3.4:8080: Failed to connect to remote host: Connection refused"
 )
+
+
+def _wire(status: str, message: str) -> str:
+    """One error shaped the way `domino_data` actually hands it over.
+
+    Use this for EVERY fixture in this file. pyarrow's Flight formatter writes
+    `Flight returned <status> error, with message: <payload>` in front of everything that crosses
+    the wire, and `_unpack_flight_error` removes only the trailing gRPC debug context, so the
+    prefix always survives to the caller.
+
+    This helper exists because inventing the string is what hid #399. Of the ten fixtures this file
+    carried before that ticket, exactly one was producer-shaped; the rest were hand-written, so the
+    suite proved a branch reachable that production could never enter. A predicate checked against
+    strings its producer cannot emit is not checked at all.
+    """
+    return f"Flight returned {status} error, with message: {message}"
 
 
 def _source() -> DataSource:
@@ -79,7 +95,8 @@ def test_a_read_that_never_reached_the_store_says_so_without_the_plumbing(monkey
 def test_a_store_that_answered_badly_still_hands_over_its_own_words(monkeypatch):
     # The other half, and the reason this is a split rather than a blanket scrub: an unverified
     # dialect must fail honestly rather than read as an empty schema.
-    said = _read_raising(monkeypatch, RuntimeError("SQL compilation error: invalid identifier 'CUSTOMR_ID'"))
+    said = _read_raising(monkeypatch, RuntimeError(
+        _wire("invalid argument", "SQL compilation error: invalid identifier 'CUSTOMR_ID'")))
 
     assert "did not answer" in said
     assert "invalid identifier 'CUSTOMR_ID'" in said
@@ -87,14 +104,28 @@ def test_a_store_that_answered_badly_still_hands_over_its_own_words(monkeypatch)
 
 @pytest.mark.parametrize("message", [
     FLIGHT,
-    "Flight returned unauthenticated error",
-    "failed to connect to all addresses",
-    "Deadline Exceeded",
-    "grpc: the connection is unavailable",
-    "socket closed",
+    _wire("unavailable", "failed to connect to all addresses"),
+    _wire("deadline exceeded", "Deadline Exceeded"),
+    _wire("unavailable", "grpc: the connection is unavailable"),
+    _wire("internal", "socket closed"),
 ])
-def test_every_transport_failure_is_recognised_as_one(message):
-    assert not store_was_reached(RuntimeError(message))
+def test_a_question_that_never_left_is_recognised_as_transport(message):
+    assert failure_kind(RuntimeError(message))[0] == "never_delivered"
+
+
+@pytest.mark.parametrize("message", [
+    # Both captured live on 2026-09-17 from the running Sage process (#399).
+    _wire("not found", "no credentials for user someone"),
+    _wire("invalid argument", "Type: configObjectError, Subtype: invalidHostOrPort"),
+    _wire("unauthenticated", "invalid token"),
+])
+def test_a_domino_configuration_fault_is_its_own_population(message):
+    """Neither of the other two sentences is true here, which is why there are three.
+
+    Waiting never repairs a missing credential, and the source cannot be quoted as having answered
+    because it was never asked. Before #399 every one of these read as transport.
+    """
+    assert failure_kind(RuntimeError(message))[0] == "setup_fault"
 
 
 @pytest.mark.parametrize("message", [
@@ -102,8 +133,43 @@ def test_every_transport_failure_is_recognised_as_one(message):
     "Table 'GONG__CALLS' does not exist or not authorized",
     "Warehouse 'HUMANS' cannot be resumed because",
 ])
-def test_a_real_store_answer_is_not_mistaken_for_transport(message):
-    assert store_was_reached(RuntimeError(message))
+def test_a_real_store_answer_survives_the_wrapper(message):
+    """The regression #399 was. Each of these classified correctly while bare and flipped the
+    moment it was wrapped the way the producer wraps it, so the bare form proves nothing."""
+    assert failure_kind(RuntimeError(message))[0] == "answered"
+    assert failure_kind(RuntimeError(_wire("invalid argument", message)))[0] == "answered"
+
+
+def test_a_message_nobody_classified_is_shown_rather_than_swallowed():
+    """The default branch is the one that shows the most.
+
+    A wrong guess here should cost a clause, never the diagnosis — the old predicate swallowed
+    every message, which is why #399 and #404 took two sessions to come apart.
+    """
+    kind, said = failure_kind(RuntimeError(_wire("internal", "something nobody predicted")))
+    assert kind == "answered"
+    assert said == "something nobody predicted"
+
+
+def test_the_wrapper_never_reaches_the_person(monkeypatch):
+    """Acceptance criterion 3. Repairing the predicate alone would have rendered
+    `DominoError: Flight returned invalid argument error, with message: ...` at the creator —
+    plumbing this feature exists to hide, invisible before only because the branch was dead."""
+    said = _read_raising(monkeypatch, RuntimeError(
+        _wire("invalid argument", "SQL compilation error: invalid identifier 'CUSTOMR_ID'")))
+
+    assert "invalid identifier 'CUSTOMR_ID'" in said
+    for plumbing in ("Flight returned", "with message:", "DominoError", "RuntimeError"):
+        assert plumbing not in said, f"{plumbing!r} is plumbing"
+
+
+def test_a_configuration_fault_does_not_tell_them_to_wait(monkeypatch):
+    said = _read_raising(monkeypatch, RuntimeError(
+        _wire("not found", "no credentials for user someone")))
+
+    assert "no credentials for user someone" in said, "the reason they can act on"
+    assert "Try again" not in said, "it will never clear on its own"
+    assert "did not answer" not in said, "the source was never asked"
 
 
 def test_an_address_in_an_unclassified_message_is_still_scrubbed():
