@@ -135,7 +135,7 @@ The agent writes files. The UI renders from the manifest + the files. There is n
 
 Slug: lowercase, hyphenated, unique within the Thread. If a name collides, suffix `-2`.
 
-Scratch Python files the agent needs to run belong in `/tmp` or a gitignored `.sage/tmp/` — they are not Artifacts and the UI does not list them.
+Scratch Python files the agent needs to run, and any data file it fetches, belong in `.sage/scratch/<threadId>/` — gitignored, created by `ensure_chat_workdir`, not Artifacts, and not listed by the UI. Not `/tmp`: `chat_path_allowed` has always refused it, so the write tool a read-only turn is left with cannot get there, and `external_directory: "deny"` now refuses the file tools too (#415).
 
 ### Manifest
 

@@ -26,13 +26,24 @@ def _both() -> tuple[str, str]:
 def test_the_prompt_carves_findings_md_out_of_both_sage_bans():
     md, prompt = _both()
     for probe in (
-        # The write ban names its one exception rather than reading as absolute.
-        "Do not write under `src/`, `public/`, or `.sage/` — with one exception,",
-        "`.sage/threads/<threadId>/findings.md`, below.",
-        # The read ban is now about the REST of `.sage/`.
-        "Do not READ the rest of `.sage/` either.",
-        "`.sage/threads/<threadId>/findings.md` is the one place",
-        "under `.sage/` you may read and write",
+        # The write ban names its exceptions rather than reading as absolute. There are TWO
+        # since #415 moved scratch and fetched data under `.sage/scratch/<threadId>/`, and the
+        # count is pinned deliberately: a third exception added without editing this sentence
+        # leaves the prompt telling the model the list is complete when it is not.
+        "Do not write under `src/`, `public/`, or `.sage/` — with two exceptions,",
+        "`.sage/scratch/<threadId>/` above and `.sage/threads/<threadId>/findings.md` below.",
+        # The read ban is about the REST of `.sage/`, and has to let the exceptions back in —
+        # a turn told to fetch a Dataset file under `.sage/` and then told never to read `.sage/`
+        # has been given an instruction it cannot carry out.
+        "Do not READ the rest of `.sage/` either — the two exceptions above are yours to read",
+        "`.sage/threads/<threadId>/findings.md` is the place",
+        # Distinguishes on PURPOSE, not lifetime. Scratch does outlive the turn — it is swept
+        # when the conversation is deleted (`ThreadStore.purge`), not after each turn — so a
+        # prompt saying otherwise would be telling the model something untrue about its own
+        # workspace, and a turn that found a stale file there would trust it.
+        "under `.sage/` you may read and write that is meant to be READ BACK",
+        "scratch is not, so a file",
+        "records nothing and may be stale",
     ):
         assert probe in md, probe
         assert probe in prompt, probe

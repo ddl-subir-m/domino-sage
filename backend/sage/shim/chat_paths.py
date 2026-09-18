@@ -54,7 +54,38 @@ def normalize_write_path(path: str) -> str:
 
 
 def chat_path_allowed(path: str, thread_id: str) -> bool:
-    """True only for files under this Thread's Artifact dir or its `.sage/threads/` dir."""
+    """True only for files under this Thread's Artifact dir, its `.sage/threads/` dir, or its
+    scratch dir.
+
+    The scratch prefix is the one a turn's working files go to, and picking it is not obvious,
+    so the three rejected candidates are worth more than the accepted one:
+
+    `/tmp` is what the prompts named until #415, and it was never reachable. This function has
+    always refused it, so the write tool a read-only turn is left with has always said no — the
+    failure was silent, and only #407's `external_directory: "deny"` made it loud. Do not fix
+    that by allowing `/tmp`: OpenCode's own server log is written to
+    `tempfile.gettempdir() / "sage-opencode.log"` (`orchestrator/service.py`), which on a Domino
+    container is `/tmp/sage-opencode.log` — gateway traffic, tool calls, internals. Allowing any
+    part of `/tmp` hands the Chat agent that file through a tool the person cannot see it use.
+    A carve-out narrow enough to exclude it cannot be written either: the rest of the filenames
+    come from the person's Dataset, so the pattern would have to be wide enough to be useless.
+
+    `.sage/threads/<threadId>/` is already permitted above and so looks like the free answer.
+    It is not gitignored — deliberately, it holds Chat history that is committed — so scratch
+    `.py` written there lands in the person's repository, which is the outcome the prompt line
+    naming `/tmp` existed to prevent.
+
+    `.sage/scratch/` FLAT is where the landing note on #415 pointed, and it is one level too
+    wide: uploaded attachments already live there (`.sage/scratch/<name>.csv`,
+    `.sage/scratch/datasets/…`, `.sage/scratch/uploads/…`). A flat allow lets one Thread's
+    scratch write overwrite a file the person uploaded and can see in the rail.
+
+    So: `.sage/scratch/<threadId>/`. Gitignored by `.gitignore`'s `.sage/scratch/`, inside the
+    project so `external_directory` never applies (OpenCode re-adds a project-glob allow over
+    any config, MEASURED against opencode-ai 1.18.4 — see #415), scoped like the other two
+    prefixes so it cannot reach another Thread or the uploads beside it, and reachable from the
+    Chat cwd because `ensure_chat_workdir` already links `.sage/scratch` in.
+    """
     if not _THREAD_ID.match(thread_id or ""):
         return False
     rel = normalize_write_path(path)
@@ -62,7 +93,8 @@ def chat_path_allowed(path: str, thread_id: str) -> bool:
         return False
     examples = f"examples/{thread_id}/"
     meta = f".sage/threads/{thread_id}/"
-    return rel.startswith((examples, meta))
+    scratch = f".sage/scratch/{thread_id}/"
+    return rel.startswith((examples, meta, scratch))
 
 
 def tool_call_name_and_args(call: dict[str, Any]) -> tuple[str, dict[str, Any]]:

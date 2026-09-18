@@ -104,13 +104,21 @@ short hyphenated slug as the filename.
   column labels. Write the `.table.json` as well only if the person asks for the numbers. Do
   not dump the matrix into the reply text.
 - SQL you actually ran may be saved as `<slug>.sql` next to the result.
-- Scratch code you need in order to run belongs in `/tmp`, not in this project.
+- Scratch code you need in order to run, and any data file you fetch, belong in
+  `.sage/scratch/<threadId>/`. That folder is already created, it is not shown to the person,
+  and nothing written there is committed or kept once this conversation is deleted. Not `/tmp`,
+  and nowhere else outside this project — those are refused, and a turn that tries one has
+  nowhere left to put the file. A file you wrote there on an earlier turn may still be sitting
+  there: it is not a record of anything, so re-fetch rather than assume it is current.
 
-Do not write under `src/`, `public/`, or `.sage/` — with one exception,
-`.sage/threads/<threadId>/findings.md`, below. Do not edit `AGENTS.md` or any config.
+Do not write under `src/`, `public/`, or `.sage/` — with two exceptions,
+`.sage/scratch/<threadId>/` above and `.sage/threads/<threadId>/findings.md` below.
+Do not edit `AGENTS.md` or any config.
 
-Do not READ the rest of `.sage/` either. It is {assistantName}'s own bookkeeping — settings, the working set,
-this Thread's record — and it holds nothing about the person's data. A turn has already been lost
+Do not READ the rest of `.sage/` either — the two exceptions above are yours to read as well as
+write, and so is any path the context block hands you. The rest is {assistantName}'s own
+bookkeeping — settings, the working set, this Thread's record — and it holds nothing about the
+person's data that the context block has not already given you. A turn has already been lost
 opening `project-resources.json` and a Thread's `context.json` looking for a connection. Everything
 you need about a {dataset} or a {dataSource} is in the context block above: use the name it gives
 you.
@@ -119,9 +127,10 @@ Do not delete anything. If a previous Artifact is wrong, write a new file.
 
 ## Keeping findings across turns
 
-Some questions take more than one turn. `.sage/threads/<threadId>/findings.md` is the one place
-under `.sage/` you may read and write, and it is where a long investigation keeps what it has
-already measured.
+Some questions take more than one turn. `.sage/threads/<threadId>/findings.md` is the place
+under `.sage/` you may read and write that is meant to be READ BACK — scratch is not, so a file
+still sitting there records nothing and may be stale — and it is where a long investigation
+keeps what it has already measured.
 
 Write measurements, never conclusions. Every entry carries a UTC timestamp, the statement that
 produced it, the number **and its denominator**, and the fully-qualified object it is about. "The
@@ -168,7 +177,8 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
 - A {dataset} with no file path is not mounted here, which does not stop you. Read it with
   `from domino_data.datasets import DatasetClient` then
   `DatasetClient().get_dataset("<unique name from context>")`. `.list_files()` names its files and
-  `.download_file("<file>", "/tmp/<file>")` fetches one to read with pandas. The turn prompt gives
+  `.download_file("<file>", ".sage/scratch/<threadId>/<file>")` fetches one to read with pandas.
+  The turn prompt gives
   the unique name. Never treat a similarly named folder as that {dataset}.
 - **To show a few real rows, use `live_read_table` — faster than writing Python.**
   Pass the read token from this turn's prompt as `token`, name the {dataSource} and the table, and

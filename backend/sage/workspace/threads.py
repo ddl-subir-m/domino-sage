@@ -158,6 +158,16 @@ class ThreadStore:
     def examples_dir(self, thread_id: str) -> Path:
         return self._root / "examples" / safe_id(thread_id, "thread id")
 
+    def scratch_dir(self, thread_id: str) -> Path:
+        """This Thread's working files: fetched Dataset files and scratch the turn runs (#415).
+
+        Gitignored and never shown, so unlike `examples_dir` nothing here is the person's to
+        keep — but it can hold the ROWS of a Dataset they fetched, which is why `purge` removes
+        it. It sits under `.sage/scratch/` rather than beside the Artifacts because the whole
+        point of the directory is that it is not one.
+        """
+        return self._root / SCRATCH / safe_id(thread_id, "thread id")
+
     def list(self) -> list[dict]:
         """Every Thread in the Project, newest activity first.
 
@@ -525,6 +535,27 @@ class ThreadStore:
         if purge_artifacts and examples.exists():
             shutil.rmtree(examples, ignore_errors=True)
             removed = True
+        # Scratch goes whatever `purge_artifacts` says, because it is not an Artifact and nothing
+        # points at it once the Thread is gone. It is swept for the opposite reason to `examples/`:
+        # not because the person might still want it, but because a fetched Dataset file leaves
+        # their ROWS sitting in the workspace with no record naming them and no later sweep that
+        # would ever find them.
+        #
+        # Deletes unconditionally, where every other removal of a file under `.sage/scratch/` asks
+        # `_fetch_holder` first so it cannot pull bytes out from under a Built App's symlink. Safe
+        # because `_promote_chat_file` only ever promotes out of `_CHAT_DATA_PREFIX`
+        # (`.sage/scratch/datasets/`), never out of a per-Thread directory, so nothing can be
+        # standing on these. EXPIRES if a promotion from `.sage/scratch/<threadId>/` is ever added:
+        # this then has to ask too, and an app's link breaks silently if it does not.
+        #
+        # There is deliberately no orphan sweep to match `purge_orphaned_artifacts`, which cleans
+        # an `examples/<id>` whose record vanished. This directory is new, so no orphan population
+        # exists yet; one can only appear from a half-restored `.sage/threads/`, the same shape
+        # that sweep was written for. Worth building when a first orphan is actually seen, not now.
+        scratch = self.scratch_dir(thread_id)
+        if scratch.exists():
+            shutil.rmtree(scratch, ignore_errors=True)
+            removed = True
         return removed
 
     def tombstoned_ids(self) -> list[str]:
@@ -826,6 +857,10 @@ _SKIP_SNAPSHOT_PARTS = frozenset({"node_modules", ".git", "dist", "__pycache__",
 _SKIP_SNAPSHOT_PREFIXES = ("public/data/", ".sage/scratch/", "apps/")
 
 CHAT_WORK = Path(".sage") / "chat-work"
+# This Thread's working files. Spelled once: `ThreadStore.scratch_dir` resolves it against
+# the store's root and `ensure_chat_workdir` against the workspace it is handed, and the two
+# have to name the same directory or the turn writes somewhere `purge` will never sweep.
+SCRATCH = Path(".sage") / "scratch"
 
 
 def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None = None,
@@ -869,11 +904,11 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
     root.mkdir(parents=True, exist_ok=True)
     (root / "AGENTS.md").write_text(agents_md)
     (Path(workspace) / "examples").mkdir(exist_ok=True)
-    (Path(workspace) / ".sage" / "scratch").mkdir(parents=True, exist_ok=True)
+    (Path(workspace) / SCRATCH).mkdir(parents=True, exist_ok=True)
     _ensure_dir_link(root / "examples", Path(workspace) / "examples")
     sage = root / ".sage"
     sage.mkdir(exist_ok=True)
-    _ensure_dir_link(sage / "scratch", Path(workspace) / ".sage" / "scratch")
+    _ensure_dir_link(sage / SCRATCH.name, Path(workspace) / SCRATCH)
     threads = sage / "threads"
     # A symlink standing HERE defeats the scoping below, silently, and no one of the three lines
     # after it looks wrong. `mkdir(exist_ok=True)` swallows, because the path exists and `is_dir()`
@@ -896,6 +931,12 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
     if thread_id:
         name = safe_id(thread_id, "thread id")
         _ensure_dir_link(threads / name, Path(workspace) / ".sage" / "threads" / name)
+        # This turn's scratch dir, where the prompts send working files and fetched Dataset
+        # files (#415). Created HERE rather than beside `examples/` at Thread creation for two
+        # reasons: Threads that predate #415 have no scratch dir and would never get one, and
+        # the lane this exists for is the read-only lane, which has no shell to `mkdir` with.
+        # `.sage/scratch` itself is created and linked above, so only the leaf is missing.
+        (Path(workspace) / SCRATCH / name).mkdir(parents=True, exist_ok=True)
     public = root / "public"
     public.mkdir(exist_ok=True)
     if data_dir is not None:

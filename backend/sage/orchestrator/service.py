@@ -3489,8 +3489,22 @@ def _at_token_hits(token: str, name: str, path: str) -> bool:
     return t in names or t in stems
 
 
-def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = "") -> str:
-    """One Session-context row for sage-chat: identity, and how its contents can be reached.
+def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = "",
+                       thread_id: str = "<threadId>") -> str:
+    """One context row for the Chat turn prompt.
+
+    `thread_id` fills the scratch destination in the two Dataset rows, which hand the model a
+    `download_file(...)` call it is meant to run verbatim. It defaults to the literal
+    `<threadId>` — the form the STATIC prompts use, since `template/chat/AGENTS.md` has no turn
+    to read an id from — so the thirteen callers that render a row with no Dataset in it are
+    unaffected. The turn prompt must override it: a literal `<threadId>` reaching the model is a
+    destination whose parent does not exist and which `chat_path_allowed` refuses, in exactly the
+    Dataset-fetch lane #415 is about. `_chat_prompt` passes the real id, and
+    `test_the_path_sage_names_is_a_path_sage_allows.py` renders a turn prompt and fails on a
+    surviving placeholder, so a caller that quietly stops passing it is caught there rather than
+    degrading in silence.
+
+    One Session-context row for sage-chat: identity, and how its contents can be reached.
 
     A Dataset without a mount is still readable — through the Domino data library, which is how
     every Dataset shared from another project is reached, since a mount only ever covers this one.
@@ -3540,10 +3554,11 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             'library: `from domino_data.datasets import DatasetClient` then '
             '`DatasetClient().get_dataset("{unique}")`. '
             '`.list_files()` returns file objects — read `.name` on each, since the list itself '
-            'prints as `[_File(), _File()]`. `.download_file(<name>, "/tmp/<name>")` fetches '
+            'prints as `[_File(), _File()]`. '
+            '`.download_file(<name>, ".sage/scratch/{threadId}/<name>")` fetches '
             "one to read with pandas. Do not search this git repo or any other folder for a "
             "project of the same name — that is not this {dataset}.",
-            name=name, where=where, unique=unique,
+            name=name, where=where, unique=unique, threadId=thread_id,
         )
     if kind in ("file", "artifact"):
         extra = f" at {path}" if path else ""
@@ -3565,9 +3580,10 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             return brand.text(
                 "- file {rel} in {dataset} {ds}. Not mounted here, so fetch it with the "
                 "{platformName} data library: `from domino_data.datasets import DatasetClient` then "
-                '`DatasetClient().get_dataset("{unique}").download_file("{rel}", "/tmp/{name}")`, '
-                "then read /tmp/{name} with pandas. Do not search this git repo for a substitute.",
-                name=name, ds=ds, rel=rel, unique=unique,
+                '`DatasetClient().get_dataset("{unique}").download_file("{rel}", '
+                '".sage/scratch/{threadId}/{name}")`, then read that file with pandas. '
+                "Do not search this git repo for a substitute.",
+                name=name, ds=ds, rel=rel, unique=unique, threadId=thread_id,
             )
         line = f"- {kind}: {name}{extra}"
         if file_note:
@@ -10663,7 +10679,8 @@ class Orchestrator:
             stat = path.stat()
         except OSError:
             return (f"If this question takes more than one turn, keep what you measure in {rel} — "
-                    "the one place under .sage/ you may write.")
+                    "the place under .sage/ you may write that is meant to be READ BACK. Scratch is "
+                    "not: a file left in .sage/scratch/ records nothing and may be stale.")
         stamp = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(timespec="seconds")
         return (f"This Thread has findings at {rel}: {stat.st_size:,} bytes, last written {stamp}. "
                 "Read it before you plan this turn — it records what has already been measured and "
@@ -10679,6 +10696,12 @@ class Orchestrator:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
+            # Scratch and fetched data, concretely, beside the concrete Artifact line — the
+            # static prompts can only say `.sage/scratch/<threadId>/` and this is where the id
+            # gets filled in. Until #415 they said `/tmp`, which `chat_path_allowed` has always
+            # refused: a read-only turn, having lost the shell, had nowhere to put a file at all.
+            f"Scratch files and any data you fetch go under .sage/scratch/{thread_id}/ — "
+            f"not /tmp, and never anywhere else outside this project.",
             self._findings_note(thread_id),
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.
@@ -10733,7 +10756,8 @@ class Orchestrator:
                     # A Dataset chip names a FOLDER, so the file describer cannot answer for it —
                     # `describe()` on a directory says "Is a directory", which is true and useless.
                     folder = _context_folder_state(workspace, it)
-                lines.append(_chat_context_line(it, file_note=note, folder_note=folder))
+                lines.append(_chat_context_line(it, file_note=note, folder_note=folder,
+                                               thread_id=thread_id))
             for url in urls:
                 lines.append(
                     f"- URL {url}. Read this page and answer from what it contains. "
