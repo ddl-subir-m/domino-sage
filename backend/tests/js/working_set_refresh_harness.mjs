@@ -39,6 +39,14 @@ let membership = [{ id: 'dataset:d1', kind: 'dataset', name: 'Sales rows' }];
 // load's read of it and the mutation's, so the two snapshots can be told apart on screen.
 let scratch = [];
 
+// The selected app's Attachments, the other half of the same `/api/project` answer. Read off the
+// same route as the Uploads above, which is why one 502 reaches both lists (#375).
+let attached = [];
+
+// That route answering 502 rather than answering late. A read that failed has nothing to write,
+// and the two lists above are what a caller that wrote anyway would empty.
+let projectFails = false;
+
 // `race` holds back the platform listing, which is the 5.1 s the scope load defers its `/project`
 // read behind and the window a mutation lands in. `stale-load` holds back the scope load's
 // MEMBERSHIP read instead — the first of them — so its pre-Add answer arrives after the refresh has
@@ -93,7 +101,7 @@ function answer(url, init) {
     scratch = scratch.filter((f) => f.path !== path);
     return { path: 'datasets/d1/rows.csv' };
   }
-  if (url.endsWith('/api/project')) return { scratch, attached: [] };
+  if (url.endsWith('/api/project')) return { scratch, attached };
   if (url.endsWith('/api/threads')) return { threads: [] };
   if (url.endsWith('/api/members')) {
     return { members: [], directory: [], ownerId: '', self: '', connected: true };
@@ -110,11 +118,12 @@ const sandbox = {
   clearInterval, URLSearchParams, TextEncoder, TextDecoder, URL, Blob, ArrayBuffer, Uint8Array,
   fetch: (url, init) => {
     requests.push(`${(init && init.method) || 'GET'} ${url}`);
-    const body = answer(url, init);
+    const dead = projectFails && url.endsWith('/api/project');
+    const body = dead ? { error: 'unavailable' } : answer(url, init);
     const res = {
-      ok: true,
-      status: 200,
-      statusText: 'OK',
+      ok: !dead,
+      status: dead ? 502 : 200,
+      statusText: dead ? 'Bad Gateway' : 'OK',
       headers: { get: () => 'application/json' },
       json: () => Promise.resolve(body),
     };
@@ -201,7 +210,13 @@ const PIN = { database: 'analytics', schema: 'public', table: 'orders' };
 // is gone by the time the act returns, so sampling the end state cannot see it: the panel draws on
 // each `notify`, and a group with nothing in it is not drawn at all — heading included.
 const paints = [];
-SW.store.subscribe(() => { paints.push(names((SW.store.get().resourceGroups || {}).file)); });
+// The app's half of the same read, sampled per paint for the same reason: a list emptied and put
+// back a tick later is a flicker no end-state assertion can see (#375).
+const attachmentPaints = [];
+SW.store.subscribe(() => {
+  paints.push(names((SW.store.get().resourceGroups || {}).file));
+  attachmentPaints.push((SW.store.get().appAttachments || []).map((a) => a.file).sort());
+});
 
 // What the catalogue half of the @ menu holds partway through an act, for the acts that have a
 // partway worth looking at.
@@ -264,6 +279,27 @@ if (act === 'add') {
     { id: 'file:public/data/rows.csv', name: 'rows.csv', kind: 'file', path: 'public/data/rows.csv' },
     'd1',
   );
+} else if (act === 'load-read-fails' || act === 'refresh-read-fails') {
+  // The other two readers of `/project` (#375), one act each. What is on screen before the failure
+  // is an Upload in the Files group and an Attachment on the app — put there by running the real
+  // read rather than by `store.set`, so what the failure is asked to leave alone is a value this
+  // code path actually wrote.
+  scratch = [{ path: 'public/data/rows.csv', name: 'rows.csv' }];
+  attached = [{ path: 'public/data/desks/margins.csv', file: 'margins.csv' }];
+  await SW.store.reloadScopeData();
+  await settle();
+  // The setup load's own paints and reads belong to the setup, not to the act below it.
+  paints.length = 0;
+  attachmentPaints.length = 0;
+  requests.length = 0;
+  projectFails = true;
+  // `load-read-fails` is the scope load's deferred read (`loadScopeData`); `refresh-read-fails` is
+  // the narrow one an Add takes (`refreshWorkingSet`). Same read, two callers, and the second is
+  // the harder case: its membership write replaces the whole group map on the way past, so the
+  // Uploads rows are only still there if something puts them back.
+  if (act === 'load-read-fails') await SW.store.reloadScopeData();
+  else await SW.store.addToProject({ id: 'dataset:d2', name: 'Risk history', kind: 'dataset' });
+  projectFails = false;
 } else if (act === 'race') {
   // A mutation inside the window the scope load defers its listing behind. `setScope` returns once
   // the membership and the people are read; the `/project` half is still out, carrying a snapshot
@@ -281,7 +317,10 @@ console.log(JSON.stringify({
   requests,
   mid,
   files: names((SW.store.get().resourceGroups || {}).file),
+  // The app's half of the same read. Reported by file name, the way the Build header prints it.
+  attachments: (state.appAttachments || []).map((a) => a.file).sort(),
   paints,
+  attachmentPaints,
   rail: railNames(),
   catalogueParents: names(state.catalogueParents),
   listingHeld: !!state.resourceListing,
