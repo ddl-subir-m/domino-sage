@@ -68,6 +68,17 @@ def _platform_api() -> str:
     return brand.text("The {platformName} API")
 
 
+class ScopeIncomplete(ValueError):
+    """A read was given no database or schema, and this dialect's statement needs one (#404).
+
+    A `ValueError` because the caller asked for something Sage will not send, which is what the
+    control cascade already turns into a 400 (`_cascade`, app.py). Its own type rather than a bare
+    `ValueError` so `liveread` can catch exactly this and turn it into a sentence, without also
+    catching a driver that raises one of its own — the same rule `live_read_again` states for
+    `NoSuchRead`.
+    """
+
+
 class ResourceUnavailable(RuntimeError):
     """A Resource listing could not be produced. The message reaches the user unchanged, so it says
     what failed and what to do about it — and never carries a token or a response body.
@@ -771,9 +782,49 @@ _SECRET_SHAPED = re.compile(r"[A-Za-z0-9_\-]{32,}")
 # schema. What it does carry is socket detail — live, a refused read read back as
 # "DominoError: Flight returned unavailable error … UNKNOWN: ipv4:10.0.3.4:8080 … Connection
 # refused", which is a gRPC peer address in front of somebody who asked to see a row.
-_NEVER_REACHED = re.compile(
-    r"flight|grpc|failed to connect to all addresses|connection refused|deadline exceeded|"
+# pyarrow writes `Flight returned <status> error, with message: <payload>` in front of every error
+# that crosses the wire, and `_unpack_flight_error` strips only the trailing gRPC debug context, so
+# the prefix arrives intact. Taken off here, once: everything below asks about the STORE's words,
+# and this wrapper is ours to read rather than the creator's to see. Keying a predicate on a word
+# INSIDE it is what made `store_was_reached` a constant for every failure on this path (#399).
+_FLIGHT_WRAPPER = re.compile(
+    r"^Flight returned\s+(?P<status>.*?)\s*error,\s*with message:\s*", re.IGNORECASE)
+
+# The gRPC status pyarrow names in that wrapper. It is the same signal as the exception class and
+# survives when the class does not — a message rebuilt from a log, or re-raised without its
+# `__context__`, still carries it. Only the statuses that mean one thing are listed: `not found`,
+# `invalid argument` and `internal` all carry BOTH Domino faults and real store objections live, so
+# they fall through to the payload rather than guess.
+_NEVER_DELIVERED_STATUS = ("unavailable", "deadline exceeded", "cancelled")
+_SETUP_FAULT_STATUS = ("unauthenticated", "permission denied", "unauthorized")
+
+# What the failure was, read off the class pyarrow raised rather than off prose. `domino_data`
+# re-raises as `DominoError(...) from None`, and `from None` suppresses the DISPLAY of the original
+# without cutting the link, so `__context__` still holds it. That class is the only structured
+# signal on this path — prefer it, and treat the patterns below as a backstop for the day a caller
+# hands us a bare message with no exception behind it.
+_NEVER_DELIVERED_CLASSES = ("FlightUnavailableError", "FlightTimedOutError", "FlightCancelledError")
+_SETUP_FAULT_CLASSES = ("FlightUnauthenticatedError", "FlightUnauthorizedError")
+
+# A failure on the way to the store rather than inside it. Arrow Flight and gRPC are Domino's
+# transport between Sage and the datasource proxy; a message carrying one never reached Snowflake
+# and says nothing about the dialect or the schema. What it does carry is socket detail — live, a
+# refused read read back as "failed to connect to all addresses ... UNKNOWN: ipv4:10.0.3.4:8080 ...
+# Connection refused", which is a gRPC peer address in front of somebody who asked to see a row.
+#
+# `flight` is deliberately NOT in this alternation. It appears in every message the producer emits,
+# including the ones that mean the store answered, so matching it classifies everything as
+# transport — which is exactly the defect this replaced (#399).
+_NEVER_DELIVERED = re.compile(
+    r"grpc|failed to connect to all addresses|connection refused|deadline exceeded|"
     r"socket closed|transport is closing",
+    re.IGNORECASE,
+)
+# Domino's datasource proxy talking about its own configuration. These are permanent: a missing
+# credential and a bad host or port are repaired in Domino, never by waiting. Measured live on
+# 2026-09-17 — both strings here were captured from the running Sage process (#399).
+_SETUP_FAULT = re.compile(
+    r"no credentials for user|configobjecterror|invalidhostorport|invalid credentials",
     re.IGNORECASE,
 )
 # Backstop for a message this did not classify: a store error that happens to quote a host. Kept
@@ -783,15 +834,77 @@ _ADDRESS_SHAPED = re.compile(
 )
 
 
-def store_was_reached(exc: Exception) -> bool:
-    """False when the question never got as far as the store.
+# Which levels a statement interpolates, by the token it spells them with. `{schema_lit}` is the
+# same level as `{schema}` — an unquoted literal inside a WHERE rather than a quoted identifier —
+# and a check that knew only one spelling would pass a statement that needs the other.
+_LEVEL_TOKENS = (("database", ("{db}",)), ("schema", ("{schema}", "{schema_lit}")))
 
-    The two cases need different sentences. A store that answered badly has told us something the
-    creator needs — an unverified dialect must fail honestly rather than look like an empty schema
-    — so its words are worth showing. A transport that never delivered the question has told us
-    nothing except its own plumbing, and repeating that at somebody is mechanism, not an answer.
+
+def levels_missing(template: str, database: str, schema: str) -> list[str]:
+    """The levels this statement needs and was given nothing for.
+
+    `statement` fills an unknown level with the empty string, so a template spelling `{db}.{schema}.`
+    and given neither builds `..TABLE`, and the store rejects a name nobody can read back to a cause
+    (#404). Asked per DIALECT because the levels are not universal: Snowflake's sample needs a
+    database and Postgres's does not, so refusing on a level a connector never uses would break
+    stores that work today.
     """
-    return not _NEVER_REACHED.search(str(exc))
+    have = {"database": database, "schema": schema}
+    return [name for name, tokens in _LEVEL_TOKENS
+            if not have[name] and any(t in template for t in tokens)]
+
+
+def _require_levels(source: DataSource, template: str, database: str, schema: str,
+                    doing: str) -> None:
+    """Refuse a cascade read that would interpolate an empty level (#404).
+
+    Every statement this provider builds is covered, not only the two the ticket named: `schemas`,
+    `tables`, `database_tables` and `columns` all spell `{db}` or `{schema}`, and each has a route
+    or a caller that can arrive with one empty. Guarding the reported door and leaving the siblings
+    is how a defect comes back wearing a different route.
+
+    A 400 through `_cascade`, because the panel only ever sends names the level above it returned —
+    so an empty one is Sage's own bug and the code should say so rather than build a statement out
+    of it.
+    """
+    missing = levels_missing(template, database, schema)
+    if missing:
+        raise ScopeIncomplete(brand.text(
+            "{assistantName} needs a {missing} to {doing} in {name}.",
+            missing=" and a ".join(missing), doing=doing, name=source.name,
+        ))
+
+
+def failure_kind(exc: Exception) -> tuple[str, str]:
+    """What a Data Source failure IS, plus the store's own words with our wrapper taken off.
+
+    Three populations, because three is how many there are and two branches cannot carry them
+    without lying to one (#399):
+
+    - `never_delivered` — the question did not reach the store. Transient; waiting is real advice.
+    - `setup_fault` — Domino's proxy refused on its own configuration: no credential for this user,
+      a bad host or port. Permanent. "Try again in a moment" is false, and so is any sentence
+      claiming the source replied, because it never did.
+    - `answered` — the store received the statement and objected to it. Its words are the only
+      thing that separates "Sage sent the wrong SQL for this connector" from "this schema is
+      empty", so they get shown.
+
+    `answered` is the DEFAULT on purpose. A misread here should cost a slightly wrong clause, never
+    the diagnosis itself: the old predicate swallowed every message, which is why this ticket and
+    #404 took two sessions to come apart. Whatever we cannot classify, we show.
+    """
+    text = " ".join(str(exc).split())
+    wrapper = _FLIGHT_WRAPPER.match(text)
+    status = wrapper.group("status").lower() if wrapper else ""
+    payload = text[wrapper.end():] if wrapper else text
+    origin = type(exc.__context__).__name__ if exc.__context__ is not None else ""
+    if (origin in _NEVER_DELIVERED_CLASSES or status in _NEVER_DELIVERED_STATUS
+            or _NEVER_DELIVERED.search(payload)):
+        return "never_delivered", payload
+    if (origin in _SETUP_FAULT_CLASSES or status in _SETUP_FAULT_STATUS
+            or _SETUP_FAULT.search(payload)):
+        return "setup_fault", payload
+    return "answered", payload
 
 
 def readable_error(exc: Exception, limit: int = 300) -> str:
@@ -805,9 +918,20 @@ def readable_error(exc: Exception, limit: int = 300) -> str:
     is 64 — and the text is collapsed and cut, because a driver traceback in a side rail is not a
     message anyone reads.
     """
-    text = _SECRET_SHAPED.sub("[redacted]", " ".join(str(exc).split()))
-    text = _ADDRESS_SHAPED.sub("[address]", text)
-    return f"{type(exc).__name__}: {text[:limit]}" if text else type(exc).__name__
+    text = _scrubbed(str(exc), limit)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _scrubbed(text: str, limit: int = 300) -> str:
+    """Somebody else's error text, safe to show and short enough to read.
+
+    Split out of `readable_error` so the decoded payload from `failure_kind` can be shown WITHOUT
+    that function's `TypeName: ` prefix. On this path the type is always `DominoError`, which tells
+    the creator nothing and reads as plumbing — and once the predicate was repaired it would have
+    been the first thing rendered in front of them (#399).
+    """
+    text = _SECRET_SHAPED.sub("[redacted]", " ".join(text.split()))
+    return _ADDRESS_SHAPED.sub("[address]", text)[:limit]
 
 
 # One cell's worth of context. A warehouse column can hold a base64 blob or a whole JSON document,
@@ -1851,10 +1975,12 @@ class DominoResourceProvider:
 
     def list_schemas(self, source: DataSource, database: str) -> list[str]:
         dialect = dialect_for(source)
+        _require_levels(source, dialect.schemas, database, "", "list the schemas")
         return self._introspect(source, dialect.statement(dialect.schemas, database=database))
 
     def list_tables(self, source: DataSource, database: str, schema: str) -> list[str]:
         dialect = dialect_for(source)
+        _require_levels(source, dialect.tables, database, schema, "list the tables")
         return self._introspect(
             source, dialect.statement(dialect.tables, database=database, schema=schema))
 
@@ -1869,6 +1995,7 @@ class DominoResourceProvider:
         dialect = dialect_for(source)
         if dialect.database_tables is None:
             raise _no_database_wide_walk(source)
+        _require_levels(source, dialect.database_tables, database, "", "walk the tables")
         rows = self._introspect_rows(
             source, dialect.statement(dialect.database_tables, database=database))
         return [
@@ -1895,6 +2022,7 @@ class DominoResourceProvider:
                 "agent will have to be told what the tables hold.",
                 kind=source.connector or source.connector_type,
             ))
+        _require_levels(source, dialect.columns, database, schema, "read the columns")
         rows = self._introspect_rows(
             source, dialect.statement(dialect.columns, database=database, schema=schema, table=table))
         return [
@@ -1917,6 +2045,16 @@ class DominoResourceProvider:
                 "{assistantName} cannot read rows out of a {kind} {dataSource}, so it cannot show "
                 "the agent what this table holds.",
                 kind=source.connector or source.connector_type,
+            ))
+        missing = levels_missing(dialect.sample, database, schema)
+        if missing:
+            # Refused here rather than sent. `..TABLE` comes back as a store rejection wearing a
+            # transport message, which is how this cost two sessions to diagnose (#399, #404).
+            raise ScopeIncomplete(brand.text(
+                "{assistantName} does not know which {missing} {table} is in. Give the full name "
+                "as database.schema.table, or ask for it to be chosen in the {dataSource} panel "
+                "first.",
+                missing=" and ".join(missing), table=table,
             ))
         frame = self._query(source, dialect.statement(
             dialect.sample, database=database, schema=schema, table=table, limit=max(1, int(limit))))
@@ -1970,20 +2108,32 @@ class DominoResourceProvider:
             client = DataSourceClient()
             return client.get_datasource(source.name).query(sql).to_pandas()
         except Exception as e:
+            kind, said = failure_kind(e)
             # Nothing reached the store, so there is nothing of the store's to report. Say what
             # happened and what to do, and keep Domino's plumbing out of it: the raw text here
             # carries a gRPC peer address, which is mechanism in front of someone who asked to see
             # a row.
-            if not store_was_reached(e):
+            if kind == "never_delivered":
                 raise ResourceUnavailable(brand.text(
                     "{assistantName} could not reach {name} just now. Nothing is wrong with the "
                     "{dataSource} itself. Try again in a moment.",
                     name=source.name,
                 )) from e
+            # Domino refused on its own configuration. Both of the other sentences are false here:
+            # the fault will not clear on its own, and the source never answered to be quoted. Say
+            # which one it is and where it gets repaired, because this is the one population a
+            # person can actually act on.
+            if kind == "setup_fault":
+                raise ResourceUnavailable(brand.text(
+                    "{assistantName} cannot open {name}: {reason}. Retrying will not help — the "
+                    "{dataSource}'s credentials or connection settings need fixing in "
+                    "{platformName}.",
+                    name=source.name, reason=_scrubbed(said),
+                )) from e
             # The store's own words, scrubbed. Naming the source matters because the creator is
             # looking at a list of them, and the connector's own error is the only signal that
             # separates "Sage sent the wrong SQL for this connector" from "this schema is empty".
-            raise ResourceUnavailable(f"{source.name} did not answer: {readable_error(e)}") from e
+            raise ResourceUnavailable(f"{source.name} did not answer: {_scrubbed(said)}") from e
 
     def _authentication_status(self, ids: list[str]) -> Any:
         """Whether the caller can open each of `ids`, positionally. `None` when Domino did not say.

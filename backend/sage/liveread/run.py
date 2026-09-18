@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from ..orchestrator import brand
+from ..resources.provider import ScopeIncomplete
 from . import grant, result
 
 log = logging.getLogger("sage.liveread")
@@ -238,7 +239,13 @@ def _table_rows(turn: Turn, name: str, database: str, schema: str, table: str, l
             name=name or "that",
         ))
 
-    rows = turn.sample_rows(source, database, schema, table, limit)
+    try:
+        rows = turn.sample_rows(source, database, schema, table, limit)
+    except ScopeIncomplete as e:
+        # The one failure the model can repair by itself: it usually spells the dotted name, and a
+        # turn that did not is a turn that can be told to (#404). Caught by its own type, never as a
+        # bare ValueError — a driver raising one of those would hand its own words to the page.
+        return Read(refused=str(e))
     # A statement that came back full is a statement that hit its own LIMIT, and there is almost
     # certainly more behind it. This is the opposite of the listing rule in ADR-0029, where a walk
     # that exactly fills the cap is NOT truncated — a walk knows it enumerated everything, and a
