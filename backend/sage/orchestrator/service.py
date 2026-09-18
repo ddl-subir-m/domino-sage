@@ -2262,6 +2262,19 @@ def _ask_without_the_binding(prompt: str, context_names: Sequence[str]) -> str:
     alone. For that name the binding and the ask are the same word, so masking it would read "show me
     the rows" as prose and take the shell off a genuine ask — this defect pointing the other way.
     Longest pattern first, so a name that is a substring of another does not shred it.
+
+    THE RESIDUAL, and why the guard stops at one word. A store whose name ENDS in one of the nouns
+    loses that noun as a signal: `["Sales Data"]` masks "can you show me the sales data?" down to
+    "can you show me the ?" and the turn answers in prose. That is the masking working as specified,
+    not a case the guard missed, and it cannot be separated from the case this function exists for —
+
+        "...in Snowflake-Data-Warehouse?"      the noun occurs only inside the name -> mask (#421)
+        "can you show me the sales data?"      the noun occurs only inside the name -> want to keep
+
+    are the same sentence shape. Any rule keyed on "the noun occurs only inside the name" reverses
+    #421, and the words that actually tell them apart are the verbs, which no noun scan reads. The
+    one-word guard is kept because `["Data"]` names no store at all; widening it further would trade
+    a defect that is reachable for one that is certain.
     """
     patterns = []
     for name in context_names:

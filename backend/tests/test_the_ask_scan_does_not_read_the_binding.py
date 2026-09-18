@@ -33,6 +33,7 @@ from pathlib import Path
 
 import pytest
 
+from sage.orchestrator import chat_intent
 from sage.orchestrator.service import _plain_chat_answer_only
 
 from .fake_opencode import Turn
@@ -57,9 +58,26 @@ STORE_NAMES = [
 ]
 
 # The classifier score from the reported turn, below `MIN_CONFIDENCE`, which is what puts
-# `answer_only` on the else branch at all. Kept here rather than imported so that a later move of
-# the threshold reds this file and says which way it moved.
+# `answer_only` on the else branch at all. Spelled out rather than derived, like the neighbouring
+# `test_the_offer_gate_stops_asking_for_certainty.py`, because it is a score the classifier really
+# returned and not an offset from a constant.
+#
+# Only an UPWARD move of the threshold reds the end-to-end rows below. A move down past 0.60 makes
+# `intent.valid` True, `answer_only` comes from the label alone, `_plain_chat_answer_only` is never
+# called, and those rows pass while testing nothing — measured, not assumed. The row directly under
+# this comment is what turns that silence into a red, and the unit rows on the predicate hold the
+# fix independently of any threshold.
 UNSURE = 0.60
+
+
+def test_the_reported_score_is_still_below_the_threshold():
+    """Guards the end-to-end rows against going vacuously green if `MIN_CONFIDENCE` drops.
+
+    Those rows only exercise the masking while `UNSURE` fails `intent.valid`. Drop the threshold to
+    0.50 and they keep passing on the label alone, having stopped reaching the code under test — so
+    the condition they depend on is asserted here rather than left implicit in a comment.
+    """
+    assert UNSURE < chat_intent.MIN_CONFIDENCE
 
 
 def _orch_observed(tmp_path: Path):
