@@ -376,18 +376,26 @@ def _write_atomic(path: Path, data: str | bytes) -> None:
     attempt; a unique one ACCUMULATES, so ENOSPC or EACCES would drop a fresh file into `.sage/` on
     every try, in the one directory this module keeps calling committed and shared.
 
-    WHAT STAGING COSTS, stated because it is a real change and not a free one. Writing straight at a
-    path needs write permission on the FILE; staging needs write and execute on the DIRECTORY, since
-    it creates a new entry there and renames over one. `.sage/` is created by the `mkdir` above under
-    the default umask, so it is 0755 and owned by whichever Builder reached it first. A second
-    collaborator in the same group could previously save a 0664 `bindings.json` and now cannot
-    create the staging file beside it. The chmod below carries the MODE across the swap but not the
-    owner — `os.replace` gives the destination the new writer's uid — so it does not close this.
+    WHAT STAGING CHANGES ABOUT PERMISSIONS, and why it costs nothing here. Writing straight at a path
+    needs write on the FILE; staging needs write and execute on the DIRECTORY, because it creates a
+    new entry and renames over one. That reads like a regression for a second collaborator, and it
+    is not — measured on a live Builder (cloud-dogfood, 2026-09-18) rather than reasoned about:
 
-    Not softened here, because the alternative is falling back to a truncating write exactly when
-    two people share a volume, which is when the window matters most. #289 already shipped this
-    trade on `model_overrides.json`; #308 extends it to the rest. It wants a check on a real
-    multi-Builder volume, which is in the ticket as work that was not done rather than assumed away.
+        ubuntu ubuntu 2755  /mnt/code/.sage        (and every directory under it)
+        ubuntu ubuntu  644  /mnt/code/.sage/*.json
+
+    There is no group write anywhere in `.sage/`. The files are 644 and the directories 2755, so a
+    second uid got EACCES writing the file before and gets EACCES creating the staging file now.
+    Nothing is lost because nothing was permitted. The argument that looked strongest against this
+    change — "they could save yesterday and cannot today" — rested on a 0664 that does not exist.
+
+    The setgid bit (the `s` in `drwxr-sr-x`) is worth knowing: anything created inside `.sage/`
+    inherits the DIRECTORY's group, not the writer's. `os.replace` transfers the uid but the gid is
+    settled by the filesystem, so that half needs nothing from the chmod below.
+
+    Scoped honestly: one Project, one deployment, one moment. A deployment that ships `.sage/`
+    group-writable re-opens the question, and the answer then is not to soften this — falling back
+    to a truncating write exactly when two people share a volume is the case the window exists for.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
