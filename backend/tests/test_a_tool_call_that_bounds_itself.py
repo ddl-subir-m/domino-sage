@@ -127,12 +127,18 @@ def test_a_route_that_is_really_unreachable_still_says_so(
 
     No fetch stub here. The tool builds its route from SAGE_CONTROL_PORT, so pointing that at a port
     nothing listens on makes the REAL fetch fail to connect — the production condition, not a
-    modelled one."""
+    modelled one.
+
+    The bound is deliberately left at its production default rather than lowered to `_BOUND_MS`.
+    Lowering it would put the two arms in a RACE: on any host where connecting to 127.0.0.1:1 does
+    not fail within the bound — a DROP firewall rule rather than a refusal, or a loaded box — the
+    timeout arm wins, both assertions below flip, and the red reads like a regression in the branch
+    under review. The short bound buys nothing here; a refused connection is already immediate."""
     out = subprocess.run(
         ["node", "--input-type=module", "-e", _REAL,
          str(ROOT / path), exported, json.dumps(args)],
         check=False, capture_output=True, text=True, timeout=_PATIENCE_S,
-        env={**os.environ, env_var: str(_BOUND_MS), "SAGE_CONTROL_PORT": "1"})
+        env={**os.environ, env_var: "", "SAGE_CONTROL_PORT": "1"})
 
     assert out.returncode == 0, out.stderr
     result = json.loads(out.stdout.strip().splitlines()[-1])
@@ -162,22 +168,71 @@ console.log(JSON.stringify({ said, bounded: seen instanceof AbortSignal, aborted
 """
 
 
+# A body that never finishes arriving. The headers are already in — `ok` is true and the tool is
+# past the first catch — so the abort lands in the SECOND one, which is a different sentence.
+_SLOW_BODY = """
+import { readFileSync } from 'node:fs';
+const [, file, exported, args] = process.argv;
+const source = readFileSync(file);
+const mod = await import('data:text/javascript;base64,' + source.toString('base64'));
+globalThis.fetch = async (_url, options) => ({
+  ok: true,
+  status: 200,
+  json: () => new Promise((_resolve, reject) => {
+    const alive = setInterval(() => {}, 1000);
+    options.signal.addEventListener('abort', () => { clearInterval(alive); reject(options.signal.reason) });
+  }),
+});
+const said = await mod[exported].execute(JSON.parse(args));
+console.log(JSON.stringify({ said }));
+"""
+
+
 @needs_node
 @pytest.mark.parametrize("path,exported,env_var,args,fell_through", _TOOLS)
-def test_a_timeout_that_cannot_be_read_falls_back_instead_of_taking_the_tool_with_it(
+def test_a_body_that_stops_arriving_is_a_timeout_and_not_a_malformed_reply(
         path: str, exported: str, env_var: str, args: dict, fell_through: str):
-    """The bound is read from the environment, and an environment is not a promise. `Number("abc")`
-    is NaN and `AbortSignal.timeout(NaN)` throws a RangeError — inside `execute`, so the throw is
-    caught and the tool stays present and readable. That is the trap: it looks survivable. What it
-    actually is, is a tool that returns the SAME refusal to every call it is ever given, having
-    never once reached the route — a capability that is gone while every surface reports it as
-    installed. Planted 2026-09-18 by dropping the `||` and confirmed: every call came back
-    'could not be reached (RangeError ... Received NaN)'."""
+    """The bound covers the body, not just the headers, so there are TWO catches an abort can land
+    in. The second one's sentence says the reply was unreadable — which blames the payload for the
+    clock, and points the model at a route that was in fact answering perfectly well, just slowly.
+    The condition is reachable in production: `analyze_text` streams its result back through here."""
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", _SLOW_BODY,
+         str(ROOT / path), exported, json.dumps(args)],
+        check=False, capture_output=True, text=True, timeout=_PATIENCE_S,
+        env={**os.environ, env_var: str(_BOUND_MS)})
+
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+
+    assert fell_through in result["said"], result["said"]
+    assert f"did not answer within {_BOUND_MS / 1000}s" in result["said"], (
+        f"a body that stopped arriving is the clock running out, not a bad payload: {result['said']!r}")
+    assert "unreadable" not in result["said"], (
+        f"and saying 'unreadable' would blame the reply for the timeout: {result['said']!r}")
+
+
+@needs_node
+@pytest.mark.parametrize("bad", ["not-a-number", "", "0", "-1", "0.5", "5000000000"])
+@pytest.mark.parametrize("path,exported,env_var,args,fell_through", _TOOLS)
+def test_a_timeout_that_cannot_be_read_falls_back_instead_of_taking_the_tool_with_it(
+        path: str, exported: str, env_var: str, args: dict, fell_through: str, bad: str):
+    """The bound is read from the environment, and an environment is not a promise. Every value
+    `AbortSignal.timeout` rejects throws a RangeError — inside `execute`, so the throw is caught and
+    the tool stays present and readable. That is the trap: it looks survivable. What it actually is
+    is a tool that returns the SAME refusal to every call it is ever given, having never once
+    reached the route — a capability that is gone while every surface reports it installed.
+
+    The list is the point. A truthiness fallback (`Number(...) || default`) covers the first three
+    and passes `-1`, `0.5` and `5e9` straight through to the throw, so a test that planted only
+    "not-a-number" would go green over three live ways to lose the tool. `5000000000` is the worst
+    of them: node does not refuse it, it warns and silently sets the duration to 1ms, which is a
+    bound that fires on every call before the route can answer."""
     out = subprocess.run(
         ["node", "--input-type=module", "-e", _LOADS,
          str(ROOT / path), exported, json.dumps(args)],
         check=False, capture_output=True, text=True, timeout=_PATIENCE_S,
-        env={**os.environ, env_var: "not-a-number"})
+        env={**os.environ, env_var: bad})
 
     assert out.returncode == 0, (
         f"the module did not load with {env_var}=not-a-number, so the tool is absent: {out.stderr}")
