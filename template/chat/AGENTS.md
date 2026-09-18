@@ -106,8 +106,10 @@ short hyphenated slug as the filename.
 - SQL you actually ran may be saved as `<slug>.sql` next to the result.
 - Scratch code you need in order to run, and any data file you fetch, belong in
   `.sage/scratch/<threadId>/`. That folder is already created, it is not shown to the person,
-  and nothing written there is kept. Not `/tmp`, and nowhere else outside this project —
-  those are refused, and a turn that tries one has nowhere left to put the file.
+  and nothing written there is committed or kept once this conversation is deleted. Not `/tmp`,
+  and nowhere else outside this project — those are refused, and a turn that tries one has
+  nowhere left to put the file. A file you wrote there on an earlier turn may still be sitting
+  there: it is not a record of anything, so re-fetch rather than assume it is current.
 
 Do not write under `src/`, `public/`, or `.sage/` — with two exceptions,
 `.sage/scratch/<threadId>/` above and `.sage/threads/<threadId>/findings.md` below.
@@ -126,8 +128,9 @@ Do not delete anything. If a previous Artifact is wrong, write a new file.
 ## Keeping findings across turns
 
 Some questions take more than one turn. `.sage/threads/<threadId>/findings.md` is the place
-under `.sage/` you may read and write that OUTLIVES the turn — scratch does not — and it is
-where a long investigation keeps what it has already measured.
+under `.sage/` you may read and write that is meant to be READ BACK — scratch is not, so a file
+still sitting there records nothing and may be stale — and it is where a long investigation
+keeps what it has already measured.
 
 Write measurements, never conclusions. Every entry carries a UTC timestamp, the statement that
 produced it, the number **and its denominator**, and the fully-qualified object it is about. "The

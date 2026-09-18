@@ -82,10 +82,56 @@ def test_the_thread_record_dir_is_still_not_the_scratch_dir():
     Scratch written there lands in the person's repository, which is the outcome the prompt line
     naming `/tmp` existed to prevent in the first place. The difference is invisible from the
     shim, so it is written down here.
+
+    The tree that matters is the PERSON'S Project workspace, not this repo. Chat commits and
+    pushes that workspace every turn (`_save_to_git`), so a seed `.gitignore` missing the rule is
+    what puts fetched Dataset rows in their repository — the exact outcome this design claims to
+    prevent. This repo's own `.gitignore` also carries the rule, which would make a test pointed
+    at it pass for the wrong reason.
+
+    TWO producers write that rule and both are checked, because checking files alone was not
+    enough. `template/react-vite/.gitignore` is copied into a new repo root by
+    `provision.seed._copy_template`; the Project VOLUME root — which is where
+    `.sage/scratch/<threadId>/` actually lives, `ThreadStore._root` being the Project record path —
+    gets its `.gitignore` GENERATED at runtime instead, appended on every `ensure()` from
+    `WorkspaceManager._PROJECT_IGNORE`. A repo the person brought themselves, or one provisioned
+    before the rule existed, is covered only by the generator. A test that walked files would have
+    stayed green while that tuple lost the line, and `_save_to_git` would then commit and push
+    fetched Dataset rows every turn.
+
+    `_PROJECT_IGNORE`'s own comment already says a fourth writer cannot know it is missing from the
+    list. This is that check for the one rule #415 depends on.
+
+    The file half is found by asking git for the TRACKED `.gitignore`s rather than by naming the
+    one that exists today. Tracked rather than globbed: a plain glob also picks up `.pytest_cache`
+    and `.venv`, which are generated, seed nothing, and would fail this for no reason.
     """
-    gitignore = (ROOT / ".gitignore").read_text().splitlines()
-    assert ".sage/scratch/" in gitignore
-    assert ".sage/threads/" not in gitignore
+    from sage.workspace import manager
+
+    # The generator. Not reached by the file loop below, and the only producer for an existing
+    # Project's volume root.
+    assert ".sage/scratch/" in manager._PROJECT_IGNORE
+    assert ".sage/threads/" not in manager._PROJECT_IGNORE
+    import subprocess
+
+    ls = subprocess.run(["git", "ls-files", "-z", "*.gitignore", ".gitignore"],
+                        cwd=ROOT, capture_output=True, text=True)
+    if ls.returncode != 0:
+        pytest.skip("not a git checkout")
+    seeds = sorted(ROOT / rel for rel in ls.stdout.split("\0")
+                   if rel and rel != ".gitignore")
+    assert seeds, "no seed .gitignore is tracked — the query is wrong, not the repo"
+
+    def rules(seed: Path) -> set[str]:
+        """The ACTIVE rules. Matching the raw text instead would accept `#.sage/scratch/`, which
+        is a comment git ignores — measured: that plant passed a substring check."""
+        return {ln.strip() for ln in seed.read_text().splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")}
+
+    for seed in seeds:
+        assert ".sage/scratch/" in rules(seed), seed
+        # And `.sage/threads/` is deliberately NOT ignored: it holds committed Chat history.
+        assert ".sage/threads/" not in rules(seed), seed
 
 
 # ---- what the prompts actually say -----------------------------------------------------------
@@ -173,3 +219,60 @@ def test_the_turn_prompt_names_the_scratch_dir_concretely_and_stays_consistent(t
 
     # The findings line may say what outlives the turn; it may not claim to be the only one.
     assert "the one place under .sage/ you may write" not in out
+
+
+def test_a_dataset_row_in_a_real_turn_prompt_carries_a_usable_destination(tmp_path):
+    """No literal `<threadId>` may survive into a turn prompt.
+
+    `_chat_context_line` defaults `thread_id` to the placeholder, because the static prompts have
+    no turn to read an id from and thirteen of its callers render rows with no Dataset in them.
+    The turn prompt must override it: the Dataset rows hand the model a `download_file(...)` call
+    it runs verbatim, and `.sage/scratch/<threadId>/q3.csv` is a destination whose parent does not
+    exist and which `chat_path_allowed` refuses, because `<threadId>` fails `_THREAD_ID`. This is
+    the guard that catches the production caller quietly dropping the argument.
+    """
+    from .test_chat_turn import _orch
+
+    orch, *_ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    ctx = {"items": [
+        {"kind": "dataset", "name": "sales", "id": "ds-1", "project": "Demo"},
+        {"kind": "file", "name": "q3.csv", "id": "ds-1", "datasetId": "ds-1",
+         "datasetName": "sales", "datasetRelPath": "q3.csv"},
+    ]}
+    out = orch._chat_prompt(tid, "what is the average?", ctx)
+
+    assert "<threadId>" not in out
+    assert f'.download_file("q3.csv", ".sage/scratch/{tid}/q3.csv")' in out
+    assert chat_path_allowed(f".sage/scratch/{tid}/q3.csv", tid)
+
+
+def test_deleting_a_thread_takes_its_fetched_dataset_rows_with_it(tmp_path):
+    """The scratch dir is created per Thread, so something has to remove it.
+
+    `purge` already sweeps `.sage/threads/<id>/` and `examples/<id>`, and `orphaned_artifact_ids`
+    walks only `examples/`. Before the destination moved here nothing wrote per-Thread content
+    under `.sage/scratch/`, so the gap was harmless. It is not now: the prompt sends
+    `download_file` output here, so a deleted Thread would leave the person's Dataset ROWS in the
+    workspace with no record naming them and no later sweep that would ever find them.
+
+    The directory is CREATED through `ensure_chat_workdir` and REMOVED through
+    `ThreadStore.scratch_dir`, deliberately: those are the two sites that have to name the same
+    path, and a test that used one of them for both halves passes no matter what either says.
+    Measured — pointing `SCRATCH` at `.sage/scratchh` left this green until the two were crossed.
+    The literal below is the third opinion, so a rename has to be made in all three places.
+    """
+    from sage.workspace.threads import ThreadStore, ensure_chat_workdir
+
+    store = ThreadStore(tmp_path)
+    tid = store.create()["id"]
+
+    ensure_chat_workdir(tmp_path, "# chat", thread_id=tid)
+    created = tmp_path / ".sage" / "scratch" / tid
+    assert created.is_dir(), "ensure_chat_workdir did not create the dir the prompt names"
+    assert store.scratch_dir(tid) == created, "the creating and purging sites disagree"
+
+    (created / "q3.csv").write_text("customer_id,email\n1,a@b.com\n")
+
+    assert store.purge(tid, purge_artifacts=True)
+    assert not created.exists()

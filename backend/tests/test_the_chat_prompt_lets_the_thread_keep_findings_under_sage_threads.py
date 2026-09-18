@@ -37,7 +37,13 @@ def test_the_prompt_carves_findings_md_out_of_both_sage_bans():
         # has been given an instruction it cannot carry out.
         "Do not READ the rest of `.sage/` either — the two exceptions above are yours to read",
         "`.sage/threads/<threadId>/findings.md` is the place",
-        "under `.sage/` you may read and write that OUTLIVES the turn",
+        # Distinguishes on PURPOSE, not lifetime. Scratch does outlive the turn — it is swept
+        # when the conversation is deleted (`ThreadStore.purge`), not after each turn — so a
+        # prompt saying otherwise would be telling the model something untrue about its own
+        # workspace, and a turn that found a stale file there would trust it.
+        "under `.sage/` you may read and write that is meant to be READ BACK",
+        "scratch is not, so a file",
+        "records nothing and may be stale",
     ):
         assert probe in md, probe
         assert probe in prompt, probe
