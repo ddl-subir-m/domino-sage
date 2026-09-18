@@ -12897,6 +12897,22 @@ class Orchestrator:
           What the narrowing buys is most of a prose trigger's false positives for nothing — a
           classifier saying this is a data question is a second opinion the words alone are not —
           and what it costs is the offer on those two paths. ADR-0056 records the residual.
+
+          The label, and NOT how sure the classifier was of it (#401). It reads
+          `intent.usable_label` where it used to read `intent.valid`, which also asks for
+          confidence: the reported question scored 0.60 against `MIN_CONFIDENCE = 0.65`, so the
+          person was never asked about the very turn that most wanted an investigation. The
+          threshold has not moved and the narrowing gates below still read `valid` — arming a
+          read-only lane off a guess is a different bet from putting a card in front of someone.
+          Do not rewrite this as `intent.label in {...}`, and note WHICH fallback makes that so.
+          It is `invalid-confidence`: `_parse` keeps `label="data_answer"` on a reply whose
+          confidence was `1.7` or `NaN`, so a bare membership check admits a turn the classifier
+          never scored. Not `no-bound-context` — that one is stamped by `_call` rather than
+          `_parse`, it needs `has_bound_context` False, and the condition below asks for a
+          `data_source`/`datasource`/`table` item, which is a proper subset of the six kinds
+          `has_bound_context` counts. Reaching that condition therefore implies context was bound,
+          so a stamped intent is refused there whatever this line does. `usable_label` excludes it
+          for symmetry, not for effect.
         - Nothing is bound to reach. An investigation is a warehouse act, so a conversation with no
           data on it is being offered a capability it has nowhere to point.
         - The sentence does not look investigative — `_looks_investigative`, which is wide on
@@ -12904,7 +12920,7 @@ class Orchestrator:
         """
         if str(investigation.get("state") or "") in ("open", "declined"):
             return None
-        if not (intent.valid and intent.label in {"data_answer", "data_artifact"}):
+        if not (intent.usable_label and intent.label in {"data_answer", "data_artifact"}):
             return None
         if not any(str(i.get("kind") or "") in ("data_source", "datasource", "table")
                    for i in items):
