@@ -75,7 +75,7 @@ not the same as reordering them:
                 T4 the walk found at least one candidate
 
     INVESTIGATION  I1 investigation state is not open|declined
-                   I2 intent.valid AND label in {data_answer, data_artifact}
+                   I2 intent.usable_label AND label in {data_answer, data_artifact}
                    I3 a bound data_source|datasource|table context item
                    I4 _looks_investigative(prompt)  (service.py:2330, pure, no model call)
 
@@ -83,6 +83,11 @@ T2 implies I3, so the exposure is I1 and I2 — and both are live. On 2026-09-17
 prompt classified at **0.60** against `MIN_CONFIDENCE = 0.65`, so I2 failed and the investigation
 card could not be drawn at all (#401). And once a Thread has declined, I1 fails permanently,
 because the card is the only door in (#389).
+
+Amended while building #401. I2 now reads `intent.usable_label`, which asks for the label without
+asking how sure the classifier was, so the 0.60 prompt above passes it and the card IS drawn. The
+gate order below is unchanged and so is `MIN_CONFIDENCE`; what changed is that the exposure this
+paragraph measured is now I1 alone.
 
 Suppressing the table card on `_looks_investigative` alone therefore drops it for turns that never
 reach an investigation card. Two questions become none, on the very prompt that opened the ticket.
