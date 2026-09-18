@@ -46,6 +46,47 @@
 const PORT = process.env.SAGE_CONTROL_PORT || "8080"
 const ROUTE = `http://127.0.0.1:${PORT}/mcp/live-read`
 
+// How long to wait for the read. The ceiling is `_CHAT_TOOL_QUIET_TIMEOUT_S` (240s, see
+// `orchestrator/service.py`): a tool in flight sends nothing, so anything past that is unreachable —
+// the TURN dies in silence and the assistant is never handed a sentence to act on. 210s keeps the
+// failure inside the TOOL and leaves 30s for the sentence below to come back and the next step to
+// begin, which refreshes that same clock — so a young turn survives its own bound. Not every turn:
+// `_CHAT_TURN_MAX_S` (600s) is measured from the start and is never refreshed, so a turn that has
+// already spent 400s gathering rows and then waits 210s here is killed by the hard ceiling anyway,
+// in the same silence. The bound buys the sentence when there is still turn left to spend it on.
+//
+// And it bounds the CLIENT, not the work. Aborting the fetch does not cancel the Python handler:
+// `/mcp/live-read` runs `live_read_call` directly on the control app's event loop (unlike
+// `/mcp/delegated-model`, which hands off to a threadpool), so an abandoned read goes on holding
+// that loop after this tool has already reported failure, and a second read queues behind it.
+//
+// The same number as `delegated/tools/delegated_model_call.ts`, and NOT because one number was
+// easier. These two look like different shapes — a model call and a data read — and the read looks
+// like the one that could afford to be strict. It is the opposite. `live_read_files` with
+// `operation: "analyze_text"` is not a read: behind this one fetch `liveread/text_analysis.py` runs
+// the rows through the LLM Gateway in batches (50 records each by default, up to two attempts
+// apiece, at most four in flight), so it is the LONGEST call of the two, not the shortest. A strict
+// bound here would cut a working analysis pass — the same mistake as the 60s gateway bound that
+// showed the person "TypeError: network error" while their answer was still coming.
+//
+// The env var is this file's own idiom, the same shape as PORT above: the production value is the
+// default, and a test can reach the bound without waiting out four minutes for it.
+//
+// The guard is a RANGE, not a truthiness check, and the difference is a capability. Anything
+// `AbortSignal.timeout` rejects throws a RangeError, and though that throw lands in the catch below
+// — measured, not assumed — the tools then return that same refusal on EVERY call, having never
+// reached the route. They are present, readable, and useless. `Number(...) || default` is not
+// enough: it catches NaN, `""` and `0`, and passes `-1`, `0.5` and `5e9` straight through to the
+// throw. The upper bound is 2^31-1 rather than the 2^32-1 node accepts, because above 2^31-1 node
+// does not refuse — it warns and silently sets the duration to 1ms, which is a bound that fires
+// instantly on every call. A typo in an env var should cost the bound's precision, not the
+// capability.
+const CONFIGURED_MS = Number(process.env.SAGE_LIVE_READ_TIMEOUT_MS)
+const TIMEOUT_MS =
+  Number.isInteger(CONFIGURED_MS) && CONFIGURED_MS > 0 && CONFIGURED_MS <= 2_147_483_647
+    ? CONFIGURED_MS
+    : 210_000
+
 const OPTIONAL = " Send null if you do not need it."
 
 // A failure is not an answer, and a fallback the person cannot see is not one either. Every one of
@@ -72,6 +113,7 @@ async function call(name, args) {
   try {
     res = await fetch(ROUTE, {
       method: "POST",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         jsonrpc: "2.0",
@@ -81,7 +123,17 @@ async function call(name, args) {
       }),
     })
   } catch (e) {
-    return `The live read could not be reached (${e}).` + FELL_THROUGH
+    // Two conditions, not one, and the difference is the whole point of the bound. "Could not be
+    // reached" was true while the only way out of this fetch was a connection failure; a bound adds
+    // a second way, and in THAT one the route was reached — it accepted the connection and did not
+    // answer in time. Telling the model it could not be reached would be telling it the opposite of
+    // what happened, and the sensible reply to unreachable is retry-or-abandon when the truth is a
+    // route that is alive and slow. Keyed on `name`, not the message: measured 2026-09-18, node and
+    // bun both set `TimeoutError` here, and they word the message differently ("The operation was
+    // aborted due to timeout" against "The operation timed out."), so the message is not a gate.
+    return (e?.name === "TimeoutError"
+      ? `The live read did not answer within ${TIMEOUT_MS / 1000}s.`
+      : `The live read could not be reached (${e}).`) + FELL_THROUGH
   }
   if (!res.ok) {
     return `The live read answered HTTP ${res.status}.` + FELL_THROUGH
@@ -90,7 +142,13 @@ async function call(name, args) {
   try {
     body = await res.json()
   } catch (e) {
-    return `The live read replied with something unreadable (${e}).` + FELL_THROUGH
+    // The bound covers the BODY too, not just the headers, so an abort can land here instead: the
+    // route answered, the rows were still arriving, and the clock ran out mid-stream. Same sentence
+    // as the other catch, because from the person's side it is the same event — the read did not
+    // come back in time. Calling it "unreadable" would blame the payload for the clock.
+    return (e?.name === "TimeoutError"
+      ? `The live read did not answer within ${TIMEOUT_MS / 1000}s.`
+      : `The live read replied with something unreadable (${e}).`) + FELL_THROUGH
   }
   const text = body?.result?.content?.[0]?.text
   if (typeof text === "string") return text
