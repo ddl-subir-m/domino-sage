@@ -226,7 +226,20 @@ _PROJECT_IGNORE = (".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/
                    # into each other's, which also means a killed writer leaves a NEW file each
                    # time rather than overwriting the last — they accumulate, and `git add -A`
                    # would commit every one. `.sage/uploads.json` itself is committed, as intended.
-                   ".sage/uploads.json.*.tmp")
+                   ".sage/uploads.json.*.tmp",
+                   # Every `_write_atomic` staging file, at any depth under `.sage/` — the records
+                   # directly in it, `plan-docs/<id>/`, and `threads/<id>/`. Keyed on the helper's
+                   # naming scheme rather than listed per path, because this tuple has now grown
+                   # three times for one reason and the fourth writer cannot know it is missing
+                   # from a list. The two rules above stay: `uploads.json` stages without the
+                   # leading dot, and the threads rule predates the helper.
+                   #
+                   # #308 is what makes this load-bearing rather than tidy. `update_bindings` and
+                   # `update_project_resources` used to stage through a FIXED `<name>.tmp`, so a
+                   # writer killed mid-write left at most one file and the next attempt overwrote
+                   # it. A unique name is what stops two writers promoting each other's half-
+                   # written bytes, and the price is that the leftovers now ACCUMULATE.
+                   ".sage/**/.*.tmp")
 # Sage metadata that belongs to the APP, so it goes when the app does. queries.json is the app's SQL;
 # plan.md and architecture.md both describe the code being removed, and AGENTS.md tells the agent
 # plan.md is the live plan — a stale one would aim the next turn at an app that is gone.
