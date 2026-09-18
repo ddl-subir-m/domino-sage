@@ -28,6 +28,7 @@ import logging
 import os
 import secrets
 import shutil
+import stat
 import threading
 import time
 from collections import deque
@@ -130,6 +131,13 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# Serialises the read-modify-write both ignore-file editors do. ONE lock for both, and not one per
+# path: `ensure_ignore_line` and `remove_ignore_line` edit the same files from opposite ends, so a
+# lock either of them could hold alone would let the pair race each other. Defined here rather than
+# beside `_BINDINGS_LOCK` because these two are module functions above every class that uses them.
+_IGNORE_LOCK = threading.Lock()
+
+
 def ensure_ignore_line(path: Path, line: str) -> None:
     """Append one rule to an ignore file, once. Shared because both surfaces have one: the app
     carries the template's .gitignore, the Project keeps its own at the volume root, and the
@@ -144,12 +152,37 @@ def ensure_ignore_line(path: Path, line: str) -> None:
     # cost, stated because it is real: in a file that is not UTF-8 the comparison cannot recognise a
     # rule already written in the file's OWN encoding, so an ASCII copy is appended beside it. A
     # duplicate git ignores is the cheaper half of that trade — the other half is data reaching git.
-    existing = path.read_bytes() if path.exists() else b""
-    want = line.encode()
-    if want in existing.split():
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(existing + (b"" if existing.endswith(b"\n") or not existing else b"\n") + want + b"\n")
+    #
+    # Under the lock AND published atomically, because this is a read-modify-write and those are
+    # two different faults with one outcome (#308). `_ensure_project_ignores` runs five of these per
+    # `ensure()`, and `Orchestrator._ensure_gitignored` fires on attach and once a turn against the
+    # same files, so the two writers are real and concurrent.
+    #
+    #   Torn read — a reader landing inside another writer's truncation window sees `b""`, concludes
+    #   the file holds no rules at all, and republishes it holding only its own line. `_write_atomic`
+    #   removes that window.
+    #
+    #   Lost update — both writers read the same bytes, both append their own rule, and whichever
+    #   publishes second overwrites the first. Atomicity does NOT help here: each write is whole and
+    #   the loser's rule is simply gone. Only the lock stops it, which is what `update_bindings`
+    #   takes `_BINDINGS_LOCK` for.
+    #
+    # Either one drops `.sage/model-api-credentials.json`, `.sage/samples.json` or whatever the
+    # person put there, and "how data reaches git" is what the paragraph above calls the failure
+    # this function exists to avoid.
+    #
+    # What the lock does NOT cover, stated because it is real: two Builder CONTAINERS on one Project
+    # volume are two processes, and a `threading.Lock` is per process. That residual is the same one
+    # `_BINDINGS_LOCK` and `_PROJECT_RESOURCES_LOCK` carry and it is not made worse here; closing it
+    # needs a lock on the volume, which is a larger change than this ticket.
+    with _IGNORE_LOCK:
+        existing = path.read_bytes() if path.exists() else b""
+        want = line.encode()
+        if want in existing.split():
+            return
+        _write_atomic(
+            path,
+            existing + (b"" if existing.endswith(b"\n") or not existing else b"\n") + want + b"\n")
 
 
 def remove_ignore_line(path: Path, line: str) -> bool:
@@ -161,21 +194,22 @@ def remove_ignore_line(path: Path, line: str) -> bool:
 
     Only the rule line goes. A comment above it explains a decision that is still worth reading
     even once the rule is gone, and this is a repair that runs over a file people also edit."""
-    if not path.exists():
-        return False
-    existing = path.read_bytes()          # bytes for the reason `ensure_ignore_line` gives above
-    want = line.encode()
-    # `split(b"\n")`, NOT `splitlines()`. `splitlines` also breaks on a lone `\r` — and in UTF-16 a
-    # `\r` is the two bytes `0D 00`, so it would split mid-character and come back joined as a bare
-    # `0A`, quietly altering bytes this function was never asked to touch. Splitting on `\n` alone
-    # keeps every other byte, including a `\r\n` ending and the absence of a final newline, so the
-    # only change to the file is the line that was asked for.
-    lines = existing.split(b"\n")
-    kept = [ln for ln in lines if ln.strip() != want]
-    if len(kept) == len(lines):
-        return False
-    path.write_bytes(b"\n".join(kept))
-    return True
+    with _IGNORE_LOCK:                # read-modify-write, for the reasons the sibling gives
+        if not path.exists():
+            return False
+        existing = path.read_bytes()          # bytes for the reason `ensure_ignore_line` gives above
+        want = line.encode()
+        # `split(b"\n")`, NOT `splitlines()`. `splitlines` also breaks on a lone `\r` — and in UTF-16 a
+        # `\r` is the two bytes `0D 00`, so it would split mid-character and come back joined as a bare
+        # `0A`, quietly altering bytes this function was never asked to touch. Splitting on `\n` alone
+        # keeps every other byte, including a `\r\n` ending and the absence of a final newline, so the
+        # only change to the file is the line that was asked for.
+        lines = existing.split(b"\n")
+        kept = [ln for ln in lines if ln.strip() != want]
+        if len(kept) == len(lines):
+            return False
+        _write_atomic(path, b"\n".join(kept))  # atomic for the reason `ensure_ignore_line` gives
+        return True
 
 # Source dirs never copied into a workspace (heavy / regenerated / linked separately). __pycache__
 # appears in a dev checkout of the template as soon as anything imports serve.py, and a workspace
@@ -204,7 +238,7 @@ def _seed_file(src: Path, dest: Path) -> None:
     `copy2` for everything else, deliberately: it keeps the +x bit Domino needs to run `app.sh`.
     """
     if src.name in _VOICED_SEED:
-        dest.write_text(apply_voice(src.read_text()))
+        _write_atomic(dest, apply_voice(src.read_text()))
         return
     shutil.copy2(src, dest)
 # Reset (#36) keeps what the user set up and replaces what a build produced. Top-level entries that
@@ -226,7 +260,29 @@ _PROJECT_IGNORE = (".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/
                    # into each other's, which also means a killed writer leaves a NEW file each
                    # time rather than overwriting the last — they accumulate, and `git add -A`
                    # would commit every one. `.sage/uploads.json` itself is committed, as intended.
-                   ".sage/uploads.json.*.tmp")
+                   ".sage/uploads.json.*.tmp",
+                   # Every `_write_atomic` staging file, anywhere in the volume. Keyed on the
+                   # helper's naming scheme — a leading dot, a random suffix, `.tmp` — rather than
+                   # listed per path, because this tuple has now grown three times for one reason
+                   # and the fourth writer cannot know it is missing from a list. The two rules
+                   # above stay: `uploads.json` stages without the leading dot, and the threads
+                   # rule predates the helper.
+                   #
+                   # Unanchored on purpose, and checked with `git check-ignore` rather than
+                   # reasoned about. `.sage/**/.*.tmp` was the first attempt and it is too narrow
+                   # by three: the helper also stages `.AGENTS.md.<hex>.tmp` at the volume ROOT
+                   # (`_voice_legacy_root_agents_md`) and at the APP root (`_seed_file`), neither
+                   # of which is under `.sage/`. The app's own `.sage/` is covered from here too —
+                   # a root rule reaches the whole tree, so this does NOT need the same line added
+                   # to `template/react-vite/.gitignore`. A record that is not staging, such as
+                   # `.sage/settings.json`, still commits.
+                   #
+                   # #308 is what makes this load-bearing rather than tidy. `update_bindings` and
+                   # `update_project_resources` used to stage through a FIXED `<name>.tmp`, so a
+                   # writer killed mid-write left at most one file and the next attempt overwrote
+                   # it. A unique name is what stops two writers promoting each other's half-
+                   # written bytes, and the price is that the leftovers now ACCUMULATE.
+                   "**/.*.tmp")
 # Sage metadata that belongs to the APP, so it goes when the app does. queries.json is the app's SQL;
 # plan.md and architecture.md both describe the code being removed, and AGENTS.md tells the agent
 # plan.md is the live plan — a stale one would aim the next turn at an app that is gone.
@@ -294,6 +350,75 @@ _OWNED_SOURCES = (
 _STEP_NUMBERING = "position"
 
 
+def _write_atomic(path: Path, data: str | bytes) -> None:
+    """Publish `data` at `path` in one step, so no reader can observe the file mid-write.
+
+    Every reader in this module answers a fault with a plausible value — `read_attachments` gives
+    `[]`, `read_session_id` gives `None`, `_read_settings_file` gives `{}` — and a plain
+    `write_text` truncates the destination at `open` and fills it afterwards. A read landing in that
+    window gets the default, and the default is indistinguishable from a true answer: "this app has
+    no attachments", told to somebody whose attachments are fine (#308). The window is removed here
+    rather than described at each reader, because a reader cannot tell the two apart and no wording
+    at the reader would make it able to.
+
+    Not only the JSON paths. `plan.md` and `architecture.md` tear into a `""` that every caller
+    reads as "there is no plan", and `read_plan` has no catch at all — a reader does not have to be
+    swallowing to be lied to, it only has to have a plausible value to land on. The rule is keyed on
+    truncation, which is what opens the window, rather than on the file's format, which does not.
+
+    The staging name is UNIQUE per call, which is `threads.py`'s spelling for the same job and not a
+    style preference: a SHARED name means two writers on one volume take turns overwriting each
+    other's half-written bytes and then promoting the result — the same torn read, arrived at from
+    the other side. `update_project_resources` and `update_bindings` both staged through a fixed
+    `<name>.tmp` until #308, which is why neither is built on the other.
+
+    The `finally` is the price of that uniqueness. A fixed name overwrites itself on the next
+    attempt; a unique one ACCUMULATES, so ENOSPC or EACCES would drop a fresh file into `.sage/` on
+    every try, in the one directory this module keeps calling committed and shared.
+
+    WHAT STAGING CHANGES ABOUT PERMISSIONS, and why it costs nothing here. Writing straight at a path
+    needs write on the FILE; staging needs write and execute on the DIRECTORY, because it creates a
+    new entry and renames over one. That reads like a regression for a second collaborator, and it
+    is not — measured on a live Builder (cloud-dogfood, 2026-09-18) rather than reasoned about:
+
+        ubuntu ubuntu 2755  /mnt/code/.sage        (and every directory under it)
+        ubuntu ubuntu  644  /mnt/code/.sage/*.json
+
+    There is no group write anywhere in `.sage/`. The files are 644 and the directories 2755, so a
+    second uid got EACCES writing the file before and gets EACCES creating the staging file now.
+    Nothing is lost because nothing was permitted. The argument that looked strongest against this
+    change — "they could save yesterday and cannot today" — rested on a 0664 that does not exist.
+
+    The setgid bit (the `s` in `drwxr-sr-x`) is worth knowing: anything created inside `.sage/`
+    inherits the DIRECTORY's group, not the writer's. `os.replace` transfers the uid but the gid is
+    settled by the filesystem, so that half needs nothing from the chmod below.
+
+    Scoped honestly: one Project, one deployment, one moment. A deployment that ships `.sage/`
+    group-writable re-opens the question, and the answer then is not to soften this — falling back
+    to a truncating write exactly when two people share a volume is the case the window exists for.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        with open(tmp, "wb" if isinstance(data, bytes) else "w") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        # `os.replace` swaps the INODE, so the destination carries the temp file's mode rather than
+        # the one it replaces — and a fresh file gets whatever the umask says. On the shared Project
+        # volume that silently drops group-write on the first save by any Builder, and the next
+        # collaborator's save fails EACCES — which these same readers then report as "couldn't be
+        # read. Fix that file", sending them to edit contents that are fine. Carried over where
+        # there is a file to carry it from; a brand new one keeps the default it would have had.
+        with contextlib.suppress(OSError):
+            # `S_IMODE`, so only the permission bits travel. `st_mode` also carries the file TYPE
+            # bits, which Linux and macOS happen to mask on `chmod` but POSIX leaves unspecified.
+            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _read_settings_file(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -310,8 +435,7 @@ def _read_settings_file(path: Path) -> dict:
 
 
 def _write_settings_file(path: Path, settings: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2))
+    _write_atomic(path, json.dumps(settings, indent=2))
 
 
 def _app_dir_names(apps_dir: Path) -> list[str]:
@@ -389,8 +513,7 @@ class ProjectRecord:
 
     def _write_plan_doc_meta(self, plan_id: str, meta: dict) -> None:
         d = self._plan_doc_dir(plan_id)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+        _write_atomic(d / "meta.json", json.dumps(meta, indent=2) + "\n")
 
     def create_plan_doc(self, markdown: str, *, title: str, author: str = "",
                         origin_thread_id: str = "", status: str = "draft",
@@ -405,7 +528,7 @@ class ProjectRecord:
 
         now = plan_doc.now()
         self._plan_doc_dir(plan_id).mkdir(parents=True, exist_ok=True)
-        (self._plan_doc_dir(plan_id) / "v001.md").write_text(markdown)
+        _write_atomic(self._plan_doc_dir(plan_id) / "v001.md", markdown)
         self._write_plan_doc_meta(plan_id, {
             "id": plan_id, "title": title, "version": 1, "status": status, "author": author,
             # `appId` is empty for a plan drafted in Chat: the app it will build does not exist
@@ -491,7 +614,7 @@ class ProjectRecord:
             return None
         versions = self._plan_doc_versions(plan_id)
         n = (int(versions[-1].stem[1:]) if versions else 0) + 1
-        (self._plan_doc_dir(plan_id) / f"v{n:03d}.md").write_text(markdown)
+        _write_atomic(self._plan_doc_dir(plan_id) / f"v{n:03d}.md", markdown)
         meta.update(meta_updates)
         meta["version"] = n
         meta["updatedAt"] = plan_doc.now()
@@ -601,16 +724,7 @@ class ProjectRecord:
         """Read, change and republish the project-resource working set as one step."""
         with _PROJECT_RESOURCES_LOCK:
             entries = change(self.read_project_resources())
-            self.project_resources_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.project_resources_path.with_name(self.project_resources_path.name + ".tmp")
-            try:
-                with open(tmp, "w") as f:
-                    json.dump({"items": entries}, f, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, self.project_resources_path)
-            finally:
-                tmp.unlink(missing_ok=True)
+            _write_atomic(self.project_resources_path, json.dumps({"items": entries}, indent=2))
             return entries
 
     def build_session_path(self, conversation: str | None = None, app_id: str = "") -> Path:
@@ -656,8 +770,7 @@ class ProjectRecord:
     def write_session_id(self, session_id: str, conversation: str | None = None,
                          app_id: str = "") -> None:
         p = self.build_session_path(conversation, app_id)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"session_id": session_id}))
+        _write_atomic(p, json.dumps({"session_id": session_id}))
 
     def clear_session_id(self, conversation: str | None = None, app_id: str = "") -> None:
         """Forget which OpenCode session this Build conversation was talking to (ADR-0022).
@@ -730,8 +843,7 @@ class ProjectRecord:
         p = self.sensitivity_lock_path(conversation)
         if p.exists():
             return
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"lockedAt": _now()}))
+        _write_atomic(p, json.dumps({"lockedAt": _now()}))
 
     @property
     def catalog_overrides_path(self) -> Path:
@@ -902,40 +1014,16 @@ class ProjectRecord:
     def write_catalog_overrides(self, overrides: dict) -> None:
         """Written whole, and atomically.
 
-        `os.replace` rather than `write_text` because the read above no longer raises on a file it
-        cannot parse — it reports one. A plain write is briefly truncated on disk, and the panel
+        Staged through `_write_atomic` rather than written straight at the path, because the read
+        above no longer raises on a file it cannot parse — it reports one. A plain write is briefly
+        truncated on disk, and the panel
         polls this path without the turn lock, so a draw landing in that window would read the
         half-written bytes, tell the reader their file could not be read and refuse their next save,
         for a file that is perfectly fine a millisecond later. Worse silently: a catalog rebuild in
         that window would resolve every slot to the deployment default and keep it until the next
         one. The raise used to make that window loud; a witness makes it plausible, so the window
         has to go rather than be explained."""
-        self.catalog_overrides_path.parent.mkdir(parents=True, exist_ok=True)
-        # Unique, which is `threads.py`'s spelling for the same job and not a style preference: a
-        # SHARED name means two writers on one volume take turns promoting each other's half-written
-        # bytes, which is the torn read this exists to stop, arrived at from the other side. The
-        # leading dot is only convention — `git status` and `git add -A` both include dotfiles, so it
-        # buys nothing against a commit-all and is not the reason for the `finally`.
-        #
-        # The `finally` is. Uniqueness is what makes a failed write ACCUMULATE rather than overwrite,
-        # so ENOSPC or EACCES would drop a fresh file into `.sage/` on every attempt, in the one
-        # directory this whole change keeps calling committed and shared.
-        tmp = self.catalog_overrides_path.with_name(
-            f".{self.catalog_overrides_path.name}.{secrets.token_hex(4)}.tmp")
-        try:
-            tmp.write_text(json.dumps(overrides))
-            # `os.replace` swaps the INODE, so the new file carries the temp file's mode rather than
-            # the one it replaces — and a fresh file gets whatever the umask says. On the shared
-            # Project volume this whole change keeps calling committed and shared, that silently
-            # drops group-write on the first save by any Builder, and the next collaborator's save
-            # fails EACCES — which this same reader then reports as "couldn't be read. Fix that
-            # file", sending them to edit contents that are fine. Carried over where there is a file
-            # to carry it from; a brand new one keeps the default it would have had anyway.
-            with contextlib.suppress(OSError):
-                os.chmod(tmp, self.catalog_overrides_path.stat().st_mode)
-            os.replace(tmp, self.catalog_overrides_path)
-        finally:
-            tmp.unlink(missing_ok=True)
+        _write_atomic(self.catalog_overrides_path, json.dumps(overrides))
 
     @property
     def instructions_path(self) -> Path:
@@ -980,8 +1068,7 @@ class ProjectRecord:
         if not text:
             self.instructions_path.unlink(missing_ok=True)
             return
-        self.instructions_path.parent.mkdir(parents=True, exist_ok=True)
-        self.instructions_path.write_text(text + "\n")
+        _write_atomic(self.instructions_path, text + "\n")
 
     def clear_plan_docs(self, app_id: str) -> None:
         """Drop the plan documents that name one Built App. Reset app's half of the Project's
@@ -1061,8 +1148,7 @@ class Workspace:
         sheet is drafted and only becomes this app's live plan when the handoff is confirmed,
         which can be long after a Build conversation wrote a newer one into the same app. A caller
         with no document behind it — the CLI, the tests — records none and readers fall back."""
-        self.plan_path.parent.mkdir(parents=True, exist_ok=True)
-        self.plan_path.write_text(text)
+        _write_atomic(self.plan_path, text)
         self._set_live_plan_doc_id(plan_id)
         # A new plan.md is a new plan, whatever the last one was owed (see read_plan_retry_step).
         self.set_plan_retry_step(0)
@@ -1174,8 +1260,7 @@ class Workspace:
         return self.path / ".sage" / "architecture.md"
 
     def write_architecture(self, text: str) -> None:
-        self.architecture_path.parent.mkdir(parents=True, exist_ok=True)
-        self.architecture_path.write_text(text)
+        _write_atomic(self.architecture_path, text)
 
     def read_architecture(self) -> str | None:
         p = self.architecture_path
@@ -1664,7 +1749,7 @@ class Workspace:
         if not rows:
             return
         adopted = [r if r.get("conversation") else {**r, "conversation": conversation} for r in rows]
-        self.history_path.write_text("".join(json.dumps(r) + "\n" for r in adopted))
+        _write_atomic(self.history_path, "".join(json.dumps(r) + "\n" for r in adopted))
 
     def history_len(self) -> int:
         """Counts the lines truncate_history() would keep. Deliberately does not parse them: this
@@ -1680,7 +1765,7 @@ class Workspace:
         if not self.history_path.exists():
             return
         lines = self.history_path.read_text().splitlines()[:n]
-        self.history_path.write_text("".join(line + "\n" for line in lines))
+        _write_atomic(self.history_path, "".join(line + "\n" for line in lines))
 
     @property
     def history_md_path(self) -> Path:
@@ -1751,8 +1836,7 @@ class Workspace:
             out += [f"## Turn {i}", ""]
             for entry in turn:
                 out += self._render_entry(entry)
-        self.history_md_path.parent.mkdir(parents=True, exist_ok=True)
-        self.history_md_path.write_text("\n".join(out).rstrip() + "\n")
+        _write_atomic(self.history_md_path, "\n".join(out).rstrip() + "\n")
 
     @staticmethod
     def _render_entry(entry: dict) -> list[str]:
@@ -1792,8 +1876,7 @@ class Workspace:
         return data if isinstance(data, list) else []
 
     def write_attachments(self, entries: list[dict]) -> None:
-        self.attachments_path.parent.mkdir(parents=True, exist_ok=True)
-        self.attachments_path.write_text(json.dumps(entries, indent=2))
+        _write_atomic(self.attachments_path, json.dumps(entries, indent=2))
 
     @property
     def bindings_path(self) -> Path:
@@ -1818,24 +1901,19 @@ class Workspace:
     def update_bindings(self, change: Callable[[list[dict]], list[dict]]) -> list[dict]:
         """Read, change and republish the bindings manifest as one step, and return the new list.
 
-        Read-modify-write under a lock, then os.replace, so two requests that arrive together cannot
-        drop one of the two edits and a reader never sees a half-written file. write_attachments
-        does neither — it truncates in place, last writer wins — which is why this is not built on
-        it.
+        Read-modify-write under a lock, then an atomic publish, so two requests that arrive together
+        cannot drop one of the two edits and a reader never sees a half-written file.
+
+        The LOCK is what this still does not share with `write_attachments`, and it is why this is
+        not built on it. Both publish atomically since #308 — the "truncates in place" half of that
+        distinction is gone — but `write_attachments` is handed the whole list and simply publishes
+        it, where this one reads, changes and republishes, and only a lock makes those three steps
+        one. Last-writer-wins is correct for a caller that already knows the whole answer and wrong
+        for one computing it from what is currently there.
         """
         with _BINDINGS_LOCK:
             entries = change(self.read_bindings())
-            self.bindings_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.bindings_path.with_name(self.bindings_path.name + ".tmp")
-            try:
-                with open(tmp, "w") as f:
-                    json.dump(entries, f, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, self.bindings_path)
-            finally:
-                # A leftover .tmp inside committed .sage/ would land in the user's app repo.
-                tmp.unlink(missing_ok=True)
+            _write_atomic(self.bindings_path, json.dumps(entries, indent=2))
             return entries
 
     @property
@@ -1883,8 +1961,7 @@ class Workspace:
         """Record the scan's answer. An object rather than a bare array, which is the shape the two
         manifests beside it use: those are records of what a person chose, and this is a derived
         answer about them — reading alike would invite them to be read alike."""
-        self.usage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.usage_path.write_text(json.dumps({"used": used}, indent=2))
+        _write_atomic(self.usage_path, json.dumps({"used": used}, indent=2))
 
 
 class WorkspaceManager:
@@ -2164,7 +2241,7 @@ class WorkspaceManager:
         if voiced == body:
             return
         try:
-            path.write_text(voiced)
+            _write_atomic(path, voiced)
         except OSError:
             log.warning("workspace: could not voice the AGENTS.md at the Project root")
         else:
@@ -2349,6 +2426,5 @@ class WorkspaceManager:
             return False
         if dst.is_file() and (not refresh or dst.read_bytes() == payload):
             return False
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(payload)
+        _write_atomic(dst, payload)
         return True

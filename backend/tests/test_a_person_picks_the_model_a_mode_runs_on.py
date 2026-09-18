@@ -879,6 +879,16 @@ def test_a_save_drops_a_malformed_sovereign_row_with_nothing_said(tmp_path):
     assert _runs(orch, Mode.ASK) == "opus"
 
 
+def _leftover_tmps(d) -> list[str]:
+    """Staging files left in `d`, found by iterating rather than by `glob("*.tmp")`.
+
+    `glob` does not match a leading dot, and every staging name here has one — so the two
+    assertions below were reporting an empty list because they could not see the files, not
+    because there were none. They had been vacuous since #289 introduced the dotted name.
+    """
+    return sorted(p.name for p in d.iterdir() if p.name.endswith(".tmp"))
+
+
 def test_a_failed_write_leaves_no_temp_file_behind(tmp_path):
     """Uniqueness is what makes a failed write accumulate rather than overwrite, so every ENOSPC or
     EACCES would drop a fresh dotfile into `.sage/` — the one directory this change keeps calling
@@ -887,13 +897,17 @@ def test_a_failed_write_leaves_no_temp_file_behind(tmp_path):
     orch = _orch(tmp_path)
     record = orch.project().record
     record.write_catalog_overrides({"plan": {"model": "opus", "effort": None}})
-    assert list(record.catalog_overrides_path.parent.glob("*.tmp")) == []
-    # And on the failing path, which is the one that leaked.
+    assert _leftover_tmps(record.catalog_overrides_path.parent) == []
+    # And on the failing path, which is the one that leaked. Injected at `os.fsync` rather than at
+    # `Path.write_text`: #308 moved the staged write into `_write_atomic`, which writes through an
+    # open handle, so the old patch target stopped being on this path at all and the `raises` below
+    # started reporting DID NOT RAISE. `fsync` is inside the helper's `try`, so the `finally` that
+    # this test is about still runs.
     import unittest.mock
-    with unittest.mock.patch("pathlib.Path.write_text", side_effect=OSError("no space")):
+    with unittest.mock.patch("os.fsync", side_effect=OSError("no space")):
         with pytest.raises(OSError):
             record.write_catalog_overrides({"plan": {"model": "coder", "effort": None}})
-    assert list(record.catalog_overrides_path.parent.glob("*.tmp")) == []
+    assert _leftover_tmps(record.catalog_overrides_path.parent) == []
     # The previous contents survived the failed write, which is the other half of atomicity.
     assert record.read_catalog_overrides() == {"plan": {"model": "opus", "effort": None}}
 

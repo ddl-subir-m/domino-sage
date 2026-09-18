@@ -269,7 +269,9 @@ def test_a_failed_write_leaves_the_previous_manifest_intact(tmp_path: Path):
         pass
     # os.replace publishes or does not; there is no half-written state to read.
     assert [b["name"] for b in orch.list_bindings()] == ["sonnet"]
-    assert not list((ws.path / ".sage").glob("*.tmp"))
+    # Iterated rather than globbed: `glob("*.tmp")` cannot see a leading dot, and #308 moved
+    # this staging name to the dotted unique form, which would have made this check vacuous.
+    assert [p.name for p in (ws.path / ".sage").iterdir() if p.name.endswith(".tmp")] == []
 
 
 def test_two_writes_arriving_together_both_survive(tmp_path: Path):
