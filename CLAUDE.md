@@ -160,6 +160,23 @@ run leaves no summary line and reads exactly like a hang. Comment `WORKER: takin
 before you start and `WORKER: slot free` when you stop — whichever tree you run on, because the
 slot is about the machine and not about your branch.
 
+**Your worktree cannot run the real-OpenCode tests, and they skip without saying so.**
+`node_modules` is gitignored, so it exists only in the repo root. In a worktree `BINARY.exists()`
+is False and every test guarded on it skips — silently, folded into a total that still reads clean.
+Measured on 2026-09-18: one tree collected 6519 items in both places, and gave `6514 passed, 5
+skipped` from the root against `6509 passed, 10 skipped` from a worktree. Five tests ran in one and
+not the other, and nothing in the worktree's summary said so. Run with `-rs` there, always: it
+prints each skip with its reason, which is the only thing that tells a skip from a pass at a glance.
+
+**Name that population by grepping `BINARY.exists()`, never by naming a file**, and run the FULL
+suite from the root rather than "that file from the root". The five tests live in TWO files, and
+for most of one day this repo's briefings said "the four real-OpenCode tests" and pointed at one of
+them — so a session that ran exactly what it was told still missed a test. The failure is not that
+the binary is missing, which anyone learns once and remembers. It is that the population is
+invisible from where the rule gets written, so each writer records the subset they happened to hit
+and the next session inherits a narrower rule than the one they need. Key the rule on its
+derivation, not on its answer: a file list rots the next time somebody adds a real-OpenCode test.
+
 **Merge `main` BEFORE the suite, never after.** Read it with `git ls-remote origin refs/heads/main`:
 `origin/main` and `git branch -r --contains` read a local cache shared by every worktree here, so
 sessions can be stale together and agree with each other. Merge with `--no-ff`; never rebase, never
