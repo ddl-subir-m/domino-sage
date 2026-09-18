@@ -204,7 +204,7 @@ def _seed_file(src: Path, dest: Path) -> None:
     `copy2` for everything else, deliberately: it keeps the +x bit Domino needs to run `app.sh`.
     """
     if src.name in _VOICED_SEED:
-        dest.write_text(apply_voice(src.read_text()))
+        _write_atomic(dest, apply_voice(src.read_text()))
         return
     shutil.copy2(src, dest)
 # Reset (#36) keeps what the user set up and replaces what a build produced. Top-level entries that
@@ -294,6 +294,52 @@ _OWNED_SOURCES = (
 _STEP_NUMBERING = "position"
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """Publish `text` at `path` in one step, so no reader can observe the file mid-write.
+
+    Every reader in this module answers a fault with a plausible value — `read_attachments` gives
+    `[]`, `read_session_id` gives `None`, `_read_settings_file` gives `{}` — and a plain
+    `write_text` truncates the destination at `open` and fills it afterwards. A read landing in that
+    window gets the default, and the default is indistinguishable from a true answer: "this app has
+    no attachments", told to somebody whose attachments are fine (#308). The window is removed here
+    rather than described at each reader, because a reader cannot tell the two apart and no wording
+    at the reader would make it able to.
+
+    Not only the JSON paths. `plan.md` and `architecture.md` tear into a `""` that every caller
+    reads as "there is no plan", and `read_plan` has no catch at all — a reader does not have to be
+    swallowing to be lied to, it only has to have a plausible value to land on. The rule is keyed on
+    truncation, which is what opens the window, rather than on the file's format, which does not.
+
+    The staging name is UNIQUE per call, which is `threads.py`'s spelling for the same job and not a
+    style preference: a SHARED name means two writers on one volume take turns overwriting each
+    other's half-written bytes and then promoting the result — the same torn read, arrived at from
+    the other side. `update_project_resources` and `update_bindings` both staged through a fixed
+    `<name>.tmp` until #308, which is why neither is built on the other.
+
+    The `finally` is the price of that uniqueness. A fixed name overwrites itself on the next
+    attempt; a unique one ACCUMULATES, so ENOSPC or EACCES would drop a fresh file into `.sage/` on
+    every try, in the one directory this module keeps calling committed and shared.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        with open(tmp, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        # `os.replace` swaps the INODE, so the destination carries the temp file's mode rather than
+        # the one it replaces — and a fresh file gets whatever the umask says. On the shared Project
+        # volume that silently drops group-write on the first save by any Builder, and the next
+        # collaborator's save fails EACCES — which these same readers then report as "couldn't be
+        # read. Fix that file", sending them to edit contents that are fine. Carried over where
+        # there is a file to carry it from; a brand new one keeps the default it would have had.
+        with contextlib.suppress(OSError):
+            os.chmod(tmp, path.stat().st_mode)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _read_settings_file(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -310,8 +356,7 @@ def _read_settings_file(path: Path) -> dict:
 
 
 def _write_settings_file(path: Path, settings: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2))
+    _write_atomic(path, json.dumps(settings, indent=2))
 
 
 def _app_dir_names(apps_dir: Path) -> list[str]:
@@ -389,8 +434,7 @@ class ProjectRecord:
 
     def _write_plan_doc_meta(self, plan_id: str, meta: dict) -> None:
         d = self._plan_doc_dir(plan_id)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+        _write_atomic(d / "meta.json", json.dumps(meta, indent=2) + "\n")
 
     def create_plan_doc(self, markdown: str, *, title: str, author: str = "",
                         origin_thread_id: str = "", status: str = "draft",
@@ -405,7 +449,7 @@ class ProjectRecord:
 
         now = plan_doc.now()
         self._plan_doc_dir(plan_id).mkdir(parents=True, exist_ok=True)
-        (self._plan_doc_dir(plan_id) / "v001.md").write_text(markdown)
+        _write_atomic(self._plan_doc_dir(plan_id) / "v001.md", markdown)
         self._write_plan_doc_meta(plan_id, {
             "id": plan_id, "title": title, "version": 1, "status": status, "author": author,
             # `appId` is empty for a plan drafted in Chat: the app it will build does not exist
@@ -491,7 +535,7 @@ class ProjectRecord:
             return None
         versions = self._plan_doc_versions(plan_id)
         n = (int(versions[-1].stem[1:]) if versions else 0) + 1
-        (self._plan_doc_dir(plan_id) / f"v{n:03d}.md").write_text(markdown)
+        _write_atomic(self._plan_doc_dir(plan_id) / f"v{n:03d}.md", markdown)
         meta.update(meta_updates)
         meta["version"] = n
         meta["updatedAt"] = plan_doc.now()
@@ -601,16 +645,7 @@ class ProjectRecord:
         """Read, change and republish the project-resource working set as one step."""
         with _PROJECT_RESOURCES_LOCK:
             entries = change(self.read_project_resources())
-            self.project_resources_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.project_resources_path.with_name(self.project_resources_path.name + ".tmp")
-            try:
-                with open(tmp, "w") as f:
-                    json.dump({"items": entries}, f, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, self.project_resources_path)
-            finally:
-                tmp.unlink(missing_ok=True)
+            _write_atomic(self.project_resources_path, json.dumps({"items": entries}, indent=2))
             return entries
 
     def build_session_path(self, conversation: str | None = None, app_id: str = "") -> Path:
@@ -656,8 +691,7 @@ class ProjectRecord:
     def write_session_id(self, session_id: str, conversation: str | None = None,
                          app_id: str = "") -> None:
         p = self.build_session_path(conversation, app_id)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"session_id": session_id}))
+        _write_atomic(p, json.dumps({"session_id": session_id}))
 
     def clear_session_id(self, conversation: str | None = None, app_id: str = "") -> None:
         """Forget which OpenCode session this Build conversation was talking to (ADR-0022).
@@ -730,8 +764,7 @@ class ProjectRecord:
         p = self.sensitivity_lock_path(conversation)
         if p.exists():
             return
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"lockedAt": _now()}))
+        _write_atomic(p, json.dumps({"lockedAt": _now()}))
 
     @property
     def catalog_overrides_path(self) -> Path:
@@ -902,40 +935,16 @@ class ProjectRecord:
     def write_catalog_overrides(self, overrides: dict) -> None:
         """Written whole, and atomically.
 
-        `os.replace` rather than `write_text` because the read above no longer raises on a file it
-        cannot parse — it reports one. A plain write is briefly truncated on disk, and the panel
+        Staged through `_write_atomic` rather than written straight at the path, because the read
+        above no longer raises on a file it cannot parse — it reports one. A plain write is briefly
+        truncated on disk, and the panel
         polls this path without the turn lock, so a draw landing in that window would read the
         half-written bytes, tell the reader their file could not be read and refuse their next save,
         for a file that is perfectly fine a millisecond later. Worse silently: a catalog rebuild in
         that window would resolve every slot to the deployment default and keep it until the next
         one. The raise used to make that window loud; a witness makes it plausible, so the window
         has to go rather than be explained."""
-        self.catalog_overrides_path.parent.mkdir(parents=True, exist_ok=True)
-        # Unique, which is `threads.py`'s spelling for the same job and not a style preference: a
-        # SHARED name means two writers on one volume take turns promoting each other's half-written
-        # bytes, which is the torn read this exists to stop, arrived at from the other side. The
-        # leading dot is only convention — `git status` and `git add -A` both include dotfiles, so it
-        # buys nothing against a commit-all and is not the reason for the `finally`.
-        #
-        # The `finally` is. Uniqueness is what makes a failed write ACCUMULATE rather than overwrite,
-        # so ENOSPC or EACCES would drop a fresh file into `.sage/` on every attempt, in the one
-        # directory this whole change keeps calling committed and shared.
-        tmp = self.catalog_overrides_path.with_name(
-            f".{self.catalog_overrides_path.name}.{secrets.token_hex(4)}.tmp")
-        try:
-            tmp.write_text(json.dumps(overrides))
-            # `os.replace` swaps the INODE, so the new file carries the temp file's mode rather than
-            # the one it replaces — and a fresh file gets whatever the umask says. On the shared
-            # Project volume this whole change keeps calling committed and shared, that silently
-            # drops group-write on the first save by any Builder, and the next collaborator's save
-            # fails EACCES — which this same reader then reports as "couldn't be read. Fix that
-            # file", sending them to edit contents that are fine. Carried over where there is a file
-            # to carry it from; a brand new one keeps the default it would have had anyway.
-            with contextlib.suppress(OSError):
-                os.chmod(tmp, self.catalog_overrides_path.stat().st_mode)
-            os.replace(tmp, self.catalog_overrides_path)
-        finally:
-            tmp.unlink(missing_ok=True)
+        _write_atomic(self.catalog_overrides_path, json.dumps(overrides))
 
     @property
     def instructions_path(self) -> Path:
@@ -980,8 +989,7 @@ class ProjectRecord:
         if not text:
             self.instructions_path.unlink(missing_ok=True)
             return
-        self.instructions_path.parent.mkdir(parents=True, exist_ok=True)
-        self.instructions_path.write_text(text + "\n")
+        _write_atomic(self.instructions_path, text + "\n")
 
     def clear_plan_docs(self, app_id: str) -> None:
         """Drop the plan documents that name one Built App. Reset app's half of the Project's
@@ -1061,8 +1069,7 @@ class Workspace:
         sheet is drafted and only becomes this app's live plan when the handoff is confirmed,
         which can be long after a Build conversation wrote a newer one into the same app. A caller
         with no document behind it — the CLI, the tests — records none and readers fall back."""
-        self.plan_path.parent.mkdir(parents=True, exist_ok=True)
-        self.plan_path.write_text(text)
+        _write_atomic(self.plan_path, text)
         self._set_live_plan_doc_id(plan_id)
         # A new plan.md is a new plan, whatever the last one was owed (see read_plan_retry_step).
         self.set_plan_retry_step(0)
@@ -1174,8 +1181,7 @@ class Workspace:
         return self.path / ".sage" / "architecture.md"
 
     def write_architecture(self, text: str) -> None:
-        self.architecture_path.parent.mkdir(parents=True, exist_ok=True)
-        self.architecture_path.write_text(text)
+        _write_atomic(self.architecture_path, text)
 
     def read_architecture(self) -> str | None:
         p = self.architecture_path
@@ -1664,7 +1670,7 @@ class Workspace:
         if not rows:
             return
         adopted = [r if r.get("conversation") else {**r, "conversation": conversation} for r in rows]
-        self.history_path.write_text("".join(json.dumps(r) + "\n" for r in adopted))
+        _write_atomic(self.history_path, "".join(json.dumps(r) + "\n" for r in adopted))
 
     def history_len(self) -> int:
         """Counts the lines truncate_history() would keep. Deliberately does not parse them: this
@@ -1680,7 +1686,7 @@ class Workspace:
         if not self.history_path.exists():
             return
         lines = self.history_path.read_text().splitlines()[:n]
-        self.history_path.write_text("".join(line + "\n" for line in lines))
+        _write_atomic(self.history_path, "".join(line + "\n" for line in lines))
 
     @property
     def history_md_path(self) -> Path:
@@ -1751,8 +1757,7 @@ class Workspace:
             out += [f"## Turn {i}", ""]
             for entry in turn:
                 out += self._render_entry(entry)
-        self.history_md_path.parent.mkdir(parents=True, exist_ok=True)
-        self.history_md_path.write_text("\n".join(out).rstrip() + "\n")
+        _write_atomic(self.history_md_path, "\n".join(out).rstrip() + "\n")
 
     @staticmethod
     def _render_entry(entry: dict) -> list[str]:
@@ -1792,8 +1797,7 @@ class Workspace:
         return data if isinstance(data, list) else []
 
     def write_attachments(self, entries: list[dict]) -> None:
-        self.attachments_path.parent.mkdir(parents=True, exist_ok=True)
-        self.attachments_path.write_text(json.dumps(entries, indent=2))
+        _write_atomic(self.attachments_path, json.dumps(entries, indent=2))
 
     @property
     def bindings_path(self) -> Path:
@@ -1818,24 +1822,19 @@ class Workspace:
     def update_bindings(self, change: Callable[[list[dict]], list[dict]]) -> list[dict]:
         """Read, change and republish the bindings manifest as one step, and return the new list.
 
-        Read-modify-write under a lock, then os.replace, so two requests that arrive together cannot
-        drop one of the two edits and a reader never sees a half-written file. write_attachments
-        does neither — it truncates in place, last writer wins — which is why this is not built on
-        it.
+        Read-modify-write under a lock, then an atomic publish, so two requests that arrive together
+        cannot drop one of the two edits and a reader never sees a half-written file.
+
+        The LOCK is what this still does not share with `write_attachments`, and it is why this is
+        not built on it. Both publish atomically since #308 — the "truncates in place" half of that
+        distinction is gone — but `write_attachments` is handed the whole list and simply publishes
+        it, where this one reads, changes and republishes, and only a lock makes those three steps
+        one. Last-writer-wins is correct for a caller that already knows the whole answer and wrong
+        for one computing it from what is currently there.
         """
         with _BINDINGS_LOCK:
             entries = change(self.read_bindings())
-            self.bindings_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.bindings_path.with_name(self.bindings_path.name + ".tmp")
-            try:
-                with open(tmp, "w") as f:
-                    json.dump(entries, f, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, self.bindings_path)
-            finally:
-                # A leftover .tmp inside committed .sage/ would land in the user's app repo.
-                tmp.unlink(missing_ok=True)
+            _write_atomic(self.bindings_path, json.dumps(entries, indent=2))
             return entries
 
     @property
@@ -1883,8 +1882,7 @@ class Workspace:
         """Record the scan's answer. An object rather than a bare array, which is the shape the two
         manifests beside it use: those are records of what a person chose, and this is a derived
         answer about them — reading alike would invite them to be read alike."""
-        self.usage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.usage_path.write_text(json.dumps({"used": used}, indent=2))
+        _write_atomic(self.usage_path, json.dumps({"used": used}, indent=2))
 
 
 class WorkspaceManager:
@@ -2164,7 +2162,7 @@ class WorkspaceManager:
         if voiced == body:
             return
         try:
-            path.write_text(voiced)
+            _write_atomic(path, voiced)
         except OSError:
             log.warning("workspace: could not voice the AGENTS.md at the Project root")
         else:
