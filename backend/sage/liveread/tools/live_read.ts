@@ -77,13 +77,31 @@ const ROUTE = `http://127.0.0.1:${PORT}/mcp/live-read`
 // — measured, not assumed — the tools then return that same refusal on EVERY call, having never
 // reached the route. They are present, readable, and useless. `Number(...) || default` is not
 // enough: it catches NaN, `""` and `0`, and passes `-1`, `0.5` and `5e9` straight through to the
-// throw. The upper bound is 2^31-1 rather than the 2^32-1 node accepts, because above 2^31-1 node
-// does not refuse — it warns and silently sets the duration to 1ms, which is a bound that fires
-// instantly on every call. A typo in an env var should cost the bound's precision, not the
-// capability.
+// throw.
+//
+// The CEILING is the job's number, not the runtime's (#416). No configured value may reach the
+// turn's own quiet window above, because a bound that cannot fire while there is still a turn to
+// hand the sentence to is not a bound — it only moves the silence. `AbortSignal.timeout`'s own
+// edge was the wrong number to key on for two reasons: it is a DIFFERENT number on each runtime,
+// and which runtime runs these tools is not settled — `driver/server.py` launches OpenCode through
+// `npx`, and OpenCode ships bun-compiled binaries. Measured 2026-09-18 on node v22.22.3 and bun
+// 1.3.11: above 2^31-1 node does not refuse, it warns and silently sets the duration to 1ms (a
+// bound that fires instantly on every call), and it throws only above 2^32-1 — while bun arms
+// every one of those values, including the one node refuses outright. 240_000 is the same number
+// on both and sits far below either edge, so the runtime edge is dead weight underneath it. A typo
+// in an env var should cost the bound's precision, not the capability.
+//
+// `<` is a FLOOR under the real constraint, not the constraint itself. The thing that makes a bound
+// useful is headroom to REPORT in: 239_999 passes this guard and leaves one millisecond to get the
+// sentence back, which is as useless as 240_000 and this guard admits it. The shipped default
+// leaves 30s of that headroom (210_000 against 240_000), and that headroom is the actual design.
+// It is not expressed here because "enough room to report" is a number the job would have to
+// justify, and reaching for one the mechanism merely suggests is how 2^31-1 got here in the first
+// place. Whoever tightens this next: that is the argument, and this is where it was left.
+const QUIET_WINDOW_MS = 240_000
 const CONFIGURED_MS = Number(process.env.SAGE_LIVE_READ_TIMEOUT_MS)
 const TIMEOUT_MS =
-  Number.isInteger(CONFIGURED_MS) && CONFIGURED_MS > 0 && CONFIGURED_MS <= 2_147_483_647
+  Number.isInteger(CONFIGURED_MS) && CONFIGURED_MS > 0 && CONFIGURED_MS < QUIET_WINDOW_MS
     ? CONFIGURED_MS
     : 210_000
 
