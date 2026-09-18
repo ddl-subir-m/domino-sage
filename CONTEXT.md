@@ -220,20 +220,33 @@ requirement (that is this, named a second time), "Bindings" as a group label (th
 run" on screen)
 
 **Table**:
-The database, schema and optionally table a Data Source Binding is read at. Chosen from lists
-Sage enumerates, never typed. A Binding may have none, which means the Resource is recorded but
-the part of it the app reads is not — a named unfinished state, drawn as "not chosen yet" and never
-as an error. Choosing one is a second act on the Built App's own surface, taken against a Binding
-that already exists; it can be taken again whenever the choice moves, and it can put the Binding back
-to naming no table at all. Removing the Binding takes this with it, so a later re-bind inherits no
-old table. A Binding that names a database and schema but no table is read as "any in that schema",
-drawn as "any in DWH.MARTS" — the whole position, so two apps reading two databases are told apart —
-rather than pretending a table was picked; only the panel can produce one,
+The position a Data Source is read at — a database, a schema and optionally a table — recorded
+either on a Built App's [[Binding]] or, in Chat, on the [[Conversation]] itself, since Chat has no
+Built App to hold a Binding. Chosen from lists Sage enumerates, never typed.
+
+It is a default and never a fence, from either record. A read fills the database and schema in from
+the recorded position when the request names a bare table, and the table name itself always comes
+from the request — both records contribute the position alone (`service.py:9986` and `:10016`,
+read at `liveread/run.py:215`: *"the recorded position is a default, not a fence"*). What bounds
+what a turn may reach is the [[Binding]], the grant on the Data Source, and never the table written
+on it. So a recorded table narrows nothing. It says where bare names resolve, and in Chat it also
+decides whose column names the turn's prompt carries. Copy offering it as "the Table to use" claims
+a limit no record holds
+([ADR-0059](docs/adr/0059-the-gate-that-widens-the-question-is-asked-before-the-one-that-narrows-it.md)).
+
+A record may have none, which means the Resource is recorded but the part of it the app reads is
+not — a named unfinished state, drawn as "not chosen yet" and never as an error. On a Built App,
+choosing one is a second act on the app's own surface, taken against a Binding that already exists;
+it can be taken again whenever the choice moves, and it can put the Binding back to naming no table
+at all. Removing the Binding takes this with it, so a later re-bind inherits no old table. A record
+that names a database and schema but no table is read as "any in that schema", drawn as "any in
+DWH.MARTS" — the whole position, so two apps reading two databases are told apart — rather than
+pretending a table was picked; only the panel can produce one,
 never a [[Candidate]] the user confirmed. Only a Data Source has one — a Dataset Binding names the
 Dataset and stops there, because a Dataset is not a table.
 _Kind_: name
 _Avoid_: scope (that word names the Project a person is switched into, ADR-0037), path, location,
-target, qualifier, selection
+target, qualifier, selection, "the table to use" and any wording that makes it sound like a limit
 
 **Candidate**:
 One table Sage offers when a person names a Data Source and not a table. Sage reads the Data
