@@ -90,31 +90,27 @@ def test_an_ordinary_question_still_gets_its_table_card_and_pays_no_classifier(t
     assert _classifier_calls(gw) == 0
 
 
-def test_a_low_confidence_investigative_question_falls_back_to_the_table_card(tmp_path: Path):
-    """I2 fails, so the turn is exactly what it is today — one card, the narrow one.
+def test_the_reported_question_is_asked_the_broad_one_first_though_nobody_was_sure(tmp_path: Path):
+    """The prompt that opened #392, end to end, at the confidence it actually scored.
 
-    This is the reported case until #401 lands: the live prompt classified 0.60 against
-    `MIN_CONFIDENCE = 0.65`. The funnel must degrade to today rather than to nothing.
+    This is the case ADR-0059 recorded as the one its own decision did NOT fix: the live sentence
+    classified 0.60 against `MIN_CONFIDENCE = 0.65`, I2 failed, and the funnel degraded to the
+    table card plus a classifier call the turn had not been making. #401 armed it by splitting the
+    field — `_chat_investigation_offer` reads `intent.usable_label`, which admits `fallback` in
+    `("", "low-confidence")`, while `bounded_intent` and the three arming sites go on reading
+    `intent.valid`. `MIN_CONFIDENCE` is untouched at 0.65, and a reader who goes looking for a
+    moved constant will not find one: crossing it would flip `bounded_intent` True and route this
+    question onto the read-only lane that cannot answer it (#407, #408).
 
-    And it costs this population ONE call that today's turn does not make, asserted here rather
-    than left to be discovered: this leg ends at the table card, so the classifier it forced is not
-    one the turn was going to make later anyway. ADR-0059 records the same and calls the decision
-    inert until #401.
+    WHAT THIS PINS THAT #401'S OWN FILE CANNOT. `test_the_offer_gate_stops_asking_for_certainty`
+    binds its Thread with `{"id": "ds1"}` and no `resourceId`, so `binding_from_context` returns
+    None and its table gate can never fire — it proves the gate change with nothing to be ordered
+    against. This Thread carries a real unscoped store whose tree the walk reaches, so all four
+    table conditions hold and the two gates genuinely compete. Only here can the reported sentence
+    show that the widening question now comes first AND the single select is not also drawn.
 
-    THIS TEST PINS PRE-#401 BEHAVIOUR AND #401 IS EXPECTED TO FLIP IT. Admitting a low-confidence
-    turn to the widening gate draws the investigation card at 0.60, which reds the second assertion
-    here and then the first. That red belongs to #401 and is updated as part of it — it is not a
-    foreign red to be investigated, and the four checks in CLAUDE.md cannot tell the difference:
-    they would report it deterministic and not yours, which would be the wrong verdict.
-
-    DO NOT GO LOOKING FOR A CHANGED `MIN_CONFIDENCE`. As planned, #401 leaves the threshold at 0.65
-    and splits the field instead: the widening gate stops reading `intent.valid` and reads the
-    label plus a named fallback set, while the narrowing gate at `bounded_intent` keeps
-    `intent.valid` unchanged. `_parse` keeps the label and sets `fallback="low-confidence"` below
-    the threshold (measured), so the label is there to read. Crossing 0.65 instead would flip
-    `bounded_intent` True and route the question onto the read-only lane that cannot answer it,
-    which is the #408 dependency — so the number this test watches moves without the threshold
-    moving.
+    The call is no longer spent for nothing: this leg ends at the card the person is owed, so it is
+    the call leg 2 was going to make anyway, moved forward.
     """
     gw = IntentGateway({"label": "data_answer", "confidence": 0.60})
     orch, _ = _orch(tmp_path, [Turn(text="answered")], gateway=gw)
@@ -122,8 +118,8 @@ def test_a_low_confidence_investigative_question_falls_back_to_the_table_card(tm
 
     events = list(orch.chat_stream(tid, INVESTIGATIVE))
 
-    assert "table-candidates" in _kinds(events)
-    assert "investigation-offer" not in _kinds(events)
+    assert "investigation-offer" in _kinds(events)
+    assert "table-candidates" not in _kinds(events)
     assert _classifier_calls(gw) == 1
 
 
