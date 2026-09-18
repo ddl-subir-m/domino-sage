@@ -192,9 +192,8 @@ the person is asked. #407 and #408 settle whether the answer runs.
 and nothing else (`message-blocks.js:1599-1663`): it can be answered but not refused, and a person
 who wants neither must abandon it and rephrase without naming the store. The funnel narrows that gap
 on the turns where the investigation card fires and does not widen it anywhere. The gap is
-pre-existing, it has a clean statement of its own, and it gets its own ticket rather than a third
-button in a decision already settling a gate order, a lazily-forced classifier and the copy on two
-cards.
+pre-existing, it has a clean statement of its own, and it is #414 rather than a third button in a
+decision already settling a gate order, a lazily-forced classifier and the copy on two cards.
 
 **It does not reopen #389.** A decline stays permanent and stays the only door. Everything above is
 designed around that, which is why I2 survives and why the build-request guard exists.
