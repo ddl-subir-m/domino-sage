@@ -10616,12 +10616,21 @@ class Orchestrator:
             self._findings_note(thread_id),
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.
+            # An absent Live read tool is NOT sent to Python here: a bounded turn loses the shell to
+            # `READ_ONLY_DENIED`, so that send promised a lane the turn does not have, and the ban
+            # that followed it ("a missing tool is never a reason") closed the only true exit. The
+            # turn improvised a /tmp write-and-run and died with no answer (#412, ADR-0058).
+            # The exit this opens is the pack's own sanctioned form, not a new one: name the missing
+            # THING and what you would do once it is there (`template/chat/AGENTS.md:23-25`) — which
+            # is why this says "what you would need" and never "which tool", since naming a tool to
+            # the person stays forbidden there (:21). Same edit in the pack and in `opencode.json`.
             (f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
              "`live_read_table` or `live_read_files` call. Use those tools to look at a bound table "
              "or Dataset rather "
              "than telling the person you cannot see their data. If they are not in your tool list "
-             "this turn, query the data with Python instead — a missing tool is never a reason to "
-             "tell someone you cannot see their data."),
+             "this turn, use what you do have; if the answer needs a calculation you have no way to "
+             "run, say what you would need in order to answer it and what you would do once it is "
+             "there, rather than improvising a way around it."),
             # The same token, said again where the second tool is taught, because a sentence about
             # Live read is not one an agent reading about language models will apply to itself
             # (ADR-0057). What it must not do is go looking: the one auth recipe discoverable in the
