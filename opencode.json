@@ -87,6 +87,13 @@
   "permission": {
     "skill": {
       "*": "allow"
+    },
+    "external_directory": "deny",
+    "doom_loop": "deny",
+    "read": {
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*.env.example": "allow"
     }
   },
   "agent": {
