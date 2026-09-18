@@ -533,9 +533,10 @@ def _effective_permission(permission: str, pattern: str, rules: list[dict]) -> s
     for the mere PRESENCE of `ask` would keep firing forever on a config that is correct.
     """
     # From the end, stopping at the first hit — `findLast`, spelled the way it actually searches.
-    # Scanning forward and overwriting gives the same answer and costs the whole list every time:
-    # a real agent carries ~16k rules, most of them one-directory `external_directory` allows, and
-    # the forward version spent six seconds of boot deciding what the last few rules already say.
+    # Scanning forward and overwriting gives the same answer and costs the whole list every time.
+    # Measured over a real 12-agent answer (15,836 rules, 1,208 distinct patterns, so the cache
+    # above holds every one of them): 6.10s forward, 0.02s from the end. The saving is that the
+    # rules which decide a permission are the ones the config appended LAST.
     for rule in reversed(rules):
         if (_permission_matches(permission, str(rule.get("permission", "")))
                 and _permission_matches(pattern, str(rule.get("pattern", "")))):
@@ -568,12 +569,36 @@ def _resolved_agent_permissions() -> list[dict]:
     `resolved_agents()` cannot answer this: it keeps only short scalars so the diag payload stays
     readable, and a permission is a list of dicts. So this asks v1 `/agent` directly — the same
     surface, read for a different question.
+
+    Asked about the directory a Chat turn actually runs in. `Agent.state` is keyed on it and a
+    project config resolves off the SESSION directory, not the server's cwd, so a query that left
+    it out would certify a resolution no turn evaluates — green here, `ask` where it counts.
+
+    The shape is pinned rather than trusted: `agent_summaries` already has to handle `/agent`
+    answering as a bare list, as `{"data": [...]}`, and as a dict keyed by agent name, so all three
+    arrive here too. Anything else raises, which the caller reports as "could not check".
     """
     client = orchestrator._ensure_opencode()
-    r = httpx.get(f"{client.base_url}/agent", timeout=30)
+    params = {"directory": _chat_work_dir()} if _chat_work_dir() else {}
+    r = httpx.get(f"{client.base_url}/agent", params=params, timeout=30)
     r.raise_for_status()
     payload = r.json()
-    return payload if isinstance(payload, list) else list(payload.get("data") or [])
+    if isinstance(payload, dict):
+        payload = payload.get("data", payload)
+    if isinstance(payload, dict):  # keyed by agent name rather than a list
+        payload = [{"name": k, **v} for k, v in payload.items() if isinstance(v, dict)]
+    if not isinstance(payload, list):
+        raise TypeError(f"/agent answered {type(payload).__name__}, not a list of agents")
+    return payload
+
+
+def _chat_work_dir() -> str | None:
+    """Where a Chat turn runs, when there is a workspace to ask about."""
+    workspace = getattr(getattr(orchestrator, "_wm", None), "_dir", None)
+    if not workspace:
+        return None
+    work = Path(workspace) / ".sage" / "chat-work"
+    return str(work) if work.is_dir() else None
 
 
 def _stop_this_process() -> None:
@@ -589,6 +614,7 @@ def _run_permission_preflight() -> None:
     global PREFLIGHT_PERMISSIONS
     try:
         agents = _resolved_agent_permissions()
+        found = _unanswerable_permissions(agents)
     except Exception as e:
         # "Could not ask" is not "OpenCode said ask". Taking the builder down because a query failed
         # would turn a slow OpenCode start into an outage, and the fault this guards against is
@@ -597,7 +623,14 @@ def _run_permission_preflight() -> None:
                                  "unanswerable": []}
         log.warning("preflight: could not check OpenCode's permissions — %s", e)
         return
-    found = _unanswerable_permissions(agents)
+    if not agents:
+        # Zero agents examined is not a clean bill of health, and calling it one would be a guard
+        # that passes hardest exactly when it has learnt least. OpenCode answers `data: []` for a
+        # directory it does not recognise as a project, which is a wiring fault worth its own word.
+        PREFLIGHT_PERMISSIONS = {"state": "unreachable", "unanswerable": [],
+                                 "error": "OpenCode reported no agents, so nothing was checked."}
+        log.warning("preflight: OpenCode reported no agents — no permission was checked")
+        return
     PREFLIGHT_PERMISSIONS = {"state": "unanswerable" if found else "ok", "error": None,
                              "unanswerable": found}
     if not found:
@@ -610,8 +643,10 @@ def _run_permission_preflight() -> None:
         log.error("preflight: %s resolves %s on %r to 'ask', which nothing headless can answer — "
                   "declare it in opencode.json's permission block",
                   problem["agent"], problem["permission"], problem["pattern"])
+    from .service import _CHAT_TOOL_QUIET_TIMEOUT_S
     log.error("preflight: refusing to start. An 'ask' has no answerer here, so every turn that "
-              "reaches one hangs for %ss and then reports a step that did not finish.", 240)
+              "reaches one hangs for %ss and then reports a step that did not finish.",
+              _CHAT_TOOL_QUIET_TIMEOUT_S)
     _stop_this_process()
 
 

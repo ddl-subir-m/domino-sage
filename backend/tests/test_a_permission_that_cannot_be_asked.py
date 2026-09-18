@@ -106,6 +106,33 @@ def test_the_boot_continues_when_nothing_asks(monkeypatch, caplog):
     assert appmod.PREFLIGHT_PERMISSIONS["state"] == "ok"
 
 
+def test_no_agents_is_not_a_clean_bill_of_health(monkeypatch):
+    # The fail-open this guard could most easily have shipped: examine nothing, find nothing, and
+    # report "every permission answers itself". OpenCode returns an empty list for a directory it
+    # does not take for a project, which is a wiring fault, not a passing config.
+    monkeypatch.setattr(appmod, "_resolved_agent_permissions", list)
+    monkeypatch.setattr(appmod, "_stop_this_process", lambda: pytest.fail("stopped on no data"))
+    monkeypatch.setattr(appmod, "PREFLIGHT_PERMISSIONS", dict(appmod.PREFLIGHT_PERMISSIONS))
+
+    appmod._run_permission_preflight()
+
+    assert appmod.PREFLIGHT_PERMISSIONS["state"] == "unreachable"
+
+
+def test_a_shape_it_cannot_read_is_reported_not_left_pending(monkeypatch):
+    # `_unanswerable_permissions` runs inside the same try as the fetch. Outside it, a surprising
+    # payload escaped to the boot wrapper and left the verdict on its module default — `pending`,
+    # a value nothing sets deliberately after boot, served from /healthz forever.
+    monkeypatch.setattr(appmod, "_resolved_agent_permissions",
+                        lambda: [{"name": "sage-chat", "permission": {"edit": "allow"}}])
+    monkeypatch.setattr(appmod, "_stop_this_process", lambda: pytest.fail("stopped on bad shape"))
+    monkeypatch.setattr(appmod, "PREFLIGHT_PERMISSIONS", dict(appmod.PREFLIGHT_PERMISSIONS))
+
+    appmod._run_permission_preflight()
+
+    assert appmod.PREFLIGHT_PERMISSIONS["state"] == "unreachable"
+
+
 def test_a_check_that_could_not_run_does_not_stop_the_boot(monkeypatch):
     # "Could not ask OpenCode" is not "OpenCode said ask". Taking the builder down because a query
     # failed would turn every slow start into an outage, which is the failure the slot preflight
@@ -145,7 +172,11 @@ def test_opencode_json_declares_the_permissions_that_would_otherwise_ask():
 
 @pytest.mark.parametrize("agent", ["sage-chat", "sage-ask", "sage-plan", "sage-architect",
                                    "sage-implement"])
-def test_no_agent_block_reintroduces_an_ask(agent):
+def test_no_agent_block_writes_the_word_ask(agent):
+    # Deliberately narrow, and named for what it can actually see. #407 was NOT an `ask` anybody
+    # wrote — it was a key nobody mentioned, falling through to OpenCode's default — and no test
+    # over this file can catch that, because the default lives in OpenCode. The boot guard is the
+    # check for the real fault. This only stops someone typing the word in on purpose.
     import json
     from pathlib import Path
 
