@@ -1963,6 +1963,19 @@ window.SW = window.SW || {};
           order: pos,
           blocks: [{ type: 'recall_cleared', scope: ev.scope }],
         });
+      } else if (ev.type === 'recall-rebuilt') {
+        // Chat's reader only, and deliberately not added to Build's below: `_chat_stream` is the
+        // one place that writes this row, into the Thread's history. The only other caller of
+        // `_ensure_thread_session` is the planner, which drops the mint flag for a reason stated
+        // there — so this row appearing in a Build transcript would mean something had gone wrong,
+        // not that this branch was missing.
+        assistant = null;
+        messages.push({
+          id: `rr_${messages.length}`,
+          role: 'system',
+          order: pos,
+          blocks: [{ type: 'recall_rebuilt' }],
+        });
       } else if (ev.type === 'recall-suggest' && i === liveRecall) {
         assistant = null;
         messages.push({

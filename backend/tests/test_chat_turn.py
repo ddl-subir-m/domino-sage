@@ -3,11 +3,13 @@ import threading
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 
-from sage.orchestrator import chat_intent, handoff
+from sage.orchestrator import chat_intent, handoff, recall
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
+from sage.workspace.threads import ThreadStore
 
 from .fake_opencode import FakeOpenCode, Turn
 
@@ -2467,3 +2469,62 @@ def test_stop_with_nothing_running_is_not_a_trap_for_the_next_turn(tmp_path: Pat
     assert orch.project(start_preview=False).stop_requested is False
     events = list(orch.chat_stream(tid, "how many rows does clickstream have?"))
     assert any(e.get("type") == "agent" and e.get("text") == "Six million rows." for e in events)
+
+
+class _ForgetfulOpenCode(FakeOpenCode):
+    """A workspace restart, in the only shape Sage can see one (ADR-0060).
+
+    OpenCode's session store lives on the container overlay and dies with the workspace;
+    `session.json` lives on the Project volume and does not. So the id is still on disk and the
+    server has never heard of it — which opencode 1.18.4 answers with 404 on
+    `GET /session/{id}/message`, and which `_ensure_thread_session` turns into a fresh session.
+
+    Overriding `messages` is the whole point: `FakeOpenCode` answers `[]` for an unknown id, and an
+    empty list is a LIVE session with nothing in it. A test without this override would take the
+    reuse path and pass while proving nothing (#427).
+    """
+
+    def __init__(self, workspace: Path) -> None:
+        super().__init__(workspace, [Turn(text="There were 41,002 events from 3,118 users."),
+                                     Turn(text="Here it is again.")])
+        self.forgotten: set[str] = set()
+
+    def restart(self) -> None:
+        self.forgotten.update(s["id"] for s in self.sessions)
+
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
+        if session_id in self.forgotten:
+            request = httpx.Request("GET", f"http://opencode/session/{session_id}/message")
+            raise httpx.HTTPStatusError(
+                "404 Not Found", request=request,
+                response=httpx.Response(404, request=request))
+        return super().messages(session_id, limit=limit)
+
+
+def test_a_lost_session_is_rebuilt_from_the_transcript_and_the_person_is_told(tmp_path: Path):
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    first = list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    # The first turn mints a session too, and nothing was lost. No summary, and no notice — the
+    # gate is "was anything carried", not "was a session made".
+    assert not any(e.get("type") == recall.REBUILT for e in first)
+
+    oc.restart()
+    events = list(orch.chat_stream(tid, "now try again"))
+
+    # The precondition for everything below: the stored session was refused and replaced.
+    assert len(oc.sessions) == 2
+
+    sent = oc.prompts[-1]["text"]
+    # The model is handed what the dead session was holding...
+    assert "how many mixpanel events in the last 30 days?" in sent
+    assert "41,002 events" in sent
+    # ...and told, in as many words, not to answer the way #427 did.
+    assert "continuing, not starting" in sent
+
+    # And the person is told, live...
+    assert any(e.get("type") == recall.REBUILT for e in events)
+    # ...and on reload, which is the half a streamed-only notice would lose.
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    assert any(e.get("type") == recall.REBUILT for e in store.read_history(tid))

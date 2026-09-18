@@ -542,6 +542,23 @@ window.SW = window.SW || {};
     );
   }
 
+  // The same seam as `RecallCleared` and the opposite cause: nobody asked for this one. The session
+  // holding the conversation was already gone when this turn ran, so the model was handed a summary
+  // of the transcript instead of the conversation itself (ADR-0060, #427). Without this line the
+  // transcript claims the model remembered every word above it, which is the same lie the clear
+  // divider exists to prevent.
+  //
+  // "Summary" is said plainly because that is the part the person can act on: the model has the
+  // gist and may be missing the one detail they are about to build a follow-up on.
+  function RecallRebuilt() {
+    return h(
+      'div',
+      { className: 'sw-recall-cleared' },
+      'Memory rebuilt. The model lost this conversation and was given a summary of the messages ' +
+        'above, so some details may be missing. If something above matters, say it again.'
+    );
+  }
+
   // The receipt for a withhold (ADR-0022), and the only thing on screen that says the click landed.
   // A divider in the same family as `RecallCleared`, and deliberately quieter than it: clearing
   // Recall throws work away and this throws nothing away at all.
@@ -2108,6 +2125,8 @@ window.SW = window.SW || {};
         return h(RecallCleared, { block });
       case 'recall_withheld':
         return h(RecallWithheld, { block });
+      case 'recall_rebuilt':
+        return h(RecallRebuilt);
       case 'graduation_nudge':
         return h(GraduationNudge, { onSave });
       default:

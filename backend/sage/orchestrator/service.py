@@ -8617,7 +8617,12 @@ class Orchestrator:
         # failure recorded nowhere left `recall.offer` counting to one forever while the one thing
         # that would fix it (a fresh session) went unoffered.
         try:
-            session_id = self._ensure_thread_session(store, thread_id, project, client)
+            # The mint flag is dropped here on purpose. ADR-0060 decides what a CHAT TURN does when
+            # the conversation's memory is gone — seed it, and tell the person in the transcript.
+            # This is the planner, which sends one self-contained prompt built from the digest
+            # above and reads one document back; it does not carry the conversation, so a fresh
+            # session costs it nothing and there is no seam here for a person to be told about.
+            session_id, _ = self._ensure_thread_session(store, thread_id, project, client)
             plan_md = self._run_sage_plan(project, prompt, session_id)
         except ValueError as e:
             self._record_plan_refusal(store, thread_id, project, str(e))
@@ -9227,7 +9232,20 @@ class Orchestrator:
         return out or None
 
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
-                               client: OpenCodeClient) -> str:
+                               client: OpenCodeClient) -> tuple[str, bool]:
+        """This Thread's OpenCode session, and whether this call had to mint a fresh one.
+
+        The second half of that answer exists because **this function is the only place that knows**
+        (ADR-0060). A reused session carries the conversation; a minted one carries nothing, and
+        from every other surface the two are indistinguishable — `history.jsonl` is on the Project
+        volume and replays in full either way, so `/api/threads/<id>/history` and
+        `_warn_if_history_lossy` both look healthy on exactly the turn the model has been emptied
+        (#427). Returning the flag is what lets the caller seed the new session and say so, instead
+        of the person meeting a model that has quietly forgotten them.
+
+        Minting is the correct act, not the defect — a session OpenCode no longer knows cannot be
+        talked to. Doing it in silence was the defect.
+        """
         # Chat stands at the Project root, where its Threads, Artifacts and scratch live. The one
         # thing it borrows from the app is `public/data/`, and only once an app exists to borrow
         # from: linking it would otherwise create the app directory a confirmed handoff is what
@@ -9254,12 +9272,20 @@ class Orchestrator:
                 # `wait_for_idle` returns on the appear grace and the caller reads a transcript the
                 # turn is still writing. That is an "empty plan" on a plan nobody had finished.
                 client.note_session_dir(sid, work)
-                return sid
+                return sid, False
             except httpx.HTTPStatusError:
                 sid = None
         sid = client.create_session(directory=work)
         store.write_session_id(thread_id, sid, directory=work)
-        return sid
+        if rec.get("session_id"):
+            # Guarded on a session having been ON DISK, so this is not a new Thread finding its
+            # feet: there WAS one and OpenCode does not have it, so this Conversation just lost its
+            # memory. The transcript row the caller writes is for the person; this line is for
+            # whoever reads logs afterwards, which until now was nobody — every path out of this
+            # function was silent, which is why #427's reporter had nothing to point at and why
+            # reading the silence of any other line was going to mislead whoever tried.
+            log.info("chat session: thread=%s lost its stored session; minted a new one", thread_id)
+        return sid, True
 
     @staticmethod
     def _plan_state_note(entries: list[dict] | None) -> str:
@@ -10753,7 +10779,7 @@ class Orchestrator:
                      artifacts: list[dict] | None = None,
                      handoffs: list[dict] | None = None,
                      history: list[dict] | None = None,
-                     declined: bool = False) -> str:
+                     declined: bool = False, rebuilt: str = "") -> str:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
@@ -10801,7 +10827,24 @@ class Orchestrator:
         # starts over, but is told what was said. Empty on every other turn, including the first
         # turn after a complete clear, where being told nothing is the whole point.
         carried = recall.seed(history or [])
-        if carried:
+        # A minted session carries nothing while the person goes on reading the whole transcript
+        # (ADR-0060). `rebuilt` is that transcript already rendered, passed in because the caller is
+        # the only place that knows the session was new — see `_ensure_thread_session`. Checked
+        # BEFORE `carried` because it supersedes it: it already covers everything `seed` would have
+        # carried, so rendering both would say the same thing twice under two different headings.
+        #
+        # The last two sentences are the defect stated as an instruction. Without them the model has
+        # a summary AND an empty session, and #427 is a turn that answered from the emptiness —
+        # "there's no Mixpanel question in our conversation yet" — while the question sat eight
+        # events above it. Being handed the history does not by itself stop that sentence.
+        if rebuilt:
+            lines += ["What was said in this Conversation already, summarised. This conversation "
+                      "is continuing, not starting: answer as though you had been part of it. "
+                      "Never tell the person the conversation has just started or that this is "
+                      "their first message, and do not introduce yourself again. It is a summary, "
+                      "so if you need a detail it does not carry, ask for that detail:",
+                      rebuilt, ""]
+        elif carried:
             lines += ["What was said in this Conversation before the model was started over:",
                       carried, ""]
         items = ctx.get("items") or []
@@ -11371,7 +11414,7 @@ class Orchestrator:
             with timing.span("setup.opencode"):
                 client = self._ensure_opencode()
             with timing.span("setup.session"):
-                sid = self._ensure_thread_session(store, thread_id, project, client)
+                sid, minted = self._ensure_thread_session(store, thread_id, project, client)
             work = str((store.read_session(thread_id) or {}).get("directory")
                        or project.record.path)
             project.active_session_id = sid
@@ -11407,12 +11450,22 @@ class Orchestrator:
             with timing.span("setup.prompt"):
                 prompt_history = store.read_history(thread_id)
                 _warn_if_history_lossy(prompt_history, "_chat_stream (prompt assembly)")
+                # ADR-0060. Rendered here rather than inside `_chat_prompt` because two things need
+                # the same answer — the prompt and the row below that tells the person — and
+                # `chat_summary` walks the whole transcript. Asking twice would render it twice and
+                # let the two disagree about whether there was anything to carry.
+                #
+                # `minted` is the only fact in play, and it does not come from the rows: a Thread
+                # with nine events and a live session is indistinguishable here from one with nine
+                # events whose session just died. Only `_ensure_thread_session` knows.
+                rebuilt = recall.reseed(prompt_history) if minted else ""
                 turn_prompt = self._chat_prompt(thread_id, prompt, ctx, urls,
                                                 workspace=Path(work),
                                                 artifacts=store.read_artifacts(thread_id),
                                                 handoffs=store.read_handoffs(thread_id),
                                                 history=prompt_history,
-                                                declined=declined)
+                                                declined=declined,
+                                                rebuilt=rebuilt)
                 if artifact_token is not None:
                     # Says what to do, never what this turn is or cannot do. The block is
                     # model-facing, so every word in it is a word the model can hand back to the
@@ -11431,6 +11484,25 @@ class Orchestrator:
                         "If you can't produce something, say so in one plain sentence and don't describe "
                         "how you work."
                     )
+            if rebuilt:
+                # The half that is not about the model (ADR-0060). A repair nobody is told about is
+                # the same defect one level quieter: the person asks a follow-up that leans on a
+                # detail the summary dropped, gets a second confusing answer, and now has LESS to go
+                # on — because the summary hid the seam that plain amnesia at least made obvious.
+                #
+                # Written to the transcript and not only streamed, for the reason `RecallCleared`
+                # exists: on reload the transcript would otherwise say the model had remembered all
+                # of this, and every turn below the seam would read as though it had.
+                #
+                # Outside the span above because that span times the prompt build; a yield hands
+                # control to whoever is consuming this generator, and their time is not ours.
+                #
+                # An empty `rebuilt` means there was nothing to carry — a Thread on its first turn,
+                # or one whose session was dropped by a complete clear, which has already drawn its
+                # own divider and asked to be forgotten. Neither is a seam, and neither gets a row.
+                rebuilt_ev = {"type": recall.REBUILT}
+                store.append_history(thread_id, rebuilt_ev)
+                yield rebuilt_ev
             with timing.span("setup.dispatch"):
                 client.send_prompt(sid, turn_prompt, agent="sage-chat",
                                    attachments=mentioned, chat=True)
