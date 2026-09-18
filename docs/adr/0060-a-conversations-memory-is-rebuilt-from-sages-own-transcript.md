@@ -119,3 +119,77 @@ here.
 and an exact symptom match are all present; the receipt is not, and no longer exists. The codebase
 documents and defends against precisely this condition in `_recover_session` (`service.py:6646`),
 and #417 measures OpenCode boots as routine. That is strong and it is not a measurement.
+
+## Amendment, 2026-09-18: the seed is a second function, and a clear is a session drop
+
+Two things were wrong in the sections above. The decision is unchanged; the implementation note
+under *"The summary"* and an unstated hazard are corrected here.
+
+**`recall.seed` is not widened. `recall.reseed` is built beside it.** The note above said the guard
+*"needs a second key"*. It does not, because **`seed`'s guard has never executed in production**.
+The caller appends the turn's own `user` row (`service.py:10966`) before it reads the transcript
+back (`:11419`), so `seed`'s backward scan meets a `user` row first and returns `""` on every turn
+there has ever been. Widening it would have hung a live decision on a branch nothing runs, and
+would have made that branch fire for the first time — seeding a summary-scoped clear, a live change
+to the recall ladder (ADR-0022) that this ADR did not decide and has no business making as a side
+effect. That change is filed separately (#432). `reseed` answers its own question — *this session
+was minted a moment ago and holds nothing* — and shares only `chat_summary`.
+
+`_ensure_thread_session` (`service.py:9229`) therefore returns `(sid, minted)` rather than `sid`,
+which is the plumbing this ADR called *"the work"*. That part was right.
+
+**A clear is carried out by dropping the session, so the rebuild path fires on the very next turn
+by construction.** `clear_recall` calls `store.clear_session_id(thread_id)` (`service.py:9657`) and
+then appends the `CLEARED` row. The next turn finds no session, mints one, and is `minted=True` —
+so an unguarded `reseed` would answer *"forget this"* by handing the model a summary of exactly
+what it was asked to forget. The seam this ADR was written to repair and the mechanism a clear
+already used are the same mechanism, and nothing above noticed.
+
+The guard: `reseed` drops every row up to and including the newest `CLEARED` row scoped `EMPTY`,
+and carries only what was said after it. A **summary**-scoped clear is left whole on purpose —
+that scope's promise is that a short summary survives, and dropping it would break the rung rather
+than protect it. `reseed` also drops the turn's own trailing `user` row, without which the model is
+handed the question twice: once as the thing already said, once as the thing being asked.
+
+**What this amendment does not settle.** ADR-0022's `EMPTY` rung still prints its divider on a turn
+where the carried text is now empty, and #432 records that a summary-scoped clear promises a
+summary and sends none. Both are the recall ladder's, not this decision's.
+
+## Second amendment, 2026-09-18: the trigger is a committed session id, not a restart
+
+The reporter has since said they were **in the same conversation and the workspace had never
+restarted**. That refutes the mechanism this ADR leads with. The section above already refused to
+claim it — *"It does not establish that a Domino workspace restart wipes the store"* — so the
+caveat was right and the narrative around it was not.
+
+**The general mechanism is that the session id is committed to git.** `_PROJECT_IGNORE`
+(`manager.py:257`) ignores `.sage/scratch/`, `.sage/chat-work/`, `.sage/threads/*/.*.tmp` and the
+upload ledger's staging twin. It does **not** ignore `.sage/threads/<id>/session.json`, which
+`ThreadStore.write_session_id` (`threads.py:252`) writes. `git check-ignore` on that path exits 1.
+
+So a Thread's OpenCode session id is **durable, versioned, cloned state that names a
+container-local object**. It rides a clone into a container that has never heard of it, and
+`client.messages(sid)` 404s on the **first turn there** — measured directly against opencode-ai
+1.18.4 on 2026-09-10: an unknown session id returns 404 on `GET /session/{id}`,
+`GET .../message` and `POST .../message`.
+
+A restart is therefore one way in, and the narrow one. The wide one needs **no restart at all**: a
+new workspace on an existing Project is amnesiac on its first turn, by construction, while the
+transcript clones back in full beside it. That is why `/api/threads/<id>/history` returned nine
+events and `_warn_if_history_lossy` stayed quiet — **both of the reporter's ruled-out checks read
+the half that survives.**
+
+This makes the defect **more** severe than stated above, not less. *"Every OpenCode restart is
+total, silent conversation amnesia"* should read: **every container that did not personally mint
+the session id inherits a dead one, and a committed id guarantees it will find one to inherit.**
+
+**The decision does not change, and neither does the fix.** `_ensure_thread_session` returns
+`minted=True` on both paths — the 404 and the directory mismatch — so `reseed` fires for this case
+as designed. What changes is the population: this is the ordinary path, not the rare one.
+
+**A question this raises and does not settle:** whether `session.json` should be in
+`_PROJECT_IGNORE` at all. A container-local handle kept in version control is the thing that
+carries the corpse from one container to the next; ignoring it would make a clone mint cleanly
+rather than probe a dead id, and `minted` would still be true, so the seed would still run. It is
+not free — `clear_session_id`'s contract and the *"there WAS one and OpenCode does not have it"*
+log line both read that file — and it is filed as #433 rather than decided here.

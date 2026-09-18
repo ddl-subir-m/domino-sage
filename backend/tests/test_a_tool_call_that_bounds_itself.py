@@ -106,6 +106,18 @@ _TOOLS = [
         "Nothing was put on the person's screen.",
         _MCP_REPLY, "ANSWERED",
         id="live_read_files"),
+    # ADR-0058's tool, and it is here because the census below refused to let it ship without a
+    # subject — the list did not know it was short, and the thing built for exactly that noticed.
+    # Same bound and same sentence as its two siblings because it shares their `call`, which is the
+    # claim being checked rather than an assumption worth inheriting: a fourth export added to
+    # `live_read.ts` gets the bound only if `call` is what it goes through.
+    pytest.param(
+        "sage/liveread/tools/live_read.ts", "query",
+        "SAGE_LIVE_READ_TIMEOUT_MS",
+        {"token": "t", "source": "DWH", "sql": "SELECT COUNT(*) AS N FROM DWH.MARTS.EVENTS"},
+        "Nothing was put on the person's screen.",
+        _MCP_REPLY, "ANSWERED",
+        id="live_read_query"),
     # #416: the third tool. It was not absent from this list because anyone judged it exempt — the
     # list is a list, and it cannot know it is short. `test_every_tool_that_fetches_is_bounded`
     # below is what notices the fourth one.
