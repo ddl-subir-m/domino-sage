@@ -99,7 +99,22 @@ def test_a_low_confidence_investigative_question_falls_back_to_the_table_card(tm
     And it costs this population ONE call that today's turn does not make, asserted here rather
     than left to be discovered: this leg ends at the table card, so the classifier it forced is not
     one the turn was going to make later anyway. ADR-0059 records the same and calls the decision
-    inert until #401 — the number belongs in a test so that raising the threshold moves it.
+    inert until #401.
+
+    THIS TEST PINS PRE-#401 BEHAVIOUR AND #401 IS EXPECTED TO FLIP IT. Admitting a low-confidence
+    turn to the widening gate draws the investigation card at 0.60, which reds the second assertion
+    here and then the first. That red belongs to #401 and is updated as part of it — it is not a
+    foreign red to be investigated, and the four checks in CLAUDE.md cannot tell the difference:
+    they would report it deterministic and not yours, which would be the wrong verdict.
+
+    DO NOT GO LOOKING FOR A CHANGED `MIN_CONFIDENCE`. As planned, #401 leaves the threshold at 0.65
+    and splits the field instead: the widening gate stops reading `intent.valid` and reads the
+    label plus a named fallback set, while the narrowing gate at `bounded_intent` keeps
+    `intent.valid` unchanged. `_parse` keeps the label and sets `fallback="low-confidence"` below
+    the threshold (measured), so the label is there to read. Crossing 0.65 instead would flip
+    `bounded_intent` True and route the question onto the read-only lane that cannot answer it,
+    which is the #408 dependency — so the number this test watches moves without the threshold
+    moving.
     """
     gw = IntentGateway({"label": "data_answer", "confidence": 0.60})
     orch, _ = _orch(tmp_path, [Turn(text="answered")], gateway=gw)
