@@ -3,6 +3,8 @@ from pathlib import Path
 
 from sage.driver.opencode import with_attachment_listing
 
+from .test_chat_turn import _orch
+
 
 def test_sage_chat_prompt_is_the_agents_md_file():
     root = Path(__file__).resolve().parents[2]
@@ -57,22 +59,97 @@ def test_build_attachment_listing_still_warns_not_to_copy_into_src():
     assert "built app MUST" in out
 
 
-def test_the_prompt_never_makes_a_missing_tool_a_reason_to_give_up():
+def test_the_prompt_never_promises_python_it_may_not_have():
     """Live read is served over MCP, and OpenCode does not reliably connect it — measured live on
     2e284e7: a workspace idle for seven minutes, then a first Chat turn handed NO Live read tools,
-    and `opencode_connected` still reading "never" two model calls later.
+    and `opencode_connected` still reading "never" two model calls later. So the prompt must still
+    say something about their absence; saying nothing left the same question answering one turn and
+    refusing the next, decided by nothing.
 
-    The turn still answered, with real rows, because the model fell back to Python. But a prompt
-    that names those tools and says nothing about their absence leaves that to chance: the same
-    question one turn earlier produced "the sage-live-read_ tools ... aren't available in this
-    turn" and no answer at all. Same shape, two outcomes, decided by nothing.
+    What it must NOT say is where this test moved. The prompt used to send that case to Python and
+    then forbid the turn from naming the missing tool. On a bounded turn there is no Python —
+    `READ_ONLY_DENIED = WRITE_TOOLS | SHELL_TOOLS` takes the shell and the ability to write a file
+    — so the send named a lane the turn does not have, and the ban closed the only true exit. The
+    turn improvised a /tmp write-and-run it had just said it could not do, and died at 240s with no
+    answer (#412, ADR-0058).
     """
-    prompt = (Path(__file__).resolve().parents[2] / "template" / "chat" / "AGENTS.md").read_text()
+    root = Path(__file__).resolve().parents[2]
+    md = (root / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
+    lines = md.split("\n")
 
-    assert "not in your list this turn, query the data with Python instead" in prompt
-    # And the half that matters to the person reading the Thread: a tool name is never the reason
-    # they are given for not getting their own data.
-    assert "never name a tool to them as the reason" in prompt
+    def says(probe: str) -> None:
+        """Assert the pack says `probe`, and that `probe` could ever have matched.
+
+        The pack is wrapped by hand and `opencode.json` keeps each wrap as an escaped newline, so
+        a probe straddling one matches nothing in either file. That failure is silent and reads
+        exactly like a passing check on a file nobody edited — which is how #412 could have been
+        reported done while undone. Requiring the probe to land inside a single line makes a
+        re-wrap fail loudly here instead of quietly weakening the check.
+        """
+        assert "\n" not in probe, probe
+        assert any(probe in line for line in lines), probe
+
+    # The absence is still addressed, and the honest exit is now the instructed one. Refusing is
+    # NOT the instructed default: the measured good outcome above is a turn that kept `bash` and
+    # answered from Python, and the condition this bullet fires on (Live read absent) is
+    # independent of the one that takes Python away (`read_only_turn`). So it has to say both.
+    says("not in your list this turn, use what you do have — do not improvise")
+    says("Whether Python is available to you this turn")
+    says("is something you can see in your own tool list: if it is there, use it")
+
+    # And the exit it opens is the pack's OWN sanctioned form, not a competing one: :23-25 already
+    # says never to call yourself blocked or unable, and to name the missing THING and what you
+    # would do once it is there. :21 still forbids naming a tool to the person. A bullet telling
+    # the turn to "say what you cannot do" would contradict :23 and re-create #412 the other way
+    # up — an instructed refusal in place of an instructed improvisation.
+    says("say what you would need in order to")
+    says("what you would do once it is there")
+    assert "say what you cannot do" not in md
+
+    # No route back to any of the four claims, in the copy the model is actually sent.
+    # `test_sage_chat_prompt_is_the_agents_md_file` pins the two equal; asserting here as well
+    # means a future split cannot land this bug on the live side alone. The THIRD copy — the
+    # per-turn prose built in `_chat_prompt` — is not covered by this loop and has its own test
+    # below; nothing else pins it.
+    prompt = json.loads((root / "opencode.json").read_text(encoding="utf-8"))[
+        "agent"]["sage-chat"]["prompt"]
+    for gone in ("Use Python below when the answer needs the",
+                 "query the data with Python instead",
+                 "everything they do, the Python below also does",
+                 "never name a tool to them as the reason"):
+        assert gone not in md, gone
+        assert gone not in prompt, gone
+
+
+def test_the_turn_prompt_does_not_promise_python_either(tmp_path: Path):
+    """The third copy, and the one with the loudest voice. `template/chat/AGENTS.md` and
+    `opencode.json` are pinned equal above, but the same instruction was taught again per turn in
+    `_chat_prompt`, and a turn prompt is what the model quotes back at the person (#398).
+
+    It carried both defects in its own words: "query the data with Python instead — a missing tool
+    is never a reason to tell someone you cannot see their data". Fixing only the pack would have
+    left the live sentence intact and the fix cosmetic, and no test reached this string (#412).
+    """
+    orch, _ = _orch(tmp_path)
+    prompt = orch._chat_prompt("thr_412", "which accounts score highest?", {"items": []})
+
+    # The same four the pack is checked against, because "nothing pins it" was true of this copy
+    # until now and a re-introduction here would be phrased in its own words, not the pack's.
+    for gone in ("Use Python below when the answer needs the",
+                 "query the data with Python instead",
+                 "everything they do, the Python below also does",
+                 "never name a tool to them as the reason",
+                 "a missing tool is never a reason"):
+        assert gone not in prompt, gone
+
+    # Both halves, matching the pack: use what is there, and if the calculation has no lane, ask
+    # in the sanctioned form rather than refusing. The turn prompt is the copy the model quotes
+    # back (#398), so a refuse-only version of it outranks the pack's "use what you do have".
+    assert "use what you do have" in prompt
+    assert "say what you would need in order to answer it" in prompt
+    # Never the tool itself: `AGENTS.md:21` forbids naming one to the person, and the turn prompt
+    # carries no tool-naming ban of its own to fall back on.
+    assert "say so plainly" not in prompt
 
 
 def test_the_turn_writes_one_artifact_not_two():
