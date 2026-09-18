@@ -169,7 +169,11 @@ not the other, and nothing in the worktree's summary said so. Run with `-rs` the
 prints each skip with its reason, which is the only thing that tells a skip from a pass at a glance.
 
 **Name that population by grepping `BINARY.exists()`, never by naming a file**, and run the FULL
-suite from the root rather than "that file from the root". The five tests live in TWO files, and
+suite from the root rather than "that file from the root". The grep finds the FILES and the sites;
+it does not give you the count. Four `skipif` sites yield five tests, because one carries
+`@pytest.mark.parametrize("mode", ["chat", "build"])` directly beneath it — use `--collect-only` for
+the number. A third file matches the grep and gates nothing: it names `BINARY.exists()` twice in
+prose. Expect that hit and discount it. The five tests live in TWO files, and
 for most of one day this repo's briefings said "the four real-OpenCode tests" and pointed at one of
 them — so a session that ran exactly what it was told still missed a test. The failure is not that
 the binary is missing, which anyone learns once and remembers. It is that the population is
