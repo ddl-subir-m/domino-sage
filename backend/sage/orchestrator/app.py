@@ -14,9 +14,12 @@ import asyncio
 import collections
 import concurrent.futures
 import contextlib
+import functools
 import logging
 import os
 import queue
+import re
+import signal
 import threading
 import time
 from mimetypes import guess_type
@@ -27,6 +30,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import httpx
 from fastapi import Body, FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import (
@@ -488,6 +492,129 @@ def _run_slot_preflight() -> None:
     PREFLIGHT_SLOTS = result
 
 
+# Preflight of OpenCode's own permissions (#407). Fatal, unlike the slot check above, and the
+# difference is whether a retry could ever help. A slot resolves against a live gateway, so a
+# failure there is usually weather and clears on its own. A permission resolves against config
+# baked into the image: `ask` at boot is `ask` for every turn this container will ever serve.
+#
+# What `ask` costs, measured: Sage runs OpenCode headless, so nothing can answer one. The tool call
+# stays open, `quiet_limit` picks `_CHAT_TOOL_QUIET_TIMEOUT_S` because a tool IS running, and the
+# turn dies 240 seconds later saying a step did not finish in time. The person watches "Thinking…"
+# for four minutes and is told nothing about a permission. Refusing to boot spends one maintainer's
+# log line instead of every user's four minutes, on a fault that no restart would have cleared.
+PREFLIGHT_PERMISSIONS: dict = {"state": "pending", "error": None, "unanswerable": []}
+
+
+@functools.lru_cache(maxsize=2048)
+def _permission_glob(pattern: str) -> re.Pattern:
+    """OpenCode's `Wildcard.match`, transcribed from opencode-ai 1.18.4.
+
+    `*` and `?` are the only metacharacters; everything else is escaped. The trailing-space case is
+    theirs too. Kept faithful rather than tidy — this decides whether a rule covers a request, and a
+    matcher that is merely close reports a config that works as broken, which takes the builder down.
+    """
+    p = re.sub(r"[.+^${}()|\[\]\\]", lambda m: "\\" + m.group(0), pattern.replace("\\", "/"))
+    p = p.replace("*", ".*").replace("?", ".")
+    if p.endswith(" .*"):
+        p = p[:-3] + "( .*)?"
+    return re.compile(p, re.DOTALL)
+
+
+def _permission_matches(value: str, pattern: str) -> bool:
+    return _permission_glob(pattern).fullmatch(value.replace("\\", "/")) is not None
+
+
+def _effective_permission(permission: str, pattern: str, rules: list[dict]) -> str:
+    """What OpenCode would actually do — the LAST matching rule, or `ask` when none matches.
+
+    Last rather than first, and this is the whole reason the fix in `opencode.json` works: OpenCode
+    appends the config's rules after its own defaults, so a declared `deny` overrides the default
+    `ask` sitting above it. Both rules stay in the list `GET /agent` returns, so a guard that looked
+    for the mere PRESENCE of `ask` would keep firing forever on a config that is correct.
+    """
+    # From the end, stopping at the first hit — `findLast`, spelled the way it actually searches.
+    # Scanning forward and overwriting gives the same answer and costs the whole list every time:
+    # a real agent carries ~16k rules, most of them one-directory `external_directory` allows, and
+    # the forward version spent six seconds of boot deciding what the last few rules already say.
+    for rule in reversed(rules):
+        if (_permission_matches(permission, str(rule.get("permission", "")))
+                and _permission_matches(pattern, str(rule.get("pattern", "")))):
+            return str(rule.get("action", "ask"))
+    return "ask"
+
+
+def _unanswerable_permissions(agents: list[dict]) -> list[dict]:
+    """Every (agent, permission, pattern) that would stop a headless turn dead.
+
+    Each rule is evaluated at its OWN pattern, which is what makes this complete without having to
+    know OpenCode's permission vocabulary: a rule saying `ask` that nothing later overrides is a
+    request that can arrive, and any key Sage has never declared still shows up here the moment
+    OpenCode's defaults put an `ask` on it. That is the half of #407 that survives the next version.
+    """
+    found = []
+    for agent in agents:
+        rules = agent.get("permission") or []
+        for permission, pattern in dict.fromkeys(
+                (str(r.get("permission", "")), str(r.get("pattern", ""))) for r in rules):
+            if _effective_permission(permission, pattern, rules) == "ask":
+                found.append({"agent": str(agent.get("name", "?")),
+                              "permission": permission, "pattern": pattern})
+    return found
+
+
+def _resolved_agent_permissions() -> list[dict]:
+    """The agents OpenCode resolved, with their full rule lists.
+
+    `resolved_agents()` cannot answer this: it keeps only short scalars so the diag payload stays
+    readable, and a permission is a list of dicts. So this asks v1 `/agent` directly — the same
+    surface, read for a different question.
+    """
+    client = orchestrator._ensure_opencode()
+    r = httpx.get(f"{client.base_url}/agent", timeout=30)
+    r.raise_for_status()
+    payload = r.json()
+    return payload if isinstance(payload, list) else list(payload.get("data") or [])
+
+
+def _stop_this_process() -> None:
+    """Stop the app the way its launcher expects, so `_lifespan` still tears OpenCode down.
+
+    A signal rather than `os._exit`: the warm-up has usually started a `opencode serve` by now, and
+    exiting under it leaves the orphan this module's lifespan was written to prevent.
+    """
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _run_permission_preflight() -> None:
+    global PREFLIGHT_PERMISSIONS
+    try:
+        agents = _resolved_agent_permissions()
+    except Exception as e:
+        # "Could not ask" is not "OpenCode said ask". Taking the builder down because a query failed
+        # would turn a slow OpenCode start into an outage, and the fault this guards against is
+        # deterministic — the next boot that CAN ask will still find it.
+        PREFLIGHT_PERMISSIONS = {"state": "unreachable", "error": f"{type(e).__name__}: {e}",
+                                 "unanswerable": []}
+        log.warning("preflight: could not check OpenCode's permissions — %s", e)
+        return
+    found = _unanswerable_permissions(agents)
+    PREFLIGHT_PERMISSIONS = {"state": "unanswerable" if found else "ok", "error": None,
+                             "unanswerable": found}
+    if not found:
+        log.info("preflight: every permission OpenCode resolved answers itself")
+        return
+    for problem in found:
+        # Named in full, because the cost of this ticket was finding out WHICH permission was
+        # silent. A line that said only "a permission asks" would send the next maintainer on the
+        # same search.
+        log.error("preflight: %s resolves %s on %r to 'ask', which nothing headless can answer — "
+                  "declare it in opencode.json's permission block",
+                  problem["agent"], problem["permission"], problem["pattern"])
+    log.error("preflight: refusing to start. An 'ask' has no answerer here, so every turn that "
+              "reaches one hangs for %ss and then reports a step that did not finish.", 240)
+    _stop_this_process()
+
+
 def _warm_opencode() -> None:
     """Boot the OpenCode server now rather than on the first turn.
 
@@ -533,8 +660,16 @@ async def _lifespan(app: FastAPI):
         except Exception:
             log.exception("startup: %s did not finish", step.__name__)
 
+    def _warm_then_check_permissions() -> None:
+        # One thread, in this order. `_ensure_opencode` takes no lock, so two boot steps both
+        # reaching for the server would spawn two of them and orphan one — the exact leak this
+        # lifespan exists to stop. The permission check needs the server the warm-up starts, so it
+        # follows it here rather than racing it from a thread of its own.
+        _warm_opencode()
+        _run_permission_preflight()
+
     for step, name in ((_run_slot_preflight, "sage-preflight-slots"),
-                       (_warm_opencode, "sage-warm-opencode")):
+                       (_warm_then_check_permissions, "sage-warm-opencode")):
         threading.Thread(target=_boot, args=(step,), name=name, daemon=True).start()
     yield
     orchestrator.shutdown()
@@ -885,6 +1020,9 @@ def healthz() -> dict:
         # on its own route because /healthz is already the one call that answers "is this builder
         # correctly wired", and the UI already makes it on load.
         "preflight_slots": PREFLIGHT_SLOTS,
+        # Beside the slot verdict for the same reason. Usually "ok" or "unreachable": a builder that
+        # found an unanswerable permission has already stopped, so nothing is left to serve this.
+        "preflight_permissions": PREFLIGHT_PERMISSIONS,
     }
 
 
