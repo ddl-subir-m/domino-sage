@@ -220,14 +220,23 @@ def reseed(history: list[dict]) -> str:
     # something already said, once as the thing being asked.
     if rows and rows[-1].get("type") == "user":
         rows = rows[:-1]
-    # A complete clear is the person asking to be forgotten, and DROPPING THE SESSION is how Sage
-    # carries it out (`clear_recall` -> `ThreadStore.clear_session_id`). So the very next turn mints
-    # a session and arrives here: summarising the whole transcript would hand straight back what was
-    # just cleared, and ADR-0022's `EMPTY` rung would become a no-op that still prints its divider.
-    # Carry only what was said after it. A SUMMARY-scoped clear is left whole on purpose — its
-    # promise was that a short summary survives, which is this.
+    # EITHER scope, and the scope is deliberately not read. `clear_recall` calls
+    # `ThreadStore.clear_session_id` OUTSIDE its `if scope == recall.EMPTY:` block, so a clear of
+    # any kind is carried out by dropping the session — which means the next turn mints one and
+    # lands here BY CONSTRUCTION, for a loss that was requested rather than suffered.
+    #
+    # Truncating at the newest clear of either scope is what keeps this decision to its subject.
+    # Reading the scope and carrying a SUMMARY clear whole looks right — that rung did promise a
+    # summary survives — and is wrong twice over: it answers "start over, keep the gist" by shovelling
+    # the WHOLE pre-clear transcript into the fresh session, and it hands the ladder's softer rung
+    # a fresh chance to re-poison a Conversation the person cleared to escape a refusal. Keeping
+    # that promise is `seed`'s job, it has never actually done it (#432), and turning it on here
+    # would be ADR-0022's decision made silently inside ADR-0060's.
+    #
+    # Rows said AFTER the newest clear are carried: nobody asked to forget those, and losing them
+    # to a restart is the thing this function exists for.
     for i in range(len(rows) - 1, -1, -1):
-        if rows[i].get("type") == CLEARED and rows[i].get("scope") == EMPTY:
+        if rows[i].get("type") == CLEARED:
             rows = rows[i + 1:]
             break
     return chat_summary(rows)

@@ -87,19 +87,37 @@ def test_a_complete_clear_still_carries_what_was_said_after_it():
     assert "Twelve columns, 4M rows." in carried
 
 
-def test_a_summary_scoped_clear_is_carried_whole():
-    # The softer rung promised that a short summary of what was said survives. A rebuild keeping it
-    # is that promise, not a violation of it — unlike the complete clear above, which promised the
-    # opposite.
+def test_a_summary_scoped_clear_is_not_undone_either():
+    # The scope is not read, and this is the test that says why. `clear_recall` drops the session
+    # for BOTH scopes, so a summary-scoped clear reaches the rebuild path exactly as a complete one
+    # does. Carrying it whole "because that rung promised a summary" answers "start over, keep the
+    # gist" by returning the entire pre-clear transcript — and does it under a notice telling the
+    # person the model LOST a conversation they chose to clear.
+    #
+    # Keeping that promise belongs to `seed`, which has never kept it (#432). It is not this
+    # function's to keep by accident.
     history = [_user("what is in the forecast file"),
                _said("Three predictions over a million."),
                _cleared(recall.SUMMARY),
                _user("and now?")]
 
+    assert recall.reseed(history) == ""
+
+
+def test_what_was_said_after_a_summary_clear_is_still_carried():
+    # The clear is a floor, not a stop: rows below it were never asked to be forgotten, and losing
+    # them to a restart is the thing this function exists for.
+    history = [_user("forget the forecast talk"),
+               _cleared(recall.SUMMARY),
+               _user("what is in the orders table?"),
+               _said("Twelve columns, 4M rows."),
+               _user("chart it")]
+
     carried = recall.reseed(history)
 
-    assert "what is in the forecast file" in carried
-    assert "Three predictions over a million." in carried
+    assert "forget the forecast talk" not in carried
+    assert "what is in the orders table?" in carried
+    assert "Twelve columns, 4M rows." in carried
 
 
 def test_a_withheld_message_is_not_replayed_by_a_rebuild():
@@ -125,15 +143,26 @@ def test_the_rebuild_answers_the_history_shape_the_caller_actually_passes():
     returned "" on an ordinary turn — its tests pass only because every one of them calls it
     directly with rows that stop at the `CLEARED` event.
 
-    Filed separately rather than fixed here: making `seed` fire would start seeding the
+    Filed separately rather than fixed here (#432): making `seed` fire would start seeding the
     summary-scoped clear for the first time, which is a live change to the recall ladder that
     ADR-0060 did not decide. This test pins the shape so that fix cannot land unnoticed — if `seed`
     starts answering this history, the first assertion fails and someone reads this docstring.
-    """
-    history = [_user("what is in the mixpanel table?"),
-               _said("It holds events."),
-               _cleared(recall.SUMMARY),
-               _user("now try again")]
 
-    assert recall.seed(history) == ""
-    assert "what is in the mixpanel table?" in recall.reseed(history)
+    Two histories, because the two functions answer two different questions and an earlier version
+    of this test ran them together and read the result as one. `seed`'s trigger is a clear;
+    `reseed`'s is a lost session, and it declines a clear on purpose.
+    """
+    # `seed`'s own trigger, on the shape its caller actually passes. It cannot see past the
+    # trailing `user` row to the CLEARED event, and never has.
+    after_a_clear = [_user("what is in the mixpanel table?"),
+                     _said("It holds events."),
+                     _cleared(recall.SUMMARY),
+                     _user("now try again")]
+    assert recall.seed(after_a_clear) == ""
+
+    # `reseed`'s trigger: nothing was cleared, the session was lost. The same caller shape.
+    after_a_restart = [_user("what is in the mixpanel table?"),
+                       _said("It holds events."),
+                       _user("now try again")]
+    assert recall.seed(after_a_restart) == ""
+    assert "what is in the mixpanel table?" in recall.reseed(after_a_restart)

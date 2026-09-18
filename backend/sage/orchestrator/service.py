@@ -8617,11 +8617,17 @@ class Orchestrator:
         # failure recorded nowhere left `recall.offer` counting to one forever while the one thing
         # that would fix it (a fresh session) went unoffered.
         try:
-            # The mint flag is dropped here on purpose. ADR-0060 decides what a CHAT TURN does when
-            # the conversation's memory is gone — seed it, and tell the person in the transcript.
-            # This is the planner, which sends one self-contained prompt built from the digest
-            # above and reads one document back; it does not carry the conversation, so a fresh
-            # session costs it nothing and there is no seam here for a person to be told about.
+            # Ignored here, and safe to ignore only because it is recorded rather than returned.
+            # ADR-0060 decides what a CHAT TURN does when the memory is gone — seed it, say so —
+            # and this is the planner, which sends one self-contained prompt built from the digest
+            # above and reads one document back. It does not carry the conversation, so a fresh
+            # session costs it nothing and there is no seam here to tell anyone about.
+            #
+            # What it must not do is SPEND the fact. This door is one click and needs no Chat turn
+            # first, so after a restart it is a plausible first act on a Thread; if the debt lived
+            # in this return value it would die here, and the next Chat turn would reuse a live
+            # session and answer out of the same emptiness as #427. The debt is in `session.json`,
+            # so dropping it on the floor here leaves it standing for that turn.
             session_id, _ = self._ensure_thread_session(store, thread_id, project, client)
             plan_md = self._run_sage_plan(project, prompt, session_id)
         except ValueError as e:
@@ -9233,15 +9239,22 @@ class Orchestrator:
 
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
                                client: OpenCodeClient) -> tuple[str, bool]:
-        """This Thread's OpenCode session, and whether this call had to mint a fresh one.
+        """This Thread's OpenCode session, and whether a turn still owes it a rebuild.
 
-        The second half of that answer exists because **this function is the only place that knows**
+        The second half exists because **this function is the only place that can find out**
         (ADR-0060). A reused session carries the conversation; a minted one carries nothing, and
         from every other surface the two are indistinguishable — `history.jsonl` is on the Project
         volume and replays in full either way, so `/api/threads/<id>/history` and
         `_warn_if_history_lossy` both look healthy on exactly the turn the model has been emptied
-        (#427). Returning the flag is what lets the caller seed the new session and say so, instead
-        of the person meeting a model that has quietly forgotten them.
+        (#427).
+
+        Note what the flag says, because an earlier version of this said the other thing and was
+        wrong twice for it. It is NOT "this call minted". It is "a rebuild is owed and unpaid",
+        which is a fact about the Thread rather than about this call: it is recorded in
+        `session.json` when the loss is discovered and cleared only once a turn has actually carried
+        the summary into the new session. A caller that mints without rebuilding — the planner does
+        exactly that — therefore hands the debt on instead of spending it, and a dispatch that fails
+        after the mint leaves it owed rather than marking it paid.
 
         Minting is the correct act, not the defect — a session OpenCode no longer knows cannot be
         talked to. Doing it in silence was the defect.
@@ -9261,6 +9274,13 @@ class Orchestrator:
         if has_app:
             self._ensure_gitignored(project.workspace.path, "public/data/")
         rec = store.read_session(thread_id) or {}
+        # A debt an EARLIER call recorded and no turn has paid yet. Read on the reuse path too, and
+        # that is the whole point of storing it: the planner (`draft_handoff_plan`) mints in this
+        # Thread's session as readily as a Chat turn does, and it does not rebuild. If the fact only
+        # lived in this call's return value, a person who opened the Build sheet before typing would
+        # spend it there, and the next Chat turn would reuse a live session, see nothing owed, and
+        # answer with the amnesia this whole decision exists to end.
+        owed = bool(rec.get("rebuild_pending"))
         sid = rec.get("session_id")
         if sid and rec.get("directory") == work:
             try:
@@ -9272,12 +9292,13 @@ class Orchestrator:
                 # `wait_for_idle` returns on the appear grace and the caller reads a transcript the
                 # turn is still writing. That is an "empty plan" on a plan nobody had finished.
                 client.note_session_dir(sid, work)
-                return sid, False
+                return sid, owed
             except httpx.HTTPStatusError:
                 sid = None
+        lost = bool(rec.get("session_id"))
         sid = client.create_session(directory=work)
-        store.write_session_id(thread_id, sid, directory=work)
-        if rec.get("session_id"):
+        store.write_session_id(thread_id, sid, directory=work, rebuild_pending=lost or owed)
+        if lost:
             # Guarded on a session having been ON DISK, so this is not a new Thread finding its
             # feet: there WAS one and OpenCode does not have it, so this Conversation just lost its
             # memory. The transcript row the caller writes is for the person; this line is for
@@ -9285,7 +9306,7 @@ class Orchestrator:
             # function was silent, which is why #427's reporter had nothing to point at and why
             # reading the silence of any other line was going to mislead whoever tried.
             log.info("chat session: thread=%s lost its stored session; minted a new one", thread_id)
-        return sid, True
+        return sid, lost or owed
 
     @staticmethod
     def _plan_state_note(entries: list[dict] | None) -> str:
@@ -11414,7 +11435,7 @@ class Orchestrator:
             with timing.span("setup.opencode"):
                 client = self._ensure_opencode()
             with timing.span("setup.session"):
-                sid, minted = self._ensure_thread_session(store, thread_id, project, client)
+                sid, owed = self._ensure_thread_session(store, thread_id, project, client)
             work = str((store.read_session(thread_id) or {}).get("directory")
                        or project.record.path)
             project.active_session_id = sid
@@ -11458,7 +11479,7 @@ class Orchestrator:
                 # `minted` is the only fact in play, and it does not come from the rows: a Thread
                 # with nine events and a live session is indistinguishable here from one with nine
                 # events whose session just died. Only `_ensure_thread_session` knows.
-                rebuilt = recall.reseed(prompt_history) if minted else ""
+                rebuilt = recall.reseed(prompt_history) if owed else ""
                 turn_prompt = self._chat_prompt(thread_id, prompt, ctx, urls,
                                                 workspace=Path(work),
                                                 artifacts=store.read_artifacts(thread_id),
@@ -11484,28 +11505,44 @@ class Orchestrator:
                         "If you can't produce something, say so in one plain sentence and don't describe "
                         "how you work."
                     )
+            with timing.span("setup.dispatch"):
+                client.send_prompt(sid, turn_prompt, agent="sage-chat",
+                                   attachments=mentioned, chat=True)
+            if owed:
+                # Discharged by a turn REACHING the model on the new session, which is not the same
+                # condition as having had something to carry. A clear-induced mint carries nothing
+                # and must still end the debt here: this turn is in the session now, so the next one
+                # is an ordinary follow-up. Left standing, it would find the rows THIS turn wrote,
+                # decide they were worth carrying, and tell the person a memory had been rebuilt on
+                # a session that never lost one.
+                store.clear_rebuild_pending(thread_id)
             if rebuilt:
                 # The half that is not about the model (ADR-0060). A repair nobody is told about is
                 # the same defect one level quieter: the person asks a follow-up that leans on a
                 # detail the summary dropped, gets a second confusing answer, and now has LESS to go
                 # on — because the summary hid the seam that plain amnesia at least made obvious.
                 #
+                # AFTER the dispatch, and this order is the whole of it. `send_prompt` is what
+                # actually puts the summary into the new session, so a row written before it is a
+                # claim about something that has not happened — and the mint is already on disk, so
+                # a dispatch that raised would leave the transcript permanently saying the memory
+                # was rebuilt while the model never received a word of it, with nothing left to
+                # re-try from. Written here, a failed dispatch leaves the debt standing in
+                # `session.json` and the next turn pays it.
+                #
                 # Written to the transcript and not only streamed, for the reason `RecallCleared`
                 # exists: on reload the transcript would otherwise say the model had remembered all
                 # of this, and every turn below the seam would read as though it had.
                 #
-                # Outside the span above because that span times the prompt build; a yield hands
-                # control to whoever is consuming this generator, and their time is not ours.
+                # Outside the spans because a yield hands control to whoever is consuming this
+                # generator, and their time is not ours to bill to a setup phase.
                 #
                 # An empty `rebuilt` means there was nothing to carry — a Thread on its first turn,
-                # or one whose session was dropped by a complete clear, which has already drawn its
-                # own divider and asked to be forgotten. Neither is a seam, and neither gets a row.
+                # or one whose session was dropped by a clear of either scope, which has already
+                # drawn its own divider. Neither is a seam, and neither gets a row.
                 rebuilt_ev = {"type": recall.REBUILT}
                 store.append_history(thread_id, rebuilt_ev)
                 yield rebuilt_ev
-            with timing.span("setup.dispatch"):
-                client.send_prompt(sid, turn_prompt, agent="sage-chat",
-                                   attachments=mentioned, chat=True)
             appeared = False
             poll_failures = 0
             started = time.monotonic()

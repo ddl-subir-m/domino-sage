@@ -7527,6 +7527,25 @@ window.SW = window.SW || {};
               at: new Date().toISOString(),
               blocks: [{ type: 'plan_suggestion', reason: ev.reason }],
             });
+          } else if (ev.type === 'recall-rebuilt') {
+            // Why this is not a duplicate of the reducer's branch near the top of this file. The
+            // `recall-cleared` family is written by DOORS, and every one of them re-reads the whole
+            // transcript when it returns, so the reducer is the only reader those rows ever need.
+            // This row is written by the turn itself, mid-stream, and on the ordinary path — the
+            // person stays on the Thread and the turn finishes — nothing re-reads: `sendMessage`
+            // only re-reads on `left || unran`. Without this branch the notice reaches the person
+            // who reloads later and nobody else, which inverts ADR-0060's second half — the reader
+            // it is FOR is the one watching the answer arrive.
+            //
+            // `state.typing` is deliberately left alone, unlike the branches around this one. This
+            // frame arrives between dispatch and the first token, so the turn genuinely is still
+            // working; clearing it here would drop the indicator and then start streaming under it.
+            pushMessage({
+              id: `rr_${Date.now()}`,
+              role: 'system',
+              at: new Date().toISOString(),
+              blocks: [{ type: 'recall_rebuilt' }],
+            });
           } else if (ev.type === 'withhold-search') {
             // The failure is already on screen; this is the line under it. Pushed as its own block
             // so the answer can replace it where it stands rather than arrive as a second card.

@@ -2528,3 +2528,131 @@ def test_a_lost_session_is_rebuilt_from_the_transcript_and_the_person_is_told(tm
     # ...and on reload, which is the half a streamed-only notice would lose.
     store = ThreadStore(orch.project(start_preview=False).record.path)
     assert any(e.get("type") == recall.REBUILT for e in store.read_history(tid))
+
+
+def test_a_summary_scoped_clear_does_not_print_the_rebuild_notice(tmp_path: Path):
+    """A clear is not a loss, and must not be reported as one.
+
+    `clear_recall` drops the stored session for BOTH scopes — `store.clear_session_id` sits outside
+    the `if scope == recall.EMPTY:` block — so the turn after ANY clear mints a session and lands in
+    the rebuild path by construction. Nobody lost anything there; the person asked for it.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    orch.clear_recall(tid, recall.SUMMARY)
+    events = list(orch.chat_stream(tid, "what can you do?"))
+
+    assert not any(e.get("type") == recall.REBUILT for e in events)
+    # And the pre-clear transcript is not shovelled back into the fresh session.
+    assert "41,002 events" not in oc.prompts[-1]["text"]
+
+
+def test_an_ordinary_turn_on_a_live_session_rebuilds_nothing(tmp_path: Path):
+    """The assertion that catches a rebuild flag stuck on.
+
+    `len(oc.sessions) == 1` is the discriminating half: it says the SECOND turn reused the first
+    turn's session rather than minting beside it. Without it, a `_ensure_thread_session` that minted
+    every time would satisfy every other assertion in this file, and every turn of every Thread
+    would carry a duplicated summary under a false "Memory rebuilt" divider.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    events = list(orch.chat_stream(tid, "and by week?"))
+
+    assert len(oc.sessions) == 1
+    assert not any(e.get("type") == recall.REBUILT for e in events)
+    assert "41,002 events" not in oc.prompts[-1]["text"]
+
+
+def test_the_planner_does_not_spend_the_rebuild_a_chat_turn_is_owed(tmp_path: Path):
+    """`draft_handoff_plan` mints in this Thread's session and does not rebuild.
+
+    It is one click and needs no Chat turn first, so after a restart it is a plausible first act.
+    The debt is recorded in `session.json` rather than returned, precisely so this path cannot
+    consume it — the Chat turn that follows reuses a live session and must still be told.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    oc.restart()
+    try:
+        orch.draft_handoff_plan(tid)
+    except Exception:
+        # Whether the planner produces a plan is not this test's business. It minted, which is.
+        pass
+    assert len(oc.sessions) == 2
+
+    events = list(orch.chat_stream(tid, "now try again"))
+
+    assert any(e.get("type") == recall.REBUILT for e in events)
+    assert "41,002 events" in oc.prompts[-1]["text"]
+
+
+def test_a_dispatch_that_fails_leaves_the_rebuild_owed_for_the_next_turn(tmp_path: Path):
+    """A row written before the thing it attests to is a lie the transcript keeps.
+
+    The mint is on disk the moment it happens, so if the notice were written before `send_prompt`,
+    a dispatch that raised would leave the transcript permanently saying the memory was rebuilt
+    while the model never received a word — and nothing left to retry from.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    oc.restart()
+    good = oc.send_prompt
+
+    def explode(*a, **k):
+        raise RuntimeError("gateway said no")
+
+    oc.send_prompt = explode
+    try:
+        list(orch.chat_stream(tid, "now try again"))
+    except Exception:
+        pass
+    oc.send_prompt = good
+
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    # Nothing claimed on the transcript, because nothing happened.
+    assert not any(e.get("type") == recall.REBUILT for e in store.read_history(tid))
+
+    # And the debt is still standing, so the next turn pays it.
+    events = list(orch.chat_stream(tid, "now try again"))
+    assert any(e.get("type") == recall.REBUILT for e in events)
+    assert "41,002 events" in oc.prompts[-1]["text"]
+
+
+def test_a_restart_after_a_clear_does_not_carry_what_the_clear_took(tmp_path: Path):
+    """The path where `reseed`'s truncation is the only thing standing.
+
+    A clear on its own is already safe twice over: it DELETES `session.json`, so the next mint finds
+    no stored id, records no debt and never reaches `reseed`. This is the ordering where that does
+    not save anyone — clear, then a turn (which writes a session id again), then a restart. Now the
+    loss is real, the debt is real, the rebuild fires correctly, and the only thing keeping the
+    cleared conversation out of the new session is `reseed` truncating at the clear.
+
+    Getting this wrong answers "forget this" with a summary of what was to be forgotten, under a
+    notice blaming a restart for it.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    orch.clear_recall(tid, recall.SUMMARY)
+    list(orch.chat_stream(tid, "what is in the orders table?"))
+
+    oc.restart()
+    events = list(orch.chat_stream(tid, "chart that"))
+
+    sent = oc.prompts[-1]["text"]
+    # The rebuild did happen — this is a genuine loss.
+    assert any(e.get("type") == recall.REBUILT for e in events)
+    assert "what is in the orders table?" in sent
+    # And it stopped at the clear.
+    assert "41,002 events" not in sent
+    assert "how many mixpanel events in the last 30 days?" not in sent
