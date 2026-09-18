@@ -65,7 +65,7 @@ TOOLS: list[dict[str, Any]] = [
                 "table": {"type": "string", "description": "The table. A dotted "
                                                           "database.schema.table is fine."},
                 "operation": {"type": "string", "enum": ["sum"],
-                              "description": "Calculate a table locally and return selected totals."},
+                              "description": "Fresh projects: calculate a table locally and return selected totals."},
                 "group_by": {"type": "string"},
                 "sum_column": {"type": "string"},
                 "selected_fields": {"type": "array", "items": {"type": "string"},
@@ -92,7 +92,7 @@ TOOLS: list[dict[str, Any]] = [
                 "token": _TOKEN,
                 "dataset": {"type": "string", "description": "The Dataset name."},
                 "operation": {"type": "string", "enum": ["sum", "analyze_text"],
-                              "description": "Calculate CSV totals or analyze CSV text."},
+                              "description": "Fresh projects: calculate CSV totals or analyze CSV text."},
                 "group_by": {"type": "string"},
                 "sum_column": {"type": "string"},
                 "text_column": {"type": "string"},

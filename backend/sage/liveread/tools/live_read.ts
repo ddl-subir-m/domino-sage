@@ -185,7 +185,7 @@ export const table = {
     "Use this whenever they ask what the data looks like, or to see a sample row. You get back the " +
     "columns, a row count and a path — not the rows themselves, which go straight to the card the " +
     "person sees. Say what the table holds; do not claim to be quoting values you were not given. " +
-    "Operation sum calculates a bound table locally and returns selected totals " +
+    "In fresh projects, operation sum calculates a bound table locally and returns selected totals " +
     "in the same call without needing a Sample rows approval step.",
   args: {
     token,
@@ -200,7 +200,7 @@ export const table = {
     database: { type: ["string", "null"], description: "The database. Send null to read it where the table was picked." },
     schema: { type: ["string", "null"], description: "The schema. Send null to read it where the table was picked." },
     operation: { type: ["string", "null"], enum: ["sum", null],
-      description: "Calculate a table locally and return selected totals." + OPTIONAL },
+      description: "Fresh projects: calculate a table locally and return selected totals." + OPTIONAL },
     group_by: { type: ["string", "null"], description: "The group column for sum." + OPTIONAL },
     sum_column: { type: ["string", "null"], description: "The numeric column for sum." + OPTIONAL },
     selected_fields: { type: ["array", "null"], items: { type: "string" },
@@ -220,7 +220,7 @@ export const files = {
   description:
     "List the files in a bound Dataset, or read the head of one of them. Use this to say what a " +
     "Dataset holds. A listing that stopped short of the end says so — never report a capped " +
-    "listing as all of them. Operation sum calculates a CSV from its authorized path, " +
+    "listing as all of them. In fresh projects, operation sum calculates a CSV from its authorized path, " +
     "and operation analyze_text sends only the selected text column with stable record ids through the LLM Gateway, " +
     "validates exact id coverage, writes a result table and returns coverage. Use dataset=upload for uploads. " +
     "Use this for CSV totals and complaint analysis; do not read unrelated raw rows into model context. " +
@@ -229,7 +229,7 @@ export const files = {
     token,
     dataset: { type: "string", description: "The Dataset name." },
     operation: { type: ["string", "null"], enum: ["sum", "analyze_text", null],
-      description: "Calculate CSV totals or analyze CSV text." + OPTIONAL },
+      description: "Fresh projects: calculate CSV totals or analyze CSV text." + OPTIONAL },
     group_by: { type: ["string", "null"], description: "The group column for sum." + OPTIONAL },
     sum_column: { type: ["string", "null"], description: "The numeric column for sum." + OPTIONAL },
     text_column: { type: ["string", "null"], description: "The CSV column containing text for analyze_text." + OPTIONAL },
