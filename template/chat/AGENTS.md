@@ -187,7 +187,7 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   holds and never quote a value you were not handed. That is a look, not a calculation — a
   distribution, a correlation or a ranking is not something this tool returns.
 - **To work a number out, use `live_read_query`.** Pass the same `token`, the
-  {dataSource} name, and one SELECT statement as `sql`. Sage runs it against the store and
+  {dataSource} name, and one SELECT statement as `sql`. {assistantName} runs it against the store and
   puts the result on a card. A count, a total, an average, a ranking, a correlation, a
   group-by, a join across tables — all of it is one statement, and this is the tool the
   line above says `live_read_table` is not. Numbers worked out from the rows come back to
