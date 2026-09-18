@@ -147,3 +147,29 @@ def test_the_rendered_dataset_lines_send_fetches_to_scratch():
     for line in (unmounted, in_dataset):
         assert TMP_DESTINATION not in line
         assert ".sage/scratch/<threadId>/" in line
+
+
+# ---- the turn prompt a real Chat turn is handed --------------------------------------------
+
+def test_the_turn_prompt_names_the_scratch_dir_concretely_and_stays_consistent(tmp_path):
+    """The rendered prompt, not the f-string read for its shape.
+
+    Two claims in this prompt have to agree with each other, and they are built ~30 lines apart:
+    the scratch line added here, and `_findings_note`, which called `findings.md` "the one place
+    under .sage/ you may write". That was true until this change and is now false — a prompt that
+    names a scratch directory and then tells the model it is the only writable one is telling the
+    model its own instruction is wrong. Rendering is how that was caught; reading either line
+    alone shows nothing.
+    """
+    from .test_chat_turn import _orch
+
+    orch, *_ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    out = orch._chat_prompt(tid, "what is the average?", {"items": []})
+
+    assert f"examples/{tid}/" in out
+    assert f".sage/scratch/{tid}/" in out
+    assert TMP_DESTINATION not in out
+
+    # The findings line may say what outlives the turn; it may not claim to be the only one.
+    assert "the one place under .sage/ you may write" not in out

@@ -10599,7 +10599,8 @@ class Orchestrator:
             stat = path.stat()
         except OSError:
             return (f"If this question takes more than one turn, keep what you measure in {rel} — "
-                    "the one place under .sage/ you may write.")
+                    "the place under .sage/ you may write that OUTLIVES the turn. Scratch does "
+                    "not, so nothing you leave in .sage/scratch/ will be here next turn.")
         stamp = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(timespec="seconds")
         return (f"This Thread has findings at {rel}: {stat.st_size:,} bytes, last written {stamp}. "
                 "Read it before you plan this turn — it records what has already been measured and "
