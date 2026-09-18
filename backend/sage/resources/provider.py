@@ -792,9 +792,27 @@ _FLIGHT_WRAPPER = re.compile(
 
 # The gRPC status pyarrow names in that wrapper. It is the same signal as the exception class and
 # survives when the class does not — a message rebuilt from a log, or re-raised without its
-# `__context__`, still carries it. Only the statuses that mean one thing are listed: `not found`,
-# `invalid argument` and `internal` all carry BOTH Domino faults and real store objections live, so
-# they fall through to the payload rather than guess.
+# `__context__`, still carries it. Only the statuses that mean one thing on their own are listed;
+# `not found`, `invalid argument` and `internal` are deliberately absent, so they fall through to
+# the payload rather than guess.
+#
+# WHAT IS MEASURED, and what is not. Three strings were captured live from the running Sage process
+# on 2026-09-17 (#399), and all three are category 1 or 2:
+#
+#     unavailable      / failed to connect ... Connection refused   -> never_delivered
+#     not found        / no credentials for user <user>             -> setup_fault
+#     invalid argument / Type: configObjectError, Subtype: ...      -> setup_fault
+#
+# NO category-3 string has ever been captured from the real proxy. That `not found` and `invalid
+# argument` also carry genuine store objections is INFERRED from those statuses being the natural
+# gRPC mapping for a rejected statement — it is not a reading. The inference is why they are left
+# out of both tuples rather than assigned, and why `answered` is the default in `failure_kind`: an
+# unclassified message is shown rather than swallowed, so being wrong here costs a clause and not
+# the diagnosis.
+#
+# One query retires this. `fpoblete-postgres-service-account` answers 200, so send it bad SQL from
+# the Sage process and read the status off the string it raises. If a real store objection turns
+# out to arrive as a status listed above, that status is wrong here and the capture says so.
 _NEVER_DELIVERED_STATUS = ("unavailable", "deadline exceeded", "cancelled")
 _SETUP_FAULT_STATUS = ("unauthenticated", "permission denied", "unauthorized")
 
