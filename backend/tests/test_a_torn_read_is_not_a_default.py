@@ -22,12 +22,24 @@ Keying on `.json` would have missed four sites and caught two that were never at
 
 The census below is therefore a ZERO, not a number: no truncating write may sit outside the helper.
 A number would have to be maintained, and a write added next year would join a stale count in
-silence. A zero reds on the write itself. The one append is named rather than counted, for the same
+silence. A zero reds on the write itself. Exemptions are named rather than counted, for the same
 reason every line number in #308's body went stale the moment #303 landed.
+
+WHAT THE CENSUS CAN AND CANNOT SEE, stated because a promise wider than the check reads as covered
+and is worse than no promise. It is a source survey, so it recognises SPELLINGS, not behaviour:
+`write_text`, `write_bytes`, the `shutil` copy/move family, and `open`/`Path.open` whose mode is a
+literal. A `Path.open(mode)` whose mode is computed is reported rather than skipped, because a
+non-constant mode is precisely where a truncating write would hide from a survey that reads only
+literals. What it still cannot reach is a handle opened somewhere else and written here, a raw
+`os.write` on a descriptor, or a write inside a called library. Those are not covered by anything
+in this file, and the first version of it could not see `write_bytes` either — which is how it
+reported a clean zero over the three `.gitignore` writers, the paths in the module where a torn
+read costs the most.
 """
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import os
 import shutil
@@ -61,8 +73,21 @@ def _enclosing_function(tree: ast.AST, target: ast.AST) -> str:
     return best
 
 
+# `shutil` calls that land bytes at a destination. `copyfile`/`copy`/`copy2`/`copytree` all truncate
+# or create; `move` can be a rename (atomic) or a copy+unlink (not), and which one it is depends on
+# whether the two paths share a filesystem — a runtime fact, so it is surveyed rather than assumed.
+_SHUTIL_WRITES = frozenset({"copy", "copy2", "copyfile", "copytree", "move", "copyfileobj"})
+
+
 def _is_shutil(func: ast.Attribute) -> bool:
     return isinstance(func.value, ast.Name) and func.value.id == "shutil"
+
+
+def _has_const_mode(call: ast.Call) -> bool:
+    """True when this `Path.open(...)` names its mode as a literal the survey can read."""
+    if call.args:
+        return isinstance(call.args[0], ast.Constant)
+    return any(kw.arg == "mode" and isinstance(kw.value, ast.Constant) for kw in call.keywords)
 
 
 def _mode_of(call: ast.Call, *, builtin: bool) -> str:
@@ -104,8 +129,15 @@ def _writes(*, inside_helper: bool) -> list[tuple[str, str]]:
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in ("write_text", "write_bytes"):
             found.append((_enclosing_function(tree, node), func.attr))
-        elif isinstance(func, ast.Attribute) and func.attr.startswith("copy") and _is_shutil(func):
+        elif isinstance(func, ast.Attribute) and _is_shutil(func) and func.attr in _SHUTIL_WRITES:
             found.append((_enclosing_function(tree, node), f"shutil.{func.attr}"))
+        elif isinstance(func, ast.Attribute) and func.attr == "open" and not node.args \
+                and not any(kw.arg == "mode" for kw in node.keywords):
+            pass  # `Path.open()` with no mode is a read
+        elif isinstance(func, ast.Attribute) and func.attr == "open" and not _has_const_mode(node):
+            # A mode this test cannot evaluate. Reported rather than skipped: a non-constant mode is
+            # exactly where a truncating write would hide from a census that only reads literals.
+            found.append((_enclosing_function(tree, node), "Path.open(<non-constant mode>)"))
         elif isinstance(func, ast.Attribute) and func.attr == "open":
             mode = _mode_of(node, builtin=False)
             if any(c in mode for c in "wax+"):
@@ -228,7 +260,15 @@ def test_the_ignore_rules_cover_every_staging_name_the_helper_can_make(tmp_path:
     git = shutil.which("git")
     if not git:
         pytest.skip("git is not on PATH")
-    subprocess.run([git, "init", "-q", "."], cwd=tmp_path, check=True)
+    # The developer's own git config is kept out of it. `check-ignore` consults `core.excludesFile`
+    # and `~/.config/git/ignore`, so a machine with `*.tmp` globally ignored would pass the positive
+    # half of this test with `**/.*.tmp` deleted, and a global rule covering `AGENTS.md` would red
+    # the negative half for a reason that has nothing to do with `_PROJECT_IGNORE`. Either way the
+    # test would be reporting on the machine rather than on the tuple it names.
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    run = functools.partial(subprocess.run, cwd=tmp_path, env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run([git, "init", "-q", "."], check=True)
     (tmp_path / ".gitignore").write_text("\n".join(manager._PROJECT_IGNORE) + "\n")
 
     staging = [
@@ -253,8 +293,8 @@ def test_the_ignore_rules_cover_every_staging_name_the_helper_can_make(tmp_path:
         p.touch()
 
     def ignored(rel: str) -> bool:
-        return subprocess.run([git, "check-ignore", "-q", rel],
-                              cwd=tmp_path, check=False).returncode == 0
+        return run([git, "-c", f"core.excludesFile={os.devnull}", "check-ignore", "-q", rel],
+                   check=False).returncode == 0
 
     missed = [rel for rel in staging if not ignored(rel)]
     assert missed == [], (

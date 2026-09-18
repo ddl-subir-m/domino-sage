@@ -28,6 +28,7 @@ import logging
 import os
 import secrets
 import shutil
+import stat
 import threading
 import time
 from collections import deque
@@ -130,6 +131,13 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# Serialises the read-modify-write both ignore-file editors do. ONE lock for both, and not one per
+# path: `ensure_ignore_line` and `remove_ignore_line` edit the same files from opposite ends, so a
+# lock either of them could hold alone would let the pair race each other. Defined here rather than
+# beside `_BINDINGS_LOCK` because these two are module functions above every class that uses them.
+_IGNORE_LOCK = threading.Lock()
+
+
 def ensure_ignore_line(path: Path, line: str) -> None:
     """Append one rule to an ignore file, once. Shared because both surfaces have one: the app
     carries the template's .gitignore, the Project keeps its own at the volume root, and the
@@ -145,20 +153,36 @@ def ensure_ignore_line(path: Path, line: str) -> None:
     # rule already written in the file's OWN encoding, so an ASCII copy is appended beside it. A
     # duplicate git ignores is the cheaper half of that trade — the other half is data reaching git.
     #
-    # Published atomically, and this is the path in the module where a torn read costs the most
-    # (#308). It is a read-modify-write: a reader landing inside another writer's truncation window
-    # sees `b""`, concludes the file holds no rules at all, and republishes it containing only its
-    # own line — dropping `.sage/model-api-credentials.json`, `.sage/samples.json` and whatever the
-    # person put there. `_ensure_project_ignores` runs five of these per `ensure()`, and
-    # `Orchestrator._ensure_gitignored` fires on attach and once a turn against the same files, so
-    # the two writers are real and concurrent. "How data reaches git" is what the paragraph above
-    # calls the failure this function exists to avoid; truncating in place is another way to it.
-    existing = path.read_bytes() if path.exists() else b""
-    want = line.encode()
-    if want in existing.split():
-        return
-    _write_atomic(path,
-                  existing + (b"" if existing.endswith(b"\n") or not existing else b"\n") + want + b"\n")
+    # Under the lock AND published atomically, because this is a read-modify-write and those are
+    # two different faults with one outcome (#308). `_ensure_project_ignores` runs five of these per
+    # `ensure()`, and `Orchestrator._ensure_gitignored` fires on attach and once a turn against the
+    # same files, so the two writers are real and concurrent.
+    #
+    #   Torn read — a reader landing inside another writer's truncation window sees `b""`, concludes
+    #   the file holds no rules at all, and republishes it holding only its own line. `_write_atomic`
+    #   removes that window.
+    #
+    #   Lost update — both writers read the same bytes, both append their own rule, and whichever
+    #   publishes second overwrites the first. Atomicity does NOT help here: each write is whole and
+    #   the loser's rule is simply gone. Only the lock stops it, which is what `update_bindings`
+    #   takes `_BINDINGS_LOCK` for.
+    #
+    # Either one drops `.sage/model-api-credentials.json`, `.sage/samples.json` or whatever the
+    # person put there, and "how data reaches git" is what the paragraph above calls the failure
+    # this function exists to avoid.
+    #
+    # What the lock does NOT cover, stated because it is real: two Builder CONTAINERS on one Project
+    # volume are two processes, and a `threading.Lock` is per process. That residual is the same one
+    # `_BINDINGS_LOCK` and `_PROJECT_RESOURCES_LOCK` carry and it is not made worse here; closing it
+    # needs a lock on the volume, which is a larger change than this ticket.
+    with _IGNORE_LOCK:
+        existing = path.read_bytes() if path.exists() else b""
+        want = line.encode()
+        if want in existing.split():
+            return
+        _write_atomic(
+            path,
+            existing + (b"" if existing.endswith(b"\n") or not existing else b"\n") + want + b"\n")
 
 
 def remove_ignore_line(path: Path, line: str) -> bool:
@@ -170,21 +194,22 @@ def remove_ignore_line(path: Path, line: str) -> bool:
 
     Only the rule line goes. A comment above it explains a decision that is still worth reading
     even once the rule is gone, and this is a repair that runs over a file people also edit."""
-    if not path.exists():
-        return False
-    existing = path.read_bytes()          # bytes for the reason `ensure_ignore_line` gives above
-    want = line.encode()
-    # `split(b"\n")`, NOT `splitlines()`. `splitlines` also breaks on a lone `\r` — and in UTF-16 a
-    # `\r` is the two bytes `0D 00`, so it would split mid-character and come back joined as a bare
-    # `0A`, quietly altering bytes this function was never asked to touch. Splitting on `\n` alone
-    # keeps every other byte, including a `\r\n` ending and the absence of a final newline, so the
-    # only change to the file is the line that was asked for.
-    lines = existing.split(b"\n")
-    kept = [ln for ln in lines if ln.strip() != want]
-    if len(kept) == len(lines):
-        return False
-    _write_atomic(path, b"\n".join(kept))  # atomic for the reason `ensure_ignore_line` gives
-    return True
+    with _IGNORE_LOCK:                # read-modify-write, for the reasons the sibling gives
+        if not path.exists():
+            return False
+        existing = path.read_bytes()          # bytes for the reason `ensure_ignore_line` gives above
+        want = line.encode()
+        # `split(b"\n")`, NOT `splitlines()`. `splitlines` also breaks on a lone `\r` — and in UTF-16 a
+        # `\r` is the two bytes `0D 00`, so it would split mid-character and come back joined as a bare
+        # `0A`, quietly altering bytes this function was never asked to touch. Splitting on `\n` alone
+        # keeps every other byte, including a `\r\n` ending and the absence of a final newline, so the
+        # only change to the file is the line that was asked for.
+        lines = existing.split(b"\n")
+        kept = [ln for ln in lines if ln.strip() != want]
+        if len(kept) == len(lines):
+            return False
+        _write_atomic(path, b"\n".join(kept))  # atomic for the reason `ensure_ignore_line` gives
+        return True
 
 # Source dirs never copied into a workspace (heavy / regenerated / linked separately). __pycache__
 # appears in a dev checkout of the template as soon as anything imports serve.py, and a workspace
@@ -350,6 +375,19 @@ def _write_atomic(path: Path, data: str | bytes) -> None:
     The `finally` is the price of that uniqueness. A fixed name overwrites itself on the next
     attempt; a unique one ACCUMULATES, so ENOSPC or EACCES would drop a fresh file into `.sage/` on
     every try, in the one directory this module keeps calling committed and shared.
+
+    WHAT STAGING COSTS, stated because it is a real change and not a free one. Writing straight at a
+    path needs write permission on the FILE; staging needs write and execute on the DIRECTORY, since
+    it creates a new entry there and renames over one. `.sage/` is created by the `mkdir` above under
+    the default umask, so it is 0755 and owned by whichever Builder reached it first. A second
+    collaborator in the same group could previously save a 0664 `bindings.json` and now cannot
+    create the staging file beside it. The chmod below carries the MODE across the swap but not the
+    owner — `os.replace` gives the destination the new writer's uid — so it does not close this.
+
+    Not softened here, because the alternative is falling back to a truncating write exactly when
+    two people share a volume, which is when the window matters most. #289 already shipped this
+    trade on `model_overrides.json`; #308 extends it to the rest. It wants a check on a real
+    multi-Builder volume, which is in the ticket as work that was not done rather than assumed away.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
@@ -365,7 +403,9 @@ def _write_atomic(path: Path, data: str | bytes) -> None:
         # read. Fix that file", sending them to edit contents that are fine. Carried over where
         # there is a file to carry it from; a brand new one keeps the default it would have had.
         with contextlib.suppress(OSError):
-            os.chmod(tmp, path.stat().st_mode)
+            # `S_IMODE`, so only the permission bits travel. `st_mode` also carries the file TYPE
+            # bits, which Linux and macOS happen to mask on `chmod` but POSIX leaves unspecified.
+            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
