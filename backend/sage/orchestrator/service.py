@@ -10412,8 +10412,14 @@ class Orchestrator:
 
         # The same gate the turn itself passed, asked again with the Conversation named — which is
         # the whole of ADR-0057's second decision. Asked again rather than remembered from the top
-        # of the turn because a Dataset can be pinned mid-turn, and because the call this gates is
-        # for a DIFFERENT model from the one the turn runs on.
+        # of the turn because a Dataset can be pinned mid-turn, and because the call this gates can
+        # be for a DIFFERENT model from the one the turn runs on.
+        #
+        # Since #424 it can also be for the SAME one, and that case is why this stays a live read
+        # rather than an assertion. The model answering the turn passed this gate when the turn
+        # started; a Dataset pinned since then can narrow the set under it, and then the call is
+        # refused at `delegated.perform` by name — correctly, and while the turn keeps running on
+        # the model it started on.
         try:
             approved, refusal = self._sensitivity_for_turn(project, thread_id)
         except Exception:
@@ -10445,6 +10451,11 @@ class Orchestrator:
         Both are something the person did on this Conversation, so both count — the same pair
         `liveread.grant.reachable` reads, and for the same reason. Never the Working set, which
         ADR-0020 fixed as orientation and never context.
+
+        A THIRD act joins them, and it is the model picker (#424). Picking the model that answers
+        this turn hands it the whole conversation, so the consent the other two acts record has
+        already been given for that one — see the block at the end, which is also where the reason
+        it is read POST-lock is written down.
 
         A CHIP CARRIES NO CALLABLE NAME. The panel posts the label and `bindingKey`, and
         `add_thread_context` strips the catalogue's `alias` field back off before storing (it is a
@@ -10499,7 +10510,57 @@ class Orchestrator:
                     add(alias.name, chip_labels.get(alias_id) or alias.display_name or alias.name)
                 else:
                     unresolved.append(chip_labels.get(alias_id) or alias_id)
+
+        # THE MODEL ALREADY ANSWERING THIS TURN, added last so that a chip naming the same model
+        # keeps the person's own wording: `add` de-duplicates on the call name and the first entry
+        # wins. Prepending would push the person's label off the screen.
+        #
+        # Not a hole in ADR-0057. The bind protects against delegating to a DIFFERENT model from the
+        # one the person picked. This model is receiving the whole conversation, declared rows
+        # included, BECAUSE the picker chose it — so binding it records a decision the person has
+        # already taken rather than taking one for them. The refusal it removes ("No language model
+        # is in this conversation") was firing on Threads where nobody thought to bind a chip, on a
+        # turn a language model was visibly answering (#424).
+        #
+        # POST-LOCK, and deliberately not what #424 asked for. `_resolve_chat` is `state.chat_model
+        # or catalog.ask`, but `resolve` wraps it in `_lock_sensitivity`, which under a sensitivity
+        # lock does not raise — it SUBSTITUTES, via `_nearest_approved`. The shim then sends
+        # `resolve(...).model`, so on a locked turn the PICKED model is not the one answering.
+        # Binding the picked one would name a model in "This conversation has: …" that this
+        # conversation cannot call, which is the same false sentence this change exists to end.
+        state = project.control.snapshot()
+        if state.chat_thread_id == thread_id:
+            try:
+                routed = llm_router.resolve(state, project.shim.catalog).model
+            except Exception as e:
+                # Fail closed the way a chip that will not resolve does: the model does not join the
+                # set and the refusal names what did. `_nearest_approved` raises on an empty
+                # approved set on purpose, and an approved set that is empty refuses every call at
+                # `delegated.perform` anyway — but that read happens after this one, so a raise here
+                # would leave the generator instead of refusing.
+                log.warning("delegated model call: could not read the model this turn runs on "
+                            "(%s) — it cannot be called by name this turn", e)
+            else:
+                add(routed, self._alias_label_for(routed))
         return tuple(out), labels, tuple(unresolved)
+
+    def _alias_label_for(self, name: str) -> str:
+        """The wording the model picker shows for one gateway alias name, or the name itself.
+
+        Cosmetic, and so this is the one read on this path that may fail open. Nothing about whether
+        a call is allowed depends on the label — `turn.approved` holds gateway alias names and
+        `_resolve` matches the call name as well as the label — so a listing that is down must not
+        cost a Conversation the model it is already running on. A name with no label known travels
+        as itself, which is what `delegated.perform` already does for the same reason.
+        """
+        try:
+            for alias in self._alias_listing().values():
+                if alias.name == name:
+                    return alias.display_name or name
+        except ResourceUnavailable as e:
+            log.warning("delegated model call: no picker label for %s (%s) — using the name",
+                        name, e)
+        return name
 
     def _alias_listing(self) -> dict[str, LlmAlias]:
         """Every Alias this caller can call, by id, read at most once every `_ALIAS_LISTING_TTL_S`.
