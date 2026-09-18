@@ -45,7 +45,7 @@ def test_scratch_is_allowed_for_this_thread_and_nothing_else_under_it():
     assert chat_path_allowed(f"/mnt/code/.sage/scratch/{TID}/q3.csv", TID)
 
     # Another Thread's scratch, like another Thread's Artifacts, is not this turn's.
-    assert not chat_path_allowed(f".sage/scratch/thr_other/q3.csv", TID)
+    assert not chat_path_allowed(".sage/scratch/thr_other/q3.csv", TID)
 
 
 def test_scratch_is_scoped_by_thread_because_uploads_already_live_beside_it():
@@ -115,7 +115,7 @@ def test_the_thread_record_dir_is_still_not_the_scratch_dir():
     import subprocess
 
     ls = subprocess.run(["git", "ls-files", "-z", "*.gitignore", ".gitignore"],
-                        cwd=ROOT, capture_output=True, text=True)
+                        cwd=ROOT, capture_output=True, text=True, check=False)
     if ls.returncode != 0:
         pytest.skip("not a git checkout")
     seeds = sorted(ROOT / rel for rel in ls.stdout.split("\0")
