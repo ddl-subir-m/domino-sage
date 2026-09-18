@@ -219,6 +219,51 @@ def test_opencode_json_declares_the_permissions_that_would_otherwise_ask():
         ("*.env", "deny"), ("*.env.*", "deny"), ("*.env.example", "allow")]
 
 
+def test_no_part_of_tmp_is_allowed_because_sage_writes_its_own_server_log_there():
+    """The fix that suggests itself for #415, held shut here so nobody re-adds it.
+
+    The prompts used to send the Chat agent's scratch and its fetched Dataset files to `/tmp`,
+    and `external_directory: "deny"` refuses every file tool aimed there. Allowing `/tmp/*` looks
+    like the one-line answer. It is not: `_ensure_opencode` puts OpenCode's own server log at
+    `tempfile.gettempdir() / "sage-opencode.log"`, which on a Domino container is
+    `/tmp/sage-opencode.log` — gateway traffic, tool calls, Sage's internals — and the Chat agent
+    would be able to read it through a tool the person cannot see it use.
+
+    Nor can a narrow carve-out work. The rest of the filenames come from the person's Dataset, so
+    any pattern wide enough to admit them is wide enough to admit the log.
+
+    The destination moved into the project instead (`.sage/scratch/<threadId>/`), which needs no
+    exception here at all: MEASURED against opencode-ai 1.18.4, OpenCode merges
+    `external_directory: {<projectGlob>: "allow"}` onto every agent unless that agent denies the
+    project glob SPECIFICALLY. `"deny"` normalises to `{"*": "deny"}` — pattern `*`, not the
+    project glob — so the merge fires, and under last-match-wins an in-project path resolves to
+    allow while `/tmp/x` stays denied.
+    """
+    import json
+    import pathlib
+    import tempfile
+
+    # The coupling this test exists to protect, asserted rather than described: the log really is
+    # written under the system temp dir, so `/tmp` really is the directory in question.
+    import sage.orchestrator.service as svc
+    source = pathlib.Path(svc.__file__).read_text()
+    assert 'Path(tempfile.gettempdir()) / "sage-opencode.log"' in source
+    assert pathlib.Path(tempfile.gettempdir()).is_absolute()
+
+    # The destination form, with the separator. The Chat prompt mirrored into this file says
+    # "Not `/tmp`" on purpose, and a bare substring check would call that a violation.
+    raw = (pathlib.Path(__file__).resolve().parents[2] / "opencode.json").read_text()
+    assert "/tmp/" not in raw
+
+    cfg = json.loads(raw)
+    blocks = [cfg.get("permission", {})]
+    blocks += [a.get("permission", {}) for a in cfg.get("agent", {}).values()]
+    for block in blocks:
+        for key, rule in block.items():
+            if isinstance(rule, dict):
+                assert not any(p.startswith("/tmp") for p in rule), key
+
+
 @pytest.mark.parametrize("agent", ["sage-chat", "sage-ask", "sage-plan", "sage-architect",
                                    "sage-implement"])
 def test_no_agent_block_writes_the_word_ask(agent):

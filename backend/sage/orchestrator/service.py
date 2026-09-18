@@ -3474,7 +3474,8 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             'library: `from domino_data.datasets import DatasetClient` then '
             '`DatasetClient().get_dataset("{unique}")`. '
             '`.list_files()` returns file objects — read `.name` on each, since the list itself '
-            'prints as `[_File(), _File()]`. `.download_file(<name>, "/tmp/<name>")` fetches '
+            'prints as `[_File(), _File()]`. '
+            '`.download_file(<name>, ".sage/scratch/<threadId>/<name>")` fetches '
             "one to read with pandas. Do not search this git repo or any other folder for a "
             "project of the same name — that is not this {dataset}.",
             name=name, where=where, unique=unique,
@@ -3499,8 +3500,9 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             return brand.text(
                 "- file {rel} in {dataset} {ds}. Not mounted here, so fetch it with the "
                 "{platformName} data library: `from domino_data.datasets import DatasetClient` then "
-                '`DatasetClient().get_dataset("{unique}").download_file("{rel}", "/tmp/{name}")`, '
-                "then read /tmp/{name} with pandas. Do not search this git repo for a substitute.",
+                '`DatasetClient().get_dataset("{unique}").download_file("{rel}", '
+                '".sage/scratch/<threadId>/{name}")`, then read that file with pandas. '
+                "Do not search this git repo for a substitute.",
                 name=name, ds=ds, rel=rel, unique=unique,
             )
         line = f"- {kind}: {name}{extra}"
@@ -10613,6 +10615,12 @@ class Orchestrator:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
+            # Scratch and fetched data, concretely, beside the concrete Artifact line — the
+            # static prompts can only say `.sage/scratch/<threadId>/` and this is where the id
+            # gets filled in. Until #415 they said `/tmp`, which `chat_path_allowed` has always
+            # refused: a read-only turn, having lost the shell, had nowhere to put a file at all.
+            f"Scratch files and any data you fetch go under .sage/scratch/{thread_id}/ — "
+            f"not /tmp, and never anywhere else outside this project.",
             self._findings_note(thread_id),
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.

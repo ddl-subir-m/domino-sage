@@ -51,3 +51,34 @@ def test_the_workdir_link_is_relative_so_a_moved_checkout_still_resolves(tmp_pat
     assert link.is_symlink()
     assert not Path(link.readlink()).is_absolute()
     assert link.resolve() == (tmp_path / ".sage" / "threads" / TID).resolve()
+
+
+def test_the_turn_can_write_its_scratch_dir_at_the_path_the_prompt_names(tmp_path: Path):
+    """The same lesson for the scratch dir the prompts moved onto in #415.
+
+    `chat_path_allowed` permitting `.sage/scratch/<threadId>/` is half of it; the turn also has to
+    be able to REACH it from `.sage/chat-work`, and the leaf has to exist. The lane this exists
+    for is the read-only lane, which has no shell — so it cannot `mkdir` the directory itself, and
+    a destination it has to create before using is a destination it does not have.
+    """
+    scratch = f".sage/scratch/{TID}/fetch.py"
+    assert chat_path_allowed(scratch, TID)
+
+    work = ensure_chat_workdir(tmp_path, "# chat", thread_id=TID)
+
+    # Created on the way in, not left to the turn.
+    assert (tmp_path / ".sage" / "scratch" / TID).is_dir()
+    assert (work / ".sage" / "scratch" / TID).is_dir()
+
+    (work / scratch).write_text("import pandas as pd\n")
+    assert (tmp_path / scratch).read_text() == "import pandas as pd\n"
+
+
+def test_another_threads_scratch_is_not_writable_from_this_turn(tmp_path: Path):
+    """Scoping, checked at the door rather than only in the allowlist: the uploads the person can
+    see in the rail sit FLAT in `.sage/scratch/`, so a turn that could write the whole tree could
+    overwrite one of them."""
+    ensure_chat_workdir(tmp_path, "# chat", thread_id=TID)
+
+    assert not chat_path_allowed(".sage/scratch/their_upload.csv", TID)
+    assert not chat_path_allowed(".sage/scratch/thr_other/fetch.py", TID)

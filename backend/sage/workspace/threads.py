@@ -896,6 +896,12 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
     if thread_id:
         name = safe_id(thread_id, "thread id")
         _ensure_dir_link(threads / name, Path(workspace) / ".sage" / "threads" / name)
+        # This turn's scratch dir, where the prompts send working files and fetched Dataset
+        # files (#415). Created HERE rather than beside `examples/` at Thread creation for two
+        # reasons: Threads that predate #415 have no scratch dir and would never get one, and
+        # the lane this exists for is the read-only lane, which has no shell to `mkdir` with.
+        # `.sage/scratch` itself is created and linked above, so only the leaf is missing.
+        (Path(workspace) / ".sage" / "scratch" / name).mkdir(parents=True, exist_ok=True)
     public = root / "public"
     public.mkdir(exist_ok=True)
     if data_dir is not None:
