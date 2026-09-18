@@ -10761,8 +10761,8 @@ class Orchestrator:
             # static prompts can only say `.sage/scratch/<threadId>/` and this is where the id
             # gets filled in. Until #415 they said `/tmp`, which `chat_path_allowed` has always
             # refused: a read-only turn, having lost the shell, had nowhere to put a file at all.
-            f"Scratch files and any data you fetch go under .sage/scratch/{thread_id}/ — "
-            f"not /tmp, and never anywhere else outside this project.",
+            (f"Scratch files and any data you fetch go under .sage/scratch/{thread_id}/ — "
+             f"not /tmp, and never anywhere else outside this project."),
             self._findings_note(thread_id),
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.
