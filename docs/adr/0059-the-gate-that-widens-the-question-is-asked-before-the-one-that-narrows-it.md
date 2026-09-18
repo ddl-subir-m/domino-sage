@@ -60,6 +60,12 @@ fence."* So the card buys two things: a position, and a set of column names in t
 not choose which table gets read. *"Pick the Table to use"* over-claims a fence it does not hold,
 and names the wrong noun while doing it.
 
+Chat is not the odd one out here. `scope_for` is filled from the Conversation's chip at
+`service.py:9986` and from the Built App's Binding at `:10016`, and **both** contribute
+`(database, schema)` alone. What bounds what a turn may reach is the Binding — the grant on the Data
+Source — never the table recorded on it. CONTEXT.md's **Table** term was sharpened alongside this
+decision to say so.
+
 **The two gates do not share conditions**, which is why reading one gate's trigger at the other is
 not the same as reordering them:
 
