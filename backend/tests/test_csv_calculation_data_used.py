@@ -51,7 +51,7 @@ def setup_turn(tmp_path, **over):
     journal = []
     data = DataUse()
     turn = run.Turn(thread_id="t1", examples_dir=tmp_path / "examples" / "t1",
-                    keep_rows=True, data_use_enabled=True, upload_for=lambda p: source if p == "sales.csv" else None,
+                    keep_rows=True, upload_for=lambda p: source if p == "sales.csv" else None,
                     record_data_use=lambda ev, reply: data.record(ev, reply, journal.append, "turn1"))
     return replace(turn, **over), data, journal
 
@@ -279,10 +279,43 @@ def test_gateway_failures_are_distinguished_without_replaying_values(tmp_path, e
 
 
 @pytest.mark.parametrize("mode", ["chat", "build"])
+def test_a_restart_reopens_the_data_operations_this_conversation_already_recorded(tmp_path, mode):
+    """`_mint_live_read_token` replays this Conversation's `dataUsed` rows into a shim that has
+    forgotten them — what a **Read again** press needs after the process restarts.
+
+    IT RUNS FOR EVERY PROJECT SINCE #431. It used to sit behind `dataUseVersion`, which was the one
+    site of seven that was not a refusal, so it was deleted by decision rather than by pattern with
+    the other six. A plant proved the decision needed this test: emptying the whole branch to `pass`
+    left the four data-use files green, so nothing anywhere was watching the site being changed.
+    """
+    orch, _ = _orch(tmp_path, Warehouse())
+    project = orch.project(start_preview=False)
+    tid = orch.create_thread()["id"]
+    upload = (orch.upload_scratch("sales.csv", SALES.encode()) if mode == "chat"
+              else orch.upload_file("sales.csv", SALES.encode()))
+    orch.add_thread_context(tid, {"kind": "file", "path": upload["path"], "name": "sales.csv"})
+    control_token = project.control.arm_chat(tid) if mode == "chat" else None
+    if mode != "chat":
+        project.build_conversation = tid
+    try:
+        token = orch._mint_live_read_token(tid)
+        json.loads(_call(orch, "live_read_files", args(token=token, path=upload["path"])))
+        recorded = dict(project.shim.data_use.operations)
+        assert recorded, "the read itself did not record anything; the rest proves nothing"
+
+        project.shim.data_use.operations.clear()  # the restart
+        orch._mint_live_read_token(tid)
+
+        assert set(project.shim.data_use.operations) == set(recorded)
+    finally:
+        if control_token:
+            project.control.disarm_chat(control_token)
+
+
+@pytest.mark.parametrize("mode", ["chat", "build"])
 def test_upload_access_and_persistent_record_use_existing_conversation_controls(tmp_path, mode):
     orch, _ = _orch(tmp_path, Warehouse())
     project = orch.project(start_preview=False)
-    assert project.record.read_settings().get("dataUseVersion") == 1
     tid = orch.create_thread()["id"]
     upload = (orch.upload_scratch("sales.csv", SALES.encode()) if mode == "chat"
               else orch.upload_file("sales.csv", SALES.encode()))
@@ -317,7 +350,6 @@ def test_bound_table_access_and_persistent_record_use_existing_conversation_cont
     warehouse = SalesWarehouse()
     orch, _ = _orch(tmp_path, warehouse)
     project = orch.project(start_preview=False)
-    assert project.record.read_settings().get("dataUseVersion") == 1
     tid = orch.create_thread()["id"]
     if mode == "chat":
         orch.add_thread_context(tid, {"kind": "data_source", "id": "ds1",
@@ -343,28 +375,6 @@ def test_bound_table_access_and_persistent_record_use_existing_conversation_cont
     finally:
         if control_token:
             project.control.disarm_chat(control_token)
-
-
-def test_existing_project_does_not_enable_calculation(tmp_path):
-    from sage.workspace.manager import WorkspaceManager
-
-    template = tmp_path / "template"
-    template.mkdir()
-    root = tmp_path / "old"
-    root.mkdir()
-    (root / "existing.txt").write_text("old")
-    manager = WorkspaceManager(root, template)
-    manager.ensure("old", seed_app=False)
-    assert "dataUseVersion" not in manager.project_record("old").read_settings()
-    turn, _, journal = setup_turn(tmp_path, data_use_enabled=False)
-    said = run.perform("live_read_files", args(), turn)
-    # The refusal, not its wording. This asserted "new projects only" until #428, which is the
-    # phrase a model paraphrased into "go write the SQL yourself" — so the string that used to
-    # stand for the property was the defect. What has to hold is that the gate refuses and nothing
-    # is journalled; what the sentence must say is pinned in
-    # `test_an_old_project_is_told_why_rather_than_sent_to_write_sql.py`.
-    assert "cannot run here" in said, said
-    assert journal == []
 
 
 def test_build_refresh_renders_one_updated_data_used_detail(tmp_path):
@@ -476,18 +486,6 @@ def test_artifact_directory_cannot_point_outside_the_project(tmp_path):
     assert "must stay" in run.perform("live_read_files", args(), turn)
     assert not list(outside.iterdir())
     assert not journal
-
-
-def test_empty_git_checkout_is_a_fresh_project(tmp_path):
-    from sage.workspace.manager import WorkspaceManager
-
-    root = tmp_path / "new"
-    (root / ".git").mkdir(parents=True)
-    template = tmp_path / "template"
-    template.mkdir()
-    manager = WorkspaceManager(root, template)
-    manager.ensure("new", seed_app=False)
-    assert manager.project_record("new").read_settings()["dataUseVersion"] == 1
 
 
 def attachment_prompt(path="public/data/upload/uploads/sales.csv", *, chat=True):

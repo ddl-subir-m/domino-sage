@@ -20,7 +20,18 @@ Calculations, tables, and charts use local data processing where practical. Sema
 
 An expandable **Data used** detail explains recorded actions beside the result. It uses file and model chips, clear coverage counts, and honest outcome text. After a refusal, Sage preserves useful local results, avoids repeated blocked requests, and asks before changing the task or discarding Recall.
 
-Deliver this behavior for fresh projects, in both Workbench modes and newly generated Built Apps. Existing projects and apps are not migrated or reset.
+Deliver this behavior for every Project, in both Workbench modes and in Built Apps.
+
+> **Reversed 2026-09-18 (#431).** This paragraph used to read *"Deliver this behavior for fresh
+> projects … Existing projects and apps are not migrated or reset."* That sentence was the sole
+> authority for the `dataUseVersion` flag, and the flag has been deleted rather than fixed. Two
+> reasons, and the second is the one that matters. First, the flag never worked: it was written
+> only where `WorkspaceManager.ensure` found the volume root empty, and a Domino Project's volume
+> arrives holding its cloned repo, so `if fresh:` never ran and no Project ever carried the key —
+> local data use was off everywhere, including the Projects the sentence meant to deliver it to.
+> Second, the population the sentence protected no longer exists: the owner deleted every Project
+> and artifact and is starting from the current code, and asked for the fresh/existing distinction
+> to be withdrawn rather than repaired. Do not rebuild the gate from this paragraph.
 
 ## User Stories
 

@@ -85,7 +85,7 @@ def setup_turn(tmp_path, content=COMPLAINTS, provider=None, **over):
     if provider is None:
         provider = lambda request: sse(json.dumps(labels_for(request)))
     turn = run.Turn(thread_id="t1", examples_dir=tmp_path / "examples" / "t1",
-                    keep_rows=True, data_use_enabled=True,
+                    keep_rows=True,
                     upload_for=lambda p: source if p == "complaints.csv" else None,
                     analyze_text_batch=provider,
                     record_data_use=lambda ev, reply: data.record(ev, reply, journal.append, "turn1"))

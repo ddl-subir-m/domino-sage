@@ -84,9 +84,9 @@ TOOLS: list[dict[str, Any]] = [
         # rather than a style choice (#423). Four shipped descriptions open "Fresh projects: …",
         # which is true of the SEEDING and reads, in a field only the model sees, as a precondition
         # on the parameter. A model applied it to itself, decided its Project was not "fresh", and
-        # told a person a working capability belonged to other projects. This tool IS gated the same
-        # way — `run.py` refuses when `data_use_enabled` is false — and the refusal says so at the
-        # moment it applies, which is the one place a scope note is a fact rather than a warning.
+        # told a person a working capability belonged to other projects. The rollout this tool was
+        # once gated by is gone (#431 deleted `dataUseVersion`), so there is now nothing true to
+        # say here even if a description were the place to say it — and it never was.
         "name": "live_read_query",
         "description": (
             "Work out a number from a bound Data Source by writing one SQL statement. Use this "

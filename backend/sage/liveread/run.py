@@ -70,7 +70,6 @@ class Turn:
     # another project is reached at all. Only a mounted one can have a file read out of it here.
     list_files: Callable[[str], Any] | None = None
     dataset_root: Callable[[str], Path | None] | None = None
-    data_use_enabled: bool = False
     upload_for: Callable[[str], Path | None] | None = None
     record_data_use: Callable[..., None] | None = None
     analyze_text_batch: Callable[[dict[str, Any]], Any] | None = None
@@ -502,25 +501,6 @@ def _statement(args: dict, turn: Turn) -> str:
     does not govern this and must not be made to: that setting is about ROWS, and a literal in a
     predicate is disclosed by the statement whatever it says.
     """
-    if not turn.data_use_enabled:
-        # The same gate `calculate` is behind, and deliberately the same one. This tool discloses
-        # values to the model, which is the question `dataUseVersion` exists to answer. An ungated
-        # disclosure path shipping beside a gated one would be two answers to "may values reach the
-        # model in this Project", with the newer one winning by accident.
-        #
-        # Through `grant.data_use_says` and not a sentence of its own: #428 put that helper in one
-        # place on the ground that one sentence with two copies drifts invisibly, and this is its
-        # third caller. It matters here for the reason #428 filed — an old Project reached a person
-        # as "go write the SQL yourself", and a tool whose whole subject IS SQL is the likeliest
-        # place for that to happen again.
-        #
-        # There is no act that fixes this refusal: `dataUseVersion` is written only inside `ensure`'s
-        # `if fresh:` arm and nothing backfills it. Measured on the live dogfood Project 2026-09-18,
-        # which returns this refusal — so the Project where #408 was filed cannot run this tool.
-        return grant.data_use_says(
-            "running a query against a {dataSource}",
-            "read the table and show its columns and a sample row")
-
     name = str(args.get("source") or "")
     sql = str(args.get("sql") or "").strip()
     if not sql:
