@@ -12839,6 +12839,33 @@ class Orchestrator:
         # has found, and the card is the answer.
         ranking = self._ranked_candidates(project, source, binding, prompt, found,
                                           session=project.session_id)
+        # The same "already answered, so do not ask" as the Chat gate (#426), through the same door:
+        # `confirm_table_candidate` proves the table is still there before recording, and a list
+        # `_database_candidates` kept for the session needs that check MORE without a click than
+        # with one, because nobody is watching a record no one asked for.
+        #
+        # NOT WHERE THE CARD WOULD BIND. `unbound is not None` is the merged card, whose click
+        # declares a Binding and a Scope in one act (#206). That act is legitimate because a PERSON
+        # chose the store and the table together. There is no person here, and creating a dependency
+        # because a sentence happened to name a table is the side-effect bind that
+        # `scope_data_source`'s refusal exists to prevent (ADR-0021). A sentence can answer "which
+        # table"; it cannot answer "depend on this store", so that case keeps its card.
+        #
+        # A failure to record asks rather than ending the turn, which leaves the person where they
+        # were before this existed.
+        picked = (table_search.named_candidate(prompt, ranking.candidates)
+                  if unbound is None else None)
+        if picked is not None:
+            try:
+                self.confirm_table_candidate(binding.id, picked.database, picked.schema,
+                                             picked.table)
+            except Exception:
+                log.exception("table gate (build): %s.%s.%s was named but could not be recorded — "
+                              "asking instead", picked.database, picked.schema, picked.table)
+            else:
+                log.info("table gate (build): %s.%s.%s named outright — recorded without asking",
+                         picked.database, picked.schema, picked.table)
+                return False
         yield from self._table_candidates_events(prompt, binding, ranking, answered, user_text,
                                                  skipped, bind_first=unbound is not None)
         return True
@@ -13109,6 +13136,31 @@ class Orchestrator:
         # path used to hand the card and loses nothing.
         ranking = self._ranked_candidates(project, source, binding, prompt, found,
                                           session=store.read_session_id(thread_id))
+        # Already answered, so do not ask (#426). `named_source` tests the BINDING's recorded table,
+        # so a fully-qualified name in the sentence left it exactly as unscoped as no name at all,
+        # and the card asked a question the person had already answered — at the cost of the whole
+        # first data turn, which returns the card and nothing else.
+        #
+        # THROUGH THE CLICK'S OWN DOOR, not around it. `confirm_thread_table_candidate` re-reads the
+        # table before recording, and this needs that check more than the click does rather than
+        # less: `_database_candidates` keeps its walk FOR THE SESSION, so the list matched here can
+        # be as stale as the one on screen, and nobody is watching a record written without a click.
+        # One writer, one record, as ADR-0038 has it.
+        #
+        # A failure to record falls through to the card rather than ending the turn. The person is
+        # then where they were before this existed, which is the direction to be wrong in.
+        picked = table_search.named_candidate(prompt, ranking.candidates)
+        if picked is not None:
+            try:
+                self.confirm_thread_table_candidate(thread_id, binding.id, picked.database,
+                                                    picked.schema, picked.table)
+            except Exception:
+                log.exception("table gate (chat): %s.%s.%s was named but could not be recorded — "
+                              "asking instead", picked.database, picked.schema, picked.table)
+            else:
+                log.info("table gate (chat): %s.%s.%s named outright — recorded without asking",
+                         picked.database, picked.schema, picked.table)
+                return None
         return self._chat_table_candidates_events(store, thread_id, prompt, binding, ranking,
                                                   skipped)
 
