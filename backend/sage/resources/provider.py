@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
@@ -685,6 +686,74 @@ class SampleRows:
     rows: list[list]
 
 
+@dataclass(frozen=True)
+class StatementRows:
+    """What one agent-composed statement came back with (ADR-0058).
+
+    Not `SampleRows`, though the shapes nearly match. `SampleRows` names a TABLE, because every row
+    in it came out of one and the card says which. A statement can join three, and a `table` field
+    on this would have to hold a name that answers no question anyone asked.
+
+    `truncated` is the other half. `sample_rows` carries no such flag because its cap IS the
+    statement — it asked for `limit` rows and got at most that many. Here the cap is applied to the
+    ANSWER, so whether the store had more to say is a separate fact and one the caller has to be
+    able to tell the person.
+
+    Values arrive reduced by `sample_value`, as `frame_rows` reduces them, for the same reason: a
+    single cell can hold a whole JSON document, and this one is going somewhere with a budget.
+    """
+
+    columns: list[str]
+    rows: list[list]
+    truncated: bool = False
+
+
+class StatementTimeout(ResourceUnavailable):
+    """One statement ran past `STATEMENT_TIMEOUT_S` and was abandoned.
+
+    A `ResourceUnavailable` subclass so every existing handler still catches it, and its own type so
+    the ONE caller that must tell it apart can: a turn whose statement timed out has a different
+    next move from a turn whose store refused. It is the case that should offer the other lane
+    rather than report the analysis as impossible (ADR-0058, #411).
+    """
+
+
+# How long a Chat data turn's statement may run before Sage stops waiting for it.
+#
+# THIS IS ABANDONMENT, NOT A DEADLINE, and the difference is the whole comment. `domino_data` takes
+# no timeout at any level of its query path — `TabularDatasource.query(self, query: str)` takes the
+# SQL and nothing else, and `DataSourceClient.execute` passes none to `_do_get`, which calls
+# pyarrow's `do_get(ticket)` without the `FlightCallOptions(timeout=…)` that pyarrow would accept.
+# Read on `dominodatalab-data 6.7.4`, the version this repo locks. So Sage cannot ask the store to
+# stop; it can only stop waiting. The statement keeps running at the warehouse, and the thread that
+# started it stays alive until the store answers or the process ends.
+#
+# That is a real cost and it is smaller than it looks, because the alternative is not a clean
+# deadline — it is the 240s one turn-level quiet window already imposes
+# (`_CHAT_TOOL_QUIET_TIMEOUT_S`), which abandons the same query in the same way with the same thread
+# left running, only four times later and with the turn already dead. The floor here was never
+# "attributable store errors"; it was Sage's own timeout, and this only moves it earlier.
+#
+# So what the cap buys is NOT error attributability. Below it, a store that objects still returns
+# its own words through `failure_kind`, exactly as today. Above it, the error was always going to be
+# Sage's. What it buys is the ~120s of turn left over, which is the only reason a turn can say "that
+# query was too slow" and offer the other lane instead of dying silent at 240s — the symptom #408
+# was filed about.
+#
+# 120 rather than the 60 first proposed, and the reason is a collision rather than a measurement.
+# `_do_get` is wrapped in `@backoff.on_exception(backoff.expo, FlightUnauthenticatedError,
+# max_time=60)`: a source whose auth is flapping can spend 60 seconds retrying BEFORE the statement
+# is sent. A 60s cap would make that source permanently unable to answer, and would put two
+# unrelated 60s in one call path for the next reader to conflate. 120 clears the retry budget with
+# room and stays half the turn-level window, which is a relationship worth being able to state.
+#
+# This number retires the day `domino_data` accepts a timeout on `query()` or `execute()`, or
+# exposes the `FlightCallOptions` seam. Then the deadline moves to the call, the store or its proxy
+# reports the overrun, and the error becomes attributable for the first time. Until then, do not
+# read this as a guarantee that a slow query stops costing anything.
+STATEMENT_TIMEOUT_S = 120.0
+
+
 def dialect_for(source: DataSource) -> SqlDialect:
     """The introspection SQL for one source, or a refusal naming the connector."""
     dialect = SQL_DIALECTS.get(source.connector_type)
@@ -996,6 +1065,46 @@ def frame_rows(frame: Any, limit: int = SAMPLE_CELL_LIMIT) -> tuple[list[str], l
     return columns, [[sample_value(col[i], limit) for col in values] for i in range(len(values[0]))]
 
 
+def _drain_within(result: Any, limit: int) -> StatementRows:
+    """At most `limit` rows out of a Flight stream, and whether the store had more to say.
+
+    Chunk by chunk rather than `result.to_pandas()`, which is what every other caller in this file
+    uses. That one reads the WHOLE resultset into memory before anything can look at it, which is
+    safe for the statements Sage writes itself — they carry their own `LIMIT` — and unsafe for one
+    an agent wrote, where `SELECT *` over a fact table is a plausible first attempt.
+
+    `truncated` is read one row past the cap, not at it. A stream that ends exactly on `limit` was
+    not cut, and saying it was would put "500 of more than 500" under a table holding the whole
+    answer.
+
+    The reader is cancelled once the cap is met, so the rest of the answer is not pulled across the
+    wire to be thrown away.
+    """
+    columns: list[str] = []
+    rows: list[list] = []
+    truncated = False
+    reader = result.reader
+    try:
+        while True:
+            try:
+                batch = reader.read_chunk().data
+            except StopIteration:
+                break
+            if not columns:
+                columns = [str(name) for name in batch.schema.names]
+            # By position. `to_pydict()` is keyed by name and would drop one of a duplicate pair.
+            held = [batch.column(i).to_pylist() for i in range(batch.num_columns)]
+            for i in range(batch.num_rows):
+                if len(rows) >= limit:
+                    truncated = True
+                    return StatementRows(columns, rows, True)
+                rows.append([sample_value(col[i]) for col in held])
+    finally:
+        if truncated:
+            reader.cancel()
+    return StatementRows(columns, rows, truncated)
+
+
 class ResourceProvider(Protocol):
     def list_llm_aliases(self) -> list[LlmAlias]: ...
 
@@ -1072,6 +1181,14 @@ class ResourceProvider(Protocol):
     # (#16), which is why it takes one table at a time: what is exposed is picked, not swept up.
     def sample_rows(self, source: DataSource, database: str, schema: str, table: str,
                     limit: int = 5) -> SampleRows: ...
+
+    # One statement the AGENT composed, run against a bound source (ADR-0058). The sibling of
+    # `sample_rows` and not a generalisation of it: that one is handed a table and builds the SQL,
+    # this one is handed the SQL. `limit` is required rather than defaulted, because the number
+    # belongs to the caller that also has to say "500 of more" on the card — a default here would
+    # let a second caller arrive later, pass nothing, and quietly mean a different 500.
+    def run_statement(self, source: DataSource, sql: str, *, limit: int,
+                      timeout_s: float = STATEMENT_TIMEOUT_S) -> StatementRows: ...
 
 
 def records_of(payload: Any) -> list[dict]:
@@ -2132,32 +2249,118 @@ class DominoResourceProvider:
             client = DataSourceClient()
             return client.get_datasource(source.name).query(sql).to_pandas()
         except Exception as e:
-            kind, said = failure_kind(e)
-            # Nothing reached the store, so there is nothing of the store's to report. Say what
-            # happened and what to do, and keep Domino's plumbing out of it: the raw text here
-            # carries a gRPC peer address, which is mechanism in front of someone who asked to see
-            # a row.
-            if kind == "never_delivered":
-                raise ResourceUnavailable(brand.text(
-                    "{assistantName} could not reach {name} just now. Nothing is wrong with the "
-                    "{dataSource} itself. Try again in a moment.",
-                    name=source.name,
-                )) from e
-            # Domino refused on its own configuration. Both of the other sentences are false here:
-            # the fault will not clear on its own, and the source never answered to be quoted. Say
-            # which one it is and where it gets repaired, because this is the one population a
-            # person can actually act on.
-            if kind == "setup_fault":
-                raise ResourceUnavailable(brand.text(
-                    "{assistantName} cannot open {name}: {reason}. Retrying will not help — the "
-                    "{dataSource}'s credentials or connection settings need fixing in "
-                    "{platformName}.",
-                    name=source.name, reason=_scrubbed(said),
-                )) from e
-            # The store's own words, scrubbed. Naming the source matters because the creator is
-            # looking at a list of them, and the connector's own error is the only signal that
-            # separates "Sage sent the wrong SQL for this connector" from "this schema is empty".
-            raise ResourceUnavailable(f"{source.name} did not answer: {_scrubbed(said)}") from e
+            raise self._store_failure(source, e) from e
+
+    def _store_failure(self, source: DataSource, e: Exception) -> ResourceUnavailable:
+        """Which of the three failures this was, as the exception to raise (#399).
+
+        Split out of `_query` when `run_statement` arrived, because that path drains the stream in
+        chunks rather than through `to_pandas` and so cannot go through `_query` — and two copies of
+        this classification would be two places for the #399 distinction to rot. Returns rather than
+        raises, so every caller keeps its own `from e` and the chain stays readable.
+        """
+        kind, said = failure_kind(e)
+        # Nothing reached the store, so there is nothing of the store's to report. Say what
+        # happened and what to do, and keep Domino's plumbing out of it: the raw text here
+        # carries a gRPC peer address, which is mechanism in front of someone who asked to see
+        # a row.
+        if kind == "never_delivered":
+            return ResourceUnavailable(brand.text(
+                "{assistantName} could not reach {name} just now. Nothing is wrong with the "
+                "{dataSource} itself. Try again in a moment.",
+                name=source.name,
+            ))
+        # Domino refused on its own configuration. Both of the other sentences are false here:
+        # the fault will not clear on its own, and the source never answered to be quoted. Say
+        # which one it is and where it gets repaired, because this is the one population a
+        # person can actually act on.
+        if kind == "setup_fault":
+            return ResourceUnavailable(brand.text(
+                "{assistantName} cannot open {name}: {reason}. Retrying will not help — the "
+                "{dataSource}'s credentials or connection settings need fixing in "
+                "{platformName}.",
+                name=source.name, reason=_scrubbed(said),
+            ))
+        # The store's own words, scrubbed. Naming the source matters because the creator is
+        # looking at a list of them, and the connector's own error is the only signal that
+        # separates "Sage sent the wrong SQL for this connector" from "this schema is empty".
+        return ResourceUnavailable(f"{source.name} did not answer: {_scrubbed(said)}")
+
+    def run_statement(self, source: DataSource, sql: str, *, limit: int,
+                      timeout_s: float = STATEMENT_TIMEOUT_S) -> StatementRows:
+        """Run one statement the AGENT composed against a bound Data Source (ADR-0058).
+
+        READ-ONLY IS THE WAREHOUSE'S JOB, NOT THIS FUNCTION'S. Sage does not read the statement to
+        decide whether it writes, and must not start: the Data Source connects under a read-only
+        warehouse role, and that role is the guarantee. Every alternative is worse in the same way.
+        A regex over SQL is defeated by a comment, a string literal, a CTE or a vendor extension. A
+        parser is defeated by the dialect it was not built for, and this repo already declined one
+        for a narrower job (#187). Both would ALSO be read as the guarantee by the next reader, who
+        would then trust a statement they should not.
+
+        The bound that makes this safe is therefore not in this file at all, and it is not new: the
+        other Chat lane already runs arbitrary SQL against this same source through `domino_data`,
+        so a statement arriving here is strictly narrower than what Sage permits today.
+
+        RETIRING THIS: if the credential behind `datasource-proxy` ever stops being read-only, this
+        tool is not safe and NO amount of statement inspection makes it safe. The repair is to
+        withdraw the tool, not to add a validator in front of it. Do not read the absence of
+        validation here as an oversight somebody should fix.
+
+        `limit` caps the ANSWER rather than the question, and it is applied while the stream is
+        being drained rather than after. `to_pandas()` loads an entire resultset into memory, so a
+        `SELECT *` over a large table would take the orchestrator down for every Conversation on it
+        — a cost `sample_rows` never had to think about, because its cap is in the statement it
+        wrote itself. The rows are read by POSITION, as `frame_rows` reads them and for the reason
+        recorded there: a statement selecting two columns with one name would otherwise answer with
+        one of them twice, and an agent-composed statement is far likelier to do that than a
+        generated `SELECT *`.
+        """
+        try:
+            from domino_data.data_sources import DataSourceClient
+        except ImportError as e:
+            raise ResourceUnavailable(brand.text(
+                "The {platformName} data library isn't installed here, so {assistantName} can "
+                "list {dataSourcePlural} but not look inside them."
+            )) from e
+
+        answer: dict[str, Any] = {}
+
+        def work() -> None:
+            try:
+                client = DataSourceClient()
+                result = client.get_datasource(source.name).query(sql)
+                answer["rows"] = _drain_within(result, max(1, int(limit)))
+            # `BaseException`, not `Exception`. Nothing here is swallowed — it is carried across to
+            # the calling thread and re-raised there. A `KeyboardInterrupt` or a `SystemExit` raised
+            # inside this worker would otherwise be printed by the threading module and lost, and
+            # the caller would be told the statement returned nothing rather than that it died.
+            except BaseException as e:
+                answer["error"] = e
+
+        # A plain daemon thread rather than the `ThreadPoolExecutor` this file uses for the Model
+        # API fan-out, and the difference is deliberate. That pool joins on the way out, and its
+        # comment says why: waiting costs less than leaking threads out of the path that reports
+        # breakage. A CAP CANNOT JOIN — a timeout that waits for the thing it timed out is not a
+        # timeout — so this one leaks by design where that one refuses to. Daemon, so an abandoned
+        # query cannot hold the process open at shutdown.
+        runner = threading.Thread(target=work, daemon=True, name="sage-sql-statement")
+        runner.start()
+        runner.join(timeout_s)
+        if runner.is_alive():
+            # Named as Sage's own, because it IS Sage's own and the sentence must not imply the
+            # store said anything. It did not; it is very likely still working on the answer.
+            raise StatementTimeout(brand.text(
+                "That query was still running after {secs} seconds, so {assistantName} stopped "
+                "waiting for it. {name} may still be working on it.",
+                secs=str(int(timeout_s)), name=source.name,
+            ))
+        if "error" in answer:
+            e = answer["error"]
+            if isinstance(e, ResourceUnavailable):
+                raise e
+            raise self._store_failure(source, e) from e
+        return answer["rows"]
 
     def _authentication_status(self, ids: list[str]) -> Any:
         """Whether the caller can open each of `ids`, positionally. `None` when Domino did not say.
@@ -2425,6 +2628,13 @@ class FakeResourceProvider:
         default_factory=lambda: dict(_FAKE_COLUMNS))
     # table -> rows, for the samples a creator can choose to share (#16).
     rows: dict[str, list[list]] = field(default_factory=lambda: dict(_FAKE_ROWS))
+    # statement -> (columns, rows), for the SQL a Chat data turn composes (ADR-0058). Empty by
+    # default and NOT derived from the tree above, unlike `list_database_tables`, which is built out
+    # of the cascade so the two cannot disagree. There is nothing to derive from here: answering a
+    # statement means evaluating it, and a fake that half-evaluates SQL would be a second, worse
+    # warehouse whose disagreements with the real one are the thing under test. A test says what a
+    # statement returns; an unmapped one is refused the way a store refuses SQL it dislikes.
+    statements: dict[str, tuple[list[str], list[list]]] = field(default_factory=dict)
 
     def list_llm_aliases(self) -> list[LlmAlias]:
         return list(self.aliases)
@@ -2559,3 +2769,31 @@ class FakeResourceProvider:
         names = [name for name, _ in self.columns.get(table, [])]
         rows = [[sample_value(v) for v in row] for row in self.rows.get(table, [])[:max(1, limit)]]
         return SampleRows(table, names, rows)
+
+    def run_statement(self, source: DataSource, sql: str, *, limit: int,
+                      timeout_s: float = STATEMENT_TIMEOUT_S) -> StatementRows:
+        """One composed statement, from `statements` above (ADR-0058).
+
+        `timeout_s` is accepted and ignored, and that is worth saying rather than leaving to be
+        noticed: nothing here is slow, so there is no timeout to honour. A test that needs the real
+        abandonment has to exercise `DominoResourceProvider.run_statement`, because the cap lives
+        there and a fake that pretended to have one would be testing itself.
+
+        The cap and `truncated` ARE honoured, because they are the contract every caller reads: a
+        caller writing "500 of more" under a table has to be able to reach that state with no
+        warehouse.
+
+        `dialect_for` is NOT called here, unlike everywhere else in this fake. The rule there is that
+        the fake must refuse what the real provider refuses, and the real `run_statement` uses no
+        dialect: the agent wrote the statement, so there is nothing for Sage to spell per connector.
+        Calling it would make the fake refuse a source the real one would have queried, which is the
+        same drift the rule exists to stop, pointing the other way.
+        """
+        held = self.statements.get(sql)
+        if held is None:
+            raise ResourceUnavailable(f"{source.name} did not answer: unknown statement")
+        columns, rows = held
+        cap = max(1, int(limit))
+        return StatementRows(list(columns),
+                             [[sample_value(v) for v in row] for row in rows[:cap]],
+                             len(rows) > cap)

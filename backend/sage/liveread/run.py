@@ -12,16 +12,19 @@ answer, which is the transcript ADR-0041 opens with.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from ..orchestrator import brand
-from ..resources.provider import ScopeIncomplete
-from . import grant, result
+from ..resources.provider import ResourceUnavailable, ScopeIncomplete
+from . import disclosure, grant, result
 
 log = logging.getLogger("sage.liveread")
 
@@ -57,6 +60,11 @@ class Turn:
     scope_for: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)
     source_for: Callable[[str], Any] | None = None
     sample_rows: Callable[..., Any] | None = None
+    # One statement the AGENT composed, run server-side (ADR-0058). Beside `sample_rows` rather than
+    # replacing it: showing a few real rows on a card and working a number out of the whole table are
+    # different jobs, and ADR-0058 says so in as many words. The agent never gets a shell, a token or
+    # a gateway URL — it composes SQL and Sage runs it.
+    run_statement: Callable[..., Any] | None = None
     # Listing and reading are two different reaches. Every Dataset can be LISTED, mounted or not —
     # an unmounted one is listed through the data library, which is how a Dataset shared from
     # another project is reached at all. Only a mounted one can have a file read out of it here.
@@ -472,9 +480,170 @@ def _capped(read: Read, limit: int) -> Read:
     return Read(read.columns, read.rows[:limit], True)
 
 
+def _statement(args: dict, turn: Turn) -> str:
+    """Run one statement the agent composed, and say what it may repeat out loud (ADR-0058).
+
+    This exists because the read-only lane had no way to compute, not because it had no way to
+    reach the warehouse. Measured live on `cd9fdd9` and worth recording as the thing this replaces:
+    asked for `COUNT(*)` over one table, a turn read one row of 106 columns, composed Python on a
+    lane with no shell, then read the sample's own `.table.json` three times until the repeat guard
+    killed it — `ok=false`, `decision="repeated"`, 61s, eight model calls. #402 saw the same hole end
+    as `decision="table generation failed"` on the artifact lane. Two deaths, one cause.
+
+    The reach for Python is NOT a prompt artefact. #412 removed the `AGENTS.md` sentences that told
+    the model to use Python, and on a tree without them the model composed Python anyway. It is what
+    a model does when it is asked for a number and has no way to produce one, which is why the fix
+    is a tool rather than more prompt.
+
+    THE STATEMENT IS NOT WRITTEN DOWN ANYWHERE. Not in the card's `.sql` sidecar, not in the
+    `data_use` event, not in the sentence returned here — only its hash. `result.record`'s sidecar
+    is committed in both Kept-rows states, and a statement with a `WHERE EMAIL = '…'` in it is a row
+    value; putting it in the Project's git history is precisely what ADR-0041 refuses. Kept rows
+    does not govern this and must not be made to: that setting is about ROWS, and a literal in a
+    predicate is disclosed by the statement whatever it says.
+    """
+    if not turn.data_use_enabled:
+        # The same gate `calculate` is behind, and deliberately the same one. This tool discloses
+        # values to the model, which is the question `dataUseVersion` exists to answer. An ungated
+        # disclosure path shipping beside a gated one would be two answers to "may values reach the
+        # model in this Project", with the newer one winning by accident.
+        #
+        # Through `grant.data_use_says` and not a sentence of its own: #428 put that helper in one
+        # place on the ground that one sentence with two copies drifts invisibly, and this is its
+        # third caller. It matters here for the reason #428 filed — an old Project reached a person
+        # as "go write the SQL yourself", and a tool whose whole subject IS SQL is the likeliest
+        # place for that to happen again.
+        #
+        # There is no act that fixes this refusal: `dataUseVersion` is written only inside `ensure`'s
+        # `if fresh:` arm and nothing backfills it. Measured on the live dogfood Project 2026-09-18,
+        # which returns this refusal — so the Project where #408 was filed cannot run this tool.
+        return grant.data_use_says(
+            "running a query against a {dataSource}",
+            "read the table and show its columns and a sample row")
+
+    name = str(args.get("source") or "")
+    sql = str(args.get("sql") or "").strip()
+    if not sql:
+        return _no_card("Send the statement to run as `sql`. Nothing was put on the person's screen.")
+
+    refused = grant.reachable("datasource", name,
+                              bound=turn.bound.get("datasource", ()),
+                              chips=turn.chips.get("datasource", ()))
+    if refused:
+        return _no_card(refused.says)
+    source = turn.source_for(name) if turn.source_for else None
+    if source is None or turn.run_statement is None:
+        return _no_card(brand.text(
+            "{assistantName} could not find {name} among the {dataSourcePlural} it can open here.",
+            name=name or "that",
+        ))
+
+    try:
+        answer = turn.run_statement(source, sql, limit=result.CAP_ROWS)
+    except ScopeIncomplete as e:
+        return _no_card(str(e))
+    except ResourceUnavailable as e:
+        # The store's own words, or Sage's own timeout, already told apart upstream and already
+        # scrubbed. Surfaced rather than replaced: reporting the analysis as impossible when the
+        # store merely objected is the distinction #399 had to be reopened to make. A turn that
+        # cannot express its question in SQL should offer the other lane from here (#411).
+        return _no_card(str(e))
+
+    verdict = disclosure.decide(sql, answer.rows)
+    title = str(args.get("title") or "Query result")
+    receipt = result.record(
+        turn.examples_dir,
+        _slug(title),
+        title,
+        answer.columns,
+        answer.rows,
+        truncated=answer.truncated,
+        keep_rows=turn.keep_rows,
+        # `binding` and `table` are left empty on purpose, which keeps `result.record`'s own `values`
+        # None. That field is gated on `grant.values_allowed` — whether the CREATOR shared a named
+        # table's rows — and this result has no single table behind it and is not governed by that
+        # question at all. Two disclosure gates on one path would be one gate too many, and the one
+        # that answers this question is `disclosure.decide` below.
+        #
+        # `source` is left out for the same reason: **Read again** replays a table or a file, and a
+        # computed answer is neither. A card with no button beats a button whose press can only come
+        # back with a failure (#258).
+    )
+    return _computed_text(receipt, verdict, answer, sql, args, turn)
+
+
+def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dict,
+                   turn: Turn) -> str:
+    """What the assistant is told, and what gets written down about it.
+
+    Recorded whatever the verdict, because the record is about the READ and not about the
+    disclosure: a statement that ran and put a card on screen is a data use even when its values
+    stayed on the card. This is an ADDITION to a working record rather than a repair of a silent
+    one — `live_read` already logs and `calculate` already emits, and both were verified firing on
+    `cd9fdd9`. What was missing was a `data_use` event for THIS route, not for any other.
+    """
+    shape = f"{receipt.rows} row{'' if receipt.rows == 1 else 's'}"
+    if receipt.truncated:
+        shape = f"the first {shape} (there are more)"
+    lines = [f"The query ran: {shape}, now on screen as a table." if receipt.kept else
+             f"The query ran: {shape}, now on screen as a card giving this result's shape.",
+             f"Columns: {', '.join(receipt.columns) or '(none)'}."]
+
+    values = [list(row) for row in answer.rows] if verdict.discloses else []
+    if verdict.discloses and len(json.dumps(values, default=str)) > result.VALUES_BUDGET_CHARS:
+        # The same sentence `calculate` gives over the same budget, and the same repair: ask for
+        # less. A result this wide is a grouped answer with too many groups, and the model can say
+        # so or narrow it.
+        verdict = replace(verdict, discloses=False, reason=(
+            "That result is too large to read here, so only the card has it. Group by fewer things "
+            "or add a tighter filter."))
+        values = []
+
+    if verdict.discloses:
+        lines.append(f"Result: {values}")
+    else:
+        lines.append(verdict.reason)
+        lines.append("Answer about the shape of the result and never quote a value you were not "
+                     "given.")
+
+    log.info("live query: %s — %s, %d columns, discloses=%s -> %s",
+             receipt.columns and receipt.columns[0] or "(none)", shape, len(receipt.columns),
+             verdict.discloses, receipt.path)
+
+    if turn.record_data_use:
+        operation = "du_" + uuid4().hex
+        event = {
+            "operation_id": operation,
+            "source": str(args.get("source") or ""),
+            # The HASH, never the statement. The event is persisted into the Thread's history, which
+            # is committed, and a statement carries literals — see `_statement`'s docstring. This is
+            # the same thing `calculate` does with the CSV bytes it read, for the same reason.
+            "source_sha256": hashlib.sha256(sql.encode()).hexdigest(),
+            "artifact": receipt.path,
+            "columns": list(receipt.columns),
+            "selected_fields": [receipt.columns[i] for i in verdict.derived
+                                if i < len(receipt.columns)] if verdict.discloses else [],
+            "result_rows": receipt.rows,
+            "coverage": {"total": receipt.rows, "processed": receipt.rows, "excluded": 0,
+                         "failed": 0, "unfinished": 1 if receipt.truncated else 0},
+            "purpose": str(args.get("purpose") or "Run a query against a bound data source"),
+            "requests": [], "delivery": "unknown",
+        }
+        reply = {"data_use": operation, "columns": list(receipt.columns),
+                 "result_rows": receipt.rows, "local_reference": receipt.path,
+                 "coverage": event["coverage"], "selected_fields": event["selected_fields"],
+                 "selected": {"rows": values} if verdict.discloses else {},
+                 "kept_rows": receipt.kept}
+        turn.record_data_use(event, reply)
+
+    return "\n".join(lines)
+
+
 def perform(name: str, args: dict, turn: Turn) -> str:
     if name == "live_read_table":
         return _table(args, turn)
     if name == "live_read_files":
         return _files(args, turn)
+    if name == "live_read_query":
+        return _statement(args, turn)
     raise ValueError(f"No tool named {name}")

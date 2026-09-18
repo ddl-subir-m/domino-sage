@@ -80,6 +80,48 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        # NOTHING IN THIS DESCRIPTION SAYS WHERE THE FEATURE IS ROLLED OUT, and that is a rule
+        # rather than a style choice (#423). Four shipped descriptions open "Fresh projects: …",
+        # which is true of the SEEDING and reads, in a field only the model sees, as a precondition
+        # on the parameter. A model applied it to itself, decided its Project was not "fresh", and
+        # told a person a working capability belonged to other projects. This tool IS gated the same
+        # way — `run.py` refuses when `data_use_enabled` is false — and the refusal says so at the
+        # moment it applies, which is the one place a scope note is a fact rather than a warning.
+        "name": "live_read_query",
+        "description": (
+            "Work out a number from a bound Data Source by writing one SQL statement. Use this "
+            "whenever the answer needs the numbers WORKED OUT rather than looked at — a count, a "
+            "total, an average, a ranking, a correlation, a group-by, a join across tables. "
+            "Sage runs the statement server-side and puts the result on a table card the person "
+            "sees. You get the numbers back when every column you select is one worked out from "
+            "the rows — COUNT, SUM, AVG, MEDIAN, CORR and the like, plus whatever you GROUP BY. "
+            "A column holding values stored in rows stays on the card and does not come back to "
+            "you; the reply says so and says which column it was, so you can ask for a count "
+            "instead. Prefer this over reading rows and adding them up yourself."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "token": _TOKEN,
+                "source": {"type": "string", "description": "The Data Source name."},
+                # Dotted names, because that is what everything else the agent reads shows it — the
+                # Chat context line names a table `DWH.MARTS.SALES` — and because a statement is
+                # sent as written. Nothing here takes the name apart: `_split_qualified` exists for
+                # a tool that BUILDS the SQL, and this one does not.
+                "sql": {"type": "string", "description": (
+                    "One SELECT statement, written for this store's own SQL. Name tables in full, "
+                    "as database.schema.table. One statement: no semicolons, no second query."
+                )},
+                "title": {"type": "string", "description": "A short title for the card."},
+                "purpose": {"type": "string", "description": (
+                    "What this is being worked out for, in a few words. It goes in the record, not "
+                    "to the person."
+                )},
+            },
+            "required": ["token", "source", "sql"],
+        },
+    },
+    {
         "name": "live_read_files",
         "description": (
             "List the files in a bound Dataset, or read the head of one of them. Use this to say "

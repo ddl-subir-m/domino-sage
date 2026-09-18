@@ -122,8 +122,19 @@ def record(
     statement_path = None
     if statement:
         # Committed in both states. It carries no values: `sample_rows` takes a table and a limit
-        # and cannot filter (ADR-0041). If predicate support ever lands, the statement starts
-        # carrying literals and joins the rows on the wrong side of this decision.
+        # and cannot filter (ADR-0041).
+        #
+        # PREDICATE SUPPORT HAS NOW LANDED, and this comment used to predict it as a future. It is
+        # `live_query` (ADR-0058, #408), which runs a statement the AGENT composed — and a statement
+        # with `WHERE EMAIL = '…'` in it carries a row value, which committing here would write into
+        # the Project's git history. So that tool does not come through this parameter at all: it
+        # passes no `statement`, writes no sidecar, and records only the statement's hash.
+        #
+        # That leaves this path exactly as it was, serving `sample_rows` alone — and in fact NOTHING
+        # passes `statement` today, so it is currently unreached. Left standing rather than deleted
+        # because it is still the right behaviour for a statement Sage wrote itself. If you give it
+        # a second caller, the question to ask first is whether that caller's SQL can carry a
+        # literal; if it can, it belongs outside this function, not behind a flag inside it.
         (examples_dir / f"{slug}.sql").write_text(statement.rstrip() + "\n")
         statement_path = f"examples/{examples_dir.name}/{slug}.sql"
 

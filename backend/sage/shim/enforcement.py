@@ -318,14 +318,35 @@ class EnforcementShim:
             # #370 opens on IS one — a classification pass over support-case text, ending in a
             # table. This list is an allowlist, so a tool absent from it is stripped, and leaving it
             # out would take the capability away from exactly the turns that want it (ADR-0057).
+            #
+            # `live_read_query` is here for #402, and it is the half of ADR-0058 that this list
+            # makes a separate edit. The read-only lane reaches its tools by a DENYLIST above —
+            # `READ_ONLY_DENIED` strips write and shell, and anything unnamed survives — so a new
+            # read tool arrives there by doing nothing. This lane is an ALLOWLIST, so the same tool
+            # arrives here only by being written down. Two unlike mechanisms, one-entry difference:
+            # a change that gave the SQL tool to the read-only path and stopped would have shipped a
+            # `data_artifact` turn that still cannot compute, which is exactly what #402 filed.
+            #
+            # It matters more here than on the other lane. A read-only turn that cannot compute
+            # answers in prose and disappoints; an artifact turn has already been labelled
+            # `data_artifact`, armed `artifact_write`, and been told by its own prompt to write the
+            # table with it — and then has no number to put in one (#425).
             allowed = READ_TOOLS | {"glob", "grep", "live_read_table", "live_read_files",
-                                    "artifact_write", "delegated_model_call"}
+                                    "live_read_query", "artifact_write", "delegated_model_call"}
             if state.web_allowed:
                 allowed |= WEB_TOOLS
             request = {**request, "tools": [
                 tool for tool in request["tools"]
                 if (name := str((tool.get("function") or {}).get("name", "")).lower()) in allowed
-                or name in {"sage-live-read_live_read_table", "sage-live-read_live_read_files"}
+                # The NAMESPACED spellings, which are a second list and not a restatement of the
+                # one above: OpenCode prefixes an MCP tool with its `opencode.json` key before
+                # offering it to the model, so `live_read_query` and
+                # `sage-live-read_live_read_query` are two names for one tool and only the bare one
+                # is in `allowed`. Adding a live-read tool to this lane is therefore TWO entries.
+                # Miss the second and the tool is stripped from the model's list on this lane only,
+                # which reads exactly like the tool not existing.
+                or name in {"sage-live-read_live_read_table", "sage-live-read_live_read_files",
+                            "sage-live-read_live_read_query"}
             ]}
         elif isinstance(request.get("tools"), list):
             # `artifact_write` is scoped to the artifact lane. `delegated_model_call` is scoped to a

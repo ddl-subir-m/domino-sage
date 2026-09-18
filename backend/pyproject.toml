@@ -15,6 +15,21 @@ dependencies = [
     "numpy>=2.0,<3.0",          # Chat sage-chat plots and array work (OpenCode bash uses this venv)
     "matplotlib>=3.8,<4.0",     # Chat charts: PNG under examples/<threadId>/
     "resvg-py>=0.3.4,<0.6",    # Render scoped Chat SVG markup to PNG without shell access
+    # Deciding what a Chat data turn's SQL result may DISCLOSE to the model (ADR-0058, #408).
+    # Not for checking that the statement is safe to run — that is the read-only warehouse role, and
+    # `provider.run_statement` says at length why no parser should be read as the guarantee.
+    #
+    # `sqlglot` was weighed for #187 and declined, and that refusal does not reach this. There it
+    # would have checked statements SAGE wrote for correctness, against risks parsing cannot see —
+    # a wrong view name, BigQuery's region, ClickHouse's `system`. Here it reads a statement the
+    # MODEL wrote to answer one question parsing can answer exactly: which output columns return a
+    # derived number and which return a stored value. Different job, different argument.
+    #
+    # Pure Python and dependency-free, so it costs a laptop nothing — unlike the `domino` extra
+    # below, which is why that one is an extra and this is not. It is a RUNTIME dependency, not a
+    # dev one: with it absent the disclosure rule fails closed and no result ever reaches the model,
+    # which is safe and also useless.
+    "sqlglot>=27,<28",
 ]
 
 [project.optional-dependencies]
