@@ -286,6 +286,25 @@ class EnforcementShim:
         # arrives. A gated plan turn keeps them.
         if state.read_only_reason in ("ask", "question") or state.mode is Mode.ASK:
             denied |= TODO_TOOLS | {"task"}
+        # A Chat turn answers and returns too, and it cannot be the build the list implies: Chat's
+        # writes are confined to the Thread's examples/ and .sage/threads/ dirs, so no Chat turn can
+        # touch src/ however many steps it opens. It is NOT expressible above — an unbounded Chat
+        # data turn is not read-only at all, so its `read_only_reason` is "", the same value an
+        # ordinary Build turn carries, and that turn must keep its list. `chat_thread_id` is the
+        # axis that separates them, and the idiom `chat_thread_id or mode is ASK` is already how
+        # this file (the `on_resolved` phase blank) and llm_router's `_lock_preferences` say
+        # "answers rather than builds". Measured live 2026-09-18: a 21-call Chat investigation turn
+        # spent call 4 on `todowrite` (#400).
+        #
+        # Only the task list. `task` stays behind deliberately: the 2026-09-14 latency work tried
+        # hiding `skill`, `task` and `todowrite` from Chat together and that profile was rejected
+        # and restored, on the ground that it lost the installed skill catalogue and prevented
+        # delegation (docs/performance/2026-09-14-latency.md). Neither loss is the task list, so
+        # that rejection does not reach `todowrite` — but it names `task` directly, and a sub-task
+        # is real work being done rather than a promise of work to come. An Ask/question turn still
+        # loses both, above; this line does not narrow that.
+        if chat_id:
+            denied |= TODO_TOOLS
         if not state.web_allowed:
             denied |= WEB_TOOLS
         if denied and "tools" in request:
