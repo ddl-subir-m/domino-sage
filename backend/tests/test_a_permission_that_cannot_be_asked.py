@@ -116,7 +116,24 @@ def test_no_agents_is_not_a_clean_bill_of_health(monkeypatch):
 
     appmod._run_permission_preflight()
 
+    # The error text, not just the state: `unreachable` is written by the fetch-failed branch too,
+    # so the state alone cannot tell "asked and learnt nothing" from "could not ask".
     assert appmod.PREFLIGHT_PERMISSIONS["state"] == "unreachable"
+    assert "no agents" in appmod.PREFLIGHT_PERMISSIONS["error"]
+
+
+def test_agents_carrying_no_rules_at_all_is_not_ok(monkeypatch):
+    # One level down from the branch above, and the case this guard claims to survive: a future
+    # OpenCode renaming `permission` leaves twelve agents present and zero rules to read.
+    monkeypatch.setattr(appmod, "_resolved_agent_permissions",
+                        lambda: [{"name": "sage-chat", "permission": []}])
+    monkeypatch.setattr(appmod, "_stop_this_process", lambda: pytest.fail("stopped on no rules"))
+    monkeypatch.setattr(appmod, "PREFLIGHT_PERMISSIONS", dict(appmod.PREFLIGHT_PERMISSIONS))
+
+    appmod._run_permission_preflight()
+
+    assert appmod.PREFLIGHT_PERMISSIONS["state"] == "unreachable"
+    assert "no permission rules" in appmod.PREFLIGHT_PERMISSIONS["error"]
 
 
 def test_a_shape_it_cannot_read_is_reported_not_left_pending(monkeypatch):
@@ -131,6 +148,38 @@ def test_a_shape_it_cannot_read_is_reported_not_left_pending(monkeypatch):
     appmod._run_permission_preflight()
 
     assert appmod.PREFLIGHT_PERMISSIONS["state"] == "unreachable"
+    assert "AttributeError" in appmod.PREFLIGHT_PERMISSIONS["error"]
+
+
+# ---- the payload shapes --------------------------------------------------------------------
+# `/agent` answers as a bare list, as {"data": [...]}, and as a dict keyed by agent name. Every
+# test above patches the fetch wholesale, so without these the normalisation ships unexecuted.
+
+
+@pytest.mark.parametrize("payload, names", [
+    ([{"name": "a", "permission": []}], ["a"]),
+    ({"data": [{"name": "a", "permission": []}]}, ["a"]),
+    ({"a": {"permission": []}}, ["a"]),
+])
+def test_the_three_shapes_agent_answers_in_all_normalise(monkeypatch, payload, names):
+    monkeypatch.setattr(appmod, "_chat_work_dir", lambda: None)
+    monkeypatch.setattr(appmod.orchestrator, "_ensure_opencode",
+                        lambda: type("C", (), {"base_url": "http://x"})(), raising=False)
+    monkeypatch.setattr(appmod.httpx, "get",
+                        lambda *a, **k: type("R", (), {"raise_for_status": lambda s: None,
+                                                       "json": lambda s: payload})())
+    assert [a["name"] for a in appmod._resolved_agent_permissions()] == names
+
+
+def test_a_shape_that_is_not_a_list_of_agents_raises(monkeypatch):
+    monkeypatch.setattr(appmod, "_chat_work_dir", lambda: None)
+    monkeypatch.setattr(appmod.orchestrator, "_ensure_opencode",
+                        lambda: type("C", (), {"base_url": "http://x"})(), raising=False)
+    monkeypatch.setattr(appmod.httpx, "get",
+                        lambda *a, **k: type("R", (), {"raise_for_status": lambda s: None,
+                                                       "json": lambda s: "nope"})())
+    with pytest.raises(TypeError):
+        appmod._resolved_agent_permissions()
 
 
 def test_a_check_that_could_not_run_does_not_stop_the_boot(monkeypatch):

@@ -95,6 +95,7 @@ from ..workspace.threads import (
 from .brand import text as brand_text
 from .describe import human_bytes
 from .service import (
+    _CHAT_TOOL_QUIET_TIMEOUT_S,
     AttachSourceMissing,
     AttachTooLarge,
     AttachWouldClobber,
@@ -579,8 +580,11 @@ def _resolved_agent_permissions() -> list[dict]:
     arrive here too. Anything else raises, which the caller reports as "could not check".
     """
     client = orchestrator._ensure_opencode()
-    params = {"directory": _chat_work_dir()} if _chat_work_dir() else {}
-    r = httpx.get(f"{client.base_url}/agent", params=params, timeout=30)
+    # Once, into a local: the helper stats the filesystem, so asking twice is two syscalls that can
+    # disagree with each other.
+    work = _chat_work_dir()
+    r = httpx.get(f"{client.base_url}/agent",
+                  params={"directory": work} if work else {}, timeout=30)
     r.raise_for_status()
     payload = r.json()
     if isinstance(payload, dict):
@@ -590,15 +594,6 @@ def _resolved_agent_permissions() -> list[dict]:
     if not isinstance(payload, list):
         raise TypeError(f"/agent answered {type(payload).__name__}, not a list of agents")
     return payload
-
-
-def _chat_work_dir() -> str | None:
-    """Where a Chat turn runs, when there is a workspace to ask about."""
-    workspace = getattr(getattr(orchestrator, "_wm", None), "_dir", None)
-    if not workspace:
-        return None
-    work = Path(workspace) / ".sage" / "chat-work"
-    return str(work) if work.is_dir() else None
 
 
 def _stop_this_process() -> None:
@@ -612,29 +607,40 @@ def _stop_this_process() -> None:
 
 def _run_permission_preflight() -> None:
     global PREFLIGHT_PERMISSIONS
+    # Recorded beside the verdict because the verdict means nothing without it: which directory was
+    # asked about decides which config answered. A project `opencode.json` beats OPENCODE_CONFIG and
+    # resolves off the SESSION directory, so "ok" for one directory says nothing about another.
+    # `.sage/chat-work` is made lazily when a Thread first opens, so on a fresh workspace this is
+    # None at boot and the server's own cwd answers — sound, but only if it is written down.
+    asked = _chat_work_dir()
     try:
         agents = _resolved_agent_permissions()
         found = _unanswerable_permissions(agents)
+        rules = sum(len(a.get("permission") or []) for a in agents)
     except Exception as e:
         # "Could not ask" is not "OpenCode said ask". Taking the builder down because a query failed
         # would turn a slow OpenCode start into an outage, and the fault this guards against is
         # deterministic — the next boot that CAN ask will still find it.
         PREFLIGHT_PERMISSIONS = {"state": "unreachable", "error": f"{type(e).__name__}: {e}",
-                                 "unanswerable": []}
+                                 "unanswerable": [], "directory": asked}
         log.warning("preflight: could not check OpenCode's permissions — %s", e)
         return
-    if not agents:
-        # Zero agents examined is not a clean bill of health, and calling it one would be a guard
-        # that passes hardest exactly when it has learnt least. OpenCode answers `data: []` for a
-        # directory it does not recognise as a project, which is a wiring fault worth its own word.
-        PREFLIGHT_PERMISSIONS = {"state": "unreachable", "unanswerable": [],
-                                 "error": "OpenCode reported no agents, so nothing was checked."}
-        log.warning("preflight: OpenCode reported no agents — no permission was checked")
+    if not agents or not rules:
+        # Examining nothing is not a clean bill of health, and calling it one would be a guard that
+        # passes hardest exactly when it has learnt least. Two ways to get here: OpenCode answers
+        # `data: []` for a directory it does not take for a project, and a future rename of the
+        # `permission` field would leave every agent present carrying no rules at all — which is
+        # precisely the event this guard claims to survive.
+        why = "no agents" if not agents else f"no permission rules on {len(agents)} agents"
+        PREFLIGHT_PERMISSIONS = {"state": "unreachable", "unanswerable": [], "directory": asked,
+                                 "error": f"OpenCode reported {why}, so nothing was checked."}
+        log.warning("preflight: OpenCode reported %s — no permission was checked", why)
         return
     PREFLIGHT_PERMISSIONS = {"state": "unanswerable" if found else "ok", "error": None,
-                             "unanswerable": found}
+                             "unanswerable": found, "directory": asked}
     if not found:
-        log.info("preflight: every permission OpenCode resolved answers itself")
+        log.info("preflight: every permission OpenCode resolved answers itself (%d rules, %s)",
+                 rules, f"directory {asked}" if asked else "the server's own cwd")
         return
     for problem in found:
         # Named in full, because the cost of this ticket was finding out WHICH permission was
@@ -643,9 +649,12 @@ def _run_permission_preflight() -> None:
         log.error("preflight: %s resolves %s on %r to 'ask', which nothing headless can answer — "
                   "declare it in opencode.json's permission block",
                   problem["agent"], problem["permission"], problem["pattern"])
-    from .service import _CHAT_TOOL_QUIET_TIMEOUT_S
+    # The constant is imported at module scope, not here. A local import on this site is the one
+    # place in the file where an ImportError would cancel a FATAL action: it would escape into
+    # `_boot`'s `log.exception`, the thread would die, and uvicorn would go on serving having
+    # already found the unanswerable permission and written the verdict.
     log.error("preflight: refusing to start. An 'ask' has no answerer here, so every turn that "
-              "reaches one hangs for %ss and then reports a step that did not finish.",
+              "reaches one hangs for %gs and then reports a step that did not finish.",
               _CHAT_TOOL_QUIET_TIMEOUT_S)
     _stop_this_process()
 
