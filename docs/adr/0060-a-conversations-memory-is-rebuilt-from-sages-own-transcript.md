@@ -119,3 +119,38 @@ here.
 and an exact symptom match are all present; the receipt is not, and no longer exists. The codebase
 documents and defends against precisely this condition in `_recover_session` (`service.py:6646`),
 and #417 measures OpenCode boots as routine. That is strong and it is not a measurement.
+
+## Amendment, 2026-09-18: the seed is a second function, and a clear is a session drop
+
+Two things were wrong in the sections above. The decision is unchanged; the implementation note
+under *"The summary"* and an unstated hazard are corrected here.
+
+**`recall.seed` is not widened. `recall.reseed` is built beside it.** The note above said the guard
+*"needs a second key"*. It does not, because **`seed`'s guard has never executed in production**.
+The caller appends the turn's own `user` row (`service.py:10966`) before it reads the transcript
+back (`:11419`), so `seed`'s backward scan meets a `user` row first and returns `""` on every turn
+there has ever been. Widening it would have hung a live decision on a branch nothing runs, and
+would have made that branch fire for the first time — seeding a summary-scoped clear, a live change
+to the recall ladder (ADR-0022) that this ADR did not decide and has no business making as a side
+effect. That change is filed separately (#432). `reseed` answers its own question — *this session
+was minted a moment ago and holds nothing* — and shares only `chat_summary`.
+
+`_ensure_thread_session` (`service.py:9229`) therefore returns `(sid, minted)` rather than `sid`,
+which is the plumbing this ADR called *"the work"*. That part was right.
+
+**A clear is carried out by dropping the session, so the rebuild path fires on the very next turn
+by construction.** `clear_recall` calls `store.clear_session_id(thread_id)` (`service.py:9657`) and
+then appends the `CLEARED` row. The next turn finds no session, mints one, and is `minted=True` —
+so an unguarded `reseed` would answer *"forget this"* by handing the model a summary of exactly
+what it was asked to forget. The seam this ADR was written to repair and the mechanism a clear
+already used are the same mechanism, and nothing above noticed.
+
+The guard: `reseed` drops every row up to and including the newest `CLEARED` row scoped `EMPTY`,
+and carries only what was said after it. A **summary**-scoped clear is left whole on purpose —
+that scope's promise is that a short summary survives, and dropping it would break the rung rather
+than protect it. `reseed` also drops the turn's own trailing `user` row, without which the model is
+handed the question twice: once as the thing already said, once as the thing being asked.
+
+**What this amendment does not settle.** ADR-0022's `EMPTY` rung still prints its divider on a turn
+where the carried text is now empty, and #432 records that a summary-scoped clear promises a
+summary and sends none. Both are the recall ladder's, not this decision's.
