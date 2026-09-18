@@ -32,6 +32,12 @@ from .bindings import KIND_DATA_SOURCE, Binding
 SHORTLIST = 5
 
 _SPLIT = re.compile(r"[^a-z0-9]+")
+# Whether a dotted name is EXTENDED by what sits against it, rather than merely touched by it. The
+# two sides are not symmetrical and the sentence in #426 is why: `DWH.MARTS.MIXPANEL__EVENT.` ends a
+# sentence, so a trailing `.` is punctuation, while `RAW.DWH.MARTS.GONG__CALLS` is a longer path, so
+# a leading `.` is part of a name. On the right a `.` only extends when something follows it.
+_EXTENDS_LEFT = re.compile(r"[a-z0-9_$.\-]\Z")
+_EXTENDS_RIGHT = re.compile(r"\A(?:[a-z0-9_$\-]|\.[a-z0-9_$\-])")
 
 # Words a request is built out of rather than words that name data. Kept structural on purpose: a
 # longer list would drop "daily" and "revenue", which are exactly the words a table is named after.
@@ -221,6 +227,47 @@ def rank(prompt: str, source: Binding, tables: Iterable[Candidate]) -> Ranking:
     scored.sort(key=lambda p: (-p[0][0], -p[0][1], len(p[1].table), p[1].schema, p[1].table))
     return Ranking(tuple(c for _, c in scored),
                    sum(1 for (whole, part), _ in scored if whole or part))
+
+
+def named_candidate(prompt: str, candidates: Iterable[Candidate]) -> Candidate | None:
+    """The one table the request names outright, or None to raise the card (#426).
+
+    MATCHED AGAINST THE CANDIDATES, never parsed out of the sentence. A dotted name pulled from
+    prose would let a request scope a Binding to a table the store does not hold; matching the
+    other way round means a name that resolves to nothing still raises the card, which is the
+    honest outcome and the one the person can act on.
+
+    FULLY QUALIFIED ONLY. `DWH.MARTS.MIXPANEL__EVENT` carries every level the click records, so
+    there is nothing left to ask. A bare or half-qualified name is the case the position exists
+    FOR — `DWH.MARTS.GONG__CALLS` and `SANDBOX.PUBLIC.GONG__CALLS` are two different tables, as
+    `Candidate` says — so those keep the card. Widening this to resolve a unique bare name is a
+    real option and a separate decision; it is not made here.
+
+    EXACTLY ONE, or the card. Two tables named in one sentence is a question, not an answer, and
+    guessing which was meant is the thing the card exists to stop.
+
+    This reads no record and writes none. It answers "did they already say", and the caller decides
+    what that is worth — which keeps ADR-0038's split intact: looking is not choosing.
+    """
+    said = (prompt or "").casefold()
+    if not said:
+        return None
+    hits: list[Candidate] = []
+    for c in candidates:
+        if not (c.database and c.schema and c.table):
+            continue
+        name = f"{c.database}.{c.schema}.{c.table}".casefold()
+        start = said.find(name)
+        while start != -1:
+            end = start + len(name)
+            if (not _EXTENDS_LEFT.search(said[:start])
+                    and not _EXTENDS_RIGHT.match(said[end:])):
+                hits.append(c)
+                break
+            start = said.find(name, start + 1)
+        if len(hits) > 1:
+            return None
+    return hits[0] if len(hits) == 1 else None
 
 
 def asked_words(prompt: str, *names: str) -> list[str]:
