@@ -2232,9 +2232,62 @@ _CHAT_ARTIFACT_OR_DATA_ASK = re.compile(
 )
 
 
-def _plain_chat_answer_only(prompt: str) -> bool:
-    """True when Chat should answer in prose, without shell/write/sub-task tools."""
-    return _looks_like_question(prompt) and _CHAT_ARTIFACT_OR_DATA_ASK.search(prompt or "") is None
+# Runs of anything that is not alphanumeric, which is what separates the words inside a Data Source's
+# name. `[^0-9A-Za-z]+` and NOT `\W+`, and that is the whole lesson of #421: `_` is a word character,
+# so `\W` keeps it. A mask built on `\W` removes `Snowflake-Data-Warehouse` and leaves
+# `Snowflake_Data_Warehouse` — the defect rebuilt inside its own repair.
+_NAME_SEPARATOR = re.compile(r"[^0-9A-Za-z]+")
+
+
+def _ask_without_the_binding(prompt: str, context_names: Sequence[str]) -> str:
+    """The prompt with the bound context items' NAMES removed, for the data-ask scan to read.
+
+    A store's name is part of the BINDING, not part of the ask, and it must not be able to satisfy a
+    predicate about what the person asked FOR (#421). `Snowflake-Data-Warehouse` put `\\bdata\\b`
+    inside the sentence without anyone having asked for data, so one character of a customer's naming
+    convention decided whether the turn kept `bash`: the hyphenated spelling lost the read-only
+    arming and the underscored spelling did not.
+
+    Narrowing the alternation was the wrong repair. `data` is not special — `tables`, `rows`,
+    `columns` and `samples` are all in it and all plausible inside a store name — and dropping any of
+    them breaks the genuine ask the scan exists to catch.
+
+    Each name is matched however the person spelled it: the name is split on the separator above and
+    rejoined with a tolerant gap, so a store bound as `Snowflake-Data-Warehouse` is masked when the
+    prompt writes it with an underscore, a space, a dot, or nothing at all. The alphanumeric
+    lookarounds are the same correction as the separator class, pointed outwards — they stop a short
+    name from being chopped out of the middle of a longer word.
+
+    A name that is nothing but ONE of the scan's own nouns (a store called `Data`, or `Rows`) is left
+    alone. For that name the binding and the ask are the same word, so masking it would read "show me
+    the rows" as prose and take the shell off a genuine ask — this defect pointing the other way.
+    Longest pattern first, so a name that is a substring of another does not shred it.
+    """
+    patterns = []
+    for name in context_names:
+        parts = [p for p in _NAME_SEPARATOR.split(name or "") if p]
+        if not parts or (len(parts) == 1 and _CHAT_ARTIFACT_OR_DATA_ASK.fullmatch(parts[0])):
+            continue
+        patterns.append(r"(?<![0-9A-Za-z])"
+                        + r"[^0-9A-Za-z]*".join(re.escape(p) for p in parts)
+                        + r"(?![0-9A-Za-z])")
+    text = prompt or ""
+    for pattern in sorted(patterns, key=len, reverse=True):
+        text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+    return text
+
+
+def _plain_chat_answer_only(prompt: str, context_names: Sequence[str] = ()) -> bool:
+    """True when Chat should answer in prose, without shell/write/sub-task tools.
+
+    `context_names` are the names of the items bound to the Thread. They are masked out of the text
+    the data-ask scan reads, so the scan reads the ask and not the binding (#421). The question-shape
+    half still reads the prompt as typed: where the name sits in the sentence is a fact about the
+    sentence, and masking there would move a bare `<store name>?` turn onto the shell lane.
+    """
+    return (_looks_like_question(prompt)
+            and _CHAT_ARTIFACT_OR_DATA_ASK.search(
+                _ask_without_the_binding(prompt, context_names)) is None)
 
 
 # A question that asks for an INVESTIGATION rather than for one answer (#386, ADR-0056).
@@ -11083,10 +11136,14 @@ class Orchestrator:
             project.control.arm_chat_artifact()
             if intent.valid and intent.label == "data_artifact" and not investigating else None
         )
+        # The else branch scans the ask, not the binding: `items` is already bound above, and its
+        # names are masked out of the text the data-ask scan reads (#421). Without that, a store
+        # called `Snowflake-Data-Warehouse` satisfied `\bdata\b` from its own name and the identical
+        # question took a different tool lane than it did on `Snowflake_Data_Warehouse`.
         answer_only = (
             intent.label in {"plain_answer", "data_answer"}
             if intent.valid and intent.label != "other_chat"
-            else _plain_chat_answer_only(prompt)
+            else _plain_chat_answer_only(prompt, [str(i.get("name") or "") for i in items])
         ) and not investigating
         plain_answer_token = (
             project.control.arm_read_only("question") if answer_only else None
@@ -12977,8 +13034,10 @@ class Orchestrator:
           it is a TRADE, not a statement about which turns are bounded — do not read it as one. Two
           other paths are bounded and are offered nothing here: `plain_answer` arms
           `arm_read_only("question")` too, and when the classifier is unavailable or answers
-          `other_chat`, `answer_only` falls back to `_plain_chat_answer_only(prompt)`, which is true
-          of any question carrying none of `_CHAT_ARTIFACT_OR_DATA_ASK`'s nouns. So "dig into why
+          `other_chat`, `answer_only` falls back to `_plain_chat_answer_only`, which is true of any
+          question carrying none of `_CHAT_ARTIFACT_OR_DATA_ASK`'s nouns — in the ASK, with the bound
+          items' names masked out of the text first, so that a store called
+          `Snowflake-Data-Warehouse` no longer supplies the noun itself (#421). So "dig into why
           weekly active users fell" with the gateway down is armed read-only and draws no card.
           What the narrowing buys is most of a prose trigger's false positives for nothing — a
           classifier saying this is a data question is a second opinion the words alone are not —
