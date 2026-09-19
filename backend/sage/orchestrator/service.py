@@ -13024,6 +13024,15 @@ class Orchestrator:
                  if isinstance(r, dict) and r.get("kind") == KIND_DATA_SOURCE],
                 bindings,
             )
+        # And, where the sentence named none, the only one the app records (#445). It cannot race
+        # the `unbound` fallback below: that one arrives from `_source_offer`, which returns before
+        # drawing anything if the app records ANY Data Source, so a turn that has an `unbound` has
+        # no bindings for this to read. Ordered anyway, rather than left to that argument holding.
+        # `inferred` rides to the ranking below, which is the second test this answer owes.
+        inferred = False
+        if binding is None:
+            binding = table_search.sole_source(bindings)
+            inferred = binding is not None
         # Last, and only where the caller built one: the store the sentence named on a turn that
         # records no Binding at all (#206). The manifest cannot answer here — that is the whole
         # situation — so the search runs against a Binding that exists only for the length of it,
@@ -13138,6 +13147,22 @@ class Orchestrator:
         # has found, and the card is the answer.
         ranking = self._ranked_candidates(project, source, binding, prompt, found,
                                           session=project.session_id)
+        # The second test an inferred store owes (#445) — see the Chat gate for why `matched` is
+        # what asks it. A Binding outlives the turn that made it, so an app with a store and no
+        # table would meet this card on "make the header blue" every turn until one is chosen.
+        #
+        # IT TAKES THE CARD BACK, which the Chat gate has nothing to take back. The walk has already
+        # streamed frames by here and this is the only exit below them that is not about the store:
+        # names appearing and then vanishing with no account of why is the one thing streaming can
+        # do that silence could not. Message-less, like the Stop exit above and unlike the
+        # nothing-found one below — those are facts about the store, worth a sentence; this one is
+        # a fact about the request, and a sentence explaining that Sage went and looked would be
+        # noise on a turn that was never about the warehouse. The build then runs as it always did.
+        if inferred and ranking.matched == 0:
+            log.info("table gate (build): declined — %s is the only store bound and the request "
+                     "asks nothing it holds", binding.display_name)
+            yield {"type": "table-search-ended", "sourceId": binding.id}
+            return False
         # The same "already answered, so do not ask" as the Chat gate (#426), through the same door:
         # `confirm_table_candidate` proves the table is still there before recording, and a list
         # `_database_candidates` kept for the session needs that check MORE without a click than
@@ -13397,6 +13422,13 @@ class Orchestrator:
                     if b is not None]
         binding = table_search.named_source(prompt, self._chat_mentioned_sources(prompt, items),
                                             bindings)
+        # And, where the sentence named none, the only one there is (#445). `inferred` rides with it
+        # to the ranking below, which is the second test this answer owes and the named one does
+        # not: `sole_source` knows a store is there and nothing about whether the turn is about it.
+        inferred = False
+        if binding is None:
+            binding = table_search.sole_source(bindings)
+            inferred = binding is not None
         if binding is None:
             # Named for the reason the Build gate's is (#204), and it matters more here: this gate
             # now runs before the handoff short-circuit, so this line is the difference between "the
@@ -13435,6 +13467,31 @@ class Orchestrator:
         # path used to hand the card and loses nothing.
         ranking = self._ranked_candidates(project, source, binding, prompt, found,
                                           session=store.read_session_id(thread_id))
+        # THE SECOND TEST an inferred store owes (#445), and the first place it can be asked. A
+        # sentence that named the store said it was about the store; a sentence that named nothing
+        # said only that a store is attached, and a Thread keeps its chip across every turn of its
+        # life — so without this, "make the header blue" draws a table picker for as long as no
+        # table is chosen. It is the same gate one level down rather than a new one: the request
+        # has to name something the store actually holds.
+        #
+        # `matched` RATHER THAN A WORD LIST, because the store's own catalog is the only thing that
+        # knows. "bar graph of gong calls per day" matches `GONG__CALLS` and three of its
+        # neighbours; "tell me what you can see" matches nothing in the same warehouse. A list of
+        # data-sounding words would have to be written without seeing either, and `_STORE_WORDS`
+        # above is kept short for exactly that reason — it would not have matched the measured
+        # prompt, which names no store word at all.
+        #
+        # `table_rank` carries `matched` through untouched and says so: it means the NAMES answered,
+        # which is a fact about the walk and not about the model that reordered it. So this reads
+        # the same whether the ranker ran or failed closed.
+        #
+        # Named stores keep today's behaviour, with a card that opens on the full list where
+        # nothing matched (see `_table_candidates_events`) — a person who said "from Snowflake"
+        # asked, and a bad ranking must cost them a scroll rather than a fall-through.
+        if inferred and ranking.matched == 0:
+            log.info("table gate (chat): declined — %s is the only store bound and the request "
+                     "asks nothing it holds", binding.display_name)
+            return None
         # Already answered, so do not ask (#426). `named_source` tests the BINDING's recorded table,
         # so a fully-qualified name in the sentence left it exactly as unscoped as no name at all,
         # and the card asked a question the person had already answered — at the cost of the whole

@@ -551,3 +551,98 @@ def test_a_data_source_holding_no_tables_is_not_offered_as_an_empty_card(
 
     assert "table-candidates" not in body
     assert built == [1]
+
+
+# ---- the store nobody had to name (#445) ----------------------------------------------------
+
+# `PROMPT` without the two words that name the store. `_handles("Snowflake-Data-Warehouse")` is
+# `{"snowflake"}` — `_GENERIC_SOURCE` strips "data" and "warehouse" — so this reaches the Binding
+# by nothing but being the only one there.
+UNNAMED = "build me a dashboard of daily gong calls"
+
+
+def _frames(text: str) -> list[dict]:
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+
+
+def test_the_only_data_source_bound_is_the_one_the_request_means(tmp_path: Path, monkeypatch):
+    """The same card, for a request that names the subject and not the store (#445).
+
+    One Data Source on the app and no table chosen is not an ambiguity — it is a question with one
+    possible answer, which the creator already gave by binding it. The turn that asked them to
+    repeat its name in prose spent the whole first data turn on it.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    asked = []
+    orch._build_stream = lambda *a, **k: asked.append(1) or iter([])  # type: ignore[method-assign]
+    _bind(client)
+
+    card = _card(client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text)
+
+    assert card["sourceId"] == "ds-dwh"
+    assert card["matched"] > 0
+    assert asked == [], "the assistant was asked to build against a table nobody had chosen"
+
+
+def test_a_second_bound_store_makes_it_a_question_again(tmp_path: Path, monkeypatch):
+    """Two unscoped stores is a real ambiguity, and #445 leaves it alone — with its control.
+
+    THE CONTROL IS THE SAME REQUEST against one binding, in the test above. Without a pair, "no
+    card" here proves nothing: on the code before #445 this sentence drew no card with one store
+    bound either, because nothing in it reached the name. The pair says the decline came from the
+    count.
+
+    `billing-oracle` is reached by "billing" and "oracle" and this request says neither, so the
+    second store is genuinely unnamed rather than quietly losing a prose match.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    _bind(client)
+    client.post("/api/bindings", json={"kind": KIND_DATA_SOURCE, "id": "ds-oracle"})
+
+    body = client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text
+
+    assert [f for f in _frames(body) if f.get("type") == "table-candidates"] == []
+    # And nothing was read to decide it: two stores is settled off the manifest, so this is still
+    # the free decline the gate's position above the build depends on.
+    assert [f for f in _frames(body) if f.get("type") == "table-search"] == []
+
+
+def test_the_only_store_is_not_asked_about_a_request_that_asks_nothing_it_holds(
+        tmp_path: Path, monkeypatch):
+    """A Binding outlives the turn that made it, so inferring it must not capture every later turn.
+
+    Without this, an app with a store and no table chosen meets the picker on "make the header
+    blue" for as long as nobody picks one — the gate answering a question that was never asked.
+    `ranking.matched` is what asks it, against the store's own catalog rather than a word list.
+
+    THE CONTROL IS THE SAME APP AND THE SAME STORE, only the sentence changes, because "no card"
+    is also what a gate that never ran looks like.
+
+    THE SEARCH IS TAKEN BACK rather than left on screen. The walk streams before `matched` can be
+    known, so the person sees Sage reading the warehouse; frames that appear and then vanish with
+    no account of why are the one thing streaming can do that silence could not.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    built = []
+    orch._build_stream = lambda *a, **k: built.append(1) or iter([])  # type: ignore[method-assign]
+    _bind(client)
+
+    unrelated = _frames(client.post("/api/project/build/stream",
+                                    json={"prompt": "make the header blue"}).text)
+    asked = _frames(client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text)
+
+    assert [f for f in unrelated if f.get("type") == "table-candidates"] == []
+    assert [f for f in asked if f.get("type") == "table-candidates"] != []
+    ended = [f for f in unrelated if f.get("type") == "table-search-ended"]
+    assert len(ended) == 1 and ended[0]["sourceId"] == "ds-dwh"
+    # Message-less, because this one is a fact about the request and not about the store. A
+    # sentence saying Sage went and looked would be noise on a turn that was never about data.
+    assert "message" not in ended[0]
+    # And the build it interrupted nothing of still ran.
+    assert built == [1]

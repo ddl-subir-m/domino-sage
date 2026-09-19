@@ -314,6 +314,12 @@ def test_the_pick_is_taken_as_the_answer_and_not_checked_against_the_prose(
     client = _client(orch, monkeypatch)
     prompt = "a dashboard of daily gong calls from the warehouse"
     client.post("/api/bindings", json={"kind": KIND_DATA_SOURCE, "id": "ds-test"})
+    # TWO, since #445, and the second one is what keeps the control below honest. A sole unscoped
+    # store is now inferred without being named — which is right, and would make "no card" here
+    # mean "there was only one" rather than "the prose reached nothing". `billing-oracle` is
+    # reached by "billing" and "oracle", neither of which this request says, so the pair is a real
+    # ambiguity and the gate has nothing to infer from.
+    client.post("/api/bindings", json={"kind": KIND_DATA_SOURCE, "id": "ds-oracle"})
 
     replay = client.post("/api/project/build/stream",
                          json={"prompt": prompt, "chosenSource": "ds-test"}).text
