@@ -1762,12 +1762,42 @@ window.SW = window.SW || {};
     return carriers.length > 0 && carriers.every((c) => keys.has(c && c.key));
   };
 
+  // One card per TURN, holding the operations that turn ran (#447). Keyed on `operation_id` this
+  // drew a card per operation, and a turn that reads a table, computes on it and then analyses
+  // text routinely runs three — three collapsed dropdowns saying the same thing under one answer.
+  // `DataUse.record` already stamps `turn_id` on every event before it persists it, so the
+  // grouping key arrives with the data and needs no new field.
+  //
+  // Falling back to `operation_id` keeps a turn-less event on its own card rather than pooling
+  // every such event into one: absent is not a value, so events that share only the ABSENCE of a
+  // turn must not be drawn as though they shared a turn.
+  //
+  // The population is `service.py`'s `self._data_use_turns.get(thread_id, "")` — three sites
+  // default to `""`, so an operation recorded before a turn was minted for its thread persists
+  // with an empty `turn_id`. NOT the restart replay: `DataUse.restore` deepcopies the persisted
+  // event, and `record` stamps `turn_id` before it persists, so a restored event does carry one.
+  //
+  // Dedupe on `operation_id` INSIDE the group, and do it keeping the latest copy — without that
+  // this card multiplies by model call instead of by read. `DataUse.observe`'s `save()` re-persists
+  // the whole event every time a gateway request settles, and today's find-and-replace on
+  // `operation_id` is the only thing collapsing those re-persists.
   function putDataUsed(messages, ensureAssistant, events) {
     for (const event of events || []) {
+      const turnId = event.turn_id || event.operation_id;
       const existing = messages.flatMap((m) => m.blocks || [])
-        .find((b) => b.type === 'data_used' && b.event.operation_id === event.operation_id);
-      if (existing) existing.event = event;
-      else ensureAssistant().blocks.push({ type: 'data_used', event });
+        .find((b) => b.type === 'data_used' && b.turnId === turnId);
+      if (!existing) {
+        ensureAssistant().blocks.push({ type: 'data_used', turnId, events: [event] });
+        continue;
+      }
+      // Replace IN PLACE, never append: the card keeps first-sighting order, and the later copy
+      // wins on content only. Order on the last row instead and a read from turn 1 that a turn-6
+      // model call happened to touch sorts as the newest thing in the Thread. Latest-wins is the
+      // direction that matters, because the re-persists are how `requests` accumulates — keep the
+      // first copy and the gateway evidence is empty.
+      const at = existing.events.findIndex((e) => e.operation_id === event.operation_id);
+      if (at < 0) existing.events.push(event);
+      else existing.events[at] = event;
     }
   }
 

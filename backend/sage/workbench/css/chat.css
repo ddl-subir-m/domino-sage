@@ -438,6 +438,15 @@
 .sw-block-page { width: 100%; height: 420px; border: 1px solid var(--gray-300); border-radius: var(--radius-lg);
                  background: #fff; }
 
+/* One "Data used" fold holds every operation the turn ran (#447), so the sections inside it need
+   a line between them — without one, the second operation's source reads as another paragraph
+   about the first. The rule is on siblings only: a turn that ran one operation gets no divider. */
+.sw-data-used-op + .sw-data-used-op {
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--gray-300);
+}
+
 /* Choice card and resource result ---------------------------------------- */
 
 .sw-choice {

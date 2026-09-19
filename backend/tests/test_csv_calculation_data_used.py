@@ -474,8 +474,8 @@ def test_chat_live_result_keeps_the_data_used_detail(tmp_path):
     blocks = json.loads(output.stdout)["final"]
     details = [b for b in blocks if b["type"] == "data_used"]
     assert len(details) == 1
-    assert details[0]["event"]["coverage"]["processed"] == 12
-    assert details[0]["event"]["source"] == "sales.csv"
+    assert details[0]["events"][0]["coverage"]["processed"] == 12
+    assert details[0]["events"][0]["source"] == "sales.csv"
 
 
 def test_artifact_directory_cannot_point_outside_the_project(tmp_path):
