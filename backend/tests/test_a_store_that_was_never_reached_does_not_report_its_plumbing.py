@@ -23,6 +23,7 @@ import types
 
 import pytest
 
+from sage.liveread.mcp import _failed_text
 from sage.resources.provider import (
     DataSource,
     DominoResourceProvider,
@@ -181,3 +182,106 @@ def test_an_address_in_an_unclassified_message_is_still_scrubbed():
 def test_the_secret_rule_still_applies():
     said = readable_error(RuntimeError("auth failed for " + "a" * 64))
     assert "a" * 64 not in said and "[redacted]" in said
+
+
+# The Postgres family arrives inside Domino's own `Type:/Subtype:/Message:` envelope, and Snowflake
+# does not. Both captured live on 2026-09-17 by `spikes/domino-probes/store_rejection_status_probe.py`
+# and re-measured in process before this fix. Through `_wire` for the reason that helper's docstring
+# gives: a fixture the producer cannot emit is not a fixture.
+PG_MISSING_RELATION = _wire(
+    "invalid argument",
+    'Type: internalError, Subtype: . Message: ERROR: relation "public.gong_calls" does not exist '
+    "(SQLSTATE 42P01)")
+PG_MISSING_COLUMN = _wire(
+    "invalid argument",
+    'Type: internalError, Subtype: . Message: ERROR: column "custmr_id" does not exist '
+    "(SQLSTATE 42703)")
+SNOWFLAKE_OBJECTION = _wire(
+    "invalid argument",
+    "002003 (42S02): SQL compilation error: Object 'DWH.MARTS.NOPE' does not exist or not "
+    "authorized.")
+
+
+@pytest.mark.parametrize("message, own_words", [
+    (PG_MISSING_RELATION, 'ERROR: relation "public.gong_calls" does not exist (SQLSTATE 42P01)'),
+    (PG_MISSING_COLUMN, 'ERROR: column "custmr_id" does not exist (SQLSTATE 42703)'),
+])
+def test_a_postgres_objection_reaches_the_person_in_the_stores_own_words(monkeypatch, message,
+                                                                        own_words):
+    """Acceptance criterion 1. A mistyped table name is the person's own, and repairable by them.
+
+    Before #406 they read `Type: internalError, Subtype: . Message: ERROR: relation ... does not
+    exist` — Domino's envelope calling a typo an internal error, with an empty subtype rendered as
+    a bare full stop, so the envelope was not even well-formed prose.
+    """
+    said = _read_raising(monkeypatch, RuntimeError(message))
+
+    assert own_words in said
+    for envelope in ("Type:", "Subtype:", "Message:", "internalError"):
+        assert envelope not in said, f"{envelope!r} is Domino's envelope, not the store's words"
+
+
+def test_the_model_reads_the_stores_own_words_too(monkeypatch):
+    """Acceptance criterion 2, and the half #399 did not cover.
+
+    `mcp.handle` hands the model `_failed_text(str(e))` on this exact exception, immediately before
+    telling it to go and answer another way. The word `internalError` there steers both the retry
+    and the sentence the model then writes to the person — the #398 shape, Sage supplying the
+    vocabulary and the model faithfully repeating it. Asserted on `_failed_text`'s output rather
+    than on the provider's exception, because that composition is what the model actually reads.
+    """
+    text = _failed_text(_read_raising(monkeypatch, RuntimeError(PG_MISSING_RELATION)))
+
+    assert 'ERROR: relation "public.gong_calls" does not exist (SQLSTATE 42P01)' in text
+    assert "Nothing was put on the person's screen." in text, "the standing warning survives"
+    for envelope in ("Type:", "Subtype:", "Message:", "internalError"):
+        assert envelope not in text, f"the model is still handed {envelope!r}"
+
+
+def test_a_snowflake_objection_is_unchanged(monkeypatch):
+    """Acceptance criterion 3. Snowflake has no envelope — its objection is already its own words.
+
+    Character for character, because the plant this guards against is a strip widened to drop
+    everything up to the first `.`, which would eat `002003 (42S02)` and leave the person an error
+    with no code in it.
+    """
+    said = _read_raising(monkeypatch, RuntimeError(SNOWFLAKE_OBJECTION))
+
+    assert said == ("Snowflake-Data-Warehouse did not answer: 002003 (42S02): SQL compilation "
+                    "error: Object 'DWH.MARTS.NOPE' does not exist or not authorized.")
+
+
+@pytest.mark.parametrize("message, kind", [
+    (_wire("invalid argument", "Type: configObjectError, Subtype: invalidHostOrPort. "),
+     "setup_fault"),
+    (PG_MISSING_RELATION, "answered"),
+])
+def test_unwrapping_for_display_does_not_move_the_classification(message, kind):
+    """Acceptance criterion 4. The strip runs after `failure_kind`, never before it.
+
+    Both populations arrive in the SAME envelope and are told apart by the Type value (#399), so a
+    strip applied first would hand the predicate a payload with nothing left to read. Category 2
+    carries no `. Message:` part, which is also why keying on `Message:` rather than on a list of
+    Type values discriminates at all.
+    """
+    assert failure_kind(RuntimeError(message))[0] == kind
+
+
+def test_the_envelope_still_reaches_the_classifier_intact():
+    """The arming half of criterion 4, and it took a plant that stayed green to find it.
+
+    Asserting the two verdicts above does NOT catch a strip moved into `failure_kind`: on every
+    payload measured so far the verdict is the same either way, because the one category-2 string
+    we have carries no `. Message:` part for the strip to bite on. So the plant "strip before
+    classification" ran green against the verdicts alone. What actually breaks under that move is
+    the INPUT the predicate reads — `_SETUP_FAULT` matches `configobjecterror`, which lives in the
+    Type value, so the day a config fault arrives with a `. Message:` part a strip placed upstream
+    would delete the only word telling it from a store objection and it would fall through to
+    `answered`. That string has not been measured and is not invented here (#399): the check is on
+    the payload `failure_kind` hands back, which is measured and which pins the placement directly.
+    """
+    kind, said = failure_kind(RuntimeError(PG_MISSING_RELATION))
+
+    assert kind == "answered"
+    assert said.startswith("Type: internalError, Subtype: . Message: "), (
+        "the envelope must survive to the predicate — it is unwrapped at the point of display")

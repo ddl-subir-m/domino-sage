@@ -926,6 +926,33 @@ _ADDRESS_SHAPED = re.compile(
     r"\b(?:ipv[46]|dns|unix|tcp):[^\s,;]+|\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b"
 )
 
+# Domino's own envelope around a store's words, for the Postgres family. Live, a mistyped table
+# name came back as `Type: internalError, Subtype: . Message: ERROR: relation "public.gong_calls"
+# does not exist (SQLSTATE 42P01)` — so the person and the model were both handed the word
+# `internalError` for the person's own typo, and an empty subtype rendered as a bare full stop
+# (#406). Snowflake has no envelope and arrives as its own words already, so this is that family
+# only and the pattern is anchored to prove it.
+#
+# Keyed on the presence of `. Message:`, NOT on the Type value, because the Type value is the one
+# thing that varies and a list of them would be short the day Domino adds one. That is also the
+# residual: a config fault that one day arrives WITH a `. Message:` part would be unwrapped too.
+# It is display only — `failure_kind` classifies on the unstripped text and never sees this, which
+# is why the strip happens after it and not before. Category 2 today carries no `. Message:` part
+# (`Type: configObjectError, Subtype: invalidHostOrPort. `) and so is untouched.
+_DOMINO_ENVELOPE = re.compile(r"^Type:\s*[^,]*,\s*Subtype:\s*[^.]*\.\s*Message:\s*", re.IGNORECASE)
+
+
+def _unwrapped(said: str) -> str:
+    """A store's words with Domino's `Type:/Subtype:/Message:` envelope taken off (#406).
+
+    The mirror of `_FLIGHT_WRAPPER` one layer in: both are Domino's prose about the trip, neither
+    is the store's, and neither belongs in front of somebody who asked to see a row. The Flight
+    wrapper comes off in `failure_kind` because predicates read the payload; this one comes off at
+    the point of DISPLAY, because classification is keyed on the envelope's Type value and must not
+    move (#399's `invalid argument` carries both a Domino config fault and a real store objection).
+    """
+    return _DOMINO_ENVELOPE.sub("", said, count=1)
+
 
 # Which levels a statement interpolates, by the token it spells them with. `{schema_lit}` is the
 # same level as `{schema}` — an unquoted literal inside a WHERE rather than a quoted identifier —
@@ -2281,10 +2308,14 @@ class DominoResourceProvider:
                 "{platformName}.",
                 name=source.name, reason=_scrubbed(said),
             ))
-        # The store's own words, scrubbed. Naming the source matters because the creator is
-        # looking at a list of them, and the connector's own error is the only signal that
-        # separates "Sage sent the wrong SQL for this connector" from "this schema is empty".
-        return ResourceUnavailable(f"{source.name} did not answer: {_scrubbed(said)}")
+        # The store's own words, unwrapped and scrubbed. Naming the source matters because the
+        # creator is looking at a list of them, and the connector's own error is the only signal
+        # that separates "Sage sent the wrong SQL for this connector" from "this schema is empty".
+        # Unwrapped AFTER the classification above, never before it: `failure_kind` tells a Domino
+        # config fault from a store objection by the envelope's Type value, so stripping first
+        # would move criterion 4. This string is also what `liveread.mcp._failed_text` hands the
+        # model verbatim, which is the half that steers what it then says to the person (#406).
+        return ResourceUnavailable(f"{source.name} did not answer: {_scrubbed(_unwrapped(said))}")
 
     def run_statement(self, source: DataSource, sql: str, *, limit: int,
                       timeout_s: float = STATEMENT_TIMEOUT_S) -> StatementRows:
