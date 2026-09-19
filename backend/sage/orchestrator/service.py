@@ -3844,28 +3844,38 @@ def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool, arch: b
     return mode is Mode.ASK or (mode in (Mode.AUTO, Mode.IMPLEMENT) and is_question)
 
 
-def _revert_scan_owed(*, answer_only: bool, any_tool_ran: bool) -> bool:
+def _revert_scan_owed(*, any_tool_ran: bool) -> bool:
     """Whether a Chat turn's end must re-read the workspace to undo writes it was not allowed.
 
-    Two independent reasons not to, and they are arguments rather than one flag on purpose (#287:
-    widening a gate breaks its neighbour).
+    One condition, and it is #418's: no tool ran, so nothing was written and the `after` read has
+    nothing to find. It is a direct observation of this turn, taken from two witnesses — the
+    `tool_run` event stream and the transcript's tool parts — because either can be the only one
+    that sees a call.
 
-    `answer_only` is #419, decided at arming. The claim is NOT that such a turn cannot write —
-    that premise was tested and is false, because `READ_ONLY_DENIED` is a denylist and the
-    `live_read_*` tools survive it deliberately (#402, ADR-0058). The claim is narrower and is
-    exactly what this scan covers: the turn holds nothing that can write OUTSIDE the allowlist.
-    The write tools and the shell are stripped, and a Live read writes only into
-    `examples/<threadId>/`, which `chat_path_allowed` permits and this scan would skip anyway.
+    It cannot help the BEFORE snapshot. Learning it lazily on the first `tool_run` is the race #418
+    examined and rejected: the event is seen a poll later (p50 1000ms) and a `bash` step can write
+    inside that window.
 
-    `any_tool_ran` is #418, decided only at the turn's end by observation. It says nothing was
-    written at all. It cannot help the before-snapshot: learning it lazily on the first `tool_run`
-    is the race #418 examined and rejected, since the event is seen a poll later (p50 1000ms) and a
-    `bash` step can write inside that window.
+    **#419's condition is deliberately not here.** It proposed skipping this scan whenever the turn
+    was armed `arm_read_only("question")`, on the ground that such a turn cannot write. That is an
+    inference from an arming enforced in another process, over `READ_ONLY_DENIED`, which is a
+    DENYLIST — so every tool it does not name is allowed by default and nobody maintains the
+    property. It already leaks: `live_read_*` survives it on purpose (#402, ADR-0058), which is how
+    #419's before-snapshot skip lost a card. A future MCP tool is allowed the same way and nothing
+    would flag it.
 
-    Named rather than inlined because it is the whole of both tickets and a comment is not a check:
-    a predicate can be driven through all four combinations, and the call site can be pinned to it.
+    This scan is a safety net for writes Sage did not sanction, and it is the last one — the turn's
+    `finally` commits and pushes the tree whatever happens here, so a scan that does not run is not
+    deferred, it is writes committed into the Project repo. `test_a_looping_chat_session_that_will
+    _not_stop_is_still_cleaned_up_after` pins it on a wedged session for exactly that reason, and
+    it went red when #419's condition was wired in. `any_tool_ran` is evidence about this turn;
+    `answer_only` was an assumption about a boundary elsewhere, and only one of those is safe to
+    skip a safety net on.
+
+    Named rather than inlined because a comment is not a check: a predicate can be driven through
+    both cases, and the call site can be pinned to it.
     """
-    return any_tool_ran and not answer_only
+    return any_tool_ran
 
 
 # A step that opens "I will …" — right after the list marker, or after the label's em dash. Weak
@@ -11668,21 +11678,19 @@ class Orchestrator:
             # bare token under a half-finished answer.
             body, asked_for_the_other_lane = _take_needs_more_than_sql_marker(body)
             with timing.span("after.artifacts"):
-                # The end-of-turn scan is the only thing skipped here, and only when this turn
-                # cannot have made a write it would undo. Two independent reasons, kept as separate
-                # arguments rather than one flag (#287: widening a gate breaks its neighbour) —
-                # #419 is decided at arming, #418 only now, by observation.
+                # The end-of-turn scan is the only thing skipped here, and only when no tool ran at
+                # all (#418) — a turn that ran nothing wrote nothing, so this read finds nothing.
+                # Everything below still runs on every turn.
                 #
-                # Everything BELOW still runs on every turn, and #419's before-snapshot skip was
-                # withdrawn for the same reason: an `answer_only` turn is not a turn that cannot
-                # write. `READ_ONLY_DENIED` is a DENYLIST, so a tool it does not name survives —
-                # and `live_read_table`/`live_read_query`/`live_read_files` are deliberately not
-                # named (#402, ADR-0058). They write `examples/<threadId>/*.table.json` through
-                # `liveread.result.record`, and `new_artifact_paths` below is the only thing that
-                # turns such a file into a card. Skipping the baseline lost the card for every
-                # `data_answer` turn that read live data: measured against main, the file reached
-                # disk and `read_artifacts` came back empty.
-                if _revert_scan_owed(answer_only=answer_only, any_tool_ran=any_tool_ran):
+                # Both of #419's skips were withdrawn, and for one reason: an `answer_only` turn is
+                # not a turn that cannot write. `READ_ONLY_DENIED` is a DENYLIST, so a tool it does
+                # not name survives, and `live_read_*` is deliberately not named (#402, ADR-0058).
+                # Those tools write `examples/<threadId>/*.table.json` through
+                # `liveread.result.record`; `new_artifact_paths` below is the only thing that turns
+                # such a file into a card, and it needs the baseline to tell it from an old file.
+                # Skipping the baseline lost the card for every `data_answer` turn that read live
+                # data — measured against main: the file reached disk, `read_artifacts` was empty.
+                if _revert_scan_owed(any_tool_ran=any_tool_ran):
                     revert_denied_writes(project.record.path, thread_id, tables.before)
                 invalid = tables.check(body)
                 tables.diagnose(invalid, outcome)

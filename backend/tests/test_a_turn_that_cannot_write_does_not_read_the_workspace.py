@@ -1,26 +1,29 @@
 """A Chat turn re-read the whole workspace's bytes at its end to undo writes it was not allowed to
-make. Two kinds of turn can have made no such write, and both were reading anyway (#418, #419).
+make, on every turn including ones that ran nothing at all (#418, #419).
 
-#419 is the turn armed `arm_read_only("question")`. The claim is NOT that it cannot write — that
-premise is false and is tested below. `READ_ONLY_DENIED` is a DENYLIST, so a tool it does not name
-survives, and `live_read_table`/`live_read_query`/`live_read_files` are deliberately not named
-(#402, ADR-0058). The claim is the narrower one this scan actually covers: the turn holds nothing
-that can write OUTSIDE the allowlist. Write tools and the shell are stripped, and a Live read
-writes only into `examples/<threadId>/`, which `chat_path_allowed` permits and the scan skips.
-
-#418 is the turn where no tool ran at all. Known only at the turn's end, so it can skip this scan
-and nothing else: learning it lazily on the first `tool_run` is a race, because the event is seen a
+**What ships: #418.** A turn where no tool ran wrote no file, so that read finds nothing. It is a
+direct observation of this turn, from two witnesses — the `tool_run` event stream and the
+transcript's tool parts — because either can be the only one that sees a call. It cannot help the
+BEFORE snapshot: learning it lazily on the first `tool_run` is a race, since the event is seen a
 poll later (p50 1000ms) and a `bash` step can write inside that window.
 
-The two are separate arguments to `_revert_scan_owed`; collapsing them widens one into the other
-(#287).
+**What does not ship: both of #419's skips.** #419 rests on "an `answer_only` turn provably holds
+no tool that can write". That premise is false, and it is false in a way that matters twice.
+`READ_ONLY_DENIED` is a DENYLIST, so every tool it does not name is allowed by default, and
+`live_read_table`/`live_read_query`/`live_read_files` are deliberately not named (#402, ADR-0058).
+They write `examples/<threadId>/*.table.json`.
 
-**What is NOT skipped, and why.** #419 also proposed skipping the BEFORE snapshot. That was
-withdrawn after it was measured, not after it was argued: `new_artifact_paths` needs the baseline
-to tell a new file from an old one, and it is the only thing that turns a Live read's
-`.table.json` into a card. Without it a `data_answer` turn wrote the table, committed it, and drew
-nothing — the file on disk and `read_artifacts` empty. That regression has its own test here so the
-next attempt at #419 meets it rather than shipping it.
+- The BEFORE snapshot skip lost a card. `new_artifact_paths` needs the baseline to tell a new file
+  from an old one and is the only thing that makes such a file a card. Measured against main: the
+  table reached disk both ways, `read_artifacts` returned the card on main and nothing with the
+  skip. That has its own test here.
+- The END-of-turn skip reddened `test_a_looping_chat_session_that_will_not_stop_is_still_cleaned
+  _up_after`, which pins the scan on a wedged session because the turn's `finally` commits the tree
+  either way — a scan that does not run is writes committed, not a scan deferred.
+
+Both failures are the same shape: an inference about a boundary enforced in another process, over
+a list nobody maintains as exhaustive, used to skip a safety net. `any_tool_ran` is evidence about
+this turn instead, which is why it is the only condition left.
 """
 from __future__ import annotations
 
@@ -45,17 +48,32 @@ _THREAD = "t_write"
 # --------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
-    "answer_only, any_tool_ran, owed, why",
+    "any_tool_ran, owed, why",
     [
-        (False, True, True, "an ordinary turn that ran a tool owes the scan"),
-        (False, False, False, "#418: no tool ran, so nothing was written"),
-        (True, True, False, "#419: nothing it holds can write outside the allowlist"),
-        (True, False, False, "both reasons at once is still not a reason to scan"),
+        (True, True, "a turn that ran a tool owes the scan"),
+        (False, False, "#418: no tool ran, so nothing was written"),
     ],
 )
-def test_the_scan_is_owed_only_by_a_turn_that_could_and_did_write(answer_only, any_tool_ran,
-                                                                 owed, why):
-    assert _revert_scan_owed(answer_only=answer_only, any_tool_ran=any_tool_ran) is owed, why
+def test_the_scan_is_owed_only_by_a_turn_that_ran_something(any_tool_ran, owed, why):
+    assert _revert_scan_owed(any_tool_ran=any_tool_ran) is owed, why
+
+
+def test_being_armed_read_only_is_not_a_reason_to_skip_the_scan():
+    """#419's condition, deliberately absent. Wiring it in reddened
+    `test_a_looping_chat_session_that_will_not_stop_is_still_cleaned_up_after`, which pins the scan
+    on a wedged session because the turn's `finally` commits the tree either way — a scan that does
+    not run is writes committed, not a scan deferred.
+
+    The premise behind it is an inference about a boundary in another process, over a DENYLIST that
+    already leaks (`live_read_*`, #402). `any_tool_ran` is evidence about this turn. Only one of
+    those is safe to skip a safety net on, so the predicate takes one argument and this test is
+    what says the other is not coming back quietly."""
+    import inspect
+
+    params = set(inspect.signature(_revert_scan_owed).parameters)
+    assert params == {"any_tool_ran"}, (
+        f"_revert_scan_owed grew a condition: {params}. If that is `answer_only`, read the wedged "
+        "session test before going further.")
 
 
 def test_the_call_site_reverts_only_under_the_gate():
@@ -136,10 +154,11 @@ def _counted(monkeypatch):
     return counts
 
 
-def test_an_answer_only_turn_takes_its_baseline_and_skips_the_scan(tmp_path, monkeypatch):
-    """#419, end to end, and the line the withdrawal drew. The scan goes; the baseline stays,
-    because a Live read on this same lane writes a table that only the baseline can turn into a
-    card."""
+def test_a_read_only_turn_still_takes_its_baseline(tmp_path, monkeypatch):
+    """The line the withdrawal drew, on the lane #419 was about. This turn is armed
+    `arm_read_only("question")` and still snapshots, because a Live read on this same lane writes a
+    table that only the baseline can turn into a card. It skips the scan for #418's reason and not
+    #419's — nothing ran."""
     counts = _counted(monkeypatch)
     orch, _ = _orch(tmp_path, [Turn(text="Plain answer.")],
                     gateway=IntentGateway({"label": "plain_answer", "confidence": 0.95}))
