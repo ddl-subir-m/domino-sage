@@ -84,11 +84,23 @@ console.log(JSON.stringify({ said }));
 # a green that proves the tool never read the reply at all.
 _MCP_REPLY = json.dumps({"result": {"content": [{"text": "ANSWERED"}]}})
 
+# `timed_out` and `unreachable` were ONE parameter until #413, and the two conditions had drifted
+# apart underneath it. A bound is a second way out of the same catch, and it is not the same event:
+# unreachable means the route never took the request, while a bound that fired means it did and is
+# still working — aborting the fetch does not cancel the Python handler. A tool whose two arms need
+# to say different things cannot be checked by one string, and while they shared one, the delegated
+# tool told the model "Nothing was asked" over a call that was asked and still running.
+#
+# Where a tool's two entries repeat the same string, that is a claim and not a shortcut. Live read's
+# sentence is about the SCREEN — "Nothing was put on the person's screen" is true whether the route
+# was reached or not — so one sentence is right for both arms there, and #413's acceptance criteria
+# say so explicitly. Spelling it twice is what makes the delegated tool's asymmetry visible.
 _TOOLS = [
     pytest.param(
         "sage/delegated/tools/delegated_model_call.ts", "default",
         "SAGE_DELEGATED_CALL_TIMEOUT_MS",
         {"token": "t", "alias": "opus", "prompt": "Classify these rows"},
+        "The request was sent and may still be running",
         "Nothing was asked and no answer came back.",
         _MCP_REPLY, "ANSWERED",
         id="delegated_model_call"),
@@ -97,12 +109,14 @@ _TOOLS = [
         "SAGE_LIVE_READ_TIMEOUT_MS",
         {"token": "t", "source": "DWH", "table": "SALES"},
         "Nothing was put on the person's screen.",
+        "Nothing was put on the person's screen.",
         _MCP_REPLY, "ANSWERED",
         id="live_read_table"),
     pytest.param(
         "sage/liveread/tools/live_read.ts", "files",
         "SAGE_LIVE_READ_TIMEOUT_MS",
         {"token": "t", "dataset": "transactions"},
+        "Nothing was put on the person's screen.",
         "Nothing was put on the person's screen.",
         _MCP_REPLY, "ANSWERED",
         id="live_read_files"),
@@ -116,6 +130,7 @@ _TOOLS = [
         "SAGE_LIVE_READ_TIMEOUT_MS",
         {"token": "t", "source": "DWH", "sql": "SELECT COUNT(*) AS N FROM DWH.MARTS.EVENTS"},
         "Nothing was put on the person's screen.",
+        "Nothing was put on the person's screen.",
         _MCP_REPLY, "ANSWERED",
         id="live_read_query"),
     # #416: the third tool. It was not absent from this list because anyone judged it exempt — the
@@ -126,6 +141,7 @@ _TOOLS = [
         "SAGE_ARTIFACT_WRITE_TIMEOUT_MS",
         {"thread_id": "thr_t", "path": "examples/thr_t/x.table.json",
          "content": "{}", "encoding": "utf8"},
+        "No artifact was confirmed.",
         "No artifact was confirmed.",
         # The reply's path is deliberately NOT the path in `args`. When they matched, a tool that
         # echoed its own argument and never read the reply at all returned the expected sentence
@@ -138,9 +154,10 @@ _TOOLS = [
 
 
 @needs_node
-@pytest.mark.parametrize("path,exported,env_var,args,fell_through,reply,answered", _TOOLS)
+@pytest.mark.parametrize("path,exported,env_var,args,timed_out,unreachable,reply,answered",
+                         _TOOLS)
 def test_a_route_that_never_answers_comes_back_as_a_sentence_the_model_can_act_on(
-        path: str, exported: str, env_var: str, args: dict, fell_through: str,
+        path: str, exported: str, env_var: str, args: dict, timed_out: str, unreachable: str,
         reply: str, answered: str):
     out = subprocess.run(
         ["node", "--input-type=module", "-e", _HARNESS,
@@ -151,9 +168,14 @@ def test_a_route_that_never_answers_comes_back_as_a_sentence_the_model_can_act_o
     assert out.returncode == 0, out.stderr
     result = json.loads(out.stdout.strip().splitlines()[-1])
 
-    assert fell_through in result["said"], (
+    assert timed_out in result["said"], (
         "the bound has to land in the catch the file already has, so the assistant reads the "
         f"sentence that tells it the work did not happen: {result['said']!r}")
+    assert "Nothing was asked" not in result["said"], (
+        "and that sentence may not say the request was never sent (#413). A bound that fired "
+        "means the route TOOK the request and went quiet, and aborting the fetch does not cancel "
+        "the Python handler — the work is still running. 'Nothing was asked' makes asking again "
+        f"the correct next move, which pays twice for the slowest call there is: {result['said']!r}")
     assert f"did not answer within {_BOUND_MS / 1000}s" in result["said"], (
         "and it has to say the route was reached and went quiet, naming the bound that fired. "
         "'Could not be reached' is the OTHER condition and is false of this one — the route "
@@ -166,9 +188,10 @@ def test_a_route_that_never_answers_comes_back_as_a_sentence_the_model_can_act_o
 
 
 @needs_node
-@pytest.mark.parametrize("path,exported,env_var,args,fell_through,reply,answered", _TOOLS)
+@pytest.mark.parametrize("path,exported,env_var,args,timed_out,unreachable,reply,answered",
+                         _TOOLS)
 def test_a_route_that_is_really_unreachable_still_says_so(
-        path: str, exported: str, env_var: str, args: dict, fell_through: str,
+        path: str, exported: str, env_var: str, args: dict, timed_out: str, unreachable: str,
         reply: str, answered: str):
     """The other arm of the same catch, and the reason it is a separate test: one plant cannot show
     that a branch PICKS. A tool that answered "did not answer within 210s" unconditionally would
@@ -192,7 +215,7 @@ def test_a_route_that_is_really_unreachable_still_says_so(
     assert out.returncode == 0, out.stderr
     result = json.loads(out.stdout.strip().splitlines()[-1])
 
-    assert fell_through in result["said"], result["said"]
+    assert unreachable in result["said"], result["said"]
     assert "could not be reached" in result["said"], (
         "a connection that was refused is exactly what 'could not be reached' is for, and the "
         f"timeout arm must not swallow it: {result['said']!r}")
@@ -255,9 +278,10 @@ console.log(JSON.stringify({ said }));
 
 
 @needs_node
-@pytest.mark.parametrize("path,exported,env_var,args,fell_through,reply,answered", _TOOLS)
+@pytest.mark.parametrize("path,exported,env_var,args,timed_out,unreachable,reply,answered",
+                         _TOOLS)
 def test_a_body_that_stops_arriving_is_a_timeout_and_not_a_malformed_reply(
-        path: str, exported: str, env_var: str, args: dict, fell_through: str,
+        path: str, exported: str, env_var: str, args: dict, timed_out: str, unreachable: str,
         reply: str, answered: str):
     """The bound covers the body, not just the headers, so there are TWO catches an abort can land
     in. The second one's sentence says the reply was unreadable — which blames the payload for the
@@ -272,7 +296,10 @@ def test_a_body_that_stops_arriving_is_a_timeout_and_not_a_malformed_reply(
     assert out.returncode == 0, out.stderr
     result = json.loads(out.stdout.strip().splitlines()[-1])
 
-    assert fell_through in result["said"], result["said"]
+    assert timed_out in result["said"], result["said"]
+    assert "Nothing was asked" not in result["said"], (
+        "and the second catch owes the same truth as the first (#413): a body that stopped "
+        f"arriving is a request that was sent, not one that never was: {result['said']!r}")
     assert f"did not answer within {_BOUND_MS / 1000}s" in result["said"], (
         f"a body that stopped arriving is the clock running out, not a bad payload: {result['said']!r}")
     assert "unreadable" not in result["said"], (
@@ -281,9 +308,10 @@ def test_a_body_that_stops_arriving_is_a_timeout_and_not_a_malformed_reply(
 
 @needs_node
 @pytest.mark.parametrize("bad", ["not-a-number", "", "0", "-1", "0.5", "5000000000"])
-@pytest.mark.parametrize("path,exported,env_var,args,fell_through,reply,answered", _TOOLS)
+@pytest.mark.parametrize("path,exported,env_var,args,timed_out,unreachable,reply,answered",
+                         _TOOLS)
 def test_a_timeout_that_cannot_be_read_falls_back_instead_of_taking_the_tool_with_it(
-        path: str, exported: str, env_var: str, args: dict, fell_through: str,
+        path: str, exported: str, env_var: str, args: dict, timed_out: str, unreachable: str,
         reply: str, answered: str, bad: str):
     """The bound is read from the environment, and an environment is not a promise. Every value
     `AbortSignal.timeout` rejects throws a RangeError — inside `execute`, so the throw is caught and
@@ -348,9 +376,10 @@ _DEFAULT_MS = 210_000
     # goes back to being the runtime's number.
     ("2000000000", _DEFAULT_MS),
 ])
-@pytest.mark.parametrize("path,exported,env_var,args,fell_through,reply,answered", _TOOLS)
+@pytest.mark.parametrize("path,exported,env_var,args,timed_out,unreachable,reply,answered",
+                         _TOOLS)
 def test_the_bound_a_tool_arms_can_still_fire_inside_the_turn(
-        path: str, exported: str, env_var: str, args: dict, fell_through: str,
+        path: str, exported: str, env_var: str, args: dict, timed_out: str, unreachable: str,
         reply: str, answered: str, configured: str, expected_ms: int):
     """The upper end of the range, which no plant in this file used to push against.
 
@@ -553,3 +582,152 @@ def test_the_ceiling_in_the_tools_is_the_turns_own_quiet_window():
         for value in declared:
             assert int(value.replace("_", "")) == _QUIET_WINDOW_MS, (
                 f"{name} caps a bound at {value}ms, but the turn goes quiet at {_QUIET_WINDOW_MS}ms")
+
+
+# Every way out of the Delegated tool's `execute` THAT ENDS IN A SENTENCE, and which sentence it
+# earns. Six of its eight returns carry one; the other two hand back the route's own words — the
+# model's answer, and `error.message` — and owe nothing. Six returns over FIVE conditions, because
+# the bound owns two of them: the clock can run out at the headers or inside the body.
+#
+# #413 split one constant into two, and the tests above pin only two of the six: the bound at the
+# headers, and the connect failure. The other four could take either constant today and ship green —
+# which is the defect #413 was filed for, arriving the other way round. So this drives all six.
+#
+# Delegated-only, deliberately. `live_read.ts` has ONE such constant, because its sentence is about
+# the screen and is true of every arm, so there is no per-arm choice there to get wrong — and
+# criterion 4 of #413 says it must stay that way. The tests above already pin its text.
+#
+# The pairs are (a fetch stub that forces one arm, the sentence that arm owes). `sent` is the arms
+# where a request reached the route and may still be running; `not_sent` is the arms where it did
+# not, which is the older sentence and still the right one for them.
+_ARMS = """
+import { readFileSync } from 'node:fs';
+const [, file] = process.argv;
+const source = readFileSync(file);
+const mod = await import('data:text/javascript;base64,' + source.toString('base64'));
+const args = { token: 't', alias: 'opus', prompt: 'Classify these rows' };
+// A fetch that never settles until the tool's own bound aborts it. The interval is what keeps
+// node's event loop alive long enough for an UNREF'd timer to fire, same as _HARNESS above.
+const hang = (_url, options) => new Promise((_resolve, reject) => {
+  const alive = setInterval(() => {}, 1000);
+  if (!options || !options.signal) return;
+  options.signal.addEventListener('abort', () => { clearInterval(alive); reject(options.signal.reason); });
+});
+const arms = {
+  timeout_headers: hang,
+  timeout_body: async (url, options) => ({ ok: true, status: 200, json: () => hang(url, options) }),
+  connect_failure: async () => { throw Error('offline') },
+  http_not_ok: async () => ({ ok: false, status: 500 }),
+  // The OTHER way out of the body catch: it throws, but not from the clock. Both arms of both
+  // catches are here, which is the point — `timeout_body` and this one are the same `try`, and the
+  // whole of #413 is that one `try` can owe two different sentences.
+  unreadable_body: async () => ({ ok: true, status: 200, json: async () => { throw Error('not json') } }),
+  nothing_readable: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+};
+const said = {};
+for (const [arm, stub] of Object.entries(arms)) {
+  globalThis.fetch = stub;
+  said[arm] = await mod.default.execute(args);
+}
+console.log(JSON.stringify({ said }));
+"""
+
+# The two sentences, as the file ships them. Spelled out rather than read out of the source: a test
+# that greps the constant it is checking agrees with whatever is there, including a swap.
+_SENT = ("The request was sent and may still be running, so asking again would start a second call "
+         "rather than recover this one. Do the work another way, and do not report an answer no "
+         "model gave you.")
+_NOT_SENT = ("Nothing was asked and no answer came back. Do the work another way, and do not "
+             "report an answer no model gave you.")
+
+_ARM_SENTENCES = {
+    # The bound fired. Both catches, because it is one clock and it owes one answer: the route took
+    # the request, and aborting the fetch does not cancel the Python handler behind it.
+    "timeout_headers": _SENT,
+    "timeout_body": _SENT,
+    # Nothing left this process.
+    "connect_failure": _NOT_SENT,
+    # A non-2xx is a request this process refused to read, not one it ran.
+    "http_not_ok": _NOT_SENT,
+    # A body that was not JSON, with the clock still running. The route always answers JSON or a
+    # bodyless 202, so this is the notification path or a mangled reply — not a generation.
+    "unreadable_body": _NOT_SENT,
+    # And the arm that most looks like a call that happened. It is reached only when a 2xx body is
+    # valid JSON carrying neither `result.content[0].text` nor `error.message` — and
+    # `delegated/mcp.py:handle` puts every executed call's outcome into the first of those, the
+    # answer on success and `_failed_text` on failure, behind an `except Exception` that is broad on
+    # purpose. A reply with neither is a reply this call never produced.
+    "nothing_readable": _NOT_SENT,
+}
+
+
+@needs_node
+def test_each_way_out_of_a_delegated_call_says_whether_the_request_was_sent():
+    """#413: the model acts on this sentence, so a false one is a decision made wrongly.
+
+    Told "nothing was asked" over a call that was asked and is still running, the correct next move
+    for an assistant is to ask again — and asking again is the one thing that pays twice for the
+    slowest call in the system while the first is still in flight, holding one of four slots. That
+    is what shipped, for the three words between "did not answer within 210s" and "nothing was
+    asked".
+
+    Both halves are asserted for every arm, not just the half that moved. Pinning only the bound
+    would leave the three quiet arms free to drift the other way, which is the same defect."""
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", _ARMS,
+         str(ROOT / "sage/delegated/tools/delegated_model_call.ts")],
+        check=False, capture_output=True, text=True, timeout=_PATIENCE_S,
+        env={**os.environ, "SAGE_DELEGATED_CALL_TIMEOUT_MS": str(_BOUND_MS)})
+
+    assert out.returncode == 0, out.stderr
+    said = json.loads(out.stdout.strip().splitlines()[-1])["said"]
+
+    assert set(said) == set(_ARM_SENTENCES), (
+        f"the harness drove {sorted(said)} but this test knows {sorted(_ARM_SENTENCES)}")
+    for arm, owed in _ARM_SENTENCES.items():
+        assert said[arm].endswith(owed), (
+            f"the {arm} arm does not end with the sentence it owes.\n  owed: {owed!r}\n  said: "
+            f"{said[arm]!r}")
+        # And the two are mutually exclusive: an arm that appended both would satisfy `endswith`
+        # for one of them while still telling the model the other thing.
+        other = _NOT_SENT if owed is _SENT else _SENT
+        assert other not in said[arm], (
+            f"the {arm} arm also carries the sentence for the opposite condition, so the model is "
+            f"told both: {said[arm]!r}")
+
+    # The operative guarantee #409 added the constant for, which #413 had to carry across the split
+    # rather than replace. It is the one clause that must survive in every arm, whatever else does.
+    for arm, text in said.items():
+        assert "do not report an answer no model gave you" in text, (
+            f"the {arm} arm dropped the clause that stops the turn describing its own work as a "
+            f"model's: {text!r}")
+
+
+def test_the_arms_above_are_every_arm_the_delegated_tool_actually_has():
+    """`_ARM_SENTENCES` is hand-written, and a list cannot know it is short.
+
+    The test above compares the harness's stubs against that dict — both written here, ten lines
+    apart, neither knowing anything about the tool. Add a seventh sentence-bearing `return` to
+    `execute` and every assertion up there stays green while the new arm is pinned by nothing.
+
+    That is the shape `test_every_tool_that_fetches_is_bounded_and_is_a_subject_of_the_tests_above`
+    exists for, one screen below: `artifact_write.ts` shipped unbounded while the file named for
+    tools bounding themselves passed beside it. Same lesson, one ring further in — so the count
+    comes off the SOURCE rather than off a second list.
+
+    Comments are stripped first, by the same `_code` the census below uses and for the reason
+    written there: prose naming a constant must not be credited as a use of it. This file's comments
+    name both of these constants many times over."""
+    code = _code((ROOT / "sage/delegated/tools/delegated_model_call.ts").read_text())
+
+    for constant, sentence in (("NOT_ASKED", _NOT_SENT), ("NOT_ANSWERED", _SENT)):
+        declarations = len(re.findall(rf"^const {constant} = ", code, re.MULTILINE))
+        assert declarations == 1, (
+            f"{constant} is declared {declarations} times, so the arithmetic below — uses are "
+            "occurrences minus declarations — is measuring something else")
+        uses = len(re.findall(rf"\b{constant}\b", code)) - declarations
+        driven = sum(1 for owed in _ARM_SENTENCES.values() if owed == sentence)
+        assert uses == driven, (
+            f"the tool appends {constant} on {uses} arm(s), but the test above drives {driven}. A "
+            "sentence that reaches the model from an arm nothing exercises is how #413 shipped: "
+            "the constant was true of the arms anyone had looked at")
