@@ -787,8 +787,15 @@ window.SW = window.SW || {};
       //
       // `!isMissing`, because the mark claims the Conversation can REACH it, and a row Domino no
       // longer lists cannot be reached whatever the manifest still records. Without this, deleting
-      // a bound Data Source leaves the row drawing the missing mark and this one at once, and a
-      // Live read of it refuses — the same two-surfaces-one-truth split #410 is about.
+      // a bound Alias leaves the row drawing the missing mark and this one at once, and a call to
+      // it refuses — the same two-surfaces-one-truth split #410 is about.
+      //
+      // NEITHER GUARD IS ON THE CHIP HALF, and that asymmetry is the point rather than an oversight
+      // in it. A chip is a record this Conversation holds: it is on the rail over the composer
+      // whether or not Domino still lists the thing, and taking the mark off it would leave the
+      // person with a chip they can see and a row denying it. The Binding is a record some app
+      // holds, so the row is the only place it is ever said — which is why it has to be said only
+      // where it is true.
       const callableHere = inContext
         || (inChat && !!resource.boundHere && !SW.util.isMissing(resource));
       return h(
