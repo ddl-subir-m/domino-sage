@@ -8085,7 +8085,23 @@ window.SW = window.SW || {};
                     : []
               )).filter(Boolean)
             );
-            const fresh = (items || []).filter((a) => !have.has(fileUrl(a.path)) && !have.has(a.path));
+            // The same upgrade the reload does (`drewAsAnswer`), off the rows this session has
+            // already seen. One `.table.json` name can be written by more than one turn, so a
+            // path an earlier turn published as an ANSWER must not be folded when a later turn
+            // rewrites it as a step. Read off `state.thread.artifacts`, which the block below
+            // appends to AFTER this — so here it holds exactly the earlier turns' rows.
+            //
+            // Here as well as on reload because two readers of one Artifact list giving two
+            // answers is the drift `SW.hydrateArtifacts` was exported to avoid, one function
+            // along: without it a row folds live and draws after a refresh.
+            const answered = new Set(
+              ((state.thread && state.thread.artifacts) || [])
+                .filter((a) => a && a.path && a.role !== 'working').map((a) => a.path)
+            );
+            const fresh = (items || [])
+              .filter((a) => !have.has(fileUrl(a.path)) && !have.has(a.path))
+              .map((a) => (a.role === 'working' && answered.has(a.path)
+                ? { ...a, role: 'answer' } : a));
             if (fresh.length) {
               assistant.blocks = [...assistant.blocks, ...(await blocksForArtifacts(fresh))];
             }

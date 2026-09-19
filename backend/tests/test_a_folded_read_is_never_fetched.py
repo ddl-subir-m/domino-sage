@@ -30,10 +30,15 @@ needs_node = pytest.mark.skipif(shutil.which("node") is None,
 
 
 def _run(thread: dict, files: dict, open_fold: bool = False,
-         live: list[dict] | None = None) -> dict:
-    spec = {"thread": thread, "files": files, "open": open_fold}
+         live: list[dict] | None = None, flutter: bool = False,
+         kinds: list[dict] | None = None, seed: list[dict] | None = None) -> dict:
+    spec = {"thread": thread, "files": files, "open": open_fold, "flutter": flutter}
     if live is not None:
         spec["live"] = live
+    if kinds is not None:
+        spec["kinds"] = kinds
+    if seed is not None:
+        spec["seedArtifacts"] = seed
     out = subprocess.run(["node", str(_HARNESS)], input=json.dumps(spec),
                          check=False, capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
@@ -297,3 +302,118 @@ def test_a_path_a_later_turn_answered_with_is_never_folded_by_an_earlier_probe()
     assert [f["items"] for f in folds] == [[probe]], "the answer was folded with the probe"
     assert [b["path"] for b in out["blocks"] if b["type"] == "table"] == [shared]
     assert out["beforeOpening"] == [shared]
+
+
+@needs_node
+def test_opening_the_fold_twice_before_it_lands_still_reads_each_row_once():
+    """An impatient double-click must not cost a second set of round trips.
+
+    The read fires on a CONDITION — open, and holding nothing — rather than on the click, which is
+    right: a fold can be open without anyone having pressed it. But open → shut → open before the
+    first read lands puts that condition back exactly as it was, and the rows are still null, so a
+    second full batch starts behind the first. On the sixty-read investigation this card is for,
+    that is sixty duplicate reads through the Domino proxy — the cost #451 measured and this
+    ticket exists to defer.
+    """
+    tid = "thr_flutter"
+    probes = [f"examples/{tid}/probe-{i}.table.json" for i in range(4)]
+    answer = f"examples/{tid}/answer.table.json"
+    out = _run(
+        _thread(tid, [_table(p, f"Probe {i}", "working") for i, p in enumerate(probes)]
+                + [_table(answer, "Answer", "answer")]),
+        _files([*probes, answer]),
+        open_fold=True,
+        flutter=True,
+    )
+
+    assert sorted(out["requests"]) == sorted([*probes, answer]), (
+        f"a row was read more than once: {out['requests']}")
+
+
+@needs_node
+def test_a_fold_whose_rows_are_all_blank_says_so_instead_of_opening_onto_nothing():
+    """A `.table.json` that is there but blank gets neither a card nor a link — inside this fold
+    exactly as outside it. When every folded row is one of those, the fold opens onto an empty
+    bordered box with a Hide button, which reads as a card that failed to load rather than as
+    files with nothing in them.
+
+    The face still counts them, because `count` is what the turn WROTE. The sentence is what makes
+    the gap between the two numbers readable instead of a dead end."""
+    tid = "thr_blank_fold"
+    probes = [f"examples/{tid}/probe-{i}.table.json" for i in range(2)]
+    answer = f"examples/{tid}/answer.table.json"
+    files = {p: {"content": "   "} for p in probes}
+    files[answer] = {"body": _body("answer.table.json")}
+    out = _run(
+        _thread(tid, [_table(p, f"Probe {i}", "working") for i, p in enumerate(probes)]
+                + [_table(answer, "Answer", "answer")]),
+        files,
+        open_fold=True,
+    )
+
+    assert "Sage read 2 tables to answer this" in out["words"]
+    assert "there is nothing to show here" in out["words"]
+    assert out["tables"] == ["answer.table.json"]
+
+
+@needs_node
+def test_every_card_the_fold_can_hold_is_one_the_disclosure_preference_leaves_alone():
+    """The fold is a SECOND renderer of Artifact blocks and it does not go through `pushBlock`.
+
+    Every other block on a message is routed through the store's marking pass, which consults
+    `HIDDEN_BY_DATA_ACCESS` — the table with no default that `test_the_preference_governs_exactly
+    _two_things` protects. `hydrateArtifacts` hands its blocks straight to `SW.MessageBlock`, so
+    that table is not consulted behind this face.
+
+    There is no defect today: every kind this builder can emit is a `shown` row. This derives that
+    rather than asserting it, so the day one of them flips to hide, it reds here instead of
+    hiding everywhere EXCEPT behind a fold, which is the shape nobody would go looking for.
+    """
+    tid = "thr_kinds"
+    kinds = [
+        {"kind": "chart", "path": f"examples/{tid}/trend.png", "title": "Trend"},
+        {"kind": "table", "path": f"examples/{tid}/summary.table.json", "title": "Summary"},
+        {"path": f"examples/{tid}/report.html", "title": "Report"},
+        {"path": f"examples/{tid}/notes.txt", "name": "notes.txt"},
+    ]
+    out = _run({"id": tid, "history": []},
+               {f"examples/{tid}/summary.table.json": {"body": _body("Summary")}},
+               kinds=kinds)
+
+    drawn = out["foldKinds"]
+    assert [k["type"] for k in drawn] == ["image", "table", "page", "file"], (
+        f"the builder emits a kind this claim has not been checked against: {drawn}")
+    assert [k["hides"] for k in drawn] == [False, False, False, False], (
+        f"a card behind the fold would now be hidden everywhere else: {drawn}")
+
+
+@needs_node
+def test_a_live_turn_and_a_reload_agree_about_a_path_an_earlier_turn_answered_with():
+    """Two readers of one Artifact list must give one answer.
+
+    The reload pass and the SSE reducer are separate functions over the same rows, and only the
+    first had the upgrade that stops an earlier turn's answer being folded by a later turn's
+    probe. So the same row folded while the person watched and drew after a refresh — a card that
+    appears when you reload is worse than either behaviour on its own, because nothing on screen
+    says which one is right.
+
+    Driven live here; `test_a_path_a_later_turn_answered_with_is_never_folded_by_an_earlier_probe`
+    is the reload half, and the two assert the same shape on purpose.
+    """
+    tid = "thr_agree"
+    shared = f"examples/{tid}/query-result.table.json"
+    out = _run(
+        {"id": tid, "history": []},
+        _files([shared]),
+        # The earlier turn's row, as the session already holds it when the new turn arrives.
+        seed=[_table(shared, "Query result", "answer")],
+        live=[{"type": "agent", "kind": "text", "text": "Re-checking that."},
+              {"type": "artifacts", "items": [_table(shared, "Query result", "working")]},
+              {"type": "done", "artifacts": [_table(shared, "Query result", "working")],
+               "ok": True}],
+        kinds=[],
+    )
+
+    assert [b["type"] for b in out["blocks"] if b["type"] == "working_reads_fold"] == [], (
+        "the live turn folded a path this Thread had already answered with")
+    assert [b["path"] for b in out["blocks"] if b["type"] == "table"] == [shared]

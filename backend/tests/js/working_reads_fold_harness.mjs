@@ -99,7 +99,17 @@ const sandbox = {
   React: {
     createElement: (t, p, ...c) => ({ t, p: p || {}, c }),
     Fragment: 'Fragment',
-    useRef: () => ({ current: null }),
+    // A REAL ref, kept beside this component's state. The usual stub hands back a fresh object
+    // every render, which is the one thing a ref must never do — a component using one to
+    // remember "a read is already in flight" would forget it on the very next frame, and a test
+    // driven against that stub would report a defect the product does not have.
+    useRef: (init) => {
+      if (!hooks.has(current)) hooks.set(current, []);
+      const bucket = hooks.get(current);
+      const i = cursor++;
+      if (!(i in bucket)) bucket[i] = { current: init === undefined ? null : init };
+      return bucket[i];
+    },
     useMemo: (fn) => fn(),
     // Real state, kept across renders by call order, so a setter firing from a resolved promise
     // shows up in the next frame instead of vanishing.
@@ -169,8 +179,11 @@ function render(node, path, out) {
 
 if (spec.live) {
   // No `openThread`: this is a turn sent into an empty transcript, which is what the reducer sees.
-  SW.store.set({ thread: { id: spec.thread.id, artifacts: [] }, messages: [],
-                 scope: { id: 'p', name: 'P' } });
+  // `seedArtifacts` is what this session already holds from EARLIER turns — the rows
+  // `state.thread.artifacts` accumulates as a Conversation runs. A live turn that rewrites one of
+  // those paths has to be read against them, so they are seeded rather than assumed empty.
+  SW.store.set({ thread: { id: spec.thread.id, artifacts: spec.seedArtifacts || [] },
+                 messages: [], scope: { id: 'p', name: 'P' } });
   await SW.store.sendMessage('which customers use model monitoring');
 } else {
   await SW.store.openThread(spec.thread.id);
@@ -187,11 +200,23 @@ const message = messages.find((m) => (m.blocks || []).some((b) => b.type === 'wo
 // One frame: render the turn, run whatever effects it armed, and let the promises they started
 // take their turns. Several ticks rather than one, because the fold's read goes through the same
 // pooled builder the transcript uses and that is a chain of awaits, not a single resolution.
-async function frame() {
+// Render the turn and run whatever effects it armed, WITHOUT letting anything settle. This is the
+// frame a person is looking at between two fast clicks, and it is the only way to press the
+// control twice before a read lands: a handler read off a stale render still closes over the old
+// state, so pressing it again re-sets the same value rather than toggling.
+function paint() {
   effects = [];
   const out = [];
   if (message) render({ t: SW.Message, p: { message } }, 'msg', out);
   effects.forEach((fn) => fn());
+  return out;
+}
+
+// One frame, then let the promises it started take their turns. Several ticks rather than one,
+// because the fold's read goes through the same pooled builder the transcript uses and that is a
+// chain of awaits, not a single resolution.
+async function frame() {
+  const out = paint();
   for (let i = 0; i < 4; i += 1) await new Promise((r) => setTimeout(r, 0));
   return out;
 }
@@ -216,6 +241,21 @@ const opener = toggle();
 if (spec.open) {
   if (!opener) throw new Error('the fold offers nothing to open');
   opener.onClick();
+  // `flutter` is the impatient double-click: opened, shut and opened again before the first read
+  // can land. `paint` between the presses and never `frame`, for two reasons that pull the same
+  // way — a handler must be read off a FRESH render or it closes over the old `open` and re-sets
+  // it instead of toggling, and settling would let the read finish, which is the very thing that
+  // makes the question unaskable.
+  if (spec.flutter) {
+    nodes = paint();
+    const shut = toggle();
+    if (!shut) throw new Error('the open fold offers nothing to shut');
+    shut.onClick();
+    nodes = paint();
+    const again = toggle();
+    if (!again) throw new Error('the shut fold offers nothing to open');
+    again.onClick();
+  }
   nodes = await settle();
 }
 
@@ -229,6 +269,17 @@ console.log(JSON.stringify({
   requests,
   words,
   opens: !!opener,
+  // What the viewer's data-access preference does to each kind of card the fold can hold, asked of
+  // the REAL table with the preference OFF. The fold renders its rows straight through
+  // `SW.MessageBlock` rather than through `pushBlock`, so it is a second renderer that never
+  // consults `HIDDEN_BY_DATA_ACCESS` — this is what makes the day one of those rows flips to hide
+  // a red here instead of a silent leak behind one face.
+  foldKinds: await (async () => {
+    SW.prefs.set('dataAccessShown', false);
+    const kinds = spec.kinds || [];
+    const built = await SW.hydrateArtifacts(kinds);
+    return built.map((b) => ({ type: b.type, hides: SW.store.hidesForDataAccess(b) }));
+  })(),
   // Every dispatcher element the rendered turn actually put on screen, with the table titles, so
   // "the cards are behind the fold" is read off the tree rather than off the store.
   drawn: nodes.filter((n) => n.el === 'MessageBlock').length,
