@@ -135,6 +135,7 @@ from ..resources.provider import (
     ResourceUnavailable,
     Table,
     cascade_levels,
+    readable_error,
     safe_identifier,
     walkable_databases,
     walks_whole_database,
@@ -10465,14 +10466,28 @@ class Orchestrator:
             # goes back as one rather than as a sentence about the data. Its own type and not a bare
             # `ValueError`, or a driver that raises one hands its own words to the page.
             raise
+        except ResourceUnavailable as e:
+            # Already through `_store_failure` (#399): branded, scrubbed of addresses and secrets,
+            # and correct about WHICH of the three things went wrong. Surfaced unchanged, the way
+            # `_statement` surfaces it, because re-branding it here is what made this button
+            # contradict the agent's read on the same source in the same minute (#405).
+            # `ResourceUnavailable`'s own docstring states the contract this relies on.
+            log.info("live read again: %s failed — %s", (source or {}).get("kind"), e)
+            return {"refused": str(e)}
         except Exception as e:
-            # The store answered with a failure rather than with rows — a credential the platform
-            # will not open for this viewer looks exactly like this. Logged whole and said short:
-            # the driver's own words are about a connection, not about what the person asked.
+            # Everything left has NOT been through that classifier, so its words may carry a peer
+            # address or a key and must not reach the page raw. Scrubbed and SHOWN rather than
+            # replaced, which is `failure_kind`'s own rule one layer up — whatever we cannot
+            # classify, we show — and the reason is the same: a sentence with no cause in it is
+            # what made #399 and #404 take two sessions to come apart. The old sentence here said
+            # "the store did not answer" about a store that, on this arm, was usually never asked.
+            #
+            # `readable_error` IS the guard. It is not decoration and it is not a comment: a driver
+            # holding a `DataSourceClient` prints its api_key in plaintext, and this line is the
+            # only thing between that repr and the page.
             log.info("live read again: %s failed — %s", (source or {}).get("kind"), e)
             return {"refused": brand.text(
-                "{assistantName} could not read that just now. The store did not answer."
-            )}
+                "{assistantName} could not finish that read.") + f" {readable_error(e)}"}
         if read.refused:
             return {"refused": read.refused}
         return {"columns": read.columns, "rows": [_sendable(r) for r in read.rows],
