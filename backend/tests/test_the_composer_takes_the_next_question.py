@@ -69,6 +69,62 @@ def test_cancelling_a_waiting_question_takes_it_back_off_the_screen():
     assert out["queuedAfter"] == 0
     assert out["rolesAfter"] == []                       # nothing of it was ever recorded
     assert out["composerSeed"] is None                   # they changed their mind; do not re-offer it
+    # And it says nothing, because the row coming down has already said it. This is the other half
+    # of the test below: the message there is a report of a cancel that did NOT happen, so a store
+    # that announced every press would be indistinguishable from one that read the verdict (#385).
+    assert out["said"] == []
+
+
+def test_a_cancel_the_server_declined_says_so_rather_than_nothing():
+    """The press that lost the race (#385). The queue can let the turn go between the click and the
+    POST, and then `cancel_pending_turn` scans a deque the ticket has already left, and answers
+    False. Nothing is woken by that, so no cancelled `done` arrives and no row comes down on account
+    of the press — this sentence is the only thing between the person and a Cancel that did nothing
+    and said nothing.
+
+    It reports the state and stops there. Naming Stop as the way to end it, which #385 asked for,
+    would be a guess: the same False covers a turn that finished, a second press on a row that has
+    not come down yet, and a wedge, which is deliberately not `turn_busy` and so has no Stop on
+    screen at all. The route's own docstring is the honest width — "may have started, or finished".
+    """
+    out = _run("cancel-declined")
+
+    assert "./api/project/turn/cancel" in out["posted"]
+    assert out["said"] == [
+        ["info", "That turn was no longer waiting — it may have started, or finished."]
+    ]
+    # The turn the Cancel missed is untouched: it was already running, and it runs to its answer.
+    assert out["rolesAfter"] == ["user", "assistant"]
+    assert "Six million rows." in out["answer"]
+    # And no row is left behind. This does not show WHICH frame took it — `sendMessage`'s `finally`
+    # drops the ticket unconditionally, so `queued` reports 0 too, with no `running` frame in it.
+    assert out["queuedAfter"] == 0
+
+
+def test_a_second_press_on_a_cancel_already_in_flight_is_not_sent():
+    """The double-press, which needs no race on the server at all (#385). The row Cancel sits on
+    comes down when the turn's own stream ends, a full round trip after the click, so the press
+    changes nothing on screen and invites a second one. That second POST names a ticket the first
+    press has already taken off `_waiting`, so the server answers False — and the person who
+    cancelled successfully would be told their turn had not been cancelled."""
+    out = _run("cancel-twice")
+
+    assert out["posted"].count("./api/project/turn/cancel") == 1
+    assert out["said"] == []                             # and nothing is reported about it
+    assert out["queuedAfter"] == 0
+    assert out["rolesAfter"] == []                       # the cancel itself still worked
+
+
+def test_a_cancel_whose_answer_cannot_be_read_says_nothing():
+    """The third state the guard has to tell apart, and the reason it reads `=== false` rather than
+    falsy (#385). A 200 that is not JSON — the proxy answering before the app is up, which the note
+    at `api.js:52` says a freshly opened Workbench really does get — reaches the caller as `{}`.
+    Falsy would read that as a refusal and announce one the server never made, over a cancel that
+    for all anybody here knows succeeded."""
+    out = _run("cancel-unreadable")
+
+    assert "./api/project/turn/cancel" in out["posted"]
+    assert out["said"] == []
 
 
 def test_a_second_question_asked_while_the_first_runs_reaches_the_server():

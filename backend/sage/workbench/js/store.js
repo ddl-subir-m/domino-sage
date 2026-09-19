@@ -3391,6 +3391,16 @@ window.SW = window.SW || {};
     state.queuedTurns = state.queuedTurns.filter((q) => q.ticket !== ticket);
   }
 
+  // A press that has been sent and whose row has not come down yet (#385). The row lives until the
+  // turn's own stream ends, which is a full round trip after the click, so nothing on screen changes
+  // when you press Cancel — and a second press goes out against a ticket the first one has already
+  // taken off `_waiting`, which the server can only answer `false` to. The row is replaced rather
+  // than mutated because every other write here replaces it, and the Composer re-reads the list.
+  function markQueuedTurnCancelling(ticket, cancelling) {
+    state.queuedTurns = state.queuedTurns.map(
+      (q) => (q.ticket === ticket ? { ...q, cancelling } : q));
+  }
+
   // Is the turn holding the lock the one on THIS screen? Both halves have to match: a Chat turn and
   // a Build turn in one Conversation are both yours, and only one of them is what you are looking at
   // (#126). False for a wedge and for a publish, which is right — neither is a turn to Stop.
@@ -7226,8 +7236,50 @@ window.SW = window.SW || {};
     //
     // The pending turn's own stream is what actually ends: the server wakes it, it yields a
     // cancelled `done`, and the send that has been awaiting it all along clears its own row.
+    //
+    // All of which needs the server to have FOUND the ticket. `_TurnQueue.cancel` scans `_waiting`
+    // only, so a turn that has left that deque cannot be cancelled, and the route answers
+    // `{cancelled: false}` (#385). Nothing is woken on that path, no `done` arrives, and there is
+    // no second mechanism — the row over the composer does come down, but on whatever frame the
+    // stream reaches next, which would have taken it with or without the press. So an unread
+    // verdict is a click that does nothing and says nothing. A refused Stop reads its own verdict
+    // just above, for the same reason.
+    //
+    // What this does NOT say is WHICH of those happened, because one bit cannot carry it: the turn
+    // may have been granted, or finished, or cancelled by an earlier press, or refused for a
+    // context change, or failed with the rest of the queue by `fail_pending` when the workspace
+    // wedged. The route's own docstring says as much — "may have started, or finished". #385 asked
+    // for the sentence to name Stop as the control that ends it instead, and it cannot: a wedge is
+    // deliberately not `turn_busy` (#39), so there is no Stop on screen to name, and a second press
+    // on a row that has not come down yet would be pointed at the Stop for the turn this one was
+    // queued BEHIND. `stopBuild` can be specific because its verdict has one cause. This one
+    // reports the state and leaves the screen to say the rest.
+    //
+    // `=== false` rather than falsy: a 200 that is not JSON reads as `{}` here (`api.js:45`), which
+    // the proxy note under it says is reachable on a freshly opened Workbench. "I could not read
+    // the answer" is not "the server declined".
     async cancelQueuedTurn(ticket) {
-      await SW.api.cancelTurn(ticket);
+      // The press is in flight and the row is still up, so this is the second click on it. Sending
+      // it would cancel nothing — the first press already took the ticket off `_waiting` — and the
+      // verdict would come back `false` and say so over a cancel that WORKED. Guarded here rather
+      // than in the Composer alone: the button's own `loading` state is feedback, and this is the
+      // part that has to hold for every caller.
+      const row = state.queuedTurns.find((q) => q.ticket === ticket);
+      if (row && row.cancelling) return;
+      markQueuedTurnCancelling(ticket, true);
+      notify();
+      try {
+        const res = await SW.api.cancelTurn(ticket);
+        if (res && res.cancelled === false) {
+          antd.message.info('That turn was no longer waiting — it may have started, or finished.');
+        }
+      } catch (err) {
+        // Nothing was dropped, so the row is still cancellable. Left disabled it would strand the
+        // turn's only control until the turn ended by itself. The caller reports the failure.
+        markQueuedTurnCancelling(ticket, false);
+        notify();
+        throw err;
+      }
     },
 
     async loadBuild(options = {}) {
