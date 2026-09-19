@@ -285,3 +285,19 @@ def test_the_envelope_still_reaches_the_classifier_intact():
     assert kind == "answered"
     assert said.startswith("Type: internalError, Subtype: . Message: "), (
         "the envelope must survive to the predicate — it is unwrapped at the point of display")
+
+
+def test_an_empty_envelope_keeps_the_envelope(monkeypatch):
+    """A strip that empties the sentence is worse than the wrapper it removed.
+
+    Domino emits empty fields — the captured Postgres string carries `Subtype: .` — so an empty
+    `Message:` is the same shape one field over, and `failure_kind` collapses the trailing space
+    away before the strip ever sees it. Stripped, the person reads `... did not answer: ` ending at
+    the colon and the model is handed `The live read did not happen: ... did not answer: .`, which
+    says Sage lost the reason rather than that the store gave none.
+    """
+    said = _read_raising(monkeypatch, RuntimeError(
+        _wire("invalid argument", "Type: internalError, Subtype: . Message: ")))
+
+    assert said.rstrip() != "Snowflake-Data-Warehouse did not answer:", "the sentence ends nowhere"
+    assert "Type: internalError" in said, "with nothing to show, show the wrapper"

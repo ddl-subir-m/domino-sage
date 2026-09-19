@@ -934,11 +934,20 @@ _ADDRESS_SHAPED = re.compile(
 # only and the pattern is anchored to prove it.
 #
 # Keyed on the presence of `. Message:`, NOT on the Type value, because the Type value is the one
-# thing that varies and a list of them would be short the day Domino adds one. That is also the
-# residual: a config fault that one day arrives WITH a `. Message:` part would be unwrapped too.
-# It is display only — `failure_kind` classifies on the unstripped text and never sees this, which
-# is why the strip happens after it and not before. Category 2 today carries no `. Message:` part
+# thing that varies and a list of them would be short the day Domino adds one. Display only —
+# `failure_kind` classifies on the unstripped text and never sees this, which is why the strip
+# happens after it and not before. Category 2 today carries no `. Message:` part
 # (`Type: configObjectError, Subtype: invalidHostOrPort. `) and so is untouched.
+#
+# The residual, stated precisely, because the obvious phrasing of it names a check that can never
+# fire: it is NOT "a config fault arriving with a `. Message:` part". A config fault whose Type is
+# already in `_SETUP_FAULT` matches on that word wherever it sits in the payload, classifies
+# `setup_fault`, and is rendered by a branch that does not call this at all — so it cannot reach
+# the strip however it is shaped. The one that can is a config fault with a Type value `_SETUP_FAULT`
+# does NOT list: it falls to `answered` by design (#399 makes that the default), and the strip then
+# deletes the Type word that was the only sign it was Domino's configuration rather than the
+# person's SQL. Hypothetical — no such payload has been measured — and the cost is one clause, which
+# is the trade `failure_kind`'s docstring already takes deliberately.
 _DOMINO_ENVELOPE = re.compile(r"^Type:\s*[^,]*,\s*Subtype:\s*[^.]*\.\s*Message:\s*", re.IGNORECASE)
 
 
@@ -950,8 +959,14 @@ def _unwrapped(said: str) -> str:
     wrapper comes off in `failure_kind` because predicates read the payload; this one comes off at
     the point of DISPLAY, because classification is keyed on the envelope's Type value and must not
     move (#399's `invalid argument` carries both a Domino config fault and a real store objection).
+
+    An envelope with nothing in it keeps the envelope. Domino does emit empty fields — the captured
+    Postgres string carries `Subtype: .` — so an empty `Message:` is the same shape one field over,
+    and stripping it would leave `<source> did not answer: ` with the sentence ending at the colon,
+    which reads as Sage losing the reason rather than the store not giving one. Better a wrapper the
+    person can see than a blank they cannot ask about.
     """
-    return _DOMINO_ENVELOPE.sub("", said, count=1)
+    return _DOMINO_ENVELOPE.sub("", said, count=1) or said
 
 
 # Which levels a statement interpolates, by the token it spells them with. `{schema_lit}` is the
