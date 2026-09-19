@@ -160,20 +160,59 @@ run leaves no summary line and reads exactly like a hang. Comment `WORKER: takin
 before you start and `WORKER: slot free` when you stop — whichever tree you run on, because the
 slot is about the machine and not about your branch.
 
-**Check the MACHINE, not the markers, and check it at the moment you claim.** The markers live per
+**Order by the CLAIM MARKER, not by a machine reading.** Claim by posting the marker on your issue,
+then yield to any marker posted before yours. A marker is a total order; a machine reading is a
+snapshot two sessions can take at the same instant and both pass. Measured 2026-09-19: three times
+in one afternoon two sessions both checked the box, both correctly saw it clear, and both started —
+the window between checking and exec'ing is where the race lives. **A check can only say "not yet",
+never "go."** That applies to a message from another session too: an authorisation derived from a
+read inherits the read's staleness.
+
+**Every test that reads a marker body is anchored, at EVERY stage.** Selecting the marker and
+classifying it claim-or-free are two reads, and both are quotable:
+
+    [.[] | select(.body|test("^(WORKER|LANDING): (taking the suite slot|slot free)"))]
+      | last | select(.body|test("^(WORKER|LANDING): taking"))
+
+Anchoring only the select is what let a comment EXPLAINING a release read as a claim. Anchoring only
+on `^WORKER:` is worse: it hides every claim a landing session makes, turning a false-busy bug into
+a false-free one that starts a second `-n auto` on a live run.
+
+**Name the claim marker in prose; reproduce the literal only when you are claiming.** The anchor
+protects readers, this protects writers, and you need both — an anchored scan still breaks on a
+comment that opens by quoting the marker. A protocol whose markers are ordinary prose in the same
+stream that discusses them cannot be quoted safely in that stream.
+
+**Sweep for outstanding claims on their own schedule**, not only when you want the box. The check
+that asks "may I start" reads the last marker and stops, so it can never find a claim that was never
+freed. One sat unfreed for three days and outranked every claim on the board; every scan was broken
+in the same direction, so it was invisible to everyone. **Audit the method on a schedule too** — a
+true positive out of a broken filter looks exactly like diligence, and the same broken scan produced
+a deadlock and a genuine find on one afternoon.
+
+**A filter tightened around the instance that bit you is short by construction** — short in DEPTH as
+well as in population. Both corrections above were made by sessions that had just argued the
+principle and then missed it one layer down.
+
+**Check the MACHINE as well, to find sessions OUTSIDE the queue** — that is how a worktree nobody
+had sequenced was found. Not to decide whether to start. The markers live per
 ISSUE and the lock is per MACHINE, so a session working a ticket you are not reading is invisible
 in them. Measured 2026-09-19: a landing session swept three issues, missed a fourth holding the
 slot with a live run, and told two sessions to start on top of it.
 
     for p in $(pgrep -f "bin/pytest"); do
-      exe=$(ps -o args= -p $p | awk '{print $1}')
-      case "$exe" in
-        */bin/python*|*/bin/pytest*)
-          if [ -x "$exe" ]; then echo "REAL pid $p [$(lsof -a -p $p -d cwd -Fn | grep ^n | head -1)]"
-          else echo "FAKE pid $p argv0=$exe"; fi ;;
-        *) echo "quote pid $p" ;;
-      esac
+      kids=$(pgrep -P $p | wc -l | tr -d ' ')
+      cwd=$(lsof -a -p $p -d cwd -Fn | grep '^n' | head -1 | cut -c2-)
+      echo "pid $p kids=$kids cwd=${cwd:-?}"        # 8+ children = a full -n auto
     done
+
+**Discriminate on STRUCTURE, not on the command line.** No string test can separate a quote of the
+signal from the signal, because the quote contains the signal by construction — measured: a venv
+python whose command line merely MENTIONS `bin/pytest` passes every argv[0] filter, and the venv
+python is the interpreter every real run uses. A quoter has no pytest children and no worktree cwd;
+a real `-n auto` has ~14 and the child count separates it from an `-n0` without reading flags at all.
+The cwd is what tells you WHOSE tree it is, which is the difference between "someone is running" and
+"#413 is running".
 
 **The filter is not decoration: a bare `pgrep -f "bin/pytest"` matches the CHECKING COMMAND ITSELF**,
 because the pattern sits in that command's own line. Two sessions checking at once then see each
@@ -246,8 +285,13 @@ one per condition; your scoped review findings, including the ones you chose not
 anything the ticket asked for that you could not do. Say that last part plainly — work left undone
 belongs in the report, not in a new issue.
 
-**`ruff check` runs on `main` after every landing.** It takes about a second and needs no suite
-slot, so it never touches the queue. Tests green is not checks green: only `ruff` looks at an
+**`ruff check` runs on `main` after every landing — the WHOLE repo, not `sage/`.** It takes about a
+second and needs no suite slot, so it never touches the queue.
+
+The scope is not a detail. Measured 2026-09-19: this rule was written as "`ruff check`" and then
+run as `ruff check sage/` by the session that wrote it, and a new `F401` rode onto `main` inside a
+test file in the same session. `sage/` passed; the repo had four errors. **A gate is the command you
+actually run, not the sentence you wrote about it.** Tests green is not checks green: only `ruff` looks at an
 unused import or an undefined name in an annotation, and a whole suite will pass over both.
 
 The cost of not doing it is not the defect, it is the repeated triage. Measured 2026-09-19: a dead

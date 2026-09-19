@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import json
 
-from sage.orchestrator import brand
 from sage.liveread import grant, result
+from sage.orchestrator import brand
 
 
 def test_the_artifact_holds_the_rows_and_the_receipt_holds_only_their_shape(tmp_path):

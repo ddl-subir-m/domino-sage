@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from sage.orchestrator import brand
 from sage.driver.opencode import with_attachment_listing
 from sage.liveread import mcp, run
 from sage.liveread.data_use import OPEN_CODE_DATA_CARRIERS, DataUse
+from sage.orchestrator import brand
 
 from .test_a_live_read_reaches_the_person_end_to_end import Warehouse, _call, _orch
 
