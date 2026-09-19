@@ -152,12 +152,27 @@ def test_the_count_is_of_attempts_not_of_answers(tmp_path: Path):
 def test_the_pack_and_its_mirror_both_teach_the_marker():
     """`template/chat/AGENTS.md` is hand-copied into `opencode.json`, so a rule added to one and not
     the other is taught to nobody in the lane that reads the mirror. Both are checked here because a
-    grep of one proves nothing about the other."""
+    grep of one proves nothing about the other.
+
+    THE MIRROR IS READ THROUGH ITS HOLDER, NOT GREPPED. `opencode.json` carries five agent prompts,
+    so a phrase found anywhere in that file says only that the file contains it — the copy could
+    land in `sage-architect` and a grep would still pass while `sage-chat`, the only agent that can
+    reach the tool, had never been taught it. Resolving the agent first makes the assertion about
+    the claim rather than about the file. The pack is read raw on purpose: that file IS this one
+    agent's instructions, so there is no holder to resolve.
+    """
     root = Path(__file__).resolve().parents[2]
     pack = (root / "template" / "chat" / "AGENTS.md").read_text()
-    mirror = (root / "opencode.json").read_text()
+    agents = json.loads((root / "opencode.json").read_text())["agent"]
+    # Pinned before it is read into, so a renamed or removed agent reds here and says which. A
+    # tolerant lookup — `.get("agent", {}).get("sage-chat", {}).get("prompt", "")` — would assert
+    # three phrases against the empty string and pass for nothing, which is the same defect this
+    # test was just repaired for, one level up.
+    assert "sage-chat" in agents, sorted(agents)
+    mirror = agents["sage-chat"]["prompt"]
+    assert mirror.strip(), "the mirrored prompt is empty, so the assertions below prove nothing"
 
-    for name, text in (("AGENTS.md", pack), ("opencode.json", mirror)):
+    for name, text in (("AGENTS.md", pack), ("opencode.json:agent.sage-chat.prompt", mirror)):
         assert NEEDS_MORE_THAN_SQL_MARKER in text, name
         # The two halves the check depends on. Teaching the token without the order teaches a model
         # to claim before it has measured, and every one of those claims is dropped.
