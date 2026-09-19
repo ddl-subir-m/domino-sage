@@ -659,6 +659,17 @@ class FolderActUnavailable(Exception):
         super().__init__(reason)
 
 
+class ChartFontsMissing(RuntimeError):
+    """This image cannot draw text into a chart, so no PNG should be written at all (#444).
+
+    Its own class rather than a bare `RuntimeError` so `/api/chat/artifact` can answer it without
+    also swallowing one raised by a bug, which belongs in a traceback and not in a sentence handed
+    to the model. Not a `ValueError` either: that route turns those into the 400 the model reads as
+    "your markup was wrong", and the markup is fine — the fonts are absent. A model told to redraw
+    a good SVG redraws it until the turn's quiet window closes.
+    """
+
+
 class PlanArchiveRefused(Exception):
     """A plan document cannot be put away right now (#167).
 
@@ -10502,7 +10513,33 @@ class Orchestrator:
                     for key, value in node.attrib.items()
                 ):
                     raise ValueError("Chart SVG must use inline shapes and text without external resources.")
-            data = resvg_py.svg_to_bytes(svg_string=content, width=1200, height=700)
+            # The image apt-installs `git` and nothing else, so its system font database is
+            # EMPTY and resvg drew every `<text>` as nothing, silently (#444). Point it at the
+            # DejaVu faces `matplotlib` already ships inside its own package directory, and
+            # name all four generics: `font_dirs` alone resolves only an SVG that asks for
+            # "DejaVu Sans" by hand, and one generic alone makes that face the last-resort
+            # fallback for every family — sans-serif labels then render in serif.
+            # `skip_system_fonts` is load-bearing off the image too: without it a developer
+            # laptop renders from ITS fonts, so this line's regression test would pass there
+            # whatever we passed here. It costs the coverage those fonts would have added —
+            # DejaVu has no CJK, so a chart labelled in Japanese draws .notdef on a host that
+            # could have drawn it. Production loses nothing, having had no fonts at all, and
+            # matplotlib ships no CJK face to add here; non-Latin labels need their own issue.
+            import matplotlib
+
+            fonts = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
+            if not any(fonts.glob("DejaVu*.ttf")):
+                # Silence is what made #444 cost a live thread: resvg returns a clean PNG for a
+                # chart with no glyphs on it, and nothing downstream can tell that from a good
+                # one. Refuse before the write so no textless PNG reaches the thread.
+                log.error("chart render: no DejaVu faces under %s", fonts)
+                raise ChartFontsMissing(f"Chart fonts are missing from this image: {fonts}")
+            data = resvg_py.svg_to_bytes(
+                svg_string=content, width=1200, height=700,
+                font_dirs=[str(fonts)], skip_system_fonts=True,
+                font_family="DejaVu Sans", sans_serif_family="DejaVu Sans",
+                serif_family="DejaVu Serif", monospace_family="DejaVu Sans Mono",
+            )
         elif encoding == "base64" and path.endswith(".png"):
             try:
                 data = base64.b64decode(content, validate=True)
@@ -10960,6 +10997,76 @@ class Orchestrator:
                 "is only for a requested limit. Do not read unrelated raw rows into model context. "
                 "Source-code reads, tools, skills and task/to-do work remain available.")
 
+    def _delegated_models_note(self, thread_id: str) -> str:
+        """How to call a language model this Conversation was given, and WHICH ones those are.
+
+        The list is the point (#439). Before it, this paragraph told the agent to set `alias` to the
+        model's name "as this prompt names it" and the prompt named none, then offered the refusal as
+        the way to find out. Measured live: an agent asked for `gpt-5.4`, was refused, and asked
+        again for `sonnet` 46 seconds later — one wasted round trip on a turn that had already
+        computed its answer, with `sonnet` callable throughout.
+
+        `gpt-5.4` is not a guess out of nowhere, which is why naming the set is the fix rather than
+        better refusal copy. `opencode.json` names it top-level, no agent overrides it, and the shim
+        rewrites every request to the Ask slot without telling OpenCode — so it is the one model name
+        the agent reliably holds, and it is wrong on every call. That rewrite is deliberate and stays
+        (ADR-0057); what changes is that the agent is now told the names that will be accepted.
+
+        THROUGH `_delegated_aliases`, so this and the gate are two readings of one answer — the same
+        argument `_bindings_here` carries for the panel's tick (#410). A list rebuilt here would
+        agree until the next act is added to one of them, and the act that made this urgent is
+        exactly that: #410 made a model bound through **Use in app** callable, and it is not a chip,
+        so it was callable while named nowhere the agent could read.
+
+        NO NEW DOMINO READ on the turn's critical path, which `service.py`'s `sourceName` block
+        refuses for the same reason (#400, #417). `_bindings_here` and the chip read are local files,
+        `llm_router.resolve` is in process, and `_alias_listing` is TTL-cached and only reached when
+        the Conversation holds a chip. It runs inside the existing `setup.prompt` span, so its cost
+        is already on `/api/diag/timing` rather than hidden in a new one.
+
+        UNRESOLVED CHIPS ARE NAMED SEPARATELY, and leaving them out would have made the empty
+        sentence a lie. A chip whose Alias the listing would not answer for is a model the person put
+        in front of this Conversation and the turn cannot call; saying only "no language model is in
+        this conversation" would report the person's own act as absent rather than as unreachable.
+        """
+        try:
+            aliases, _labels, unresolved = self._delegated_aliases(self._chat_project(), thread_id)
+        except Exception:
+            # Loud, and back to the sentence that was here before: the refusal names the set, at the
+            # cost of a round trip. A prompt that cannot be rendered is a turn that cannot run, and
+            # the list is worth a wasted call rather than the whole turn.
+            log.exception("chat prompt: could not read which models this conversation can call")
+            aliases, unresolved = (), ()
+
+        if aliases:
+            named = ", ".join(f"`{name}` ({label})" if label and label != name else f"`{name}`"
+                              for name, label in aliases)
+            which = (f"This conversation can call: {named}. Pass one of those names as `alias`, "
+                     "spelled exactly as written here. No other name is accepted — in particular "
+                     "not the model name your own configuration gives you, which is not what "
+                     "reaches the gateway. ")
+        else:
+            which = ("No language model has been given to this conversation, so there is nothing "
+                     f"for `{delegated.TOOL_NAME}` to call this turn. Answer with the model you are "
+                     "already running on, and say what you would need if the question wants another. ")
+        if unresolved:
+            # Through the pack rather than spelled out, for the reason every model-facing noun on
+            # this branch is: `paranoid-pack` scans `sage/` only, so a hard-coded product name here
+            # is the one that survives a rename and goes on saying the old word to the person.
+            plural = len(unresolved) > 1
+            which += brand.text(
+                "Put in front of this conversation but not reachable this turn: {names} — "
+                "{assistantName} could not read {their} details, so {they} not callable right now. ",
+                names=", ".join(unresolved),
+                their="their" if plural else "its",
+                they="they are" if plural else "it is")
+        return (f"To call a language model this conversation has been given, use "
+                f"`{delegated.TOOL_NAME}` with that same token, `alias` set to the model's name, and "
+                f"your question as `prompt`. Up to {_DELEGATED_CALLS_MAX} calls per turn. {which}"
+                "A model that is not in this conversation is refused — never substitute another "
+                "model for the one you were asked for, and never say a model was used when it "
+                "refused.")
+
     def _findings_note(self, thread_id: str) -> str:
         """Where this Thread's findings are, and — only if there are any — how old and how big.
 
@@ -11037,12 +11144,7 @@ class Orchestrator:
             # workspace is `src/appLlm.ts`, which is correct for a published app's own call from a
             # browser and unusable from here — and an agent that found it told the person it could
             # not reach the model at all (#370).
-            (f"To call a language model this conversation has been given, use "
-             f"`{delegated.TOOL_NAME}` with that same token, `alias` set to the model's name as "
-             f"this prompt names it, and your question as `prompt`. Up to "
-             f"{_DELEGATED_CALLS_MAX} calls per turn. A model that is not in this conversation is "
-             "refused and the refusal names the ones that are — never substitute another model for "
-             "the one you were asked for, and never say a model was used when it refused."),
+            self._delegated_models_note(thread_id),
             self._data_use_note(),
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
