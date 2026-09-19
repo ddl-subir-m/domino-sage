@@ -20,6 +20,7 @@ owns the ThreadStore; this writes the file and says what it wrote.
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,35 @@ CAP_ROWS = 500
 # Measured in characters rather than rows because the row is not the unit that costs anything: a
 # table three times as wide costs three times as much for the same "give me 20 rows".
 VALUES_BUDGET_CHARS = 8000
+
+
+def json_safe(value):
+    """A warehouse value as JSON can carry it, with NaN and the infinities as `null` (#435).
+
+    Python's `json` writes a non-finite float as the bare token `NaN`, `Infinity` or `-Infinity`,
+    which no JSON reader downstream of here accepts: not the browser's, which paints the card, and
+    not `ChatTables.check`, which reads every `.table.json` back with `parse_constant` set and calls
+    what it finds invalid. So a NULL in one cell of a 106-column sample wrote a card nothing could
+    render, and then failed the whole turn that read it — measured live on `78e9223`, where a
+    3-row sample of `MARTS.MIXPANEL__EVENT` landed 222 bare `NaN` tokens and ended a turn that had
+    already computed its answer as `ok:false, decision="table generation failed"`.
+
+    `null` rather than a string: JSON has no NaN, the cell really is empty, and `"NaN"` in a numeric
+    column would be a value the card would print. This is a coercion on the way OUT, so nothing
+    upstream needs to know the format cannot hold what the store returned.
+
+    Containers are walked because a VARIANT column arrives as a dict or a list, and a non-finite
+    float one level down writes exactly the same bare token as one at the top.
+    """
+    if isinstance(value, float):
+        # `isfinite` and not `isnan`: `Infinity` is the same unreadable token for the same reason,
+        # and a COUNT over an empty group can produce one.
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    return value
 
 
 def stamp() -> str:
@@ -114,7 +144,10 @@ def record(
     an Artifact with no rows keeps, and that module re-checks every field of it.
     """
     examples_dir.mkdir(parents=True, exist_ok=True)
-    kept = list(rows[:cap])
+    # Coerced here, where the store's values enter this module, rather than at the write below:
+    # `kept` is also what `values` hands the model, and a `NaN` is no more readable in a tool reply
+    # than in the file (#435).
+    kept = [json_safe(row) for row in rows[:cap]]
     short = bool(truncated or len(rows) > cap)
 
     name = f"{slug}.table.json"
@@ -153,7 +186,12 @@ def record(
         if source:
             body["source"] = source
         body = table_shape.shape_only(body, read_at=stamp())
-    (examples_dir / name).write_text(json.dumps(body, indent=2, default=str) + "\n")
+    # `allow_nan=False` is the CHECK on the coercion above, not a second coercion: every float in
+    # `body` came through `json_safe`, so this can only raise if a later writer adds a field that
+    # skips it. Raising is the point — the alternative is writing another card nothing can read and
+    # failing the turn that read it, which is what #435 was.
+    (examples_dir / name).write_text(
+        json.dumps(body, indent=2, default=str, allow_nan=False) + "\n")
 
     return Receipt(
         path=f"examples/{examples_dir.name}/{name}",

@@ -569,7 +569,14 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
              f"The query ran: {shape}, now on screen as a card giving this result's shape.",
              f"Columns: {', '.join(receipt.columns) or '(none)'}."]
 
-    values = [list(row) for row in answer.rows] if verdict.discloses else []
+    # Through `json_safe` for the reason the card's rows are (#435), and separately from them: this
+    # lane's `record` call leaves `binding` and `table` empty, so `receipt.values` is always None
+    # here and these rows never passed through it. `_table` and `_files` hand the model the same
+    # list they wrote; `live_read_query` reads `answer.rows` again, so a `NaN` the file no longer
+    # holds would still reach the model — as the bare `nan` of a Python repr, on the one lane #435's
+    # own repro used to compute its answer. A model handed a token it cannot re-serialise writes it
+    # into the next table it composes, and that table fails validation exactly as this one did.
+    values = [result.json_safe(list(row)) for row in answer.rows] if verdict.discloses else []
     if verdict.discloses and len(json.dumps(values, default=str)) > result.VALUES_BUDGET_CHARS:
         # The same sentence `calculate` gives over the same budget, and the same repair: ask for
         # less. A result this wide is a grouped answer with too many groups, and the model can say

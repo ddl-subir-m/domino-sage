@@ -3599,11 +3599,41 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             )
         return line
     if kind in ("data_source", "datasource"):
-        # No resolved source name, no recipe. When a table is scoped, `name` is the table, so
-        # guessing with it sends the agent at a lookup that cannot succeed — and it comes back as
-        # "no Data Source registered under that name", which reads like the person attached the
-        # wrong thing. Saying "cannot query" is worse to read and far better to act on.
-        if scope and scope.get("table") and source_name:
+        # The store's own name, and the reason this is a variable rather than `source_name`: it is
+        # the ONLY argument `live_read_query` takes for a Data Source (`liveread/mcp.py` — "The Data
+        # Source name"), so a row that holds a usable name holds everything the tool needs, whether
+        # or not `add_thread_context` managed to stamp `sourceName` onto the chip.
+        #
+        # #436, and the production route to this branch is a transient one rather than the refusal
+        # in the ticket body. `add_thread_context` stamps `sourceName` only when `_context_source`
+        # resolves, and that helper swallows `ResourceUnavailable` — Domino not answering, or
+        # answering and refusing. A chip the Workbench posted correctly, attached in those seconds,
+        # is written without a `sourceName`, nothing retries it, and every later turn in the Thread
+        # was then told the store could not be queried — about a store reachable again by then whose
+        # name was in the chip the whole time.
+        #
+        # The refusal the ticket was filed on is NOT that. It ran on a chip a sibling session posted
+        # by hand while verifying #408, carrying the raw Domino id in `id` and no `resourceId`. The
+        # Workbench door never posts that shape (`workbench/js/api.js:531` sends `resourceId` and no
+        # `id`), so it proves nothing about production and is not what this branch is justified on.
+        #
+        # When a table is scoped and no source name resolved, `name` is the TABLE, so it is not a
+        # store name and guessing with it sends the agent at a lookup that cannot succeed. That case
+        # alone still falls through.
+        # NOT re-resolved lazily here when `sourceName` is missing and `resourceId` is present,
+        # though that is the obvious alternative and it was considered. It would put a Domino round
+        # trip inside prompt rendering, on the turn's critical path, and turn latency is under
+        # active work (#400, #417) — the wrong thing to charge for a field that is only ever absent
+        # after an outage. For a Workbench chip `item["name"]` IS `resource.name` (`api.js:533`),
+        # which is the same string the resolve would return, so the cheap read is also the correct
+        # one. Do not "fix" this into a lookup.
+        # Read off the item rather than off `name`, which is not the same question: `name` carries
+        # the display fallbacks (`item["id"]`, then the literal "unnamed"), and neither of those is
+        # a store `live_read_query` can look up. Passing one would put this row back in the business
+        # of naming a route that cannot work — the defect, with the arrow turned around.
+        store = source_name or ("" if scope and scope.get("table")
+                                else str(item.get("name") or "").strip())
+        if scope and scope.get("table") and store:
             dotted = scope_label(scope)
             cols = item.get("columns") if isinstance(item.get("columns"), list) else []
             col_txt = ", ".join(
@@ -3616,32 +3646,59 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 for c in cols[:40]
             ).strip()
             extra = f" Columns: {col_txt}." if col_txt else ""
+            # The tools come first and Python second, because on this side of the fork Python is
+            # usually the route the turn does NOT have: a `data_answer` turn is read-only and a
+            # `data_artifact` turn keeps an allowlist, and both of them drop the shell while keeping
+            # every `live_read_*` tool (`shim/enforcement.py`). A recipe naming the store by name
+            # is the most specific instruction in the prompt about that store, so when it named the
+            # one unrunnable route it beat the general note higher up that named the right one.
+            #
+            # Python is kept rather than deleted. An unbounded Chat turn has the shell and may have
+            # no live-read tool at all — the MCP handshake can land after the tool list is fixed —
+            # and a row that names a store while leaving the route unsaid is #370.
             return brand.text(
-                "- {dataSource} {name}, table {dotted}.{extra} Query it with "
+                "- {dataSource} {name}, table {dotted}.{extra} To work a number out of it — a "
+                "count, a total, an average, a ranking, a group-by — call `live_read_query` with "
+                "this turn's token, source {quoted}, and one SELECT against {dotted}. To see a few "
+                "rows, call `live_read_table` with the same token and source. If those tools are "
+                "not in your tool list this turn and you have a shell, "
                 "`from domino_data.data_sources import DataSourceClient` then "
                 '`DataSourceClient().get_datasource({quoted}).query('
                 '"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
                 "Do not search files, env, or /opt/sage for credentials. Do not invent rows. "
                 "If the query errors, tell the person.",
-                name=name, dotted=dotted, extra=extra, quoted=repr(name),
+                name=name, dotted=dotted, extra=extra, quoted=repr(store),
             )
         extra = f" at {path}" if path else ""
-        if source_name:
+        if store:
             # A bare Data Source: no table pinned, but the store IS named, so it is reachable. This
             # used to fall through to the sentence below and claim the workspace could not query it
             # at all. Live, a creator asked for a dashboard over a Snowflake source with no table
             # picked, and the build shipped invented rows behind a note saying the connection needed
             # table names — which nothing had asked them for. Not knowing WHICH table is a question;
             # it is not the store being shut.
+            #
+            # Same ordering as the scoped row above, for the same reason (#436), and the same reason
+            # the old text could not be left alone even where it resolved a source name: "list its
+            # tables before you answer" was an instruction to run Python on a turn that has none.
             return brand.text(
                 "- {dataSource} {name}{extra}. No {scope} is chosen on it, so which tables it holds is "
-                "not recorded here. Reach it with "
-                "`from domino_data.data_sources import DataSourceClient` then "
-                "`DataSourceClient().get_datasource({quoted})`, and list its tables before you "
-                "answer — do not guess a table name. Do not search files, env, or /opt/sage for "
-                "credentials. Do not invent rows. If the query errors, tell the person.",
-                name=name, extra=extra, quoted=repr(source_name),
+                "not recorded here. To work a number out of it, call `live_read_query` with this "
+                "turn's token, source {quoted}, and one SELECT naming the table in full as "
+                "database.schema.table. To see a few rows, call `live_read_table` with the same "
+                "token and source. If those tools are not in your tool list this turn and you have "
+                "a shell, `from domino_data.data_sources import DataSourceClient` then "
+                "`DataSourceClient().get_datasource({quoted})`. Do not guess a table name — if the "
+                "person has not named one and you cannot find it, say so. Do not search files, env, "
+                "or /opt/sage for credentials. Do not invent rows. If the query errors, tell the "
+                "person.",
+                name=name, extra=extra, quoted=repr(store),
             )
+        # Reached only when a table is scoped and no source name resolved, which is the one shape
+        # where nothing here knows what to pass as `source` — `name` is the table. Before #436 this
+        # also caught every chip that simply arrived without `sourceName`, and there it was a false
+        # statement about a store the turn could have queried by name. Narrow it further only with a
+        # source name in hand: this sentence is what a turn says when it genuinely has none.
         return brand.text(
             "- {dataSource} {name}{extra}. This workspace cannot query it live. Do not invent rows. "
             "Say that you cannot open it.",
@@ -3703,6 +3760,36 @@ def _take_no_build_marker(text: str) -> tuple[str, bool]:
     agent says — a bare NOTHING_TO_BUILD sitting under a friendly explanation reads as a leaked
     error code, which is a smaller version of the same defect this whole mechanism exists to fix."""
     stripped = _NO_BUILD_LINE.sub("", text)
+    return stripped, stripped != text
+
+
+# The second marker, and deliberately the same mechanism as the one above (#411, ADR-0058). A Chat
+# data turn composes SQL; when SQL cannot reach the question, ADR-0058 says the turn offers the lane
+# that can rather than improvising its way around the gap — and the only thing in the loop that reads
+# the question AND knows the tool's reach is the model, so the model has to be the one that claims it.
+#
+# A noun phrase rather than a verdict, matching NOTHING_TO_BUILD: it names the condition — this needs
+# more than SQL — rather than announcing a failure, and it points at the door being offered rather
+# than only at what did not work.
+NEEDS_MORE_THAN_SQL_MARKER = "NEEDS_MORE_THAN_SQL"
+# Its own line, with the wrappers a model reaches for unprompted tolerated, and NOT tolerated
+# mid-sentence — the whole of the reasoning at `_NO_BUILD_LINE` applies here unchanged. Mid-sentence
+# is where a model QUOTES the marker while explaining itself ("I would emit NEEDS_MORE_THAN_SQL if
+# …"), and reading that as a claim hands every agent an accidental way to draw a card nobody asked
+# for. The prompt that teaches this marker necessarily names it, so the quoting case is not
+# hypothetical here; it is the expected first failure.
+_NEEDS_MORE_THAN_SQL_LINE = re.compile(
+    rf"^[ \t]*[`*_]*{NEEDS_MORE_THAN_SQL_MARKER}[`*_]*[ \t]*$\n?", re.MULTILINE)
+
+
+def _take_needs_more_than_sql_marker(text: str) -> tuple[str, bool]:
+    """Split one assistant text part into the prose to show and whether it asked for the other lane.
+
+    Stripped for the reason `_take_no_build_marker` strips its own: it is a signal addressed to Sage,
+    and a bare NEEDS_MORE_THAN_SQL sitting under the agent's explanation reads as a leaked error code
+    to the one person who reads every word the agent says. Here the prose under it is the answer —
+    what SQL COULD reach — so the marker sits directly above text the person is meant to trust."""
+    stripped = _NEEDS_MORE_THAN_SQL_LINE.sub("", text)
     return stripped, stripped != text
 
 
@@ -4942,6 +5029,32 @@ class Orchestrator:
         # receipt written at the end of the turn reads the breakdown. Reset when the turn's token is
         # minted, so a count is always about one turn.
         self._delegated_calls: dict[str, dict[str, int]] = {}
+        # Statements this turn actually sent to a warehouse, per Conversation (#411, ADR-0058). The
+        # cheap check behind the marker above: the door is for a question SQL could not express, and
+        # a turn that composed nothing has not established that. One writer, at the `run_statement`
+        # wrapper where the Turn is built; one reader, at the turn's conclusion.
+        #
+        # ATTEMPTS, NOT SUCCESSES. A statement that timed out or that the store refused was still
+        # composed and still sent, and `StatementTimeout` is its own type precisely so that a turn
+        # can tell "the store said no" from "I have no way to ask" (#399, #408). Counting only what
+        # came back would make the slowest questions — the ones most likely to need the other lane —
+        # the ones that can never reach the door.
+        self._statements_tried: dict[str, int] = {}
+        # Grants the door above has handed out and not yet spent, per Conversation (#411).
+        #
+        # SERVER-MINTED AND SINGLE-USE, and that is the whole reason this is not a request-body
+        # boolean like `skipTableGate`, `investigationAnswered` or `datasetDismissed`. Every one of
+        # those is client-supplied and every one of them gates a CARD: the worst a forged one does is
+        # skip a question. This flag suppresses bounded arming, so a forged one would hand a browser
+        # the shell lane. It is minted when the offer is drawn, tied to that offer, spent once on the
+        # replay, and a replay presenting no token or a spent one gets the bounded lane like any
+        # other turn.
+        #
+        # PER CALCULATION, NOT PER THREAD, which is the whole decision (Project owner, 2026-09-18).
+        # Reusing `decide_thread_investigation` would have made the accept Thread-wide while the
+        # decline stayed per-question, and that mismatch — not the offer — is what reached into
+        # #389's one-way door. Nothing here reads or writes investigation state.
+        self._other_lane_grants: dict[str, set[str]] = {}
         # The step lines those calls owe the person, waiting for the Chat loop to drain them. The
         # call is served on a route's own thread and the turn is a generator on another, so a queue
         # is what makes the count in the line the count the cap enforced rather than a second one
@@ -8034,7 +8147,8 @@ class Orchestrator:
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                     already_asked: bool = False, skip_table_gate: bool = False,
                     skip_dataset_gate: bool = False, dismissed_dataset: str = "",
-                    skip_investigation_gate: bool = False, declined: bool = False):
+                    skip_investigation_gate: bool = False, declined: bool = False,
+                    other_lane_grant: str = ""):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
         `already_asked` means this question is on the Thread and was offered Build rather than an
@@ -8097,7 +8211,8 @@ class Orchestrator:
                                         skip_dataset_gate=skip_dataset_gate,
                                         dismissed_dataset=dismissed_dataset,
                                         skip_investigation_gate=skip_investigation_gate,
-                                        declined=declined):
+                                        declined=declined,
+                                        other_lane_grant=other_lane_grant):
                 if ev.get("type") == "done":
                     # Every way this turn can end passes through a `done`, and there are eight of
                     # them — the gates, the handoff short-circuit, the caps, a failed step, an
@@ -10078,6 +10193,10 @@ class Orchestrator:
         with self._delegated_lock:
             self._delegated_calls.pop(thread_id, None)
             self._delegated_lines.pop(thread_id, None)
+        # And the statement count, here for the same reason and with the same failure in mind
+        # (#411): a turn that died holding a count would let the NEXT turn claim it had tried SQL
+        # when it had not, which is exactly the unchecked claim the check exists to catch.
+        self._statements_tried.pop(thread_id, None)
         return token
 
     def _live_read_thread(self, token: str) -> str | None:
@@ -10240,6 +10359,17 @@ class Orchestrator:
                 persist = lambda ev: workspace.append_history(ev, thread_id)
             project.shim.data_use.record(event, reply, persist, turn_id)
 
+        def count_statement(source, sql, **kw):
+            """Send one composed statement, and remember that this turn composed one (#411).
+
+            Counted BEFORE the call rather than after it, so a statement that raises still counts:
+            see `_statements_tried`. Wrapping here rather than inside `_statement` keeps the count
+            on the same object that already holds the turn's other per-turn tallies, and keeps
+            `liveread.run` a pure function of its `Turn` — it takes no orchestrator to test.
+            """
+            self._statements_tried[thread_id] = self._statements_tried.get(thread_id, 0) + 1
+            return self._resources.run_statement(source, sql, **kw)
+
         def analyze_text_batch(request: dict):
             return project.shim.handle(request, project=project.id,
                                        session=f"{thread_id}:text-analysis")
@@ -10258,7 +10388,7 @@ class Orchestrator:
             scope_for=scope_for,
             source_for=sources.get,
             sample_rows=self._resources.sample_rows,
-            run_statement=self._resources.run_statement,
+            run_statement=count_statement,
             list_files=list_files,
             dataset_root=dataset_root,
             upload_for=upload_for,
@@ -10796,6 +10926,28 @@ class Orchestrator:
                 "Reach for this rather than reading rows and adding them up, and rather than "
                 "writing Python. If the question cannot be put in one SELECT, say so and say what "
                 "you would need. "
+                # The marker, taught where the tool it is about is taught (#411, ADR-0058). Two
+                # things it must carry, both learned the hard way. The order — try first, then
+                # claim — because the check behind it drops a claim from a turn that composed
+                # nothing, so a model that emits it early gets no card and the person gets no door.
+                # And the own-line rule, because a model that mentions the marker inside its
+                # explanation is quoting this very sentence, and that must not count as asking.
+                # THE EXAMPLES COME FROM ADR-0058's "does not reach" LIST, and getting them from
+                # anywhere else is how this sentence went wrong once already (#411). The first
+                # draft named a correlation, a cohort, a funnel and a cross-source join — all four
+                # of which that ADR names as things SQL DOES reach, in one statement, and three of
+                # which this very paragraph offers `live_read_query` for four sentences earlier. A
+                # prompt that lists the same work on both sides does not teach a rule; it hands the
+                # model a licence to pick either, and the nearest, most concrete list wins.
+                f"If you have run a statement and the answer still needs more than SQL can reach — "
+                f"a CSV or Dataset file, model fitting, anything wanting a library — then answer "
+                f"what you CAN from what you measured, say what you would need for the rest, and "
+                f"put {NEEDS_MORE_THAN_SQL_MARKER} on a line of its own at the end. Sage then offers "
+                f"the person the lane that can run it. A correlation, a percentile, a ranking, a "
+                f"cohort, a funnel and a join across sources are NOT that — they are one statement, "
+                f"so compose it rather than asking for another lane. Only after you have tried a "
+                f"statement, and only on its own line — naming it inside a sentence is not asking "
+                f"for it. "
                 "For CSV totals use live_read_files with operation=sum, dataset=upload, the authorized "
                 "path, group_by, sum_column, and selected_fields (result columns and/or total). "
                 "This one call calculates locally, writes a table, and returns the selected result. "
@@ -11002,7 +11154,8 @@ class Orchestrator:
     def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                      already_asked: bool = False, skip_table_gate: bool = False,
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
-                     skip_investigation_gate: bool = False, declined: bool = False):
+                     skip_investigation_gate: bool = False, declined: bool = False,
+                     other_lane_grant: str = ""):
         import time
 
         project = self._chat_project()
@@ -11064,8 +11217,16 @@ class Orchestrator:
         # turn that drew the candidate card wrote this sentence to the Thread before it drew one, so
         # writing it again would print the person's question twice under one card. The investigation
         # card (#386) is a third of the same shape, and both of its answers replay through here.
+        # Spent here, above the gates, because it decides two things below: whether the question is
+        # written down again, and whether the bounded lane is armed at all. A replay that presents
+        # nothing, or a token already spent, falls through as an ordinary turn — it does not fail,
+        # it is simply bounded, which is what every turn without a card behind it is.
+        other_lane_granted = self._spend_other_lane_grant(thread_id, other_lane_grant)
+        # A replay under a grant joins the three flags below for their reason, not a new one: the
+        # turn that drew the card already wrote this question into the Thread, and writing it again
+        # prints the person's question twice under one card.
         asking = (not already_asked and not skip_table_gate and not skip_dataset_gate
-                  and not skip_investigation_gate)
+                  and not skip_investigation_gate and not other_lane_granted)
         if asking:
             store.append_history(thread_id, user_ev)
             yield user_ev
@@ -11135,6 +11296,13 @@ class Orchestrator:
         # file is a record of what was measured and is no longer a permission to measure.
         investigation = store.read_investigation(thread_id)
         investigating = investigation.get("state") == "open"
+        # Two ways to reach an unbounded turn, and they are deliberately NOT one thing (#411).
+        # `investigating` is a standing grant on the Thread, recorded, visible and closable;
+        # `other_lane_granted` is one calculation the person clicked for, spent, and gone. They meet
+        # at the two arming sites below and nowhere else — in particular the table gate keeps
+        # reading `investigating` alone, because a grant for one calculation says nothing about
+        # which table the NEXT question should start from.
+        unbounded = investigating or other_lane_granted
 
         # The classifier, at most once per turn (#392, ADR-0059). It used to run in one place, below
         # both record gates; the funnel under this reads it above them. Memoised rather than moved,
@@ -11329,8 +11497,12 @@ class Orchestrator:
         # exemption is not one: `data_answer` arms `arm_read_only`, whose `READ_ONLY_DENIED =
         # WRITE_TOOLS | SHELL_TOOLS` takes the shell, and `data_artifact` leaves read plus
         # `artifact_write`, which cannot write outside `examples/<threadId>/`. Either way the turn
-        # loses Python, and Python is the only way to the warehouse — `live_read_table` accepts no
-        # SQL. The third route in is the classifier's own fallback through `_plain_chat_answer_only`,
+        # loses Python. That used to mean it lost the warehouse with it — `live_read_table` accepts
+        # no SQL — and #408 is the tool that made it untrue; what the turn keeps is `live_read_query`
+        # on both lanes, so bounding it no longer costs it the store. Said here because the belief
+        # outlived the code once already: the Data Source row in `_chat_context_line` went on
+        # handing every turn a Python recipe, and #436 is a turn that read it and gave up.
+        # The third route in is the classifier's own fallback through `_plain_chat_answer_only`,
         # which is why the gate is on `answer_only` rather than on the label.
         #
         # WHAT MAKES THAT SAFE IS THE GRANT, AND NOTHING ELSE (#386, ADR-0056). This used to read
@@ -11347,7 +11519,7 @@ class Orchestrator:
         # exemption shut.
         artifact_token = (
             project.control.arm_chat_artifact()
-            if intent.valid and intent.label == "data_artifact" and not investigating else None
+            if intent.valid and intent.label == "data_artifact" and not unbounded else None
         )
         # The else branch scans the ask, not the binding: `items` is already bound above, and its
         # names are masked out of the text the data-ask scan reads (#421). Without that, a store
@@ -11357,7 +11529,7 @@ class Orchestrator:
             intent.label in {"plain_answer", "data_answer"}
             if intent.valid and intent.label != "other_chat"
             else _plain_chat_answer_only(prompt, [str(i.get("name") or "") for i in items])
-        ) and not investigating
+        ) and not unbounded
         plain_answer_token = (
             project.control.arm_read_only("question") if answer_only else None
         )
@@ -11405,21 +11577,30 @@ class Orchestrator:
                 chat_approved.names, chat_approved.order
             )
         tap: _EventTap | None = None
-        from ..workspace.chat_tables import ChatTables, without_failed_tables
+        from ..workspace.chat_tables import ChatTables, failed_table_name, without_failed_tables
 
         tables: ChatTables | None = None
         primary_body = ""
         last_text = ""
         streamed_body = ""
         artifacts_finished = False
+        # Set where the body is finalised below, read at the turn's conclusion (#411). A `nonlocal`
+        # rather than a return value because every exit from this turn goes through
+        # `publish_chat_artifacts`, and only one of them — the completed one — may draw the card.
+        asked_for_the_other_lane = False
 
         def publish_chat_artifacts(outcome: str):
             """Every active Chat exit validates bytes before retention, text and artifacts."""
-            nonlocal artifacts, immediate, artifacts_finished
+            nonlocal artifacts, immediate, artifacts_finished, asked_for_the_other_lane
             if tables is None or artifacts_finished:
                 return {}
             body = primary_body if tables.repair_ran else last_text or streamed_body
             body = _take_no_build_marker(body)[0]
+            # Stripped on EVERY exit, claimed on all of them too, because the card is drawn on one.
+            # A turn that stopped or timed out still had its prose cleaned: the marker is Sage's
+            # signal either way, and leaving it painted on a stopped turn would show the person a
+            # bare token under a half-finished answer.
+            body, asked_for_the_other_lane = _take_needs_more_than_sql_marker(body)
             with timing.span("after.artifacts"):
                 revert_denied_writes(project.record.path, thread_id, tables.before)
                 invalid = tables.check(body)
@@ -11452,6 +11633,18 @@ class Orchestrator:
                            else "I could not generate the table.")
                 if len(invalid) > 1:
                     message = message.replace("the table", "some tables")
+                # WHICH table, because this sentence can stand beside a card that worked. One turn
+                # can write several: #435 read a 106-column sample AND computed an answer, failed on
+                # the sample and published the answer, and said "I could not generate the table"
+                # over a correct card. Two claims about two different files, and nothing on screen
+                # said which was which — the person could only guess whether to trust the number.
+                #
+                # The file's own name, which is what the card is captioned with, so the sentence and
+                # the thing it is about are read with one word in common.
+                # A set: `rglob` is recursive, so two invalid files in different subdirectories
+                # of this Thread can share a basename, and "moves, moves" names neither.
+                named = ", ".join(sorted({failed_table_name(rel) for rel in invalid}))
+                message = f"{message.rstrip('.')}: {named}."
                 ev = {"type": "error", "reason": "table generation failed", "message": message}
                 events.append(ev)
             if runaway:
@@ -12109,6 +12302,24 @@ class Orchestrator:
             done = {"type": "done", "ok": True, "decision": "answered"}
             if invalid:
                 done.update(ok=False, decision="table generation failed")
+            # The door onto the lane that can compute (#411, ADR-0058). AFTER the answer, and that
+            # position is the decision rather than a convenience.
+            #
+            # NOT A THIRD GATE. ADR-0059 orders two gates that fire BEFORE the turn — broad question
+            # before narrow one — and neither order nor membership is touched here. This condition
+            # cannot exist up there: it needs the model to have composed a statement AND to have said
+            # SQL does not reach the question, and before the turn runs neither fact exists. A third
+            # card dropped into that block would be asking the person to predict what the model is
+            # about to find out.
+            #
+            # WHAT THE POSITION BUYS is that "No" costs nothing. The prose above this card is the
+            # answer — what SQL COULD reach — so declining records the answer and replays nothing.
+            # The investigation card must replay on both buttons because it ends the turn before the
+            # model runs and therefore owes an answer either way (`answerInvestigationAndAsk`,
+            # `store.js`). Here the debt is already paid. Do not make the two symmetrical.
+            if offer := self._chat_other_lane_offer(
+                    store, thread_id, prompt, claimed=asked_for_the_other_lane):
+                yield from offer
             if step_error and not answered:
                 # The turn ended, and the person has nothing. `done ok:True` with an empty Thread is
                 # the shape that sends someone looking for a Sage bug when the provider had already
@@ -13426,6 +13637,95 @@ class Orchestrator:
         for ev in events:
             store.append_history(thread_id, ev)
             yield ev
+
+    # ---- the door onto the lane that can compute (#411, ADR-0058) --------------------------------
+
+    def _chat_other_lane_offer(self, store: ThreadStore, thread_id: str, prompt: str, *,
+                               claimed: bool):
+        """Offer the lane with Python, or None to let the answer stand as the whole turn.
+
+        THE MODEL PROPOSES AND A CHEAP CHECK VERIFIES. The model is the only thing in the loop that
+        reads the question and knows what the tool reaches, so it has to make the call; but an
+        unchecked claim turns this door into the default, and #400 measured what the default costs —
+        400.2 seconds to reach an answer SQL could have given in one statement. So the check asks the
+        one thing the claim needs and nothing more: did this turn actually send a statement. A turn
+        that composed nothing has not established that SQL could not express the question.
+
+        DELIBERATELY NOT A SECOND OPINION ON THE QUESTION. Nothing here re-reads the prompt to judge
+        whether it really needs Python. That would be Sage deciding what the model may reach, which
+        is the shape #381's review rejected and the shape ADR-0056 exists to keep out. The check
+        catches a model reaching for the door out of habit, not a model that is wrong about SQL.
+
+        BOTH FAILURE DIRECTIONS DEGRADE SAFELY, which is the reason this shape was chosen over a
+        prose scan. A marker the model emits when it should not is stripped and dropped here, so the
+        person sees the answer and no card. A marker it fails to emit when it should leaves the turn
+        ending exactly as it ends today — an answer with no offer under it. Neither failure shows the
+        person a wrong card, so the feature can be measured live without risking the turn.
+
+        THE FIRE RATE IS THE THING TO MEASURE, NOT THE TEST. Every test here supplies the marker;
+        none of them establishes how often a model emits one unprompted, because the trigger is a
+        token taught in a prompt and nothing in a suite measures whether a prompt is obeyed. Add the
+        safe degradation above and the two failure modes become indistinguishable from success at
+        this level: a door that never opens looks exactly like a door nobody needed. That is how
+        #428 shipped and how #408 shipped unreachable — so the log line below exists to make a
+        silent zero visible rather than assumed, and the rate belongs in a live measurement.
+        """
+        if not claimed:
+            return None
+        tried = self._statements_tried.get(thread_id, 0)
+        if not tried:
+            # Logged rather than dropped in silence. A run of these is the signal that the marker is
+            # being quoted out of its own instruction or reached for by habit, and the rate is not
+            # recoverable after the fact from a turn that looks exactly like a turn that never asked.
+            log.info("chat: the turn asked for the other lane without composing a statement — "
+                     "no card drawn (#411)")
+            return None
+        log.info("chat: offering the other lane after %d statement(s) (#411)", tried)
+        return self._chat_other_lane_offer_events(store, thread_id, prompt)
+
+    def _chat_other_lane_offer_events(self, store: ThreadStore, thread_id: str, prompt: str):
+        """The card itself. No `done` — unlike every other card in this file.
+
+        The other cards END the turn to ask their question, so each one owes the client a `done` and
+        each one's buttons must replay the question that never ran. This card is drawn UNDER a
+        finished answer, and the turn's own `done` follows it a few lines below. Giving it one here
+        would settle the turn twice.
+        """
+        message = brand.text(
+            # The maintainer's wording, kept rather than improved. It says three things the person
+            # needs in order to choose and nothing else: that the calculation cannot run on this
+            # lane, that {assistantName} can do it on another, and roughly what that costs. The cost
+            # sentence is honest about the ORDER OF MAGNITUDE rather than the number — #400 measured
+            # 400.2s — which is what someone deciding whether to wait actually needs.
+            "That needs a calculation {assistantName} can't run here. Want it worked out? "
+            "It'll take a few minutes.")
+        # Minted here, where the offer is made, so the grant cannot exist without a card that
+        # offered it. Held in memory rather than written to the Thread: a grant that survived a
+        # restart would be a standing capability, which is the Thread-wide shape this door exists
+        # not to be. Losing one costs the person a click on a card that is still on screen.
+        grant = new_id("lane_grant")
+        self._other_lane_grants.setdefault(thread_id, set()).add(grant)
+        ev = {"type": "other-lane-offer", "prompt": prompt, "message": message,
+              # Which conversation the click spends the grant in, as the cards above carry it.
+              "threadId": thread_id, "grant": grant}
+        store.append_history(thread_id, ev)
+        yield ev
+
+    def _spend_other_lane_grant(self, thread_id: str, grant: str) -> bool:
+        """Take one unspent grant, or answer False and leave the turn bounded like any other.
+
+        SPENT ON PRESENTATION, not on success. A replay that arrives and then fails for its own
+        reasons has still used its click, and leaving the grant live would let one card be redeemed
+        repeatedly — the difference between a per-calculation grant and a standing one, which is the
+        whole point of this shape. The card is still on screen if the person wants to ask again.
+        """
+        live = self._other_lane_grants.get(thread_id)
+        if not grant or not live or grant not in live:
+            return False
+        live.discard(grant)
+        if not live:
+            self._other_lane_grants.pop(thread_id, None)
+        return True
 
     # ---- the Dataset gate (#196, ADR-0039) -------------------------------------------------------
 

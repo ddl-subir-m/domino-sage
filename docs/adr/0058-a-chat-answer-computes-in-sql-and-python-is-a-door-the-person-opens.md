@@ -155,3 +155,84 @@ Three things do NOT change, and are restated because each looks like it might:
 Recorded as an amendment rather than a new ADR because it changes this decision's scope and nothing
 else; a reader who finds only the body above would build the SQL path into one lane and leave the
 other exactly as this ADR describes it.
+
+## Amendment: where the door is, and why it is not a gate (2026-09-18)
+
+The body above decided that a turn which cannot express its question in SQL offers the other lane.
+This records where that offer fires, because the obvious place is wrong and the reason is not
+obvious.
+
+**The offer is drawn at the turn's conclusion, not in the gate block.** Two gates already fire in
+`_chat_stream` before the turn runs, and ADR-0059 fixed their order — the broad question before the
+narrow one. This is not a third one, and that ordering is untouched. The condition here cannot exist
+before the turn runs: it needs the model to have composed a statement AND to have said that one
+SELECT does not reach the question, and neither fact exists while the gates are firing. A card put
+up there would be asking the person to predict what the model is about to find out.
+
+**The model proposes with a marker and a cheap check verifies it.** The model is the only thing in
+the loop that reads the question and knows the tool's reach, so it makes the call. It claims by
+emitting `NEEDS_MORE_THAN_SQL` on a line of its own, which is the `NOTHING_TO_BUILD` mechanism and
+deliberately the same one: a token no model emits by accident, tolerated with the wrappers a model
+reaches for unprompted, NOT tolerated mid-sentence — that is where a model quotes the marker while
+explaining itself — and stripped before the prose is shown, because a bare token under a friendly
+answer reads as a leaked error code.
+
+The check asks one thing: did this turn actually send a statement. A turn that composed nothing has
+not established that SQL could not express the question, and an unchecked claim turns this door into
+the default, which is what #400 measured at 400.2 seconds. Nothing re-reads the prompt to second-
+guess the model about SQL; that would be Sage deciding what the model may reach, which is the shape
+#381's review rejected. The check catches habit, not error. It counts ATTEMPTS rather than
+successes, because a statement that timed out was still composed and sent — `StatementTimeout` is
+its own type precisely so a turn can tell "the store said no" from "I have no way to ask".
+
+**"No" is cheap here, and that asymmetry with the investigation card is deliberate.** The prose this
+card sits under is the answer — what SQL could reach — so declining records the answer and replays
+nothing, and writes no row: a line saying a capability was NOT granted is a receipt for nothing
+happening, which is the rule ADR-0056 already states for its own decline. The investigation card
+must replay on BOTH buttons because it ends the turn before the model runs and therefore owes an
+answer either way. Do not make the two symmetrical; the difference is the position, not an
+oversight.
+
+**Accepting grants ONE calculation, not the Thread.** The accept mints a grant server-side when
+the card is drawn, ties it to that card, spends it once on the replay, and then it is gone. It does
+not open an investigation and it neither reads nor writes investigation state.
+
+This is the decision, and the first draft got it wrong in a way worth recording. It reused
+`decide_thread_investigation("open")` — ADR-0056's standing grant — on the argument that a grant the
+person can see and take back beats one that expires silently. But the decline here was always
+per-calculation, because "no" to working out one number is not "no" to the conversation. That left
+the accept Thread-wide and the decline per-question, and **that mismatch, not the offer, is what
+reached into #389**: `decide_thread_investigation` early-returns only when the state is already
+`open`, so a `declined` row is overwritten with `{"state": "open"}` and accepting would re-open a
+Thread that #389 says can only be entered through the investigation card. Making both halves
+per-calculation removes the second door rather than trading it for a different cost — and it also
+removes the alternative that was weighed against it, because this card never reads investigation
+state at all, so one early "Just answer this" cannot silently kill the feature either.
+
+**The grant is server-minted and single-use, and deliberately not a request-body boolean.**
+`skipTableGate`, `investigationAnswered` and `datasetDismissed` are all client-supplied, and every
+one of them gates a CARD: the worst a forged one does is skip a question. This flag suppresses
+bounded arming, so a forged one would hand a browser the shell lane. It is the shape
+`arm_chat_artifact()` and `arm_read_only()` already use in the same function. Spent on
+presentation rather than on success: a replay that then fails has still used its click, and leaving
+the grant live would let one card be redeemed repeatedly, which is the standing grant again by
+another route.
+
+The grant meets the standing one at exactly two places — the two arming sites — and nowhere else.
+The table gate keeps reading `investigating` alone, because a grant for one calculation says nothing
+about which table the next question should start from.
+
+**The fire rate is the open risk, and it is not a test question.** The trigger is a token taught in
+a prompt, and no suite measures whether a prompt is obeyed: every test here supplies the marker, so
+all of them together say nothing about how often a model emits one unprompted.
+
+The safe degradation above makes that worse rather than better, and it is worth being explicit about
+the trade. A false marker is stripped by the statement check and a missed one leaves the turn ending
+exactly as it ends today, so neither failure shows the person a wrong card — which is the right
+property to build for, and also the property that makes both failures invisible from here. A door
+that never opens looks exactly like a door nobody needed. That is how #428 shipped and how #408
+shipped unreachable.
+
+So the rate belongs in a live measurement, and until one exists this feature is UNVERIFIED in
+production however green the suite is. A `log.info` fires on both arms of the check — offered, and
+claimed-without-a-statement — so a silent zero is visible rather than assumed.

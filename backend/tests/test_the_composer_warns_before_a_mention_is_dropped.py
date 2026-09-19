@@ -151,12 +151,14 @@ def test_the_busy_helper_is_shared_rather_than_copied_a_fourth_time():
     """Cards in the transcript and the composer both draw a one-click act. The copies were at three
     when this surface asked for a fourth, and the two candidate cards (#183, #185) and the Dataset
     card (#196) each reached for it rather than write their own. The guardrail search's card
-    (ADR-0022) is the seventh and did the same, and the investigation offer (#386) is the eighth."""
+    (ADR-0022) is the seventh and did the same, the investigation offer (#386) is the eighth, and
+    the door onto the lane that can compute (#411) is the ninth — it reuses the investigation
+    card's accept action as well as this helper, so only its one server-side button is counted."""
     assert "useBusyAct() {" in UTIL
     assert "const [busy, run] = SW.util.useBusyAct();" in UI
     blocks = (WB / "js" / "components" / "message-blocks.js").read_text()
     assert "function useBusyAct() {" not in blocks
-    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 8
+    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 9
     # And the first caller outside a card: the bar that closes an investigation (#386). It is here
     # because it is the one that nearly did write its own — a hand-rolled `busy` flag with no
     # `catch`, on the control whose whole job is taking a capability back.

@@ -12,6 +12,12 @@ const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const frames = JSON.parse(fs.readFileSync(0, 'utf8'));
 const body = frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join('');
 
+// Counted, not stubbed silently: `readSSE` fires `store.refreshProblems()` once per failed
+// stream (ADR-0027), and whether a given ending is worth paying that for is a fact about the
+// sequence rather than the shape — reading store.js cannot answer it. The Build harness has
+// counted this since it shipped; Chat could not see it at all until #435.
+let healthCalls = 0;
+
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout, clearTimeout,
@@ -30,8 +36,9 @@ const sandbox = {
           : (sent = true, { done: false, value: new TextEncoder().encode(body) })),
       }) } };
     }
+    if (String(url).includes('health')) healthCalls += 1;
     return { ok: true, status: 200, headers: { get: () => 'application/json' },
-             json: async () => ({}), text: async () => '' };
+             json: async () => ({ problems: [] }), text: async () => '' };
   },
 };
 sandbox.window = sandbox;
@@ -59,4 +66,5 @@ for (const snap of seen) {
   if (typing && typing !== typings[typings.length - 1]) typings.push(typing);
 }
 const assistant = SW.store.get().messages.find((m) => m.role === 'assistant');
-console.log(JSON.stringify({ steps, typings, final: (assistant ? assistant.blocks : []) }));
+console.log(JSON.stringify({ steps, typings, healthCalls,
+                             final: (assistant ? assistant.blocks : []) }));

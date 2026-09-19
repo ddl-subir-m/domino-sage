@@ -1904,6 +1904,28 @@ window.SW = window.SW || {};
           threadId: ev.threadId || '',
           live: !!ev.live,
         });
+      } else if (ev.type === 'other-lane-offer' && ev.message) {
+        // The door onto the lane that can compute, drawn UNDER an answer rather than instead of one
+        // (#411, ADR-0058). Same `live` rule as the card above, and it inherits that card's reason
+        // whole: the accept grants a capability for the rest of the conversation and re-runs a
+        // question, which a message somebody is scrolling back through must not be able to do.
+        //
+        // What is different is what a retired card leaves behind, and it is nothing. This offer is
+        // per-question: it records no decision at all, so the next question that needs more than SQL
+        // is offered again — including in a conversation where the investigation card was already
+        // declined. "No" to working out one calculation is not "no" to the Thread (#389).
+        ensureAssistant().blocks.push({
+          type: 'other_lane_offer',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          threadId: ev.threadId || '',
+          // The server-minted, single-use grant this card's accept spends (#411). Carried opaquely
+          // and never read here. A replayed card from history still holds the string, which is
+          // harmless: `live` is false so there are no buttons, and the grant was spent on the click
+          // that made it useless anyway.
+          grant: ev.grant || '',
+          live: !!ev.live,
+        });
       } else if (ev.type === 'investigation-state') {
         // The grant and its end, in the conversation rather than only in the record. The bar above
         // the composer says what is true NOW; this says when it changed, which is the half a
@@ -2084,10 +2106,22 @@ window.SW = window.SW || {};
   // frame, which is not a failure, and the `done` that closes it, which carries `ok: false` like
   // every other unhappy ending and would otherwise be one. `ASKED_FOR` is the whole list, and it is
   // declared below with the gate decisions it is built from.
+  // `NO_PLATFORM_FAULT` is read HERE and not only at the withdrawal below, because the withdrawal
+  // is an `else` on this function and so never ran for an ending that carries `ok: false` — which
+  // is every ending in that list. Measured on #435 through `build_stream_harness`: a `done` with
+  // `ok:false, decision:"queries failed"` bought a listing, although #203 put that decision in the
+  // exemption precisely so it would not. The list's own test greps store.js for the string, so it
+  // pinned the entry and never the behaviour, and the entry has not worked since it shipped.
+  //
+  // The two questions are genuinely different and both are still asked: `ASKED_FOR` is "did the
+  // person ask for this ending", `NO_PLATFORM_FAULT` is "could a listing of models say anything
+  // about it". A turn can fail for real — `ok:false`, nobody asked for it — and still have nothing
+  // to do with the platform, which is exactly what a malformed table is.
   function endedBadly(ev) {
     if (!ev || ev.contextChanged) return false;
     if (ev.type === 'error') return true;
-    return ev.type === 'done' && ev.ok === false && !ASKED_FOR[ev.decision];
+    return ev.type === 'done' && ev.ok === false
+      && !ASKED_FOR[ev.decision] && !NO_PLATFORM_FAULT[ev.decision];
   }
 
   // Decisions whose own card already says what happened and what to do next. A red "Stopped —"
@@ -2150,7 +2184,17 @@ window.SW = window.SW || {};
   // every stray note or shell command would otherwise buy a listing for a turn that worked (#150).
   // `queries failed` is here for the same reason (#203): the turn ran, the model answered, and a
   // Data Source refused a query — nothing a listing of models can say anything about.
-  const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true };
+  // `table generation failed` is here for the reason the two beside it are, and it was missing
+  // for the whole of #435: a turn answered, wrote a correct card, left ONE malformed
+  // `.table.json`, and bought a listing of models to explain a file that failed validation.
+  // Nothing was asked of the gateway. The rule was already written with this case named — the
+  // test that pins `queries failed` says "or every broken table buys a listing that cannot say
+  // anything about it" — so this is the entry that sentence was about, added late.
+  //
+  // This withdraws the PLATFORM flag and nothing else. The `error` frame still goes up, the
+  // person still reads which table failed, and `done.ok` is untouched.
+  const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true,
+                              'table generation failed': true };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
   // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
@@ -6786,6 +6830,24 @@ window.SW = window.SW || {};
       return store.sendMessage(prompt, { echo: false, investigationAnswered: true });
     },
 
+    // The door onto the lane that can compute, accepted (#411, ADR-0058). ONE act, not two: there
+    // is no decision to record first, because the grant this replays under is per-calculation and
+    // the server minted it when it drew the card. Nothing is written to the conversation's record,
+    // which is the difference from `answerInvestigationAndAsk` above and the whole of the decision
+    // — accepting one calculation must not hand the Thread a standing grant, and must not touch the
+    // investigation card's own answer in either direction (#389).
+    //
+    // The grant goes back exactly as it arrived. It is opaque here: the client neither reads it nor
+    // invents one, and a replay carrying a spent or missing grant is an ordinary bounded turn.
+    async workItOutOnTheOtherLane(prompt, threadId, grant) {
+      // Re-read first, for the reason the two actions above do it: `sendMessage` reads
+      // `state.thread`, so replaying after a click onto another conversation would post this
+      // question into the one the person moved to — with `echo` off, where they would never see it.
+      const opened = await store.openThread(threadId);
+      if (!opened || !state.thread || state.thread.id !== threadId) return null;
+      return store.sendMessage(prompt, { echo: false, otherLaneGrant: grant });
+    },
+
     // The bar's Close. No replay: nothing was asked, and nothing is owed an answer. Closing takes
     // back the capability and LEAVES the findings where they are — see ADR-0056.
     async closeInvestigation(threadId) {
@@ -7256,7 +7318,8 @@ window.SW = window.SW || {};
     // record itself, on both answers.
     async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride,
                               skipTableGate = false, skipDatasetGate = false,
-                              datasetDismissed = '', investigationAnswered = false } = {}) {
+                              datasetDismissed = '', investigationAnswered = false,
+                              otherLaneGrant = '' } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
       // and said so in the transcript — which read as Sage answering a question about data with a
@@ -7363,7 +7426,7 @@ window.SW = window.SW || {};
           // The decline route ignores this and reads the pending question off the Thread, so a
           // stale tab cannot put a turn under a question it does not match.
           body: JSON.stringify({ prompt: text, skipTableGate, skipDatasetGate, datasetDismissed,
-                               investigationAnswered }),
+                               investigationAnswered, otherLaneGrant }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
@@ -7595,6 +7658,16 @@ window.SW = window.SW || {};
             ensurePushed();
             assistant.blocks = [...assistant.blocks,
                                 { ...ev, type: 'investigation_offer', live: true }];
+            notify();
+          } else if (ev.type === 'other-lane-offer') {
+            // The same frame, arriving at the other end of the turn (#411). `state.typing` is NOT
+            // cleared here, unlike every branch above: those cards are drawn instead of an answer,
+            // so the turn is over when they arrive. This one is drawn under an answer while the
+            // turn is still settling, and blanking the indicator here would say it had finished a
+            // beat before `done` says so.
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks,
+                                { ...ev, type: 'other_lane_offer', live: true }];
             notify();
           }
         });
