@@ -3616,7 +3616,12 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
         # When a table is scoped and no source name resolved, `name` is the TABLE, so it is not a
         # store name and guessing with it sends the agent at a lookup that cannot succeed. That case
         # alone still falls through.
-        store = source_name or ("" if scope and scope.get("table") else name)
+        # Read off the item rather than off `name`, which is not the same question: `name` carries
+        # the display fallbacks (`item["id"]`, then the literal "unnamed"), and neither of those is
+        # a store `live_read_query` can look up. Passing one would put this row back in the business
+        # of naming a route that cannot work — the defect, with the arrow turned around.
+        store = source_name or ("" if scope and scope.get("table")
+                                else str(item.get("name") or "").strip())
         if scope and scope.get("table") and store:
             dotted = scope_label(scope)
             cols = item.get("columns") if isinstance(item.get("columns"), list) else []

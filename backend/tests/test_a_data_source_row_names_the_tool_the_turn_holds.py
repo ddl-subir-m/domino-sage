@@ -149,3 +149,18 @@ def test_the_composed_prompt_carries_it_and_still_teaches_the_tool_by_name(tmp_p
     # #411's lane, which this must not swallow: a question SQL cannot express still has somewhere
     # to go that is not the tool.
     assert "If the question cannot be put in one SELECT, say so" in prompt
+
+
+def test_a_chip_with_no_name_is_not_handed_a_store_name_to_pass():
+    """`name` carries display fallbacks — the row's own id, then the literal "unnamed" — and
+    neither is a store `live_read_query` can look up.
+
+    The fix turned a row that named no route into a row that names one, and this is the edge where
+    that could go wrong in the other direction: a chip with nothing to pass would be told to pass
+    the word "unnamed".
+    """
+    line = _chat_context_line({"kind": "data_source", "id": "ds-77"}, thread_id=TID)
+
+    assert SHUT in line
+    assert "live_read_query" not in line
+    assert "source '" not in line, "the row is telling the agent to pass a display fallback"
