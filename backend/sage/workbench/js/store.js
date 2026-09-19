@@ -169,6 +169,14 @@ window.SW = window.SW || {};
     // draws its turns. Read with `!thread`, never alone: once a real conversation opens, that is
     // the row, and this one has nothing left to stand for.
     pendingConversation: false,
+    // Which Conversation is being opened right now, or null. The opposite of the flag above in
+    // both directions: that one stands for a Conversation that does not exist yet, this one for
+    // one that exists and has not arrived. Read with the thread rather than against it — the
+    // screen holds the PREVIOUS Conversation for the whole interval, so `openingThreadId` and
+    // `thread` naming different Conversations is exactly the moment worth drawing (#455).
+    //
+    // An id rather than a boolean because the Rail draws it on a row and has to know which.
+    openingThreadId: null,
     // A turn is running somewhere in this project. Not "in this conversation": one project runs
     // one turn at a time (the server's turn lock), so a Chat turn, a Build turn and a turn another
     // tab started are all the same fact here. It no longer decides whether Chat can SEND — a second
@@ -4436,6 +4444,17 @@ window.SW = window.SW || {};
       if (!keepThread) {
         state.thread = null;
         state.pendingConversation = false;
+        // `openingThreadId` is deliberately NOT cleared here, and the reason is the same shape as
+        // the one `clearConversation` gives for `pendingConversation`: the caller that reaches
+        // this line most often is the open itself. `openThread` awaits `adoptThreadScope`, which
+        // calls `setScope` whenever the Conversation belongs to another Project — so clearing
+        // here took the marker off a live open, half way through the SLOWEST open there is, and
+        // left the pane on the blank landing until the rest of it landed. That is the symptom
+        // #455 was opened on, reintroduced by the fix for it.
+        //
+        // Nothing is leaked by leaving it: the marker belongs to `openThread`, whose `finally`
+        // clears it on every way out. A Project switch somebody drives by hand while an unrelated
+        // open is in flight draws a wait that is genuinely still running.
         state.messages = [];
         state.attachments = [];
         state.touched = [];
@@ -6243,37 +6262,64 @@ window.SW = window.SW || {};
       // `sendMessage` reads `state.thread`, so the next message is posted into the conversation
       // nobody is looking at. Every await re-checks, and the view is written in one go afterwards
       // so a superseded open can never leave half of itself on screen.
-      const gen = ++openSeq;
-      const thread = await SW.api.thread(threadId);
-      if (gen !== openSeq) return null;
-      await store.adoptThreadScope(thread);
-      if (gen !== openSeq) return null;
-      const messages = await store.conversationMessages(thread);
-      if (gen !== openSeq) return null;
-      state.thread = thread;
-      state.pendingConversation = false;
-      state.messages = messages;
-      state.activePlanId = thread.planId || null;
-      state.touched = thread.touched || [];
-      state.assistantTurns = state.messages.filter((m) => m.role === 'assistant').length;
-      state.pendingTurn = null;
-      state.planViewerId = null;
-      state.typing = null;
-      notify();
-      // Half the lock is this Conversation's own (ADR-0043), so the answer standing on screen
-      // belongs to the one that was open before. Unawaited beside the attachments read below: the
-      // view is already painted, and a lock arriving a beat later is the same deferral a scope load
-      // makes. It carries no `gen` because it does not need this one — it holds the Conversation it
-      // asked about and drops its own answer if that has moved on.
       //
-      // The drop comes first for the reason it does in `newThread`: a read that fails or is
-      // superseded leaves the last answer standing, and that answer is the previous Conversation's.
-      dropSessionLock();
-      refreshSensitivity();
-      await refreshAttachments();
-      if (gen !== openSeq) return thread;
-      if (thread.planId) await store.loadPlan(thread.planId);
-      return thread;
+      // Three round trips happen before that write, and for that whole interval the screen holds
+      // the PREVIOUS Conversation — no spinner, nothing moved, so the click reads as lost and
+      // people click again (#455). `openingThreadId` is what says the interval is happening. It
+      // names the Conversation being opened rather than being a bare boolean, because the Rail
+      // draws it on a row and has to know WHICH row: click B then A and A is the one loading.
+      //
+      // Not `pendingConversation`, which means a conversation that does not exist yet and is read
+      // with `!thread` — set here it would draw the new-conversation empty state over a Thread.
+      const gen = ++openSeq;
+      state.openingThreadId = threadId;
+      notify();
+      try {
+        const thread = await SW.api.thread(threadId);
+        if (gen !== openSeq) return null;
+        await store.adoptThreadScope(thread);
+        if (gen !== openSeq) return null;
+        const messages = await store.conversationMessages(thread);
+        if (gen !== openSeq) return null;
+        state.thread = thread;
+        state.pendingConversation = false;
+        // In the single write, so the marker and the view it describes move in the same frame.
+        // Cleared a line later and the skeleton flashes off over the old Conversation's turns.
+        state.openingThreadId = null;
+        state.messages = messages;
+        state.activePlanId = thread.planId || null;
+        state.touched = thread.touched || [];
+        state.assistantTurns = state.messages.filter((m) => m.role === 'assistant').length;
+        state.pendingTurn = null;
+        state.planViewerId = null;
+        state.typing = null;
+        notify();
+        // Half the lock is this Conversation's own (ADR-0043), so the answer standing on screen
+        // belongs to the one that was open before. Unawaited beside the attachments read below: the
+        // view is already painted, and a lock arriving a beat later is the same deferral a scope
+        // load makes. It carries no `gen` because it does not need this one — it holds the
+        // Conversation it asked about and drops its own answer if that has moved on.
+        //
+        // The drop comes first for the reason it does in `newThread`: a read that fails or is
+        // superseded leaves the last answer standing, and that answer is the previous one's.
+        dropSessionLock();
+        refreshSensitivity();
+        await refreshAttachments();
+        if (gen !== openSeq) return thread;
+        if (thread.planId) await store.loadPlan(thread.planId);
+        return thread;
+      } finally {
+        // The two ways out that never reach the write above. A `thread` read that 404s throws, and
+        // `modes/chat.js` catches it and routes to `#/chat` — a marker left set there is a spinner
+        // with nothing left running to clear it. A superseded open returns null, and there
+        // `gen !== openSeq` HANDS the marker to the newer open rather than clearing it: the newer
+        // one has already written its own id, and clearing here would take the Rail's only sign
+        // that the second click was heard back off the screen.
+        if (gen === openSeq && state.openingThreadId !== null) {
+          state.openingThreadId = null;
+          notify();
+        }
+      }
     },
 
     // No conversation open. Not the same as an empty one — nothing is persisted
@@ -6287,6 +6333,10 @@ window.SW = window.SW || {};
     clearConversation() {
       state.thread = null;
       state.messages = [];
+      // Unlike `pendingConversation` above, this one IS cleared: "no conversation open" and "a
+      // conversation is arriving" cannot both be true, and the skeleton it draws would otherwise
+      // sit over the landing page somebody reached by pressing New conversation mid-open.
+      state.openingThreadId = null;
       // "Start a new chat" is the way out the copy gives, and a lock still drawn over an empty
       // screen makes the one instruction it gives look like it did nothing. Dropped rather than
       // re-read because this reset is synchronous and reaches no network — every other caller of
