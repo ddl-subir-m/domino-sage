@@ -71,7 +71,7 @@ sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
-for (const f of ['store.js', 'components/collab.js']) {
+for (const f of ['prefs.js', 'store.js', 'components/collab.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 // util.js is not loaded — it pulls in more of the shell than this branch needs, and an avatar is a

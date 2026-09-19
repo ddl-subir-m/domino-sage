@@ -30,6 +30,9 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
+// prefs.js before store.js: the store asks the viewer's preference on a common path since
+// #448, and a sandbox without `SW.prefs` throws where callers catch.
+vm.runInContext(fs.readFileSync(ROOT + 'prefs.js', 'utf8'), sandbox, { filename: 'prefs.js' });
 vm.runInContext(fs.readFileSync(ROOT + 'store.js', 'utf8'), sandbox, { filename: 'store.js' });
 vm.runInContext(fs.readFileSync(ROOT + 'util.js', 'utf8'), sandbox, { filename: 'util.js' });
 

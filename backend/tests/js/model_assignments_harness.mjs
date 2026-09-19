@@ -270,7 +270,7 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-for (const f of ['util.js', 'api.js', 'store.js', 'components/model-assignments.js']) {
+for (const f of ['util.js', 'api.js', 'prefs.js', 'store.js', 'components/model-assignments.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;

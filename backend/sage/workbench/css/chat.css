@@ -321,6 +321,12 @@
 }
 .sw-msg:hover .sw-msg-actions { opacity: 1; }
 
+/* The way in to disclosure this viewer has put away (#448). Deliberately NOT hover-revealed like
+   the row of actions above: those are things you already know you can do to a message, and this
+   one is the only thing on screen saying the disclosure exists at all. */
+.sw-msg-disclosure { margin-top: var(--s1); }
+.sw-msg-disclosure .ant-btn { padding-left: 0; padding-right: 0; height: auto; }
+
 /* Typing indicator ------------------------------------------------------- */
 
 .sw-typing {

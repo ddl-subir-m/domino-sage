@@ -152,3 +152,78 @@ short of `mergedHistoryToMessages`, which is the one that matters under `convers
 
 `message-blocks.js:1342` (`investigation_offer`) and `message-blocks.js:774` (ADR-0023's
 force-open) were checked and needed no change.
+
+## Amendment, 2026-09-19: where the filter actually sits, and the default it has
+
+Recorded at implementation (#448). Two things above are now wrong as written, and both were found
+by review rather than by the build, so they are corrected here instead of left for the next reader
+to rediscover.
+
+**The filter is one level below the three functions named above.** This record says it belongs in
+`historyToMessages`, `buildHistoryToMessages` and `mergedHistoryToMessages`. It is in `pushBlock`,
+which those three reach through the two mint helpers — `putDataUsed` and the `investigation-state`
+branch.
+
+The reason is the question this record left open. `putDataUsed` has three callers, and the third is
+the SSE reducer, which pushes straight into `state.messages` without passing through any history
+function. A filter in the three would have drawn a card live that the same turn hides after a
+reload: the viewer's preference honoured on the second look and not the first. Filtering in the
+shared helper covers all three reads *and* the live turn, with one copy of the rule rather than
+three that can drift. `mergedHistoryToMessages` is covered by delegating to `historyToMessages`,
+not by a filter of its own.
+
+This does not weaken the house rule the section above is really about. The store is still the only
+reader of the preference, and a component is still handed the answer.
+
+**"No default" describes the table, not the lookup.** `hiddenByDataAccess` ends
+`return row ? !!row(block) : false` — a type with no row is DRAWN. That is deliberate and it is the
+safe direction for a disclosure, but it means a missing row fails silently rather than loudly, so
+the harness is the only thing standing between a new card and a quiet hole. Two further lessons
+from getting that wrong, both worth more than the rule they came from:
+
+- The harness derives the population with a pattern, and a pattern bounds what it can see. A
+  narrow character class hid `case 'chartV2':` from the comparison entirely — neither counted
+  against the table nor reported missing from it. Every field read clean. It now matches any quoted
+  label and cross-checks the count against the dispatcher's own `case` keywords, which needs no
+  pattern at all.
+- "It governs nothing else" was spelled by thirty-one rows sharing one `shown` constant, and
+  pinned by nothing. Flipping any of them to hide was a one-word edit that took a viewer's table
+  receipts away and reddened no test. The governed set is now derived from the real table and
+  asserted to equal exactly the two things this record names.
+
+**Withheld disclosure is MARKED, not removed.** A block the preference hides stays in
+`message.blocks`, in the position the read gave it, carrying `hiddenDisclosure`; the answer draws
+every block that is not marked. This is `build_plan`'s `folded` shape, and it is a correction: the
+first implementation moved withheld blocks into a side list with the index they would have had, and
+spliced them back on reveal. Two defects followed, and both were found by review rather than by the
+build.
+
+The index went stale, because `dropTableCard` and `dropWithholdCard` remove shown blocks from a
+message after a park and the reducer replaces its streamed blocks wholesale — so revealed
+disclosure landed below the answer it belonged above, which is the one thing the ordering
+bookkeeping existed to keep.
+
+The second is the serious one. Restoring REBUILT `message.blocks`, and the SSE reducer caches a
+position into that array and writes through it. A re-persist that force-showed a failed read
+shifted the array under that cached index, and the next flush overwrote the card with streamed
+text. **A read whose gateway request failed was deleted from the transcript**, with the count
+cleared so no nudge said it had ever been there — the outcome this record forbids absolutely,
+produced by the machinery meant to prevent it. Marking has no index to go stale and never reassigns
+the array, so neither defect is reachable.
+
+**A request that did not settle is read from `state`, not only `failure`.** This record names
+`coverage` and `requests[].failure`. That is short: `data_use.py`'s `finally` writes
+`state: 'interrupted'` without touching `failure`, so a response cut off mid-stream — a Stop, a
+dropped connection — carried `{ state: 'interrupted', failure: null }` and was put away. A response
+that visibly did not finish is a read that fell short, so `interrupted` now counts. `attempted` does
+not, and deliberately: it is the state every request is persisted with the moment it opens, so
+counting it would force-show every card until its requests settled and the preference would not
+work during a live turn at all.
+
+**A refused write still honours the click.** `prefs.set` refuses when storage is blocked or full,
+and when the viewer's identity has not landed — which `prefs.js` itself calls a real window. On a
+refusal the stored value does not move, so re-reading it answered with the value from before the
+click: the re-partition was a no-op, the transcript kept hiding while the drawer's box sat ticked,
+and the warning promised "it won't persist next time" when the truth was that it had not happened
+at all. For a viewer in that state the nudge on the answer is the only way in, and it was inert.
+The choice is now held for the session first and filed second.

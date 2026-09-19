@@ -77,6 +77,20 @@ window.SW = window.SW || {};
     // "don't show this again". There is no "seen" value on purpose: an undismissed note may
     // show again, a dismissed one never does.
     chipScopeHintDismissed: { fallback: false, values: [true, false] },
+
+    // Whether an answer carries its disclosure beside it (#448, ADR-0062). `data_used` and the
+    // investigation opened/closed line are proof, and they were written for a reader who asked;
+    // a reader who did not sees table paths, request ids and decision stages, and reads machinery.
+    //
+    // Fallback `false`, so the quiet answer is what a first visit gets. Two values and not three:
+    // `dockTab` above is the standing warning that a value dropped from `values` reads back as the
+    // fallback, so removing a level later is a defect while adding one is free.
+    //
+    // It decides only what is DRAWN. Nothing here reaches the work — the same question must not
+    // return a different answer because of a display setting, or no bug report about one is
+    // answerable without a value nobody thinks to mention. And it can never hide a read that fell
+    // short: see `HIDDEN_BY_DATA_ACCESS` in store.js, which is the one reader.
+    dataAccessShown: { fallback: false, values: [true, false] },
   };
 
   // Who the record belongs to, or null when nobody knows yet.

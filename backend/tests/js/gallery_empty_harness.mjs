@@ -52,7 +52,7 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-for (const f of ['store.js', 'modes/gallery.js']) {
+for (const f of ['prefs.js', 'store.js', 'modes/gallery.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 

@@ -1188,6 +1188,14 @@ a.sw-topnav-link {
   margin-bottom: var(--s1);
 }
 
+/* What a control cannot do, under the control that looks like it could (#448). Caption weight, so
+   it reads as a note on the checkbox above rather than as a second setting. */
+.sw-setting-hint {
+  font-size: var(--fs-12);
+  color: var(--gray-600);
+  margin-top: var(--s1);
+}
+
 .sw-version-row {
   display: flex;
   gap: var(--s3);
