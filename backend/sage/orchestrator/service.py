@@ -6658,7 +6658,14 @@ class Orchestrator:
             # Only the status matters — a 200 means the server still knows this session. Bounded so a
             # long recovered session isn't serialized in full to answer a yes/no question.
             client.messages(sid, limit=1)
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as e:
+            # The same blind catch as Chat's, and the same measurement (#434). This one looks
+            # safer because it returns rather than assigns — it is not: its only caller mints on
+            # `None` and writes, so a 503 re-homes a Build conversation exactly as it does a Chat
+            # one. Behaviour unchanged here too; this says which status it was.
+            log.info("%s: OpenCode answered %s for stored session %s; the caller will mint and "
+                     "overwrite the stored id", conversation or app_id or "build",
+                     e.response.status_code, sid)
             return None
         return sid
 
@@ -9293,7 +9300,25 @@ class Orchestrator:
                 # turn is still writing. That is an "empty plan" on a plan nobody had finished.
                 client.note_session_dir(sid, work)
                 return sid, owed
-            except httpx.HTTPStatusError:
+            except httpx.HTTPStatusError as e:
+                # THE STATUS CODE IS THE WHOLE POINT OF THIS LINE (#434). `messages` ends in
+                # `raise_for_status`, which raises the same exception for every 4xx AND every 5xx,
+                # and this catch has never read the code. A 404 means OpenCode does not know this
+                # session, and minting below is right. A 500, 502, 503 or 429 means it could not
+                # answer just now — and the mint that follows calls `write_session_id`, which
+                # OVERWRITES the good id on disk, so one transient blip detaches a live
+                # Conversation from its session for good.
+                #
+                # THIS SAYS WHAT CAME BACK; the `if lost:` line below (#427) says what was then
+                # done about it. That one cannot say why, which is the gap here — it reports the
+                # loss identically whether OpenCode had forgotten the session or merely could not
+                # answer, and those two want opposite fixes.
+                #
+                # BEHAVIOUR IS DELIBERATELY UNCHANGED. Which statuses may mint is a separate
+                # decision (#434 sketches it, #433 is the 404 case that must keep minting), and
+                # this line is the measurement that has to come first.
+                log.info("chat session: thread=%s OpenCode answered %s for stored session %s",
+                         thread_id, e.response.status_code, sid)
                 sid = None
         lost = bool(rec.get("session_id"))
         sid = client.create_session(directory=work)
@@ -10881,11 +10906,11 @@ class Orchestrator:
         # "there's no Mixpanel question in our conversation yet" — while the question sat eight
         # events above it. Being handed the history does not by itself stop that sentence.
         if rebuilt:
-            lines += ["What was said in this Conversation already, summarised. This conversation "
-                      "is continuing, not starting: answer as though you had been part of it. "
-                      "Never tell the person the conversation has just started or that this is "
-                      "their first message, and do not introduce yourself again. It is a summary, "
-                      "so if you need a detail it does not carry, ask for that detail:",
+            lines += [("What was said in this Conversation already, summarised. This conversation "
+                       "is continuing, not starting: answer as though you had been part of it. "
+                       "Never tell the person the conversation has just started or that this is "
+                       "their first message, and do not introduce yourself again. It is a summary, "
+                       "so if you need a detail it does not carry, ask for that detail:"),
                       rebuilt, ""]
         elif carried:
             lines += ["What was said in this Conversation before the model was started over:",
