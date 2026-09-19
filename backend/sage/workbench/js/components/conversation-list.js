@@ -15,7 +15,7 @@ window.SW = window.SW || {};
   const { Button, Tooltip, Input, Dropdown, Modal } = antd;
   const {
     PlusOutlined, SearchOutlined, MoreOutlined, PushpinOutlined,
-    DeleteOutlined, EditOutlined, CloseOutlined,
+    DeleteOutlined, EditOutlined, CloseOutlined, LoadingOutlined,
   } = icons;
 
   // A Build link naming no app resolves the Conversation's own app (ADR-0009). This used to stamp
@@ -164,13 +164,17 @@ window.SW = window.SW || {};
     );
   }
 
-  SW.ConversationRow = function ConversationRow({ thread, active, mode, onFilter }) {
+  SW.ConversationRow = function ConversationRow({ thread, active, opening, mode, onFilter }) {
     return h(
       'div',
       {
-        className: `sw-thread${active ? ' is-active' : ''}`,
+        className: `sw-thread${active ? ' is-active' : ''}${opening ? ' is-opening' : ''}`,
         onClick: () => SW.openConversation(thread, mode),
         role: 'button',
+        // The row is still clickable while it loads — the click is a no-op the mode discards, and
+        // a row that stops answering the pointer mid-open is the dead-feeling this came from.
+        // `aria-busy` is what says it is working, for the reading the spinner is not in.
+        'aria-busy': opening ? 'true' : undefined,
       },
       h(
         'div',
@@ -179,12 +183,23 @@ window.SW = window.SW || {};
         // says which ones are pinned, so a pin here is decoration that eats the
         // words you are scanning for.
         h('div', { className: 'sw-thread-title' }, thread.title),
-        h(
-          'div',
-          { className: 'sw-thread-meta' },
-          SW.util.relativeTime(thread.updatedAt),
-          thread.planId && h('span', { className: 'sw-thread-flag' }, 'plan')
-        ),
+        // The meta line carries the wait, in place of the timestamp rather than beside it: when
+        // this conversation last changed is not the question anyone has while waiting for it, and
+        // the line is one line. The words as well as the spinner — a bare spinner on a row says
+        // something is happening without saying that it is THIS row arriving.
+        opening
+          ? h(
+              'div',
+              { className: 'sw-thread-meta' },
+              h(LoadingOutlined, { style: { fontSize: 11 } }),
+              h('span', { className: 'sw-thread-opening' }, 'Opening…')
+            )
+          : h(
+              'div',
+              { className: 'sw-thread-meta' },
+              SW.util.relativeTime(thread.updatedAt),
+              thread.planId && h('span', { className: 'sw-thread-flag' }, 'plan')
+            ),
         h(AppTags, { touched: thread.touched, onFilter })
       ),
       h(
@@ -249,7 +264,8 @@ window.SW = window.SW || {};
   }
 
   SW.ConversationRail = function ConversationRail({ mode }) {
-    const { threads, thread, railHidden, railAppFilter, pendingConversation, apps } = SW.store.get();
+    const { threads, thread, railHidden, railAppFilter, pendingConversation, apps,
+            openingThreadId } = SW.store.get();
     const [query, setQuery] = useState('');
 
     // Collapsing forgets the search. The branch below returns early rather than unmounting, so
@@ -330,6 +346,19 @@ window.SW = window.SW || {};
     });
 
     const groups = SW.util.groupThreads(filtered);
+    // Which row is lit. Exactly one, and from the click onwards it is the row that was clicked:
+    // the Rail answers "which conversation are you looking at", and leaving the highlight on the
+    // one being left while its neighbour spins is the Rail naming two (#455).
+    //
+    // Decided against `filtered` rather than per row, because the marker can name a Conversation
+    // this Rail is not drawing — a needle it does not match, an app filter it has not touched, or
+    // an open started somewhere that is not the list at all (the Resource Browser, a plan link).
+    // Asked per row, that case lights NOTHING and the previously selected row just goes dark,
+    // which is a worse answer than the one it replaced rather than a more honest one.
+    const activeId =
+      (openingThreadId && filtered.some((t) => t.id === openingThreadId) ? openingThreadId : null)
+      || (thread && thread.id)
+      || null;
     // The Project's app list first, the tags second. The tag scan alone held while a chip was the
     // only writer — the app was in some thread's tags by definition — but the Build header can now
     // filter to an app no conversation has changed, and that read "Only an app".
@@ -438,7 +467,14 @@ window.SW = window.SW || {};
                   h(SW.ConversationRow, {
                     key: item.id,
                     thread: item,
-                    active: thread && thread.id === item.id,
+                    active: activeId === item.id,
+                    // The same-thread guard `modes/chat.js` puts on its skeleton, for the same
+                    // reason. `openThread` runs as a plain RE-READ of the Conversation already
+                    // open on a dozen ordinary paths — every turn that ends somewhere else, an
+                    // investigation closing, a handoff drafted — and without this the row you are
+                    // reading grows a spinner and loses its timestamp for three round trips while
+                    // its turns sit fully drawn beside it.
+                    opening: openingThreadId === item.id && !(thread && thread.id === item.id),
                     mode,
                     onFilter: (appId) => SW.store.set({ railAppFilter: appId }),
                   })

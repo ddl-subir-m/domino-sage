@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useEffect, useRef, Fragment } = React;
-  const { Button } = antd;
+  const { Button, Skeleton } = antd;
 
   // The rail itself is shared with Build — same component, same behaviour. Chat
   // only adds the layout wrapper the docked rail needs.
@@ -142,15 +142,32 @@ window.SW = window.SW || {};
 
   SW.ChatMode = function ChatMode({ threadId }) {
     const { thread, messages, typing, pendingTurn, scope, activePlanId, planViewerId,
-            turnWedged } = SW.store.get();
+            turnWedged, openingThreadId } = SW.store.get();
     const scroller = useRef(null);
 
+    // Read during render rather than subscribed to: `Root` already re-renders on every route
+    // emission, so this mode is re-rendered with the fresh count without a second subscription to
+    // the same router.
+    const { nav } = SW.router.get();
+
+    // `nav` and not `threadId` alone. Clicking the row already in the hash re-emits the SAME
+    // threadId (`SW.router.go` calls `handleChange` rather than returning early), so on
+    // `[threadId]` this effect did not re-run and a stranded view could not be recovered from the
+    // one control that looks like it should do it — the row itself (#455).
+    //
+    // Safe to re-run on a navigation that changed nothing, because the guard below is about where
+    // the STORE is, not where the route is: a conversation already open re-runs to a no-op.
+    //
+    // `openingThreadId` is the third arm, and it is what makes the second click on a row that IS
+    // loading free rather than a restart — the complaint this ticket came from is people clicking
+    // again. It cannot swallow a recovery: the marker names whichever open is current, so a lost
+    // generation has already had it taken off it by the open that won.
     useEffect(() => {
-      if (threadId && (!thread || thread.id !== threadId)) {
+      if (threadId && (!thread || thread.id !== threadId) && openingThreadId !== threadId) {
         SW.store.openThread(threadId).catch(() => SW.router.replace('#/chat'));
       }
       if (!threadId && thread) SW.store.clearConversation();
-    }, [threadId]);
+    }, [threadId, nav]);
 
     useEffect(() => {
       const el = scroller.current;
@@ -183,6 +200,70 @@ window.SW = window.SW || {};
 
     const empty = !thread || messages.length === 0;
 
+    // A Conversation other than the one on screen is arriving. Drawn over the turns rather than
+    // beside them, because what is standing there belongs to the Conversation being left and
+    // reading it as the answer to the row you just clicked is the whole complaint (#455).
+    //
+    // Compared against `thread` rather than read alone: `openThread` also runs for the
+    // Conversation already open (a refresh after a handoff, say), and a skeleton there would
+    // blink the turns off and back over work nobody navigated away from.
+    const opening = !!openingThreadId && (!thread || thread.id !== openingThreadId);
+
+    // Hoisted out of the branch below so it can stand beside the skeleton as well as beside the
+    // turns. It has to survive the open: `chatRunning` is project-wide, so a turn can be running
+    // while you open a different Conversation, and `TurnBar` is where Stop lives — the one way
+    // out of a wedged turn (ADR-0043). Unmounting the dock for the interval took Stop off the
+    // screen and took whatever was half-typed in the Composer with it, since the draft is the
+    // Composer's own state.
+    const dock = h(
+      'div',
+      { className: 'sw-composer-dock' },
+      h(
+        'div',
+        { className: 'sw-composer-dock-inner' },
+        // Not while another Conversation is arriving. The plan, and the app the second button
+        // names, belong to the Conversation being LEFT — drawing them over a skeleton is the
+        // fault this ticket is about, one bar further down the screen.
+        !opening && activePlanId &&
+          h(
+            'div',
+            { className: 'sw-chat-planbar' },
+            h('span', { className: 'sw-caption' }, 'Working from a plan'),
+            h(
+              Button,
+              {
+                type: 'link',
+                size: 'small',
+                style: { padding: 0 },
+                onClick: () => SW.store.openPlanArtifact(activePlanId),
+              },
+              'Open plan'
+            ),
+            // Once this conversation has changed an app, Build is
+            // somewhere to go back to rather than a thing to start.
+            h(
+              Button,
+              {
+                size: 'small',
+                onClick: () => SW.store.draftHandoffPlan(thread && thread.id),
+              },
+              thread && (thread.touched || []).length ? 'Open in Build' : 'Build this'
+            )
+          ),
+        h(InvestigationBar, null),
+        h(TurnBar, null),
+        h(SW.Composer, {
+          onSend: send,
+          placeholder: SW.util.composerPlaceholder('Ask about your data'),
+          // Typing survives the open; SENDING must not. `send` posts through `state.thread`,
+          // which is still the Conversation being left, so a message sent here would land in the
+          // one nobody is looking at — the same mis-delivery the `openSeq` guard exists to stop,
+          // reached through the composer instead of through a race.
+          disabled: turnWedged || opening,
+        })
+      )
+    );
+
     return h(
       'div',
       { className: 'sw-chat' },
@@ -190,7 +271,25 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-chat-main' },
-        empty
+        opening
+          ? h(
+              Fragment,
+              null,
+              h(
+                'div',
+                { className: 'sw-messages sw-scroll' },
+                h(
+                  'div',
+                  { className: 'sw-messages-inner sw-messages-opening' },
+                  // No title row: a Conversation's turns are what is being waited for, and a grey
+                  // bar where the heading goes would promise one this pane does not draw.
+                  h(Skeleton, { active: true, title: false, paragraph: { rows: 3 } }),
+                  h(Skeleton, { active: true, title: false, paragraph: { rows: 5 } })
+                )
+              ),
+              dock
+            )
+          : empty
           ? h(Landing, { onSend: send, compact: !!planViewerId })
           : h(
               Fragment,
@@ -231,47 +330,7 @@ window.SW = window.SW || {};
                     )
                 )
               ),
-              h(
-                'div',
-                { className: 'sw-composer-dock' },
-                h(
-                  'div',
-                  { className: 'sw-composer-dock-inner' },
-                  activePlanId &&
-                    h(
-                      'div',
-                      { className: 'sw-chat-planbar' },
-                      h('span', { className: 'sw-caption' }, 'Working from a plan'),
-                      h(
-                        Button,
-                        {
-                          type: 'link',
-                          size: 'small',
-                          style: { padding: 0 },
-                          onClick: () => SW.store.openPlanArtifact(activePlanId),
-                        },
-                        'Open plan'
-                      ),
-                      // Once this conversation has changed an app, Build is
-                      // somewhere to go back to rather than a thing to start.
-                      h(
-                        Button,
-                        {
-                          size: 'small',
-                          onClick: () => SW.store.draftHandoffPlan(thread && thread.id),
-                        },
-                        thread && (thread.touched || []).length ? 'Open in Build' : 'Build this'
-                      )
-                    ),
-                  h(InvestigationBar, null),
-                  h(TurnBar, null),
-                  h(SW.Composer, {
-                    onSend: send,
-                    placeholder: SW.util.composerPlaceholder('Ask about your data'),
-                    disabled: turnWedged,
-                  })
-                )
-              )
+              dock
             )
       ),
       h(SW.PlanSheet, null)

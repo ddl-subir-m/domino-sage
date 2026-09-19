@@ -3,6 +3,17 @@ window.SW = window.SW || {};
 (function () {
   const listeners = new Set();
 
+  // How many navigations have been emitted, counting the ones that did not change the hash.
+  // `go` deliberately re-emits an identical hash (see below), but until this existed there was
+  // nothing on the route object that SAID so: a mode keying its open on `[threadId]` saw the same
+  // string and did not re-run, so clicking the row already in the hash could not retry an open
+  // that lost its generation, and the row was inert from then on (#455).
+  //
+  // Read as an effect key, never as a value: what it means is "you were sent here again", and the
+  // number itself says nothing about where. A mode that re-runs on it must be safe to re-run when
+  // it is already where it is being sent — every one of them guards on that already.
+  let nav = 0;
+
   function parse() {
     const raw = (window.location.hash || '#/chat').replace(/^#\/?/, '');
     const [pathPart, queryPart] = raw.split('?');
@@ -18,12 +29,14 @@ window.SW = window.SW || {};
       b: segments[2] || null,
       query,
       path: `#/${segments.join('/')}`,
+      nav,
     };
   }
 
   let current = parse();
 
   function handleChange() {
+    nav += 1;
     current = parse();
     listeners.forEach((fn) => fn(current));
   }

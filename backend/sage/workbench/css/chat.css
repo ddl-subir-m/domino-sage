@@ -61,6 +61,14 @@
    one, so it keeps every other thread style — but nothing happens when it is clicked, and a
    pointer promising otherwise is the row lying about itself. */
 .sw-thread.is-pending { cursor: default; }
+/* The row for the conversation currently arriving (#455). It keeps the active background rather
+   than getting one of its own, because it IS the selected row from the click onwards — the wait
+   is a property of the row you picked, not a fourth kind of row. Only the meta line changes. */
+.sw-thread.is-opening .sw-thread-opening {
+  color: var(--purple-600);
+  font-weight: 600;
+}
+.sw-thread.is-opening .anticon-loading { color: var(--purple-600); }
 .sw-thread-main { flex: 1; min-width: 0; }
 /* Two lines before it truncates. A flat history is scanned by title, and a
    title cut off at "Desk limits moved to the ne" is not scannable. */
@@ -252,6 +260,11 @@
   margin: 0 auto;
   padding: var(--s5) var(--s4) var(--s4);
 }
+
+/* The turns of the conversation being opened, before they arrive (#455). Two blocks with a turn's
+   worth of space between them, so the shape on screen is the shape that replaces it and the pane
+   does not jump when it does. */
+.sw-messages-opening .ant-skeleton + .ant-skeleton { margin-top: var(--s5); }
 
 .sw-msg { margin-bottom: var(--s5); }
 .sw-msg-body { min-width: 0; }
