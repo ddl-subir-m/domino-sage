@@ -160,6 +160,24 @@ def test_an_unclassified_failure_still_says_something_true_about_itself(tmp_path
     assert "did not answer" not in answer["refused"], "the store was never asked"
 
 
+def test_a_path_bearing_failure_shows_the_path(tmp_path: Path, monkeypatch):
+    """The boundary the generic arm widened, pinned rather than left to be discovered.
+
+    `_scrubbed` rewrites secret-shaped runs and addresses. It does NOT rewrite mount paths or bare
+    hostnames, so a file card over an unreadable mount puts its path on the card where the old
+    sentence showed nothing. That is a deliberate trade — the path is the diagnosis for that
+    failure — and it is asserted here so the next reader can tell it was chosen. If this test is
+    what fails, the question is whether the trade still holds, not whether `_scrubbed` should grow.
+    """
+    def failing(source, database, schema, table, limit):
+        raise PermissionError("[Errno 13] Permission denied: '/mnt/data/finance/rows.csv'")
+
+    answer = _pressing(tmp_path, monkeypatch, failing).live_read_again("thr_a", CARD)
+
+    assert "/mnt/data/finance/rows.csv" in answer["refused"]
+    assert "PermissionError" in answer["refused"]
+
+
 # ---- criterion 4: a refusal is an answer, not a fault --------------------------------------------
 
 

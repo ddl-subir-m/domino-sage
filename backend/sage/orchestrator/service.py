@@ -10485,6 +10485,16 @@ class Orchestrator:
             # `readable_error` IS the guard. It is not decoration and it is not a comment: a driver
             # holding a `DataSourceClient` prints its api_key in plaintext, and this line is the
             # only thing between that repr and the page.
+            #
+            # WHAT IT DOES NOT TAKE OUT, knowingly: `_scrubbed` rewrites secret-shaped runs and
+            # addresses, so a mount path or a bare hostname travels. A file card over an unreadable
+            # mount reaches here as `PermissionError: … '/mnt/data/<dataset>/<file>'` — `_file_rows`
+            # reads the bytes with no guard of its own — and that path now renders where the old
+            # sentence showed nothing. Kept, because the path IS the diagnosis for that failure and
+            # the card already records the file it was read from; the widening is the mount root.
+            # Do not repair this by widening `_scrubbed`: it is shared with #399's sentences and
+            # with `mcp._failed_text`, and widening a shared scrub for one caller is the move this
+            # ticket exists to refuse. Pinned by `test_a_path_bearing_failure_shows_the_path`.
             log.info("live read again: %s failed — %s", (source or {}).get("kind"), e)
             return {"refused": brand.text(
                 "{assistantName} could not finish that read.") + f" {readable_error(e)}"}
