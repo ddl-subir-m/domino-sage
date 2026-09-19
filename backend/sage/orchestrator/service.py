@@ -271,6 +271,10 @@ _CHAT_TURN_MAX_S = 600.0
 # waits all of them for nothing. The number is a starting point, not a measured one; what matters is
 # that reaching it is a REFUSAL the assistant reads, not a silent stop.
 _DELEGATED_CALLS_MAX = 25
+# How many sources the "Already read in this Thread" block names (ADR-0061). One line per SOURCE,
+# not per read, so a Thread reaches this only by touching twenty different tables — and newest
+# first, because the ones a stalled investigation keeps re-reading are the recent ones.
+_ALREADY_READ_MAX = 20
 # How long the Alias listing a Delegated model call resolves against stays good. Short, because its
 # only job is to keep one classification pass from re-asking the gateway "which models exist" fifty
 # times; it is not a cache anything else reads. See `_alias_listing`.
@@ -11137,6 +11141,60 @@ class Orchestrator:
                 "what is still open. Append what you measure: the statement that produced it, the "
                 "time, and the numbers with their denominators.")
 
+    def _already_read_note(self, history: list[dict] | None) -> str:
+        """The sources earlier turns in this Thread already read, and where each result landed.
+
+        Rendered from the rows the caller already holds. Nothing here opens a file, walks a tree or
+        calls Domino: `service.py:3625` refuses a lookup during prompt rendering for the same
+        reason, and #418 is a live latency ticket on this exact path.
+
+        Gated on there being reads, never on a flag. An `investigating` gate would decide the
+        audience for this by a piece of state that can be mis-set, which is #443's own defect one
+        level up — the turns that need it most would be the ones the flag excludes (ADR-0061).
+
+        Evidence, and deliberately no verb. A turn legitimately asked to re-check whether the
+        warehouse moved must not be able to read this block as a prohibition.
+
+        Bounded at a COMPLETE clear, matching `recall.seed` and ADR-0055, which deletes the
+        findings file on the same event. A summary-scoped clear leaves it whole: a measurement log
+        is not talk, and neither is a read.
+
+        Two lists reach the prompt because neither record covers every read. `live_read_table`
+        emits no `data_used` event at all (`liveread/run.py`), so the Artifact list below is what
+        covers it; this one is richer where it applies.
+        """
+        rows = [r for r in (history or []) if isinstance(r, dict)]
+        for i in range(len(rows) - 1, -1, -1):
+            if rows[i].get("type") == recall.CLEARED and rows[i].get("scope") == recall.EMPTY:
+                rows = rows[i + 1:]
+                break
+        reads = chat_handoff.data_reads_by_source(rows)[:_ALREADY_READ_MAX]
+        if not reads:
+            return ""
+        # Through the same filter the Artifact list below uses, and for the reason stated there: a
+        # path the model is told it may read costs a tool call and an answer written around a file
+        # that is not there. The history row outlives the file — a card the person deleted, or a
+        # clone that never carried `examples/` — so the event's `artifact` is a claim about disk
+        # and not a fact about it.
+        #
+        # Applied AFTER the cap, so this is at most `_ALREADY_READ_MAX` stats and never a walk.
+        # The line still renders without its path: that the source was read is true either way,
+        # and it is the dead PATH that costs a turn, not the missing one.
+        here = {str(row.get("path") or "") for row in _artifacts_present(
+            self._chat_project().record.path,
+            [{"path": e["artifact"]} for e in reads if e["artifact"]])}
+        lines = ["Already read in this Thread:"]
+        for entry in reads:
+            turns = entry["turns"]
+            said = f"{turns} turn" if turns == 1 else f"{turns} turns"
+            artifact = str(entry["artifact"] or "")
+            if artifact in here:
+                lines.append(f"- {entry['source']} — read on {said}, "
+                             f"most recent result at {artifact}")
+            else:
+                lines.append(f"- {entry['source']} — read on {said}")
+        return "\n".join(lines)
+
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
                      urls: list[str] | None = None, workspace: Path | None = None,
                      artifacts: list[dict] | None = None,
@@ -11232,10 +11290,20 @@ class Orchestrator:
         # may read — a dead one costs a tool call and an answer written around a file that is not
         # there. Filtered here rather than at the caller because every caller would have to
         # remember, and this list is only ever rendered into a prompt.
+        # Beside the Artifact list, because the two are complementary and answer one question
+        # between them: what this Thread has already looked at, and where the answer landed.
+        already_read = self._already_read_note(history)
+        if already_read:
+            lines += [already_read, ""]
         artifacts = _artifacts_present(self._chat_project().record.path, artifacts or [])
         if artifacts:
             lines.append(
-                "Already written this Thread (on screen; change one only if asked):"
+                # The permission that was missing, not a weakening of the prohibition. The
+                # measured failure is a turn that was told a card existed and never opened it
+                # (#443), not a turn that rewrote one — so "change one only if asked" stands
+                # exactly as it was and only the free act is spelled out beside it.
+                "Already written this Thread (on screen; reading one is always free; "
+                "change one only if asked):"
             )
             for art in artifacts:
                 path = str(art.get("path") or "")
@@ -11310,6 +11378,18 @@ class Orchestrator:
             # model ran.
             yield {"type": "done", "ok": False, "decision": "unknown thread"}
             return
+        # What this turn wrote, and which of those paths already existed when it started.
+        # Filled in place by `publish_chat_artifacts` from the list it builds anyway: `finish` is
+        # defined above it and runs after it, and reading the tree again here would add a pass over
+        # the workspace on the path #418 is a latency ticket about.
+        #
+        # `tables.before` is the baseline `new_artifact_paths` already measures against, so "was
+        # there before this turn" is free. Under `examples/<threadId>/` that means an earlier turn
+        # of this Thread wrote it — a clone could in principle carry one in from git, which would
+        # read as a rewrite, and that is the honest direction for the error to fall.
+        turn_writes: list[str] = []
+        turn_rewrites: set[str] = set()
+
         def finish(done: dict) -> dict:
             """The Chat turn's terminal row, on its way to the Thread.
 
@@ -11327,6 +11407,17 @@ class Orchestrator:
             data_used = project.shim.data_use.events(self._data_use_turns.get(thread_id, ""))
             if data_used:
                 done["dataUsed"] = data_used
+            # Stamped on EVERY turn, never only when the condition fires (ADR-0061). A field that
+            # appears only on failure cannot tell a turn that passed from one that ran before the
+            # field existed, and this row is the only place the question is ever asked.
+            #
+            # No new `decision` value, and `answered` is untouched. #435 measured what a new one
+            # costs: `store.js` keys `NO_PLATFORM_FAULT` and `ASKED_FOR` on `decision`, and a value
+            # missing from either list regresses in silence. This is a field beside it.
+            done["reads"] = sorted(set(turn_writes))
+            # The guard is load-bearing. An empty set is a subset of everything, so without "wrote
+            # at least one" every ordinary conversational turn would report `advanced: false`.
+            done["advanced"] = not (turn_writes and set(turn_writes) <= turn_rewrites)
             store.append_history(thread_id, done)
             return done
 
@@ -11390,10 +11481,13 @@ class Orchestrator:
         # other, nobody asked, `confirm_handoff` minted an app around an unscoped Binding, and the
         # model wrote `FROM GONG` — a table name it invented, on which every query failed.
         #
-        # The seconds the old order was protecting are only ever spent on the one request that
-        # needs them. This declines off the Thread's own rows, before any catalog call, unless the
-        # sentence names a Data Source with no table chosen — so a build request that names no
-        # store still crosses in milliseconds, exactly as it did.
+        # The seconds the old order was protecting are spent on the requests that need them. This
+        # declines off the Thread's own rows, before any catalog call, unless the sentence names a
+        # Data Source with no table chosen — or unless exactly one is attached and unscoped, which
+        # #445 reads as naming it. That last population walks the catalog before it can decline,
+        # because whether the turn is about the store is a fact only the catalog holds; the walk is
+        # kept for the session, so it is a first-turn cost. Two attached, or none, still cross in
+        # milliseconds exactly as they did.
         #
         # The nudge is deferred, not dropped: the click replays the question with `skip_table_gate`
         # and the explicit detect below runs on that turn instead. It arrives with the table already
@@ -11768,9 +11862,14 @@ class Orchestrator:
                 withhold_table_rows(project.record.path, thread_id, tables.before,
                                     kept_rows=project.record.kept_rows())
                 runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
-                artifacts = [store.record_artifact(thread_id, path=rel)
-                             for rel in new_artifact_paths(project.record.path, thread_id, tables.before)
-                             if rel not in invalid]
+                written = [rel for rel in new_artifact_paths(project.record.path, thread_id,
+                                                            tables.before)
+                           if rel not in invalid]
+                artifacts = [store.record_artifact(thread_id, path=rel) for rel in written]
+                # The same list, kept for the terminal row (ADR-0061). In place rather than
+                # rebound, so `finish` above needs no `nonlocal` and this stays one computation.
+                turn_writes.extend(written)
+                turn_rewrites.update(rel for rel in written if rel in tables.before)
             events = []
             if body.strip() or invalid:
                 ev = {"type": "agent", "kind": "text",
@@ -13187,13 +13286,19 @@ class Orchestrator:
         `table-search` frames say what is being read and then what has been found; the settled
         `table-candidates` card is still one event and still the only answerable one.
 
-        Returns False — and the turn goes on to the ordinary build — in four cases, all of which
-        leave today's behaviour exactly as it was: no such Data Source is named, it cannot be walked
-        in one query, the store stops answering, or it holds nothing to offer. The last two happen
-        after the streaming has begun, so they take the card back with `table-search-ended` rather
-        than leaving a sentence on screen that will never finish. Falling through means the
-        assistant meets the unscoped section and asks, which is a worse answer than the card and a
-        better one than a card with nothing on it.
+        Returns False — and the turn goes on to the ordinary build — in five cases, all of which
+        leave today's behaviour exactly as it was: no Data Source is named or inferrable, it cannot
+        be walked in one query, the store stops answering, it holds nothing to offer, or the store
+        was INFERRED and the request asks nothing it holds (#445). The last three happen after the
+        streaming has begun, so they take the card back with `table-search-ended` rather than
+        leaving a sentence on screen that will never finish. Falling through means the assistant
+        meets the unscoped section and asks, which is a worse answer than the card and a better one
+        than a card with nothing on it.
+
+        An INFERRED store makes every one of those exits silent — `table-search-ended` with no
+        message. Nobody named it, so nobody is owed an account of a warehouse they did not ask
+        about; a store that stops answering is news to the person who said "from Snowflake" and
+        noise on a turn about the header colour.
 
         `chosen` is the Data Source somebody just picked off the card before this one (#185), and
         it is taken rather than matched: a person who clicked `reporting-replica` under a request
@@ -13212,6 +13317,15 @@ class Orchestrator:
                  if isinstance(r, dict) and r.get("kind") == KIND_DATA_SOURCE],
                 bindings,
             )
+        # And, where the sentence named none, the only one the app records (#445). It cannot race
+        # the `unbound` fallback below: that one arrives from `_source_offer`, which returns before
+        # drawing anything if the app records ANY Data Source, so a turn that has an `unbound` has
+        # no bindings for this to read. Ordered anyway, rather than left to that argument holding.
+        # `inferred` rides to the ranking below, which is the second test this answer owes.
+        inferred = False
+        if binding is None:
+            binding = table_search.sole_source(bindings)
+            inferred = binding is not None
         # Last, and only where the caller built one: the store the sentence named on a turn that
         # records no Binding at all (#206). The manifest cannot answer here — that is the whole
         # situation — so the search runs against a Binding that exists only for the length of it,
@@ -13248,9 +13362,17 @@ class Orchestrator:
                 # against 3.84s a database, which is why the frame below still lands first in
                 # anything a person would notice.
                 databases = self._databases_to_walk(source, binding)
+        # AN INFERRED STORE DOES NOT SPEAK, and every exit below here honours that (#445). These
+        # sentences are right for a person who named a store: they asked about it, so a store that
+        # will not answer is news. Nobody asked here — the store is on the app and the request may
+        # be about the header colour — so the same sentence is Sage reporting a warehouse outage
+        # into a CSS turn, and it would repeat on every turn until somebody picked a table.
+        #
+        # The log line stays on both paths. What changes is only whether it reaches the person.
         except StoreWentQuiet as e:
             log.info("table search: %s stopped answering — %s", binding.display_name, e)
-            yield from self._table_search_gave_up(binding)
+            if not inferred:
+                yield from self._table_search_gave_up(binding)
             return False
         except (LookupError, ResourceUnavailable) as e:
             # The refusals, which stay silent: nothing was read, so there is nothing to take back.
@@ -13258,7 +13380,8 @@ class Orchestrator:
             return False
         except Exception:
             log.exception("table search: could not walk %s", binding.display_name)
-            yield from self._table_search_gave_up(binding)
+            if not inferred:
+                yield from self._table_search_gave_up(binding)
             return False
         # Before the first query, not after it: the first database IS the wait this is about.
         yield self._table_search_frame(binding, ())
@@ -13315,15 +13438,36 @@ class Orchestrator:
         # the one thing streaming can do that silence could not, and the assistant's own "which
         # table?" a moment later does not say whether the store failed or held nothing.
         if not found:
-            yield {"type": "table-search-ended", "sourceId": binding.id,
-                   "message": gave_up or (cannot_finish if skipped else brand.text(
-                       "{name} has no {scopePlural} to pick from.",
-                       name=binding.display_name))}
+            # Message-less where nobody named the store, for the reason above: the frames come back
+            # either way, and only a person who asked is owed an account of why.
+            ended = {"type": "table-search-ended", "sourceId": binding.id}
+            if not inferred:
+                ended["message"] = gave_up or (cannot_finish if skipped else brand.text(
+                    "{name} has no {scopePlural} to pick from.", name=binding.display_name))
+            yield ended
             return False
         # The model rank runs AFTER the last streamed frame and before the settled card, which is why
         # the frames carry the name order and the card carries the model's. Them differing across
         # that boundary is the point rather than a glitch: the frames are the walk reporting what it
         # has found, and the card is the answer.
+        # The second test an inferred store owes (#445) — see the Chat gate for why the catalog is
+        # what asks it. A Binding outlives the turn that made it, so an app with a store and no
+        # table would meet this card on "make the header blue" every turn until one is chosen.
+        #
+        # ABOVE THE MODEL RANK, not below it. `matched` comes off the name scoring, which
+        # `_ranked_candidates` runs first and `table_rank` carries through untouched — so asking
+        # here reads exactly the same and a declined turn does not spend two gateway calls and a
+        # column query on an order nobody will see.
+        #
+        # IT TAKES THE CARD BACK, which the Chat gate has nothing to take back. The walk has already
+        # streamed frames by here: names appearing and then vanishing with no account of why is the
+        # one thing streaming can do that silence could not. Message-less, for the reason every
+        # other exit above is now — nobody asked about this store. The build then runs as it did.
+        if inferred and not self._asks_anything_of(prompt, binding, found):
+            log.info("table gate (build): declined — %s is the only store bound and the request "
+                     "asks nothing it holds", binding.display_name)
+            yield {"type": "table-search-ended", "sourceId": binding.id}
+            return False
         ranking = self._ranked_candidates(project, source, binding, prompt, found,
                                           session=project.session_id)
         # The same "already answered, so do not ask" as the Chat gate (#426), through the same door:
@@ -13422,6 +13566,36 @@ class Orchestrator:
                                       name=binding.display_name),
                 "groups": table_search.grouped(candidates[:table_search.SHORTLIST]),
                 "total": len(candidates)}
+
+    def _asks_anything_of(self, prompt: str, binding: Binding, found: list[Candidate]) -> bool:
+        """Whether a request the store was INFERRED for is about that store at all (#445).
+
+        The question `named_source` used to answer by accident and `sole_source` cannot answer at
+        all. A sentence that names a store has said in the same breath that it is about one; a
+        sentence that names nothing has said only that a store is attached, and a Thread keeps its
+        chip and an app keeps its Binding for the whole of their lives. Without this, one store
+        with no table chosen turns "make the header blue" into a table question, every turn, until
+        somebody picks a table.
+
+        THE STORE'S OWN CATALOG ANSWERS IT, not a word list, because only the catalog knows. "a bar
+        graph of gong calls per day" reaches `GONG__CALLS` and three of its neighbours; "tell me
+        what you can see" reaches nothing in the same warehouse. A list of data-sounding words
+        would have to be written without seeing either — `_STORE_WORDS` is kept short for exactly
+        that reason, and it would not have matched the measured prompt, which names no store word
+        at all.
+
+        `named_candidate` beside `matched`, because they disagree in one direction that matters. A
+        table named out of the store's own handle words — a source called `Gong` holding `GONG` —
+        scores nothing, since the handles are stripped from the request before tables are scored.
+        A sentence naming a table outright is the clearest data intent there is, and declining it
+        for want of a second word would be this gate refusing the case it exists for.
+
+        Both readings are of the name rank alone, which is why this is asked before the model rank
+        rather than after: `table_rank` reorders and carries `matched` through untouched.
+        """
+        ranking = table_search.rank(prompt, binding, found)
+        return bool(ranking.matched) or table_search.named_candidate(
+            prompt, ranking.candidates) is not None
 
     def _table_search_gave_up(self, binding: Binding):
         """Say a walk died before it could ask anything, instead of going quiet.
@@ -13578,13 +13752,21 @@ class Orchestrator:
         them answer the same question twice across the crossing, which is the friction this whole
         feature exists to remove.
 
-        Falls through in the same three cases the Build gate does, and for the same reason: no such
-        Data Source is named, the store will not say what it holds, or it holds nothing to offer.
+        Falls through in the same four cases the Build gate does, and for the same reason: no Data
+        Source is named or inferrable, the store will not say what it holds, it holds nothing to
+        offer, or it was INFERRED and the request asks nothing it holds (#445).
         """
         bindings = [b for b in (chat_handoff.binding_from_context(i) for i in items)
                     if b is not None]
         binding = table_search.named_source(prompt, self._chat_mentioned_sources(prompt, items),
                                             bindings)
+        # And, where the sentence named none, the only one there is (#445). `inferred` rides with it
+        # to the ranking below, which is the second test this answer owes and the named one does
+        # not: `sole_source` knows a store is there and nothing about whether the turn is about it.
+        inferred = False
+        if binding is None:
+            binding = table_search.sole_source(bindings)
+            inferred = binding is not None
         if binding is None:
             # Named for the reason the Build gate's is (#204), and it matters more here: this gate
             # now runs before the handoff short-circuit, so this line is the difference between "the
@@ -13621,6 +13803,16 @@ class Orchestrator:
         # happens, so it must not be the surface that gets the weaker order — and the ranker already
         # fails closed, so a Chat turn that cannot reach a model keeps exactly the name order this
         # path used to hand the card and loses nothing.
+        # THE SECOND TEST an inferred store owes (#445), asked before the model rank so a declined
+        # turn pays nothing for an order nobody will see. `_asks_anything_of` carries the reasoning.
+        #
+        # Named stores keep today's behaviour, with a card that opens on the full list where
+        # nothing matched (see `_table_candidates_events`) — a person who said "from Snowflake"
+        # asked, and a bad ranking must cost them a scroll rather than a fall-through.
+        if inferred and not self._asks_anything_of(prompt, binding, found):
+            log.info("table gate (chat): declined — %s is the only store bound and the request "
+                     "asks nothing it holds", binding.display_name)
+            return None
         ranking = self._ranked_candidates(project, source, binding, prompt, found,
                                           session=store.read_session_id(thread_id))
         # Already answered, so do not ask (#426). `named_source` tests the BINDING's recorded table,

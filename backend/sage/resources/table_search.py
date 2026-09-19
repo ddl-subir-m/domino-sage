@@ -148,6 +148,30 @@ def named_source(prompt: str, mentioned: Iterable[str], bindings: list[Binding])
     return None
 
 
+def sole_source(bindings: list[Binding]) -> Binding | None:
+    """The one bound Data Source with no table chosen, where it is the only one, or None (#445).
+
+    A SEPARATE QUESTION FROM `named_source`, and kept separate rather than folded into its last
+    branch, because the two answer differently and the caller has to know which it got. That one
+    answers "which store did this request name", and a request that names a store has said in the
+    same breath that it is about a store. This one answers only "which store is there", of a
+    request that may be about the header colour — so a caller taking this answer owes a second
+    test that `named_source`'s callers do not.
+
+    Measured on 2026-09-19: one Data Source attached, unscoped, and "give me a bar graph of gong
+    calls per day" reached nothing. `_handles("Snowflake-Data-Warehouse")` is `{"snowflake"}`, so
+    naming the subject, the database or the table matched none of it, and Sage replied by asking
+    for a table in the store it had just named itself. There was nothing to disambiguate: the
+    person answered "which store" by attaching it.
+
+    ONLY at one. Two or more unscoped stores is a real question with a real answer, and naming one
+    of them is information — `named_source`'s "one question per source" reasoning is untouched
+    here, as is a caller with none.
+    """
+    unscoped = [b for b in bindings if b.kind == KIND_DATA_SOURCE and not b.table]
+    return unscoped[0] if len(unscoped) == 1 else None
+
+
 # Words that say "a store somewhere else", read only where the app records NO Data Source at all
 # (#185). Deliberately short. This is asked of a request that names nothing we hold, so a word here
 # that is also ordinary app-building English — "data", "table", "database" — would stop somebody

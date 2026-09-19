@@ -161,6 +161,10 @@ def test_compact_error_does_not_fail_the_turn(tmp_path: Path):
     events = list(orch.chat_stream(tid, "hi"))
     assert next(e for e in events if e["type"] == "done") == {
         "type": "done", "ok": True, "decision": "answered",
+        # Stamped on every terminal row, never only when the condition fires (ADR-0061). This turn
+        # wrote no result Artifact, so it advanced by the guard: an empty set is a subset of
+        # everything, and without "wrote at least one" every turn like this would read false.
+        "reads": [], "advanced": True,
     }
     assert oc.compacts == []
     hist = orch.thread_history(tid)
