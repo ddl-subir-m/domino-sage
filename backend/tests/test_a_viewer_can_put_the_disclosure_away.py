@@ -55,7 +55,7 @@ def _run(payload: dict) -> dict:
 def _coverage(**short: int) -> dict:
     """A `coverage` record in the shape the readers build it.
 
-    COUNTS, not states: `liveread/run.py:614`, `calculate.py:157` and `text_analysis.py:133` all
+    COUNTS, not states: `liveread/run.py:614`, `calculate.py:157` and `text_analysis.py:130` all
     build `{total, processed, excluded, failed, unfinished}`. Clean by default, so each test names
     only the count it is about.
     """
@@ -417,7 +417,7 @@ def test_revealing_survives_a_turn_that_replaced_its_own_blocks():
 
 
 @pytest.mark.parametrize("state,drawn", [
-    # The `finally` at `data_use.py:266` writes this WITHOUT touching `failure`, so a response cut
+    # The `finally` at `data_use.py:265` writes this at `:267` WITHOUT touching `failure`, so a
     # off mid-stream carries `{state: 'interrupted', failure: None}`. A response that visibly did
     # not finish is a read that fell short, and truthiness on `failure` alone put it away.
     pytest.param("interrupted", True, id="interrupted-is-short"),

@@ -1867,7 +1867,7 @@ window.SW = window.SW || {};
   // nobody is asked.
   // The three counts on a `coverage` record that mean a read came back with less than it was asked
   // for. COUNTS, not states: `coverage` is `{ total, processed, excluded, failed, unfinished }`
-  // — `liveread/run.py:614`, `calculate.py:157`, `text_analysis.py:133` all build that shape, and
+  // — `liveread/run.py:614`, `calculate.py:157`, `text_analysis.py:130` all build that shape, and
   // `handoff.py:512` names the same five keys. Any of the three above zero is the shortfall.
   //
   // `processed` and `total` are deliberately not compared. `calculate.py` derives `excluded` as
@@ -1881,13 +1881,13 @@ window.SW = window.SW || {};
   //
   // `requests[]` is the other half, and it takes TWO fields rather than one. `failure` records the
   // KIND of error when one was seen — `data_use.py:224` creates it `None`, `:252` and `:263` set
-  // it. `state` records whether the request settled at all, and the `finally` at `:266` writes
+  // it. `state` records whether the request settled at all, and the `finally` at `:265` writes
   // `interrupted` WITHOUT touching `failure`. So a response cut off mid-stream, by a Stop or a
   // dropped connection, persists as `{ state: 'interrupted', failure: null }`, and truthiness on
   // `failure` alone put it away. A response that visibly did not finish is a read that fell short.
   //
   // `attempted` is deliberately not here. It is the state every request is persisted with the
-  // moment it opens (`data_use.py:224`, persisted at `:233`), so counting it would force-show every
+  // moment it opens (`data_use.py:224`, persisted by the `save()` at `:234`), so counting it would
   // card until its requests settled — the preference would not work during a live turn, which is
   // most of when anybody is looking.
   //
