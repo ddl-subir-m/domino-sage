@@ -39,6 +39,19 @@ def without_failed_tables(text: str, failed: set[str]) -> str:
     return text.strip(" ;\n")
 
 
+def failed_table_name(rel: str) -> str:
+    """What to call a table that failed, in the words its card is captioned with (#435).
+
+    `record_artifact` titles a card from the file's own name with the separators opened out, so a
+    failed table named the same way is read against the cards on screen with words in common. The
+    path is not used: it carries the Thread id, which means nothing to the person reading it and is
+    the longest part of the string.
+    """
+    name = Path(rel).name
+    stem = name.removesuffix(table_shape.SUFFIX)
+    return stem.replace("-", " ").replace("_", " ").strip() or name
+
+
 class ChatTables:
     """One turn's candidates survive deletion during repair; old files are never repair targets."""
 
