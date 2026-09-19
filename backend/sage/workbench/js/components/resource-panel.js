@@ -485,7 +485,19 @@ window.SW = window.SW || {};
             { title: inContext ? SW.util.IN_CONTEXT_TITLE : SW.util.BOUND_HERE_TITLE },
             h(
               'span',
-              { className: 'sw-res-ctx', 'aria-label': `${resource.name} is in this conversation` },
+              {
+                className: 'sw-res-ctx',
+                // The tooltip tells the two acts apart and this has to as well, or the only reader
+                // who cannot see the mark's colour is the one told least: without the second half,
+                // a screen reader hears "is in this conversation" and goes looking for a chip to
+                // take off that was never there.
+                // The name is concatenated AFTER the pack resolves, never interpolated into the
+                // template: a Resource called `{project}` would otherwise be rewritten into the
+                // product's own noun on its way through.
+                'aria-label': `${resource.name} ${inContext
+                  ? 'is in this conversation'
+                  : SW.brand.text('is in this conversation, because a {builtApp} uses it')}`,
+              },
               h(CheckCircleFilled, { style: { fontSize: 12 } })
             )
           )
@@ -765,7 +777,20 @@ window.SW = window.SW || {};
       //
       // The PICKER, which is that helper's third act, is deliberately not here: it is not an act on
       // this row, and a tick nobody clicked for reads worse than the `+` it would replace.
-      const callableHere = inContext || !!resource.boundHere;
+      //
+      // Two guards on the Binding half, and neither is on the chip half beside it.
+      //
+      // `inChat`, because the mark's words are Chat's words — "is in this conversation". In Build
+      // the slot drew a spacer, since `attachedIds` holds no chips there, and a Binding is already
+      // said twice on that surface: the `Required by {app}` bar and the `saysAppUse` subtitle. A
+      // third saying of it, in the other mode's grammar, is not an improvement.
+      //
+      // `!isMissing`, because the mark claims the Conversation can REACH it, and a row Domino no
+      // longer lists cannot be reached whatever the manifest still records. Without this, deleting
+      // a bound Data Source leaves the row drawing the missing mark and this one at once, and a
+      // Live read of it refuses — the same two-surfaces-one-truth split #410 is about.
+      const callableHere = inContext
+        || (inChat && !!resource.boundHere && !SW.util.isMissing(resource));
       return h(
         Fragment,
         { key: resource.id },
@@ -928,7 +953,12 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-panel-head' },
-        h('h2', { className: 'sw-panel-title' }, 'Project resources'),
+        // Through the pack since #410, because the refusals now send people here BY NAME —
+        // "Add it from {project} resources". A literal heading and a tokenised sentence read the
+        // same under the default pack and come apart under any other, which would point somebody
+        // at a heading that is not on their screen: the very thing those refusals were reworded to
+        // stop doing.
+        h('h2', { className: 'sw-panel-title' }, SW.brand.text('{project} resources')),
         h('span', { className: 'sw-topnav-spacer' }),
         // The one control that hides the panel, and it stays on the title row: it is the dock's
         // chrome rather than one of the panel's own acts, and the sub bar's near-identical twin

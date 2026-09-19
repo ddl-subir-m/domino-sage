@@ -54,6 +54,7 @@ from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
+from ..liveread import grant as live_grant
 from ..liveread import mcp as live_mcp
 from ..liveread import result as live_result
 from ..liveread import run as live_read
@@ -17796,7 +17797,9 @@ class Orchestrator:
         conversation holds offering a removal that was certain to answer 409. Both fields together
         are what let the row point at a door that opens: the app's Bindings, or the conversation.
 
-        And `boundHere` beside those two, which is a different question from both (#410). `usedBy`
+        And `boundHere` beside those two, which is a different question from both (#410). It is not
+        every Binding: a kind no turn can reach is left out, and `_binding_reaches_a_turn` names
+        the Model API that makes the difference. `usedBy`
         names every app that binds the row, because a removal must not strand one nobody is looking
         at. `boundHere` is a single boolean about the app a TURN would use, because the panel's tick
         has to mean "this Conversation can reach it" and nothing else — `_bindings_here` carries the
@@ -18206,31 +18209,61 @@ class Orchestrator:
         a tick on a row this Conversation would still refuse — the same false sentence in the other
         direction, which is the one thing #410 exists to end.
 
-        Kind-agnostic, because the acts are. `liveread.grant.reachable` reads the same bound-plus-
-        chips pair for a store or a file as `_delegated_aliases` reads for a model, so the panel's
-        tick means the same thing on every row and the caller filters if it has a reason to.
+        NOT the only reader of this manifest, and the docstring said so wrongly at first. The
+        `bound` map `liveread.grant.reachable` is given is built inline in `_live_turn`, off
+        `project.workspace.read_bindings()` directly, because it derives `binding_for` and
+        `scope_for` from the same rows in the same pass. Same file, same scope, third reader —
+        routing it through here would be an improvement and is not this change.
 
         Non-dict entries are dropped rather than trusted: `read_bindings` answers with whatever the
         manifest's top-level list held, and `parse_bindings` skips those for the same reason.
         """
         return [row for row in project.workspace.read_bindings() if isinstance(row, dict)]
 
+    @staticmethod
+    def _binding_reaches_a_turn(kind: str) -> bool:
+        """Whether a Binding of this kind puts the Resource within a turn's reach.
+
+        Asked of the two readers that answer it rather than answered from a list here, because a
+        list is what goes stale: `_delegated_aliases` accepts an LLM Alias and nothing else, and
+        `liveread.grant.READABLE` names the kinds a Live read may reach.
+
+        A MODEL API IS BOUND AND STILL OUT OF REACH, which is the case a list would have missed.
+        It sits in `grant.CALLED`, so a Live read of one is refused outright — *"called by the app,
+        not read like a store or file"* — and it is not an Alias, so no turn can call it either. A
+        tick on that row would be #410's own defect rebuilt: a surface promising what another
+        refuses.
+        """
+        k = (kind or "").replace("_", "").replace("-", "").casefold()
+        return k == "llmalias" or k in live_grant.READABLE
+
     def _bound_here_ids(self, project: Project) -> set[str]:
         """Every id the selected app's Bindings can be joined on, in the membership row's spellings.
 
         The mirror of `_resource_aliases`, coming the other way: that one widens a membership id to
-        every spelling a Binding might use, so this one widens each Binding to both of the two it
-        is written under. Intersecting the two sets is the join, and neither side has to know which
-        spelling the other picked.
+        every spelling a Binding might use, so this one writes each Binding under the kind-prefixed
+        spelling both sides produce. Intersecting the two sets is the join, and neither side has to
+        know which spelling the other picked.
+
+        PREFIXED ONLY, never the bare id. `_resource_aliases` emits the bare form as well, so
+        adding it here too would make the intersection succeed on the id alone — and a Data Source
+        and a Dataset that happen to share an id would tick each other's row. Domino ids are
+        namespaced per type, so nothing rules that collision out; the prefix is the part that
+        carries the type, and both sides already write it.
+
+        Kinds out of a turn's reach are left out entirely — `_binding_reaches_a_turn` says which
+        and why.
         """
         ids: set[str] = set()
         for row in self._bindings_here(project):
             kind, rid = str(row.get("kind") or ""), str(row.get("id") or "")
-            if not rid:
+            if not rid or not kind or not self._binding_reaches_a_turn(kind):
                 continue
-            ids.add(rid)
-            if kind:
-                ids.add(f"{kind}:{rid}")
+            ids.add(f"{kind}:{rid}")
+            # The one legacy spelling `_resource_aliases` also reconciles: older membership files
+            # key a Data Source under `datasource:` where today's writes go under `data_source:`.
+            if kind == KIND_DATA_SOURCE:
+                ids.add(f"datasource:{rid}")
         return ids
 
     def _apps_that_bind(

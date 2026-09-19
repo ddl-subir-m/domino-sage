@@ -350,7 +350,15 @@ window.SW = window.SW || {};
     //
     // No verb here either, for `IN_CONTEXT_TITLE`'s reason: a Binding comes off on the app's own
     // dependency list, which is the one surface that owns it (ADR-0021).
-    BOUND_HERE_TITLE: 'In this conversation — the app you are building uses it.',
+    //
+    // Not "the app you are building": this is read in Chat, where nobody is building anything and
+    // no app is on screen at all. Naming a surface the reader cannot see is the exact failure
+    // #410 fixed in the refusals, and it would be silly to rebuild it in the tooltip that change
+    // added. So it names the RECORD — a Built App depends on this — and leaves which app to the
+    // row's own `usedBy` text.
+    get BOUND_HERE_TITLE() {
+      return SW.brand.text('In this conversation — a {builtApp} in this {project} uses it.');
+    },
 
     // The mark a `missing` row wears, and the sentence behind it. Three surfaces read one answer —
     // the rail, the @ menu and the bind picker — so the words are written once, the way

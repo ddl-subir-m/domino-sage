@@ -19,7 +19,13 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { members, context, mode = 'chat' } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { members, context, mode = 'chat', unlisted: gone = [] } =
+  JSON.parse(fs.readFileSync(0, 'utf8'));
+
+// Ids the platform listing is told to LEAVE OUT, so a caller can ask what the row does once Domino
+// stops holding it. Opt-in and named, because the default has to be the opposite: an accidentally
+// unlisted row reads as a verdict about the mark when it is a verdict about the fixture.
+const dropped = new Set(gone);
 
 const THREAD = 'conv_1';
 
@@ -29,16 +35,40 @@ const THREAD = 'conv_1';
 // kind is answered with exactly what membership holds, and the whole question is left to
 // `working_set_liveness_harness.mjs`, which owns it.
 const bare = (id) => String(id).split(':').slice(1).join(':') || String(id);
-const kinds = (kind) => members.filter((m) => m.kind === kind);
+
+// ONE MEMBERSHIP KIND HAS TWO SPELLINGS AND THE FIXTURE HAS TO KNOW BOTH. A row added through the
+// panel is written `model_llm`; the row `_join_project_on_bind` writes when an app binds an Alias
+// is written `llm_alias`. Matching one spelling left the other out of the listing below, so the
+// row came back `liveness: 'missing'` — and because the mark used to ignore liveness, the test
+// passed anyway. It only surfaced once the mark started checking. So this normalises, and the
+// guard at the bottom of this block fails loudly rather than letting a fixture hole read as a
+// verdict again.
+const GROUP = {
+  model_llm: 'llm', llm_alias: 'llm', llmalias: 'llm',
+  dataset: 'dataset',
+  datasource: 'datasource', data_source: 'datasource',
+  model_predictive: 'modelapi', model_api: 'modelapi',
+};
+const kinds = (group) => members.filter(
+  (m) => GROUP[String(m.kind || '')] === group && !dropped.has(m.id));
 const RESOURCES = {
-  llm_aliases: kinds('model_llm').map((m) => ({
+  llm_aliases: kinds('llm').map((m) => ({
     id: bare(m.id), name: m.alias || bare(m.id), display_name: m.name,
   })),
   data_sources: kinds('datasource').map((m) => ({ id: bare(m.id), name: m.name })),
-  model_apis: kinds('model_predictive').map((m) => ({ id: bare(m.id), name: m.name })),
+  model_apis: kinds('modelapi').map((m) => ({ id: bare(m.id), name: m.name })),
   assets: kinds('dataset').map((m) => ({ id: bare(m.id), name: m.name })),
   errors: {},
 };
+
+const unlisted = members.filter((m) => !GROUP[String(m.kind || '')]);
+if (unlisted.length) {
+  // Not a silent skip: an unrecognised kind would be served no listing row, the panel would draw
+  // it as gone from Domino, and every claim about its mark would be a claim about a missing row.
+  console.error(`context_mark_harness: no listing leg for kind(s) `
+    + `${[...new Set(unlisted.map((m) => m.kind))].join(', ')} — add it to GROUP`);
+  process.exit(2);
+}
 
 function serve(url) {
   const path = String(url).replace(/^\.\/api/, '').split('?')[0];
@@ -173,6 +203,7 @@ const rows = drawn
       inContext: !!n.p.inContext,
       callableHere: !!n.p.callableHere,
       boundHere: !!(n.p.resource || {}).boundHere,
+      liveness: (n.p.resource || {}).liveness || null,
       // and what it drew: `mark` for the tick, `add` for the `+`, `spacer` for neither.
       slot: cls.includes('sw-res-ctx-add') ? 'add' : cls.includes('is-spacer') ? 'spacer' : 'mark',
       aria: slot ? (slot.p['aria-label'] || null) : null,
