@@ -3656,13 +3656,30 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     # The two skip flags are a card being answered, not a gate being skipped (#188, #196): the turn
     # that drew the card wrote the question to the Thread, so a replay must not write it a second
     # time. `datasetDismissed` outlives this request — see the build route above for why.
+    # Parsed into a local, and named as short as it is, because the streaming call below is within a
+    # few characters of the 500 that
+    # `test_every_stream_declares_the_media_type_that_keeps_it_out_of_the_compressor` reads from the
+    # start of each streaming return. That guard is about GZipMiddleware buffering an SSE stream and
+    # is worth not blunting, so the next argument added here goes in a local too rather than
+    # widening the window. A comment above the call costs nothing; one inside it costs the guard.
+    #
+    # And it must not spell that opening call out, which this comment learned the hard way: the test
+    # finds its sites with a plain regex, so prose quoting the phrase it scans for becomes a site of
+    # its own, with no media type within 500 characters of it and no way to give it one.
+    grant = str((body or {}).get("otherLaneGrant") or "")
+    # `otherLaneGrant` is carried as the opaque string it is, NOT coerced to a bool like the four
+    # flags beside it (#411). Those are card answers, and a forged one skips a question; this one
+    # suppresses bounded arming, so a forged one would buy the shell lane. It is checked against a
+    # server-minted single-use grant rather than believed — `str()` here and no more, because the
+    # validation belongs where the grants are held.
     return StreamingResponse(
         _turn_sse(orchestrator.chat_stream(
             thread_id, prompt,
             skip_table_gate=bool((body or {}).get("skipTableGate")),
             skip_dataset_gate=bool((body or {}).get("skipDatasetGate")),
             dismissed_dataset=str((body or {}).get("datasetDismissed") or ""),
-            skip_investigation_gate=bool((body or {}).get("investigationAnswered"))), "chat_stream"),
+            skip_investigation_gate=bool((body or {}).get("investigationAnswered")),
+            other_lane_grant=grant), "chat_stream"),
         media_type="text/event-stream")
 
 

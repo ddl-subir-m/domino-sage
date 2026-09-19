@@ -102,7 +102,8 @@ def test_the_click_writes_the_record_first_and_then_asks_the_question_again():
     # flag the route reads (#196, #386) and this click answers only the table one.
     assert out["replay"] == {"prompt": PROMPT, "skipTableGate": True,
                              "skipDatasetGate": False, "datasetDismissed": "",
-                             "investigationAnswered": False}
+                             "investigationAnswered": False,
+                             "otherLaneGrant": ""}
 
 
 @needs_node
