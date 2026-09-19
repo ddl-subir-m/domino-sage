@@ -61,9 +61,16 @@ def test_every_surface_that_attaches_a_resource_uses_the_same_words():
     The glossary term survives on all three surfaces, but since #410 none of them draws it as INK:
     the tree shortened it first, and the panel's menu and the drawer's button followed. So this
     asserts only that each surface still NAMES the act — where each one puts it is the next test's
-    question, and the ink is asserted there."""
+    question, and the ink is asserted there.
+
+    OVER `_flat` AND NOT THE RAW SOURCE, which is what makes it a check at all. Every one of these
+    three files now carries a COMMENT quoting this phrase — explaining where the long form went when
+    the ink was shortened — and a comment satisfies a substring search exactly as well as code does.
+    Measured on 2026-09-18: with the phrase removed from all three files' code and only the comments
+    left, this assertion still passed. `_flat` strips comments, so the prose can say the phrase as
+    often as it needs to and only a real call site answers here."""
     for name, src in SURFACES.items():
-        assert USE in src, f"{name} no longer offers {USE!r}"
+        assert USE in _flat(src), f"{name} no longer offers {USE!r}"
 
 
 def test_the_panel_and_the_drawer_shorten_the_act_the_way_the_tree_did():
