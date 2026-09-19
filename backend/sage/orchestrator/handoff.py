@@ -450,8 +450,13 @@ def data_reads_by_source(history: list[dict]) -> list[dict]:
             continue
         entry = by_source.setdefault(source, {"source": source, "turns": set(), "artifact": "",
                                               "at": position})
-        # The operation id when the event carries no `turn_id`: a restored event (`DataUse.restore`)
-        # has none, and counting those as one shared turn would under-report a whole session.
+        # No event the current producer writes can take the `or key` branch: `DataUse.record`
+        # stamps `turn_id` before it persists, `DataUse.restore` rebuilds from those same persisted
+        # rows, and `DataUse.events` indexes `event["turn_id"]` unconditionally — so an event
+        # without one raises in `finish()` long before it reaches a prompt. It is kept for rows
+        # written before the field existed, which a committed `history.jsonl` can still hold, and
+        # it stops those collapsing into one shared turn. Delete it once no Thread in the wild
+        # predates `turn_id`.
         entry["turns"].add(str(event.get("turn_id") or "") or key)
         artifact = str(event.get("artifact") or "").strip()
         if artifact:

@@ -187,8 +187,16 @@ def test_reads_is_measured_against_the_turns_own_snapshot(tmp_path: Path):
     `table_shape.shape_only` stamps `readAt` per second, so re-running the same statement writes
     different bytes and the repeat IS caught. With **Kept rows** ON the card is
     `{title, columns, rows}` with no timestamp, and a repeat of an unchanged table lands here and
-    reports `advanced: true`. The error falls in the honest direction — a missed report, never a
-    false one — but it is a real hole and it belongs in the record.
+    reports `advanced: true`. That is a missed report, and it is a real hole in the record.
+
+    It is NOT the only direction the error falls, and an earlier draft of this docstring claimed
+    it was. `new_artifact_paths` is prefix-filtered to `examples/<threadId>/`, so a turn that
+    appends a new measurement to `.sage/threads/<threadId>/findings.md` — the record all three
+    prompt layers ask for — and refreshes one existing card writes nothing this field can see as
+    new, and closes `advanced: false` for work that happened. A false report, on exactly the
+    well-behaved investigation turn #442 wants. Named here, not fixed here: `advanced` is defined
+    on the result-Artifact path by ADR-0061, and widening it to a second kind of file is that
+    record's decision to make.
     """
     orch, oc = _orch(tmp_path)
     tid = orch.create_thread()["id"]

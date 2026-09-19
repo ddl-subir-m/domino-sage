@@ -11065,15 +11065,27 @@ class Orchestrator:
             if rows[i].get("type") == recall.CLEARED and rows[i].get("scope") == recall.EMPTY:
                 rows = rows[i + 1:]
                 break
-        reads = chat_handoff.data_reads_by_source(rows)
+        reads = chat_handoff.data_reads_by_source(rows)[:_ALREADY_READ_MAX]
         if not reads:
             return ""
+        # Through the same filter the Artifact list below uses, and for the reason stated there: a
+        # path the model is told it may read costs a tool call and an answer written around a file
+        # that is not there. The history row outlives the file — a card the person deleted, or a
+        # clone that never carried `examples/` — so the event's `artifact` is a claim about disk
+        # and not a fact about it.
+        #
+        # Applied AFTER the cap, so this is at most `_ALREADY_READ_MAX` stats and never a walk.
+        # The line still renders without its path: that the source was read is true either way,
+        # and it is the dead PATH that costs a turn, not the missing one.
+        here = {str(row.get("path") or "") for row in _artifacts_present(
+            self._chat_project().record.path,
+            [{"path": e["artifact"]} for e in reads if e["artifact"]])}
         lines = ["Already read in this Thread:"]
-        for entry in reads[:_ALREADY_READ_MAX]:
+        for entry in reads:
             turns = entry["turns"]
             said = f"{turns} turn" if turns == 1 else f"{turns} turns"
             artifact = str(entry["artifact"] or "")
-            if artifact:
+            if artifact in here:
                 lines.append(f"- {entry['source']} — read on {said}, "
                              f"most recent result at {artifact}")
             else:
