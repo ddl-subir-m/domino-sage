@@ -17798,8 +17798,9 @@ class Orchestrator:
         are what let the row point at a door that opens: the app's Bindings, or the conversation.
 
         And `boundHere` beside those two, which is a different question from both (#410). It is not
-        every Binding: a kind no turn can reach is left out, and `_binding_reaches_a_turn` names
-        the Model API that makes the difference. `usedBy`
+        every Binding — only one a turn could actually call, which today means a named LLM Alias;
+        `_binding_reaches_a_turn` is the condition and says why a bound store is not the same case.
+        `usedBy`
         names every app that binds the row, because a removal must not strand one nobody is looking
         at. `boundHere` is a single boolean about the app a TURN would use, because the panel's tick
         has to mean "this Conversation can reach it" and nothing else — `_bindings_here` carries the
@@ -17854,9 +17855,10 @@ class Orchestrator:
                  {"appId": ws.app_id, "name": _app_display_name(ws), "scope": b.scope_shown}
                  for ws, b in self._apps_that_bind(str(row.get("id") or ""), scanned)
              ],
-             # Whether THIS act — **Use in app**, on the app a turn would use — already makes the
-             # row reachable, so the panel can draw one tick per act rather than guessing from
-             # `usedBy`, which spans every app and would tick a row a turn still refuses (#410).
+             # Whether **Use in app**, on the app a turn would use, already makes this row
+             # callable — so the panel can say so rather than guessing from `usedBy`, which spans
+             # every app and would tick a row a turn still refuses (#410). Language models only;
+             # `_binding_reaches_a_turn` carries the reason the data kinds are not the same case.
              "boundHere": bool(self._resource_aliases(str(row.get("id") or "")) & bound_here),
              "heldBy": self._threads_that_hold(str(row.get("id") or ""), chips)}
             for row in rows
@@ -18197,8 +18199,10 @@ class Orchestrator:
         """The Binding rows recorded by the app this Conversation's turns would use.
 
         ONE read behind two surfaces, which is the whole point of it. `_delegated_aliases` turns
-        the language-model rows into the call names a turn may use; `list_project_resources` turns
-        all of them into each row's `boundHere`, which is how the panel draws its tick. Before #410
+        the language-model rows into the call names a turn may use; `list_project_resources` puts
+        the same rows behind each membership row's `boundHere`, which is how the panel draws its
+        tick. The same rows and not all of them — `_binding_reaches_a_turn` is the filter both
+        apply, and it is why a bound store ticks nothing. Before #410
         the panel had no account of this act at all — it read Session context chips alone — so a
         model bound through **Use in app** was callable and still drew a `+` offering to add it.
 
@@ -18221,21 +18225,32 @@ class Orchestrator:
         return [row for row in project.workspace.read_bindings() if isinstance(row, dict)]
 
     @staticmethod
-    def _binding_reaches_a_turn(kind: str) -> bool:
-        """Whether a Binding of this kind puts the Resource within a turn's reach.
+    def _binding_reaches_a_turn(row: dict) -> bool:
+        """Whether a Binding row puts the Resource within a turn's reach — the SAME condition
+        `_delegated_aliases` applies, spelled once so the panel cannot drift off it.
 
-        Asked of the two readers that answer it rather than answered from a list here, because a
-        list is what goes stale: `_delegated_aliases` accepts an LLM Alias and nothing else, and
-        `liveread.grant.READABLE` names the kinds a Live read may reach.
+        An LLM Alias with a name, and nothing else. Both halves match that helper exactly: it
+        compares `kind` against `KIND_LLM_ALIAS` with `==` and skips any row whose `name` is empty,
+        because the name IS the call name and a row without one names nothing a turn could ask for.
+        Normalising the kind here instead — accepting `llmalias` or `LLM-Alias` — would tick a row
+        that helper then skips, which is this ticket's own defect in miniature.
 
-        A MODEL API IS BOUND AND STILL OUT OF REACH, which is the case a list would have missed.
-        It sits in `grant.CALLED`, so a Live read of one is refused outright — *"called by the app,
-        not read like a store or file"* — and it is not an Alias, so no turn can call it either. A
-        tick on that row would be #410's own defect rebuilt: a surface promising what another
-        refuses.
+        A MODEL API is bound and out of reach: it sits in `grant.CALLED`, so a Live read of one is
+        refused outright — *"called by the app, not read like a store or file"* — and it is not an
+        Alias, so no turn can call it either.
+
+        AND SO ARE THE DATA KINDS, which is the part that is easy to get wrong and which this
+        function was wrong about first. `grant.reachable` does accept a bound Dataset or Data Source
+        on its `bound` half, so a Live read of one is PERMITTED. But permission is not reach: the
+        prompt's `Session context:` block is built from `ctx["items"]` — chips — and lists no
+        Bindings at all, so the assistant is never told the store exists and never names it. A tick
+        there would say "in this conversation" about something the model cannot see, and would take
+        away the `+` that is the only act which does put it in front of the model. Permitted-if-
+        named and present-in-the-conversation are two different claims, and the mark makes the
+        second one.
         """
-        k = (kind or "").replace("_", "").replace("-", "").casefold()
-        return k == "llmalias" or k in live_grant.READABLE
+        return (str(row.get("kind") or "") == KIND_LLM_ALIAS
+                and bool(str(row.get("name") or "")))
 
     def _bound_here_ids(self, project: Project) -> set[str]:
         """Every id the selected app's Bindings can be joined on, in the membership row's spellings.
@@ -18246,24 +18261,20 @@ class Orchestrator:
         know which spelling the other picked.
 
         PREFIXED ONLY, never the bare id. `_resource_aliases` emits the bare form as well, so
-        adding it here too would make the intersection succeed on the id alone — and a Data Source
-        and a Dataset that happen to share an id would tick each other's row. Domino ids are
-        namespaced per type, so nothing rules that collision out; the prefix is the part that
-        carries the type, and both sides already write it.
+        adding it here too would make the intersection succeed on the id alone — and a Dataset that
+        happened to share an id with a bound Alias would wear its tick. Domino ids are namespaced
+        per type, so nothing rules that collision out; the prefix is the part that carries the type,
+        and both sides already write it.
 
-        Kinds out of a turn's reach are left out entirely — `_binding_reaches_a_turn` says which
-        and why.
+        Rows out of a turn's reach are left out entirely — `_binding_reaches_a_turn` is the
+        condition, and it is `_delegated_aliases`'s condition.
         """
         ids: set[str] = set()
         for row in self._bindings_here(project):
-            kind, rid = str(row.get("kind") or ""), str(row.get("id") or "")
-            if not rid or not kind or not self._binding_reaches_a_turn(kind):
+            rid = str(row.get("id") or "")
+            if not rid or not self._binding_reaches_a_turn(row):
                 continue
-            ids.add(f"{kind}:{rid}")
-            # The one legacy spelling `_resource_aliases` also reconciles: older membership files
-            # key a Data Source under `datasource:` where today's writes go under `data_source:`.
-            if kind == KIND_DATA_SOURCE:
-                ids.add(f"datasource:{rid}")
+            ids.add(f"{KIND_LLM_ALIAS}:{rid}")
         return ids
 
     def _apps_that_bind(

@@ -356,8 +356,14 @@ window.SW = window.SW || {};
     // #410 fixed in the refusals, and it would be silly to rebuild it in the tooltip that change
     // added. So it names the RECORD — a Built App depends on this — and leaves which app to the
     // row's own `usedBy` text.
+    // Says CALLABLE and not merely present, because that is the whole of what the record supports.
+    // An earlier draft said "a Built App in this project uses it", which is true of a bound store
+    // too — and a bound store is not in the conversation in any sense the assistant can act on: the
+    // prompt's Session context block lists chips and no Bindings, so the model is never told it
+    // exists. The mark is now drawn for a bound language model only, and this names why that one
+    // is different: it has a call name, and a turn can ask for it by that name.
     get BOUND_HERE_TITLE() {
-      return SW.brand.text('In this conversation — a {builtApp} in this {project} uses it.');
+      return SW.brand.text('{assistantName} can call it here — a {builtApp} in this {project} uses it.');
     },
 
     // The mark a `missing` row wears, and the sentence behind it. Three surfaces read one answer —

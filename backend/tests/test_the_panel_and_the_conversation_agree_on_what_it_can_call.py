@@ -212,7 +212,7 @@ def test_the_two_acts_that_earn_the_mark_do_not_borrow_each_others_sentence(tmp_
 
 @needs_node
 def test_a_bound_model_api_is_not_ticked_because_no_turn_can_reach_it(tmp_path: Path):
-    """The one bindable kind that **Use in app** does not put within a turn's reach.
+    """A bindable kind that **Use in app** does not put within a turn's reach.
 
     A Model API sits in `liveread.grant.CALLED`, so a Live read of one is refused outright — "called
     by the app, not read like a store or file" — and it is not an Alias, so `_delegated_aliases`
@@ -324,3 +324,61 @@ def test_a_binding_does_not_tick_another_kinds_row_that_shares_its_id(tmp_path: 
         "a Binding on one kind reached another kind's row, so the join lost the type"
     )
     assert rows[f"dataset:{OPUS_ID}"]["slot"] == "add", "and the row keeps its offer"
+
+
+@needs_node
+def test_a_bound_store_is_not_ticked_because_the_prompt_never_names_it(tmp_path: Path):
+    """PERMITTED IS NOT PRESENT, and this is the row where the difference bites.
+
+    `grant.reachable` accepts a bound Dataset or Data Source on its `bound` half, so a Live read of
+    one is permitted — which made it tempting to tick. But the assistant is never TOLD the store is
+    there: `_chat_prompt` builds `Session context:` from `ctx["items"]`, the chips, and lists no
+    Bindings at all. So the model does not name it, does not read it, and answers that it has no
+    data.
+
+    Ticking it would therefore do the two worst things at once: claim the store is in the
+    conversation when the model cannot see it, and take away the `+` — the one act that would
+    actually put it in front of the model. A language model is different in exactly the way that
+    matters: it has a call name, and a turn can ask for it by name.
+    """
+    orch = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "classify these"))
+
+    source = orch.list_data_sources()[0]
+    orch.bind_data_source(source["id"], None, None, None)
+
+    row = next(r for r in _drawn(orch, tid).values() if r["name"] == source["name"])
+    assert row["boundHere"] is False, "a bound store was marked callable in the conversation"
+    assert row["slot"] == "add", (
+        "and the row lost the `+`, which is the only act that names the store to the model"
+    )
+
+
+@needs_node
+def test_an_alias_binding_with_no_call_name_is_not_ticked(tmp_path: Path):
+    """The tick has to fail wherever `_delegated_aliases` fails, including on a malformed row.
+
+    That helper skips any Binding whose `name` is empty, because the name IS the call name and a
+    row without one names nothing a turn could ask for. A join that looked only at `kind` and `id`
+    would tick the panel while the turn refused — the same split, arriving through a manifest
+    nobody hand-checks.
+
+    Written into the manifest directly: no door records a nameless Binding, which is the point —
+    the guard is against a file, not against an act.
+    """
+    orch = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "classify these"))
+    _member(orch, OPUS_ID, OPUS_LABEL)
+
+    project.workspace.update_bindings(
+        lambda _entries: [{"kind": "llm_alias", "id": OPUS_ID}])
+
+    aliases, _, _ = orch._delegated_aliases(project, tid)
+    assert OPUS_ID not in {a[0] for a in aliases}, "the premise: the turn cannot call it"
+
+    row = _drawn(orch, tid)[f"llm_alias:{OPUS_ID}"]
+    assert row["boundHere"] is False, "the panel ticked a row the turn will not call"
+    assert row["slot"] == "add"
