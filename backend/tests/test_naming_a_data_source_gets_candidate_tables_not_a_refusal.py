@@ -25,7 +25,10 @@ record, and the request the person already made is built against it.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -34,7 +37,7 @@ from fastapi.testclient import TestClient
 
 import sage.orchestrator.app as appmod
 from sage.gateway.client import FakeGatewayClient
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import Orchestrator, StoreWentQuiet
 from sage.resources.bindings import KIND_DATA_SOURCE
 from sage.resources.provider import FakeResourceProvider, ResourceUnavailable
 from sage.router.models import ModelCatalog
@@ -205,18 +208,28 @@ def test_an_at_mention_names_the_data_source_without_the_prose_having_to(
     It matters because the prose match is a heuristic and this one is not. Somebody who @mentions
     the Data Source and then describes the data in words that name no store at all still gets the
     search, which is the case the prose path cannot answer.
+
+    TWO BOUND, since #445, and without the second this test stopped being able to fail: one
+    unscoped store is now inferred whether or not anything names it, so the card would arrive with
+    the mention deleted. The pair puts the mention back in the load-bearing position — `ds-oracle`
+    is reached by "billing" and "oracle", and this request says neither.
     """
     orch = _orch(tmp_path)
     _gong_warehouse(orch)
     client = _client(orch, monkeypatch)
     _bind(client)
+    client.post("/api/bindings", json={"kind": KIND_DATA_SOURCE, "id": "ds-oracle"})
+    prompt = "a daily summary of gong calls"
 
     card = _card(client.post("/api/project/build/stream", json={
-        "prompt": "a daily summary of gong calls",
+        "prompt": prompt,
         "resources": [{"kind": KIND_DATA_SOURCE, "id": "ds-dwh"}],
     }).text)
+    without = client.post("/api/project/build/stream", json={"prompt": prompt}).text
 
     assert card["sourceId"] == "ds-dwh"
+    # The control: the same sentence with nothing mentioned reaches neither store.
+    assert [f for f in _frames(without) if f.get("type") == "table-candidates"] == []
 
 
 def test_a_data_source_with_a_table_already_chosen_is_not_asked_about_again(
@@ -551,3 +564,281 @@ def test_a_data_source_holding_no_tables_is_not_offered_as_an_empty_card(
 
     assert "table-candidates" not in body
     assert built == [1]
+
+
+# ---- the store nobody had to name (#445) ----------------------------------------------------
+
+# `PROMPT` without the two words that name the store. `_handles("Snowflake-Data-Warehouse")` is
+# `{"snowflake"}` — `_GENERIC_SOURCE` strips "data" and "warehouse" — so this reaches the Binding
+# by nothing but being the only one there.
+UNNAMED = "build me a dashboard of daily gong calls"
+
+
+def _frames(text: str) -> list[dict]:
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+
+
+def test_the_only_data_source_bound_is_the_one_the_request_means(tmp_path: Path, monkeypatch):
+    """The same card, for a request that names the subject and not the store (#445).
+
+    One Data Source on the app and no table chosen is not an ambiguity — it is a question with one
+    possible answer, which the creator already gave by binding it. The turn that asked them to
+    repeat its name in prose spent the whole first data turn on it.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    asked = []
+    orch._build_stream = lambda *a, **k: asked.append(1) or iter([])  # type: ignore[method-assign]
+    _bind(client)
+
+    card = _card(client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text)
+
+    assert card["sourceId"] == "ds-dwh"
+    assert card["matched"] > 0
+    assert asked == [], "the assistant was asked to build against a table nobody had chosen"
+
+
+def test_a_second_bound_store_makes_it_a_question_again(tmp_path: Path, monkeypatch):
+    """Two unscoped stores is a real ambiguity, and #445 leaves it alone — with its control.
+
+    THE CONTROL IS THE SAME REQUEST against one binding, in the test above. Without a pair, "no
+    card" here proves nothing: on the code before #445 this sentence drew no card with one store
+    bound either, because nothing in it reached the name. The pair says the decline came from the
+    count.
+
+    `billing-oracle` is reached by "billing" and "oracle" and this request says neither, so the
+    second store is genuinely unnamed rather than quietly losing a prose match.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    _bind(client)
+    client.post("/api/bindings", json={"kind": KIND_DATA_SOURCE, "id": "ds-oracle"})
+
+    body = client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text
+
+    assert [f for f in _frames(body) if f.get("type") == "table-candidates"] == []
+    # And nothing was read to decide it: two stores is settled off the manifest, so this is still
+    # the free decline the gate's position above the build depends on.
+    assert [f for f in _frames(body) if f.get("type") == "table-search"] == []
+
+
+def test_the_only_store_is_not_asked_about_a_request_that_asks_nothing_it_holds(
+        tmp_path: Path, monkeypatch):
+    """A Binding outlives the turn that made it, so inferring it must not capture every later turn.
+
+    Without this, an app with a store and no table chosen meets the picker on "make the header
+    blue" for as long as nobody picks one — the gate answering a question that was never asked.
+    `ranking.matched` is what asks it, against the store's own catalog rather than a word list.
+
+    THE CONTROL IS THE SAME APP AND THE SAME STORE, only the sentence changes, because "no card"
+    is also what a gate that never ran looks like.
+
+    THE SEARCH IS TAKEN BACK rather than left on screen. The walk streams before `matched` can be
+    known, so the person sees Sage reading the warehouse; frames that appear and then vanish with
+    no account of why are the one thing streaming can do that silence could not.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    built = []
+    orch._build_stream = lambda *a, **k: built.append(1) or iter([])  # type: ignore[method-assign]
+    _bind(client)
+
+    unrelated = _frames(client.post("/api/project/build/stream",
+                                    json={"prompt": "make the header blue"}).text)
+    asked = _frames(client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text)
+
+    assert [f for f in unrelated if f.get("type") == "table-candidates"] == []
+    assert [f for f in asked if f.get("type") == "table-candidates"] != []
+    ended = [f for f in unrelated if f.get("type") == "table-search-ended"]
+    assert len(ended) == 1 and ended[0]["sourceId"] == "ds-dwh"
+    # Message-less, because this one is a fact about the request and not about the store. A
+    # sentence saying Sage went and looked would be noise on a turn that was never about data.
+    assert "message" not in ended[0]
+    # And the build it interrupted nothing of still ran.
+    assert built == [1]
+
+
+def test_an_inferred_store_reports_nothing_about_itself_on_the_way_out(
+        tmp_path: Path, monkeypatch):
+    """A store nobody named does not get to narrate its own failures (#445).
+
+    The walk's message-bearing exits were written for a person who said "from Snowflake": they
+    asked about the store, so a store that holds nothing or will not answer is news. Inferring the
+    sole store put those same sentences in front of somebody who asked about the header colour —
+    and a warehouse blip would then repeat them on every turn until a table was picked.
+
+    The control is the SAME empty store under a request that names it, which must still say so.
+    Without that pair this passes on a gate that never ran at all.
+    """
+    orch = _orch(tmp_path)
+    orch._resources.tree["ds-dwh"] = {"DWH": {"MARTS": []}}
+    client = _client(orch, monkeypatch)
+    _bind(client)
+
+    inferred = _frames(client.post("/api/project/build/stream",
+                                   json={"prompt": UNNAMED}).text)
+    named = _frames(client.post("/api/project/build/stream", json={"prompt": PROMPT}).text)
+
+    quiet = [f for f in inferred if f.get("type") == "table-search-ended"]
+    spoken = [f for f in named if f.get("type") == "table-search-ended"]
+    assert len(quiet) == 1 and "message" not in quiet[0]
+    assert len(spoken) == 1 and "no Tables to pick from" in spoken[0]["message"]
+
+
+def test_a_table_named_outright_is_asked_about_even_where_the_name_scores_nothing(
+        tmp_path: Path, monkeypatch):
+    """The one direction `matched` and `named_candidate` disagree in, and it matters.
+
+    `_words` drops anything under three characters, from a request and from a table name alike, so
+    a table called `T1` scores zero however plainly the sentence names it. Relevance read off
+    `matched` alone would decline the clearest data intent there is — a fully-qualified table name
+    — which is the case this whole gate exists for.
+
+    WHAT IT REACHES IS THE #426 DOOR, not the card: a table named outright is recorded without
+    asking. The relevance test sits one line above that door, so reading it off `matched` alone
+    would leave the door unreachable for an inferred store — a branch repaired and never entered.
+
+    THE STORE IS NOT NAMED HERE, which the first draft of this test got wrong and a planted
+    failure caught. Naming `SANDBOX.PUBLIC.TEST` in a store called `test` puts the store's own
+    handle in the prose, so `named_source` answers and `inferred` is never true — the test passed
+    with the clause deleted, because the code it named never ran. `Snowflake-Data-Warehouse` is
+    reached by "snowflake" alone, and this sentence does not say it.
+
+    The control is the same store and shape naming a table it does not hold, on its own app
+    because the recording above leaves no unscoped store behind to infer.
+    """
+    orch = _orch(tmp_path)
+    orch._resources.tree["ds-dwh"] = {"DWH": {"MARTS": ["T1", "OTHER"]}}
+    client = _client(orch, monkeypatch)
+    _bind(client)
+
+    client.post("/api/project/build/stream", json={"prompt": "build a chart from DWH.MARTS.T1"})
+
+    assert [(s["id"], s.get("table")) for s in _sources(client)] == [("ds-dwh", "T1")]
+
+    other = _orch(tmp_path / "control")
+    other._resources.tree["ds-dwh"] = {"DWH": {"MARTS": ["T1", "OTHER"]}}
+    control = _client(other, monkeypatch)
+    _bind(control)
+
+    control.post("/api/project/build/stream", json={"prompt": "build a chart from DWH.MARTS.NOPE"})
+
+    assert [(s["id"], s.get("table")) for s in _sources(control)] == [("ds-dwh", None)]
+
+
+# ---- every arm of "an inferred store does not speak" (#445) ----------------------------------
+
+
+def _speaks(text: str) -> list[str]:
+    """The user-visible copy a walk left behind, in order."""
+    return [str(f.get("message") or "") for f in _frames(text)
+            if f.get("type") in ("table-search-ended", "table-search") and f.get("message")]
+
+
+def _breaking(orch: Orchestrator, exc: Exception):
+    """Make the walk die at the one call every speaking arm is reached through."""
+    def boom(*_a, **_k):
+        raise exc
+    orch._databases_to_walk = boom  # type: ignore[method-assign]
+
+
+def test_an_inferred_store_that_stops_answering_says_nothing(tmp_path: Path, monkeypatch):
+    """The warehouse-blip arm, which is the live symptom the silence rule was written for.
+
+    A store that stops answering is news to somebody who said "from Snowflake" and noise to
+    somebody who asked for a blue header — and it repeats every turn until a table is picked,
+    because the Binding outlives the turn. This arm was the reason for the rule and was the one
+    arm no test drove; `test_an_inferred_store_reports_nothing_about_itself_on_the_way_out`
+    covers the empty-store arm only.
+
+    The control is the same failure under a request that NAMES the store, which must still say so.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    _bind(client)
+    _breaking(orch, StoreWentQuiet("connection reset"))
+
+    inferred = client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text
+    named = client.post("/api/project/build/stream", json={"prompt": PROMPT}).text
+
+    assert _speaks(inferred) == []
+    assert any("couldn't" in m or "could not" in m for m in _speaks(named)), _speaks(named)
+
+
+def test_an_inferred_store_whose_walk_crashes_says_nothing(tmp_path: Path, monkeypatch):
+    """The same rule on the arm that catches everything else, with the same control.
+
+    Separate from the one above because it is a separate `except` — a guard added to one arm of a
+    try and not its sibling is the shape this whole group exists to make visible.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    _bind(client)
+    _breaking(orch, RuntimeError("driver blew up"))
+
+    inferred = client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text
+    named = client.post("/api/project/build/stream", json={"prompt": PROMPT}).text
+
+    assert _speaks(inferred) == []
+    assert any("couldn't" in m or "could not" in m for m in _speaks(named)), _speaks(named)
+
+
+def test_the_arms_above_are_every_arm_the_build_gate_can_speak_from(tmp_path: Path):
+    """The census, derived from the gate's own source rather than from this file's memory.
+
+    A HAND-WRITTEN LIST OF SITES CANNOT KNOW IT IS SHORT. The rule "an inferred store does not
+    speak" reaches four exits and was pinned at one; two of the other three could be un-silenced
+    with the whole file still green, and the un-silenceable one was the arm the rule was written
+    for. Naming the arms here would repeat that mistake one layer up, so this walks the function
+    and asserts the property instead of the population.
+
+    THE PROPERTY: inside `_table_offer`, everything that introduces user-visible copy sits under
+    an `if not inferred:`. Three things introduce it — a call to `_table_search_gave_up`, an
+    assignment into a `message` key, and a yielded dict that carries one literally. A new exit
+    that speaks without the guard fails here even though no test drives it yet, which is the whole
+    point: the next person to add an arm gets told, rather than the next person to read a
+    transcript.
+    """
+    src = textwrap.dedent(inspect.getsource(Orchestrator._table_offer))
+    unguarded: list[int] = []
+
+    def speaks(node: ast.AST) -> bool:
+        if isinstance(node, ast.Call):
+            return isinstance(node.func, ast.Attribute) and node.func.attr == "_table_search_gave_up"
+        if isinstance(node, ast.Assign):
+            return any(isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant)
+                       and t.slice.value == "message" for t in node.targets)
+        if isinstance(node, ast.Dict):
+            return any(isinstance(k, ast.Constant) and k.value == "message" for k in node.keys)
+        return False
+
+    def guards(node: ast.AST) -> bool:
+        return (isinstance(node, ast.If) and isinstance(node.test, ast.UnaryOp)
+                and isinstance(node.test.op, ast.Not)
+                and isinstance(node.test.operand, ast.Name)
+                and node.test.operand.id == "inferred")
+
+    def walk(node: ast.AST, guarded: bool) -> None:
+        if speaks(node) and not guarded:
+            unguarded.append(getattr(node, "lineno", -1))
+        if guards(node):
+            for child in node.body:
+                walk(child, True)
+            for child in node.orelse:
+                walk(child, guarded)
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child, guarded)
+
+    walk(ast.parse(src), False)
+
+    assert unguarded == [], (
+        f"_table_offer speaks to the person at unguarded line(s) {unguarded} of its own source — "
+        "an inferred store must not narrate a warehouse nobody asked about (#445)")
+    # And the census is not vacuously empty: the guarded sites are still there to be found.
+    assert sum(1 for n in ast.walk(ast.parse(src)) if speaks(n)) >= 3
