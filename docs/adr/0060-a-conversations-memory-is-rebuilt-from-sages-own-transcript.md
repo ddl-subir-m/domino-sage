@@ -183,6 +183,14 @@ This makes the defect **more** severe than stated above, not less. *"Every OpenC
 total, silent conversation amnesia"* should read: **every container that did not personally mint
 the session id inherits a dead one, and a committed id guarantees it will find one to inherit.**
 
+**A third path was found after this was written, and it needs no clone either.** The catch at
+`service.py:9258` is a bare `except httpx.HTTPStatusError`, and `client.messages` raises that
+for every 4xx **and every 5xx**. A transient 503 or 429 from OpenCode is therefore read as
+*"this session does not exist"*, and the recovery overwrites `session.json` — so a live
+container can detach a Conversation from a session it minted itself, permanently. That is #434,
+and it is the only mechanism found so far that explains memory lost mid-life in a workspace that
+never restarted and never cloned.
+
 **The decision does not change, and neither does the fix.** `_ensure_thread_session` returns
 `minted=True` on both paths — the 404 and the directory mismatch — so `reseed` fires for this case
 as designed. What changes is the population: this is the ordinary path, not the rare one.

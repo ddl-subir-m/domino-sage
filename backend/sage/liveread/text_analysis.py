@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from . import grant, result
+from . import result
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_RECORDS = 10_000
@@ -40,10 +40,6 @@ class BatchResult:
 
 
 def analyze(args: dict, turn) -> str:
-    if not turn.data_use_enabled:
-        return grant.data_use_says(
-            "text analysis",
-            "list the files in the Dataset and read the head of one")
     if turn.analyze_text_batch is None:
         return "Text analysis through the LLM Gateway is not available in this turn."
     source = str(args.get("path") or "")

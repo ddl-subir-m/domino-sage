@@ -10028,15 +10028,21 @@ class Orchestrator:
         token = "lrt_" + secrets.token_urlsafe(15)
         self._data_use_turns[thread_id] = new_id("du_turn")
         project = self._chat_project()
-        if project.record.read_settings().get("dataUseVersion") == 1:
-            if project.control.snapshot().chat_thread_id:
-                store = ThreadStore(project.record.path)
-                project.shim.data_use.restore(store.read_history(thread_id),
-                                              lambda ev: store.append_history(thread_id, ev))
-            else:
-                workspace = project.app_for_turn()
-                project.shim.data_use.restore(workspace.read_history(thread_id),
-                                              lambda ev: workspace.append_history(ev, thread_id))
+        # Unconditional since #431 took the `dataUseVersion` gate out, and this is the one site of
+        # the seven that was not a refusal: it reopens metadata for data operations ALREADY IN this
+        # Conversation's own history after a restart. It reads what is there and registers nothing
+        # else, so a Conversation that has never used data yields an empty set and this is a no-op.
+        # The gate only ever stood because a Project that could not use data could not have such
+        # rows either; now that every Project can, gating recovery would withhold it from exactly
+        # the Conversations that now accumulate something to recover.
+        if project.control.snapshot().chat_thread_id:
+            store = ThreadStore(project.record.path)
+            project.shim.data_use.restore(store.read_history(thread_id),
+                                          lambda ev: store.append_history(thread_id, ev))
+        else:
+            workspace = project.app_for_turn()
+            project.shim.data_use.restore(workspace.read_history(thread_id),
+                                          lambda ev: workspace.append_history(ev, thread_id))
         with self._live_read_lock:
             self._live_read[thread_id] = (token, time.monotonic())
         # The same token names this turn for a Delegated model call, so this is the moment that
@@ -10229,7 +10235,6 @@ class Orchestrator:
             run_statement=self._resources.run_statement,
             list_files=list_files,
             dataset_root=dataset_root,
-            data_use_enabled=project.record.read_settings().get("dataUseVersion") == 1,
             upload_for=upload_for,
             record_data_use=record_data_use,
             analyze_text_batch=analyze_text_batch,
@@ -10745,8 +10750,14 @@ class Orchestrator:
         }
 
     def _data_use_note(self) -> str:
-        if self._chat_project().record.read_settings().get("dataUseVersion") != 1:
-            return ""
+        """The lines that tell the model `live_read_query` and `live_read_files` exist.
+
+        Unconditional since #431. Until then this returned `""` unless the Project carried
+        `dataUseVersion`, and no Project ever did (the freshness test it was written from could
+        never be true — a Domino Project's volume arrives holding its repo), so the model was
+        never told these operations existed anywhere. That is why the fix is here and not only at
+        the refusals: a tool the model is never named cannot be reached, whatever the gates say.
+        """
         return ("To work a number out of a bound Data Source — a count, a total, an average, a "
                 "ranking, a correlation, a group-by, a join — use live_read_query: pass this turn's "
                 "token, the Data Source name, and one SELECT statement as sql. Sage runs it "
