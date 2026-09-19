@@ -4,11 +4,13 @@
 // a queued row on screen with nothing in the transcript, and a question handed back to the composer
 // after the bubble for it had already been drawn.
 //
-// Input on stdin: `{ "mode": "queued" | "cancelled" | "context-changed" | "two-in-flight" }`. The
-// first three script the same shape — the server accepts the turn, holds it, and then one of the
-// three things happens to it — and hold the stream open between the `pending` frame and the rest,
-// because that pause IS the feature. The fourth sends twice and lets the FIRST finish first, which
-// is the one arrangement where a tab's own bookkeeping can lie about whether it is still busy.
+// Input on stdin:
+// `{ "mode": "queued" | "cancelled" | "cancel-declined" | "cancel-unreadable" | "cancel-twice"
+//    | "context-changed" | "two-in-flight" }`. The first six script the same shape — the server
+// accepts the turn, holds it, and then one of the six things happens to it — and hold the stream
+// open between the `pending` frame and the rest, because that pause IS the feature. The seventh
+// sends twice and lets the FIRST finish first, which is the one arrangement where a tab's own
+// bookkeeping can lie about whether it is still busy.
 //
 // The stubs are the smallest set store.js touches on this path. React is never rendered.
 import fs from 'node:fs';
@@ -23,6 +25,17 @@ const PENDING = {
   prompt: 'how many rows?',
   message: 'Waiting on the turn that is running. Nothing has run yet — you can cancel.',
 };
+// The two Cancels that do not cancel (#385): the one the server declined, and the one whose answer
+// came back unreadable. Both script a turn that RUNS — the `running` row the grant streams, and
+// then the answer — because in both the queue had already let this turn go when the POST landed.
+// They differ only in what the cancel reply says, which is the stub further down and not these
+// frames, and sharing the array is what keeps that true.
+const GRANTED_ANYWAY = [
+  { type: 'running', ticket: 'turn_abc' },
+  { type: 'delta', text: 'Six million rows.', final: true },
+  { type: 'agent', kind: 'text', text: 'Six million rows.' },
+  { type: 'done', ok: true, decision: 'answered' },
+];
 const REST = {
   queued: [
     { type: 'delta', text: 'Six million rows.', final: true },
@@ -30,6 +43,11 @@ const REST = {
     { type: 'done', ok: true, decision: 'answered' },
   ],
   cancelled: [{ type: 'done', ok: false, decision: 'cancelled' }],
+  'cancel-declined': GRANTED_ANYWAY,
+  'cancel-unreadable': GRANTED_ANYWAY,
+  // Two presses on the row one WORKING cancel leaves up (#385). Same frames as `cancelled`,
+  // because that is what the first press earns; the question is what the second one does.
+  'cancel-twice': [{ type: 'done', ok: false, decision: 'cancelled' }],
   'context-changed': [
     { type: 'error', contextChanged: true, prompt: 'how many rows?',
       message: 'Your attachments changed, so this didn\'t run. The text is back in the box — send it again.' },
@@ -47,6 +65,15 @@ const gates = [];
 const letGo = (i = 0) => gates[i] && gates[i]();
 
 const posted = [];
+// Every sentence the store said out loud, in order. A press whose only outcome is a message has
+// nothing else to assert on: no row comes down for it and no frame arrives on account of it.
+const said = [];
+// What the cancel route actually answers when it answers at all (`app.py:4142` returns
+// `{"cancelled": <bool>}` for every call). `False` is the ticket no longer being on `_waiting` by
+// the time `_TurnQueue.cancel` scanned it. The stub used to answer `{}` here, which is a shape the
+// route cannot produce and the one shape that hides the verdict from the client. `cancel-unreadable`
+// does not use this: its reply never parses, which is a different thing from a verdict of `false`.
+const CANCEL_VERDICT = mode !== 'cancel-declined';
 let streams = 0;
 const sandbox = {
   console, JSON, Math, Date, process, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
@@ -57,7 +84,12 @@ const sandbox = {
   document: { addEventListener() {}, querySelector: () => null, body: {} },
   React: { createElement: (t, p, ...c) => ({ t, p, c }), useState: () => [null, () => {}],
            useEffect: () => {}, useRef: () => ({ current: null }), Fragment: 'Fragment' },
-  antd: { message: { success() {}, error() {}, info() {}, warning() {} }, Modal: { confirm() {} } },
+  antd: { message: {
+    success: (text) => said.push(['success', text]),
+    error: (text) => said.push(['error', text]),
+    info: (text) => said.push(['info', text]),
+    warning: (text) => said.push(['warning', text]),
+  }, Modal: { confirm() {} } },
   fetch: async (url, options) => {
     const href = String(url);
     if (options && options.method === 'POST') posted.push(href);
@@ -77,6 +109,21 @@ const sandbox = {
           return { done: true };
         },
       }) } };
+    }
+    // The cancel route is the one read with a verdict on it, so it is the one read this stub
+    // cannot answer `{}` to: throwing the verdict away here leaves the client's reading of it
+    // untested whichever way the client reads it.
+    if (href.includes('/turn/cancel')) {
+      // A 200 that is not JSON — the proxy answering instead of the app, which `api.js:45` hands
+      // on as `{}`. Neither a verdict nor an error, and the only shape that tells `=== false`
+      // apart from a falsy test. Reachable on a freshly opened Workbench; see api.js:52.
+      if (mode === 'cancel-unreadable') {
+        return { ok: true, status: 200, headers: { get: () => 'text/html' },
+                 json: async () => { throw new Error('Unexpected token <'); },
+                 text: async () => '<html>502</html>' };
+      }
+      return { ok: true, status: 200, headers: { get: () => 'application/json' },
+               json: async () => ({ cancelled: CANCEL_VERDICT }), text: async () => '' };
     }
     // Every other read answers empty, which is also what makes the re-read after a turn that never
     // ran observable: the server has no record of the question, so the bubble goes.
@@ -135,8 +182,16 @@ const whileWaiting = {
   roles: waiting.messages.map((m) => m.role),
 };
 
-if (mode === 'cancelled') {
+if (mode === 'cancelled' || mode === 'cancel-declined' || mode === 'cancel-unreadable') {
   await SW.store.cancelQueuedTurn(waiting.queuedTurns[0].ticket);
+}
+if (mode === 'cancel-twice') {
+  // NOT awaited in turn: the second press is the one that lands while the first is still in flight
+  // and its row is therefore still on screen, which is the whole of the double-press. Awaiting the
+  // first would test a press against a row that no longer exists, which is a different bug.
+  const first = SW.store.cancelQueuedTurn(waiting.queuedTurns[0].ticket);
+  const second = SW.store.cancelQueuedTurn(waiting.queuedTurns[0].ticket);
+  await Promise.all([first, second]);
 }
 letGo(0);
 await turn;
@@ -149,4 +204,5 @@ console.log(JSON.stringify({
   answer: after.messages.flatMap((m) => (m.blocks || []).map((b) => b.value)).filter(Boolean),
   composerSeed: after.composerSeed,
   posted,
+  said,
 }));

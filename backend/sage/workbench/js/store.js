@@ -1581,9 +1581,124 @@ window.SW = window.SW || {};
     };
   }
 
+  // How many `.table.json` reads a hydrating transcript keeps in flight. They used to go one
+  // after another, so a Thread holding 60 tables cost 60 serial round trips through the Domino
+  // proxy before the first card drew, and the rail read as a dead click (#451). Six is a starting
+  // point rather than a measured optimum — it is named here so a later measurement can move it.
+  // Unbounded `Promise.all` was rejected: 60 simultaneous connections through the proxy is
+  // untested and may throttle or stall.
+  const ARTIFACT_HYDRATION_POOL = 6;
+
+  // One `.table.json`, read and turned into the block its card draws. Returns `null` for a file
+  // that is there but blank — the caller hides those rather than drawing a captioned empty box.
+  //
+  // Never throws. That was already true of the serial loop, where the cost of a leak was every
+  // artifact AFTER the failing one; inside a pool a rejection would take the whole batch down,
+  // including tables that had already been read, so the catch is now what keeps each item
+  // settling on its own.
+  async function tableArtifactBlocks(art) {
+    const path = art.path || '';
+    try {
+      const res = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`);
+      const body = await res.json();
+      if (!res.ok) throw new Error((body && body.error) || res.statusText);
+      // Old conversations can name unfinished files. Keep valid zero-row tables and
+      // receipts, but give a blank file neither a card nor an "Open the file" link.
+      if (typeof body.content === 'string' && !body.content.trim()) return null;
+      const data = JSON.parse(body.content || '{}');
+      // The contract is `{title, columns, rows}` with a positional array per row. sage-chat
+      // misses it two ways, and both showed a chart that plotted fine next to a table that
+      // did not: pandas-style record rows (an object keyed by column name) inside the
+      // wrapper, which `TableBlock`'s numeric `dataIndex` lookup rendered as blank cells
+      // under a correct-looking header; and `df.to_dict("records")` dumped with no wrapper at
+      // all, where `columns` and `rows` both fell through to empty and antd painted its
+      // "No data" placeholder. Recover the wrapper from the records rather than trust every
+      // turn's Python to have followed the contract.
+      const bare = Array.isArray(data) ? data : null;
+      const wrapper = bare ? {} : data;
+      // A third way to miss it, and the one that reads worst: the wrapper is there, `title`
+      // is there, and the rows are under some other key. A turn thinking in pandas rather
+      // than in the contract reaches for `df.to_json(orient=…)`, and every orient that keeps
+      // a wrapper puts its rows under `data`; a turn half-remembering the contract writes
+      // `records`. Reading only `rows` left a correct title over an antd table with no
+      // columns and no rows — a captioned blank box.
+      let source = bare || ['rows', 'data', 'records'].map((k) => wrapper[k]).find(Array.isArray) || [];
+      const head = source[0];
+      // `orient="table"` names its columns in a JSON Table Schema `fields` list and nowhere
+      // else. Its `index` field is one pandas synthesised, not one of the frame's own.
+      const fields = Array.isArray(wrapper.schema && wrapper.schema.fields)
+        ? wrapper.schema.fields.map((f) => (f || {}).name).filter((n) => n && n !== 'index')
+        : [];
+      // Only a record row names its columns. Reading them off a positional row would header
+      // the table "0", "1", … — worse than the empty header that shape renders today.
+      const named = tableColumnList(wrapper.columns);
+      let columns =
+        (named.some(Boolean) ? named : null) ||
+        (fields.length ? fields : null) ||
+        (head && !Array.isArray(head) ? Object.keys(head) : []);
+      if (!source.length) {
+        // The dump is not always the whole file. A turn that half-remembers the wrapper
+        // writes `{title, data: df.to_dict()}`, or fills `rows` with the dump instead of a
+        // list of rows, and the ladder above only looks for an ARRAY under those keys — so
+        // both fell through to the blank box with a correct title still sitting above it.
+        // The wrapper itself is tried first because that is the plain dump; the rest are the
+        // keys a wrapper would have used.
+        //
+        // A receipt's own keys come off the wrapper before the guess runs. `source` is a small
+        // object of strings and numbers, which is the very shape this is looking for, so a card
+        // that recorded which read made it read back as a one-row table headed with the names
+        // of its own metadata (#256). Only at this level — a frame really can have a column
+        // called `title`, and under `data` that is what it means.
+        const dump = [receiptFreeWrapper(wrapper), wrapper.data, wrapper.rows, wrapper.records]
+          .map((o) => pandasOrientedTable(o)).find(Boolean);
+        if (dump) {
+          columns = dump.columns;
+          source = dump.rows;
+        }
+      }
+      return [{
+        type: 'table',
+        title: data.title || art.title,
+        // Carried so a table that still recovers nothing can hand over the file instead of
+        // painting the blank box that started this.
+        path,
+        // What a table whose Project does not keep rows has left: how many were read and when
+        // (ADR-0045). `keptRows: false` is written by the pass that emptied the file, so it
+        // tells that table apart from a frame that really was empty — the two want opposite
+        // sentences, and only one of them is worth offering the file for.
+        keptRows: data.keptRows,
+        rowCount: typeof data.rowCount === 'number' ? data.rowCount : null,
+        readAt: data.readAt || null,
+        // Which read made this file, so the card can run it again as whoever is looking at it
+        // (#256). Only a Live read through a Binding writes one, which is what keeps the
+        // button off a table the Chat agent composed — re-reading that one's source hands back
+        // the file, not the table (#258). Carried whole and never read here: the card posts it
+        // back verbatim, and the server is what makes sense of it.
+        source: data.source && typeof data.source === 'object' && !Array.isArray(data.source)
+          ? data.source : null,
+        // Only a Live read knows this: it stopped at a LIMIT and there is more behind it
+        // (ADR-0029 — truncation is a fact the caller reads, not a silence). Without it a read
+        // cut at the cap renders "500 rows" and reads as the whole table, which is the wrong
+        // claim about exactly the tables somebody asks about. A table Chat wrote never sets it.
+        truncated: data.truncated === true,
+        columns,
+        rows: source.map((row) =>
+          Array.isArray(row) ? row : columns.map((name) => tableRecordCell(row, name))),
+      }];
+    } catch (err) {
+      return [{ type: 'file', name: art.name || path, path }];
+    }
+  }
+
   async function blocksForArtifacts(items, hiddenTables = new Set()) {
-    const blocks = [];
-    for (const art of items || []) {
+    const list = items || [];
+    // One slot per Artifact, filled in place. The callers splice the result straight into a
+    // message's blocks (`store.js:1865`), so returning the reads in the order they came back
+    // would silently rearrange the transcript.
+    const slots = new Array(list.length);
+    const reads = [];
+    for (let i = 0; i < list.length; i += 1) {
+      const art = list[i];
       const path = art.path || '';
       const lower = path.toLowerCase();
       if (art.kind === 'chart' || lower.endsWith('.png')) {
@@ -1592,113 +1707,57 @@ window.SW = window.SW || {};
         // never commits one, and the Builder that restarts gets this row and no file. The server
         // marks the absence on the restore — a card that found out by letting an `<img>` fail
         // would have drawn the broken image first.
-        blocks.push({ type: 'image', title: art.title || art.name, src: fileUrl(path), path,
+        slots[i] = [{ type: 'image', title: art.title || art.name, src: fileUrl(path), path,
                       producedAt: art.producedAt, missing: !!art.missing,
-                      notKept: !!art.notKept });
+                      notKept: !!art.notKept }];
       } else if (art.kind === 'table' || lower.endsWith('.table.json')) {
-        try {
-          const res = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`);
-          const body = await res.json();
-          if (!res.ok) throw new Error((body && body.error) || res.statusText);
-          // Old conversations can name unfinished files. Keep valid zero-row tables and
-          // receipts, but give a blank file neither a card nor an "Open the file" link.
-          if (typeof body.content === 'string' && !body.content.trim()) {
-            hiddenTables.add(path);
-            continue;
-          }
-          const data = JSON.parse(body.content || '{}');
-          // The contract is `{title, columns, rows}` with a positional array per row. sage-chat
-          // misses it two ways, and both showed a chart that plotted fine next to a table that
-          // did not: pandas-style record rows (an object keyed by column name) inside the
-          // wrapper, which `TableBlock`'s numeric `dataIndex` lookup rendered as blank cells
-          // under a correct-looking header; and `df.to_dict("records")` dumped with no wrapper at
-          // all, where `columns` and `rows` both fell through to empty and antd painted its
-          // "No data" placeholder. Recover the wrapper from the records rather than trust every
-          // turn's Python to have followed the contract.
-          const bare = Array.isArray(data) ? data : null;
-          const wrapper = bare ? {} : data;
-          // A third way to miss it, and the one that reads worst: the wrapper is there, `title`
-          // is there, and the rows are under some other key. A turn thinking in pandas rather
-          // than in the contract reaches for `df.to_json(orient=…)`, and every orient that keeps
-          // a wrapper puts its rows under `data`; a turn half-remembering the contract writes
-          // `records`. Reading only `rows` left a correct title over an antd table with no
-          // columns and no rows — a captioned blank box.
-          let source = bare || ['rows', 'data', 'records'].map((k) => wrapper[k]).find(Array.isArray) || [];
-          const head = source[0];
-          // `orient="table"` names its columns in a JSON Table Schema `fields` list and nowhere
-          // else. Its `index` field is one pandas synthesised, not one of the frame's own.
-          const fields = Array.isArray(wrapper.schema && wrapper.schema.fields)
-            ? wrapper.schema.fields.map((f) => (f || {}).name).filter((n) => n && n !== 'index')
-            : [];
-          // Only a record row names its columns. Reading them off a positional row would header
-          // the table "0", "1", … — worse than the empty header that shape renders today.
-          const named = tableColumnList(wrapper.columns);
-          let columns =
-            (named.some(Boolean) ? named : null) ||
-            (fields.length ? fields : null) ||
-            (head && !Array.isArray(head) ? Object.keys(head) : []);
-          if (!source.length) {
-            // The dump is not always the whole file. A turn that half-remembers the wrapper
-            // writes `{title, data: df.to_dict()}`, or fills `rows` with the dump instead of a
-            // list of rows, and the ladder above only looks for an ARRAY under those keys — so
-            // both fell through to the blank box with a correct title still sitting above it.
-            // The wrapper itself is tried first because that is the plain dump; the rest are the
-            // keys a wrapper would have used.
-            //
-            // A receipt's own keys come off the wrapper before the guess runs. `source` is a small
-            // object of strings and numbers, which is the very shape this is looking for, so a card
-            // that recorded which read made it read back as a one-row table headed with the names
-            // of its own metadata (#256). Only at this level — a frame really can have a column
-            // called `title`, and under `data` that is what it means.
-            const dump = [receiptFreeWrapper(wrapper), wrapper.data, wrapper.rows, wrapper.records]
-              .map((o) => pandasOrientedTable(o)).find(Boolean);
-            if (dump) {
-              columns = dump.columns;
-              source = dump.rows;
-            }
-          }
-          blocks.push({
-            type: 'table',
-            title: data.title || art.title,
-            // Carried so a table that still recovers nothing can hand over the file instead of
-            // painting the blank box that started this.
-            path,
-            // What a table whose Project does not keep rows has left: how many were read and when
-            // (ADR-0045). `keptRows: false` is written by the pass that emptied the file, so it
-            // tells that table apart from a frame that really was empty — the two want opposite
-            // sentences, and only one of them is worth offering the file for.
-            keptRows: data.keptRows,
-            rowCount: typeof data.rowCount === 'number' ? data.rowCount : null,
-            readAt: data.readAt || null,
-            // Which read made this file, so the card can run it again as whoever is looking at it
-            // (#256). Only a Live read through a Binding writes one, which is what keeps the
-            // button off a table the Chat agent composed — re-reading that one's source hands back
-            // the file, not the table (#258). Carried whole and never read here: the card posts it
-            // back verbatim, and the server is what makes sense of it.
-            source: data.source && typeof data.source === 'object' && !Array.isArray(data.source)
-              ? data.source : null,
-            // Only a Live read knows this: it stopped at a LIMIT and there is more behind it
-            // (ADR-0029 — truncation is a fact the caller reads, not a silence). Without it a read
-            // cut at the cap renders "500 rows" and reads as the whole table, which is the wrong
-            // claim about exactly the tables somebody asks about. A table Chat wrote never sets it.
-            truncated: data.truncated === true,
-            columns,
-            rows: source.map((row) =>
-              Array.isArray(row) ? row : columns.map((name) => tableRecordCell(row, name))),
-          });
-        } catch (err) {
-          blocks.push({ type: 'file', name: art.name || path, path });
-        }
+        // The only kind that costs a round trip. Queued for the pool below; every other kind is
+        // built from its own row and must not be made to wait behind one.
+        reads.push(i);
       } else if (lower.endsWith('.html') || lower.endsWith('.htm')) {
         // Chat's contract is a PNG or a `.table.json` (chat/AGENTS.md), and a page is neither. But a
         // turn that wrote one anyway had already done the work, and handing back a link to a file
         // nobody can open in place threw that work away — the person asked to see their data and
         // got a filename. Shown, not run as an app: an app is what Build is for, and the offer to
         // cross over is already on the Thread.
-        blocks.push({ type: 'page', title: art.title || art.name, path });
+        slots[i] = [{ type: 'page', title: art.title || art.name, path }];
       } else if (path) {
-        blocks.push({ type: 'file', name: art.name || path, path });
+        slots[i] = [{ type: 'file', name: art.name || path, path }];
+      } else {
+        slots[i] = [];
       }
+    }
+
+    let next = 0;
+    const worker = async () => {
+      while (next < reads.length) {
+        const i = reads[next];
+        next += 1;
+        slots[i] = await tableArtifactBlocks(list[i]);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(ARTIFACT_HYDRATION_POOL, reads.length) }, worker));
+
+    // `hiddenTables` is filled on this pass rather than inside the read, so its insertion order
+    // stays the order the turn wrote its Artifacts in rather than the order the reads came back.
+    //
+    // Whether that order can be OBSERVED is a separate question, and the answer today is no. The
+    // caller walks the Set twice to strip a hidden path out of the surrounding sentence
+    // (`store.js:2049`): once asking whether a link mentions it, which is a membership test, and
+    // once deleting it as a bare substring, which diverges only when one hidden path contains
+    // another. No two real paths can — every Artifact is written to
+    // `examples/<threadId>/<slug>.table.json` (`shim/chat_paths.py`), and two paths sharing that
+    // prefix cannot sit inside one another. Filled here anyway: it costs nothing, it keeps this
+    // observably identical to the serial loop it replaced, and it does not rest on that argument
+    // still holding for whatever path a later writer invents.
+    //
+    // A slot is `null` only for a table the read chose to hide; every other index was written
+    // above or by a worker.
+    const blocks = [];
+    for (let i = 0; i < list.length; i += 1) {
+      if (slots[i] === null) hiddenTables.add(list[i].path || '');
+      else blocks.push(...slots[i]);
     }
     return blocks;
   }
@@ -3624,6 +3683,16 @@ window.SW = window.SW || {};
   function dropQueuedTurn(ticket) {
     if (!ticket) return;
     state.queuedTurns = state.queuedTurns.filter((q) => q.ticket !== ticket);
+  }
+
+  // A press that has been sent and whose row has not come down yet (#385). The row lives until the
+  // turn's own stream ends, which is a full round trip after the click, so nothing on screen changes
+  // when you press Cancel — and a second press goes out against a ticket the first one has already
+  // taken off `_waiting`, which the server can only answer `false` to. The row is replaced rather
+  // than mutated because every other write here replaces it, and the Composer re-reads the list.
+  function markQueuedTurnCancelling(ticket, cancelling) {
+    state.queuedTurns = state.queuedTurns.map(
+      (q) => (q.ticket === ticket ? { ...q, cancelling } : q));
   }
 
   // Is the turn holding the lock the one on THIS screen? Both halves have to match: a Chat turn and
@@ -7510,8 +7579,50 @@ window.SW = window.SW || {};
     //
     // The pending turn's own stream is what actually ends: the server wakes it, it yields a
     // cancelled `done`, and the send that has been awaiting it all along clears its own row.
+    //
+    // All of which needs the server to have FOUND the ticket. `_TurnQueue.cancel` scans `_waiting`
+    // only, so a turn that has left that deque cannot be cancelled, and the route answers
+    // `{cancelled: false}` (#385). Nothing is woken on that path, no `done` arrives, and there is
+    // no second mechanism — the row over the composer does come down, but on whatever frame the
+    // stream reaches next, which would have taken it with or without the press. So an unread
+    // verdict is a click that does nothing and says nothing. A refused Stop reads its own verdict
+    // just above, for the same reason.
+    //
+    // What this does NOT say is WHICH of those happened, because one bit cannot carry it: the turn
+    // may have been granted, or finished, or cancelled by an earlier press, or refused for a
+    // context change, or failed with the rest of the queue by `fail_pending` when the workspace
+    // wedged. The route's own docstring says as much — "may have started, or finished". #385 asked
+    // for the sentence to name Stop as the control that ends it instead, and it cannot: a wedge is
+    // deliberately not `turn_busy` (#39), so there is no Stop on screen to name, and a second press
+    // on a row that has not come down yet would be pointed at the Stop for the turn this one was
+    // queued BEHIND. `stopBuild` can be specific because its verdict has one cause. This one
+    // reports the state and leaves the screen to say the rest.
+    //
+    // `=== false` rather than falsy: a 200 that is not JSON reads as `{}` here (`api.js:45`), which
+    // the proxy note under it says is reachable on a freshly opened Workbench. "I could not read
+    // the answer" is not "the server declined".
     async cancelQueuedTurn(ticket) {
-      await SW.api.cancelTurn(ticket);
+      // The press is in flight and the row is still up, so this is the second click on it. Sending
+      // it would cancel nothing — the first press already took the ticket off `_waiting` — and the
+      // verdict would come back `false` and say so over a cancel that WORKED. Guarded here rather
+      // than in the Composer alone: the button's own `loading` state is feedback, and this is the
+      // part that has to hold for every caller.
+      const row = state.queuedTurns.find((q) => q.ticket === ticket);
+      if (row && row.cancelling) return;
+      markQueuedTurnCancelling(ticket, true);
+      notify();
+      try {
+        const res = await SW.api.cancelTurn(ticket);
+        if (res && res.cancelled === false) {
+          antd.message.info('That turn was no longer waiting — it may have started, or finished.');
+        }
+      } catch (err) {
+        // Nothing was dropped, so the row is still cancellable. Left disabled it would strand the
+        // turn's only control until the turn ended by itself. The caller reports the failure.
+        markQueuedTurnCancelling(ticket, false);
+        notify();
+        throw err;
+      }
     },
 
     async loadBuild(options = {}) {
