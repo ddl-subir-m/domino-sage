@@ -200,7 +200,7 @@ def main() -> int:
                 # cache moves only the tail.
                 median_pre = pres[len(pres) // 2] / 1000
                 worst = pres[-1] / 1000
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"could not read {a.url}/api/diag/timing: {type(e).__name__}: {e}", file=sys.stderr)
             return 2
         if not a.watch:

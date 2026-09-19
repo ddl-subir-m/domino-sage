@@ -25,10 +25,16 @@ setup:
 test:
 	cd backend && uv run --extra dev pytest -q -n auto
 
-# Lint. Ruff is pinned exactly (see `required-version` in backend/pyproject.toml), so this and CI
-# cannot disagree about what counts as clean.
+# Lint. Ruff is pinned exactly — `required-version` in BOTH backend/pyproject.toml and the root
+# ruff.toml — so this and CI cannot disagree about what counts as clean.
+#
+# The `..` is the point of this target and not a typo. It was `ruff check`, which from `backend/`
+# means backend only, while CLAUDE.md called the gate "the WHOLE repo". Nothing had ever linted
+# `scripts/`, `spikes/` or `template/`; the first repo-wide run found 46 findings there. Narrowing
+# this back re-opens that blind spot silently, because the narrower command still prints
+# "All checks passed!".
 lint:
-	cd backend && uv run --extra dev ruff check
+	cd backend && uv run --extra dev ruff check ..
 
 # Run the enforcement shim alone (FakeGateway unless GATEWAY_BASE_URL/KEY are set).
 shim:
