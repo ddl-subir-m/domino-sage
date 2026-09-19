@@ -647,7 +647,8 @@ class ThreadStore:
         items = data.get("items") if isinstance(data, dict) else None
         return items if isinstance(items, list) else []
 
-    def record_artifact(self, thread_id: str, *, path: str, message_id: str | None = None) -> dict:
+    def record_artifact(self, thread_id: str, *, path: str, role: str = "answer",
+                        message_id: str | None = None) -> dict:
         name = Path(path).name
         row = {
             "id": new_id("art"),
@@ -656,6 +657,12 @@ class ThreadStore:
             "title": Path(name).name.rsplit(".", 1)[0].replace("-", " ").replace("_", " "),
             "path": path,
             "producedAt": _now(),
+            # Whether this file was a step towards the answer or the answer (ADR-0063). Decided at
+            # the operation that wrote it and carried here on the `DataUse` event's `artifact`
+            # path — nothing about the file itself can say, which is why the default is the one
+            # that DRAWS. A row written before this field existed has no key at all, and the
+            # transcript reads that absence the same way: `'answer'`, drawn, exactly as today.
+            "role": "working" if role == "working" else "answer",
         }
         if message_id:
             row["messageId"] = message_id

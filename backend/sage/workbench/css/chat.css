@@ -730,6 +730,13 @@
   padding-top: var(--s2);
 }
 
+/* A turn's steps, folded (ADR-0063). It wears `.sw-leadin`'s rules rather than a copy of them, for
+   the reason the rule above shares one: both folds say "the transcript continues behind this", and
+   two rules drifting apart is how one control starts reading as two. Solid rather than dashed,
+   because these rows are work that happened HERE — the dashed edge is the Lead-in's own marker for
+   a seam into another app. */
+.sw-working-reads { border-style: solid; }
+
 /* Composer --------------------------------------------------------------- */
 
 .sw-composer-dock {

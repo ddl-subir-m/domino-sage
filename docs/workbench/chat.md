@@ -153,6 +153,7 @@ Scratch Python files the agent needs to run, and any data file it fetches, belon
       "title": "Gross notional by desk",
       "path": "examples/thr_01HZX…/exposure_by_desk.png",
       "producedAt": "2026-08-25T18:11:04Z",
+      "role": "answer",
       "messageId": "m_01HZX…"
     }
   ]
@@ -160,6 +161,8 @@ Scratch Python files the agent needs to run, and any data file it fetches, belon
 ```
 
 The orchestrator appends a row when it observes a write under `examples/<threadId>/` during a `sage-chat` turn (the same event stream it already uses for tool steps). The agent does not edit the manifest. If the agent writes a file the orchestrator does not recognise (`.xlsx`, `.html`), record `kind: "file"` and the UI offers a download, not an inline renderer.
+
+`role` is `"working"` or `"answer"` (ADR-0063). A Live read decides it where the statement is still in hand — a catalogue read is `working` mechanically, and anything else is `working` only if the caller set `step` — and the publish joins it back onto the row by matching the written path against the turn's `data_used` events. Nothing else sets it, and a row with no matching event or no role at all is `"answer"`. The transcript folds a turn's `working` rows behind one face and never reads them until the fold is opened; `"answer"` draws, always, which is what makes a row written before this field existed look exactly as it did.
 
 ### Rendering in the Thread
 

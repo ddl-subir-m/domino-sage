@@ -152,6 +152,10 @@ def calculate(args, turn):
     event = {
         "operation_id": operation, "source": source,
         "source_sha256": hashlib.sha256(raw or json.dumps([columns, source_rows]).encode()).hexdigest(),
+        # A calculation is something the turn was ASKED to do, so its card always draws (ADR-0063,
+        # *What this does not decide*). The field is on every operation so the event shape stays
+        # uniform; only the read lanes compute it.
+        "role": "answer",
         "artifact": receipt.path, "columns": [group, value], "selected_fields": selected,
         "result_rows": len(rows),
         "coverage": {"total": count, "processed": processed, "excluded": count - processed,

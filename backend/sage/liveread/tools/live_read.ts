@@ -288,6 +288,14 @@ export const query = {
     purpose: { type: ["string", "null"], description:
       "What this is being worked out for, in a few words. It goes in the record, not to the " +
       "person." + OPTIONAL },
+    // The declared half of the role rule (ADR-0063), and the same field `mcp.py` declares — the
+    // two doors on this tool have drifted before, which is what the header above is about.
+    step: { type: ["boolean", "null"], description:
+      "True when this statement is a step towards the answer rather than the answer itself — " +
+      "counting rows to see whether a table is worth using, measuring how often a column is " +
+      "filled, checking that a join key matches. Its card is folded out of the way so the answer " +
+      "is readable. Null for the statement that answers the question. Catalogue reads count as " +
+      "steps without being told." + OPTIONAL },
   },
   async execute(args) {
     return call("live_read_query", args)

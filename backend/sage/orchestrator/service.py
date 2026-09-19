@@ -54,6 +54,7 @@ from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
+from ..liveread import data_use as live_data_use
 from ..liveread import mcp as live_mcp
 from ..liveread import result as live_result
 from ..liveread import run as live_read
@@ -11975,7 +11976,17 @@ class Orchestrator:
                 written = [rel for rel in new_artifact_paths(project.record.path, thread_id,
                                                             tables.before)
                            if rel not in invalid]
-                artifacts = [store.record_artifact(thread_id, path=rel) for rel in written]
+                # An Artifact is DISCOVERED, not reported: the scan above hands back a path and
+                # nothing else, and the statement that produced it is long gone (ADR-0063). The
+                # operation recorded its own verdict on its `DataUse` event, keyed by the path it
+                # wrote, so this is where the two are joined back together. A path with no event
+                # — every Artifact written before this shipped, and every lane that records no
+                # operation — is `'answer'` and draws.
+                roles = live_data_use.artifact_roles(
+                    project.shim.data_use.events(self._data_use_turns.get(thread_id, "")))
+                artifacts = [store.record_artifact(thread_id, path=rel,
+                                                  role=roles.get(rel, "answer"))
+                             for rel in written]
                 # The same list, kept for the terminal row (ADR-0061). In place rather than
                 # rebound, so `finish` above needs no `nonlocal` and this stays one computation.
                 turn_writes.extend(written)
@@ -15147,9 +15158,18 @@ class Orchestrator:
                 # is the push this exists to keep rows out of.
                 withhold_table_rows(project.record.path, project.build_conversation,
                                     live_read_before, kept_rows=project.record.kept_rows())
+                # The same join the Chat publish makes, at the other site that turns a Live read's
+                # file into a card (ADR-0063). Here rather than only there because the field is on
+                # the row and a Build transcript draws the same blocks: a lane that recorded a
+                # verdict and then lost it on the way to the card would be a half-wired field, and
+                # the next reader would have no way to tell that from a decision.
+                build_roles = live_data_use.artifact_roles(
+                    project.shim.data_use.events(
+                        self._data_use_turns.get(project.build_conversation, "")))
                 found = [
                     ThreadStore(project.record.path).record_artifact(
-                        project.build_conversation, path=rel)
+                        project.build_conversation, path=rel,
+                        role=build_roles.get(rel, "answer"))
                     for rel in new_artifact_paths(
                         project.record.path, project.build_conversation, live_read_before)
                 ]
