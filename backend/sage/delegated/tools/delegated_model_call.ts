@@ -77,8 +77,52 @@ const OPTIONAL = " Send null if you do not need it."
 // A failure is not an answer. Each of these says the model was NOT asked before it says why,
 // because an assistant handed only the "why" goes off, answers another way, and then describes the
 // result as though a model had produced it.
+//
+// Six returns below carry a sentence, over FIVE conditions — the bound owns two of them, because
+// the clock can run out at the headers or inside the body. This one is true of four of those five,
+// and the bound has its own. (The other two returns hand back the route's own words and owe
+// nothing.) Connection failure never reached the route; HTTP non-2xx is a request this process
+// refused to read, not one it ran; an unreadable body that is not a timeout is the bodyless 202 or
+// a mangled reply, and this route answers JSON or nothing at all. And
+// "returned nothing readable" — the arm that is easiest to mistake for a call that happened — is
+// reached only when a 2xx body is valid JSON carrying neither `result.content[0].text` nor
+// `error.message`. `delegated/mcp.py:handle` puts EVERY executed call's outcome into the first of
+// those: the answer on success, and on failure `_failed_text`, behind an `except Exception` that is
+// broad on purpose. So a reply with neither is a reply this call never produced. Nothing was asked.
 const NOT_ASKED = " Nothing was asked and no answer came back. Do the work another way, and do not "
   + "report an answer no model gave you."
+
+// The bound is the one arm NOT_ASKED is false of, and it is false in the direction that costs money
+// (#413). The route took the request; what ran out was this tool's patience, not the work. Aborting
+// the fetch does not cancel the Python handler — see the note above TIMEOUT_MS — so the generation
+// is still in flight, still holding one of the four delegated slots, and will finish with nobody
+// reading it. Told "nothing was asked", the correct next move for an assistant is to ask again, and
+// asking again is the one thing that pays twice for the slowest call in the system while the first
+// one is still running. So this says the opposite, and keeps the clause NOT_ASKED exists for:
+// whatever the turn does instead, it may not report an answer no model gave it.
+//
+// It does not say "wait" either. There is nothing here to wait on: the fetch is gone, and the
+// answer this call is still generating has no reader left to arrive at.
+//
+// Where it is WRONG, since the next reader will look for it — and it is wrong at ONE of its two
+// sites, not both. In the BODY catch it is not an inference at all: `fetch` already resolved, so
+// headers arrived, so the request demonstrably left. That arm is exempt by construction.
+//
+// The HEADERS catch is the one that reaches. It is keyed on the abort, not on whether a connection
+// was ever established, and those are not the same question. A connect that stalls rather than
+// refuses — a DROP rule in front of the control app, say, instead of the ECONNREFUSED loopback
+// normally gives instantly — reaches 210s and aborts with `TimeoutError` too, and then "the request
+// was sent" is false and NOT_ASKED was the true sentence. That case is accepted, not overlooked. It
+// costs a turn that could have retried immediately being told not to, on a host where loopback is
+// firewalled against itself; the case it replaces costs a second generation on every ordinary slow
+// call. And the discriminator that would settle it is the one the body catch already gets for free
+// — a flag set when `fetch` RESOLVES — which by definition cannot be read from inside the catch
+// that fires because `fetch` never did. A flag set just BEFORE `fetch` is the one that is easy to
+// reach for, and it would be worthless: it asserts exactly as much as this sentence already does,
+// while reading like evidence.
+const NOT_ANSWERED = " The request was sent and may still be running, so asking again would start a "
+  + "second call rather than recover this one. Do the work another way, and do not report an answer "
+  + "no model gave you."
 
 export default {
   description:
@@ -129,9 +173,14 @@ export default {
       // Two conditions, not one. See the same catch in `liveread/tools/live_read.ts` for why the
       // bound needs its own sentence: "could not be reached" is false of a gateway that took the
       // request and was still working on it, and that is the condition this bound creates.
-      return (e?.name === "TimeoutError"
-        ? `The model did not answer within ${TIMEOUT_MS / 1000}s.`
-        : `The model could not be reached (${e}).`) + NOT_ASKED
+      //
+      // BOTH halves differ here, and that is where this file stops matching live_read.ts (#413).
+      // There the trailing sentence is about the SCREEN — nothing was drawn either way — so one
+      // constant serves both arms. Here it is about whether the request was SENT, which is the
+      // thing the two arms disagree about, so each takes its own.
+      return e?.name === "TimeoutError"
+        ? `The model did not answer within ${TIMEOUT_MS / 1000}s.` + NOT_ANSWERED
+        : `The model could not be reached (${e}).` + NOT_ASKED
     }
     if (!res.ok) {
       return `The model call answered HTTP ${res.status}.` + NOT_ASKED
@@ -142,9 +191,11 @@ export default {
     } catch (e) {
       // The bound covers the BODY too — see the same catch in `liveread/tools/live_read.ts`. An
       // answer that was still streaming when the clock ran out is a timeout, not a malformed reply.
-      return (e?.name === "TimeoutError"
-        ? `The model did not answer within ${TIMEOUT_MS / 1000}s.`
-        : `The model call replied with something unreadable (${e}).`) + NOT_ASKED
+      // And it is the same timeout as the one above, so it owes the same truth: a body that stopped
+      // arriving is a request that was sent. Both catches pick between the two constants (#413).
+      return e?.name === "TimeoutError"
+        ? `The model did not answer within ${TIMEOUT_MS / 1000}s.` + NOT_ANSWERED
+        : `The model call replied with something unreadable (${e}).` + NOT_ASKED
     }
     const text = body?.result?.content?.[0]?.text
     if (typeof text === "string") return text

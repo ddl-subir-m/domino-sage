@@ -54,7 +54,6 @@ from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
-from ..liveread import grant as live_grant
 from ..liveread import mcp as live_mcp
 from ..liveread import result as live_result
 from ..liveread import run as live_read
