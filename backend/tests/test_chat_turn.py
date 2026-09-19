@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from sage.orchestrator import chat_intent, handoff, recall
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import ChartFontsMissing, Orchestrator
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
@@ -363,6 +363,107 @@ def test_artifact_writer_keeps_text_and_png_bytes_in_the_thread_folder(tmp_path,
     assert client.post("/api/chat/artifact", json={
         "thread_id": tid, "path": f"examples/{tid}/late.txt", "content": "late",
     }).status_code == 400
+
+
+def test_a_chart_draws_its_labels_where_the_system_font_database_is_empty(tmp_path, monkeypatch):
+    """The image installs no fonts, so resvg drew every `<text>` as nothing and said so nowhere (#444).
+
+    Two ways to be green here and still be broken. The laptop has system fonts and the container
+    has none, so a render that consults them passes here for a reason production does not have —
+    `skip_system_fonts` is what makes the assert below the container's render, and it is read off
+    the production call rather than assumed. And resvg's last-resort fallback draws EVERY family
+    in one face once any one family argument is set, so "the glyphs appeared" goes green while
+    every `sans-serif` label is in a serif face. Assert the face, not the presence.
+    """
+    import resvg_py
+
+    seen: dict = {}
+    render = resvg_py.svg_to_bytes
+
+    def recording_render(**kwargs):
+        seen.update(kwargs)
+        return render(**kwargs)
+
+    monkeypatch.setattr(resvg_py, "svg_to_bytes", recording_render)
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    chat = project.control.arm_chat(tid)
+    artifact = project.control.arm_chat_artifact()
+
+    def png(name: str, label: str) -> bytes:
+        path = f"examples/{tid}/{name}.png"
+        orch.write_chat_artifact({"thread_id": tid, "path": path, "encoding": "svg", "content":
+            '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700">'
+            '<rect width="1200" height="700" fill="white"/>'
+            f'{label}</svg>'})
+        return (project.record.path / path).read_bytes()
+
+    try:
+        text = '<text x="60" y="80" font-size="40"{family}>Revenue</text>'
+        blank = png("blank", "")
+        drawn = {family: png(family.replace(" ", "-"), text.format(family=f' font-family="{family}"'))
+                 for family in ["sans-serif", "serif", "monospace", "Inter",
+                                "DejaVu Sans", "DejaVu Serif", "DejaVu Sans Mono"]}
+        drawn["(none)"] = png("plain", text.format(family=""))
+    finally:
+        project.control.disarm_chat_artifact(artifact)
+        project.control.disarm_chat(chat)
+
+    assert seen["skip_system_fonts"] is True
+    for family, png_bytes in drawn.items():
+        assert png_bytes != blank, f"{family}: no glyph reached the page"
+    # Equality against the face named by hand, not distinctness between the generics. Two
+    # different bytes prove only that the two renders are not the same picture, and a BLANK one
+    # satisfies that: measured, dropping `serif_family` leaves `serif` drawing nothing at all,
+    # and `sans != serif` reads that as a pass. Distinctness cannot tell "the wrong face" or
+    # "no face" from "the face we asked for"; equality against a face named in the markup can.
+    for generic, face in [("sans-serif", "DejaVu Sans"), ("serif", "DejaVu Serif"),
+                          ("monospace", "DejaVu Sans Mono"), ("(none)", "DejaVu Sans")]:
+        assert drawn[generic] == drawn[face], f"{generic} did not resolve to {face}"
+    # A family name we ship no face for is NOT covered by `font_family` — measured, resvg applies
+    # that only where the attribute is absent, and sends an unknown name to the serif fallback.
+    # So "Inter" draws, in DejaVu Serif. Pinned as the measurement, not endorsed as the design.
+    assert drawn["Inter"] == drawn["DejaVu Serif"]
+
+
+def test_a_chart_whose_fonts_are_missing_refuses_instead_of_writing_a_textless_png(tmp_path, monkeypatch, caplog):
+    """#444 criterion 3. resvg returns a clean PNG for a chart carrying no glyphs, and nothing
+    downstream can tell it from a good one — so the one condition we CAN see is checked here."""
+    import logging
+
+    import matplotlib
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as app_module
+
+    monkeypatch.setattr(matplotlib, "get_data_path", lambda: str(tmp_path / "no-fonts"))
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    chat = project.control.arm_chat(tid)
+    artifact = project.control.arm_chat_artifact()
+    monkeypatch.setattr(app_module, "orchestrator", orch)
+    path = f"examples/{tid}/chart.png"
+    body = {"thread_id": tid, "path": path, "encoding": "svg",
+            "content": '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700">'
+                       '<text x="60" y="80">Revenue</text></svg>'}
+    try:
+        with caplog.at_level(logging.ERROR, logger="sage.orchestrator"):
+            with pytest.raises(ChartFontsMissing, match="fonts are missing"):
+                orch.write_chat_artifact(dict(body))
+            # Through the route too: an uncaught raise is a bare non-JSON 500, which the tool
+            # reports as an unreadable transport failure and the model answers by redrawing a
+            # chart that was never the problem. The cause has to survive as far as the model.
+            client = TestClient(app_module.control_app, raise_server_exceptions=False)
+            response = client.post("/api/chat/artifact", json=dict(body))
+    finally:
+        project.control.disarm_chat_artifact(artifact)
+        project.control.disarm_chat(chat)
+    assert response.status_code == 500
+    assert "fonts are missing" in response.json()["error"]
+    assert any("chart render: no DejaVu faces" in r.message for r in caplog.records)
+    assert not (project.record.path / path).exists()
 
 
 def test_a_data_artifact_turn_publishes_a_png_from_the_scoped_writer(tmp_path):
