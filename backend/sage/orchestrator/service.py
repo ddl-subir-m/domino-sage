@@ -659,6 +659,17 @@ class FolderActUnavailable(Exception):
         super().__init__(reason)
 
 
+class ChartFontsMissing(RuntimeError):
+    """This image cannot draw text into a chart, so no PNG should be written at all (#444).
+
+    Its own class rather than a bare `RuntimeError` so `/api/chat/artifact` can answer it without
+    also swallowing one raised by a bug, which belongs in a traceback and not in a sentence handed
+    to the model. Not a `ValueError` either: that route turns those into the 400 the model reads as
+    "your markup was wrong", and the markup is fine — the fonts are absent. A model told to redraw
+    a good SVG redraws it until the turn's quiet window closes.
+    """
+
+
 class PlanArchiveRefused(Exception):
     """A plan document cannot be put away right now (#167).
 
@@ -10519,7 +10530,33 @@ class Orchestrator:
                     for key, value in node.attrib.items()
                 ):
                     raise ValueError("Chart SVG must use inline shapes and text without external resources.")
-            data = resvg_py.svg_to_bytes(svg_string=content, width=1200, height=700)
+            # The image apt-installs `git` and nothing else, so its system font database is
+            # EMPTY and resvg drew every `<text>` as nothing, silently (#444). Point it at the
+            # DejaVu faces `matplotlib` already ships inside its own package directory, and
+            # name all four generics: `font_dirs` alone resolves only an SVG that asks for
+            # "DejaVu Sans" by hand, and one generic alone makes that face the last-resort
+            # fallback for every family — sans-serif labels then render in serif.
+            # `skip_system_fonts` is load-bearing off the image too: without it a developer
+            # laptop renders from ITS fonts, so this line's regression test would pass there
+            # whatever we passed here. It costs the coverage those fonts would have added —
+            # DejaVu has no CJK, so a chart labelled in Japanese draws .notdef on a host that
+            # could have drawn it. Production loses nothing, having had no fonts at all, and
+            # matplotlib ships no CJK face to add here; non-Latin labels need their own issue.
+            import matplotlib
+
+            fonts = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
+            if not any(fonts.glob("DejaVu*.ttf")):
+                # Silence is what made #444 cost a live thread: resvg returns a clean PNG for a
+                # chart with no glyphs on it, and nothing downstream can tell that from a good
+                # one. Refuse before the write so no textless PNG reaches the thread.
+                log.error("chart render: no DejaVu faces under %s", fonts)
+                raise ChartFontsMissing(f"Chart fonts are missing from this image: {fonts}")
+            data = resvg_py.svg_to_bytes(
+                svg_string=content, width=1200, height=700,
+                font_dirs=[str(fonts)], skip_system_fonts=True,
+                font_family="DejaVu Sans", sans_serif_family="DejaVu Sans",
+                serif_family="DejaVu Serif", monospace_family="DejaVu Sans Mono",
+            )
         elif encoding == "base64" and path.endswith(".png"):
             try:
                 data = base64.b64decode(content, validate=True)
