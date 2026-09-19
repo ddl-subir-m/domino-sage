@@ -173,7 +173,10 @@ def test_chat_is_unchanged_because_it_never_had_the_act():
                    for r in step["rows"] for i in r.get("items") or [])
     assert not any("Not used by" in t for r in step["rows"] for t in r["texts"])
     row = _row(step["rows"], "Claude Sonnet 4")
-    assert any(i["label"] == "Use in this conversation" for i in row["items"])
+    # `Use here` since #410, with the glossary term on the hover — the act is unchanged, which is
+    # this test's claim, and only the words it is drawn with moved.
+    assert any(i["label"] == "Use here" and i["title"] == "Use in this conversation"
+               for i in row["items"])
 
 
 # ---- the act still exists, one surface over ------------------------------------------------------

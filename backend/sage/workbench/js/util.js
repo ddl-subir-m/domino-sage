@@ -343,6 +343,15 @@ window.SW = window.SW || {};
     // that: "Stop using here" is on the row's own menu and in the drawer behind it.
     IN_CONTEXT_TITLE: 'In this conversation — shown as a chip above the message box.',
 
+    // The same mark, earned the other way. One tick covers both acts (#410), but the sentence
+    // behind it cannot: sending a reader to look for a chip above the message box, on a row that
+    // has none, is the same wrong-place problem the tick itself was drawn to fix. So this one names
+    // the act that DID put it there and the list that can take it back off.
+    //
+    // No verb here either, for `IN_CONTEXT_TITLE`'s reason: a Binding comes off on the app's own
+    // dependency list, which is the one surface that owns it (ADR-0021).
+    BOUND_HERE_TITLE: 'In this conversation — the app you are building uses it.',
+
     // The mark a `missing` row wears, and the sentence behind it. Three surfaces read one answer —
     // the rail, the @ menu and the bind picker — so the words are written once, the way
     // `SOVEREIGN_TITLE` is: a person carries what they read from one menu to the other (ADR-0021).

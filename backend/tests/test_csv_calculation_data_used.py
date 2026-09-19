@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from sage.orchestrator import brand
 from sage.driver.opencode import with_attachment_listing
 from sage.liveread import mcp, run
 from sage.liveread.data_use import OPEN_CODE_DATA_CARRIERS, DataUse
@@ -120,7 +121,7 @@ def test_bound_table_out_of_range_is_refused_before_the_source_is_touched(tmp_pa
 
     said = run.perform("live_read_table", table_args(), turn)
 
-    assert "Use in this conversation" in said
+    assert brand.text("from {project} resources") in said
     assert journal == []
 
 

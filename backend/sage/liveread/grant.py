@@ -50,10 +50,13 @@ def reachable(kind: str, name: str, *, bound: Iterable[str] = (), chips: Iterabl
         ))
     named = {str(n).casefold() for n in bound} | {str(n).casefold() for n in chips}
     if (name or "").casefold() not in named:
-        # Names the thing and the act, never the mechanism. The act is the glossary's own label, so
-        # the sentence points at a control the person can actually see (ADR-0015).
+        # Names the thing and the PLACE, never the mechanism. It used to name the act, on the
+        # reasoning that the glossary's own label points at something the person can see — but the
+        # row draws that act as an unlabelled `+`, and the label lives in a menu behind it, so the
+        # sentence sent them looking for words that are not on screen (#410). The panel's heading
+        # is on screen, and it is where both acts are reached from (ADR-0015).
         return Refusal("not-in-range", brand.text(
-            "{name} isn't in this conversation. Use in this conversation, then ask again.",
+            "{name} isn't in this conversation. Add it from {project} resources, then ask again.",
             name=name or "that",
         ))
     return None

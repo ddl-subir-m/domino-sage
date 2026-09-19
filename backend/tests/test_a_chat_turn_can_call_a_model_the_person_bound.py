@@ -21,6 +21,7 @@ import pytest
 
 from sage.delegated import call as delegated
 from sage.delegated import mcp as delegated_mcp
+from sage.orchestrator import brand
 from sage.orchestrator.service import _DELEGATED_CALLS_MAX, Orchestrator
 from sage.resources.provider import (
     ApprovedModels,
@@ -297,7 +298,9 @@ def test_a_model_this_conversation_never_named_is_refused_and_the_set_is_named(t
     assert gateway.delegated == [], "nothing reached the gateway"
     assert "gpt-5.4 isn't a language model in this conversation" in said
     assert OPUS_LABEL in said, "the refusal names the set"
-    assert "Use in this conversation" in said, "and the act that fixes it"
+    # Through `brand.text`, never spelled out: the sentence is branded, and `paranoid-pack`'s
+    # scan covers `sage/` only — so a hard-coded copy here is the one that survives a rename.
+    assert brand.text("from {project} resources") in said, "and where the act that fixes it lives"
 
 
 def test_a_conversation_with_no_model_in_it_is_told_that_and_not_shown_an_empty_set(tmp_path: Path):
@@ -310,7 +313,7 @@ def test_a_conversation_with_no_model_in_it_is_told_that_and_not_shown_an_empty_
     said = _ask(orch, _token(oc), alias="opus", prompt="Classify this")
 
     assert "No language model is in this conversation" in said
-    assert "Add one with Use in this conversation" in said
+    assert brand.text("Add one from {project} resources") in said
 
 
 def test_the_cap_refuses_loudly_rather_than_letting_a_delegated_loop_spend_the_turn(tmp_path: Path):

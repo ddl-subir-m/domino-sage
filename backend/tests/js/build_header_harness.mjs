@@ -715,6 +715,10 @@ function flatten(node, out = [], depth = 0) {
   if (props.menu && props.menu.items) {
     const read = (i) => ({
       key: i.key || '', label: typeof i.label === 'string' ? i.label : '', danger: !!i.danger,
+      // The hover beside the ink. Since #410 the act's short form is what a menu draws and the
+      // glossary term lives here, so a test reading `label` alone can no longer tell the pair
+      // being correct from the long form having been dropped on the floor.
+      title: typeof i.title === 'string' ? i.title : null,
       divider: i.type === 'divider',
       // A heading, which is an item that holds items rather than acting. Both halves are the
       // criterion for the header's picker (#141): the heading is what says which list a row is in,

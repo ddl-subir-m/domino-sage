@@ -10482,7 +10482,10 @@ class Orchestrator:
             labels[call_name] = label or call_name
             out.append((call_name, labels[call_name]))
 
-        for row in project.workspace.read_bindings():
+        # Through `_bindings_here` rather than straight off the manifest, so that the panel's tick
+        # and this set are two readings of one list rather than two lists that happen to agree
+        # (#410). The kind filter stays here: only a language model has a call name.
+        for row in self._bindings_here(project):
             if str(row.get("kind") or "") != KIND_LLM_ALIAS:
                 continue
             name = str(row.get("name") or "")
@@ -17659,6 +17662,12 @@ class Orchestrator:
         conversation holds offering a removal that was certain to answer 409. Both fields together
         are what let the row point at a door that opens: the app's Bindings, or the conversation.
 
+        And `boundHere` beside those two, which is a different question from both (#410). `usedBy`
+        names every app that binds the row, because a removal must not strand one nobody is looking
+        at. `boundHere` is a single boolean about the app a TURN would use, because the panel's tick
+        has to mean "this Conversation can reach it" and nothing else — `_bindings_here` carries the
+        argument. Same act as `usedBy` reports, asked at the scope the reader is standing in.
+
         Computed on read, never written to the membership file. Both answers live somewhere else —
         the apps' own manifests (ADR-0010), the Threads' own `context.json` — and a copy here would
         go stale the moment any app bound or unbound, or any conversation dropped a chip, including
@@ -17698,12 +17707,20 @@ class Orchestrator:
         # `store.list()` reads live Threads only, so a deleted conversation's chips — which stay on
         # disk under its tombstone — hold nothing back here, matching the removal guard's own rule.
         chips = list(self._live_thread_context(self._chat_project())) if rows else []
+        # `boundHere`'s half of the answer, hoisted once per call like the two above it. One more
+        # small JSON read than this listing used to cost, and NOT taken off `scanned`, which is
+        # every app: the tick has to mean what a turn would do, and `_bindings_here` says why.
+        bound_here = self._bound_here_ids(self.project(start_preview=False)) if rows else set()
         return [
             {**row,
              "usedBy": [
                  {"appId": ws.app_id, "name": _app_display_name(ws), "scope": b.scope_shown}
                  for ws, b in self._apps_that_bind(str(row.get("id") or ""), scanned)
              ],
+             # Whether THIS act — **Use in app**, on the app a turn would use — already makes the
+             # row reachable, so the panel can draw one tick per act rather than guessing from
+             # `usedBy`, which spans every app and would tick a row a turn still refuses (#410).
+             "boundHere": bool(self._resource_aliases(str(row.get("id") or "")) & bound_here),
              "heldBy": self._threads_that_hold(str(row.get("id") or ""), chips)}
             for row in rows
         ]
@@ -18038,6 +18055,49 @@ class Orchestrator:
             elif kind == KIND_DATA_SOURCE:
                 aliases.add(f"datasource:{rest}")
         return aliases
+
+    def _bindings_here(self, project: Project) -> list[dict]:
+        """The Binding rows recorded by the app this Conversation's turns would use.
+
+        ONE read behind two surfaces, which is the whole point of it. `_delegated_aliases` turns
+        the language-model rows into the call names a turn may use; `list_project_resources` turns
+        all of them into each row's `boundHere`, which is how the panel draws its tick. Before #410
+        the panel had no account of this act at all — it read Session context chips alone — so a
+        model bound through **Use in app** was callable and still drew a `+` offering to add it.
+
+        The SELECTED app, matching `_delegated_aliases`, and deliberately NOT `_apps_that_bind`'s
+        every-app scan. Those two answer different questions and both are right where they stand: a
+        removal guard must not strand an app nobody is looking at, while a Binding some OTHER app
+        holds is not consent this Conversation was given. Reading the every-app scan here would put
+        a tick on a row this Conversation would still refuse — the same false sentence in the other
+        direction, which is the one thing #410 exists to end.
+
+        Kind-agnostic, because the acts are. `liveread.grant.reachable` reads the same bound-plus-
+        chips pair for a store or a file as `_delegated_aliases` reads for a model, so the panel's
+        tick means the same thing on every row and the caller filters if it has a reason to.
+
+        Non-dict entries are dropped rather than trusted: `read_bindings` answers with whatever the
+        manifest's top-level list held, and `parse_bindings` skips those for the same reason.
+        """
+        return [row for row in project.workspace.read_bindings() if isinstance(row, dict)]
+
+    def _bound_here_ids(self, project: Project) -> set[str]:
+        """Every id the selected app's Bindings can be joined on, in the membership row's spellings.
+
+        The mirror of `_resource_aliases`, coming the other way: that one widens a membership id to
+        every spelling a Binding might use, so this one widens each Binding to both of the two it
+        is written under. Intersecting the two sets is the join, and neither side has to know which
+        spelling the other picked.
+        """
+        ids: set[str] = set()
+        for row in self._bindings_here(project):
+            kind, rid = str(row.get("kind") or ""), str(row.get("id") or "")
+            if not rid:
+                continue
+            ids.add(rid)
+            if kind:
+                ids.add(f"{kind}:{rid}")
+        return ids
 
     def _apps_that_bind(
         self,
