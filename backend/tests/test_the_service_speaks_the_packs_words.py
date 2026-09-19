@@ -161,11 +161,31 @@ def test_a_scoped_table_row_renames_the_noun_and_quotes_the_source_as_given(acme
 
 
 def test_an_unqueryable_data_source_row_renames_the_noun(acme):
-    line = _chat_context_line({"kind": "data_source", "name": "Snowflake_Prod"})
+    """The shape that is genuinely unreachable: a table is scoped and no source name resolved, so
+    `name` is the TABLE and there is nothing here to pass `live_read_query` as its store.
+
+    This used to be asserted on `{"kind": "data_source", "name": "Snowflake_Prod"}` — a bare chip
+    carrying its store's real name, which #436 measured live as reachable all along. The noun is
+    what this file is for, and the noun is unchanged; what moved is which chip earns the sentence.
+    """
+    line = _chat_context_line({
+        "kind": "table", "name": "clickstream",
+        "scope": {"database": "db", "schema": "public", "table": "clickstream"},
+    })
     assert line == (
-        "- Warehouse Snowflake_Prod. This workspace cannot query it live. Do not invent rows. "
+        "- Warehouse clickstream. This workspace cannot query it live. Do not invent rows. "
         "Say that you cannot open it."
     )
+
+
+def test_a_bare_named_data_source_row_renames_the_noun_and_names_the_tool(acme):
+    """#436. The chip holds the store's name, `live_read_query` takes a store's name, and the row
+    now says so. The pack's noun still has to survive the rewrite."""
+    line = _chat_context_line({"kind": "data_source", "name": "Snowflake_Prod"})
+    assert line.startswith("- Warehouse Snowflake_Prod.")
+    assert "cannot query it live" not in line
+    assert "source 'Snowflake_Prod'" in line
+    assert "Data Source" not in line
 
 
 def test_a_language_model_row_hands_the_turn_a_way_to_call_it(acme):
