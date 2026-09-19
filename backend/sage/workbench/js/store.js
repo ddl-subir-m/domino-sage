@@ -2084,10 +2084,22 @@ window.SW = window.SW || {};
   // frame, which is not a failure, and the `done` that closes it, which carries `ok: false` like
   // every other unhappy ending and would otherwise be one. `ASKED_FOR` is the whole list, and it is
   // declared below with the gate decisions it is built from.
+  // `NO_PLATFORM_FAULT` is read HERE and not only at the withdrawal below, because the withdrawal
+  // is an `else` on this function and so never ran for an ending that carries `ok: false` — which
+  // is every ending in that list. Measured on #435 through `build_stream_harness`: a `done` with
+  // `ok:false, decision:"queries failed"` bought a listing, although #203 put that decision in the
+  // exemption precisely so it would not. The list's own test greps store.js for the string, so it
+  // pinned the entry and never the behaviour, and the entry has not worked since it shipped.
+  //
+  // The two questions are genuinely different and both are still asked: `ASKED_FOR` is "did the
+  // person ask for this ending", `NO_PLATFORM_FAULT` is "could a listing of models say anything
+  // about it". A turn can fail for real — `ok:false`, nobody asked for it — and still have nothing
+  // to do with the platform, which is exactly what a malformed table is.
   function endedBadly(ev) {
     if (!ev || ev.contextChanged) return false;
     if (ev.type === 'error') return true;
-    return ev.type === 'done' && ev.ok === false && !ASKED_FOR[ev.decision];
+    return ev.type === 'done' && ev.ok === false
+      && !ASKED_FOR[ev.decision] && !NO_PLATFORM_FAULT[ev.decision];
   }
 
   // Decisions whose own card already says what happened and what to do next. A red "Stopped —"
@@ -2150,7 +2162,17 @@ window.SW = window.SW || {};
   // every stray note or shell command would otherwise buy a listing for a turn that worked (#150).
   // `queries failed` is here for the same reason (#203): the turn ran, the model answered, and a
   // Data Source refused a query — nothing a listing of models can say anything about.
-  const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true };
+  // `table generation failed` is here for the reason the two beside it are, and it was missing
+  // for the whole of #435: a turn answered, wrote a correct card, left ONE malformed
+  // `.table.json`, and bought a listing of models to explain a file that failed validation.
+  // Nothing was asked of the gateway. The rule was already written with this case named — the
+  // test that pins `queries failed` says "or every broken table buys a listing that cannot say
+  // anything about it" — so this is the entry that sentence was about, added late.
+  //
+  // This withdraws the PLATFORM flag and nothing else. The `error` frame still goes up, the
+  // person still reads which table failed, and `done.ok` is untouched.
+  const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true,
+                              'table generation failed': true };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
   // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
