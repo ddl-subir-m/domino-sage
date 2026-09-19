@@ -3603,15 +3603,18 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
         # Source name"), so a row that holds a usable name holds everything the tool needs, whether
         # or not `add_thread_context` managed to stamp `sourceName` onto the chip.
         #
-        # #436. A chip posted without `resourceId` resolves to no source (`_context_source_id` reads
-        # `bindingKey`, `parentId` and `resourceId`, never the row's own `id`), so `sourceName` was
-        # never stamped and this fell through to the last sentence below — "cannot query it live",
-        # "say that you cannot open it" — while `live_read_query` sat armed in the turn's tool list
-        # and the chip's `name` was the store's real name all along. Measured on cloud-dogfood
-        # 2026-09-19 at `78e9223`: the model did not ignore the instruction, it OBEYED it and told
-        # the person the warehouse was unreachable. The chip decided that, not the phrasing — three
-        # threads in the same workspace whose chips DID carry `sourceName` reached the data path on
-        # the same plain question.
+        # #436, and the production route to this branch is a transient one rather than the refusal
+        # in the ticket body. `add_thread_context` stamps `sourceName` only when `_context_source`
+        # resolves, and that helper swallows `ResourceUnavailable` — Domino not answering, or
+        # answering and refusing. A chip the Workbench posted correctly, attached in those seconds,
+        # is written without a `sourceName`, nothing retries it, and every later turn in the Thread
+        # was then told the store could not be queried — about a store reachable again by then whose
+        # name was in the chip the whole time.
+        #
+        # The refusal the ticket was filed on is NOT that. It ran on a chip a sibling session posted
+        # by hand while verifying #408, carrying the raw Domino id in `id` and no `resourceId`. The
+        # Workbench door never posts that shape (`workbench/js/api.js:531` sends `resourceId` and no
+        # `id`), so it proves nothing about production and is not what this branch is justified on.
         #
         # When a table is scoped and no source name resolved, `name` is the TABLE, so it is not a
         # store name and guessing with it sends the agent at a lookup that cannot succeed. That case
