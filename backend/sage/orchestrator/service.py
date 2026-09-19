@@ -5275,10 +5275,20 @@ class Orchestrator:
         # number from the idle delay rather than a literal `0` so a test can hold the save still
         # and fire it by hand, the way the idle one already does.
         self._chat_save_turn_s = 0.0
+        # The same number for a click that leaves a dirty Conversation, and its own attribute for
+        # the same reason the one above is: a test has to be able to hold one of the two still and
+        # fire it by hand without holding the other. They answer different questions — "a turn
+        # wrote something" and "a person walked away from it" — and a test that could only pin them
+        # together could not tell which arm it had caught (#456).
+        self._chat_save_leave_s = 0.0
         # Why the reason is held here rather than passed to the timer: the post-turn save and the
         # idle one land in the same callback, and without this every commit a turn produced would
         # read `chat (idle)`.
         self._chat_save_reason = "idle"
+        # The last Chat save that did not land, or None. Kept because the savers that matter have
+        # no caller to answer: the post-turn commit and the one a rail switch leaves behind both
+        # run on the timer's thread. `get_thread` hands it back (#456).
+        self._chat_save_failed: dict | None = None
         # True while a queued Chat save holds the turn lock, or is about to ask for it. See
         # `_acquire_for_door`, which reads it to tell a commit from a build.
         self._chat_saving = False
@@ -7640,8 +7650,28 @@ class Orchestrator:
         return ThreadStore(self._chat_project().record.path).create()
 
     def get_thread(self, thread_id: str) -> dict:
+        """Open a Conversation. Leaving a dirty one still commits it — off this read's thread.
+
+        The condition is unchanged: a Thread that was typed in is committed before the session
+        moves on to another one. What changed is who waits for it. That commit walks the tree,
+        fetches, merges and pushes — two network round trips — and it used to run here, ahead of
+        the first byte of the Conversation being opened. A write triggered by a read, paid for by
+        the person who clicked somewhere else (#456).
+
+        Handed to the timer the way a turn hands over its own commit (`_after_chat_turn`): a delay
+        of `_chat_save_leave_s` is not a wait, it is the handoff, and the timer IS a thread. So the
+        commit runs whether or not another request ever arrives — closing the tab right after the
+        click does not strand it — and a graceful stop flushes whatever is still dirty
+        (`shutdown`). Nothing is reordered either: `_flush_chat_save` takes the turn lock, so two
+        quick switches queue behind one another instead of interleaving, and one commit takes the
+        whole tree however many switches asked for it.
+
+        What this door gives up is the answer. A save with nobody waiting on its return value can
+        fail unseen, and failing to commit someone's work unseen is worse than a slow click — so
+        `_chat_save_now` keeps the last one that did not land and it is reported below.
+        """
         if self._chat_dirty_thread and self._chat_dirty_thread != thread_id:
-            self._flush_chat_save("leave")
+            self._arm_chat_idle_save("leave", delay=self._chat_save_leave_s)
         record = self._chat_project().record
         store = ThreadStore(record.path)
         row = store.get(thread_id)
@@ -7658,6 +7688,12 @@ class Orchestrator:
                                                   kept=record.kept_rows()),
             "handoff": handoffs[-1] if handoffs else None,
             "planId": _thread_plan_id(record, thread_id),
+            # The last background save that did not land, or None. Carried on the read rather than
+            # pushed anywhere: this is the door the flush came off, so it is the door that owes the
+            # news. It reports the save BEFORE this one — the one this click just armed has not run
+            # yet, which is the whole point — so the report arrives on the next switch, or on the
+            # `/api/threads/save` door, which retries while the files are still dirty.
+            "saveFailed": self._chat_save_failed,
         }
 
     def patch_thread(self, thread_id: str, body: dict) -> dict:
@@ -8395,7 +8431,15 @@ class Orchestrator:
                 self._chat_saving = False
 
     def _chat_save_now(self, reason: str) -> dict | None:
-        """The save itself. The caller owns the turn lock; this decides what to do with the result."""
+        """The save itself. The caller owns the turn lock; this decides what to do with the result.
+
+        Every outcome is recorded on `_chat_save_failed`, because most of the callers no longer
+        read the one returned: the post-turn commit and the one a rail switch leaves behind both
+        run on the timer's thread, which has nowhere to put an answer. Retrying is not reporting —
+        a push refused by the remote retries every thirty seconds forever and says so only to the
+        log — so the last failure is held for `get_thread` to hand back, and cleared by the first
+        save that lands.
+        """
         t0 = time.monotonic()
         try:
             project = self.project(start_preview=False)
@@ -8410,12 +8454,19 @@ class Orchestrator:
             # `reason` carried into the retry, not dropped back to the default: a commit that
             # failed is still this turn's work, and the next attempt should say so.
             self._arm_chat_idle_save(reason)
-            return {"type": "saved", "ok": False, "pushed": False, "detail": "chat save failed"}
+            self._chat_save_failed = {"type": "saved", "ok": False, "pushed": False,
+                                      "detail": "chat save failed"}
+            return self._chat_save_failed
         if result is None or result.get("ok"):
             self._chat_dirty = False
             self._chat_dirty_thread = None
+            # Cleared on the way that clears `_chat_dirty`, and only there. A save that lands is
+            # the one piece of evidence that the earlier failure is behind us; anything else —
+            # another attempt being armed, the files being rewritten — leaves it standing.
+            self._chat_save_failed = None
         else:
             self._arm_chat_idle_save(reason)
+            self._chat_save_failed = result
         return result
 
     def _after_chat_turn(self, thread_id: str, *, immediate: str | None) -> None:

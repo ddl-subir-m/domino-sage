@@ -1578,7 +1578,17 @@ def test_a_second_save_that_misses_the_lock_does_not_unmark_the_one_holding_it(t
 
 
 def test_chat_leave_thread_flushes(tmp_path: Path):
+    """Switching away from a dirty Conversation still commits it — but not inside the click.
+
+    The condition is the one that was always there: the same Thread reads without arming
+    anything, a different one arms `leave`. What moved is the commit itself, which is now the
+    timer's to run rather than this read's to wait for (#456). Both delays are held still so the
+    arm can be caught and fired by hand; the `leave` one has its own so holding it does not also
+    hold the commit a turn leaves behind.
+    """
     orch, oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="Still Rates.")])
+    orch._chat_save_turn_s = 60.0
+    orch._chat_save_leave_s = 60.0
     calls = _track_saves(orch)
     a = orch.create_thread()
     b = orch.create_thread()
@@ -1589,8 +1599,16 @@ def test_chat_leave_thread_flushes(tmp_path: Path):
 
     orch.get_thread(a["id"])
     assert calls == []
+    assert orch._chat_save_reason == "idle"   # the Thread it is already in arms nothing
 
-    orch.get_thread(b["id"])
+    orch._cancel_chat_idle_save()
+    got = orch.get_thread(b["id"])
+    assert calls == []                        # the read did not wait on a push
+    assert got["saveFailed"] is None
+    assert orch._chat_save_reason == "leave"
+    assert orch._chat_save_timer is not None
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
     assert calls == ["chat (leave)"]
     assert orch._chat_dirty is False
 
@@ -1598,8 +1616,111 @@ def test_chat_leave_thread_flushes(tmp_path: Path):
     oc.turns.append(Turn(text="APAC."))
     list(orch.chat_stream(a["id"], "and by region?"))
     assert orch._chat_dirty is True
+    # `create_thread` is NOT on the read path and keeps its inline flush (#456 constraint 2).
     orch.create_thread()
     assert calls == ["chat (leave)"]
+
+
+def test_a_conversation_left_dirty_commits_with_no_second_request(tmp_path: Path):
+    """The commit a switch hands off does not wait on another click to arrive.
+
+    This is the constraint the inline flush used to satisfy for free, and the one worth a test of
+    its own: the browser can close on the same click that armed this. So the timer is left to run
+    for real rather than fired by hand, and nothing else touches the orchestrator afterwards — the
+    save has to land off its own thread or not at all.
+    """
+    orch, _oc = _orch(tmp_path, [Turn(text="Rates.")])
+    orch._chat_save_turn_s = 60.0     # hold the turn's own commit; this test is about the switch
+    calls = _track_saves(orch)
+    a = orch.create_thread()
+    b = orch.create_thread()
+    list(orch.chat_stream(a["id"], "what's our gross exposure by desk?"))
+    orch._cancel_chat_idle_save()
+    calls.clear()
+    assert orch._chat_dirty is True
+
+    orch.get_thread(b["id"])          # the last call made; the timer is on its own from here
+    deadline = time.monotonic() + 5.0
+    while orch._chat_dirty and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == ["chat (leave)"]
+    assert orch._chat_dirty is False
+    assert orch._chat_dirty_thread is None
+
+
+def test_two_quick_switches_commit_once_and_do_not_interleave(tmp_path: Path):
+    """A → B → C faster than the save runs is one commit, not two racing ones.
+
+    Each switch arms the same single timer slot, so the second replaces the first rather than
+    joining it, and the commit that finally runs takes the whole tree — there is only one, and
+    `_save_to_git` stages all of it. What stops a second save from cutting into one already
+    running is the turn lock `_flush_chat_save` takes, which is why the saver parked below sees
+    the door-flush defer instead of commit.
+    """
+    orch, _oc = _orch(tmp_path, [Turn(text="Rates.")])
+    orch._chat_save_turn_s = 60.0
+    orch._chat_save_leave_s = 60.0
+    calls = _track_saves(orch)
+    a = orch.create_thread()
+    b = orch.create_thread()
+    c = orch.create_thread()
+    list(orch.chat_stream(a["id"], "what's our gross exposure by desk?"))
+    orch._cancel_chat_idle_save()
+    calls.clear()
+
+    orch.get_thread(b["id"])
+    first = orch._chat_save_timer
+    orch.get_thread(c["id"])
+    assert first is not orch._chat_save_timer   # one slot: the second replaced it
+    assert first.finished.is_set()              # and cancelled it, so it can never also fire
+    assert calls == []
+
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
+    assert calls == ["chat (leave)"]            # one commit for both switches
+    assert orch._chat_dirty is False
+
+
+def test_a_background_save_that_fails_is_reported_on_the_next_read(tmp_path: Path):
+    """A push that does not land is news, and nobody is holding the return value any more.
+
+    Retrying is not reporting: the re-arm below would go on failing every thirty seconds and say
+    so only to the log. So the failure is kept and handed back by the door the flush came off —
+    and cleared by a save that lands, not by one merely being attempted again.
+    """
+    orch, _oc = _orch(tmp_path, [Turn(text="Rates.")])
+    orch._chat_save_turn_s = 60.0
+    orch._chat_save_leave_s = 60.0
+    a = orch.create_thread()
+    b = orch.create_thread()
+    refused = {"type": "saved", "ok": False, "pushed": False, "detail": "push rejected"}
+    orch._save_to_git = lambda *_a, **_k: refused
+    list(orch.chat_stream(a["id"], "what's our gross exposure by desk?"))
+    orch._cancel_chat_idle_save()
+
+    assert orch.get_thread(b["id"])["saveFailed"] is None   # nothing has failed yet
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
+    assert orch._chat_dirty is True                         # still dirty, so still retried
+    assert orch.get_thread(b["id"])["saveFailed"] == refused
+
+    # An attempt that raises is reported the same way — the person cannot tell the two apart and
+    # does not need to; both mean their work is not on the remote.
+    orch._save_to_git = _raises_on_save
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
+    assert orch.get_thread(b["id"])["saveFailed"]["detail"] == "chat save failed"
+
+    # And only a save that LANDS clears it.
+    orch._save_to_git = lambda *_a, **_k: {"type": "saved", "ok": True, "pushed": True}
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
+    assert orch._chat_dirty is False
+    assert orch.get_thread(a["id"])["saveFailed"] is None
+
+
+def _raises_on_save(*_a, **_k):
+    raise RuntimeError("git push exploded")
 
 
 def test_flush_chat_save_and_shutdown_cancel_idle(tmp_path: Path):
