@@ -94,7 +94,10 @@ def test_workbench_is_the_default_ui():
     # One heading, and it is the panel's title rather than a section head inside it. The dock's tab
     # and the section head under it were one list named twice; both are gone. `In context` went
     # with the other head: context is the chips over the composer plus a mark on the row (#151).
-    assert b"'Project resources'" in panel.content
+    # Through the brand pack since #410, not a literal: the refusals in `delegated/call.py` and
+    # `liveread/grant.py` now send people to this heading BY NAME, so the two have to be the same
+    # words under every pack rather than only under the default one.
+    assert b"SW.brand.text('{project} resources')" in panel.content
     assert b"In context" not in panel.content
     assert b"sw-panel-title" in panel.content
     # Title and act on two rows: a heading that also held a count, a door and a chevron read as a
