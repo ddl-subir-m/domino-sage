@@ -617,6 +617,15 @@ _Kind_: name
 _Avoid_: context (that is Session context, which is Resources), session (OpenCode's word for the
 harness object that holds Recall), history (that is the transcript), memory
 
+**Findings file**:
+The measurement log a long Investigation keeps across turns, written by the
+model and read back by it. It holds aggregates and column facts with their denominators, never a
+row value and never a conclusion. It is committed with the Project and drawn on no card, so it is
+invisible to exactly the person who could judge whether its contents should leave
+([ADR-0055](docs/adr/0055-a-findings-file-is-committed-and-invisible-only-to-the-person.md)).
+_Kind_: name
+_Avoid_: notes, scratch (that is `.sage/scratch/`, which records nothing), memory, log
+
 ### Handling rules
 
 **Delete**:
@@ -814,3 +823,13 @@ _Kind_: word
 _Avoid_: Pull latest (no control carries that label), Sync (Domino's own word, for [[Domino
 Artifacts]]), merge (it is the prerequisite, not what anybody asked for), Update, Refresh (both hide
 that a build runs)
+
+**Advance**:
+What a turn does when it produces a result no earlier turn in the Thread had already
+produced. A turn that reads and writes only what is already there has not advanced, however much
+it says. The word names the turn's effect on the Thread's record, never the quality of its answer
+or the person's satisfaction with it
+([ADR-0061](docs/adr/0061-a-turn-is-handed-what-earlier-turns-already-read.md)).
+_Kind_: word
+_Avoid_: progress, make progress (both read as a judgement of the answer), succeed, stall (that is
+the failure, not the act), loop, repeat (that names a resemblance, not an effect)
