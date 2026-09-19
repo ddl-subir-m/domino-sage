@@ -13575,12 +13575,13 @@ class Orchestrator:
         ending exactly as it ends today — an answer with no offer under it. Neither failure shows the
         person a wrong card, so the feature can be measured live without risking the turn.
 
-        THE FIRE RATE IS THE THING TO MEASURE, NOT THE TEST. #436 measured this same model, in this
-        same lane, with `live_read_query` armed and in its tool list, declining to call it at all and
-        telling the person to go run the SQL themselves. A prompt-level instruction about this tool
-        has already been ignored once. This can therefore pass every test here and still never fire
-        in production, which is how #428 shipped and how #408 shipped unreachable — so the log line
-        below exists to make a silent zero visible rather than assumed.
+        THE FIRE RATE IS THE THING TO MEASURE, NOT THE TEST. Every test here supplies the marker;
+        none of them establishes how often a model emits one unprompted, because the trigger is a
+        token taught in a prompt and nothing in a suite measures whether a prompt is obeyed. Add the
+        safe degradation above and the two failure modes become indistinguishable from success at
+        this level: a door that never opens looks exactly like a door nobody needed. That is how
+        #428 shipped and how #408 shipped unreachable — so the log line below exists to make a
+        silent zero visible rather than assumed, and the rate belongs in a live measurement.
         """
         if not claimed:
             return None

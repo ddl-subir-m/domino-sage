@@ -222,11 +222,17 @@ The grant meets the standing one at exactly two places — the two arming sites 
 The table gate keeps reading `investigating` alone, because a grant for one calculation says nothing
 about which table the next question should start from.
 
-**The fire rate is the open risk, and it is not a test question.** #436 measured this same model, in
-this same lane, with `live_read_query` armed and in its tool list, not calling it at all and telling
-the person to go run the SQL themselves. A prompt-level instruction about this tool has been ignored
-once already. Both failure directions here degrade safely — a false marker is stripped by the check,
-and a missed marker leaves the turn ending exactly as it ends today — so neither shows a wrong card.
-But that same property means this can pass every test and never fire in production, which is how
-#428 shipped and how #408 shipped unreachable. The rate belongs in a live measurement, not in a
-green suite.
+**The fire rate is the open risk, and it is not a test question.** The trigger is a token taught in
+a prompt, and no suite measures whether a prompt is obeyed: every test here supplies the marker, so
+all of them together say nothing about how often a model emits one unprompted.
+
+The safe degradation above makes that worse rather than better, and it is worth being explicit about
+the trade. A false marker is stripped by the statement check and a missed one leaves the turn ending
+exactly as it ends today, so neither failure shows the person a wrong card — which is the right
+property to build for, and also the property that makes both failures invisible from here. A door
+that never opens looks exactly like a door nobody needed. That is how #428 shipped and how #408
+shipped unreachable.
+
+So the rate belongs in a live measurement, and until one exists this feature is UNVERIFIED in
+production however green the suite is. A `log.info` fires on both arms of the check — offered, and
+claimed-without-a-statement — so a silent zero is visible rather than assumed.
