@@ -1066,6 +1066,10 @@ window.SW = window.SW || {};
                 {
                   size: 'small',
                   type: 'text',
+                  // The press and the row coming down are a round trip apart, so without this the
+                  // button says nothing happened and a second click looks like the thing to try
+                  // (#385). The store refuses that click either way; this is the half that says why.
+                  loading: !!queued.cancelling,
                   onClick: () => SW.store.cancelQueuedTurn(queued.ticket).catch(sayFailed),
                 },
                 'Cancel'
