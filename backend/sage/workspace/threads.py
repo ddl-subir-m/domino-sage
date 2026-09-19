@@ -249,13 +249,39 @@ class ThreadStore:
             return None
         return data if isinstance(data, dict) else None
 
-    def write_session_id(self, thread_id: str, session_id: str, directory: str | None = None) -> None:
+    def write_session_id(self, thread_id: str, session_id: str, directory: str | None = None,
+                         rebuild_pending: bool = False) -> None:
         p = self.thread_dir(thread_id) / "session.json"
         p.parent.mkdir(parents=True, exist_ok=True)
-        body: dict[str, str] = {"session_id": session_id}
+        body: dict[str, object] = {"session_id": session_id}
         if directory:
             body["directory"] = directory
+        # ADR-0060. Written here rather than derived per turn because the fact it records — this
+        # Conversation's memory is gone and its next turn owes itself a rebuild — outlives the call
+        # that discovers it. A local flag was the first shape and it was the same mistake the bug
+        # is made of: the debt survives a restart, so the record of it has to as well, or whichever
+        # caller happens to mint first spends it and the Chat turn that needed it sees nothing.
+        #
+        # Absent rather than `false` when there is no debt, so the file keeps its old shape for
+        # every Thread that never lost a session.
+        if rebuild_pending:
+            body["rebuild_pending"] = True
         p.write_text(json.dumps(body))
+
+    def clear_rebuild_pending(self, thread_id: str) -> None:
+        """The debt is paid: a turn has carried the summary into the new session.
+
+        Rewrites rather than deletes, because `session_id` and `directory` in the same file are what
+        the NEXT turn reuses — `clear_session_id` removes the file and means something else entirely.
+
+        Silent when there is no file or no debt. Both are ordinary: the file is written by one
+        function, and a turn that owed nothing calls this never.
+        """
+        p = self.thread_dir(thread_id) / "session.json"
+        rec = self.read_session(thread_id)
+        if not rec or not rec.pop("rebuild_pending", None):
+            return
+        p.write_text(json.dumps(rec))
 
     def clear_session_id(self, thread_id: str) -> None:
         """Forget which OpenCode session this Conversation was talking to (ADR-0022).
