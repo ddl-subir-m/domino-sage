@@ -166,8 +166,37 @@ in them. Measured 2026-09-19: a landing session swept three issues, missed a fou
 slot with a live run, and told two sessions to start on top of it.
 
     for p in $(pgrep -f "bin/pytest"); do
-      echo "pid $p [$(lsof -a -p $p -d cwd -Fn | grep ^n | head -1)]"; ps -o lstart=,args= -p $p
+      exe=$(ps -o args= -p $p | awk '{print $1}')
+      case "$exe" in
+        */bin/python*|*/bin/pytest*)
+          if [ -x "$exe" ]; then echo "REAL pid $p [$(lsof -a -p $p -d cwd -Fn | grep ^n | head -1)]"
+          else echo "FAKE pid $p argv0=$exe"; fi ;;
+        *) echo "quote pid $p" ;;
+      esac
     done
+
+**The filter is not decoration: a bare `pgrep -f "bin/pytest"` matches the CHECKING COMMAND ITSELF**,
+because the pattern sits in that command's own line. Two sessions checking at once then see each
+other as suites, and it scales the wrong way — every session that adopts the check becomes visible
+to every other one running it. Worse, it is INTERMITTENT: it fires only when the checking line is
+long enough to be scanned, so one session sees it, the next cannot reproduce it, and it gets filed
+as a fluke.
+
+`[ -x "$exe" ]` is the part doing the work. Matching argv[0] against `*/bin/pytest*` is still
+pattern-matching — measured, a process whose argv[0] is `/fake/path/bin/pytest` passes that glob and
+reports REAL. **Shape alone is a claim; the stat is the check.**
+
+And do not reach for the `bin/py[t]est` bracket trick. It stops the pattern matching its own literal
+text and nothing else, so it holds only where the bracketed form is the SOLE occurrence — it breaks
+the moment the plain string appears in a comment, a message, or a neighbouring variant of the same
+script. Measured failing here for exactly that reason.
+
+This is one instance of a class that cost three separate findings in one afternoon: **a scanner
+cannot tell a signal from a quote of the signal.** `git log -S` answered about two docstrings that
+named a string the import line never contained; `pgrep -f` answered about its own command line; the
+bracket trick was defeated by an adjacent quote of the very pattern it was avoiding. In all three
+the wrong answer is a real-looking result, never an obvious failure, so nothing prompts a second
+look. Before trusting a pattern search, confirm what it actually matched.
 
 Read `ps -o args=` PER PID. A truncated `ps aux` line is not enough: **a bare `pytest` with no
 `-n` and no path arguments IS a full `-n auto` suite**, because `backend/pyproject.toml` sets
