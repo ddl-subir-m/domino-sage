@@ -25,7 +25,10 @@ record, and the request the person already made is built against it.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -34,7 +37,7 @@ from fastapi.testclient import TestClient
 
 import sage.orchestrator.app as appmod
 from sage.gateway.client import FakeGatewayClient
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import Orchestrator, StoreWentQuiet
 from sage.resources.bindings import KIND_DATA_SOURCE
 from sage.resources.provider import FakeResourceProvider, ResourceUnavailable
 from sage.router.models import ModelCatalog
@@ -724,3 +727,118 @@ def test_a_table_named_outright_is_asked_about_even_where_the_name_scores_nothin
     control.post("/api/project/build/stream", json={"prompt": "build a chart from DWH.MARTS.NOPE"})
 
     assert [(s["id"], s.get("table")) for s in _sources(control)] == [("ds-dwh", None)]
+
+
+# ---- every arm of "an inferred store does not speak" (#445) ----------------------------------
+
+
+def _speaks(text: str) -> list[str]:
+    """The user-visible copy a walk left behind, in order."""
+    return [str(f.get("message") or "") for f in _frames(text)
+            if f.get("type") in ("table-search-ended", "table-search") and f.get("message")]
+
+
+def _breaking(orch: Orchestrator, exc: Exception):
+    """Make the walk die at the one call every speaking arm is reached through."""
+    def boom(*_a, **_k):
+        raise exc
+    orch._databases_to_walk = boom  # type: ignore[method-assign]
+
+
+def test_an_inferred_store_that_stops_answering_says_nothing(tmp_path: Path, monkeypatch):
+    """The warehouse-blip arm, which is the live symptom the silence rule was written for.
+
+    A store that stops answering is news to somebody who said "from Snowflake" and noise to
+    somebody who asked for a blue header — and it repeats every turn until a table is picked,
+    because the Binding outlives the turn. This arm was the reason for the rule and was the one
+    arm no test drove; `test_an_inferred_store_reports_nothing_about_itself_on_the_way_out`
+    covers the empty-store arm only.
+
+    The control is the same failure under a request that NAMES the store, which must still say so.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    _bind(client)
+    _breaking(orch, StoreWentQuiet("connection reset"))
+
+    inferred = client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text
+    named = client.post("/api/project/build/stream", json={"prompt": PROMPT}).text
+
+    assert _speaks(inferred) == []
+    assert any("couldn't" in m or "could not" in m for m in _speaks(named)), _speaks(named)
+
+
+def test_an_inferred_store_whose_walk_crashes_says_nothing(tmp_path: Path, monkeypatch):
+    """The same rule on the arm that catches everything else, with the same control.
+
+    Separate from the one above because it is a separate `except` — a guard added to one arm of a
+    try and not its sibling is the shape this whole group exists to make visible.
+    """
+    orch = _orch(tmp_path)
+    _gong_warehouse(orch)
+    client = _client(orch, monkeypatch)
+    _bind(client)
+    _breaking(orch, RuntimeError("driver blew up"))
+
+    inferred = client.post("/api/project/build/stream", json={"prompt": UNNAMED}).text
+    named = client.post("/api/project/build/stream", json={"prompt": PROMPT}).text
+
+    assert _speaks(inferred) == []
+    assert any("couldn't" in m or "could not" in m for m in _speaks(named)), _speaks(named)
+
+
+def test_the_arms_above_are_every_arm_the_build_gate_can_speak_from(tmp_path: Path):
+    """The census, derived from the gate's own source rather than from this file's memory.
+
+    A HAND-WRITTEN LIST OF SITES CANNOT KNOW IT IS SHORT. The rule "an inferred store does not
+    speak" reaches four exits and was pinned at one; two of the other three could be un-silenced
+    with the whole file still green, and the un-silenceable one was the arm the rule was written
+    for. Naming the arms here would repeat that mistake one layer up, so this walks the function
+    and asserts the property instead of the population.
+
+    THE PROPERTY: inside `_table_offer`, everything that introduces user-visible copy sits under
+    an `if not inferred:`. Three things introduce it — a call to `_table_search_gave_up`, an
+    assignment into a `message` key, and a yielded dict that carries one literally. A new exit
+    that speaks without the guard fails here even though no test drives it yet, which is the whole
+    point: the next person to add an arm gets told, rather than the next person to read a
+    transcript.
+    """
+    src = textwrap.dedent(inspect.getsource(Orchestrator._table_offer))
+    unguarded: list[int] = []
+
+    def speaks(node: ast.AST) -> bool:
+        if isinstance(node, ast.Call):
+            return isinstance(node.func, ast.Attribute) and node.func.attr == "_table_search_gave_up"
+        if isinstance(node, ast.Assign):
+            return any(isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant)
+                       and t.slice.value == "message" for t in node.targets)
+        if isinstance(node, ast.Dict):
+            return any(isinstance(k, ast.Constant) and k.value == "message" for k in node.keys)
+        return False
+
+    def guards(node: ast.AST) -> bool:
+        return (isinstance(node, ast.If) and isinstance(node.test, ast.UnaryOp)
+                and isinstance(node.test.op, ast.Not)
+                and isinstance(node.test.operand, ast.Name)
+                and node.test.operand.id == "inferred")
+
+    def walk(node: ast.AST, guarded: bool) -> None:
+        if speaks(node) and not guarded:
+            unguarded.append(getattr(node, "lineno", -1))
+        if guards(node):
+            for child in node.body:
+                walk(child, True)
+            for child in node.orelse:
+                walk(child, guarded)
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child, guarded)
+
+    walk(ast.parse(src), False)
+
+    assert unguarded == [], (
+        f"_table_offer speaks to the person at unguarded line(s) {unguarded} of its own source — "
+        "an inferred store must not narrate a warehouse nobody asked about (#445)")
+    # And the census is not vacuously empty: the guarded sites are still there to be found.
+    assert sum(1 for n in ast.walk(ast.parse(src)) if speaks(n)) >= 3
