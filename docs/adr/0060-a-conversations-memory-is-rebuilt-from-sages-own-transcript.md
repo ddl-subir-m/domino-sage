@@ -145,11 +145,19 @@ so an unguarded `reseed` would answer *"forget this"* by handing the model a sum
 what it was asked to forget. The seam this ADR was written to repair and the mechanism a clear
 already used are the same mechanism, and nothing above noticed.
 
-The guard: `reseed` drops every row up to and including the newest `CLEARED` row scoped `EMPTY`,
-and carries only what was said after it. A **summary**-scoped clear is left whole on purpose —
-that scope's promise is that a short summary survives, and dropping it would break the rung rather
-than protect it. `reseed` also drops the turn's own trailing `user` row, without which the model is
-handed the question twice: once as the thing already said, once as the thing being asked.
+The guard: `reseed` truncates at the newest `CLEARED` row **of either scope**, and carries only
+what was said after it. `reseed` also drops the turn's own trailing `user` row, without which the
+model is handed the question twice: once as the thing already said, once as the thing being asked.
+
+**Corrected on the same day this amendment was written.** It first said a `SUMMARY`-scoped clear was
+carried whole, on the reasoning that the rung promises a short summary survives. That shipped, and
+review found it wrong twice over. `clear_recall` calls `clear_session_id` **outside** its
+`if scope == EMPTY:` block, so a clear of either scope drops the session and lands here — meaning
+reading the scope answered *"start over, keep the gist"* by shovelling the **whole** pre-clear
+transcript into the fresh session, and handed the softer rung a fresh chance to re-poison a
+Conversation the person cleared in order to escape a refusal. Keeping that promise is `seed`'s job,
+`seed` has never done it (#432), and switching it on here would have been ADR-0022's decision made
+silently inside this one — the exact thing the paragraph above claims to avoid.
 
 **What this amendment does not settle.** ADR-0022's `EMPTY` rung still prints its divider on a turn
 where the carried text is now empty, and #432 records that a summary-scoped clear promises a
