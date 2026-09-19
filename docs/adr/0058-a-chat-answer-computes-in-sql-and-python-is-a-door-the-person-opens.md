@@ -193,22 +193,34 @@ must replay on BOTH buttons because it ends the turn before the model runs and t
 answer either way. Do not make the two symmetrical; the difference is the position, not an
 oversight.
 
-**Accepting opens an ordinary investigation**, the standing grant of ADR-0056, rather than a
-one-turn exemption. It grants more than the question asked for, and that is recorded as a decision
-rather than left to fall out: a grant the person can see and take back is more honest than one that
-expires silently, and a second mechanism beside the first would mean two answers to "is this Thread
-bounded?".
+**Accepting grants ONE calculation, not the Thread.** The accept mints a grant server-side when
+the card is drawn, ties it to that card, spends it once on the replay, and then it is gone. It does
+not open an investigation and it neither reads nor writes investigation state.
 
-**One consequence to know about, because it widens something this ADR does not own.** This offer is
-per-question and inherits nothing from the investigation card's remembered decline — a person who
-says no to working out one calculation must still be offered the next one. That is deliberate. It
-follows that the card is drawn in a Thread where an investigation was already declined, and
-`decide_thread_investigation` has no guard against opening from `declined`, so accepting re-opens
-it. #389 records that a declined investigation cannot be opened again and that the card is the only
-door in; this door becomes a second one. That is a widening of #389, not a fix for it, and it was
-taken knowingly: the alternative — suppressing this card on a declined Thread — makes one early
-click on "Just answer this" kill this feature for the rest of the conversation, silently. Whoever
-settles #389 should settle both together.
+This is the decision, and the first draft got it wrong in a way worth recording. It reused
+`decide_thread_investigation("open")` — ADR-0056's standing grant — on the argument that a grant the
+person can see and take back beats one that expires silently. But the decline here was always
+per-calculation, because "no" to working out one number is not "no" to the conversation. That left
+the accept Thread-wide and the decline per-question, and **that mismatch, not the offer, is what
+reached into #389**: `decide_thread_investigation` early-returns only when the state is already
+`open`, so a `declined` row is overwritten with `{"state": "open"}` and accepting would re-open a
+Thread that #389 says can only be entered through the investigation card. Making both halves
+per-calculation removes the second door rather than trading it for a different cost — and it also
+removes the alternative that was weighed against it, because this card never reads investigation
+state at all, so one early "Just answer this" cannot silently kill the feature either.
+
+**The grant is server-minted and single-use, and deliberately not a request-body boolean.**
+`skipTableGate`, `investigationAnswered` and `datasetDismissed` are all client-supplied, and every
+one of them gates a CARD: the worst a forged one does is skip a question. This flag suppresses
+bounded arming, so a forged one would hand a browser the shell lane. It is the shape
+`arm_chat_artifact()` and `arm_read_only()` already use in the same function. Spent on
+presentation rather than on success: a replay that then fails has still used its click, and leaving
+the grant live would let one card be redeemed repeatedly, which is the standing grant again by
+another route.
+
+The grant meets the standing one at exactly two places — the two arming sites — and nowhere else.
+The table gate keeps reading `investigating` alone, because a grant for one calculation says nothing
+about which table the next question should start from.
 
 **The fire rate is the open risk, and it is not a test question.** #436 measured this same model, in
 this same lane, with `live_read_query` armed and in its tool list, not calling it at all and telling

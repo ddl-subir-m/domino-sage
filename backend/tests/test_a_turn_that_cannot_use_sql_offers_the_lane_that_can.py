@@ -163,3 +163,115 @@ def test_the_pack_and_its_mirror_both_teach_the_marker():
         # to claim before it has measured, and every one of those claims is dropped.
         assert "on a line of its own" in text, name
         assert "tried a statement" in text, name
+
+
+# ---- the grant (Project owner, 2026-09-18: accept AND decline are per calculation) --------------
+
+def _grant_for(orch, store, tid, prompt="correlate signups with seats"):
+    """Mint one through the real producer rather than reaching into the dict.
+
+    A grant handed to the test by hand would prove the arming path and nothing about whether a card
+    ever carries one — and the card is the only thing that may create a grant.
+    """
+    orch._statements_tried[tid] = 1
+    events = list(orch._chat_other_lane_offer(store, tid, prompt, claimed=True) or [])
+    return events[0]["grant"]
+
+
+def test_the_grant_is_single_use_and_cannot_be_invented(tmp_path: Path):
+    """The grant suppresses bounded arming, so it is not a request-body boolean like the four flags
+    beside it. Those gate a CARD and a forged one skips a question; a forged one here would hand a
+    browser the shell lane. Minted by the server when the card is drawn, spent once, then gone."""
+    orch, _ = _orch(tmp_path, [Turn(text="Counted 41,234 accounts.")])
+    tid = orch.create_thread()["id"]
+    store = ThreadStore(orch._chat_project().record.path)
+
+    grant = _grant_for(orch, store, tid)
+    assert grant, "the card carries the grant it offers"
+
+    assert orch._spend_other_lane_grant(tid, grant) is True
+    # Spent on presentation, so the second attempt is an ordinary bounded turn rather than a second
+    # unbounded one. This is the line between a per-calculation grant and a standing one.
+    assert orch._spend_other_lane_grant(tid, grant) is False
+    assert orch._spend_other_lane_grant(tid, "lane_grant_made_up") is False
+    assert orch._spend_other_lane_grant(tid, "") is False
+    # And a grant minted for one conversation is not spendable in another.
+    other = orch.create_thread()["id"]
+    assert orch._spend_other_lane_grant(other, _grant_for(orch, store, tid)) is False
+
+
+def test_a_replay_under_a_grant_is_not_armed_read_only(tmp_path: Path):
+    """THE PLANT FOR THE GRANT ITSELF. Everything else about this door is bookkeeping if the accept
+    does not actually reach the lane with Python — that is the calculation the person clicked for."""
+    from .fake_opencode import Turn as FakeTurn
+    from .test_chat_turn import IntentGateway, ObservedControlOpenCode
+
+    turns = [FakeTurn(text="Counted 41,234 accounts.")]
+    orch, oc = _orch(
+        tmp_path, turns,
+        gateway=IntentGateway({"label": "data_answer", "confidence": 0.91}),
+        client=lambda ws: ObservedControlOpenCode(ws, list(turns)),
+    )
+    project = orch.project(start_preview=False)
+    oc.control = project.control
+    tid = orch.create_thread()["id"]
+    store = ThreadStore(orch._chat_project().record.path)
+    grant = _grant_for(orch, store, tid)
+
+    list(orch.chat_stream(tid, "correlate signups with seats", other_lane_grant=grant))
+    assert oc.snapshots
+    assert not oc.snapshots[0].read_only_turn, (
+        "the accepted calculation runs on the lane that has Python")
+
+    # THE SAME TURN WITHOUT A LIVE GRANT IS BOUNDED. The grant above is spent by now, so this is
+    # both the spent case and the forged case: neither buys the shell lane.
+    oc.snapshots.clear()
+    list(orch.chat_stream(tid, "correlate signups with seats", other_lane_grant=grant))
+    assert oc.snapshots and oc.snapshots[0].read_only_turn, (
+        "a spent grant is an ordinary bounded turn")
+
+
+def test_accepting_one_calculation_leaves_the_investigation_answer_alone(tmp_path: Path):
+    """THE #389 QUESTION, AND THE REASON THE GRANT IS NOT `decide_thread_investigation`.
+
+    The decline was always per-calculation. Reusing the Thread-wide grant for the accept would have
+    made the two halves disagree, and `decide_thread_investigation` overwrites a `declined` row with
+    `{"state": "open"}` — so accepting would have re-opened a Thread #389 says can only be entered
+    through the investigation card. Nothing in this door reads or writes that record, in either
+    direction, and this test is what holds that.
+    """
+    orch, _ = _orch(tmp_path, [Turn(text="Counted 41,234 accounts.")])
+    tid = orch.create_thread()["id"]
+    store = ThreadStore(orch._chat_project().record.path)
+
+    orch.decide_thread_investigation(tid, "decline")
+    before = store.read_investigation(tid)
+    assert before.get("state") == "declined"
+
+    # The card is still offered in a Thread that declined an investigation — "no" to looking across
+    # sources is not "no" to working out this number — and accepting it changes nothing on the
+    # record.
+    grant = _grant_for(orch, store, tid)
+    assert grant, "a declined Thread is still offered the door"
+    list(orch.chat_stream(tid, "correlate signups with seats", other_lane_grant=grant))
+
+    assert store.read_investigation(tid) == before, (
+        "accepting one calculation neither opens nor re-opens an investigation")
+
+
+def test_a_replay_under_a_grant_does_not_write_the_question_twice(tmp_path: Path):
+    """The grant joins `already_asked` and the three gate flags in deciding `asking`.
+
+    The turn that drew this card wrote the question into the Thread before it answered it, so a
+    replay that wrote it again would print the person's sentence twice under one card — the defect
+    every flag beside it exists to avoid, arriving through a fifth door.
+    """
+    orch, _ = _orch(tmp_path, [Turn(text="Counted 41,234 accounts.")])
+    tid = orch.create_thread()["id"]
+    store = ThreadStore(orch._chat_project().record.path)
+    grant = _grant_for(orch, store, tid)
+
+    list(orch.chat_stream(tid, "correlate signups with seats", other_lane_grant=grant))
+    asked = [e for e in orch.thread_history(tid)
+             if e.get("type") == "user" and e.get("text") == "correlate signups with seats"]
+    assert asked == [], "the replay adds no second copy of a question already on the Thread"

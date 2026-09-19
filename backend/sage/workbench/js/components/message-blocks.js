@@ -1388,13 +1388,15 @@ window.SW = window.SW || {};
 
   // The door onto the lane that can compute, drawn under a finished answer (#411, ADR-0058).
   //
-  // TWO BUTTONS, ONLY ONE OF WHICH TALKS TO THE SERVER. "Work it out" is the investigation card's
-  // accept exactly — the same grant, reached for a different reason (ADR-0056) — so it calls the
-  // same action rather than a second one that would have to be kept in step with it. "Not now"
-  // calls nothing: the answer this card sits under is already on screen, so there is no question
-  // owed and nothing to replay, and a decline that wrote a row would be a receipt for nothing
-  // happening — the rule ADR-0056 states for its own decline. Retiring the card locally leaves the
-  // person looking at exactly what a reload would show them, which is the sentence without buttons.
+  // TWO BUTTONS, AND BOTH ANSWERS ARE ABOUT THIS CALCULATION RATHER THAN THIS CONVERSATION.
+  // "Work it out" replays the question once under the server-minted grant the card arrived with, so
+  // the turn runs unbounded and then the grant is gone. It is deliberately NOT the investigation
+  // card's accept: that one opens a standing grant on the Thread, and accepting one calculation
+  // must not do that — nor touch the investigation card's own answer in either direction (#389).
+  // "Not now" calls nothing at all: the answer this card sits under is already on screen, so no
+  // question is owed and nothing replays, and a decline that wrote a row would be a receipt for
+  // nothing happening — the rule ADR-0056 states for its own decline. Retiring the card locally
+  // leaves the person looking at exactly what a reload shows, which is the sentence without buttons.
   function OtherLaneOffer({ block }) {
     const [busy, run] = SW.util.useBusyAct();
     const [dismissed, setDismissed] = useState(false);
@@ -1417,8 +1419,8 @@ window.SW = window.SW || {};
                   size: 'small',
                   loading: busy === 'open',
                   disabled: !!busy,
-                  onClick: run('open', () => SW.store.answerInvestigationAndAsk(
-                    block.prompt, block.threadId, 'open')),
+                  onClick: run('open', () => SW.store.workItOutOnTheOtherLane(
+                    block.prompt, block.threadId, block.grant)),
                 }, 'Work it out'),
                 h(Button, {
                   size: 'small',

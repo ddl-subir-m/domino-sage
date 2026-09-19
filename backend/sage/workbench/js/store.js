@@ -1919,6 +1919,11 @@ window.SW = window.SW || {};
           message: ev.message,
           prompt: ev.prompt || '',
           threadId: ev.threadId || '',
+          // The server-minted, single-use grant this card's accept spends (#411). Carried opaquely
+          // and never read here. A replayed card from history still holds the string, which is
+          // harmless: `live` is false so there are no buttons, and the grant was spent on the click
+          // that made it useless anyway.
+          grant: ev.grant || '',
           live: !!ev.live,
         });
       } else if (ev.type === 'investigation-state') {
@@ -6803,6 +6808,24 @@ window.SW = window.SW || {};
       return store.sendMessage(prompt, { echo: false, investigationAnswered: true });
     },
 
+    // The door onto the lane that can compute, accepted (#411, ADR-0058). ONE act, not two: there
+    // is no decision to record first, because the grant this replays under is per-calculation and
+    // the server minted it when it drew the card. Nothing is written to the conversation's record,
+    // which is the difference from `answerInvestigationAndAsk` above and the whole of the decision
+    // — accepting one calculation must not hand the Thread a standing grant, and must not touch the
+    // investigation card's own answer in either direction (#389).
+    //
+    // The grant goes back exactly as it arrived. It is opaque here: the client neither reads it nor
+    // invents one, and a replay carrying a spent or missing grant is an ordinary bounded turn.
+    async workItOutOnTheOtherLane(prompt, threadId, grant) {
+      // Re-read first, for the reason the two actions above do it: `sendMessage` reads
+      // `state.thread`, so replaying after a click onto another conversation would post this
+      // question into the one the person moved to — with `echo` off, where they would never see it.
+      const opened = await store.openThread(threadId);
+      if (!opened || !state.thread || state.thread.id !== threadId) return null;
+      return store.sendMessage(prompt, { echo: false, otherLaneGrant: grant });
+    },
+
     // The bar's Close. No replay: nothing was asked, and nothing is owed an answer. Closing takes
     // back the capability and LEAVES the findings where they are — see ADR-0056.
     async closeInvestigation(threadId) {
@@ -7273,7 +7296,8 @@ window.SW = window.SW || {};
     // record itself, on both answers.
     async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride,
                               skipTableGate = false, skipDatasetGate = false,
-                              datasetDismissed = '', investigationAnswered = false } = {}) {
+                              datasetDismissed = '', investigationAnswered = false,
+                              otherLaneGrant = '' } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
       // and said so in the transcript — which read as Sage answering a question about data with a
@@ -7380,7 +7404,7 @@ window.SW = window.SW || {};
           // The decline route ignores this and reads the pending question off the Thread, so a
           // stale tab cannot put a turn under a question it does not match.
           body: JSON.stringify({ prompt: text, skipTableGate, skipDatasetGate, datasetDismissed,
-                               investigationAnswered }),
+                               investigationAnswered, otherLaneGrant }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));

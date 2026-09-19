@@ -4982,6 +4982,21 @@ class Orchestrator:
         # came back would make the slowest questions — the ones most likely to need the other lane —
         # the ones that can never reach the door.
         self._statements_tried: dict[str, int] = {}
+        # Grants the door above has handed out and not yet spent, per Conversation (#411).
+        #
+        # SERVER-MINTED AND SINGLE-USE, and that is the whole reason this is not a request-body
+        # boolean like `skipTableGate`, `investigationAnswered` or `datasetDismissed`. Every one of
+        # those is client-supplied and every one of them gates a CARD: the worst a forged one does is
+        # skip a question. This flag suppresses bounded arming, so a forged one would hand a browser
+        # the shell lane. It is minted when the offer is drawn, tied to that offer, spent once on the
+        # replay, and a replay presenting no token or a spent one gets the bounded lane like any
+        # other turn.
+        #
+        # PER CALCULATION, NOT PER THREAD, which is the whole decision (Project owner, 2026-09-18).
+        # Reusing `decide_thread_investigation` would have made the accept Thread-wide while the
+        # decline stayed per-question, and that mismatch — not the offer — is what reached into
+        # #389's one-way door. Nothing here reads or writes investigation state.
+        self._other_lane_grants: dict[str, set[str]] = {}
         # The step lines those calls owe the person, waiting for the Chat loop to drain them. The
         # call is served on a route's own thread and the turn is a generator on another, so a queue
         # is what makes the count in the line the count the cap enforced rather than a second one
@@ -8074,7 +8089,8 @@ class Orchestrator:
     def chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                     already_asked: bool = False, skip_table_gate: bool = False,
                     skip_dataset_gate: bool = False, dismissed_dataset: str = "",
-                    skip_investigation_gate: bool = False, declined: bool = False):
+                    skip_investigation_gate: bool = False, declined: bool = False,
+                    other_lane_grant: str = ""):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
         `already_asked` means this question is on the Thread and was offered Build rather than an
@@ -8137,7 +8153,8 @@ class Orchestrator:
                                         skip_dataset_gate=skip_dataset_gate,
                                         dismissed_dataset=dismissed_dataset,
                                         skip_investigation_gate=skip_investigation_gate,
-                                        declined=declined):
+                                        declined=declined,
+                                        other_lane_grant=other_lane_grant):
                 if ev.get("type") == "done":
                     # Every way this turn can end passes through a `done`, and there are eight of
                     # them — the gates, the handoff short-circuit, the caps, a failed step, an
@@ -11066,7 +11083,8 @@ class Orchestrator:
     def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                      already_asked: bool = False, skip_table_gate: bool = False,
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
-                     skip_investigation_gate: bool = False, declined: bool = False):
+                     skip_investigation_gate: bool = False, declined: bool = False,
+                     other_lane_grant: str = ""):
         import time
 
         project = self._chat_project()
@@ -11128,8 +11146,16 @@ class Orchestrator:
         # turn that drew the candidate card wrote this sentence to the Thread before it drew one, so
         # writing it again would print the person's question twice under one card. The investigation
         # card (#386) is a third of the same shape, and both of its answers replay through here.
+        # Spent here, above the gates, because it decides two things below: whether the question is
+        # written down again, and whether the bounded lane is armed at all. A replay that presents
+        # nothing, or a token already spent, falls through as an ordinary turn — it does not fail,
+        # it is simply bounded, which is what every turn without a card behind it is.
+        other_lane_granted = self._spend_other_lane_grant(thread_id, other_lane_grant)
+        # A replay under a grant joins the three flags below for their reason, not a new one: the
+        # turn that drew the card already wrote this question into the Thread, and writing it again
+        # prints the person's question twice under one card.
         asking = (not already_asked and not skip_table_gate and not skip_dataset_gate
-                  and not skip_investigation_gate)
+                  and not skip_investigation_gate and not other_lane_granted)
         if asking:
             store.append_history(thread_id, user_ev)
             yield user_ev
@@ -11199,6 +11225,13 @@ class Orchestrator:
         # file is a record of what was measured and is no longer a permission to measure.
         investigation = store.read_investigation(thread_id)
         investigating = investigation.get("state") == "open"
+        # Two ways to reach an unbounded turn, and they are deliberately NOT one thing (#411).
+        # `investigating` is a standing grant on the Thread, recorded, visible and closable;
+        # `other_lane_granted` is one calculation the person clicked for, spent, and gone. They meet
+        # at the two arming sites below and nowhere else — in particular the table gate keeps
+        # reading `investigating` alone, because a grant for one calculation says nothing about
+        # which table the NEXT question should start from.
+        unbounded = investigating or other_lane_granted
 
         # The classifier, at most once per turn (#392, ADR-0059). It used to run in one place, below
         # both record gates; the funnel under this reads it above them. Memoised rather than moved,
@@ -11411,7 +11444,7 @@ class Orchestrator:
         # exemption shut.
         artifact_token = (
             project.control.arm_chat_artifact()
-            if intent.valid and intent.label == "data_artifact" and not investigating else None
+            if intent.valid and intent.label == "data_artifact" and not unbounded else None
         )
         # The else branch scans the ask, not the binding: `items` is already bound above, and its
         # names are masked out of the text the data-ask scan reads (#421). Without that, a store
@@ -11421,7 +11454,7 @@ class Orchestrator:
             intent.label in {"plain_answer", "data_answer"}
             if intent.valid and intent.label != "other_chat"
             else _plain_chat_answer_only(prompt, [str(i.get("name") or "") for i in items])
-        ) and not investigating
+        ) and not unbounded
         plain_answer_token = (
             project.control.arm_read_only("question") if answer_only else None
         )
@@ -13578,11 +13611,33 @@ class Orchestrator:
             # 400.2s — which is what someone deciding whether to wait actually needs.
             "That needs a calculation {assistantName} can't run here. Want it worked out? "
             "It'll take a few minutes.")
+        # Minted here, where the offer is made, so the grant cannot exist without a card that
+        # offered it. Held in memory rather than written to the Thread: a grant that survived a
+        # restart would be a standing capability, which is the Thread-wide shape this door exists
+        # not to be. Losing one costs the person a click on a card that is still on screen.
+        grant = new_id("lane_grant")
+        self._other_lane_grants.setdefault(thread_id, set()).add(grant)
         ev = {"type": "other-lane-offer", "prompt": prompt, "message": message,
-              # Which conversation the click records the grant on, as the cards above carry it.
-              "threadId": thread_id}
+              # Which conversation the click spends the grant in, as the cards above carry it.
+              "threadId": thread_id, "grant": grant}
         store.append_history(thread_id, ev)
         yield ev
+
+    def _spend_other_lane_grant(self, thread_id: str, grant: str) -> bool:
+        """Take one unspent grant, or answer False and leave the turn bounded like any other.
+
+        SPENT ON PRESENTATION, not on success. A replay that arrives and then fails for its own
+        reasons has still used its click, and leaving the grant live would let one card be redeemed
+        repeatedly — the difference between a per-calculation grant and a standing one, which is the
+        whole point of this shape. The card is still on screen if the person wants to ask again.
+        """
+        live = self._other_lane_grants.get(thread_id)
+        if not grant or not live or grant not in live:
+            return False
+        live.discard(grant)
+        if not live:
+            self._other_lane_grants.pop(thread_id, None)
+        return True
 
     # ---- the Dataset gate (#196, ADR-0039) -------------------------------------------------------
 
