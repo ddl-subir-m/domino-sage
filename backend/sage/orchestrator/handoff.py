@@ -411,6 +411,62 @@ def data_use_summaries(history: list[dict]) -> list[str]:
     return [line for line in lines if line]
 
 
+def data_reads_by_source(history: list[dict]) -> list[dict]:
+    """One row per source this Thread has read: the source, how many turns touched it, and where
+    the most recent result landed. Newest first.
+
+    The same walk `data_use_summaries` runs above, aggregated for a different reader. That one
+    renders every operation for the Build handoff and calls `_data_use_line`, which builds up to
+    twelve column names into each line; the next Chat turn needs to know a source has been read
+    and where to look, not what the read selected.
+
+    Deduped on `operation_id` before anything is counted. An event is re-persisted every time a
+    model call touches it — `DataUse.observe` saves the same operation again with fresh request
+    evidence — so one read appears in many rows, and counting rows would count a turn's model
+    calls as reads.
+
+    Turns are counted on `turn_id`, which `DataUse.record` stamps onto every event it writes. It
+    is the only field that says which turn a read belongs to; a row is not a turn, since one turn
+    persists a `data_used` row per operation and then again per model call.
+
+    Recency is the position of the READ, not of its last re-persist, so a source is as recent as
+    when it was last looked at rather than as when it was last sent to a model.
+    """
+    seen: dict[str, dict] = {}
+    order: list[str] = []
+    for row in history or []:
+        if not isinstance(row, dict):
+            continue
+        for event in _row_data_used(row):
+            key = str(event.get("operation_id") or "") or f"{event.get('source')}-{len(order)}"
+            if key not in seen:
+                order.append(key)
+            seen[key] = event
+    by_source: dict[str, dict] = {}
+    for position, key in enumerate(order):
+        event = seen[key]
+        source = str(event.get("source") or "").strip()
+        if not source:
+            continue
+        entry = by_source.setdefault(source, {"source": source, "turns": set(), "artifact": "",
+                                              "at": position})
+        # No event the current producer writes can take the `or key` branch: `DataUse.record`
+        # stamps `turn_id` before it persists, `DataUse.restore` rebuilds from those same persisted
+        # rows, and `DataUse.events` indexes `event["turn_id"]` unconditionally — so an event
+        # without one raises in `finish()` long before it reaches a prompt. It is kept for rows
+        # written before the field existed, which a committed `history.jsonl` can still hold, and
+        # it stops those collapsing into one shared turn. Delete it once no Thread in the wild
+        # predates `turn_id`.
+        entry["turns"].add(str(event.get("turn_id") or "") or key)
+        artifact = str(event.get("artifact") or "").strip()
+        if artifact:
+            entry["artifact"] = artifact
+        entry["at"] = position
+    ordered = sorted(by_source.values(), key=lambda e: e["at"], reverse=True)
+    return [{"source": e["source"], "turns": len(e["turns"]), "artifact": e["artifact"]}
+            for e in ordered]
+
+
 def _row_data_used(row: dict) -> list[dict]:
     raw = row.get("dataUsed")
     if isinstance(raw, list):

@@ -160,6 +160,56 @@ run leaves no summary line and reads exactly like a hang. Comment `WORKER: takin
 before you start and `WORKER: slot free` when you stop — whichever tree you run on, because the
 slot is about the machine and not about your branch.
 
+**Check the MACHINE, not the markers, and check it at the moment you claim.** The markers live per
+ISSUE and the lock is per MACHINE, so a session working a ticket you are not reading is invisible
+in them. Measured 2026-09-19: a landing session swept three issues, missed a fourth holding the
+slot with a live run, and told two sessions to start on top of it.
+
+    for p in $(pgrep -f "bin/pytest"); do
+      exe=$(ps -o args= -p $p | awk '{print $1}')
+      case "$exe" in
+        */bin/python*|*/bin/pytest*)
+          if [ -x "$exe" ]; then echo "REAL pid $p [$(lsof -a -p $p -d cwd -Fn | grep ^n | head -1)]"
+          else echo "FAKE pid $p argv0=$exe"; fi ;;
+        *) echo "quote pid $p" ;;
+      esac
+    done
+
+**The filter is not decoration: a bare `pgrep -f "bin/pytest"` matches the CHECKING COMMAND ITSELF**,
+because the pattern sits in that command's own line. Two sessions checking at once then see each
+other as suites, and it scales the wrong way — every session that adopts the check becomes visible
+to every other one running it. Worse, it is INTERMITTENT: it fires only when the checking line is
+long enough to be scanned, so one session sees it, the next cannot reproduce it, and it gets filed
+as a fluke.
+
+`[ -x "$exe" ]` is the part doing the work. Matching argv[0] against `*/bin/pytest*` is still
+pattern-matching — measured, a process whose argv[0] is `/fake/path/bin/pytest` passes that glob and
+reports REAL. **Shape alone is a claim; the stat is the check.**
+
+And do not reach for the `bin/py[t]est` bracket trick. It stops the pattern matching its own literal
+text and nothing else, so it holds only where the bracketed form is the SOLE occurrence — it breaks
+the moment the plain string appears in a comment, a message, or a neighbouring variant of the same
+script. Measured failing here for exactly that reason.
+
+This is one instance of a class that cost three separate findings in one afternoon: **a scanner
+cannot tell a signal from a quote of the signal.** `git log -S` answered about two docstrings that
+named a string the import line never contained; `pgrep -f` answered about its own command line; the
+bracket trick was defeated by an adjacent quote of the very pattern it was avoiding. In all three
+the wrong answer is a real-looking result, never an obvious failure, so nothing prompts a second
+look. Before trusting a pattern search, confirm what it actually matched.
+
+Read `ps -o args=` PER PID. A truncated `ps aux` line is not enough: **a bare `pytest` with no
+`-n` and no path arguments IS a full `-n auto` suite**, because `backend/pyproject.toml` sets
+`addopts = "-n auto"`. So `pytest -q -rs` reads as modest and spawns fifteen workers, and it is
+indistinguishable from a scoped `-n0` neighbour once the line is cut short. That is exactly how two
+full suites ended up on this box forty seconds apart, each session having checked first.
+
+A session's PREVIOUS invocation is no evidence about its current one — the run that was `-n0` over
+one file when you looked can be a full suite by the time you start. And the two signals disagree in
+both directions: **a marker with no process is stale or pre-claimed, and a process with no marker
+is a session nobody sequenced.** Neither absence proves the box is free; a session between its
+scoped run and its gating run looks exactly like a session that has finished.
+
 **Your worktree cannot run the real-OpenCode tests, and they skip without saying so.**
 `node_modules` is gitignored, so it exists only in the repo root. In a worktree `BINARY.exists()`
 is False and every test guarded on it skips — silently, folded into a total that still reads clean.
@@ -195,6 +245,16 @@ on COLLECTED rather than on passed; the tree identity above; source hashes befor
 one per condition; your scoped review findings, including the ones you chose not to act on; and
 anything the ticket asked for that you could not do. Say that last part plainly — work left undone
 belongs in the report, not in a new issue.
+
+**`ruff check` runs on `main` after every landing.** It takes about a second and needs no suite
+slot, so it never touches the queue. Tests green is not checks green: only `ruff` looks at an
+unused import or an undefined name in an annotation, and a whole suite will pass over both.
+
+The cost of not doing it is not the defect, it is the repeated triage. Measured 2026-09-19: a dead
+`from ..liveread import grant as live_grant` sat at `service.py:57` from #410 onward, and FOUR
+separate sessions each found it on a merged tree, each proved it was not theirs, and each reported
+it as pre-existing — none able to see that the others had already done it. One second after the
+landing that introduced it would have cost none of that.
 
 ### Domain docs
 
