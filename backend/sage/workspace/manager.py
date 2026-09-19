@@ -2155,12 +2155,7 @@ class WorkspaceManager:
         `.sage/`, so an app that was never published falls back to `Started` once `clear_built`
         takes the build stamp away.
         """
-        fresh = not self._dir.exists() or not any(
-            path.name not in (".git", ".gitignore", ".gitkeep") for path in self._dir.iterdir())
         self._dir.mkdir(parents=True, exist_ok=True)
-        if fresh:
-            record = self.project_record(project_id)
-            record.write_settings({**record.read_settings(), "dataUseVersion": 1})
         self._ensure_project_ignores()
         self._voice_legacy_root_agents_md()
         app = self.app_path

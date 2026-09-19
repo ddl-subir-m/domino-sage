@@ -80,10 +80,6 @@ def _rows_from_table(args, turn, read_limit):
 
 
 def calculate(args, turn):
-    if not turn.data_use_enabled:
-        return grant.data_use_says(
-            "local data calculation",
-            "read the table and show its columns and a sample row")
     group = args.get("group_by")
     value = args.get("sum_column")
     selected = args.get("selected_fields")

@@ -36,14 +36,12 @@ class FakeAnswer:
 
 
 def turn_for(tmp_path, answer=None, **kw):
-    """A turn that can run one statement. `data_use_enabled` is ON here because almost every test
-    below is about what happens AFTER the gate; the gate itself is held in its own test."""
+    """A turn that can run one statement."""
     recorded: list[tuple[dict, dict]] = []
     base = {
         "thread_id": "thr_q",
         "examples_dir": tmp_path / "examples" / "thr_q",
         "bound": {"datasource": ("DWH",)},
-        "data_use_enabled": True,
         "source_for": lambda n: object() if n == "DWH" else None,
         "run_statement": lambda s, sql, limit: answer or FakeAnswer(["N"], [[41234]]),
         "record_data_use": lambda event, reply: recorded.append((event, reply)),
@@ -148,25 +146,7 @@ def test_the_record_carries_the_statements_hash_and_not_the_statement(tmp_path):
     assert "SELECT" not in json.dumps(event)
 
 
-# --- the gate, the grant, and the two ways a store can fail --------------------------------------
-
-
-def test_a_project_without_data_use_is_refused_and_told_what_to_do_instead(tmp_path):
-    """Gated exactly as `calculate` is, because this is the same question `dataUseVersion` answers:
-    may values reach the model in this Project. Two answers to that, with the newer one winning by
-    accident, is worse than one restrictive answer."""
-    turn, recorded = turn_for(tmp_path, data_use_enabled=False)
-    said = _run(turn, "SELECT COUNT(*) FROM E")
-
-    # Through `grant.data_use_says` (#428) rather than a third copy of the sentence. Asserted on
-    # what that helper guarantees, not on its exact wording, so rewording it does not redden this —
-    # but the last clause IS asserted, because it is the whole reason #428 exists: an old Project
-    # reached a person as "go write the SQL yourself", and this tool's subject is SQL.
-    assert "created before" in said and "already exists" in said
-    assert "Do not ask the person to write SQL" in said
-    assert "can still" in said, "a dead end is the failure this ticket is about"
-    assert not recorded
-    assert not (tmp_path / "examples" / "thr_q").exists(), "a refused turn writes nothing"
+# --- the grant, and the two ways a store can fail ------------------------------------------------
 
 
 def test_a_source_that_is_not_in_this_conversation_is_refused_by_name(tmp_path):
