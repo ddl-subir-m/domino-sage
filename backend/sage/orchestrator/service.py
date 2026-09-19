@@ -3619,6 +3619,13 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
         # When a table is scoped and no source name resolved, `name` is the TABLE, so it is not a
         # store name and guessing with it sends the agent at a lookup that cannot succeed. That case
         # alone still falls through.
+        # NOT re-resolved lazily here when `sourceName` is missing and `resourceId` is present,
+        # though that is the obvious alternative and it was considered. It would put a Domino round
+        # trip inside prompt rendering, on the turn's critical path, and turn latency is under
+        # active work (#400, #417) — the wrong thing to charge for a field that is only ever absent
+        # after an outage. For a Workbench chip `item["name"]` IS `resource.name` (`api.js:533`),
+        # which is the same string the resolve would return, so the cheap read is also the correct
+        # one. Do not "fix" this into a lookup.
         # Read off the item rather than off `name`, which is not the same question: `name` carries
         # the display fallbacks (`item["id"]`, then the literal "unnamed"), and neither of those is
         # a store `live_read_query` can look up. Passing one would put this row back in the business
