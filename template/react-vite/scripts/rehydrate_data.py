@@ -87,7 +87,7 @@ def rehydrate(root: Path, get_dataset=None) -> tuple[int, int]:
             dest.parent.mkdir(parents=True, exist_ok=True)
             datasets[unique].download_file(ds_rel, str(dest))
             fetched += 1
-        except Exception as e:            # one unreachable Dataset must not cost the others
+        except Exception as e:            # one unreachable Dataset must not cost the others  # noqa: BLE001
             unavailable += 1
             print(f"[rehydrate] {ds_rel}: {type(e).__name__}: {e}")
     return fetched, unavailable

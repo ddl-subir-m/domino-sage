@@ -56,7 +56,7 @@ def sidecar_token():
     try:
         with urllib.request.urlopen(PROXY + "/access-token", timeout=10) as r:
             return r.read().decode().strip()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -81,7 +81,7 @@ def get(url, tok):
             return r.status, json.loads(raw), ""
     except urllib.error.HTTPError as e:
         return e.code, None, e.read()[:200].decode("utf8", "replace")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return "ERR", None, f"{type(e).__name__}: {e}"
 
 
@@ -152,7 +152,7 @@ for e in eps:
     for key, table in ((row["id"], by_id), (row["url"], by_url), (row["vanityUrl"], by_vanity)):
         if key:
             table[key] = row
-    print(f"  {str(row['status'] or '<no currentVersion>'):<18} {str(row['name'])[:30]:<30} {row['url'][:60]}")
+    print(f"  {row['status'] or '<no currentVersion>'!s:<18} {str(row['name'])[:30]:<30} {row['url'][:60]}")
 
 stopped = [r for r in by_id.values() if r["status"] in ("Stopped", "Failed", "BuildFailed")]
 print(f"\ntotal={len(by_id)} running={sum(1 for r in by_id.values() if r['status'] == 'Running')} "
@@ -188,7 +188,7 @@ for a in aliases:
     if hit:
         field_hits[field] += 1
         joined.append((name, field, hit["status"], hit["name"], name in accessible))
-        print(f"  JOIN  {str(name)[:24]:<24} via {field:<10} -> {str(hit['status']):<12} "
+        print(f"  JOIN  {str(name)[:24]:<24} via {field:<10} -> {hit['status']!s:<12} "
               f"in/v1/models={'yes' if name in accessible else 'NO ':<3} "
               f"endpoint={str(hit['name'])[:24]}")
     else:
@@ -197,7 +197,7 @@ for a in aliases:
 print(f"\n  matched by field: {field_hits}   <-- Q2: the winner is the field to join on")
 print(f"\n  NOT joined ({len(unjoined)}) — these must read 'not a hosted endpoint', never 'stopped':  <-- Q3")
 for name, ptype, why in unjoined:
-    print(f"    {str(name)[:24]:<24} provider_type={str(ptype):<18} {why}")
+    print(f"    {str(name)[:24]:<24} provider_type={ptype!s:<18} {why}")
 
 # ---- Q1: the premise ---------------------------------------------------------------------------
 print("\n" + "=" * 78)
@@ -242,7 +242,7 @@ print("\n" + "=" * 78)
 print("Q5 — /api/providers health_status, the alternative source")
 print("=" * 78)
 for p in provs:
-    print(f"  {str(p.get('name'))[:28]:<28} type={str(p.get('provider_type')):<16} "
+    print(f"  {str(p.get('name'))[:28]:<28} type={p.get('provider_type')!s:<16} "
           f"health={p.get('health_status')!r} last_check={p.get('last_health_check')!r}")
 if provs and all(p.get("health_status") is None for p in provs):
     print("\n  health_status absent on every provider -> alternative is dead, use the endpoints listing.")

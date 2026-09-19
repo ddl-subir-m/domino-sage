@@ -83,7 +83,7 @@ def probe_token_sidecar(url: str, timeout: float = 5.0) -> str:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             length = len((resp.read() or b"").strip())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return f"not reachable at {url} ({type(e).__name__}: {e})"
     if not length:
         return f"reachable at {url} but returned an empty body"
@@ -177,7 +177,7 @@ class _Handler(SimpleHTTPRequestHandler):
             result = getattr(self.server, "sage_executor", unavailable_executor)(query, params)
         except QueryProblem as e:
             return self._send_json(e.status, {"error": e.message})
-        except Exception as e:   # an executor that failed in a way it did not describe
+        except Exception as e:   # an executor that failed in a way it did not describe  # noqa: BLE001
             self.log_message("query %s failed: %s: %s", name, type(e).__name__, e)
             return self._send_json(HTTPStatus.BAD_GATEWAY,
                                    {"error": "This app could not read its data source."})
@@ -462,7 +462,7 @@ class Source:
     @property
     def kind(self) -> str:
         """The connector, as a sentence would say it: `SnowflakeConfig` reads back as `Snowflake`."""
-        return self.connector_type[:-6] if self.connector_type.endswith("Config") else self.connector_type
+        return self.connector_type.removesuffix("Config")
 
     def scope(self) -> tuple:
         """(the configuration override this Scope becomes, the levels of it that cannot travel).
@@ -951,7 +951,7 @@ def _drain(reader, max_rows: int) -> tuple:
         del rows[max_rows:]
         try:
             reader.cancel()     # stop the store streaming into a socket nobody is reading
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
     return columns, rows, truncated
 
@@ -1056,7 +1056,7 @@ def _log_data_library() -> None:
     """
     try:
         from domino_data.data_sources import DataSourceClient  # noqa: F401
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         print(f"[sage] data library: NOT available to {sys.executable} — {_readable(exc)}", flush=True)
         return
     print(f"[sage] data library: ready ({sys.executable})", flush=True)

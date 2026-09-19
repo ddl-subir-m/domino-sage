@@ -24,8 +24,18 @@ Usage:
   python gw_probe6.py --levels 8 --rounds 3
   python gw_probe6.py --no-tools           # plain text generation instead
 """
-import argparse, json, os, queue, random, re, string, sys, threading, time
-import urllib.request, urllib.error
+import argparse
+import json
+import os
+import queue
+import random
+import re
+import string
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 
 BASE = os.environ.get("GATEWAY_BASE_URL",
                       "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1")
@@ -129,7 +139,7 @@ def one(model, n_words, max_out, use_tools, out: queue.Queue, idx: int) -> None:
             outcome = "ok"
     except urllib.error.HTTPError as e:
         status, outcome = e.code, f"HTTP {e.code}: " + e.read()[:90].decode(errors="replace")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         status, outcome = None, f"BROKE: {type(e).__name__}: {e}"
 
     out.put({"i": idx, "wall": round(time.monotonic() - t0, 1),
@@ -173,9 +183,9 @@ def main() -> int:
                 all_rows.append(r)
                 if "205 SIGNATURE" in r["outcome"]:
                     hits.append(r)
-                print(f"{r['i']:>4}{r['wall']:>8}{str(r['ttfb']):>7}{r['gap']:>7}"
+                print(f"{r['i']:>4}{r['wall']:>8}{r['ttfb']!s:>7}{r['gap']:>7}"
                       f"{r['chunks']:>8}{r['kb']:>6}{r['rsn']:>5}{r['fin']:>12}"
-                      f"{str(r['status']):>6}  {r['outcome']}")
+                      f"{r['status']!s:>6}  {r['outcome']}")
             print()
 
     gaps = sorted(r["gap"] for r in all_rows if r["gap"])

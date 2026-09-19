@@ -1,0 +1,24 @@
+# Ruff for everything OUTSIDE `backend/`.
+#
+# `backend/pyproject.toml` carries its own `[tool.ruff]`, and ruff resolves configuration from the
+# nearest ancestor of each file, so that one still governs `backend/` and this one never reaches it.
+#
+# WHY THIS FILE EXISTS. `make lint` was `cd backend && ruff check`, which is backend only, while
+# CLAUDE.md described the gate as "the WHOLE repo, not sage/". The sentence and the command had
+# disagreed since the rule was written, so `scripts/`, `spikes/` and `template/` had never been
+# linted by anything, and the first genuinely repo-wide run found 46 findings in them. A gate is the
+# command you actually run, not the sentence written about it.
+#
+# Without a config here those trees are judged by whatever ruff's bare defaults happen to be on the
+# day, which is a moving target that no pin controls. `required-version` is the point of this file:
+# it makes "clean" mean one fixed thing on both sides of the repo.
+#
+# There are deliberately NO per-file-ignores. `BLE001` (blind `except Exception`) is the shape of
+# almost every finding here and it would have been one line to switch off for these three trees —
+# but six `# noqa: BLE001` directives already existed in `spikes/`, so the per-site form is this
+# repo's answer to the question, and a tree-wide ignore would have deleted those six as redundant
+# while silently exempting every blind catch anyone adds later. `template/` is shipped code seeded
+# into a person's workspace; a new unexplained blind catch there should still have to say so.
+
+required-version = "==0.16.1"   # must equal backend/pyproject.toml's pin; bump the two together
+line-length = 110               # same as backend, so a file does not change shape when it moves

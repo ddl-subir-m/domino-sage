@@ -285,13 +285,20 @@ one per condition; your scoped review findings, including the ones you chose not
 anything the ticket asked for that you could not do. Say that last part plainly — work left undone
 belongs in the report, not in a new issue.
 
-**`ruff check` runs on `main` after every landing — the WHOLE repo, not `sage/`.** It takes about a
-second and needs no suite slot, so it never touches the queue.
+**Run `make lint` on `main` after every landing.** Not `ruff check` from wherever you are standing —
+the target exists so that the scope is not yours to get right. It takes about a second and needs no
+suite slot, so it never touches the queue.
 
-The scope is not a detail. Measured 2026-09-19: this rule was written as "`ruff check`" and then
-run as `ruff check sage/` by the session that wrote it, and a new `F401` rode onto `main` inside a
-test file in the same session. `sage/` passed; the repo had four errors. **A gate is the command you
-actually run, not the sentence you wrote about it.** Tests green is not checks green: only `ruff` looks at an
+The scope is not a detail, and it has now been wrong twice in the same direction. Measured
+2026-09-19: this rule was written as "`ruff check`" and then run as `ruff check sage/` by the
+session that wrote it, and a new `F401` rode onto `main` inside a test file in the same session.
+`sage/` passed; the repo had four errors. The rule was then widened to say "the WHOLE repo" — and
+the sentence was the only thing that changed. `make lint` was still `cd backend && ruff check`, and
+a session that had just reported "ruff check repo-wide — All checks passed!" had in fact run it from
+`backend/`. The first genuinely repo-wide run found **46 findings** in `scripts/`, `spikes/` and
+`template/`, three trees that no gate had ever read. **A gate is the command you actually run, not
+the sentence you wrote about it** — so the fix the second time was to move the scope INTO the
+command, where a reader cannot get it wrong, rather than to write a more emphatic sentence. Tests green is not checks green: only `ruff` looks at an
 unused import or an undefined name in an annotation, and a whole suite will pass over both.
 
 The cost of not doing it is not the defect, it is the repeated triage. Measured 2026-09-19: a dead

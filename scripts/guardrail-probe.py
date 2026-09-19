@@ -111,7 +111,7 @@ def ask(text: str) -> str:
             name = raw.split("Blocked by guardrail:", 1)[1].split('"')[0].split("\\")[0]
             return f"GUARDRAIL: {name.strip(' .;:')}"
         return f"HTTP-{err.code}: {raw[:200]}"
-    except Exception as err:                    # a probe reports its failures, it never raises
+    except Exception as err:                    # a probe reports its failures, it never raises  # noqa: BLE001
         return f"ERROR: {type(err).__name__}: {err}"
 
 
