@@ -55,7 +55,14 @@ def failed_table_name(rel: str) -> str:
 class ChatTables:
     """One turn's candidates survive deletion during repair; old files are never repair targets."""
 
-    def __init__(self, root: Path, thread_id: str, before: dict[str, bytes]):
+    def __init__(self, root: Path, thread_id: str, before: dict[str, bytes] | None):
+        """`before` is this turn's baseline, or `None` when no snapshot was taken (#419).
+
+        `None` is not `{}`, and the difference is the whole of #419's hazard. `self.before` is what
+        marks a file as THIS turn's candidate, so an empty baseline says every pre-existing table
+        was written now and offers all of them up for repair. `None` says the opposite, and says it
+        truthfully: the turn held no tool that could write, so nothing on disk is its work.
+        """
         self.root, self.thread_id, self.before = root, thread_id, before
         self.candidates: set[str] = set()
         self.failures: dict[str, str] = {}
@@ -78,7 +85,12 @@ class ChatTables:
                 self.prior_paths.discard(rel)
                 reason = "missing or unreadable file"
             else:
-                if self.before.get(rel) == raw:
+                # A `None` baseline means the turn could not write, so every file here is unchanged
+                # from before it — the same answer a real baseline gives for a file the turn left
+                # alone. References still validate below: the model can name a table in prose
+                # without holding a tool to make one, and a name with nothing under it is the thing
+                # this pass exists to catch.
+                if self.before is None or self.before.get(rel) == raw:
                     if rel not in self.references and rel not in self.candidates:
                         continue
                     self.prior_paths.add(rel)

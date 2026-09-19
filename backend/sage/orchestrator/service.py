@@ -3833,6 +3833,23 @@ def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool, arch: b
     return mode is Mode.ASK or (mode in (Mode.AUTO, Mode.IMPLEMENT) and is_question)
 
 
+def _revert_scan_owed(*, before: dict[str, bytes] | None, any_tool_ran: bool) -> bool:
+    """Whether a Chat turn's end must re-read the workspace to undo writes it was not allowed.
+
+    Two independent reasons not to, and they are arguments rather than one flag on purpose (#287:
+    widening a gate breaks its neighbour). `before is None` is #419 — the turn was armed
+    `arm_read_only("question")` and holds no tool that can write, decided at arming, which is also
+    what let the BEFORE snapshot be skipped. `any_tool_ran` is #418 — no tool ran, so nothing was
+    written, decided only at the turn's end by observation and therefore no help to the before
+    snapshot at all. Folding them together would either lose #419's saving or widen #418's skip
+    into the poll-lag race #418 examined and rejected.
+
+    Named rather than inlined because it is the whole of both tickets and a comment is not a check:
+    a predicate can be driven through all four combinations, and the call site can be pinned to it.
+    """
+    return before is not None and any_tool_ran
+
+
 # A step that opens "I will …" — right after the list marker, or after the label's em dash. Weak
 # planners latch onto one opener and repeat it for every step, and seven identical openers is the
 # thing that makes a plan card read as filler. The opener carries no information the label and
@@ -11584,6 +11601,11 @@ class Orchestrator:
         last_text = ""
         streamed_body = ""
         artifacts_finished = False
+        # #418. Read at the turn's end to decide whether the workspace is worth re-reading: a turn
+        # that ran no tool cannot have written a file, so there is nothing for the revert scan to
+        # find. Set in the poll loop's `tool_run` branch below and never cleared — one tool is
+        # enough to owe the scan, and a turn that dies before the loop starts correctly owes none.
+        any_tool_ran = False
         # Set where the body is finalised below, read at the turn's conclusion (#411). A `nonlocal`
         # rather than a return value because every exit from this turn goes through
         # `publish_chat_artifacts`, and only one of them — the completed one — may draw the card.
@@ -11601,23 +11623,44 @@ class Orchestrator:
             # signal either way, and leaving it painted on a stopped turn would show the person a
             # bare token under a half-finished answer.
             body, asked_for_the_other_lane = _take_needs_more_than_sql_marker(body)
+            runaway = None
             with timing.span("after.artifacts"):
-                revert_denied_writes(project.record.path, thread_id, tables.before)
+                # Two conditions, held apart on purpose (#287: widening a gate breaks its
+                # neighbour). #419 is "the turn CANNOT write" — decided at arming, and it is what
+                # let the snapshot be skipped above; it arrives here as `before is None`. #418 is
+                # "no tool RAN" — decided only now, by observation, and it covers an unbounded turn
+                # that happened to run nothing. For the REVERT the two or together, which is what
+                # this line is. For the before-snapshot only #419 qualifies, so folding them into
+                # one flag would either lose that saving or widen #418's skip into the poll-lag
+                # race it rejected.
+                #
+                # A turn that ran no tool wrote no file, so the `after` read finds nothing to undo.
+                # The risk this takes is named and not hedged: it holds because every write today
+                # goes through a tool, which is a fact about the event stream and not a property of
+                # the code. A path that ever writes outside a tool call would go unreverted here.
+                if _revert_scan_owed(before=tables.before, any_tool_ran=any_tool_ran):
+                    revert_denied_writes(project.record.path, thread_id, tables.before)
                 invalid = tables.check(body)
                 tables.diagnose(invalid, outcome)
-                # A failed replacement must not turn an earlier turn's valid card into an empty
-                # receipt. Restore only this turn's damage; unchanged prior files stay untouched.
-                for rel in invalid:
-                    if rel in tables.before and rel not in tables.prior_paths:
-                        path = project.record.path / rel
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(tables.before[rel])
-                withhold_table_rows(project.record.path, thread_id, tables.before,
-                                    kept_rows=project.record.kept_rows())
-                runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
-                artifacts = [store.record_artifact(thread_id, path=rel)
-                             for rel in new_artifact_paths(project.record.path, thread_id, tables.before)
-                             if rel not in invalid]
+                # These four stay on #419's condition alone. #418's skip is scoped to the revert:
+                # a turn that ran no tool still HAS a real baseline, and each of these is correct
+                # against it — `new_artifact_paths` against a real `before` returns nothing when
+                # nothing was written, at the cost of the read, which is #418's measurement and not
+                # its fix.
+                if tables.before is not None:
+                    # A failed replacement must not turn an earlier turn's valid card into an empty
+                    # receipt. Restore only this turn's damage; unchanged prior files stay untouched.
+                    for rel in invalid:
+                        if rel in tables.before and rel not in tables.prior_paths:
+                            path = project.record.path / rel
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            path.write_bytes(tables.before[rel])
+                    withhold_table_rows(project.record.path, thread_id, tables.before,
+                                        kept_rows=project.record.kept_rows())
+                    runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
+                    artifacts = [store.record_artifact(thread_id, path=rel)
+                                 for rel in new_artifact_paths(project.record.path, thread_id, tables.before)
+                                 if rel not in invalid]
             events = []
             if body.strip() or invalid:
                 ev = {"type": "agent", "kind": "text",
@@ -11684,7 +11727,22 @@ class Orchestrator:
                        or project.record.path)
             project.active_session_id = sid
             with timing.span("setup.snapshot"):
-                before = snapshot_files(project.record.path)
+                # #419. `answer_only` armed `arm_read_only("question")` above, and
+                # `READ_ONLY_DENIED = WRITE_TOOLS | SHELL_TOOLS` strips every tool that can write a
+                # file — the strip is the whole enforcement, since OpenCode's per-agent `permission`
+                # is inert on the headless path. Such a turn is also never `data_artifact`, so it
+                # holds no `artifact_write` either. It provably cannot write, and reading the tree
+                # to find out what it wrote is the entire cost and none of the answer. Known at
+                # arming, before dispatch, so there is no race — unlike the lazy snapshot #418
+                # examined and rejected, where poll lag lets a write land before the read.
+                #
+                # `None`, and never `{}`. Six readers below ask `before` what this turn wrote, and
+                # an empty dict answers "all of it": `revert_denied_writes` and
+                # `refuse_oversize_findings` both unlink on `prev is None`, `withhold_table_rows`
+                # rewrites every prior table to shape-only, and `new_artifact_paths` re-records
+                # every card. `None` is the only value that says "not taken" rather than "empty",
+                # and it fails loudly rather than destructively if a new reader forgets to ask.
+                before = None if answer_only else snapshot_files(project.record.path)
                 tables = ChatTables(project.record.path, thread_id, before)
             # Cleared here so what is read at the end of this turn belongs to this turn. Every build
             # entry point already does this; Chat never did, because Chat never read the field —
@@ -12018,6 +12076,11 @@ class Orchestrator:
                         appeared = True
                         continue
                     if ev.kind == "tool_run":
+                        # Before the `stream_owned` handover, not after: the flag is about whether
+                        # this turn ran anything at all, which is true of an event the transcript
+                        # already counted the first half of, and the end-of-turn revert scan is
+                        # owed on either half (#418).
+                        any_tool_ran = True
                         if not stream_owned:
                             # The handover. The stream starts its own run clean rather than
                             # inheriting one the transcript may have counted the first half of.
