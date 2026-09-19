@@ -126,10 +126,80 @@ def test_a_re_recorded_operation_updates_its_section_rather_than_adding_one():
     assert "Gateway delivery: unknown" not in drawn["words"]
 
 
+def _draw(block: dict) -> dict:
+    """Render one hand-made block through the dispatcher, without the store."""
+    out = subprocess.run(["node", str(_JS / "data_used_grouping_harness.mjs")],
+                         input=json.dumps({"block": block}), check=False, capture_output=True,
+                         text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])["rendered"][0]
+
+
+@needs_node
+def test_a_card_with_no_operations_draws_nothing_rather_than_an_empty_promise():
+    """An empty fold is a claim, not an error.
+
+    A reader who opens "Data used" and finds no source, no coverage and no Artifact concludes the
+    turn touched nothing. This is the last surface that should say that falsely, so it draws no
+    card at all. Unreachable from `putDataUsed`, which always creates a block holding one event —
+    which is why it is driven here directly rather than through a transcript.
+    """
+    drawn = _draw({"type": "data_used", "turnId": "turn_a", "events": []})
+    assert drawn["details"] == 0
+    assert drawn["sections"] == 0
+    assert drawn["words"] == ""
+
+
+@needs_node
+def test_re_persists_multiply_by_read_not_by_model_call():
+    """The trap in grouping on `turn_id`: it is not enough on its own.
+
+    `DataUse.observe`'s `save()` re-persists the WHOLE event every time a gateway request touching
+    it settles, so one read persists many rows. Group on `turn_id` and drop the `operation_id`
+    dedupe and the turn's single card grows a section per RE-PERSIST — this ticket's own symptom
+    moved inside the card, and scaling with model calls rather than with reads, so it reads worst
+    on exactly the long investigations the card exists for.
+
+    Two operations, five rows, interleaved the way a turn with several model calls emits them.
+    """
+    first = _event("du_1", "turn_a", "live_read", "sales.csv")
+    second = _event("du_2", "turn_a", "text_analysis", "notes.csv")
+
+    def touched(event: dict, request_id: str) -> dict:
+        """The same operation, re-persisted after another gateway request settled on it."""
+        request = {"request_id": request_id, "requested_alias": "policy-model",
+                   "state": "response_completed", "serving_model": "gpt-5.4",
+                   "provider_receipt": request_id, "decision_stage": "final",
+                   "delivery": "streamed", "cache": "miss", "fallback": "none"}
+        return {**event, "requests": [*event.get("requests", []), request]}
+
+    once = touched(first, "req_1")
+    result = _open(first, second, once, touched(second, "req_2"), touched(once, "req_3"))
+    assert result["cards"] == 1
+    # Two reads, five rows. Five sections would be the defect moved, not fixed.
+    assert result["rendered"][0]["sections"] == 2
+    # First-sighting order, not last-row order: `du_1` was read first and must stay first even
+    # though the final re-persist in the stream is its own.
+    assert result["operations"] == [["du_1", "du_2"]]
+    # Latest copy wins on content — the re-persists are how `requests` accumulates, so keeping the
+    # first copy would show a read with no gateway evidence at all.
+    words = result["rendered"][0]["words"]
+    assert "Data used (2 operations)" in words
+    for request_id in ("req_1", "req_2", "req_3"):
+        assert f"Request: {request_id}" in words
+    assert "Gateway delivery: unknown" not in words
+
+
 @needs_node
 def test_events_carrying_no_turn_keep_their_own_cards():
-    """Absence is not a value. A restored event with no turn says nothing about which turn ran it,
-    so pooling several into one card would claim a grouping the data never asserted."""
+    """Absence is not a value. Events that share only the ABSENCE of a turn must not be drawn as
+    though they shared a turn.
+
+    The population is `service.py`'s `self._data_use_turns.get(thread_id, "")` — an operation
+    recorded before a turn was minted for its thread persists with an empty `turn_id`. It is NOT
+    the restart replay: `DataUse.restore` deepcopies the persisted event and `record` stamps
+    `turn_id` before persisting, so a restored event carries one.
+    """
     result = _open(
         _event("du_1", None, "live_read", "sales.csv"),
         _event("du_2", None, "calculation", "sales.csv"),

@@ -11,11 +11,16 @@
 //
 // Input on stdin: `{ "thread": { "id": ..., "history": [...] } }` — a Chat transcript, with
 // `dataUsed` rows on it exactly as the server persists them.
+//
+// Or `{ "block": {...} }` to render one hand-made block straight through the dispatcher, without
+// the store. That is the only way to reach a block shape `putDataUsed` cannot currently produce —
+// an empty `events`, say — which is exactly the shape a defensive guard is written for. A guard
+// no test can reach is a written claim, not a guard.
 import fs from 'node:fs';
 import vm from 'node:vm';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { thread } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { thread, block: rawBlock } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const json = (body) => ({
   ok: true, status: 200,
@@ -101,6 +106,11 @@ function draw(block) {
   };
 }
 
+if (rawBlock) {
+  console.log(JSON.stringify({ cards: null, operations: null, rendered: [draw(rawBlock)] }));
+  process.exit(0);
+}
+
 await SW.store.openThread(thread.id);
 const blocks = (SW.store.get().messages || []).flatMap((m) => m.blocks || [])
   .filter((b) => b.type === 'data_used');
@@ -109,6 +119,11 @@ console.log(JSON.stringify({
   cards: blocks.length,
   // What each card claims to cover. Keyed off the block, so a grouping that put the right number
   // of cards on screen with the wrong operations under them still fails.
-  operations: blocks.map((b) => (b.events || [b.event]).map((e) => e && e.operation_id)),
+  //
+  // No `|| [b.event]` fallback to the pre-#447 shape. Nothing writes that shape any more, and
+  // tolerating it here would let a store reverted to one-block-per-operation keep reporting
+  // plausible ids — only the card count would red, and it would red with a misleading message.
+  // Without the fallback the ids come back `[[null]]` and name the actual breakage.
+  operations: blocks.map((b) => (b.events || []).map((e) => e && e.operation_id)),
   rendered: blocks.map(draw),
 }));

@@ -2066,6 +2066,12 @@ window.SW = window.SW || {};
   // alone cannot say whether it holds one operation or five.
   function DataUsed({ events }) {
     const operations = events || [];
+    // Nothing rather than an empty fold. A "Data used" disclosure a reader opens to find no
+    // source, no coverage and no Artifact reads as "this turn touched nothing" — which is a
+    // claim, and one this card is the last surface that should make falsely. The shape that
+    // reaches here always carries an operation; if that ever stops being true, draw no card
+    // instead of an empty promise.
+    if (!operations.length) return null;
     return h('details', { className: 'sw-data-used' },
       h('summary', null, operations.length > 1
         ? `Data used (${operations.length} operations)` : 'Data used'),
