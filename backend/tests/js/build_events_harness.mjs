@@ -66,6 +66,13 @@ async function settle() {
   for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 0));
 }
 
+// Disclosure on, because this file's claims are about what a reader who asked for it sees. #448
+// made `data_used` and the investigation opened/closed line a viewer's choice with the fallback
+// OFF, so a run that said nothing about the preference would walk a transcript written for
+// somebody who wanted none of it — and disclosure absent by request reads exactly like disclosure
+// the store lost.
+SW.store.set({ me: { id: 'u1' } });
+SW.prefs.set('dataAccessShown', true);
 SW.store.set({
   thread: { id: 'conv_1', title: 'The desk talk', artifacts: [] },
   scope: { id: 'proj', name: 'Demo Project' },

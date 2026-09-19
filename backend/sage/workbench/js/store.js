@@ -1829,6 +1829,215 @@ window.SW = window.SW || {};
     return carriers.length > 0 && carriers.every((c) => keys.has(c && c.key));
   };
 
+  // ---- the disclosure a viewer can put away (#448, ADR-0062) ----------------------------------
+  //
+  // `dataAccessShown` is per-viewer and spans Projects, and this is its ONE reader. The house rule
+  // `test_only_the_store_branches_on_the_preference` holds for the conversation view holds here:
+  // the store decides what a Conversation's blocks ARE, and a component is handed the answer. A
+  // second reader in a component is a second place two views can disagree.
+  //
+  // WHERE THE FILTER SITS, and why it is not quite where ADR-0062 put it. The record names the
+  // three history functions, and `putDataUsed` has a third caller the record does not mention: the
+  // SSE reducer, which pushes straight into `state.messages` without passing through any of them.
+  // A filter in the three would have drawn a card live that the same turn hides after a reload —
+  // the viewer's preference honoured on the second look and not the first.
+  //
+  // So it sits one level down, in the two mint helpers all of those callers share: here, via
+  // `pushBlock`. `historyToMessages`, `buildHistoryToMessages` and `mergedHistoryToMessages` are
+  // covered because each goes through them, and so is the live turn, and there is one copy of the
+  // rule rather than three that can drift apart. `test_a_live_turn_hides_what_the_same_turn_hides_
+  // after_a_reload` is what holds the live half, and it is driven as a real streamed turn because
+  // nothing else can tell a shared helper from three copies.
+  //
+  // A TABLE and not a list, with no default. A hide-list drifts silently — a card added next year
+  // shows, and nobody finds out. A keep-list drifts the other way and buries a new disclosure.
+  // Neither failure announces itself, so every `block.type` the dispatcher at
+  // `message-blocks.js:2110` can draw gets a row here, and `data_access_harness.mjs` reds when the
+  // dispatcher holds a type this table does not.
+  //
+  // Each row answers one question — does the preference being OFF hide this block — so a row is a
+  // predicate over the block and not a boolean. Two rows are not constant, and they are the whole
+  // ticket:
+  //
+  //   `data_used` hides only a read that came back whole. A read that fell short is drawn whatever
+  //   the preference says, the same shape as the crossing receipt force-opening when an Upload did
+  //   not cross (`message-blocks.js:774`, ADR-0023). Hidden, a read that half-worked is
+  //   indistinguishable from one that worked, and the viewer's own preference is what made it so.
+  //
+  //   `status` carries fifteen distinct meanings into one block type and the originating event type
+  //   is discarded at every mint site but one. `fromEvent` is stamped at `investigation-state`
+  //   alone, so this row hides the opened/closed line and leaves the other fourteen statuses — a
+  //   turn's failure, its spend, its Stop — on screen. Splitting the other fourteen is a real
+  //   cleanup and it is not this ticket.
+  //
+  // `investigation_offer` is deliberately a shown row, not an oversight. `message-blocks.js:1342`
+  // draws it INSTEAD of an answer, so hiding it renders a turn with nothing in it — a question
+  // nobody is asked.
+  // The three counts on a `coverage` record that mean a read came back with less than it was asked
+  // for. COUNTS, not states: `coverage` is `{ total, processed, excluded, failed, unfinished }`
+  // — `liveread/run.py:614`, `calculate.py:157`, `text_analysis.py:130` all build that shape, and
+  // `handoff.py:512` names the same five keys. Any of the three above zero is the shortfall.
+  //
+  // `processed` and `total` are deliberately not compared. `calculate.py` derives `excluded` as
+  // `count - processed`, so the gap is already reported by a named field there, and reading the
+  // gap directly would make this rule wider than the one ADR-0062 settled.
+  const FELL_SHORT = ['excluded', 'failed', 'unfinished'];
+
+  // Whether any operation on this card reports less than it was asked for. Read over the whole
+  // group and not the first event: since #447 one card holds a turn's operations, so a turn that
+  // read one table cleanly and failed on the second must draw the card that says so.
+  //
+  // `requests[]` is the other half, and it takes TWO fields rather than one. `failure` records the
+  // KIND of error when one was seen — `data_use.py:224` creates it `None`, `:252` and `:263` set
+  // it. `state` records whether the request settled at all, and the `finally` at `:265` writes
+  // `interrupted` WITHOUT touching `failure`. So a response cut off mid-stream, by a Stop or a
+  // dropped connection, persists as `{ state: 'interrupted', failure: null }`, and truthiness on
+  // `failure` alone put it away. A response that visibly did not finish is a read that fell short.
+  //
+  // `attempted` is deliberately not here. It is the state every request is persisted with the
+  // moment it opens (`data_use.py:224`, persisted by the `save()` at `:234`), so counting it would
+  // card until its requests settled — the preference would not work during a live turn, which is
+  // most of when anybody is looking.
+  //
+  // ADR-0062 named `coverage` and `requests[].failure` only. This is wider than its letter and
+  // narrower than its rule, and the rule is what governs: never hide a read that fell short.
+  const DID_NOT_SETTLE = ['interrupted'];
+
+  function readFellShort(events) {
+    return (events || []).some((e) => !!e && (
+      FELL_SHORT.some((k) => ((e.coverage || {})[k] || 0) > 0)
+      || (e.requests || []).some((r) => r && (r.failure || DID_NOT_SETTLE.includes(r.state)))));
+  }
+
+  const shown = () => false;
+  const HIDDEN_BY_DATA_ACCESS = {
+    text: shown,
+    data_used: (block) => !readFellShort(block.events),
+    code: shown,
+    sandbox_run: shown,
+    chart: shown,
+    image: shown,
+    file: shown,
+    page: shown,
+    table: shown,
+    choice: shown,
+    resource_result: shown,
+    app_change: shown,
+    build_run: shown,
+    lead_in_fold: shown,
+    plan_card: shown,
+    build_plan: shown,
+    status: (block) => block.fromEvent === 'investigation-state',
+    mentions_unresolved: shown,
+    reset_offer: shown,
+    incoming_changes: shown,
+    source_candidates: shown,
+    table_candidates: shown,
+    dataset_files: shown,
+    investigation_offer: shown,
+    other_lane_offer: shown,
+    build_stalled: shown,
+    plan_suggestion: shown,
+    withhold: shown,
+    recall_offer: shown,
+    recall_cleared: shown,
+    recall_withheld: shown,
+    recall_rebuilt: shown,
+    graduation_nudge: shown,
+  };
+
+  // A type with no row is drawn. The harness is what stops that from being the quiet answer: a
+  // block type added to the dispatcher without a row here reds there, and until it does the new
+  // card shows, which is the safe direction for a disclosure.
+  //
+  // WHY THIRTY-ONE ROWS LOOK UNUSED, and why deleting them would be a defect. `pushBlock` is
+  // reached two ways. At MINT it is reached from the two governed sites only — `putDataUsed` and
+  // the `investigation-state` status — because the other thirty-one blocks are pushed straight
+  // onto the message, so on a first read their rows are never consulted. On a RE-PARTITION it is
+  // reached for every block on the message, because `applyDataAccess` puts the whole sequence back
+  // through it, and that is the path the drawer's checkbox and the answer's nudge both take.
+  //
+  // So the constant rows are what make the two paths agree. Trim them to the two that are not
+  // constant and the first person to untick the box loses their whole transcript, and nothing
+  // before that click would have said so.
+  // What this session was told, when the browser would not file it. `null` is "nobody has clicked",
+  // and the preference on file is the answer.
+  //
+  // prefs.js refuses a write three ways — blocked or full storage, and a viewer whose identity has
+  // not landed yet, which prefs.js itself says is a real window rather than a theoretical one. On a
+  // refusal the stored value does not move, so re-reading it answers with the OLD one: without this
+  // the click was honoured neither now nor later, the transcript kept hiding while the drawer's box
+  // sat ticked, and the warning said "it won't persist next time" when the truth was "it did not
+  // happen this time". In a browser that refuses storage the nudge is the only way in, and it was
+  // inert.
+  let dataAccessThisSession = null;
+
+  function hiddenByDataAccess(block) {
+    const shown = dataAccessThisSession === null
+      ? SW.prefs.get('dataAccessShown')
+      : dataAccessThisSession;
+    if (shown) return false;
+    const row = HIDDEN_BY_DATA_ACCESS[block && block.type];
+    return row ? !!row(block) : false;
+  }
+
+  // One block onto a message, MARKED rather than removed. Withheld disclosure stays in
+  // `message.blocks`, in the position the read gave it, carrying `hiddenDisclosure`; `SW.Message`
+  // draws every block that is not marked. `build_plan`'s `folded` is the same shape and the same
+  // reason (`mergedHistoryToMessages`): the store decides, once, and the component is handed the
+  // answer rather than the preference.
+  //
+  // IT MUST NOT REMOVE, and two defects are why. The first version parked withheld blocks in a
+  // side list with the index they would have had, and put them back by splicing:
+  //
+  //   * That index went stale. `dropTableCard` and `dropWithholdCard` remove SHOWN blocks from a
+  //     message after a park, and the SSE reducer replaces its streamed blocks wholesale, so the
+  //     parked index no longer named the slot it was taken from and revealed disclosure landed
+  //     below the answer it belonged above — the exact claim this bookkeeping existed to keep.
+  //
+  //   * Worse, restoring REBUILT `message.blocks`, and the reducer caches a position into that
+  //     array (`liveIndex`) and writes through it. A re-persist that force-showed a failed read
+  //     shifted the array under that index, and the next flush overwrote the card with streamed
+  //     text. A read whose gateway request FAILED was deleted from the transcript, with the count
+  //     cleared so no nudge said it had ever been there. That is the one outcome ADR-0062 forbids
+  //     absolutely, and the mechanism that hid it was the mechanism meant to reveal it.
+  //
+  // Marking has no indices to go stale and never reassigns the array, so neither is reachable.
+  //
+  // `disclosureHidden` is what the answer's nudge is drawn from. It is a count and not a flag so
+  // that a message holding two withheld blocks does not read as holding one, and it is absent
+  // rather than zero when nothing is withheld — a component that never sees the stamp cannot
+  // branch on the preference by accident.
+  function markDisclosure(message, block) {
+    if (hiddenByDataAccess(block)) block.hiddenDisclosure = true;
+    else delete block.hiddenDisclosure;
+    return block;
+  }
+
+  function countDisclosure(message) {
+    const hidden = (message.blocks || []).filter((b) => b && b.hiddenDisclosure).length;
+    if (hidden) message.disclosureHidden = hidden;
+    else delete message.disclosureHidden;
+  }
+
+  function pushBlock(message, block) {
+    message.blocks.push(markDisclosure(message, block));
+    countDisclosure(message);
+    return block;
+  }
+
+  // Re-mark one message against the preference as it reads NOW. Both directions, because the
+  // drawer's checkbox has to work both ways: a viewer who unticks the box is owed the transcript
+  // changing under them, and a control that only took effect on the next read would look broken
+  // sitting next to the thing it governs.
+  //
+  // In place, block by block. `message.blocks` is never reassigned and nothing changes position,
+  // so a cached index into it stays valid and no caller of this has to know it ran.
+  function applyDataAccess(message) {
+    for (const block of message.blocks || []) markDisclosure(message, block);
+    countDisclosure(message);
+  }
+
   // One card per TURN, holding the operations that turn ran (#447). Keyed on `operation_id` this
   // drew a card per operation, and a turn that reads a table, computes on it and then analyses
   // text routinely runs three — three collapsed dropdowns saying the same thing under one answer.
@@ -1851,10 +2060,19 @@ window.SW = window.SW || {};
   function putDataUsed(messages, ensureAssistant, events) {
     for (const event of events || []) {
       const turnId = event.turn_id || event.operation_id;
-      const existing = messages.flatMap((m) => m.blocks || [])
-        .find((b) => b.type === 'data_used' && b.turnId === turnId);
+      // One list, because a withheld card is still ON the message — marked, not removed. That is
+      // what keeps this search whole: a card taken out of `blocks` while disclosure was off would
+      // not be found here, and the turn's next operation would mint a second one. #447's stack,
+      // back again, invisible until the viewer turned disclosure on and found it waiting.
+      let owner = null;
+      let existing = null;
+      for (const m of messages) {
+        existing = (m.blocks || []).find((b) => b && b.type === 'data_used' && b.turnId === turnId)
+          || null;
+        if (existing) { owner = m; break; }
+      }
       if (!existing) {
-        ensureAssistant().blocks.push({ type: 'data_used', turnId, events: [event] });
+        pushBlock(ensureAssistant(), { type: 'data_used', turnId, events: [event] });
         continue;
       }
       // Replace IN PLACE, never append: the card keeps first-sighting order, and the later copy
@@ -1865,6 +2083,12 @@ window.SW = window.SW || {};
       const at = existing.events.findIndex((e) => e.operation_id === event.operation_id);
       if (at < 0) existing.events.push(event);
       else existing.events[at] = event;
+      // A card that has just stopped being whole. `DataUse.observe`'s `save()` re-persists the
+      // event as each gateway request settles, so `failure` and a short `coverage` routinely
+      // arrive AFTER the copy that minted this card — which means the rule "never hide a read that
+      // fell short" cannot be a decision taken once at mint time. Without this the shortfall
+      // surfaces only on the next reload, and the preference is what delayed it.
+      if (owner) applyDataAccess(owner);
     }
   }
 
@@ -2036,9 +2260,20 @@ window.SW = window.SW || {};
         //
         // "Later turns" and not "turns", because that is what is true: the flag is read once at the
         // start of a turn, so a turn already streaming keeps the shell it was armed with.
-        ensureAssistant().blocks.push({
+        //
+        // `fromEvent` is the one thing the store did not carry (#448). Fifteen distinct meanings
+        // mint into `{ type: 'status' }` and the type is discarded at every site, so no status can
+        // be told from another on the block alone — and the viewer's preference hides THIS line
+        // and not a turn's failure or its spend. Stamped here only; the other fourteen are left
+        // alone, and splitting them is a real cleanup that is not this ticket.
+        //
+        // Safe to hide because `modes/chat.js:77` draws an open investigation in the composer,
+        // live, with a Close button, outside the transcript and outside the preference. What is
+        // put away is the record of WHEN the grant changed, never WHETHER it is open now.
+        pushBlock(ensureAssistant(), {
           type: 'status',
           ok: true,
+          fromEvent: 'investigation-state',
           value: ev.state === 'open'
             ? SW.brand.text('Investigation opened. {turnPlural} in this conversation can query '
                             + 'your {dataSourcePlural} until you close it.')
@@ -3875,6 +4110,55 @@ window.SW = window.SW || {};
       if ('resourceGroups' in patch) state.resourceIndex = indexResources(state.resourceGroups);
       notify();
     },
+
+    // The one writer of `dataAccessShown` (#448, ADR-0062), for both of its controls: the
+    // checkbox in the Account settings drawer, and the nudge on the answer itself.
+    //
+    // Two controls and not one. The drawer alone would not do — the conversation view can live
+    // there because both its values are visible states, you see split, you wonder about unified,
+    // you go looking; a preference whose fallback is OFF is invisible, and nobody goes looking for
+    // a thing they have never seen. So the answer carries the way in, and that first click both
+    // reveals the disclosure and records the choice: the `chipScopeHintDismissed` shape, where the
+    // viewer's own action retires the nudge.
+    //
+    // Applied in place, not by a re-read. The withheld blocks are already parked on the messages,
+    // and a re-read would be the wrong mechanism twice over: a live turn's streamed text is not on
+    // the server yet, so the transcript that came back would be short of it, and the merged view
+    // would pay a request to be told what is on screen already.
+    //
+    // Every list that holds messages, because `buildTranscript` is `conversationChat` concatenated
+    // with `buildMessages` and unified Chat reads both halves — one message object can sit in three
+    // of these at once. Re-partitioning is idempotent, which is what makes naming all four safe
+    // rather than a way to draw a block twice.
+    setDataAccessShown(value) {
+      // Held for this session FIRST, so the act lands whatever storage does. Then filed. The order
+      // is the whole fix: reading the preference back after a refused write answers with the value
+      // before the click, so a re-partition driven off the file alone was a no-op and the click
+      // did nothing anyone could see.
+      dataAccessThisSession = !!value;
+      if (!SW.prefs.set('dataAccessShown', !!value)) {
+        // The same sentence the settings drawer's own writer uses, and now it is true: the click
+        // is honoured for this session and the next load will not remember it.
+        antd.message.warning("This browser isn't saving the choice, so it won't persist next time.");
+      }
+      for (const list of [state.messages, state.conversationChat, state.buildMessages,
+                          state.buildTranscript]) {
+        for (const message of list || []) applyDataAccess(message);
+      }
+      notify();
+    },
+
+    // What `data_access_harness.mjs` holds the real dispatcher against. Exposed rather than
+    // grepped: a Python test reading this table's literal out of the file would pin the string and
+    // not the behaviour, and a list copied from the table could go short of it without saying so.
+    dataAccessRows: () => Object.keys(HIDDEN_BY_DATA_ACCESS),
+
+    // The table's decision about one block, so a test can DERIVE which types the preference
+    // governs instead of reading the rows and trusting them. ADR-0062 claims it governs
+    // `data_used` and the investigation line and "nothing else", and thirty-one rows spell that by
+    // sharing one constant — which means flipping any of them to hide was a one-word edit that
+    // cost a viewer their table receipts and reddened nothing. Now the claim is a derived list.
+    hidesForDataAccess: (block) => hiddenByDataAccess(block),
 
     async setBuildMode(mode) {
       if (!['auto', 'ask', 'plan', 'implement'].includes(mode)) return;

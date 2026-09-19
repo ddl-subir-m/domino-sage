@@ -2346,8 +2346,40 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-msg-blocks' },
-          message.blocks.map((block, i) => h(SW.MessageBlock, { key: i, block, onSave }))
+          // Disclosure this viewer has put away stays ON the message, marked by the store, and is
+          // skipped here (#448). Marked and not removed because other code both deletes blocks
+          // from this array and caches positions into it — the store's comment on `pushBlock` has
+          // the two defects that taught us. `build_plan`'s `folded` is the same shape: the store
+          // decides, the component is handed the answer, and the preference is not read here.
+          //
+          // Keyed on the ORIGINAL index, so revealing a block does not renumber its neighbours and
+          // make React rebuild the answer around it.
+          message.blocks
+            .map((block, i) => [block, i])
+            .filter(([block]) => !block.hiddenDisclosure)
+            .map(([block, i]) => h(SW.MessageBlock, { key: i, block, onSave }))
         ),
+
+        // The way in to disclosure this viewer has put away (#448, ADR-0062). Drawn from what the
+        // store stamped, never from the preference: `test_only_the_store_branches_on_the_preference`
+        // is the house rule, and the stamp only exists when something was actually withheld — so
+        // this branch cannot read the preference by accident, and it cannot draw an offer to reveal
+        // nothing.
+        //
+        // The count is on the label because one withheld card and three are different offers, and
+        // a person deciding whether to look wants to know which they are getting.
+        !isUser && message.disclosureHidden > 0 &&
+          h(
+            'div',
+            { className: 'sw-msg-disclosure' },
+            h(
+              Button,
+              { type: 'link', size: 'small', onClick: () => SW.store.setDataAccessShown(true) },
+              message.disclosureHidden === 1
+                ? 'Show data access'
+                : `Show data access (${message.disclosureHidden})`
+            )
+          ),
 
         !isUser &&
           h(

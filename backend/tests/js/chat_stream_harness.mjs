@@ -25,6 +25,17 @@ const sandbox = {
   // would be testing the event loop rather than the reducer.
   requestAnimationFrame: (fn) => fn(),
   document: { addEventListener() {}, querySelector: () => null, body: {} },
+  // Where the viewer's preferences live. prefs.js treats storage it cannot reach as "no answer on
+  // file" and refuses every write, so without this the preference set below would silently read
+  // back as its fallback and this harness would measure the wrong reader.
+  localStorage: (() => {
+    const backing = new Map();
+    return {
+      getItem: (k) => (backing.has(k) ? backing.get(k) : null),
+      setItem: (k, v) => backing.set(k, String(v)),
+      removeItem: (k) => backing.delete(k),
+    };
+  })(),
   React: { createElement: (t, p, ...c) => ({ t, p, c }), useState: () => [null, () => {}],
            useEffect: () => {}, useRef: () => ({ current: null }), Fragment: 'Fragment' },
   antd: { message: { success() {}, error() {}, info() {}, warning() {} }, Modal: { confirm() {} } },
@@ -44,12 +55,22 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-for (const f of ['util.js', 'api.js', 'store.js']) {
+// prefs.js is not optional here any more. Since #448 the reducer asks the viewer's preference
+// before it puts a `data_used` block on an answer, so a sandbox without `SW.prefs` throws inside
+// the stream — and the reducer catches, which turns a missing stub into a dropped block rather
+// than an error anybody can read.
+for (const f of ['util.js', 'api.js', 'prefs.js', 'store.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 
 const SW = sandbox.SW;
 SW.store.set({ thread: { id: 't1', artifacts: [] }, messages: [], scope: { id: 'p', name: 'P' } });
+// Disclosure on, because this file's claims are about what a reader who asked for it sees. #448
+// made it a viewer's choice with the fallback OFF, so a run that said nothing would measure a
+// transcript written for somebody who wanted none of it — and a `data_used` block absent by
+// request reads exactly like one the reducer dropped.
+SW.store.set({ me: { id: 'u1' } });
+SW.prefs.set('dataAccessShown', true);
 const seen = [];
 SW.store.subscribe((s) => seen.push(JSON.stringify({ messages: s.messages, typing: s.typing })));
 await SW.store.sendMessage('q');

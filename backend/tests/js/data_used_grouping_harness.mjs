@@ -81,6 +81,14 @@ for (const file of ['util.js', 'api.js', 'prefs.js', 'store.js', 'components/mes
 }
 const SW = sandbox.SW;
 
+// Disclosure on, because that is the reader this file is about. #448 made `data_used` a viewer's
+// choice with the fallback OFF, so a run that said nothing about the preference would walk a
+// transcript for somebody who had asked to see none of this and count zero cards — six greens
+// turning red on a claim about grouping that had not changed. What this file measures is how many
+// cards a turn draws FOR A READER WHO ASKED, so it asks.
+SW.store.set({ me: { id: 'u1' } });
+SW.prefs.set('dataAccessShown', true);
+
 function flatten(node, out = []) {
   if (node === null || node === undefined || node === false || node === true) return out;
   if (Array.isArray(node)) { node.forEach((n) => flatten(n, out)); return out; }

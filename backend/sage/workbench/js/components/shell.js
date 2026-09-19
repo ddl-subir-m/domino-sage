@@ -579,6 +579,7 @@ window.SW = window.SW || {};
   SW.SettingsDrawer = function SettingsDrawer() {
     const { settingsOpen } = SW.store.get();
     const [conversationView, setConversationView] = useState('split');
+    const [dataAccessShown, setDataAccessShown] = useState(false);
     const [crossings, setCrossings] = useState({
       handoffResources: true,
       handoffArtifacts: true,
@@ -590,6 +591,9 @@ window.SW = window.SW || {};
     useEffect(() => {
       if (!settingsOpen) return;
       setConversationView(SW.prefs.get('conversationView'));
+      // Read on open like the rest, and it has a second reason to be: the nudge on an answer
+      // writes this preference too, so the drawer opened after that click must not sit on `false`.
+      setDataAccessShown(SW.prefs.get('dataAccessShown'));
       setCrossings({
         handoffResources: SW.prefs.get('handoffResources'),
         handoffArtifacts: SW.prefs.get('handoffArtifacts'),
@@ -609,6 +613,15 @@ window.SW = window.SW || {};
     const choose = (value) => {
       setConversationView(value);
       save('conversationView', value);
+    };
+
+    // Through the store rather than `save` above, because this preference changes what the
+    // transcript on screen IS — the store owns that, and a write from here would leave the drawer
+    // agreeing with a transcript nobody had re-partitioned. The store warns about a refused write
+    // itself, so there is nothing for `save` to add.
+    const showAccess = (value) => {
+      setDataAccessShown(value);
+      SW.store.setDataAccessShown(value);
     };
 
     const carry = (name) => (e) => {
@@ -642,6 +655,29 @@ window.SW = window.SW || {};
             { label: 'Unified', value: 'unified' },
           ],
         })
+      ),
+      h(
+        'div',
+        { className: 'sw-setting' },
+        // Named for the GROUP and not for the card (#448, ADR-0062). Reusing a shipped term is
+        // normally right and "Data used" is already on screen, but an investigation notice is
+        // permission GRANTED, not data USED — so a viewer who unticked "Data used" and then
+        // stopped seeing investigation notices would have been surprised by their own setting.
+        // The card keeps its own label.
+        h('div', { className: 'sw-setting-label' }, 'Data access'),
+        h(
+          antd.Checkbox,
+          { checked: dataAccessShown, onChange: (e) => showAccess(e.target.checked) },
+          'Show what each answer read'
+        ),
+        // Says what unticking it cannot do. Without this the control reads as a way to switch
+        // disclosure off, and a read that came back short would look like the setting had failed
+        // rather than like the one thing it deliberately does not cover.
+        h(
+          'div',
+          { className: 'sw-setting-hint' },
+          'A read that failed or came back incomplete is always shown.'
+        )
       ),
       h(
         'div',
