@@ -34,7 +34,7 @@ viewer preference must never go.
 It governs exactly two things:
 
 - `data_used`
-- the investigation opened/closed line (`store.js:1929`)
+- the investigation opened/closed line (`store.js:1959`)
 
 It governs nothing else. In particular it does **not** govern `investigation_offer`, which
 `message-blocks.js:1342` draws *instead of* an answer. A hidden offer is a question nobody is asked
@@ -79,13 +79,13 @@ Chat pane" would quietly change what it hides the moment somebody switched views
 
 Filtering the investigation line needs one thing the store does not carry today: the originating
 event type. Fifteen distinct meanings mint into `{ type: 'status' }` and the type is discarded
-(`store.js:1841`–`2941`), so no status can be told from another on the block alone. We carry the
-event type at **one** mint site, `store.js:1929`, and leave the other fourteen alone. The full split
+(`store.js:1804`, `2532` and `3238`), so no status can be told from another on the block alone. We carry the
+event type at **one** mint site, `store.js:1959`, and leave the other fourteen alone. The full split
 is a real cleanup and it is not this ticket.
 
 ## The rule is a table, not a list
 
-Every one of the 33 `block.type` values in the switch at `message-blocks.js:2092` gets a row, and
+Every one of the 33 `block.type` values in the switch at `message-blocks.js:2110` gets a row, and
 there is **no default**. A JS harness under `tests/js/` drives the real switch and fails when it holds
 a type the table does not.
 
@@ -129,3 +129,26 @@ normally right, and this one is already on screen. But an investigation notice i
 *granted*, not data *used*, and a viewer who unticks "Data used" and then stops seeing investigation
 notices has been surprised by their own setting. The group is named **Data access**; the card keeps
 its own label.
+
+## Pin refresh, 2026-09-19
+
+The coordinates above were taken before this record landed, and `store.js` moved under them
+(#447, `c06dfb2f`, shifted the region +30). Refreshed against `6388e9b8`:
+
+| was | now | what is there |
+|---|---|---|
+| `store.js:1929` | **`store.js:1959`** | the `ev.type === 'investigation-state'` branch |
+| `store.js:1841`–`2941` | **`store.js:1804`, `2532`, `3238`** | `historyToMessages`, `buildHistoryToMessages`, `mergedHistoryToMessages` |
+| `message-blocks.js:2092` | **`message-blocks.js:2110`** | `switch (block.type)` |
+
+The first one mattered more than line drift usually does. `store.js:1929` today sits inside the
+investigation **offer** branch (it opens at `:1921` and mints `investigation_offer` at `:1931`) —
+the one block this record says the preference must never hide. Left unrefreshed, this ADR pointed
+its own implementer at the counter-example.
+
+The old range also understated the work: it covered the first two history functions but stopped
+short of `mergedHistoryToMessages`, which is the one that matters under `conversationView: unified`
+— the case this record singles out. All three are named explicitly now.
+
+`message-blocks.js:1342` (`investigation_offer`) and `message-blocks.js:774` (ADR-0023's
+force-open) were checked and needed no change.
