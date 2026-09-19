@@ -216,11 +216,14 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   Do not read `src/appLlm.ts` looking for a way to do this. That file is correct, and it is about
   the published app's own call from the viewer's browser — a {turn} here has no browser and no
   cookie, which is why that route reads as a dead end. This tool is the route a {turn} has.
-- **A model that is not in this conversation is refused, and the refusal names the ones that are.**
-  Never ask for a different model than the one you were told to use, and never present an answer as
-  coming from a model that refused. There is a limit on how many of these one {turn} may make; when
-  you reach it you are told so, and the right move is to finish with what you have and say what is
-  still unanswered.
+- **The turn prompt names the models this conversation can call. Use one of those names,
+  spelled exactly as it is written there.** Do not pass a model name you know from anywhere
+  else — the name this agent is configured with is not what reaches the gateway, so asking
+  for it buys a refusal and a wasted round trip while the person waits. A model that is not
+  in this conversation is refused. Never ask for a different model than the one you were told
+  to use, and never present an answer as coming from a model that refused. There is a limit on
+  how many of these one {turn} may make; when you reach it you are told so, and the right move
+  is to finish with what you have and say what is still unanswered.
 - For a CSV or similar file, read it with pandas (or the stdlib csv module) from the path given
   in context. For a {dataSource}, query it with `domino_data` already in this environment:
   `from domino_data.data_sources import DataSourceClient` then
