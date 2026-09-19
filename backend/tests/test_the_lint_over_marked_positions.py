@@ -455,6 +455,9 @@ def test_the_glossary_holds_both_kinds():
         "Sovereign",
         "Stop using here",
         "Try again",
+        # The mirror of `Incoming changes` and a word for the same reason: it names a state of the
+        # repo rather than anything on screen, so a pack has nothing to rename it to (ADR-0064).
+        "Unsent work",
         "Use in this conversation",
     ]
 
