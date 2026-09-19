@@ -228,7 +228,19 @@ def test_the_call_is_tagged_chat_delegated_so_built_app_keeps_its_meaning(tmp_pa
 
 
 def _listing_down(tmp_path: Path):
-    """A Conversation holding a BOUND `opus` and a CHIPPED `sonnet`, with the listing then failing."""
+    """A Conversation holding a BOUND `opus` and a CHIPPED `sonnet`, with the listing then failing.
+
+    THE CACHE IS EXPIRED TOO, and saying so is now load-bearing. `_alias_listing` holds a successful
+    listing for `_ALIAS_LISTING_TTL_S`, and since #439 the turn's PROMPT resolves the callable set in
+    order to name it — so the turn above leaves a warm cache where it used to leave none, and the
+    calls below would be answered out of it. That is the TTL behaving as written rather than a hole:
+    a second call in one turn always read the cache, and #439 only moved the first read earlier.
+
+    What these tests are about is the read that finds the gateway gone, so the cache is dropped here
+    rather than the outage moved in front of the turn. Moving it would test an outage spanning the
+    whole turn, which is a different and easier case — the prompt would refuse to name the chip and
+    nothing downstream would be trusted with it.
+    """
     resources = Aliases()
     gateway = AnswerGateway()
     orch, oc = _orch(tmp_path, gateway=gateway, resources=resources)
@@ -237,6 +249,7 @@ def _listing_down(tmp_path: Path):
     _chip(orch, tid, alias_id="f-sonnet", label=SONNET_LABEL)
     list(orch.chat_stream(tid, "classify these"))
     resources.listing_fails = True
+    orch._alias_listing_at = None
     return orch, oc, gateway
 
 
