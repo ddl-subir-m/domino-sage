@@ -206,6 +206,51 @@ as designed. What changes is the population: this is the ordinary path, not the 
 **A question this raises and does not settle:** whether `session.json` should be in
 `_PROJECT_IGNORE` at all. A container-local handle kept in version control is the thing that
 carries the corpse from one container to the next; ignoring it would make a clone mint cleanly
-rather than probe a dead id, and `minted` would still be true, so the seed would still run. It is
+rather than probe a dead id, ~~and `minted` would still be true, so the seed would still run~~
+(**struck — see the third amendment below**). It is
 not free — `clear_session_id`'s contract and the *"there WAS one and OpenCode does not have it"*
 log line both read that file — and it is filed as #433 rather than decided here.
+
+## Third amendment, 2026-09-19: the sentence struck above was false
+
+The second amendment argued that gitignoring `session.json` would be safe because *"`minted` would
+still be true, so the seed would still run."* **It would not.** Verified against `eafcd768`:
+
+```
+service.py:9454   owed = bool(rec.get("rebuild_pending"))
+service.py:9487   lost = bool(rec.get("session_id"))
+service.py:9489   store.write_session_id(thread_id, sid, directory=work, rebuild_pending=lost or owed)
+```
+
+Both flags are derived from `rec` — **the stored record**, which is that file. The comment beneath
+`lost` says so in as many words: *"Guarded on a session having been ON DISK, so this is not a new
+Thread finding its feet."* That guard is the whole point of the flag, and it is exactly what an
+ignored file removes.
+
+So ignore the file and a cloned Thread carrying a full `history.jsonl` returns `(sid, False)`: no
+reseed, and the amnesia this ADR exists to end returns — **silently, and on every clone rather than
+on the rare one.** The fix the second amendment reached for would have made the defect quieter
+instead of smaller.
+
+**What this does not change:** the decision in the body of this ADR, or either fix. `reseed` is
+correct, and the second amendment's own finding — that the 5xx path at `service.py:9467` lets a
+transient 503 or 429 read as *"this session does not exist"* — stands unaltered.
+
+**What it does change** is the order of work in #433. `lost` has to stop being derived from the
+stored record — the transcript is the honest source, and ADR-0061 already establishes that a turn
+is handed what earlier turns read — **before** the file can be ignored. Gitignoring first is the
+step that breaks things.
+
+The urgency is not hypothetical. A dead handle is committed on `main` today:
+
+```
+.sage/threads/thr_1a06d9274b6a65ef1898e/session.json
+{"session_id": "ses_f926cd74bffeTTWkJUM4w6wl4q", "directory": "/mnt/code/.sage/chat-work"}
+```
+
+added by `517e7744` ("build: chat (first)", 2026-09-04), naming a `/mnt/code` container that no
+clone of this repo has ever run. `git check-ignore` on that path exits 1.
+
+*Found during a premise sweep of the open board, not by a failing test — no test reads this file,
+and the claim was prose. A written claim is the weakest evidence there is, and this one sat in a
+merged ADR for a day being quoted as settled.*
