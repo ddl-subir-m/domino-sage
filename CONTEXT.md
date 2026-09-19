@@ -617,14 +617,6 @@ _Kind_: name
 _Avoid_: context (that is Session context, which is Resources), session (OpenCode's word for the
 harness object that holds Recall), history (that is the transcript), memory
 
-**Investigation**:
-A standing grant on a Conversation, opened by the person, that lets its turns
-keep a shell for as long as it stands. It is a permission the person can see and close, never
-something the model sets, and closing it is not deleting what it produced
-([ADR-0056](docs/adr/0056-an-investigation-is-a-grant-the-person-makes.md)).
-_Kind_: name
-_Avoid_: research mode, deep dive, agent mode, session (that is OpenCode's word)
-
 **Findings file**:
 The measurement log a long Investigation keeps across turns, written by the
 model and read back by it. It holds aggregates and column facts with their denominators, never a

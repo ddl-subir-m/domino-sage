@@ -431,6 +431,10 @@ def test_the_glossary_holds_both_kinds():
     assert kinds["Turn"] == "name"
     assert kinds["Remove"] == "word"
     assert sorted(k for k, v in kinds.items() if v == "word") == [
+        # A word and not a name because it describes a turn's EFFECT on the Thread's record, not a
+        # thing on screen. There is nothing for a pack to rename it to, and marked `name` it would
+        # owe a key with nothing to put in it (ADR-0061).
+        "Advance",
         "Attach file",
         "Attach folder",
         "Build this again",

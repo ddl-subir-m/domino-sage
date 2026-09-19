@@ -1179,7 +1179,8 @@ def test_a_slow_question_that_is_not_a_build_still_ends_without_guessing_at_its_
     assert "smaller" not in err["message"]
 
     done = next(e for e in events if e["type"] == "done")
-    assert done == {"type": "done", "ok": False, "decision": "timeout"}
+    assert done == {"type": "done", "ok": False, "decision": "timeout",
+                    "reads": [], "advanced": True}
     hist = orch.thread_history(tid)
     assert any(e.get("type") == "error" for e in hist)
     assert any(e.get("decision") == "timeout" for e in hist)
@@ -2403,7 +2404,8 @@ def test_a_refused_step_says_what_was_refused(tmp_path: Path):
     assert "context length exceeded" in err["message"]
     assert "stopped making progress" not in err["message"]
     assert next(e for e in out if e["type"] == "done") == {
-        "type": "done", "ok": False, "decision": "step failed"}
+        "type": "done", "ok": False, "decision": "step failed",
+        "reads": [], "advanced": True}
     # And the Thread keeps it, so a reload still shows why.
     assert any(e.get("type") == "error" for e in orch.get_thread(tid)["history"])
 
@@ -2465,7 +2467,8 @@ def test_a_turn_that_never_stops_talking_hits_the_ceiling(tmp_path: Path, monkey
     assert "took too long" in err["message"]
     assert "stopped making progress" not in err["message"]  # it never stopped; that is the point
     assert next(e for e in out if e["type"] == "done") == {
-        "type": "done", "ok": False, "decision": "timeout"}
+        "type": "done", "ok": False, "decision": "timeout",
+        "reads": [], "advanced": True}
 
 
 # --- Tidying up is not the turn ---
