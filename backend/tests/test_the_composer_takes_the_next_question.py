@@ -104,7 +104,8 @@ def test_a_cancel_the_server_declined_says_so_rather_than_nothing():
 def test_a_second_press_on_a_cancel_already_in_flight_is_not_sent():
     """The double-press, which needs no race on the server at all (#385). The row Cancel sits on
     comes down when the turn's own stream ends, a full round trip after the click, so the press
-    changes nothing on screen and invites a second one. That second POST names a ticket the first
+    changes nothing on screen, so a second click looks like the thing to try. That POST names a
+    ticket the first
     press has already taken off `_waiting`, so the server answers False — and the person who
     cancelled successfully would be told their turn had not been cancelled."""
     out = _run("cancel-twice")
