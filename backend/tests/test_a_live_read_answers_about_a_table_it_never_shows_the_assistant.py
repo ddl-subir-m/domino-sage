@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from sage.orchestrator import brand
 from sage.liveread import run
 
 
@@ -72,7 +73,7 @@ def test_a_data_source_this_conversation_never_named_is_refused_before_anything_
     said = run.perform("live_read_table", {"source": "Other-Warehouse", "table": "T"},
                        turn_for(tmp_path, sample_rows=explode))
 
-    assert "Other-Warehouse" in said and "Use in this conversation" in said
+    assert "Other-Warehouse" in said and brand.text("from {project} resources") in said
     assert not (tmp_path / "examples").exists(), "and nothing is written"
 
 
@@ -133,7 +134,7 @@ def test_a_path_climbing_out_of_the_mount_reads_as_a_file_that_is_not_there(tmp_
 def test_a_dataset_out_of_range_is_refused_before_it_is_touched(tmp_path):
     said = run.perform("live_read_files", {"dataset": "payroll"},
                        turn_for(tmp_path, list_files=lambda n: (_ for _ in ()).throw(AssertionError("touched"))))
-    assert "payroll" in said and "Use in this conversation" in said
+    assert "payroll" in said and brand.text("from {project} resources") in said
 
 
 def test_an_unmounted_dataset_still_lists_and_says_why_a_file_cannot_be_read(tmp_path):
@@ -165,7 +166,7 @@ def test_a_dataset_name_does_not_authorise_a_data_source_of_the_same_name(tmp_pa
     turn = turn_for(tmp_path, bound={}, chips={"dataset": ("DWH",)},
                     sample_rows=lambda *a: (_ for _ in ()).throw(AssertionError("read")))
     said = run.perform("live_read_table", {"source": "DWH", "table": "T"}, turn)
-    assert "Use in this conversation" in said
+    assert brand.text("from {project} resources") in said
 
 
 def test_the_assistant_is_told_when_it_saw_fewer_rows_than_were_read(tmp_path):

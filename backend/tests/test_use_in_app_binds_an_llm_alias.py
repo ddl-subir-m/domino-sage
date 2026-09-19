@@ -115,7 +115,10 @@ def test_chat_offers_the_conversation_act_and_nothing_app_scoped():
     row = _row(step["rows"], "Claude Sonnet 4")
     assert not any("Not used by" in t for t in row["texts"])
     assert not any(i["label"] == "Use in Rate curve viewer" for i in row["items"])
-    assert any(i["label"] == "Use in this conversation" for i in row["items"])
+    # `Use here` since #410, with the glossary term on the hover. Asserted as the pair, so that
+    # shortening the ink cannot quietly cost the long form too.
+    assert any(i["label"] == "Use here" and i["title"] == "Use in this conversation"
+               for i in row["items"])
 
 
 # ---- the refusal, which is the sentence that reported the bug -------------------------

@@ -204,8 +204,12 @@ window.SW = window.SW || {};
                   : inProject
                   ? mention
                   : useHere,
+                // The long form as hover, the short one as ink — `resource-tree.js:307` records
+                // why, and the pair reads lopsided anywhere it is not done: twenty-four characters
+                // against `Stop using here`'s fifteen (#410).
+                title: attached ? undefined : 'Use in this conversation',
               },
-              attached ? 'Stop using here' : 'Use in this conversation'
+              attached ? 'Stop using here' : 'Use here'
             )
           ),
       },

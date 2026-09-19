@@ -199,7 +199,10 @@ def test_chat_shows_neither_the_sign_nor_the_alias_door():
     assert step["doors"] == []
     row = _source_row(step)
     assert not any("Not used by" in t for t in row["texts"])
-    assert any(i["label"] == "Use in this conversation" for i in row["items"])
+    # `Use here` since #410, with the glossary term on the hover. Asserted as the pair, so that
+    # shortening the ink cannot quietly cost the long form too.
+    assert any(i["label"] == "Use here" and i["title"] == "Use in this conversation"
+               for i in row["items"])
     # Asked of the MENUS as well as of the screen, because the two hide the act in different places:
     # `doors` reads the labels controls carry as children, and a Dropdown item's label is data on a
     # prop — so no menu item could ever have shown up in the assertion above.

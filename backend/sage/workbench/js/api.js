@@ -282,6 +282,12 @@ function rowFromMember(item) {
     // The sibling: every live conversation holding a chip on it, by id and title (#169). The other
     // half of what the removal refuses on, so the row can offer a door that opens instead.
     heldBy: item.heldBy || [],
+    // Whether **Use in app** already makes this reachable on the app a turn would use (#410). A
+    // boolean and not a list, and NOT derivable from `usedBy` above: that one spans every app the
+    // Project holds, and a Binding another app keeps is not consent this conversation was given.
+    // Server-computed off the same manifest read `_delegated_aliases` makes, so the tick this
+    // feeds and the Conversation's own answer about what it may call cannot come apart.
+    boundHere: !!item.boundHere,
     membershipParent: true,
     writable: item.writable,
     levels: item.levels,

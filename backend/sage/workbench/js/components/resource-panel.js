@@ -143,7 +143,19 @@ window.SW = window.SW || {};
     // Whether this Resource is in the Conversation's context. Drawn as a mark, never as the act:
     // the chips over the composer are where context is shown and taken back (#137), and this row
     // only says whether the thing you are looking at is one of them.
+    //
+    // A CHIP, precisely, and not the wider question below. Two of the three readers of this flag
+    // are about the chip itself and not about reachability: the menu offers `Stop using here`,
+    // which is a chip's own door and has nothing to take off a row that never had one, and
+    // `openable` drops this conversation from the list of holders BECAUSE that door is above. Both
+    // would lie on a row the app binds and no chip names (#410).
     inContext,
+    // Whether the Conversation can reach this Resource AT ALL — either act, chip or Binding. The
+    // mark is the one thing on the row that answers that, and answering it with `inContext` alone
+    // is what #410 reported: **Use in app** makes a model callable, the panel read chips only, and
+    // the row went on offering to add something a turn was already using. Kept apart from
+    // `inContext` rather than folded into it for the reason written above it.
+    callableHere,
     // Chat only. The cheap half of the pair the mark leaves open — one click to put a row into the
     // Conversation, which is a Session-context door and so one the panel is allowed to own
     // (ADR-0021's table). Build has no verb for it (#147), so Build passes none.
@@ -233,8 +245,14 @@ window.SW = window.SW || {};
       : [
           ...(inChat
             ? [{
+                // `inContext` and not `callableHere`: this pair is the CHIP's door. There is
+                // nothing for `Stop using here` to take off a row that only an app binds, and the
+                // offer to put a chip on one is worth keeping — a chip stays with the conversation
+                // when the app selection moves, and the Binding's reach moves with it (#410).
                 key: inContext ? 'remove-resource-from-conversation' : 'mention',
-                label: inContext ? 'Stop using here' : 'Use in this conversation',
+                label: inContext ? 'Stop using here' : 'Use here',
+                // Long form as hover, short as ink (`resource-tree.js:307`).
+                title: inContext ? undefined : 'Use in this conversation',
               }]
             : []),
           ...(isScratch
@@ -456,13 +474,30 @@ window.SW = window.SW || {};
       // and not a button: taking something back out is what the chip's own × does, and what the
       // drawer behind this row offers in words. Only the ADD is a click, and only where the verb
       // has a Conversation on screen to name.
-      inContext
+      //
+      // `callableHere` and not `inContext`: the mark answers what the Conversation can reach, and
+      // a Binding reaches it just as a chip does (#410, ADR-0057).
+      callableHere
         ? h(
             Tooltip,
-            { title: SW.util.IN_CONTEXT_TITLE },
+            // Which act earned the mark decides which sentence is true behind it. A chip names the
+            // chip rail; a Binding has no chip to point at, so it names the app instead (#410).
+            { title: inContext ? SW.util.IN_CONTEXT_TITLE : SW.util.BOUND_HERE_TITLE },
             h(
               'span',
-              { className: 'sw-res-ctx', 'aria-label': `${resource.name} is in this conversation` },
+              {
+                className: 'sw-res-ctx',
+                // The tooltip tells the two acts apart and this has to as well, or the only reader
+                // who cannot see the mark's colour is the one told least: without the second half,
+                // a screen reader hears "is in this conversation" and goes looking for a chip to
+                // take off that was never there.
+                // The name is concatenated AFTER the pack resolves, never interpolated into the
+                // template: a Resource called `{project}` would otherwise be rewritten into the
+                // product's own noun on its way through.
+                'aria-label': `${resource.name} ${inContext
+                  ? 'is in this conversation'
+                  : SW.brand.text('is in this conversation, because a {builtApp} uses it')}`,
+              },
               h(CheckCircleFilled, { style: { fontSize: 12 } })
             )
           )
@@ -732,6 +767,37 @@ window.SW = window.SW || {};
           }
         : resource;
       const inContext = attachedIds.has(resource.id);
+      // The two acts that reach a Resource from this Conversation, read as one fact for the mark
+      // and for the `+` beside it. `boundHere` comes off the row rather than out of `requiredIds`
+      // above it: Bindings are APP-scoped state, and in Chat nothing loads them — `refreshAppScope`
+      // fires on a selection move, so `state.bindings` is `[]` on a Chat scope load and a join
+      // against it would have been correct code over an empty list, green in a harness that seeds
+      // one and inert in front of a person. The server answers it instead, off the same manifest
+      // read `_delegated_aliases` makes (#410).
+      //
+      // The PICKER, which is that helper's third act, is deliberately not here: it is not an act on
+      // this row, and a tick nobody clicked for reads worse than the `+` it would replace.
+      //
+      // Two guards on the Binding half, and neither is on the chip half beside it.
+      //
+      // `inChat`, because the mark's words are Chat's words — "is in this conversation". In Build
+      // the slot drew a spacer, since `attachedIds` holds no chips there, and a Binding is already
+      // said twice on that surface: the `Required by {app}` bar and the `saysAppUse` subtitle. A
+      // third saying of it, in the other mode's grammar, is not an improvement.
+      //
+      // `!isMissing`, because the mark claims the Conversation can REACH it, and a row Domino no
+      // longer lists cannot be reached whatever the manifest still records. Without this, deleting
+      // a bound Alias leaves the row drawing the missing mark and this one at once, and a call to
+      // it refuses — the same two-surfaces-one-truth split #410 is about.
+      //
+      // NEITHER GUARD IS ON THE CHIP HALF, and that asymmetry is the point rather than an oversight
+      // in it. A chip is a record this Conversation holds: it is on the rail over the composer
+      // whether or not Domino still lists the thing, and taking the mark off it would leave the
+      // person with a chip they can see and a row denying it. The Binding is a record some app
+      // holds, so the row is the only place it is ever said — which is why it has to be said only
+      // where it is true.
+      const callableHere = inContext
+        || (inChat && !!resource.boundHere && !SW.util.isMissing(resource));
       return h(
         Fragment,
         { key: resource.id },
@@ -746,7 +812,9 @@ window.SW = window.SW || {};
           app: activeApp,
           saysAppUse,
           inContext,
-          onAddToContext: inChat && !inContext ? addToContext : null,
+          callableHere,
+          // `callableHere`, so the row stops offering an act on something a turn already uses.
+          onAddToContext: inChat && !callableHere ? addToContext : null,
           highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
             && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
           onOpen: openResource,
@@ -892,7 +960,12 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-panel-head' },
-        h('h2', { className: 'sw-panel-title' }, 'Project resources'),
+        // Through the pack since #410, because the refusals now send people here BY NAME —
+        // "Add it from {project} resources". A literal heading and a tokenised sentence read the
+        // same under the default pack and come apart under any other, which would point somebody
+        // at a heading that is not on their screen: the very thing those refusals were reworded to
+        // stop doing.
+        h('h2', { className: 'sw-panel-title' }, SW.brand.text('{project} resources')),
         h('span', { className: 'sw-topnav-spacer' }),
         // The one control that hides the panel, and it stays on the title row: it is the dock's
         // chrome rather than one of the panel's own acts, and the sub bar's near-identical twin

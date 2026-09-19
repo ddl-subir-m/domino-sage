@@ -120,7 +120,7 @@ def perform(name: str, args: dict, turn: Turn) -> str:
             # yet. Naming an empty set as though it were a choice reads as a bug.
             return _refused(brand.text(
                 "No language model is in this conversation, so {assistantName} has none to call. "
-                "Add one with Use in this conversation, then ask again.",
+                "Add one from {project} resources, then ask again.",
             ))
         if any(asked.casefold() == label.casefold() for label in turn.unresolved):
             return _refused(brand.text(
@@ -128,9 +128,13 @@ def perform(name: str, args: dict, turn: Turn) -> str:
                 "could not call {asked}. Try again.",
                 asked=asked,
             ))
+        # Names the PLACE and not the control. Until #410 this said "with Use in this conversation",
+        # which is a menu label — the row itself draws an unlabelled `+`, so a person told to look
+        # for those words found none. The panel's own heading is the thing they can actually see,
+        # and `store.js` already sends people to it in the same words.
         return _refused(brand.text(
-            "{asked} isn't a language model in this conversation. These are: {names}. "
-            "Add the one you want with Use in this conversation, then ask again.",
+            "{asked} isn't a language model in this conversation. {assistantName} can call "
+            "{names}. Add {asked} from {project} resources, then ask again.",
             asked=asked, names=_alias_list(turn) or "none",
         ))
 

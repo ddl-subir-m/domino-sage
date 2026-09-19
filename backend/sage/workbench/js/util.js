@@ -343,6 +343,29 @@ window.SW = window.SW || {};
     // that: "Stop using here" is on the row's own menu and in the drawer behind it.
     IN_CONTEXT_TITLE: 'In this conversation — shown as a chip above the message box.',
 
+    // The same mark, earned the other way. One tick covers both acts (#410), but the sentence
+    // behind it cannot: sending a reader to look for a chip above the message box, on a row that
+    // has none, is the same wrong-place problem the tick itself was drawn to fix. So this one names
+    // the act that DID put it there and the list that can take it back off.
+    //
+    // No verb here either, for `IN_CONTEXT_TITLE`'s reason: a Binding comes off on the app's own
+    // dependency list, which is the one surface that owns it (ADR-0021).
+    //
+    // Not "the app you are building": this is read in Chat, where nobody is building anything and
+    // no app is on screen at all. Naming a surface the reader cannot see is the exact failure
+    // #410 fixed in the refusals, and it would be silly to rebuild it in the tooltip that change
+    // added. So it names the RECORD — a Built App depends on this — and leaves which app to the
+    // row's own `usedBy` text.
+    // Says CALLABLE and not merely present, because that is the whole of what the record supports.
+    // An earlier draft said "a Built App in this project uses it", which is true of a bound store
+    // too — and a bound store is not in the conversation in any sense the assistant can act on: the
+    // prompt's Session context block lists chips and no Bindings, so the model is never told it
+    // exists. The mark is now drawn for a bound language model only, and this names why that one
+    // is different: it has a call name, and a turn can ask for it by that name.
+    get BOUND_HERE_TITLE() {
+      return SW.brand.text('{assistantName} can call it here — a {builtApp} in this {project} uses it.');
+    },
+
     // The mark a `missing` row wears, and the sentence behind it. Three surfaces read one answer —
     // the rail, the @ menu and the bind picker — so the words are written once, the way
     // `SOVEREIGN_TITLE` is: a person carries what they read from one menu to the other (ADR-0021).

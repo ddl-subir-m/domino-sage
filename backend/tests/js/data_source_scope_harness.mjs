@@ -291,6 +291,10 @@ function walk(node, out = [], depth = 0) {
   if (props.menu && props.menu.items) {
     entry.items = props.menu.items.map((i) => ({
       key: i.key || '', label: typeof i.label === 'string' ? i.label : '',
+      // The hover beside the ink. Since #410 a menu draws the act's short form and the glossary
+      // term lives here, so `label` alone cannot tell the pair being right from the long form
+      // having been dropped.
+      title: typeof i.title === 'string' ? i.title : null,
     }));
   }
   const direct = (Array.isArray(node.c) ? node.c : [node.c]).filter(

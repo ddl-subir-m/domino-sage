@@ -56,10 +56,47 @@ PIN_BRANCH = (
 
 def test_every_surface_that_attaches_a_resource_uses_the_same_words():
     """One act, one name. Three names for it made a person guess whether "Add to chat" and "Add to
-    this conversation" reached the same place — they always did. The tree row's visible ink is the
-    short "Use here" so the table name can be read; the glossary term stays as its title."""
+    this conversation" reached the same place — they always did.
+
+    The glossary term survives on all three surfaces, but since #410 none of them draws it as INK:
+    the tree shortened it first, and the panel's menu and the drawer's button followed. So this
+    asserts only that each surface still NAMES the act — where each one puts it is the next test's
+    question, and the ink is asserted there.
+
+    OVER `_flat` AND NOT THE RAW SOURCE, which is what makes it a check at all. Every one of these
+    three files now carries a COMMENT quoting this phrase — explaining where the long form went when
+    the ink was shortened — and a comment satisfies a substring search exactly as well as code does.
+    Measured on 2026-09-18: with the phrase removed from all three files' code and only the comments
+    left, this assertion still passed. `_flat` strips comments, so the prose can say the phrase as
+    often as it needs to and only a real call site answers here."""
     for name, src in SURFACES.items():
-        assert USE in src, f"{name} no longer offers {USE!r}"
+        assert USE in _flat(src), f"{name} no longer offers {USE!r}"
+
+
+def test_the_panel_and_the_drawer_shorten_the_act_the_way_the_tree_did():
+    """#410's other half. The tree fixed this in one place and recorded why at `resource-tree.js:307`
+    — twenty-four characters ate the table name in a 320px dock — and the reason applied just as
+    well to the two surfaces that went on drawing the long form. The pair also read lopsided
+    everywhere it was not done: `Use in this conversation` against `Stop using here`.
+
+    Asserted as the ink/hover PAIR rather than as the presence of a phrase, which is what the test
+    above cannot see: it passes while the long form sits in a `title`, which is exactly where this
+    change moved it to."""
+    panel, drawer = _flat(PANEL), _flat(DRAWER)
+
+    # The panel's row menu: short ink, long form on hover, and the removal untouched at fifteen
+    # characters — it was never the half that did not fit.
+    assert "label: inContext ? 'Stop using here' : 'Use here'," in panel
+    assert "title: inContext ? undefined : 'Use in this conversation'," in panel
+
+    # The drawer's button, the same pair one surface out.
+    assert "attached ? 'Stop using here' : 'Use here'" in drawer
+    assert "title: attached ? undefined : 'Use in this conversation'," in drawer
+
+    # No third assertion saying "and the long form is not ink anywhere". Both surfaces reached the
+    # long form through a ternary rather than as a bare child, so the shape a loop over `}, '<USE>')`
+    # would look for was never in either file — it would read as a guard and hold nothing. The two
+    # pairs above are the claim; each names the ink and the hover in one string.
 
 
 def test_the_tree_row_shortens_the_act_so_the_name_can_be_read():

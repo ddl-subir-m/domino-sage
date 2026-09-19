@@ -61,7 +61,11 @@ def test_use_in_this_chat_still_offers_the_act_it_owns():
     rows = _run([{"panel": "thr_many", "select": APP_ID, "mode": "chat"}])[-1]["rows"]
     row = _row(rows, "Claude Sonnet 4")
     assert _keys(row) == ["mention"]
-    assert [i["label"] for i in row["items"]] == ["Use in this conversation"]
+    # Ink and hover, as the pair #410 moved it to: the short form is what the menu draws, and the
+    # glossary term the other two surfaces say out loud lives on the hover. Asserted together, so
+    # that shortening the ink cannot quietly cost the long form as well.
+    assert [i["label"] for i in row["items"]] == ["Use here"]
+    assert [i["title"] for i in row["items"]] == ["Use in this conversation"]
 
 
 @needs_node
