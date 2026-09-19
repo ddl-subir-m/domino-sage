@@ -6658,7 +6658,14 @@ class Orchestrator:
             # Only the status matters — a 200 means the server still knows this session. Bounded so a
             # long recovered session isn't serialized in full to answer a yes/no question.
             client.messages(sid, limit=1)
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as e:
+            # The same blind catch as Chat's, and the same measurement (#434). This one looks
+            # safer because it returns rather than assigns — it is not: its only caller mints on
+            # `None` and writes, so a 503 re-homes a Build conversation exactly as it does a Chat
+            # one. Behaviour unchanged here too; this says which status it was.
+            log.info("%s: OpenCode answered %s for stored session %s; the caller will mint and "
+                     "overwrite the stored id", conversation or app_id or "build",
+                     e.response.status_code, sid)
             return None
         return sid
 
@@ -9255,7 +9262,22 @@ class Orchestrator:
                 # turn is still writing. That is an "empty plan" on a plan nobody had finished.
                 client.note_session_dir(sid, work)
                 return sid
-            except httpx.HTTPStatusError:
+            except httpx.HTTPStatusError as e:
+                # THE STATUS CODE IS THE WHOLE POINT OF THIS LINE (#434). `messages` ends in
+                # `raise_for_status`, which raises the same exception for every 4xx AND every 5xx,
+                # and this catch has never read the code. A 404 means OpenCode does not know this
+                # session, and minting below is right. A 500, 502, 503 or 429 means it could not
+                # answer just now — and the mint that follows calls `write_session_id`, which
+                # OVERWRITES the good id on disk, so one transient blip detaches a live
+                # Conversation from its session for good.
+                #
+                # BEHAVIOUR IS DELIBERATELY UNCHANGED. Which statuses may mint is a separate
+                # decision (#434 sketches it, #433 is the 404 case that must keep minting), and
+                # this line is the measurement that has to come first: today a 503 and a 404 leave
+                # identical evidence, which is none.
+                log.info("thread %s: OpenCode answered %s for its stored session %s; "
+                         "minting a new one and overwriting the stored id",
+                         thread_id, e.response.status_code, sid)
                 sid = None
         sid = client.create_session(directory=work)
         store.write_session_id(thread_id, sid, directory=work)
