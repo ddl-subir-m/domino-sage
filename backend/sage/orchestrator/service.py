@@ -3843,6 +3843,40 @@ def _is_answer_only(*, mode: Mode, is_question: bool, is_approval: bool, arch: b
     return mode is Mode.ASK or (mode in (Mode.AUTO, Mode.IMPLEMENT) and is_question)
 
 
+def _revert_scan_owed(*, any_tool_ran: bool) -> bool:
+    """Whether a Chat turn's end must re-read the workspace to undo writes it was not allowed.
+
+    One condition, and it is #418's: no tool ran, so nothing was written and the `after` read has
+    nothing to find. It is a direct observation of this turn, taken from two witnesses — the
+    `tool_run` event stream and the transcript's tool parts — because either can be the only one
+    that sees a call.
+
+    It cannot help the BEFORE snapshot. Learning it lazily on the first `tool_run` is the race #418
+    examined and rejected: the event is seen a poll later (p50 1000ms) and a `bash` step can write
+    inside that window.
+
+    **#419's condition is deliberately not here.** It proposed skipping this scan whenever the turn
+    was armed `arm_read_only("question")`, on the ground that such a turn cannot write. That is an
+    inference from an arming enforced in another process, over `READ_ONLY_DENIED`, which is a
+    DENYLIST — so every tool it does not name is allowed by default and nobody maintains the
+    property. It already leaks: `live_read_*` survives it on purpose (#402, ADR-0058), which is how
+    #419's before-snapshot skip lost a card. A future MCP tool is allowed the same way and nothing
+    would flag it.
+
+    This scan is a safety net for writes Sage did not sanction, and it is the last one — the turn's
+    `finally` commits and pushes the tree whatever happens here, so a scan that does not run is not
+    deferred, it is writes committed into the Project repo. `test_a_looping_chat_session_that_will
+    _not_stop_is_still_cleaned_up_after` pins it on a wedged session for exactly that reason, and
+    it went red when #419's condition was wired in. `any_tool_ran` is evidence about this turn;
+    `answer_only` was an assumption about a boundary elsewhere, and only one of those is safe to
+    skip a safety net on.
+
+    Named rather than inlined because a comment is not a check: a predicate can be driven through
+    both cases, and the call site can be pinned to it.
+    """
+    return any_tool_ran
+
+
 # A step that opens "I will …" — right after the list marker, or after the label's em dash. Weak
 # planners latch onto one opener and repeat it for every step, and seven identical openers is the
 # thing that makes a plan card read as filler. The opener carries no information the label and
@@ -11688,6 +11722,11 @@ class Orchestrator:
         last_text = ""
         streamed_body = ""
         artifacts_finished = False
+        # #418. Read at the turn's end to decide whether the workspace is worth re-reading: a turn
+        # that ran no tool cannot have written a file, so there is nothing for the revert scan to
+        # find. Set in the poll loop's `tool_run` branch below and never cleared — one tool is
+        # enough to owe the scan, and a turn that dies before the loop starts correctly owes none.
+        any_tool_ran = False
         # Set where the body is finalised below, read at the turn's conclusion (#411). A `nonlocal`
         # rather than a return value because every exit from this turn goes through
         # `publish_chat_artifacts`, and only one of them — the completed one — may draw the card.
@@ -11706,7 +11745,20 @@ class Orchestrator:
             # bare token under a half-finished answer.
             body, asked_for_the_other_lane = _take_needs_more_than_sql_marker(body)
             with timing.span("after.artifacts"):
-                revert_denied_writes(project.record.path, thread_id, tables.before)
+                # The end-of-turn scan is the only thing skipped here, and only when no tool ran at
+                # all (#418) — a turn that ran nothing wrote nothing, so this read finds nothing.
+                # Everything below still runs on every turn.
+                #
+                # Both of #419's skips were withdrawn, and for one reason: an `answer_only` turn is
+                # not a turn that cannot write. `READ_ONLY_DENIED` is a DENYLIST, so a tool it does
+                # not name survives, and `live_read_*` is deliberately not named (#402, ADR-0058).
+                # Those tools write `examples/<threadId>/*.table.json` through
+                # `liveread.result.record`; `new_artifact_paths` below is the only thing that turns
+                # such a file into a card, and it needs the baseline to tell it from an old file.
+                # Skipping the baseline lost the card for every `data_answer` turn that read live
+                # data — measured against main: the file reached disk, `read_artifacts` was empty.
+                if _revert_scan_owed(any_tool_ran=any_tool_ran):
+                    revert_denied_writes(project.record.path, thread_id, tables.before)
                 invalid = tables.check(body)
                 tables.diagnose(invalid, outcome)
                 # A failed replacement must not turn an earlier turn's valid card into an empty
@@ -11788,6 +11840,22 @@ class Orchestrator:
                        or project.record.path)
             project.active_session_id = sid
             with timing.span("setup.snapshot"):
+                # Taken on EVERY turn, including one armed `arm_read_only("question")`. #419
+                # proposed skipping it there on the premise that such a turn cannot write; the
+                # premise is false. `READ_ONLY_DENIED` is a denylist, so a tool it does not name
+                # survives, and `live_read_table`/`live_read_query`/`live_read_files` are
+                # deliberately not named (#402, ADR-0058). They write
+                # `examples/<threadId>/*.table.json`, and `new_artifact_paths` — which needs this
+                # baseline to tell a new file from an old one — is the only thing that turns one
+                # into a card. Skipping it lost the card for every `data_answer` turn that read
+                # live data, measured against main: the file reached disk, `read_artifacts` was
+                # empty, and nothing on screen said the table existed.
+                #
+                # So what #419 buys is the END-of-turn scan below and not this read. If this one is
+                # ever worth skipping, the replacement must still answer "what did this turn write
+                # into examples/<threadId>/" — an empty or partial baseline cannot, and handing one
+                # to `revert_denied_writes` or `refuse_oversize_findings` deletes files, since both
+                # unlink on `prev is None`.
                 before = snapshot_files(project.record.path)
                 tables = ChatTables(project.record.path, thread_id, before)
             # Cleared here so what is read at the end of this turn belongs to this turn. Every build
@@ -12122,6 +12190,11 @@ class Orchestrator:
                         appeared = True
                         continue
                     if ev.kind == "tool_run":
+                        # Before the `stream_owned` handover, not after: the flag is about whether
+                        # this turn ran anything at all, which is true of an event the transcript
+                        # already counted the first half of, and the end-of-turn revert scan is
+                        # owed on either half (#418).
+                        any_tool_ran = True
                         if not stream_owned:
                             # The handover. The stream starts its own run clean rather than
                             # inheriting one the transcript may have counted the first half of.
@@ -12280,6 +12353,20 @@ class Orchestrator:
                         if key in seen:
                             continue
                         if "tool" in pt:
+                            # The second witness, and the one that must be here rather than only on
+                            # the event stream (#418). `_EventTap` is best-effort by design — a
+                            # driver with no `session_events`, a stream that never connects, or one
+                            # that dies mid-turn all leave `drain()` empty forever and the loop
+                            # falls back to reading THIS transcript. Keyed only on `tool_run`, the
+                            # end-of-turn revert would then skip on a turn that really did write,
+                            # and a denied write would survive on disk. The transcript is where
+                            # every card comes from and it sees the call on both paths, so it is
+                            # the witness the guard is allowed to trust.
+                            #
+                            # Set before the status check, not after: a call still `running` at the
+                            # turn's end is a tool that ran, and it is the one most likely to have
+                            # left a half-written file behind.
+                            any_tool_ran = True
                             status = (part.get("state") or {}).get("status")
                             if status in ("pending", "running", "in_progress"):
                                 polled_running = True
