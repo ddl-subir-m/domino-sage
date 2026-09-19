@@ -833,6 +833,22 @@ _Avoid_: Pull latest (no control carries that label), Sync (Domino's own word, f
 Artifacts]]), merge (it is the prerequisite, not what anybody asked for), Update, Refresh (both hide
 that a build runs)
 
+**Unsent work**:
+Commits this workspace holds that the Project's git remote does not. The mirror of [[Incoming
+changes]] and read the same way — from refs a push or a fetch already left behind, never the
+network, never written down. Named by what it means to the person rather than by the ref
+arithmetic: their work exists in one place only. A Project with no remote has none, and neither
+does a local `/tmp` workspace that is not a repo root — both are as saved as anyone can be. A tree
+with uncommitted files is not this: Sage commits on a timer, so that state is ordinary and passes
+in seconds. What makes it a [[Problem]] rather than an error that already happened is that it
+stands: the save that failed is past tense, but a remote that refused once refuses the next turn
+too, so every turn after it silently does something other than what Chat says it does. See
+[ADR-0064](docs/adr/0064-a-failed-save-is-past-tense-and-unsent-work-is-not.md).
+_Kind_: word
+_Avoid_: ahead, unpushed, unsynced, out of sync (git internals rather than work someone did),
+unsaved (the commit did happen), uncommitted or dirty (a different state, and not this one),
+pending, backlog
+
 **Advance**:
 What a turn does when it produces a result no earlier turn in the Thread had already
 produced. A turn that reads and writes only what is already there has not advanced, however much
