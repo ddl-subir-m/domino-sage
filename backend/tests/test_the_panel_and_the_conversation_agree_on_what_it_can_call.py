@@ -345,6 +345,12 @@ def test_a_bound_store_is_not_ticked_because_the_prompt_never_names_it(tmp_path:
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "classify these"))
 
+    # WHAT THIS DOES AND DOES NOT DISCRIMINATE. Two things keep a store out: the condition in
+    # `_binding_reaches_a_turn`, and `_bound_here_ids` writing every id under the `llm_alias:`
+    # prefix, which a store's membership row can never match. Either one alone holds this test
+    # green — measured, by widening the condition and watching it pass. So it reds only when both
+    # are wrong, and it is not evidence about the condition by itself; the nameless-Alias test
+    # below is what pins that half. Both are kept deliberately: they fail in different directions.
     source = orch.list_data_sources()[0]
     orch.bind_data_source(source["id"], None, None, None)
 
