@@ -22,9 +22,15 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      # `requires-python = ">=3.11"`, and the checked-in venv is built on 3.11. Pinning the floor
-      # keeps uv from silently picking a newer interpreter than anyone develops against.
-      UV_PYTHON: "3.11"
+      # The Sage workspace runs 3.12.3 (`/opt/sage/backend/.venv/bin/python`), so CI runs 3.12
+      # and `.python-version` at the repo root puts every local venv on it too.
+      #
+      # `requires-python` is a FLOOR, not a pin, and this line is the only thing that made CI
+      # agree with anyone. Measured 2026-09-19: with no `.python-version`, uv picked 3.13.12 in
+      # the three worktrees while the root venv sat on 3.11.15 and CI on 3.11 — three different
+      # interpreters, none of them the one Sage ships on, and nothing said so. Do not delete this
+      # line thinking `requires-python` covers it.
+      UV_PYTHON: "3.12"
     steps:
       - uses: actions/checkout@v4
 
