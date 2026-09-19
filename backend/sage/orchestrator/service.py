@@ -272,6 +272,10 @@ _CHAT_TURN_MAX_S = 600.0
 # waits all of them for nothing. The number is a starting point, not a measured one; what matters is
 # that reaching it is a REFUSAL the assistant reads, not a silent stop.
 _DELEGATED_CALLS_MAX = 25
+# How many sources the "Already read in this Thread" block names (ADR-0061). One line per SOURCE,
+# not per read, so a Thread reaches this only by touching twenty different tables — and newest
+# first, because the ones a stalled investigation keeps re-reading are the recent ones.
+_ALREADY_READ_MAX = 20
 # How long the Alias listing a Delegated model call resolves against stays good. Short, because its
 # only job is to keep one classification pass from re-asking the gateway "which models exist" fifty
 # times; it is not a cache anything else reads. See `_alias_listing`.
@@ -10997,6 +11001,48 @@ class Orchestrator:
                 "what is still open. Append what you measure: the statement that produced it, the "
                 "time, and the numbers with their denominators.")
 
+    def _already_read_note(self, history: list[dict] | None) -> str:
+        """The sources earlier turns in this Thread already read, and where each result landed.
+
+        Rendered from the rows the caller already holds. Nothing here opens a file, walks a tree or
+        calls Domino: `service.py:3625` refuses a lookup during prompt rendering for the same
+        reason, and #418 is a live latency ticket on this exact path.
+
+        Gated on there being reads, never on a flag. An `investigating` gate would decide the
+        audience for this by a piece of state that can be mis-set, which is #443's own defect one
+        level up — the turns that need it most would be the ones the flag excludes (ADR-0061).
+
+        Evidence, and deliberately no verb. A turn legitimately asked to re-check whether the
+        warehouse moved must not be able to read this block as a prohibition.
+
+        Bounded at a COMPLETE clear, matching `recall.seed` and ADR-0055, which deletes the
+        findings file on the same event. A summary-scoped clear leaves it whole: a measurement log
+        is not talk, and neither is a read.
+
+        Two lists reach the prompt because neither record covers every read. `live_read_table`
+        emits no `data_used` event at all (`liveread/run.py`), so the Artifact list below is what
+        covers it; this one is richer where it applies.
+        """
+        rows = [r for r in (history or []) if isinstance(r, dict)]
+        for i in range(len(rows) - 1, -1, -1):
+            if rows[i].get("type") == recall.CLEARED and rows[i].get("scope") == recall.EMPTY:
+                rows = rows[i + 1:]
+                break
+        reads = chat_handoff.data_reads_by_source(rows)
+        if not reads:
+            return ""
+        lines = ["Already read in this Thread:"]
+        for entry in reads[:_ALREADY_READ_MAX]:
+            turns = entry["turns"]
+            said = f"{turns} turn" if turns == 1 else f"{turns} turns"
+            artifact = str(entry["artifact"] or "")
+            if artifact:
+                lines.append(f"- {entry['source']} — read on {said}, "
+                             f"most recent result at {artifact}")
+            else:
+                lines.append(f"- {entry['source']} — read on {said}")
+        return "\n".join(lines)
+
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
                      urls: list[str] | None = None, workspace: Path | None = None,
                      artifacts: list[dict] | None = None,
@@ -11097,10 +11143,20 @@ class Orchestrator:
         # may read — a dead one costs a tool call and an answer written around a file that is not
         # there. Filtered here rather than at the caller because every caller would have to
         # remember, and this list is only ever rendered into a prompt.
+        # Beside the Artifact list, because the two are complementary and answer one question
+        # between them: what this Thread has already looked at, and where the answer landed.
+        already_read = self._already_read_note(history)
+        if already_read:
+            lines += [already_read, ""]
         artifacts = _artifacts_present(self._chat_project().record.path, artifacts or [])
         if artifacts:
             lines.append(
-                "Already written this Thread (on screen; change one only if asked):"
+                # The permission that was missing, not a weakening of the prohibition. The
+                # measured failure is a turn that was told a card existed and never opened it
+                # (#443), not a turn that rewrote one — so "change one only if asked" stands
+                # exactly as it was and only the free act is spelled out beside it.
+                "Already written this Thread (on screen; reading one is always free; "
+                "change one only if asked):"
             )
             for art in artifacts:
                 path = str(art.get("path") or "")
@@ -11175,6 +11231,18 @@ class Orchestrator:
             # model ran.
             yield {"type": "done", "ok": False, "decision": "unknown thread"}
             return
+        # What this turn wrote, and which of those paths already existed when it started.
+        # Filled in place by `publish_chat_artifacts` from the list it builds anyway: `finish` is
+        # defined above it and runs after it, and reading the tree again here would add a pass over
+        # the workspace on the path #418 is a latency ticket about.
+        #
+        # `tables.before` is the baseline `new_artifact_paths` already measures against, so "was
+        # there before this turn" is free. Under `examples/<threadId>/` that means an earlier turn
+        # of this Thread wrote it — a clone could in principle carry one in from git, which would
+        # read as a rewrite, and that is the honest direction for the error to fall.
+        turn_writes: list[str] = []
+        turn_rewrites: set[str] = set()
+
         def finish(done: dict) -> dict:
             """The Chat turn's terminal row, on its way to the Thread.
 
@@ -11192,6 +11260,17 @@ class Orchestrator:
             data_used = project.shim.data_use.events(self._data_use_turns.get(thread_id, ""))
             if data_used:
                 done["dataUsed"] = data_used
+            # Stamped on EVERY turn, never only when the condition fires (ADR-0061). A field that
+            # appears only on failure cannot tell a turn that passed from one that ran before the
+            # field existed, and this row is the only place the question is ever asked.
+            #
+            # No new `decision` value, and `answered` is untouched. #435 measured what a new one
+            # costs: `store.js` keys `NO_PLATFORM_FAULT` and `ASKED_FOR` on `decision`, and a value
+            # missing from either list regresses in silence. This is a field beside it.
+            done["reads"] = sorted(set(turn_writes))
+            # The guard is load-bearing. An empty set is a subset of everything, so without "wrote
+            # at least one" every ordinary conversational turn would report `advanced: false`.
+            done["advanced"] = not (turn_writes and set(turn_writes) <= turn_rewrites)
             store.append_history(thread_id, done)
             return done
 
@@ -11615,9 +11694,14 @@ class Orchestrator:
                 withhold_table_rows(project.record.path, thread_id, tables.before,
                                     kept_rows=project.record.kept_rows())
                 runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
-                artifacts = [store.record_artifact(thread_id, path=rel)
-                             for rel in new_artifact_paths(project.record.path, thread_id, tables.before)
-                             if rel not in invalid]
+                written = [rel for rel in new_artifact_paths(project.record.path, thread_id,
+                                                            tables.before)
+                           if rel not in invalid]
+                artifacts = [store.record_artifact(thread_id, path=rel) for rel in written]
+                # The same list, kept for the terminal row (ADR-0061). In place rather than
+                # rebound, so `finish` above needs no `nonlocal` and this stays one computation.
+                turn_writes.extend(written)
+                turn_rewrites.update(rel for rel in written if rel in tables.before)
             events = []
             if body.strip() or invalid:
                 ev = {"type": "agent", "kind": "text",
