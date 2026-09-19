@@ -173,11 +173,15 @@ def test_the_pack_and_its_mirror_both_teach_the_marker():
     assert mirror.strip(), "the mirrored prompt is empty, so the assertions below prove nothing"
 
     for name, text in (("AGENTS.md", pack), ("opencode.json:agent.sage-chat.prompt", mirror)):
-        assert NEEDS_MORE_THAN_SQL_MARKER in text, name
+        # Whitespace-collapsed before matching, because these are WRAPPED PROSE files: re-flowing a
+        # paragraph splits a phrase across a newline and two leading spaces, and a guard that reds
+        # on re-wrapping teaches the next editor to work around it rather than to keep the rule.
+        flat = " ".join(text.split())
+        assert NEEDS_MORE_THAN_SQL_MARKER in flat, name
         # The two halves the check depends on. Teaching the token without the order teaches a model
         # to claim before it has measured, and every one of those claims is dropped.
-        assert "on a line of its own" in text, name
-        assert "tried a statement" in text, name
+        assert "on a line of its own" in flat, name
+        assert "tried a statement" in flat, name
 
 
 # ---- the grant (Project owner, 2026-09-18: accept AND decline are per calculation) --------------
@@ -290,3 +294,31 @@ def test_a_replay_under_a_grant_does_not_write_the_question_twice(tmp_path: Path
     asked = [e for e in orch.thread_history(tid)
              if e.get("type") == "user" and e.get("text") == "correlate signups with seats"]
     assert asked == [], "the replay adds no second copy of a question already on the Thread"
+
+
+def test_the_door_is_not_offered_for_work_sql_already_reaches():
+    """The prompt must not name the same work on both sides of this door (#411).
+
+    ADR-0058 is explicit about the split: a correlation, a percentile, a ranking, a cohort, a funnel
+    and a cross-source join are ALL one statement, and what SQL does not reach is a CSV or Dataset
+    file, model fitting, and anything wanting a library.
+
+    The first draft of the marker sentence named a correlation, a cohort, a funnel and a
+    cross-source join as reasons to ask for the other lane — all four on the wrong side, and three
+    of them offered to `live_read_query` by name four sentences earlier in the same paragraph. A
+    prompt that lists one kind of work on both sides does not teach a rule, it hands the model a
+    licence to pick either; and the model reads the nearest, most concrete list, which #436 has
+    since made more concrete still in the Data Source row. Held here because it is copy, so nothing
+    else fails when it drifts back.
+    """
+    from sage.orchestrator.service import Orchestrator
+
+    note = Orchestrator._data_use_note(None)
+    offer = note.split("still needs more than SQL can reach")[1].split("on a line of its own")[0]
+
+    for reachable in ("correlation", "percentile", "ranking", "cohort", "funnel", "join"):
+        assert reachable not in offer.split("NOT that")[0], (
+            f"{reachable!r} is named as a reason to ask for the other lane, and ADR-0058 says SQL "
+            "reaches it in one statement")
+    # And the capability half still offers them, so the split is stated rather than merely absent.
+    assert "a correlation" in note.split("use live_read_query")[0]

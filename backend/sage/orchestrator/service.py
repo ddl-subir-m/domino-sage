@@ -10928,12 +10928,22 @@ class Orchestrator:
                 # nothing, so a model that emits it early gets no card and the person gets no door.
                 # And the own-line rule, because a model that mentions the marker inside its
                 # explanation is quoting this very sentence, and that must not count as asking.
-                f"If you have run a statement and the answer still needs more than one SELECT can "
-                f"express — a correlation, a cohort, a funnel, a join across sources — then answer "
+                # THE EXAMPLES COME FROM ADR-0058's "does not reach" LIST, and getting them from
+                # anywhere else is how this sentence went wrong once already (#411). The first
+                # draft named a correlation, a cohort, a funnel and a cross-source join — all four
+                # of which that ADR names as things SQL DOES reach, in one statement, and three of
+                # which this very paragraph offers `live_read_query` for four sentences earlier. A
+                # prompt that lists the same work on both sides does not teach a rule; it hands the
+                # model a licence to pick either, and the nearest, most concrete list wins.
+                f"If you have run a statement and the answer still needs more than SQL can reach — "
+                f"a CSV or Dataset file, model fitting, anything wanting a library — then answer "
                 f"what you CAN from what you measured, say what you would need for the rest, and "
                 f"put {NEEDS_MORE_THAN_SQL_MARKER} on a line of its own at the end. Sage then offers "
-                f"the person the lane that can run it. Only after you have tried a statement, and "
-                f"only on its own line — naming it inside a sentence is not asking for it. "
+                f"the person the lane that can run it. A correlation, a percentile, a ranking, a "
+                f"cohort, a funnel and a join across sources are NOT that — they are one statement, "
+                f"so compose it rather than asking for another lane. Only after you have tried a "
+                f"statement, and only on its own line — naming it inside a sentence is not asking "
+                f"for it. "
                 "For CSV totals use live_read_files with operation=sum, dataset=upload, the authorized "
                 "path, group_by, sum_column, and selected_fields (result columns and/or total). "
                 "This one call calculates locally, writes a table, and returns the selected result. "
