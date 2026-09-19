@@ -3,11 +3,13 @@ import threading
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 
-from sage.orchestrator import chat_intent, handoff
+from sage.orchestrator import chat_intent, handoff, recall
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
+from sage.workspace.threads import ThreadStore
 
 from .fake_opencode import FakeOpenCode, Turn
 
@@ -2467,3 +2469,190 @@ def test_stop_with_nothing_running_is_not_a_trap_for_the_next_turn(tmp_path: Pat
     assert orch.project(start_preview=False).stop_requested is False
     events = list(orch.chat_stream(tid, "how many rows does clickstream have?"))
     assert any(e.get("type") == "agent" and e.get("text") == "Six million rows." for e in events)
+
+
+class _ForgetfulOpenCode(FakeOpenCode):
+    """A workspace restart, in the only shape Sage can see one (ADR-0060).
+
+    OpenCode's session store lives on the container overlay and dies with the workspace;
+    `session.json` lives on the Project volume and does not. So the id is still on disk and the
+    server has never heard of it — which opencode 1.18.4 answers with 404 on
+    `GET /session/{id}/message`, and which `_ensure_thread_session` turns into a fresh session.
+
+    Overriding `messages` is the whole point: `FakeOpenCode` answers `[]` for an unknown id, and an
+    empty list is a LIVE session with nothing in it. A test without this override would take the
+    reuse path and pass while proving nothing (#427).
+    """
+
+    def __init__(self, workspace: Path) -> None:
+        super().__init__(workspace, [Turn(text="There were 41,002 events from 3,118 users."),
+                                     Turn(text="Here it is again.")])
+        self.forgotten: set[str] = set()
+
+    def restart(self) -> None:
+        self.forgotten.update(s["id"] for s in self.sessions)
+
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
+        if session_id in self.forgotten:
+            request = httpx.Request("GET", f"http://opencode/session/{session_id}/message")
+            raise httpx.HTTPStatusError(
+                "404 Not Found", request=request,
+                response=httpx.Response(404, request=request))
+        return super().messages(session_id, limit=limit)
+
+
+def test_a_lost_session_is_rebuilt_from_the_transcript_and_the_person_is_told(tmp_path: Path):
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    first = list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    # The first turn mints a session too, and nothing was lost. No summary, and no notice — the
+    # gate is "was anything carried", not "was a session made".
+    assert not any(e.get("type") == recall.REBUILT for e in first)
+
+    oc.restart()
+    events = list(orch.chat_stream(tid, "now try again"))
+
+    # The precondition for everything below: the stored session was refused and replaced.
+    assert len(oc.sessions) == 2
+
+    sent = oc.prompts[-1]["text"]
+    # The model is handed what the dead session was holding...
+    assert "how many mixpanel events in the last 30 days?" in sent
+    assert "41,002 events" in sent
+    # ...and told, in as many words, not to answer the way #427 did.
+    assert "continuing, not starting" in sent
+
+    # And the person is told, live...
+    assert any(e.get("type") == recall.REBUILT for e in events)
+    # ...and on reload, which is the half a streamed-only notice would lose.
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    assert any(e.get("type") == recall.REBUILT for e in store.read_history(tid))
+
+
+def test_a_summary_scoped_clear_does_not_print_the_rebuild_notice(tmp_path: Path):
+    """A clear is not a loss, and must not be reported as one.
+
+    `clear_recall` drops the stored session for BOTH scopes — `store.clear_session_id` sits outside
+    the `if scope == recall.EMPTY:` block — so the turn after ANY clear mints a session and lands in
+    the rebuild path by construction. Nobody lost anything there; the person asked for it.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    orch.clear_recall(tid, recall.SUMMARY)
+    events = list(orch.chat_stream(tid, "what can you do?"))
+
+    assert not any(e.get("type") == recall.REBUILT for e in events)
+    # And the pre-clear transcript is not shovelled back into the fresh session.
+    assert "41,002 events" not in oc.prompts[-1]["text"]
+
+
+def test_an_ordinary_turn_on_a_live_session_rebuilds_nothing(tmp_path: Path):
+    """The assertion that catches a rebuild flag stuck on.
+
+    `len(oc.sessions) == 1` is the discriminating half: it says the SECOND turn reused the first
+    turn's session rather than minting beside it. Without it, a `_ensure_thread_session` that minted
+    every time would satisfy every other assertion in this file, and every turn of every Thread
+    would carry a duplicated summary under a false "Memory rebuilt" divider.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    events = list(orch.chat_stream(tid, "and by week?"))
+
+    assert len(oc.sessions) == 1
+    assert not any(e.get("type") == recall.REBUILT for e in events)
+    assert "41,002 events" not in oc.prompts[-1]["text"]
+
+
+def test_the_planner_does_not_spend_the_rebuild_a_chat_turn_is_owed(tmp_path: Path):
+    """`draft_handoff_plan` mints in this Thread's session and does not rebuild.
+
+    It is one click and needs no Chat turn first, so after a restart it is a plausible first act.
+    The debt is recorded in `session.json` rather than returned, precisely so this path cannot
+    consume it — the Chat turn that follows reuses a live session and must still be told.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    oc.restart()
+    try:
+        orch.draft_handoff_plan(tid)
+    except Exception:
+        # Whether the planner produces a plan is not this test's business. It minted, which is.
+        pass
+    assert len(oc.sessions) == 2
+
+    events = list(orch.chat_stream(tid, "now try again"))
+
+    assert any(e.get("type") == recall.REBUILT for e in events)
+    assert "41,002 events" in oc.prompts[-1]["text"]
+
+
+def test_a_dispatch_that_fails_leaves_the_rebuild_owed_for_the_next_turn(tmp_path: Path):
+    """A row written before the thing it attests to is a lie the transcript keeps.
+
+    The mint is on disk the moment it happens, so if the notice were written before `send_prompt`,
+    a dispatch that raised would leave the transcript permanently saying the memory was rebuilt
+    while the model never received a word — and nothing left to retry from.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    oc.restart()
+    good = oc.send_prompt
+
+    def explode(*a, **k):
+        raise RuntimeError("gateway said no")
+
+    oc.send_prompt = explode
+    try:
+        list(orch.chat_stream(tid, "now try again"))
+    except Exception:
+        pass
+    oc.send_prompt = good
+
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    # Nothing claimed on the transcript, because nothing happened.
+    assert not any(e.get("type") == recall.REBUILT for e in store.read_history(tid))
+
+    # And the debt is still standing, so the next turn pays it.
+    events = list(orch.chat_stream(tid, "now try again"))
+    assert any(e.get("type") == recall.REBUILT for e in events)
+    assert "41,002 events" in oc.prompts[-1]["text"]
+
+
+def test_a_restart_after_a_clear_does_not_carry_what_the_clear_took(tmp_path: Path):
+    """The path where `reseed`'s truncation is the only thing standing.
+
+    A clear on its own is already safe twice over: it DELETES `session.json`, so the next mint finds
+    no stored id, records no debt and never reaches `reseed`. This is the ordering where that does
+    not save anyone — clear, then a turn (which writes a session id again), then a restart. Now the
+    loss is real, the debt is real, the rebuild fires correctly, and the only thing keeping the
+    cleared conversation out of the new session is `reseed` truncating at the clear.
+
+    Getting this wrong answers "forget this" with a summary of what was to be forgotten, under a
+    notice blaming a restart for it.
+    """
+    orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    orch.clear_recall(tid, recall.SUMMARY)
+    list(orch.chat_stream(tid, "what is in the orders table?"))
+
+    oc.restart()
+    events = list(orch.chat_stream(tid, "chart that"))
+
+    sent = oc.prompts[-1]["text"]
+    # The rebuild did happen — this is a genuine loss.
+    assert any(e.get("type") == recall.REBUILT for e in events)
+    assert "what is in the orders table?" in sent
+    # And it stopped at the clear.
+    assert "41,002 events" not in sent
+    assert "how many mixpanel events in the last 30 days?" not in sent

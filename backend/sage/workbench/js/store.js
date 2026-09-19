@@ -1963,6 +1963,19 @@ window.SW = window.SW || {};
           order: pos,
           blocks: [{ type: 'recall_cleared', scope: ev.scope }],
         });
+      } else if (ev.type === 'recall-rebuilt') {
+        // Chat's reader only, and deliberately not added to Build's below: `_chat_stream` is the
+        // one place that writes this row, into the Thread's history. The only other caller of
+        // `_ensure_thread_session` is the planner, which drops the mint flag for a reason stated
+        // there — so this row appearing in a Build transcript would mean something had gone wrong,
+        // not that this branch was missing.
+        assistant = null;
+        messages.push({
+          id: `rr_${messages.length}`,
+          role: 'system',
+          order: pos,
+          blocks: [{ type: 'recall_rebuilt' }],
+        });
       } else if (ev.type === 'recall-suggest' && i === liveRecall) {
         assistant = null;
         messages.push({
@@ -7513,6 +7526,25 @@ window.SW = window.SW || {};
               role: 'system',
               at: new Date().toISOString(),
               blocks: [{ type: 'plan_suggestion', reason: ev.reason }],
+            });
+          } else if (ev.type === 'recall-rebuilt') {
+            // Why this is not a duplicate of the reducer's branch near the top of this file. The
+            // `recall-cleared` family is written by DOORS, and every one of them re-reads the whole
+            // transcript when it returns, so the reducer is the only reader those rows ever need.
+            // This row is written by the turn itself, mid-stream, and on the ordinary path — the
+            // person stays on the Thread and the turn finishes — nothing re-reads: `sendMessage`
+            // only re-reads on `left || unran`. Without this branch the notice reaches the person
+            // who reloads later and nobody else, which inverts ADR-0060's second half — the reader
+            // it is FOR is the one watching the answer arrive.
+            //
+            // `state.typing` is deliberately left alone, unlike the branches around this one. This
+            // frame arrives between dispatch and the first token, so the turn genuinely is still
+            // working; clearing it here would drop the indicator and then start streaming under it.
+            pushMessage({
+              id: `rr_${Date.now()}`,
+              role: 'system',
+              at: new Date().toISOString(),
+              blocks: [{ type: 'recall_rebuilt' }],
             });
           } else if (ev.type === 'withhold-search') {
             // The failure is already on screen; this is the line under it. Pushed as its own block
