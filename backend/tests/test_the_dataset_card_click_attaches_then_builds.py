@@ -209,7 +209,8 @@ def test_the_chat_way_past_the_card_names_it_too():
 
     assert out["replay"] == {"prompt": PROMPT, "skipTableGate": False,
                              "skipDatasetGate": True, "datasetDismissed": "ds_revenue",
-                             "investigationAnswered": False}
+                             "investigationAnswered": False,
+                             "otherLaneGrant": ""}
 
 
 @needs_node
@@ -280,7 +281,8 @@ def test_the_chat_click_pins_the_file_and_then_asks_the_question_again():
     # just answered about must not also be recorded as one they wanted nothing from.
     assert out["replay"] == {"prompt": PROMPT, "skipTableGate": False,
                              "skipDatasetGate": True, "datasetDismissed": "",
-                             "investigationAnswered": False}
+                             "investigationAnswered": False,
+                             "otherLaneGrant": ""}
 
 
 @needs_node
