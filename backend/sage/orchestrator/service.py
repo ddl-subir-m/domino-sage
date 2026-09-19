@@ -11573,7 +11573,7 @@ class Orchestrator:
                 chat_approved.names, chat_approved.order
             )
         tap: _EventTap | None = None
-        from ..workspace.chat_tables import ChatTables, without_failed_tables
+        from ..workspace.chat_tables import ChatTables, failed_table_name, without_failed_tables
 
         tables: ChatTables | None = None
         primary_body = ""
@@ -11629,6 +11629,18 @@ class Orchestrator:
                            else "I could not generate the table.")
                 if len(invalid) > 1:
                     message = message.replace("the table", "some tables")
+                # WHICH table, because this sentence can stand beside a card that worked. One turn
+                # can write several: #435 read a 106-column sample AND computed an answer, failed on
+                # the sample and published the answer, and said "I could not generate the table"
+                # over a correct card. Two claims about two different files, and nothing on screen
+                # said which was which — the person could only guess whether to trust the number.
+                #
+                # The file's own name, which is what the card is captioned with, so the sentence and
+                # the thing it is about are read with one word in common.
+                # A set: `rglob` is recursive, so two invalid files in different subdirectories
+                # of this Thread can share a basename, and "moves, moves" names neither.
+                named = ", ".join(sorted({failed_table_name(rel) for rel in invalid}))
+                message = f"{message.rstrip('.')}: {named}."
                 ev = {"type": "error", "reason": "table generation failed", "message": message}
                 events.append(ev)
             if runaway:

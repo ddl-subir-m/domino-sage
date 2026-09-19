@@ -37,6 +37,7 @@ from sage.resources.provider import FakeResourceProvider
 from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
+from .test_a_shape_only_table_artifact_renders_as_a_receipt import _node, needs_node
 
 TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
 
@@ -207,6 +208,28 @@ def test_the_ending_does_not_buy_a_gateway_listing(tmp_path: Path):
 
     fault = store[store.index("const NO_PLATFORM_FAULT"):]
     assert "'queries failed'" in fault[:fault.index("\n")]
+
+
+@needs_node
+def test_the_ending_really_does_not_buy_one_when_the_stream_runs():
+    """The behaviour the grep above only claims (#435).
+
+    That assertion reads the list and stops. It passed for the whole time the entry did nothing:
+    `NO_PLATFORM_FAULT` was consulted in an `else` branch of `endedBadly`, which a `done` carrying
+    `ok: false` never reached — and this decision always carries `ok: false`, because a build whose
+    queries all failed is not clean. Measured, not read: the harness counts the `/health` calls.
+    """
+    failed = _node("build_stream_harness.mjs", {"history": [], "events": [
+        {"type": "data-source-failed", "message": "A store refused a query."},
+        {"type": "done", "ok": False, "decision": "queries failed"},
+    ]})
+    assert failed["healthCalls"] == 0
+
+    # The discriminator: ADR-0027 still pays for the listing where it can answer something.
+    gateway = _node("build_stream_harness.mjs", {"history": [], "events": [
+        {"type": "done", "ok": False, "decision": "gateway error"},
+    ]})
+    assert gateway["healthCalls"] == 1
 
 
 # ---- and it stays best-effort -------------------------------------------------------------------

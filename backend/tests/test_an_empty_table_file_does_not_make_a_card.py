@@ -48,7 +48,8 @@ def test_empty_authoritative_text_removes_a_streamed_broken_offer():
     result = _node("chat_stream_harness.mjs", [
         {"type": "delta", "text": "The table is ready: [file:examples/t1/moves.table.json]", "final": True},
         {"type": "agent", "kind": "text", "text": ""},
-        {"type": "error", "reason": "table generation failed", "message": "I could not generate the table."},
+        {"type": "error", "reason": "table generation failed",
+         "message": "I could not generate the table: moves."},
         {"type": "done", "ok": False},
     ])
     assert "table is ready" not in json.dumps(result["final"])

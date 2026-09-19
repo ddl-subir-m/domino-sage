@@ -69,8 +69,10 @@ def test_invalid_content_gets_one_repair_and_a_persisted_failure(tmp_path, raw, 
         assert table not in texts
         assert "table is ready" not in texts
         failures = [e for e in rows if e.get("reason") == "table generation failed"]
+        # The table is named since #435: one turn can write several, and this sentence can stand
+        # beside a card that worked — here, the chart it already says is ready.
         assert [e["message"] for e in failures] == [
-            "The chart is ready, but I could not generate the table."]
+            "The chart is ready, but I could not generate the table: moves."]
         assert [a["path"] for e in rows if e["type"] == "artifacts" for a in e["items"]] == [chart]
     assert [a["path"] for a in orch.get_thread(tid)["artifacts"]] == [chart]
     if not kept_rows and raw is not None:
