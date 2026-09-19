@@ -926,7 +926,12 @@ def test_a_data_source_with_no_table_picked_is_reachable_not_shut(tmp_path: Path
 
     assert "cannot query it live" not in prompt
     assert "get_datasource('Snowflake-Data-Warehouse')" in prompt
-    assert "list its tables before you answer" in prompt
+    # #436 moved the route this row leads with. "List its tables before you answer" was an
+    # instruction to run Python, and the lanes that reach this row most often have no shell — so
+    # the row now names the tool they do hold, and keeps Python behind its own condition.
+    assert "source 'Snowflake-Data-Warehouse'" in prompt
+    assert "live_read_query" in prompt
+    assert "Do not guess a table name" in prompt
     assert "Do not invent rows" in prompt
 
 
