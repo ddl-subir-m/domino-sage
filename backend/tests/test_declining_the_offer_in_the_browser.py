@@ -37,6 +37,15 @@ OFFERED_AFTER = [
 ]
 
 
+# The shape the server used to produce for a `build_app` verdict, and the live symptom of #453: a
+# card tagged `classifier` with no answer above it, because the classifier ran BEFORE the turn and
+# returned instead of it. The client is not wrong about this shape — it does exactly what the tag
+# says — which is why #453 is a server fix. Kept as the reason the tag has to be earned.
+TAGGED_CLASSIFIER_BUT_OWED = [
+    {"id": "u1", "role": "user", "blocks": [{"type": "text", "value": ASK}]},
+    {"id": "s1", "role": "system", "blocks": [{"type": "plan_suggestion", "reason": "classifier"}]},
+]
+
 # The shape that broke it live. A prompt naming a Dataset draws the file picker BEFORE the handoff
 # regex runs, so the offer arrives with a card between it and the question — and a card is an
 # assistant message on screen while being a `dataset-files` event in the transcript. The server's
@@ -96,6 +105,20 @@ def test_a_card_between_the_question_and_the_offer_is_not_an_answer():
     out = _decline(OFFERED_AFTER_A_CARD)
     assert "api/threads/t1/handoff/decline" in out["routes"]
     assert out["answers"][-1] == "Here is what that data holds."
+
+
+def test_a_classifier_tag_over_an_unanswered_question_loses_it():
+    """#453 on screen. The card said the turn had answered, so `Not now` suppressed locally and
+    called no route — and there was no answer under it. Nothing took the card's place, and Retry
+    was the only way back to the question.
+
+    The assertion is what the person is left looking at, not which route ran. `Not now` on a
+    classifier card is *correct* to stay local; what was wrong was a server minting that tag on a
+    turn that never ran, which `test_a_build_app_turn_answers_before_it_offers.py` now pins shut.
+    """
+    out = _decline(TAGGED_CLASSIFIER_BUT_OWED)
+    assert out["answers"] == []
+    assert out["routes"] == ["api/threads/t1"]
 
 
 def test_the_thread_reads_as_suppressed_either_way():
