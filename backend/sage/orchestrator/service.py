@@ -3598,11 +3598,41 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             )
         return line
     if kind in ("data_source", "datasource"):
-        # No resolved source name, no recipe. When a table is scoped, `name` is the table, so
-        # guessing with it sends the agent at a lookup that cannot succeed — and it comes back as
-        # "no Data Source registered under that name", which reads like the person attached the
-        # wrong thing. Saying "cannot query" is worse to read and far better to act on.
-        if scope and scope.get("table") and source_name:
+        # The store's own name, and the reason this is a variable rather than `source_name`: it is
+        # the ONLY argument `live_read_query` takes for a Data Source (`liveread/mcp.py` — "The Data
+        # Source name"), so a row that holds a usable name holds everything the tool needs, whether
+        # or not `add_thread_context` managed to stamp `sourceName` onto the chip.
+        #
+        # #436, and the production route to this branch is a transient one rather than the refusal
+        # in the ticket body. `add_thread_context` stamps `sourceName` only when `_context_source`
+        # resolves, and that helper swallows `ResourceUnavailable` — Domino not answering, or
+        # answering and refusing. A chip the Workbench posted correctly, attached in those seconds,
+        # is written without a `sourceName`, nothing retries it, and every later turn in the Thread
+        # was then told the store could not be queried — about a store reachable again by then whose
+        # name was in the chip the whole time.
+        #
+        # The refusal the ticket was filed on is NOT that. It ran on a chip a sibling session posted
+        # by hand while verifying #408, carrying the raw Domino id in `id` and no `resourceId`. The
+        # Workbench door never posts that shape (`workbench/js/api.js:531` sends `resourceId` and no
+        # `id`), so it proves nothing about production and is not what this branch is justified on.
+        #
+        # When a table is scoped and no source name resolved, `name` is the TABLE, so it is not a
+        # store name and guessing with it sends the agent at a lookup that cannot succeed. That case
+        # alone still falls through.
+        # NOT re-resolved lazily here when `sourceName` is missing and `resourceId` is present,
+        # though that is the obvious alternative and it was considered. It would put a Domino round
+        # trip inside prompt rendering, on the turn's critical path, and turn latency is under
+        # active work (#400, #417) — the wrong thing to charge for a field that is only ever absent
+        # after an outage. For a Workbench chip `item["name"]` IS `resource.name` (`api.js:533`),
+        # which is the same string the resolve would return, so the cheap read is also the correct
+        # one. Do not "fix" this into a lookup.
+        # Read off the item rather than off `name`, which is not the same question: `name` carries
+        # the display fallbacks (`item["id"]`, then the literal "unnamed"), and neither of those is
+        # a store `live_read_query` can look up. Passing one would put this row back in the business
+        # of naming a route that cannot work — the defect, with the arrow turned around.
+        store = source_name or ("" if scope and scope.get("table")
+                                else str(item.get("name") or "").strip())
+        if scope and scope.get("table") and store:
             dotted = scope_label(scope)
             cols = item.get("columns") if isinstance(item.get("columns"), list) else []
             col_txt = ", ".join(
@@ -3615,32 +3645,59 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 for c in cols[:40]
             ).strip()
             extra = f" Columns: {col_txt}." if col_txt else ""
+            # The tools come first and Python second, because on this side of the fork Python is
+            # usually the route the turn does NOT have: a `data_answer` turn is read-only and a
+            # `data_artifact` turn keeps an allowlist, and both of them drop the shell while keeping
+            # every `live_read_*` tool (`shim/enforcement.py`). A recipe naming the store by name
+            # is the most specific instruction in the prompt about that store, so when it named the
+            # one unrunnable route it beat the general note higher up that named the right one.
+            #
+            # Python is kept rather than deleted. An unbounded Chat turn has the shell and may have
+            # no live-read tool at all — the MCP handshake can land after the tool list is fixed —
+            # and a row that names a store while leaving the route unsaid is #370.
             return brand.text(
-                "- {dataSource} {name}, table {dotted}.{extra} Query it with "
+                "- {dataSource} {name}, table {dotted}.{extra} To work a number out of it — a "
+                "count, a total, an average, a ranking, a group-by — call `live_read_query` with "
+                "this turn's token, source {quoted}, and one SELECT against {dotted}. To see a few "
+                "rows, call `live_read_table` with the same token and source. If those tools are "
+                "not in your tool list this turn and you have a shell, "
                 "`from domino_data.data_sources import DataSourceClient` then "
                 '`DataSourceClient().get_datasource({quoted}).query('
                 '"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
                 "Do not search files, env, or /opt/sage for credentials. Do not invent rows. "
                 "If the query errors, tell the person.",
-                name=name, dotted=dotted, extra=extra, quoted=repr(name),
+                name=name, dotted=dotted, extra=extra, quoted=repr(store),
             )
         extra = f" at {path}" if path else ""
-        if source_name:
+        if store:
             # A bare Data Source: no table pinned, but the store IS named, so it is reachable. This
             # used to fall through to the sentence below and claim the workspace could not query it
             # at all. Live, a creator asked for a dashboard over a Snowflake source with no table
             # picked, and the build shipped invented rows behind a note saying the connection needed
             # table names — which nothing had asked them for. Not knowing WHICH table is a question;
             # it is not the store being shut.
+            #
+            # Same ordering as the scoped row above, for the same reason (#436), and the same reason
+            # the old text could not be left alone even where it resolved a source name: "list its
+            # tables before you answer" was an instruction to run Python on a turn that has none.
             return brand.text(
                 "- {dataSource} {name}{extra}. No {scope} is chosen on it, so which tables it holds is "
-                "not recorded here. Reach it with "
-                "`from domino_data.data_sources import DataSourceClient` then "
-                "`DataSourceClient().get_datasource({quoted})`, and list its tables before you "
-                "answer — do not guess a table name. Do not search files, env, or /opt/sage for "
-                "credentials. Do not invent rows. If the query errors, tell the person.",
-                name=name, extra=extra, quoted=repr(source_name),
+                "not recorded here. To work a number out of it, call `live_read_query` with this "
+                "turn's token, source {quoted}, and one SELECT naming the table in full as "
+                "database.schema.table. To see a few rows, call `live_read_table` with the same "
+                "token and source. If those tools are not in your tool list this turn and you have "
+                "a shell, `from domino_data.data_sources import DataSourceClient` then "
+                "`DataSourceClient().get_datasource({quoted})`. Do not guess a table name — if the "
+                "person has not named one and you cannot find it, say so. Do not search files, env, "
+                "or /opt/sage for credentials. Do not invent rows. If the query errors, tell the "
+                "person.",
+                name=name, extra=extra, quoted=repr(store),
             )
+        # Reached only when a table is scoped and no source name resolved, which is the one shape
+        # where nothing here knows what to pass as `source` — `name` is the table. Before #436 this
+        # also caught every chip that simply arrived without `sourceName`, and there it was a false
+        # statement about a store the turn could have queried by name. Narrow it further only with a
+        # source name in hand: this sentence is what a turn says when it genuinely has none.
         return brand.text(
             "- {dataSource} {name}{extra}. This workspace cannot query it live. Do not invent rows. "
             "Say that you cannot open it.",
@@ -11325,8 +11382,12 @@ class Orchestrator:
         # exemption is not one: `data_answer` arms `arm_read_only`, whose `READ_ONLY_DENIED =
         # WRITE_TOOLS | SHELL_TOOLS` takes the shell, and `data_artifact` leaves read plus
         # `artifact_write`, which cannot write outside `examples/<threadId>/`. Either way the turn
-        # loses Python, and Python is the only way to the warehouse — `live_read_table` accepts no
-        # SQL. The third route in is the classifier's own fallback through `_plain_chat_answer_only`,
+        # loses Python. That used to mean it lost the warehouse with it — `live_read_table` accepts
+        # no SQL — and #408 is the tool that made it untrue; what the turn keeps is `live_read_query`
+        # on both lanes, so bounding it no longer costs it the store. Said here because the belief
+        # outlived the code once already: the Data Source row in `_chat_context_line` went on
+        # handing every turn a Python recipe, and #436 is a turn that read it and gave up.
+        # The third route in is the classifier's own fallback through `_plain_chat_answer_only`,
         # which is why the gate is on `answer_only` rather than on the label.
         #
         # WHAT MAKES THAT SAFE IS THE GRANT, AND NOTHING ELSE (#386, ADR-0056). This used to read
