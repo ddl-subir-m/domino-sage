@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Phase-5 STEP 5.2 — probe Domino's PUBLIC apps API to lock the "Publish" create body.
 
 Purpose: learn exactly what `POST /api/apps/beta/apps` accepts for a git-based project's

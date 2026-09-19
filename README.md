@@ -19,8 +19,8 @@ The rest of this README covers local development, not deployment.
 
 ## Prerequisites
 
-- **Node ≥ 20** (for the OpenCode coding harness)
-- **Python ≥ 3.11**
+- **Node ≥ 22.13.0** (for the OpenCode coding harness, and for `node --experimental-strip-types`)
+- **Python 3.12** (what the Sage workspace runs; pinned by `.python-version`)
 - **uv** — Python package/venv manager (https://docs.astral.sh/uv/). `brew install uv`.
 
 ## Setup (any machine)
@@ -105,7 +105,7 @@ the token sidecar (`:8899`) works with no static key.
 ```bash
 git clone git@github.com:ddl-subir-m/domino-sage.git && cd domino-sage
 cp .env.example backend/.env          # keep GATEWAY_API_KEY BLANK -> sidecar auth is automatic
-make setup                            # needs Node >=20, Python >=3.11, uv (see note)
+make setup                            # needs Node >=22.13.0, Python 3.12, uv (see note)
 make shim                             # terminal 1: shim on :8080, sidecar token per request
 make opencode                         # terminal 2: pick a model like sage-gateway/qwen-2-5
 ```

@@ -22,18 +22,35 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      # `requires-python = ">=3.11"`, and the checked-in venv is built on 3.11. Pinning the floor
-      # keeps uv from silently picking a newer interpreter than anyone develops against.
-      UV_PYTHON: "3.11"
+      # The Sage workspace runs 3.12.3 (`/opt/sage/backend/.venv/bin/python`), so CI runs 3.12
+      # and `.python-version` at the repo root puts every local venv on it too.
+      #
+      # `requires-python` is a FLOOR, not a pin, and this line is the only thing that made CI
+      # agree with anyone. Measured 2026-09-19: with no `.python-version`, uv picked 3.13.12 in
+      # the three worktrees while the root venv sat on 3.11.15 and CI on 3.11 — three different
+      # interpreters, none of them the one Sage ships on, and nothing said so. Do not delete this
+      # line thinking `requires-python` covers it.
+      UV_PYTHON: "3.12"
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20" # `engines.node = ">=20"` in the root package.json.
+          node-version: "22" # `engines.node = ">=22.13.0"` in the root package.json.
 
-      # The harnesses import `node:fs` and `node:vm` only, so no `npm ci` is needed here, and the
+      # Most harnesses import `node:fs` and `node:vm` only, so no `npm ci` is needed here, and the
       # Vite template's node_modules are for the preview server that no test starts.
+      #
+      # `app_model_outcome_harness.mjs` is the exception and it is why the pin is 22 and not 20: it
+      # imports `stripTypeScriptTypes` from `node:module` to compile the generated .ts helper, and
+      # that export was added in v22.13.0. Node 20 raises a SyntaxError at import, which reaches
+      # pytest as a bare `assert 1 == 0` on the subprocess return code and names no version at all.
+      # Three tests in `test_new_apps_report_incomplete_model_answers.py` were red on main for days
+      # for exactly that reason while passing on every developer laptop.
+      #
+      # Before lowering this pin, grep the harnesses for `node:` imports and check each export
+      # against the floor, rather than trusting the sentence above. That sentence was true when it
+      # was written, a harness added a third module, and nothing re-read it.
 
       - name: Install ripgrep
         # Present on the runner image today, installed anyway so the suite does not depend on that

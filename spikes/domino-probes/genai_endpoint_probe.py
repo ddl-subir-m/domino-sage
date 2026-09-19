@@ -18,7 +18,12 @@ tiny and max_tokens is 8. /v1/models is tried first because it is a free GET.
 Usage:
   python3 spikes/domino-probes/genai_endpoint_probe.py [endpoint-name-substring]
 """
-import json, os, sys, time, urllib.error, urllib.request
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
 
 WANT = sys.argv[1].lower() if len(sys.argv) > 1 else None
 HOST = os.environ.get("DOMINO_API_HOST", "")
@@ -29,7 +34,7 @@ def token():
     try:
         with urllib.request.urlopen(PROXY + "/access-token", timeout=10) as r:
             return r.read().decode().strip()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -61,7 +66,7 @@ def call(url, auth_label, tok, payload=None, timeout=60):
     except urllib.error.HTTPError as e:
         return (auth_label, e.code, round(time.time() - t0, 2),
                 e.read()[:300].decode("utf8", "replace"))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return (auth_label, "ERR", round(time.time() - t0, 2), f"{type(e).__name__}: {e}")
 
 
@@ -94,8 +99,8 @@ for e in items:
 
 for r_ in rows:
     mark = "RUNNING >>" if r_["status"] == "Running" else "          "
-    print(f"{mark} {r_['name'][:34]:<34} {str(r_['status']):<12} "
-          f"access={str(r_['access']):<9} proj={r_['project']} ({r_['owner']})")
+    print(f"{mark} {r_['name'][:34]:<34} {r_['status']!s:<12} "
+          f"access={r_['access']!s:<9} proj={r_['project']} ({r_['owner']})")
 
 running = [r_ for r_ in rows if r_["status"] == "Running"]
 print(f"\ntotal={len(rows)}  running={len(running)}")
@@ -131,7 +136,7 @@ try:
                                           "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as r:
         served_id = (json.loads(r.read()).get("data") or [{}])[0].get("id")
-except Exception as e:
+except Exception as e:  # noqa: BLE001
     print(f"   could not resolve served model id: {type(e).__name__}: {e}")
 
 print(f"\n-- served model id from /v1/models: {served_id!r}"
