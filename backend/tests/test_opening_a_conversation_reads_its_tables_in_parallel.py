@@ -73,8 +73,9 @@ def test_twelve_tables_are_read_six_at_a_time():
 
 @needs_node
 def test_one_unreadable_table_still_leaves_every_other_card_drawn():
-    """A throw used to abandon the rest of the loop; inside a pool it would take the whole batch,
-    including tables that had already come back. Each item settles on its own."""
+    """The serial loop already caught this per item, so the failing table has always fallen back
+    to its link. What changed is the cost of a leak: inside a pool a rejection would take the
+    whole batch, including tables that had already come back, not just the ones behind it."""
     thread_id = "thr_broken"
     paths = [f"examples/{thread_id}/t{i}.table.json" for i in range(5)]
     files = {p: {"body": _body(f"Table {i}")} for i, p in enumerate(paths)}
@@ -144,8 +145,12 @@ def test_blocks_keep_the_order_the_turn_wrote_them_when_a_later_read_lands_first
 
 @needs_node
 def test_a_blank_table_file_is_still_hidden_and_still_stripped_from_the_sentence():
-    """`hiddenTables` is filled by the caller's ordered pass, not by the reads, so the Set the
-    stripping walks keeps the order the turn wrote its Artifacts in."""
+    """A table file that is there but blank gets neither a card nor a link, and the sentence
+    around it loses the link too.
+
+    This pins the hiding, not the order `hiddenTables` is walked in. Nothing here pins that
+    order, and nothing can: see the comment on the assembly pass in `store.js` for why no two
+    real Artifact paths can make it observable."""
     thread_id = "thr_blank"
     blank_one = f"examples/{thread_id}/first.table.json"
     blank_two = f"examples/{thread_id}/second.table.json"

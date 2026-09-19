@@ -1740,11 +1740,20 @@ window.SW = window.SW || {};
       Array.from({ length: Math.min(ARTIFACT_HYDRATION_POOL, reads.length) }, worker));
 
     // `hiddenTables` is filled on this pass rather than inside the read, so its insertion order
-    // stays the order the turn wrote its Artifacts in. The caller iterates the Set to strip the
-    // hidden paths out of the surrounding sentence (`store.js:2049`), and a Set iterates in
-    // insertion order — filling it from the pool would have handed that order to whichever read
-    // happened to finish first. A slot is `null` only for a table the read chose to hide; every
-    // other index was written above or by a worker.
+    // stays the order the turn wrote its Artifacts in rather than the order the reads came back.
+    //
+    // Whether that order can be OBSERVED is a separate question, and the answer today is no. The
+    // caller walks the Set twice to strip a hidden path out of the surrounding sentence
+    // (`store.js:2049`): once asking whether a link mentions it, which is a membership test, and
+    // once deleting it as a bare substring, which diverges only when one hidden path contains
+    // another. No two real paths can — every Artifact is written to
+    // `examples/<threadId>/<slug>.table.json` (`shim/chat_paths.py`), and two paths sharing that
+    // prefix cannot sit inside one another. Filled here anyway: it costs nothing, it keeps this
+    // observably identical to the serial loop it replaced, and it does not rest on that argument
+    // still holding for whatever path a later writer invents.
+    //
+    // A slot is `null` only for a table the read chose to hide; every other index was written
+    // above or by a worker.
     const blocks = [];
     for (let i = 0; i < list.length; i += 1) {
       if (slots[i] === null) hiddenTables.add(list[i].path || '');
