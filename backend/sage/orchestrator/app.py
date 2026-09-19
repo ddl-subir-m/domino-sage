@@ -99,6 +99,7 @@ from .service import (
     AttachSourceMissing,
     AttachTooLarge,
     AttachWouldClobber,
+    ChartFontsMissing,
     DataReferenced,
     DetachStopped,
     FolderActUnavailable,
@@ -3577,6 +3578,12 @@ async def delegated_model_mcp(request: Request) -> Response:
 def write_chat_artifact(body: dict = Body(default={})) -> JSONResponse:
     try:
         return JSONResponse(orchestrator.write_chat_artifact(body))
+    except ChartFontsMissing as e:
+        # 500, not 400: this image cannot draw chart text, and the markup that reached it was
+        # fine (#444). Carried as `error` so the tool quotes the cause instead of reporting the
+        # bare non-JSON 500 uvicorn writes for an uncaught raise — that reads as a transport
+        # failure, which is the one shape the model retries.
+        return JSONResponse({"error": str(e)}, status_code=500)
     except (TypeError, ValueError) as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
