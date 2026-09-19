@@ -10906,11 +10906,11 @@ class Orchestrator:
         # "there's no Mixpanel question in our conversation yet" — while the question sat eight
         # events above it. Being handed the history does not by itself stop that sentence.
         if rebuilt:
-            lines += ["What was said in this Conversation already, summarised. This conversation "
-                      "is continuing, not starting: answer as though you had been part of it. "
-                      "Never tell the person the conversation has just started or that this is "
-                      "their first message, and do not introduce yourself again. It is a summary, "
-                      "so if you need a detail it does not carry, ask for that detail:",
+            lines += [("What was said in this Conversation already, summarised. This conversation "
+                       "is continuing, not starting: answer as though you had been part of it. "
+                       "Never tell the person the conversation has just started or that this is "
+                       "their first message, and do not introduce yourself again. It is a summary, "
+                       "so if you need a detail it does not carry, ask for that detail:"),
                       rebuilt, ""]
         elif carried:
             lines += ["What was said in this Conversation before the model was started over:",
