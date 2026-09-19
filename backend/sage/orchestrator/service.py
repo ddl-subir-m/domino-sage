@@ -11338,21 +11338,41 @@ class Orchestrator:
             log.warning("chat: the session would not go idle inside the findings slice; "
                         "nothing was asked for")
             return rel
-        try:
-            client.send_prompt(
-                sid,
-                # Says what to write and forbids everything else. A turn arriving here has already
-                # spent its clock, so any word that could be read as "carry on" spends the slice on
-                # more of what ran out of time — and the one thing this must not do is produce an
-                # answer, which the block above it is about to say was never reached.
-                f"This turn has reached its time limit and is being stopped now. Before it is, "
-                f"append what you have already measured to {rel}: the statement or command that "
-                "produced each number, the numbers with their denominators, and what is still "
-                "open. Write that file and nothing else — start no new work, read nothing "
-                "further, and do not try to answer the question.",
-                agent="sage-chat", chat=True)
-        except Exception:
-            log.warning("chat: the findings request failed")
+        # Says what to write and forbids everything else. A turn arriving here has already spent
+        # its clock, so any word that could be read as "carry on" spends the slice on more of what
+        # ran out of time — and the one thing this must not do is produce an answer, which the
+        # block above it is about to say was never reached.
+        ask = (f"This turn has reached its time limit and is being stopped now. Before it is, "
+               f"append what you have already measured to {rel}: the statement or command that "
+               "produced each number, the numbers with their denominators, and what is still "
+               "open. Write that file and nothing else — start no new work, read nothing further, "
+               "and do not try to answer the question.")
+        sent: list[bool] = []
+
+        def dispatch() -> None:
+            try:
+                client.send_prompt(sid, ask, agent="sage-chat", chat=True)
+                sent.append(True)
+            except Exception:
+                log.warning("chat: the findings request failed")
+
+        # ON A THREAD, bounded by the same deadline as everything else here, because this call is
+        # the one place the slice could still have put five minutes on top of the ceiling.
+        # `send_prompt` posts with the client's own `timeout_s`, which is 300 seconds
+        # (`driver/opencode.py:292`) — every other call in this method is 30 — and the session it
+        # posts to is by definition one that has just been interrupted for not answering. Waiting
+        # it out would make the ceiling negotiable by the exact amount the ticket forbids.
+        # `_mount_probe` bounds a blocking read the same way, a few hundred lines up.
+        #
+        # An abandoned request may still land, and that is the right failure rather than a leak:
+        # it reaches a session this turn interrupts again a moment later, and anything written
+        # after that goes to a file built to outlive the turn. No Continue is offered for it,
+        # because the caller weighs the file before the card is drawn and nothing had landed.
+        th = threading.Thread(target=dispatch, daemon=True)
+        th.start()
+        th.join(max(0.0, deadline - time.monotonic()))
+        if not sent:
+            log.warning("chat: the findings request did not go out inside the slice")
             return rel
         with timing.span("chat.findings_flush"):
             if not idle_by(deadline):

@@ -19,6 +19,7 @@ and a write that never lands both end the turn at the same instant the work woul
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,10 @@ from sage.router.models import ModelCatalog
 from sage.workspace.threads import findings_file
 
 from .fake_opencode import FakeOpenCode, Turn
+
+# Captured before the fixture below replaces `time.sleep` with a no-op. One fake here needs a call
+# that really does not come back, and the no-op is a stub of the case that never mattered.
+_real_sleep = time.sleep
 
 # What a turn is asked and what its slice writes down. The question is investigation-shaped on
 # purpose: `bounded_intent` leaves `suggestion` non-None for a build-shaped one, and the handoff
@@ -69,6 +74,10 @@ class WorksUntilStopped(FakeOpenCode):
         # the prompt, and then never comes back from writing the file. The two waits are separate
         # code, so they are separate conditions.
         self.writes_forever = writes_forever
+        # The third, which is not a wait at all but a call. `send_prompt` posts with the client's
+        # own 300-second timeout, so a dispatch that blocks is five minutes on top of a ten-minute
+        # ceiling — see `dispatch_blocks_for`.
+        self.dispatch_blocks_for = 0.0
 
     def interrupt(self, session_id: str) -> None:
         self.interrupted += 1
@@ -78,6 +87,10 @@ class WorksUntilStopped(FakeOpenCode):
         self._running[session_id] = False
 
     def send_prompt(self, *args, **kwargs) -> None:
+        if self.dispatch_blocks_for and len(self.prompts) >= 1:
+            # A real `time.sleep`, not the fixture's no-op: the whole point is a call that does
+            # not come back, and a stub that returns instantly is a stub of the healthy case.
+            _real_sleep(self.dispatch_blocks_for)
         super().send_prompt(*args, **kwargs)
         if self.writes_forever and len(self.prompts) > 1:
             self.stay_running = True
@@ -85,7 +98,6 @@ class WorksUntilStopped(FakeOpenCode):
 
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
-    import time
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
     from sage.orchestrator import handoff
@@ -343,8 +355,6 @@ def test_a_findings_write_that_never_comes_back_does_not_extend_the_turn(tmp_pat
     The two waits are separate code and so they are separate conditions: the slice must end at the
     same instant either way, and a turn whose write did not land must say it kept nothing.
     """
-    import time
-
     _short_ceiling(monkeypatch, ceiling=1.2, slice_s=0.6)
     oc = WorksUntilStopped(tmp_path / "mnt" / "code", [Turn(text="working on it")],
                            writes_forever=True)
@@ -362,11 +372,40 @@ def test_a_findings_write_that_never_comes_back_does_not_extend_the_turn(tmp_pat
     assert "nothing it measured was written down" in said
 
 
+def test_a_dispatch_that_blocks_does_not_extend_the_turn_either(tmp_path: Path, monkeypatch):
+    """The third way out, and the only one that is a CALL rather than a wait.
+
+    Both waits above are loops this code wrote, so both were bounded by the deadline the moment
+    they were written. `send_prompt` is not: it posts with the client's own `timeout_s`, which is
+    300 seconds against 30 for every other call here (`driver/opencode.py:292`) — and the session
+    it posts to is by definition one that has just been interrupted for not answering. Waiting it
+    out would have put five minutes on top of a ten-minute ceiling, which is exactly the thing
+    this ticket forbids, and no amount of care in the two loops would have caught it.
+
+    An abandoned request may still land afterwards. That is the right failure rather than a leak:
+    it reaches a session the ceiling arm interrupts again a moment later, and no Continue is
+    offered for it, because the file is weighed before the card is drawn.
+    """
+    _short_ceiling(monkeypatch, ceiling=1.2, slice_s=0.6)
+    oc = WorksUntilStopped(tmp_path / "mnt" / "code", [Turn(text="working on it")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    oc.turns.append(Turn(writes=_findings_write(tid)))
+    oc.dispatch_blocks_for = 4.0
+
+    began = time.monotonic()
+    out = _run(orch, tid)
+    ran = time.monotonic() - began
+
+    assert ran < 1.2 + 1.5, f"the turn ran {ran:.2f}s against a 1.2s ceiling"
+    assert not [e for e in out if e["type"] == "continue-offer"]
+    said = next(e for e in out if e["type"] == "error")["message"]
+    assert "nothing it measured was written down" in said
+
+
 def test_the_turn_ends_inside_its_own_ceiling_however_the_slice_goes(tmp_path: Path, monkeypatch):
     """Measured, not argued. The slice is subtracted from the ceiling rather than added to it, so
     a turn that spends the whole of it still ends within the number the cap names."""
-    import time
-
     _short_ceiling(monkeypatch, ceiling=1.2, slice_s=0.6)
     oc = WorksUntilStopped(tmp_path / "mnt" / "code", [Turn(text="working on it")], deaf=True)
     orch = _orch(tmp_path, oc)
