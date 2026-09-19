@@ -8,6 +8,7 @@ The first two moved here from test_builder_composer.py when the single-file buil
 Workbench: the bugs were found there, and the properties that stop them are properties of whatever
 composer is on screen.
 """
+import re
 from pathlib import Path
 
 WB = Path(__file__).resolve().parents[1] / "sage" / "workbench"
@@ -132,7 +133,39 @@ def test_no_table_or_dataset_file_can_reach_the_new_group():
     assert "MEMBERSHIP_PARENT_KINDS = ['dataset', 'datasource', 'model_llm', 'model_predictive']" in UTIL
     # And the listing it filters has no leaf in it to begin with: a table is a level below any
     # group `fetchDominoListing` builds, and reaching one is the round trip this menu never makes.
-    assert "warehouse" in STORE.split("state.catalogueParents = SW.util")[0].split("datasetTargets =")[1]
+    # Read as the LIST of keys the `groups` literal carries, because an absence check is not
+    # available here: `"table" not in` this window is already satisfied by `writable:` on the
+    # Dataset leg. Keys only, with no shape required of the value — a leg is a leg whether it
+    # reads `(res.tables || []).map(...)`, `res.tables.map(...)` or `buildTables(res)`, and an
+    # earlier draft of this guard saw only the first (#437).
+    #
+    # What carries the claim is the equality, not the pattern. This replaced `"warehouse" in` a
+    # window of store.js whose only `warehouse` was the comment explaining the claim, so the code
+    # could go and the comment would hold it green. An equality inverts that: a comment that
+    # happens to match ADDS a leg and reds. `//` cannot match at all — `//` is not `\w`. A block
+    # comment can, so this is not comment-proof in the strict sense; forging a green would take
+    # deleting the real legs AND leaving exactly these four names, in this order, at this indent,
+    # inside the `groups` literal. That is a forgery, not the accident #437 was.
+    #
+    # This guard is also what keeps a second thing unreachable. `applyListing` reads
+    # `listing.groups[kind]` for each parent kind and filters on membership ALONE — it never checks
+    # the kind of the ROWS it got back, so a leaf carried inside a parent kind's own leg would go
+    # straight into the catalogue half unexamined (measured: seeding one `table:` row into the
+    # `datasource` leg puts it in `state.catalogueParents`). Nobody can reach that today, because
+    # the legs asserted here are the only rows that exist. If a leg is ever made to carry its own
+    # children, the kind check in `applyListing` is what has to land with it.
+    groups = (
+        API.split("async function fetchDominoListing()")[1]
+        .split("\n}\n")[0]
+        .split("\n    groups: {\n")[1]
+        .split("\n    },\n")[0]
+    )
+    assert re.findall(r"^ {6}(\w+):", groups, re.MULTILINE) == [
+        "dataset",
+        "datasource",
+        "model_llm",
+        "model_predictive",
+    ]
 
 
 def test_a_catalogue_row_says_so_on_the_row_itself():
