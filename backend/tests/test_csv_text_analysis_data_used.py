@@ -304,8 +304,8 @@ def test_chat_live_result_keeps_text_analysis_data_used_detail(tmp_path):
                             text=True, capture_output=True, check=True)
     details = [b for b in json.loads(output.stdout)["final"] if b["type"] == "data_used"]
     assert len(details) == 1
-    assert details[0]["event"]["operation"] == "text_analysis"
-    assert details[0]["event"]["coverage"]["processed"] == 12
+    assert details[0]["events"][0]["operation"] == "text_analysis"
+    assert details[0]["events"][0]["coverage"]["processed"] == 12
 
 
 @pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")

@@ -2057,35 +2057,47 @@ window.SW = window.SW || {};
     );
   }
 
-  function DataUsed({ event }) {
-    const coverage = event.coverage || {};
-    const textOperation = event.operation === 'text_analysis';
+  // One fold for the whole turn, a section inside it per operation the turn ran (#447). The card
+  // was written to describe one operation and given one per card, so an answer that read a table,
+  // computed on it and analysed text stacked three identical-looking dropdowns. Nothing is hidden
+  // by the grouping: every paragraph a single operation used to get, it still gets.
+  //
+  // The count is in the summary because the fold is shut when the reader meets it, and "Data used"
+  // alone cannot say whether it holds one operation or five.
+  function DataUsed({ events }) {
+    const operations = events || [];
     return h('details', { className: 'sw-data-used' },
-      h('summary', null, 'Data used'),
-      h('p', null, textOperation ? 'Analyzed through the LLM Gateway from ' : 'Calculated in Domino from ',
-        h(Tag, { 'aria-label': `Source file: ${event.source}` }, event.source.split('/').pop()), '.'),
-      h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +
-        `${coverage.excluded} excluded; ${coverage.failed} failed; ${coverage.unfinished} unfinished.`),
-      h('p', null, `Selected fields: ${(event.selected_fields || []).join(', ') || 'Structure only'}.`),
-      h('p', null, 'Artifact: ', h(Tag, { 'aria-label': `Artifact: ${event.artifact}` }, event.artifact.split('/').pop())),
-      ...(event.requests || []).map((request) => h('div', { key: request.request_id },
-        h('p', null, 'Requested model: ',
-          h(Tag, { 'aria-label': `Requested model: ${request.requested_alias}` }, request.requested_alias),
-          '. Serving model: ', request.serving_model || 'unknown', '.'),
-        h('p', null, request.state === 'response_completed' ? 'Gateway response completed. '
-          : request.state === 'failed' ? 'Gateway request failed. '
-          : request.state === 'interrupted' ? 'Gateway response interrupted. '
-          : 'Gateway request attempted. ',
-          `Provider receipt: ${request.provider_receipt || 'unknown'}. ` +
-          `Decision stage: ${request.decision_stage || 'unknown'}. ` +
-          `Delivery: ${request.delivery || 'unknown'}. ` +
-          `Cache: ${request.cache || 'unknown'}. ` +
-          `Fallback: ${request.fallback || 'unknown'}.`),
-        request.failure && h('p', null, `Failure: ${request.failure}.`,
-          request.refusal_reason ? ` ${request.refusal_reason}.` : ''),
-        h('p', null, `Request: ${request.request_id}`))),
-      !(event.requests || []).length && h('p', null, 'Gateway delivery: unknown.'),
-      h('p', null, `Operation: ${event.operation_id}`));
+      h('summary', null, operations.length > 1
+        ? `Data used (${operations.length} operations)` : 'Data used'),
+      ...operations.map((event) => {
+        const coverage = event.coverage || {};
+        const textOperation = event.operation === 'text_analysis';
+        return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
+          h('p', null, textOperation ? 'Analyzed through the LLM Gateway from ' : 'Calculated in Domino from ',
+            h(Tag, { 'aria-label': `Source file: ${event.source}` }, event.source.split('/').pop()), '.'),
+          h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +
+            `${coverage.excluded} excluded; ${coverage.failed} failed; ${coverage.unfinished} unfinished.`),
+          h('p', null, `Selected fields: ${(event.selected_fields || []).join(', ') || 'Structure only'}.`),
+          h('p', null, 'Artifact: ', h(Tag, { 'aria-label': `Artifact: ${event.artifact}` }, event.artifact.split('/').pop())),
+          ...(event.requests || []).map((request) => h('div', { key: request.request_id },
+            h('p', null, 'Requested model: ',
+              h(Tag, { 'aria-label': `Requested model: ${request.requested_alias}` }, request.requested_alias),
+              '. Serving model: ', request.serving_model || 'unknown', '.'),
+            h('p', null, request.state === 'response_completed' ? 'Gateway response completed. '
+              : request.state === 'failed' ? 'Gateway request failed. '
+              : request.state === 'interrupted' ? 'Gateway response interrupted. '
+              : 'Gateway request attempted. ',
+              `Provider receipt: ${request.provider_receipt || 'unknown'}. ` +
+              `Decision stage: ${request.decision_stage || 'unknown'}. ` +
+              `Delivery: ${request.delivery || 'unknown'}. ` +
+              `Cache: ${request.cache || 'unknown'}. ` +
+              `Fallback: ${request.fallback || 'unknown'}.`),
+            request.failure && h('p', null, `Failure: ${request.failure}.`,
+              request.refusal_reason ? ` ${request.refusal_reason}.` : ''),
+            h('p', null, `Request: ${request.request_id}`))),
+          !(event.requests || []).length && h('p', null, 'Gateway delivery: unknown.'),
+          h('p', null, `Operation: ${event.operation_id}`));
+      }));
   }
 
   SW.MessageBlock = function MessageBlock({ block, onSave }) {
@@ -2096,7 +2108,7 @@ window.SW = window.SW || {};
         return h('div', { className: `sw-msg-text${block.streaming ? ' is-streaming' : ''}` },
                  SW.util.markdown(block.value));
       case 'data_used':
-        return h(DataUsed, { event: block.event });
+        return h(DataUsed, { events: block.events });
       case 'code':
         return h(CodeBlock, { code: block.value, language: block.language });
       case 'sandbox_run':

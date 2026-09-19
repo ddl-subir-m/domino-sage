@@ -1762,12 +1762,30 @@ window.SW = window.SW || {};
     return carriers.length > 0 && carriers.every((c) => keys.has(c && c.key));
   };
 
+  // One card per TURN, holding the operations that turn ran (#447). Keyed on `operation_id` this
+  // drew a card per operation, and a turn that reads a table, computes on it and then analyses
+  // text routinely runs three — three collapsed dropdowns saying the same thing under one answer.
+  // `DataUse.record` already stamps `turn_id` on every event before it persists it, so the
+  // grouping key arrives with the data and needs no new field.
+  //
+  // Falling back to `operation_id` keeps a turn-less event on its own card rather than pooling
+  // every such event into one: absent is not a value, and the events a restart replays through
+  // `DataUse.restore` are the population that can reach here without one.
   function putDataUsed(messages, ensureAssistant, events) {
     for (const event of events || []) {
+      const turnId = event.turn_id || event.operation_id;
       const existing = messages.flatMap((m) => m.blocks || [])
-        .find((b) => b.type === 'data_used' && b.event.operation_id === event.operation_id);
-      if (existing) existing.event = event;
-      else ensureAssistant().blocks.push({ type: 'data_used', event });
+        .find((b) => b.type === 'data_used' && b.turnId === turnId);
+      if (!existing) {
+        ensureAssistant().blocks.push({ type: 'data_used', turnId, events: [event] });
+        continue;
+      }
+      // An operation is recorded once and then updated — `DataUse.observe` rewrites the event
+      // every time a gateway request of its own starts or settles. Replace it in place, so the
+      // card keeps the order the turn ran things in.
+      const at = existing.events.findIndex((e) => e.operation_id === event.operation_id);
+      if (at < 0) existing.events.push(event);
+      else existing.events[at] = event;
     }
   }
 
