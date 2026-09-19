@@ -64,7 +64,7 @@ def _classifier():
     try:
         from sage.resources.provider import failure_kind
         return failure_kind
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"(sage not importable here: {type(e).__name__}: {e} — raw strings only)\n")
         return None
 
@@ -85,7 +85,7 @@ def main() -> int:
         print(f"SQL    : {sql}")
         try:
             DataSourceClient().get_datasource(name).query(sql).to_pandas()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             ctx = e.__context__
             raw = str(e)
             print(f"  exception class   : {type(e).__name__}")
@@ -117,6 +117,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception:
+    except Exception:  # noqa: BLE001
         traceback.print_exc()
         sys.exit(1)

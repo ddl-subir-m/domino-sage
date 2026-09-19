@@ -80,7 +80,7 @@ def _headers() -> dict[str, str]:
             token = r.read().decode().strip()
         if token:
             return {"Authorization": token if token.startswith("Bearer ") else f"Bearer {token}"}
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     key = (os.environ.get("DOMINO_USER_API_KEY") or "").strip()
     if not key:

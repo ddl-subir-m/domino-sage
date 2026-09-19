@@ -18,7 +18,10 @@ Usage:
   python3 spikes/domino-probes/snowflake_query_probe.py [datasource-name]
   default name: Snowflake-Data-Warehouse
 """
-import os, sys, time, traceback
+import os
+import sys
+import time
+import traceback
 
 NAME = sys.argv[1] if len(sys.argv) > 1 else "Snowflake-Data-Warehouse"
 results = []
@@ -35,7 +38,7 @@ def step(label, fn, fatal=False):
             print("   ", str(out).replace("\n", "\n    "))
         results.append((label, "PASS", round(dt, 2)))
         return out
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         dt = time.time() - t0
         print(f"    FAIL  ({dt:.2f}s)  {type(e).__name__}: {e}")
         print("    --- traceback (last 6 lines) ---")
@@ -64,7 +67,8 @@ print("=" * 72)
 
 step("1. import domino_data", lambda: __import__("domino_data").__file__, fatal=True)
 
-from domino_data.data_sources import DataSourceClient  # noqa: E402
+from domino_data.data_sources import DataSourceClient
+
 
 def _client():
     # NEVER return the client itself: DataSourceClient.__repr__ includes api_key in

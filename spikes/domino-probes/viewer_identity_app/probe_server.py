@@ -19,7 +19,11 @@ Reads three things and prints them to stdout (Domino app logs) AND to the page:
 SAFETY: never prints a raw token. JWTs are decoded (payload only, no signature check)
 and reported as claims. Other secrets are reported as name + length.
 """
-import base64, json, os, sys, urllib.error, urllib.request
+import base64
+import json
+import os
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HOST = os.environ.get("DOMINO_API_HOST", "")
@@ -41,7 +45,7 @@ def jwt_claims(token):
     try:
         seg = parts[1] + "=" * (-len(parts[1]) % 4)
         claims = json.loads(base64.urlsafe_b64decode(seg))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     keep = ("sub", "preferred_username", "email", "aud", "azp", "iss", "exp", "scope", "typ")
     return {k: claims[k] for k in keep if k in claims}
@@ -59,7 +63,7 @@ def api(path, token, label):
         return {"label": label, "status": r.status, "body": summarize(path, body)}
     except urllib.error.HTTPError as e:
         return {"label": label, "status": e.code, "body": (e.read()[:300]).decode("utf8", "replace")}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"label": label, "error": f"{type(e).__name__}: {e}"}
 
 
@@ -77,7 +81,7 @@ def sidecar_token():
     try:
         with urllib.request.urlopen(PROXY + "/access-token", timeout=10) as r:
             return r.read().decode().strip()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return f"<unavailable: {type(e).__name__}>"
 
 
@@ -109,7 +113,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         report = {
-            "all_inbound_header_names": sorted(k.lower() for k in self.headers.keys()),
+            "all_inbound_header_names": sorted(k.lower() for k in self.headers),
             "identity_headers": {},
             "forwarded_token": None,
             "forwarded_token_tests": [],

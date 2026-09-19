@@ -104,7 +104,7 @@ def _call(path: str, body: dict | None = None) -> tuple[int, str]:
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as err:
         return err.code, err.read().decode("utf-8", "replace")
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001
         return 0, f"ERROR: {type(err).__name__}: {err}"
 
 
