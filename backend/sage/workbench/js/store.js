@@ -1904,6 +1904,23 @@ window.SW = window.SW || {};
           threadId: ev.threadId || '',
           live: !!ev.live,
         });
+      } else if (ev.type === 'other-lane-offer' && ev.message) {
+        // The door onto the lane that can compute, drawn UNDER an answer rather than instead of one
+        // (#411, ADR-0058). Same `live` rule as the card above, and it inherits that card's reason
+        // whole: the accept grants a capability for the rest of the conversation and re-runs a
+        // question, which a message somebody is scrolling back through must not be able to do.
+        //
+        // What is different is what a retired card leaves behind, and it is nothing. This offer is
+        // per-question: it records no decision at all, so the next question that needs more than SQL
+        // is offered again — including in a conversation where the investigation card was already
+        // declined. "No" to working out one calculation is not "no" to the Thread (#389).
+        ensureAssistant().blocks.push({
+          type: 'other_lane_offer',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          threadId: ev.threadId || '',
+          live: !!ev.live,
+        });
       } else if (ev.type === 'investigation-state') {
         // The grant and its end, in the conversation rather than only in the record. The bar above
         // the composer says what is true NOW; this says when it changed, which is the half a
@@ -7595,6 +7612,16 @@ window.SW = window.SW || {};
             ensurePushed();
             assistant.blocks = [...assistant.blocks,
                                 { ...ev, type: 'investigation_offer', live: true }];
+            notify();
+          } else if (ev.type === 'other-lane-offer') {
+            // The same frame, arriving at the other end of the turn (#411). `state.typing` is NOT
+            // cleared here, unlike every branch above: those cards are drawn instead of an answer,
+            // so the turn is over when they arrive. This one is drawn under an answer while the
+            // turn is still settling, and blanking the indicator here would say it had finished a
+            // beat before `done` says so.
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks,
+                                { ...ev, type: 'other_lane_offer', live: true }];
             notify();
           }
         });

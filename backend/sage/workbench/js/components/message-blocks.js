@@ -1386,6 +1386,51 @@ window.SW = window.SW || {};
     );
   }
 
+  // The door onto the lane that can compute, drawn under a finished answer (#411, ADR-0058).
+  //
+  // TWO BUTTONS, ONLY ONE OF WHICH TALKS TO THE SERVER. "Work it out" is the investigation card's
+  // accept exactly — the same grant, reached for a different reason (ADR-0056) — so it calls the
+  // same action rather than a second one that would have to be kept in step with it. "Not now"
+  // calls nothing: the answer this card sits under is already on screen, so there is no question
+  // owed and nothing to replay, and a decline that wrote a row would be a receipt for nothing
+  // happening — the rule ADR-0056 states for its own decline. Retiring the card locally leaves the
+  // person looking at exactly what a reload would show them, which is the sentence without buttons.
+  function OtherLaneOffer({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+    const [dismissed, setDismissed] = useState(false);
+
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        block.live && block.prompt && !dismissed
+          ? h(
+              'div',
+              { style: { marginTop: 8 } },
+              h(Space, { size: 8, wrap: true },
+                h(Button, {
+                  type: 'primary',
+                  size: 'small',
+                  loading: busy === 'open',
+                  disabled: !!busy,
+                  onClick: run('open', () => SW.store.answerInvestigationAndAsk(
+                    block.prompt, block.threadId, 'open')),
+                }, 'Work it out'),
+                h(Button, {
+                  size: 'small',
+                  disabled: !!busy,
+                  onClick: () => setDismissed(true),
+                }, 'Not now'))
+            )
+          : null
+      )
+    );
+  }
+
   // The turn asked to start over (#36). The gate stops before any inference and hands the decision
   // back, so this card is the decision: it says what a reset does and does not take, and gives the
   // one-click way to do it. "Reset and build this" exists because "clear everything and build X from
@@ -2113,6 +2158,8 @@ window.SW = window.SW || {};
         return h(DatasetFiles, { block });
       case 'investigation_offer':
         return h(InvestigationOffer, { block });
+      case 'other_lane_offer':
+        return h(OtherLaneOffer, { block });
       case 'build_stalled':
         return h(BuildStalled, { block });
       case 'plan_suggestion':

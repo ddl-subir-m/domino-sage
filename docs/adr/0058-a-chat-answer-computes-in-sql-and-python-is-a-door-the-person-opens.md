@@ -155,3 +155,66 @@ Three things do NOT change, and are restated because each looks like it might:
 Recorded as an amendment rather than a new ADR because it changes this decision's scope and nothing
 else; a reader who finds only the body above would build the SQL path into one lane and leave the
 other exactly as this ADR describes it.
+
+## Amendment: where the door is, and why it is not a gate (2026-09-18)
+
+The body above decided that a turn which cannot express its question in SQL offers the other lane.
+This records where that offer fires, because the obvious place is wrong and the reason is not
+obvious.
+
+**The offer is drawn at the turn's conclusion, not in the gate block.** Two gates already fire in
+`_chat_stream` before the turn runs, and ADR-0059 fixed their order — the broad question before the
+narrow one. This is not a third one, and that ordering is untouched. The condition here cannot exist
+before the turn runs: it needs the model to have composed a statement AND to have said that one
+SELECT does not reach the question, and neither fact exists while the gates are firing. A card put
+up there would be asking the person to predict what the model is about to find out.
+
+**The model proposes with a marker and a cheap check verifies it.** The model is the only thing in
+the loop that reads the question and knows the tool's reach, so it makes the call. It claims by
+emitting `NEEDS_MORE_THAN_SQL` on a line of its own, which is the `NOTHING_TO_BUILD` mechanism and
+deliberately the same one: a token no model emits by accident, tolerated with the wrappers a model
+reaches for unprompted, NOT tolerated mid-sentence — that is where a model quotes the marker while
+explaining itself — and stripped before the prose is shown, because a bare token under a friendly
+answer reads as a leaked error code.
+
+The check asks one thing: did this turn actually send a statement. A turn that composed nothing has
+not established that SQL could not express the question, and an unchecked claim turns this door into
+the default, which is what #400 measured at 400.2 seconds. Nothing re-reads the prompt to second-
+guess the model about SQL; that would be Sage deciding what the model may reach, which is the shape
+#381's review rejected. The check catches habit, not error. It counts ATTEMPTS rather than
+successes, because a statement that timed out was still composed and sent — `StatementTimeout` is
+its own type precisely so a turn can tell "the store said no" from "I have no way to ask".
+
+**"No" is cheap here, and that asymmetry with the investigation card is deliberate.** The prose this
+card sits under is the answer — what SQL could reach — so declining records the answer and replays
+nothing, and writes no row: a line saying a capability was NOT granted is a receipt for nothing
+happening, which is the rule ADR-0056 already states for its own decline. The investigation card
+must replay on BOTH buttons because it ends the turn before the model runs and therefore owes an
+answer either way. Do not make the two symmetrical; the difference is the position, not an
+oversight.
+
+**Accepting opens an ordinary investigation**, the standing grant of ADR-0056, rather than a
+one-turn exemption. It grants more than the question asked for, and that is recorded as a decision
+rather than left to fall out: a grant the person can see and take back is more honest than one that
+expires silently, and a second mechanism beside the first would mean two answers to "is this Thread
+bounded?".
+
+**One consequence to know about, because it widens something this ADR does not own.** This offer is
+per-question and inherits nothing from the investigation card's remembered decline — a person who
+says no to working out one calculation must still be offered the next one. That is deliberate. It
+follows that the card is drawn in a Thread where an investigation was already declined, and
+`decide_thread_investigation` has no guard against opening from `declined`, so accepting re-opens
+it. #389 records that a declined investigation cannot be opened again and that the card is the only
+door in; this door becomes a second one. That is a widening of #389, not a fix for it, and it was
+taken knowingly: the alternative — suppressing this card on a declined Thread — makes one early
+click on "Just answer this" kill this feature for the rest of the conversation, silently. Whoever
+settles #389 should settle both together.
+
+**The fire rate is the open risk, and it is not a test question.** #436 measured this same model, in
+this same lane, with `live_read_query` armed and in its tool list, not calling it at all and telling
+the person to go run the SQL themselves. A prompt-level instruction about this tool has been ignored
+once already. Both failure directions here degrade safely — a false marker is stripped by the check,
+and a missed marker leaves the turn ending exactly as it ends today — so neither shows a wrong card.
+But that same property means this can pass every test and never fire in production, which is how
+#428 shipped and how #408 shipped unreachable. The rate belongs in a live measurement, not in a
+green suite.

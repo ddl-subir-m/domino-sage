@@ -3705,6 +3705,36 @@ def _take_no_build_marker(text: str) -> tuple[str, bool]:
     return stripped, stripped != text
 
 
+# The second marker, and deliberately the same mechanism as the one above (#411, ADR-0058). A Chat
+# data turn composes SQL; when SQL cannot reach the question, ADR-0058 says the turn offers the lane
+# that can rather than improvising its way around the gap — and the only thing in the loop that reads
+# the question AND knows the tool's reach is the model, so the model has to be the one that claims it.
+#
+# A noun phrase rather than a verdict, matching NOTHING_TO_BUILD: it names the condition — this needs
+# more than SQL — rather than announcing a failure, and it points at the door being offered rather
+# than only at what did not work.
+NEEDS_MORE_THAN_SQL_MARKER = "NEEDS_MORE_THAN_SQL"
+# Its own line, with the wrappers a model reaches for unprompted tolerated, and NOT tolerated
+# mid-sentence — the whole of the reasoning at `_NO_BUILD_LINE` applies here unchanged. Mid-sentence
+# is where a model QUOTES the marker while explaining itself ("I would emit NEEDS_MORE_THAN_SQL if
+# …"), and reading that as a claim hands every agent an accidental way to draw a card nobody asked
+# for. The prompt that teaches this marker necessarily names it, so the quoting case is not
+# hypothetical here; it is the expected first failure.
+_NEEDS_MORE_THAN_SQL_LINE = re.compile(
+    rf"^[ \t]*[`*_]*{NEEDS_MORE_THAN_SQL_MARKER}[`*_]*[ \t]*$\n?", re.MULTILINE)
+
+
+def _take_needs_more_than_sql_marker(text: str) -> tuple[str, bool]:
+    """Split one assistant text part into the prose to show and whether it asked for the other lane.
+
+    Stripped for the reason `_take_no_build_marker` strips its own: it is a signal addressed to Sage,
+    and a bare NEEDS_MORE_THAN_SQL sitting under the agent's explanation reads as a leaked error code
+    to the one person who reads every word the agent says. Here the prose under it is the answer —
+    what SQL COULD reach — so the marker sits directly above text the person is meant to trust."""
+    stripped = _NEEDS_MORE_THAN_SQL_LINE.sub("", text)
+    return stripped, stripped != text
+
+
 def _read_only_reason(*, mode: Mode, answer_only: bool, gate: bool, arch: bool = False) -> str:
     """Why the shim is withholding edit tools this turn — "" when it isn't. Reported in the turn
     summary so a turn that wrote nothing can say which rule stopped it instead of blaming OpenCode for
@@ -4941,6 +4971,17 @@ class Orchestrator:
         # receipt written at the end of the turn reads the breakdown. Reset when the turn's token is
         # minted, so a count is always about one turn.
         self._delegated_calls: dict[str, dict[str, int]] = {}
+        # Statements this turn actually sent to a warehouse, per Conversation (#411, ADR-0058). The
+        # cheap check behind the marker above: the door is for a question SQL could not express, and
+        # a turn that composed nothing has not established that. One writer, at the `run_statement`
+        # wrapper where the Turn is built; one reader, at the turn's conclusion.
+        #
+        # ATTEMPTS, NOT SUCCESSES. A statement that timed out or that the store refused was still
+        # composed and still sent, and `StatementTimeout` is its own type precisely so that a turn
+        # can tell "the store said no" from "I have no way to ask" (#399, #408). Counting only what
+        # came back would make the slowest questions — the ones most likely to need the other lane —
+        # the ones that can never reach the door.
+        self._statements_tried: dict[str, int] = {}
         # The step lines those calls owe the person, waiting for the Chat loop to drain them. The
         # call is served on a route's own thread and the turn is a generator on another, so a queue
         # is what makes the count in the line the count the cap enforced rather than a second one
@@ -10077,6 +10118,10 @@ class Orchestrator:
         with self._delegated_lock:
             self._delegated_calls.pop(thread_id, None)
             self._delegated_lines.pop(thread_id, None)
+        # And the statement count, here for the same reason and with the same failure in mind
+        # (#411): a turn that died holding a count would let the NEXT turn claim it had tried SQL
+        # when it had not, which is exactly the unchecked claim the check exists to catch.
+        self._statements_tried.pop(thread_id, None)
         return token
 
     def _live_read_thread(self, token: str) -> str | None:
@@ -10239,6 +10284,17 @@ class Orchestrator:
                 persist = lambda ev: workspace.append_history(ev, thread_id)
             project.shim.data_use.record(event, reply, persist, turn_id)
 
+        def count_statement(source, sql, **kw):
+            """Send one composed statement, and remember that this turn composed one (#411).
+
+            Counted BEFORE the call rather than after it, so a statement that raises still counts:
+            see `_statements_tried`. Wrapping here rather than inside `_statement` keeps the count
+            on the same object that already holds the turn's other per-turn tallies, and keeps
+            `liveread.run` a pure function of its `Turn` — it takes no orchestrator to test.
+            """
+            self._statements_tried[thread_id] = self._statements_tried.get(thread_id, 0) + 1
+            return self._resources.run_statement(source, sql, **kw)
+
         def analyze_text_batch(request: dict):
             return project.shim.handle(request, project=project.id,
                                        session=f"{thread_id}:text-analysis")
@@ -10257,7 +10313,7 @@ class Orchestrator:
             scope_for=scope_for,
             source_for=sources.get,
             sample_rows=self._resources.sample_rows,
-            run_statement=self._resources.run_statement,
+            run_statement=count_statement,
             list_files=list_files,
             dataset_root=dataset_root,
             upload_for=upload_for,
@@ -10792,6 +10848,18 @@ class Orchestrator:
                 "Reach for this rather than reading rows and adding them up, and rather than "
                 "writing Python. If the question cannot be put in one SELECT, say so and say what "
                 "you would need. "
+                # The marker, taught where the tool it is about is taught (#411, ADR-0058). Two
+                # things it must carry, both learned the hard way. The order — try first, then
+                # claim — because the check behind it drops a claim from a turn that composed
+                # nothing, so a model that emits it early gets no card and the person gets no door.
+                # And the own-line rule, because a model that mentions the marker inside its
+                # explanation is quoting this very sentence, and that must not count as asking.
+                f"If you have run a statement and the answer still needs more than one SELECT can "
+                f"express — a correlation, a cohort, a funnel, a join across sources — then answer "
+                f"what you CAN from what you measured, say what you would need for the rest, and "
+                f"put {NEEDS_MORE_THAN_SQL_MARKER} on a line of its own at the end. Sage then offers "
+                f"the person the lane that can run it. Only after you have tried a statement, and "
+                f"only on its own line — naming it inside a sentence is not asking for it. "
                 "For CSV totals use live_read_files with operation=sum, dataset=upload, the authorized "
                 "path, group_by, sum_column, and selected_fields (result columns and/or total). "
                 "This one call calculates locally, writes a table, and returns the selected result. "
@@ -11408,14 +11476,23 @@ class Orchestrator:
         last_text = ""
         streamed_body = ""
         artifacts_finished = False
+        # Set where the body is finalised below, read at the turn's conclusion (#411). A `nonlocal`
+        # rather than a return value because every exit from this turn goes through
+        # `publish_chat_artifacts`, and only one of them — the completed one — may draw the card.
+        asked_for_the_other_lane = False
 
         def publish_chat_artifacts(outcome: str):
             """Every active Chat exit validates bytes before retention, text and artifacts."""
-            nonlocal artifacts, immediate, artifacts_finished
+            nonlocal artifacts, immediate, artifacts_finished, asked_for_the_other_lane
             if tables is None or artifacts_finished:
                 return {}
             body = primary_body if tables.repair_ran else last_text or streamed_body
             body = _take_no_build_marker(body)[0]
+            # Stripped on EVERY exit, claimed on all of them too, because the card is drawn on one.
+            # A turn that stopped or timed out still had its prose cleaned: the marker is Sage's
+            # signal either way, and leaving it painted on a stopped turn would show the person a
+            # bare token under a half-finished answer.
+            body, asked_for_the_other_lane = _take_needs_more_than_sql_marker(body)
             with timing.span("after.artifacts"):
                 revert_denied_writes(project.record.path, thread_id, tables.before)
                 invalid = tables.check(body)
@@ -12105,6 +12182,24 @@ class Orchestrator:
             done = {"type": "done", "ok": True, "decision": "answered"}
             if invalid:
                 done.update(ok=False, decision="table generation failed")
+            # The door onto the lane that can compute (#411, ADR-0058). AFTER the answer, and that
+            # position is the decision rather than a convenience.
+            #
+            # NOT A THIRD GATE. ADR-0059 orders two gates that fire BEFORE the turn — broad question
+            # before narrow one — and neither order nor membership is touched here. This condition
+            # cannot exist up there: it needs the model to have composed a statement AND to have said
+            # SQL does not reach the question, and before the turn runs neither fact exists. A third
+            # card dropped into that block would be asking the person to predict what the model is
+            # about to find out.
+            #
+            # WHAT THE POSITION BUYS is that "No" costs nothing. The prose above this card is the
+            # answer — what SQL COULD reach — so declining records the answer and replays nothing.
+            # The investigation card must replay on both buttons because it ends the turn before the
+            # model runs and therefore owes an answer either way (`answerInvestigationAndAsk`,
+            # `store.js`). Here the debt is already paid. Do not make the two symmetrical.
+            if offer := self._chat_other_lane_offer(
+                    store, thread_id, prompt, claimed=asked_for_the_other_lane):
+                yield from offer
             if step_error and not answered:
                 # The turn ended, and the person has nothing. `done ok:True` with an empty Thread is
                 # the shape that sends someone looking for a Sage bug when the provider had already
@@ -13422,6 +13517,72 @@ class Orchestrator:
         for ev in events:
             store.append_history(thread_id, ev)
             yield ev
+
+    # ---- the door onto the lane that can compute (#411, ADR-0058) --------------------------------
+
+    def _chat_other_lane_offer(self, store: ThreadStore, thread_id: str, prompt: str, *,
+                               claimed: bool):
+        """Offer the lane with Python, or None to let the answer stand as the whole turn.
+
+        THE MODEL PROPOSES AND A CHEAP CHECK VERIFIES. The model is the only thing in the loop that
+        reads the question and knows what the tool reaches, so it has to make the call; but an
+        unchecked claim turns this door into the default, and #400 measured what the default costs —
+        400.2 seconds to reach an answer SQL could have given in one statement. So the check asks the
+        one thing the claim needs and nothing more: did this turn actually send a statement. A turn
+        that composed nothing has not established that SQL could not express the question.
+
+        DELIBERATELY NOT A SECOND OPINION ON THE QUESTION. Nothing here re-reads the prompt to judge
+        whether it really needs Python. That would be Sage deciding what the model may reach, which
+        is the shape #381's review rejected and the shape ADR-0056 exists to keep out. The check
+        catches a model reaching for the door out of habit, not a model that is wrong about SQL.
+
+        BOTH FAILURE DIRECTIONS DEGRADE SAFELY, which is the reason this shape was chosen over a
+        prose scan. A marker the model emits when it should not is stripped and dropped here, so the
+        person sees the answer and no card. A marker it fails to emit when it should leaves the turn
+        ending exactly as it ends today — an answer with no offer under it. Neither failure shows the
+        person a wrong card, so the feature can be measured live without risking the turn.
+
+        THE FIRE RATE IS THE THING TO MEASURE, NOT THE TEST. #436 measured this same model, in this
+        same lane, with `live_read_query` armed and in its tool list, declining to call it at all and
+        telling the person to go run the SQL themselves. A prompt-level instruction about this tool
+        has already been ignored once. This can therefore pass every test here and still never fire
+        in production, which is how #428 shipped and how #408 shipped unreachable — so the log line
+        below exists to make a silent zero visible rather than assumed.
+        """
+        if not claimed:
+            return None
+        tried = self._statements_tried.get(thread_id, 0)
+        if not tried:
+            # Logged rather than dropped in silence. A run of these is the signal that the marker is
+            # being quoted out of its own instruction or reached for by habit, and the rate is not
+            # recoverable after the fact from a turn that looks exactly like a turn that never asked.
+            log.info("chat: the turn asked for the other lane without composing a statement — "
+                     "no card drawn (#411)")
+            return None
+        log.info("chat: offering the other lane after %d statement(s) (#411)", tried)
+        return self._chat_other_lane_offer_events(store, thread_id, prompt)
+
+    def _chat_other_lane_offer_events(self, store: ThreadStore, thread_id: str, prompt: str):
+        """The card itself. No `done` — unlike every other card in this file.
+
+        The other cards END the turn to ask their question, so each one owes the client a `done` and
+        each one's buttons must replay the question that never ran. This card is drawn UNDER a
+        finished answer, and the turn's own `done` follows it a few lines below. Giving it one here
+        would settle the turn twice.
+        """
+        message = brand.text(
+            # The maintainer's wording, kept rather than improved. It says three things the person
+            # needs in order to choose and nothing else: that the calculation cannot run on this
+            # lane, that {assistantName} can do it on another, and roughly what that costs. The cost
+            # sentence is honest about the ORDER OF MAGNITUDE rather than the number — #400 measured
+            # 400.2s — which is what someone deciding whether to wait actually needs.
+            "That needs a calculation {assistantName} can't run here. Want it worked out? "
+            "It'll take a few minutes.")
+        ev = {"type": "other-lane-offer", "prompt": prompt, "message": message,
+              # Which conversation the click records the grant on, as the cards above carry it.
+              "threadId": thread_id}
+        store.append_history(thread_id, ev)
+        yield ev
 
     # ---- the Dataset gate (#196, ADR-0039) -------------------------------------------------------
 
