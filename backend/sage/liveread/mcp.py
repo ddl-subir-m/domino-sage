@@ -65,7 +65,7 @@ TOOLS: list[dict[str, Any]] = [
                 "table": {"type": "string", "description": "The table. A dotted "
                                                           "database.schema.table is fine."},
                 "operation": {"type": "string", "enum": ["sum"],
-                              "description": "Fresh projects: calculate a table locally and return selected totals."},
+                              "description": "Calculate a table locally and return selected totals."},
                 "group_by": {"type": "string"},
                 "sum_column": {"type": "string"},
                 "selected_fields": {"type": "array", "items": {"type": "string"},
@@ -80,13 +80,15 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        # NOTHING IN THIS DESCRIPTION SAYS WHERE THE FEATURE IS ROLLED OUT, and that is a rule
-        # rather than a style choice (#423). Four shipped descriptions open "Fresh projects: …",
-        # which is true of the SEEDING and reads, in a field only the model sees, as a precondition
-        # on the parameter. A model applied it to itself, decided its Project was not "fresh", and
-        # told a person a working capability belonged to other projects. The rollout this tool was
-        # once gated by is gone (#431 deleted `dataUseVersion`), so there is now nothing true to
-        # say here even if a description were the place to say it — and it never was.
+        # NO ROLLOUT SCOPE IN ANY DESCRIPTION HERE, and that is a rule rather than a style choice
+        # (#423, closed by #431). Four shipped descriptions used to open "Fresh projects: …", in a
+        # field only the model sees, as a precondition on the parameter. A model applied it to
+        # itself, decided its Project was not "fresh", and told a person a working capability
+        # belonged to other projects — it declined without ever calling the tool, so no gate was
+        # reached and no refusal was involved. The clause has been deleted rather than reworded:
+        # `dataUseVersion` is gone (#431), there is no live scope to state, and a description is
+        # not where scope would be stated even if there were one.
+        # `test_a_tool_description_never_says_where_a_feature_is_rolled_out` reds if one comes back.
         "name": "live_read_query",
         "description": (
             "Work out a number from a bound Data Source by writing one SQL statement. Use this "
@@ -134,7 +136,7 @@ TOOLS: list[dict[str, Any]] = [
                 "token": _TOKEN,
                 "dataset": {"type": "string", "description": "The Dataset name."},
                 "operation": {"type": "string", "enum": ["sum", "analyze_text"],
-                              "description": "Fresh projects: calculate CSV totals or analyze CSV text."},
+                              "description": "Calculate CSV totals or analyze CSV text."},
                 "group_by": {"type": "string"},
                 "sum_column": {"type": "string"},
                 "text_column": {"type": "string"},
