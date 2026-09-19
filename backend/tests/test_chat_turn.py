@@ -1,4 +1,5 @@
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -7,7 +8,7 @@ import httpx
 import pytest
 
 from sage.orchestrator import chat_intent, handoff, recall
-from sage.orchestrator.service import ChartFontsMissing, Orchestrator
+from sage.orchestrator.service import ChartFontsMissing, Orchestrator, _chat_save_landed
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
@@ -1628,6 +1629,11 @@ def test_a_conversation_left_dirty_commits_with_no_second_request(tmp_path: Path
     its own: the browser can close on the same click that armed this. So the timer is left to run
     for real rather than fired by hand, and nothing else touches the orchestrator afterwards — the
     save has to land off its own thread or not at all.
+
+    Note what this does NOT pin. It passes against the old inline flush too, and deliberately: it
+    asks whether the work is committed, not who committed it. Reverting to a synchronous flush
+    satisfies it, and reverting to arming NOTHING does not. That the read no longer waits is
+    `test_chat_leave_thread_flushes`'s `assert calls == []`, which is the load-bearing one.
     """
     orch, _oc = _orch(tmp_path, [Turn(text="Rates.")])
     orch._chat_save_turn_s = 60.0     # hold the turn's own commit; this test is about the switch
@@ -1649,13 +1655,18 @@ def test_a_conversation_left_dirty_commits_with_no_second_request(tmp_path: Path
 
 
 def test_two_quick_switches_commit_once_and_do_not_interleave(tmp_path: Path):
-    """A → B → C faster than the save runs is one commit, not two racing ones.
+    """A → B → C arms one save, not two accumulating ones.
 
-    Each switch arms the same single timer slot, so the second replaces the first rather than
-    joining it, and the commit that finally runs takes the whole tree — there is only one, and
-    `_save_to_git` stages all of it. What stops a second save from cutting into one already
-    running is the turn lock `_flush_chat_save` takes, which is why the saver parked below sees
-    the door-flush defer instead of commit.
+    Read the delay before the claim: `_chat_save_leave_s` is held at 60.0 here, and that is what
+    makes both switches land on one still-pending timer. In production it is 0.0, so the first
+    save normally runs before the second click arrives and A→B→C is two commits. Two commits is
+    not a violation — what constraint 2 forbids is interleaving and pushing out of order, and the
+    turn lock `_flush_chat_save` takes is what forbids it, not this coalescing.
+
+    So what this pins is narrower than "one commit": arming REPLACES rather than accumulates, so
+    a burst of switches can never leave a pile of timers each racing to commit the same tree.
+    `calls == []` below is what separates "the first timer was cancelled" from "it already fired"
+    — `Timer.finished` is set by both, so that assertion cannot tell them apart on its own.
     """
     orch, _oc = _orch(tmp_path, [Turn(text="Rates.")])
     orch._chat_save_turn_s = 60.0
@@ -1682,19 +1693,25 @@ def test_two_quick_switches_commit_once_and_do_not_interleave(tmp_path: Path):
 
 
 def test_a_background_save_that_fails_is_reported_on_the_next_read(tmp_path: Path):
-    """A push that does not land is news, and nobody is holding the return value any more.
+    """A save that does not reach the remote is news, and nobody is holding the answer any more.
 
-    Retrying is not reporting: the re-arm below would go on failing every thirty seconds and say
-    so only to the log. So the failure is kept and handed back by the door the flush came off —
-    and cleared by a save that lands, not by one merely being attempted again.
+    Two shapes, because `_save_to_git` has two ways of saying it and they do not look alike: a
+    sync conflict or an internal exception answer `ok: False`, but a REFUSED PUSH answers
+    `ok: True` with `rejected: True` — see `test_a_refused_push_really_does_answer_ok_true`, which
+    pins that against the real `git.push` rather than against this file's belief about it. Asking
+    `ok` alone would report an all-clear about work sitting only on this disk, which is the one
+    thing a field like this must never do.
+
+    Cleared only by a save that reaches the remote, not by one merely attempted again.
     """
     orch, _oc = _orch(tmp_path, [Turn(text="Rates.")])
     orch._chat_save_turn_s = 60.0
     orch._chat_save_leave_s = 60.0
     a = orch.create_thread()
     b = orch.create_thread()
-    refused = {"type": "saved", "ok": False, "pushed": False, "detail": "push rejected"}
-    orch._save_to_git = lambda *_a, **_k: refused
+    conflict = {"type": "saved", "ok": False, "pushed": False,
+                "detail": "couldn't sync with the repo — conflict"}
+    orch._save_to_git = lambda *_a, **_k: conflict
     list(orch.chat_stream(a["id"], "what's our gross exposure by desk?"))
     orch._cancel_chat_idle_save()
 
@@ -1702,7 +1719,7 @@ def test_a_background_save_that_fails_is_reported_on_the_next_read(tmp_path: Pat
     orch._cancel_chat_idle_save()
     orch._on_chat_save_idle()
     assert orch._chat_dirty is True                         # still dirty, so still retried
-    assert orch.get_thread(b["id"])["saveFailed"] == refused
+    assert orch.get_thread(b["id"])["saveFailed"] == conflict
 
     # An attempt that raises is reported the same way — the person cannot tell the two apart and
     # does not need to; both mean their work is not on the remote.
@@ -1711,12 +1728,93 @@ def test_a_background_save_that_fails_is_reported_on_the_next_read(tmp_path: Pat
     orch._on_chat_save_idle()
     assert orch.get_thread(b["id"])["saveFailed"]["detail"] == "chat save failed"
 
-    # And only a save that LANDS clears it.
+    # The one that would slip past an `ok` test: committed here, refused by the remote. It clears
+    # `_chat_dirty` (long-standing, and not this ticket's to change), so the ONLY thing left
+    # saying the work never left this disk is the field under test.
+    refused = {"type": "saved", "ok": True, "pushed": False, "rejected": True,
+               "detail": "push failed: non-fast-forward"}
+    orch._save_to_git = lambda *_a, **_k: refused
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
+    assert orch._chat_dirty is False
+    assert orch.get_thread(b["id"])["saveFailed"] == refused
+
+    # A Project with NO remote answers `pushed: False` too, and that is saved as far as anyone can
+    # be — so it must CLEAR the report. Reading `pushed` instead of `rejected` would pass every
+    # assertion above and then cry failure at every local workspace, which is why this is here and
+    # not left to the docstring: it is the reason the test is `rejected`, stated as a check.
+    orch._chat_dirty = True
+    orch._save_to_git = lambda *_a, **_k: {"type": "saved", "ok": True, "pushed": False,
+                                           "detail": "committed (no remote)"}
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
+    assert orch.get_thread(a["id"])["saveFailed"] is None
+
+    # Same for the local `/tmp` workspace that is not a repo root at all: `_save_to_git` answers
+    # None, and None is "nothing to save", not "the save failed".
+    orch._chat_dirty = True
+    orch._chat_save_failed = refused
+    orch._save_to_git = lambda *_a, **_k: None
+    orch._cancel_chat_idle_save()
+    orch._on_chat_save_idle()
+    assert orch.get_thread(a["id"])["saveFailed"] is None
+
+    # And a save that plainly reaches the remote clears it.
+    orch._chat_dirty = True
+    orch._chat_save_failed = refused
     orch._save_to_git = lambda *_a, **_k: {"type": "saved", "ok": True, "pushed": True}
     orch._cancel_chat_idle_save()
     orch._on_chat_save_idle()
     assert orch._chat_dirty is False
     assert orch.get_thread(a["id"])["saveFailed"] is None
+
+
+def test_a_refused_push_really_does_answer_ok_true(tmp_path: Path):
+    """Anchor the fixture above to the producer, so it cannot drift into fiction.
+
+    The test beside this one asserts behaviour against a hand-written `rejected: True, ok: True`
+    dict. A hand-written dict is a belief about `_save_to_git`, and a belief is exactly what gets
+    stale — so this drives the real `git.push` at a remote that cannot be written to and checks
+    the two fields the orchestrator keys on. If `git.push` ever starts raising instead, or drops
+    `rejected`, this reds and the fixture stops being trusted.
+    """
+    from sage.workspace import git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_quiet(repo, "init", "-q")
+    _git_quiet(repo, "config", "user.email", "t@t")
+    _git_quiet(repo, "config", "user.name", "t")
+    (repo / "f.txt").write_text("hi\n")
+    _git_quiet(repo, "add", "f.txt")
+    _git_quiet(repo, "commit", "-qm", "one")
+    _git_quiet(repo, "remote", "add", "origin", str(tmp_path / "nope-not-a-repo"))
+
+    assert git.has_remote(repo) is True
+    result = git.push(repo)
+    assert result.pushed is False
+    assert result.rejected is True          # a RESULT, not an exception — the whole point
+    assert _chat_save_landed({"type": "saved", "ok": True, "pushed": result.pushed,
+                              "rejected": result.rejected, "detail": result.detail}) is False
+
+    # The other half, from the same producer: no remote at all is ALSO `pushed=False`, and it is
+    # saved. So `pushed` cannot be the test, and the two cases are only distinguishable by
+    # `rejected` — which is the one thing a reader of this file would otherwise have to take on
+    # trust from a comment.
+    bare = tmp_path / "solo"
+    bare.mkdir()
+    _git_quiet(bare, "init", "-q")
+    assert git.has_remote(bare) is False
+    solo = git.push(bare)
+    assert solo.pushed is False
+    assert solo.rejected is False
+    assert _chat_save_landed({"type": "saved", "ok": True, "pushed": solo.pushed,
+                              "rejected": solo.rejected, "detail": solo.detail}) is True
+
+
+def _git_quiet(path: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=path, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _raises_on_save(*_a, **_k):
