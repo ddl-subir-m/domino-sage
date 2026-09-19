@@ -3972,6 +3972,25 @@ def _viewer_id() -> str:
     return os.environ.get("DOMINO_USER_ID") or "me"
 
 
+def _chat_save_landed(result: dict | None) -> bool:
+    """Whether a `_save_to_git` answer means the work is on the remote.
+
+    Not the same question as `ok`, which is why this is a function rather than `result["ok"]` at
+    each site. `git.push` treats a refused push as a RESULT and not an error — `rejected=True`,
+    `pushed=False` — and `_save_to_git` hands that back as `ok: True`, so a non-fast-forward, a
+    dead credential and an unreachable remote all read as success to anyone asking `ok` alone.
+
+    `pushed` is not the test either, and reading it as one would be the louder bug: a Project with
+    no remote, and a local `/tmp` workspace that is not a repo root at all, both answer
+    `pushed=False` with `rejected` unset, and both are saved as far as anyone can be
+    (docs/workbench/chat.md). `None` is the same case — nothing to save. Only `rejected` says the
+    remote was asked and said no.
+    """
+    if result is None:
+        return True
+    return bool(result.get("ok")) and not result.get("rejected")
+
+
 def _thread_plan_id(record: ProjectRecord, thread_id: str) -> str:
     """The plan document this Conversation produced, or "" if it has produced none.
 
@@ -5276,10 +5295,24 @@ class Orchestrator:
         # number from the idle delay rather than a literal `0` so a test can hold the save still
         # and fire it by hand, the way the idle one already does.
         self._chat_save_turn_s = 0.0
+        # The same number for a click that leaves a dirty Conversation, and its own attribute for
+        # the same reason the one above is: a test has to be able to hold one of the two still and
+        # fire it by hand without holding the other. They answer different questions — "a turn
+        # wrote something" and "a person walked away from it" — and a test that could only pin them
+        # together could not tell which arm it had caught (#456).
+        self._chat_save_leave_s = 0.0
         # Why the reason is held here rather than passed to the timer: the post-turn save and the
         # idle one land in the same callback, and without this every commit a turn produced would
         # read `chat (idle)`.
         self._chat_save_reason = "idle"
+        # The last Chat save that did not reach the remote, or None. Kept because the savers that
+        # matter have no caller to answer: the post-turn commit and the one a rail switch leaves
+        # behind both run on the timer's thread. The `holding_turn=True` doors DO answer their own
+        # caller, and they write this too — so a failure they already reported is reported a second
+        # time here. Deliberate: one field that means "Chat's work is not on the remote" whoever
+        # was saving beats one a reader has to know the caller to interpret. `get_thread` hands it
+        # back (#456).
+        self._chat_save_failed: dict | None = None
         # True while a queued Chat save holds the turn lock, or is about to ask for it. See
         # `_acquire_for_door`, which reads it to tell a commit from a build.
         self._chat_saving = False
@@ -7641,8 +7674,28 @@ class Orchestrator:
         return ThreadStore(self._chat_project().record.path).create()
 
     def get_thread(self, thread_id: str) -> dict:
+        """Open a Conversation. Leaving a dirty one still commits it — off this read's thread.
+
+        The condition is unchanged: a Thread that was typed in is committed before the session
+        moves on to another one. What changed is who waits for it. That commit walks the tree,
+        fetches, merges and pushes — two network round trips — and it used to run here, ahead of
+        the first byte of the Conversation being opened. A write triggered by a read, paid for by
+        the person who clicked somewhere else (#456).
+
+        Handed to the timer the way a turn hands over its own commit (`_after_chat_turn`): a delay
+        of `_chat_save_leave_s` is not a wait, it is the handoff, and the timer IS a thread. So the
+        commit runs whether or not another request ever arrives — closing the tab right after the
+        click does not strand it — and a graceful stop flushes whatever is still dirty
+        (`shutdown`). Nothing is reordered either: `_flush_chat_save` takes the turn lock, so two
+        quick switches queue behind one another instead of interleaving, and one commit takes the
+        whole tree however many switches asked for it.
+
+        What this door gives up is the answer. A save with nobody waiting on its return value can
+        fail unseen, and failing to commit someone's work unseen is worse than a slow click — so
+        `_chat_save_now` keeps the last one that did not land and it is reported below.
+        """
         if self._chat_dirty_thread and self._chat_dirty_thread != thread_id:
-            self._flush_chat_save("leave")
+            self._arm_chat_idle_save("leave", delay=self._chat_save_leave_s)
         record = self._chat_project().record
         store = ThreadStore(record.path)
         row = store.get(thread_id)
@@ -7659,6 +7712,13 @@ class Orchestrator:
                                                   kept=record.kept_rows()),
             "handoff": handoffs[-1] if handoffs else None,
             "planId": _thread_plan_id(record, thread_id),
+            # The last Chat save that did not reach the remote, or None. Carried on the read rather
+            # than pushed anywhere: this is the door the flush came off, so it is the door that
+            # owes the news. Normally it reports the save BEFORE this one, since the one this click
+            # armed has not run yet — but the arm above is at delay 0 and the reads between here
+            # and it take no time at all, so a fast failure can land in this very payload. Both
+            # answers are true ones, which is why it is read here rather than captured up there.
+            "saveFailed": self._chat_save_failed,
         }
 
     def patch_thread(self, thread_id: str, body: dict) -> dict:
@@ -8396,7 +8456,25 @@ class Orchestrator:
                 self._chat_saving = False
 
     def _chat_save_now(self, reason: str) -> dict | None:
-        """The save itself. The caller owns the turn lock; this decides what to do with the result."""
+        """The save itself. The caller owns the turn lock; this decides what to do with the result.
+
+        Every outcome is recorded on `_chat_save_failed`, because the callers that matter no longer
+        read the one returned: the post-turn commit and the one a rail switch leaves behind both
+        run on the timer's thread, which has nowhere to put an answer.
+
+        What counts as failed here is "did not reach the remote", which is NOT `ok is False`.
+        `git.push` treats a refused push as a result rather than an error (`workspace/git.py`:
+        `rejected=True`, `pushed=False`), and `_save_to_git` passes that through as **`ok: True`** —
+        so a non-fast-forward, an expired credential or an unreachable remote all arrive here
+        looking like success, and `_chat_dirty` is cleared without a retry being armed. That is
+        long-standing behaviour and this is not the ticket that changes it. But a field reporting
+        "saved" about work sitting only on this disk would be worse than no field, so `rejected` is
+        read as well as `ok`.
+
+        `pushed` is deliberately not the test: a Project with no remote at all answers
+        `pushed=False` with `rejected` unset, and a local `/tmp` workspace is treated as saved
+        (docs/workbench/chat.md). Only `rejected` means the remote was asked and said no.
+        """
         t0 = time.monotonic()
         try:
             project = self.project(start_preview=False)
@@ -8411,12 +8489,19 @@ class Orchestrator:
             # `reason` carried into the retry, not dropped back to the default: a commit that
             # failed is still this turn's work, and the next attempt should say so.
             self._arm_chat_idle_save(reason)
-            return {"type": "saved", "ok": False, "pushed": False, "detail": "chat save failed"}
+            self._chat_save_failed = {"type": "saved", "ok": False, "pushed": False,
+                                      "detail": "chat save failed"}
+            return self._chat_save_failed
         if result is None or result.get("ok"):
             self._chat_dirty = False
             self._chat_dirty_thread = None
         else:
             self._arm_chat_idle_save(reason)
+        # Asked of the result, not of the branch above: `ok` and "reached the remote" are two
+        # different questions, and a refused push answers True to the first and False to the
+        # second. Clearing it is the same test read the other way — an attempt being armed, or the
+        # files being rewritten, is not evidence that the earlier failure is behind us.
+        self._chat_save_failed = None if _chat_save_landed(result) else result
         return result
 
     def _after_chat_turn(self, thread_id: str, *, immediate: str | None) -> None:
