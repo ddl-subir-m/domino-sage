@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.orchestrator import handoff
+from sage.orchestrator import handoff, table_rank
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
@@ -354,12 +354,19 @@ def test_a_second_unscoped_store_makes_it_a_question_again(tmp_path: Path):
     assert "table-candidates" in with_one
 
 
-def test_a_mention_still_picks_one_store_out_of_several(tmp_path: Path):
-    """An @mention is identity, not a guess, so it answers where the count cannot.
+def test_naming_one_store_still_picks_it_out_of_several(tmp_path: Path):
+    """Naming one of several answers where the count cannot.
 
-    Both stores hold `GONG__CALLS`, so the only thing separating them here is the mention. The
-    control is the line above it: the same Thread and the same subject with nothing mentioned
-    draws no card at all, which is what makes the card below attributable to the `@`.
+    WHAT THIS DOES NOT SEPARATE, said here because the obvious reading of it is wrong: an `@test`
+    in a Chat sentence is also the prose word "test", and `_handles("test")` is `{"test"}`, so
+    `named_source` reaches `ds-test` on its prose branch before the mention branch is consulted.
+    There is no prompt that carries a mention and not its own text, so this file cannot tell the
+    two branches apart and does not claim to. What it pins is the half that matters here — naming
+    a store beats counting them — and `test_an_at_mention_names_the_data_source_without_the_prose`
+    in the Build file covers the mention on its own.
+
+    The control is the line above it: the same Thread and the same subject naming neither store
+    draws no card at all, so the card below is attributable to the name.
     """
     orch, _oc = _orch(tmp_path)
     _gong_warehouse(orch)
@@ -434,3 +441,30 @@ def test_the_only_store_is_walked_before_it_is_ruled_out(tmp_path: Path):
 
     assert "table-candidates" not in _types(events)
     assert read == ["DWH"]
+
+
+def test_a_store_ruled_out_by_its_catalog_is_not_also_ranked_by_a_model(
+        tmp_path: Path, monkeypatch):
+    """What the decline costs, held down to the walk alone.
+
+    `matched` comes off the name rank, which runs before the model rank and which `table_rank`
+    carries through untouched — so asking about relevance below `_ranked_candidates` reads exactly
+    the same and bills a turn nobody will see the order of for two gateway calls and a column
+    query. Per turn, forever, on an app whose store has no table chosen.
+
+    The control is the same Thread under a request the store CAN answer, which must still be
+    ranked. Without it this passes on a gate that never ran, and on a ranker that was deleted.
+    """
+    orch, _oc = _orch(tmp_path)
+    _gong_warehouse(orch)
+    tid = _thread_with_source(orch)
+    ranked: list[str] = []
+    inner = table_rank.rank_with_model
+    monkeypatch.setattr(table_rank, "rank_with_model",
+                        lambda prompt, *a, **k: (ranked.append(prompt), inner(prompt, *a, **k))[1])
+
+    list(orch.chat_stream(tid, "make the header blue"))
+    assert ranked == [], "a turn the catalog ruled out was ranked by a model anyway"
+
+    list(orch.chat_stream(tid, UNNAMED))
+    assert ranked == [UNNAMED]

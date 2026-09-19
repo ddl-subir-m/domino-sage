@@ -205,18 +205,28 @@ def test_an_at_mention_names_the_data_source_without_the_prose_having_to(
     It matters because the prose match is a heuristic and this one is not. Somebody who @mentions
     the Data Source and then describes the data in words that name no store at all still gets the
     search, which is the case the prose path cannot answer.
+
+    TWO BOUND, since #445, and without the second this test stopped being able to fail: one
+    unscoped store is now inferred whether or not anything names it, so the card would arrive with
+    the mention deleted. The pair puts the mention back in the load-bearing position — `ds-oracle`
+    is reached by "billing" and "oracle", and this request says neither.
     """
     orch = _orch(tmp_path)
     _gong_warehouse(orch)
     client = _client(orch, monkeypatch)
     _bind(client)
+    client.post("/api/bindings", json={"kind": KIND_DATA_SOURCE, "id": "ds-oracle"})
+    prompt = "a daily summary of gong calls"
 
     card = _card(client.post("/api/project/build/stream", json={
-        "prompt": "a daily summary of gong calls",
+        "prompt": prompt,
         "resources": [{"kind": KIND_DATA_SOURCE, "id": "ds-dwh"}],
     }).text)
+    without = client.post("/api/project/build/stream", json={"prompt": prompt}).text
 
     assert card["sourceId"] == "ds-dwh"
+    # The control: the same sentence with nothing mentioned reaches neither store.
+    assert [f for f in _frames(without) if f.get("type") == "table-candidates"] == []
 
 
 def test_a_data_source_with_a_table_already_chosen_is_not_asked_about_again(
@@ -646,3 +656,71 @@ def test_the_only_store_is_not_asked_about_a_request_that_asks_nothing_it_holds(
     assert "message" not in ended[0]
     # And the build it interrupted nothing of still ran.
     assert built == [1]
+
+
+def test_an_inferred_store_reports_nothing_about_itself_on_the_way_out(
+        tmp_path: Path, monkeypatch):
+    """A store nobody named does not get to narrate its own failures (#445).
+
+    The walk's message-bearing exits were written for a person who said "from Snowflake": they
+    asked about the store, so a store that holds nothing or will not answer is news. Inferring the
+    sole store put those same sentences in front of somebody who asked about the header colour —
+    and a warehouse blip would then repeat them on every turn until a table was picked.
+
+    The control is the SAME empty store under a request that names it, which must still say so.
+    Without that pair this passes on a gate that never ran at all.
+    """
+    orch = _orch(tmp_path)
+    orch._resources.tree["ds-dwh"] = {"DWH": {"MARTS": []}}
+    client = _client(orch, monkeypatch)
+    _bind(client)
+
+    inferred = _frames(client.post("/api/project/build/stream",
+                                   json={"prompt": UNNAMED}).text)
+    named = _frames(client.post("/api/project/build/stream", json={"prompt": PROMPT}).text)
+
+    quiet = [f for f in inferred if f.get("type") == "table-search-ended"]
+    spoken = [f for f in named if f.get("type") == "table-search-ended"]
+    assert len(quiet) == 1 and "message" not in quiet[0]
+    assert len(spoken) == 1 and "no Tables to pick from" in spoken[0]["message"]
+
+
+def test_a_table_named_outright_is_asked_about_even_where_the_name_scores_nothing(
+        tmp_path: Path, monkeypatch):
+    """The one direction `matched` and `named_candidate` disagree in, and it matters.
+
+    `_words` drops anything under three characters, from a request and from a table name alike, so
+    a table called `T1` scores zero however plainly the sentence names it. Relevance read off
+    `matched` alone would decline the clearest data intent there is — a fully-qualified table name
+    — which is the case this whole gate exists for.
+
+    WHAT IT REACHES IS THE #426 DOOR, not the card: a table named outright is recorded without
+    asking. The relevance test sits one line above that door, so reading it off `matched` alone
+    would leave the door unreachable for an inferred store — a branch repaired and never entered.
+
+    THE STORE IS NOT NAMED HERE, which the first draft of this test got wrong and a planted
+    failure caught. Naming `SANDBOX.PUBLIC.TEST` in a store called `test` puts the store's own
+    handle in the prose, so `named_source` answers and `inferred` is never true — the test passed
+    with the clause deleted, because the code it named never ran. `Snowflake-Data-Warehouse` is
+    reached by "snowflake" alone, and this sentence does not say it.
+
+    The control is the same store and shape naming a table it does not hold, on its own app
+    because the recording above leaves no unscoped store behind to infer.
+    """
+    orch = _orch(tmp_path)
+    orch._resources.tree["ds-dwh"] = {"DWH": {"MARTS": ["T1", "OTHER"]}}
+    client = _client(orch, monkeypatch)
+    _bind(client)
+
+    client.post("/api/project/build/stream", json={"prompt": "build a chart from DWH.MARTS.T1"})
+
+    assert [(s["id"], s.get("table")) for s in _sources(client)] == [("ds-dwh", "T1")]
+
+    other = _orch(tmp_path / "control")
+    other._resources.tree["ds-dwh"] = {"DWH": {"MARTS": ["T1", "OTHER"]}}
+    control = _client(other, monkeypatch)
+    _bind(control)
+
+    control.post("/api/project/build/stream", json={"prompt": "build a chart from DWH.MARTS.NOPE"})
+
+    assert [(s["id"], s.get("table")) for s in _sources(control)] == [("ds-dwh", None)]

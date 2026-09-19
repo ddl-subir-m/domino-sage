@@ -11357,10 +11357,13 @@ class Orchestrator:
         # other, nobody asked, `confirm_handoff` minted an app around an unscoped Binding, and the
         # model wrote `FROM GONG` — a table name it invented, on which every query failed.
         #
-        # The seconds the old order was protecting are only ever spent on the one request that
-        # needs them. This declines off the Thread's own rows, before any catalog call, unless the
-        # sentence names a Data Source with no table chosen — so a build request that names no
-        # store still crosses in milliseconds, exactly as it did.
+        # The seconds the old order was protecting are spent on the requests that need them. This
+        # declines off the Thread's own rows, before any catalog call, unless the sentence names a
+        # Data Source with no table chosen — or unless exactly one is attached and unscoped, which
+        # #445 reads as naming it. That last population walks the catalog before it can decline,
+        # because whether the turn is about the store is a fact only the catalog holds; the walk is
+        # kept for the session, so it is a first-turn cost. Two attached, or none, still cross in
+        # milliseconds exactly as they did.
         #
         # The nudge is deferred, not dropped: the click replays the question with `skip_table_gate`
         # and the explicit detect below runs on that turn instead. It arrives with the table already
@@ -13101,13 +13104,19 @@ class Orchestrator:
         `table-search` frames say what is being read and then what has been found; the settled
         `table-candidates` card is still one event and still the only answerable one.
 
-        Returns False — and the turn goes on to the ordinary build — in four cases, all of which
-        leave today's behaviour exactly as it was: no such Data Source is named, it cannot be walked
-        in one query, the store stops answering, or it holds nothing to offer. The last two happen
-        after the streaming has begun, so they take the card back with `table-search-ended` rather
-        than leaving a sentence on screen that will never finish. Falling through means the
-        assistant meets the unscoped section and asks, which is a worse answer than the card and a
-        better one than a card with nothing on it.
+        Returns False — and the turn goes on to the ordinary build — in five cases, all of which
+        leave today's behaviour exactly as it was: no Data Source is named or inferrable, it cannot
+        be walked in one query, the store stops answering, it holds nothing to offer, or the store
+        was INFERRED and the request asks nothing it holds (#445). The last three happen after the
+        streaming has begun, so they take the card back with `table-search-ended` rather than
+        leaving a sentence on screen that will never finish. Falling through means the assistant
+        meets the unscoped section and asks, which is a worse answer than the card and a better one
+        than a card with nothing on it.
+
+        An INFERRED store makes every one of those exits silent — `table-search-ended` with no
+        message. Nobody named it, so nobody is owed an account of a warehouse they did not ask
+        about; a store that stops answering is news to the person who said "from Snowflake" and
+        noise on a turn about the header colour.
 
         `chosen` is the Data Source somebody just picked off the card before this one (#185), and
         it is taken rather than matched: a person who clicked `reporting-replica` under a request
@@ -13171,9 +13180,17 @@ class Orchestrator:
                 # against 3.84s a database, which is why the frame below still lands first in
                 # anything a person would notice.
                 databases = self._databases_to_walk(source, binding)
+        # AN INFERRED STORE DOES NOT SPEAK, and every exit below here honours that (#445). These
+        # sentences are right for a person who named a store: they asked about it, so a store that
+        # will not answer is news. Nobody asked here — the store is on the app and the request may
+        # be about the header colour — so the same sentence is Sage reporting a warehouse outage
+        # into a CSS turn, and it would repeat on every turn until somebody picked a table.
+        #
+        # The log line stays on both paths. What changes is only whether it reaches the person.
         except StoreWentQuiet as e:
             log.info("table search: %s stopped answering — %s", binding.display_name, e)
-            yield from self._table_search_gave_up(binding)
+            if not inferred:
+                yield from self._table_search_gave_up(binding)
             return False
         except (LookupError, ResourceUnavailable) as e:
             # The refusals, which stay silent: nothing was read, so there is nothing to take back.
@@ -13181,7 +13198,8 @@ class Orchestrator:
             return False
         except Exception:
             log.exception("table search: could not walk %s", binding.display_name)
-            yield from self._table_search_gave_up(binding)
+            if not inferred:
+                yield from self._table_search_gave_up(binding)
             return False
         # Before the first query, not after it: the first database IS the wait this is about.
         yield self._table_search_frame(binding, ())
@@ -13238,33 +13256,38 @@ class Orchestrator:
         # the one thing streaming can do that silence could not, and the assistant's own "which
         # table?" a moment later does not say whether the store failed or held nothing.
         if not found:
-            yield {"type": "table-search-ended", "sourceId": binding.id,
-                   "message": gave_up or (cannot_finish if skipped else brand.text(
-                       "{name} has no {scopePlural} to pick from.",
-                       name=binding.display_name))}
+            # Message-less where nobody named the store, for the reason above: the frames come back
+            # either way, and only a person who asked is owed an account of why.
+            ended = {"type": "table-search-ended", "sourceId": binding.id}
+            if not inferred:
+                ended["message"] = gave_up or (cannot_finish if skipped else brand.text(
+                    "{name} has no {scopePlural} to pick from.", name=binding.display_name))
+            yield ended
             return False
         # The model rank runs AFTER the last streamed frame and before the settled card, which is why
         # the frames carry the name order and the card carries the model's. Them differing across
         # that boundary is the point rather than a glitch: the frames are the walk reporting what it
         # has found, and the card is the answer.
-        ranking = self._ranked_candidates(project, source, binding, prompt, found,
-                                          session=project.session_id)
-        # The second test an inferred store owes (#445) — see the Chat gate for why `matched` is
+        # The second test an inferred store owes (#445) — see the Chat gate for why the catalog is
         # what asks it. A Binding outlives the turn that made it, so an app with a store and no
         # table would meet this card on "make the header blue" every turn until one is chosen.
         #
+        # ABOVE THE MODEL RANK, not below it. `matched` comes off the name scoring, which
+        # `_ranked_candidates` runs first and `table_rank` carries through untouched — so asking
+        # here reads exactly the same and a declined turn does not spend two gateway calls and a
+        # column query on an order nobody will see.
+        #
         # IT TAKES THE CARD BACK, which the Chat gate has nothing to take back. The walk has already
-        # streamed frames by here and this is the only exit below them that is not about the store:
-        # names appearing and then vanishing with no account of why is the one thing streaming can
-        # do that silence could not. Message-less, like the Stop exit above and unlike the
-        # nothing-found one below — those are facts about the store, worth a sentence; this one is
-        # a fact about the request, and a sentence explaining that Sage went and looked would be
-        # noise on a turn that was never about the warehouse. The build then runs as it always did.
-        if inferred and ranking.matched == 0:
+        # streamed frames by here: names appearing and then vanishing with no account of why is the
+        # one thing streaming can do that silence could not. Message-less, for the reason every
+        # other exit above is now — nobody asked about this store. The build then runs as it did.
+        if inferred and not self._asks_anything_of(prompt, binding, found):
             log.info("table gate (build): declined — %s is the only store bound and the request "
                      "asks nothing it holds", binding.display_name)
             yield {"type": "table-search-ended", "sourceId": binding.id}
             return False
+        ranking = self._ranked_candidates(project, source, binding, prompt, found,
+                                          session=project.session_id)
         # The same "already answered, so do not ask" as the Chat gate (#426), through the same door:
         # `confirm_table_candidate` proves the table is still there before recording, and a list
         # `_database_candidates` kept for the session needs that check MORE without a click than
@@ -13361,6 +13384,36 @@ class Orchestrator:
                                       name=binding.display_name),
                 "groups": table_search.grouped(candidates[:table_search.SHORTLIST]),
                 "total": len(candidates)}
+
+    def _asks_anything_of(self, prompt: str, binding: Binding, found: list[Candidate]) -> bool:
+        """Whether a request the store was INFERRED for is about that store at all (#445).
+
+        The question `named_source` used to answer by accident and `sole_source` cannot answer at
+        all. A sentence that names a store has said in the same breath that it is about one; a
+        sentence that names nothing has said only that a store is attached, and a Thread keeps its
+        chip and an app keeps its Binding for the whole of their lives. Without this, one store
+        with no table chosen turns "make the header blue" into a table question, every turn, until
+        somebody picks a table.
+
+        THE STORE'S OWN CATALOG ANSWERS IT, not a word list, because only the catalog knows. "a bar
+        graph of gong calls per day" reaches `GONG__CALLS` and three of its neighbours; "tell me
+        what you can see" reaches nothing in the same warehouse. A list of data-sounding words
+        would have to be written without seeing either — `_STORE_WORDS` is kept short for exactly
+        that reason, and it would not have matched the measured prompt, which names no store word
+        at all.
+
+        `named_candidate` beside `matched`, because they disagree in one direction that matters. A
+        table named out of the store's own handle words — a source called `Gong` holding `GONG` —
+        scores nothing, since the handles are stripped from the request before tables are scored.
+        A sentence naming a table outright is the clearest data intent there is, and declining it
+        for want of a second word would be this gate refusing the case it exists for.
+
+        Both readings are of the name rank alone, which is why this is asked before the model rank
+        rather than after: `table_rank` reorders and carries `matched` through untouched.
+        """
+        ranking = table_search.rank(prompt, binding, found)
+        return bool(ranking.matched) or table_search.named_candidate(
+            prompt, ranking.candidates) is not None
 
     def _table_search_gave_up(self, binding: Binding):
         """Say a walk died before it could ask anything, instead of going quiet.
@@ -13517,8 +13570,9 @@ class Orchestrator:
         them answer the same question twice across the crossing, which is the friction this whole
         feature exists to remove.
 
-        Falls through in the same three cases the Build gate does, and for the same reason: no such
-        Data Source is named, the store will not say what it holds, or it holds nothing to offer.
+        Falls through in the same four cases the Build gate does, and for the same reason: no Data
+        Source is named or inferrable, the store will not say what it holds, it holds nothing to
+        offer, or it was INFERRED and the request asks nothing it holds (#445).
         """
         bindings = [b for b in (chat_handoff.binding_from_context(i) for i in items)
                     if b is not None]
@@ -13567,33 +13621,18 @@ class Orchestrator:
         # happens, so it must not be the surface that gets the weaker order — and the ranker already
         # fails closed, so a Chat turn that cannot reach a model keeps exactly the name order this
         # path used to hand the card and loses nothing.
-        ranking = self._ranked_candidates(project, source, binding, prompt, found,
-                                          session=store.read_session_id(thread_id))
-        # THE SECOND TEST an inferred store owes (#445), and the first place it can be asked. A
-        # sentence that named the store said it was about the store; a sentence that named nothing
-        # said only that a store is attached, and a Thread keeps its chip across every turn of its
-        # life — so without this, "make the header blue" draws a table picker for as long as no
-        # table is chosen. It is the same gate one level down rather than a new one: the request
-        # has to name something the store actually holds.
-        #
-        # `matched` RATHER THAN A WORD LIST, because the store's own catalog is the only thing that
-        # knows. "bar graph of gong calls per day" matches `GONG__CALLS` and three of its
-        # neighbours; "tell me what you can see" matches nothing in the same warehouse. A list of
-        # data-sounding words would have to be written without seeing either, and `_STORE_WORDS`
-        # above is kept short for exactly that reason — it would not have matched the measured
-        # prompt, which names no store word at all.
-        #
-        # `table_rank` carries `matched` through untouched and says so: it means the NAMES answered,
-        # which is a fact about the walk and not about the model that reordered it. So this reads
-        # the same whether the ranker ran or failed closed.
+        # THE SECOND TEST an inferred store owes (#445), asked before the model rank so a declined
+        # turn pays nothing for an order nobody will see. `_asks_anything_of` carries the reasoning.
         #
         # Named stores keep today's behaviour, with a card that opens on the full list where
         # nothing matched (see `_table_candidates_events`) — a person who said "from Snowflake"
         # asked, and a bad ranking must cost them a scroll rather than a fall-through.
-        if inferred and ranking.matched == 0:
+        if inferred and not self._asks_anything_of(prompt, binding, found):
             log.info("table gate (chat): declined — %s is the only store bound and the request "
                      "asks nothing it holds", binding.display_name)
             return None
+        ranking = self._ranked_candidates(project, source, binding, prompt, found,
+                                          session=store.read_session_id(thread_id))
         # Already answered, so do not ask (#426). `named_source` tests the BINDING's recorded table,
         # so a fully-qualified name in the sentence left it exactly as unscoped as no name at all,
         # and the card asked a question the person had already answered — at the cost of the whole

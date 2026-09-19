@@ -1010,7 +1010,16 @@ def test_a_data_source_with_no_table_picked_is_reachable_not_shut(tmp_path: Path
     is named and reachable; only WHICH table was unknown. Downstream, a build shipped a dashboard on
     invented rows behind a note asking for table names nothing had asked the person for.
 
-    Not knowing which table is a question to ask. It is not the store being shut."""
+    Not knowing which table is a question to ask. It is not the store being shut.
+
+    TWO STORES ON THE THREAD, since #445, and the second one is here to keep this turn reaching
+    the agent at all. A sole unscoped Data Source is now read as the one the request means, so this
+    prompt — which matches `FCT_USAGE_DAILY` on the word "usage" — ends at the table card instead,
+    and `oc.prompts` is empty. That is the intended behaviour and not a dead end: the card is
+    answerable and the click replays the turn. What it is not is a turn that reaches the model, so
+    the row this test is about would go unexercised. Two unscoped stores is the population that
+    still crosses to the agent, and the row it reads is the same row.
+    """
     orch, oc = _orch(tmp_path, [Turn(text="ok")])
     tid = orch.create_thread()["id"]
     # What the composer posts for a bare Data Source chip: no scope, no parent, just the Resource.
@@ -1021,6 +1030,11 @@ def test_a_data_source_with_no_table_picked_is_reachable_not_shut(tmp_path: Path
     })
     assert row["sourceName"] == "Snowflake-Data-Warehouse"
     assert "columns" not in row          # a Scope above a table has none to read
+    orch.add_thread_context(tid, {
+        "kind": "data_source",
+        "name": "billing-oracle",
+        "resourceId": "data_source:ds-oracle",
+    })
 
     list(orch.chat_stream(tid, "what is in the anthropic api usage data"))
     prompt = oc.prompts[0]["text"]
