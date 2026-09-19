@@ -12276,6 +12276,20 @@ class Orchestrator:
                         if key in seen:
                             continue
                         if "tool" in pt:
+                            # The second witness, and the one that must be here rather than only on
+                            # the event stream (#418). `_EventTap` is best-effort by design — a
+                            # driver with no `session_events`, a stream that never connects, or one
+                            # that dies mid-turn all leave `drain()` empty forever and the loop
+                            # falls back to reading THIS transcript. Keyed only on `tool_run`, the
+                            # end-of-turn revert would then skip on a turn that really did write,
+                            # and a denied write would survive on disk. The transcript is where
+                            # every card comes from and it sees the call on both paths, so it is
+                            # the witness the guard is allowed to trust.
+                            #
+                            # Set before the status check, not after: a call still `running` at the
+                            # turn's end is a tool that ran, and it is the one most likely to have
+                            # left a half-written file behind.
+                            any_tool_ran = True
                             status = (part.get("state") or {}).get("status")
                             if status in ("pending", "running", "in_progress"):
                                 polled_running = True

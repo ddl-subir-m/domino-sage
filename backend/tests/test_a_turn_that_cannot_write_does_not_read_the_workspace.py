@@ -246,3 +246,123 @@ def test_no_baseline_validates_an_earlier_table_the_answer_pointed_at(tmp_path: 
     _seed(tmp_path)
     named = f"examples/{_THREAD}/earlier.table.json"
     assert ChatTables(tmp_path, _THREAD, None).check(f"See {named}") == {}
+
+
+# --------------------------------------------------------------------------------------------
+# The turn itself. Everything above tests a part; these drive `chat_stream` and count the reads.
+# --------------------------------------------------------------------------------------------
+
+def _counted(monkeypatch):
+    """Count the two workspace reads a Chat turn's own setup and teardown make.
+
+    `service.snapshot_files` is the `setup.snapshot` read and nothing else — `new_artifact_paths`
+    takes its own from the `threads` namespace, so it is not counted here and is not what either
+    ticket is about."""
+    from sage.orchestrator import service as svc
+
+    counts = {"snapshot": 0, "revert": 0}
+    real_snapshot, real_revert = svc.snapshot_files, svc.revert_denied_writes
+
+    def snapshot(*a, **k):
+        counts["snapshot"] += 1
+        return real_snapshot(*a, **k)
+
+    def revert(*a, **k):
+        counts["revert"] += 1
+        return real_revert(*a, **k)
+
+    monkeypatch.setattr(svc, "snapshot_files", snapshot)
+    monkeypatch.setattr(svc, "revert_denied_writes", revert)
+    return counts
+
+
+def test_an_answer_only_turn_reads_the_workspace_neither_before_nor_after(tmp_path, monkeypatch):
+    """#419, end to end. The turn is armed `arm_read_only("question")`, so it holds no tool that can
+    write, and it reads the tree zero times instead of twice."""
+    from .test_chat_turn import IntentGateway, Turn, _orch
+
+    counts = _counted(monkeypatch)
+    orch, _ = _orch(tmp_path, [Turn(text="Plain answer.")],
+                    gateway=IntentGateway({"label": "plain_answer", "confidence": 0.95}))
+    tid = orch.create_thread()["id"]
+
+    list(orch.chat_stream(tid, "Explain how rainbows form."))
+
+    assert counts == {"snapshot": 0, "revert": 0}
+
+
+def test_a_turn_that_can_write_but_ran_nothing_still_takes_its_baseline(tmp_path, monkeypatch):
+    """#418, end to end, and the line between the two tickets. A greeting classifies `other_chat`
+    and is not a question, so it keeps `bash` and is NOT answer-only — its baseline must be taken,
+    because at that moment nothing knows the turn will run nothing. Only the end-of-turn scan is
+    skipped, and only once the turn is over and no `tool_run` ever arrived."""
+    from .test_chat_turn import IntentGateway, Turn, _orch
+
+    counts = _counted(monkeypatch)
+    orch, _ = _orch(tmp_path, [Turn(text="Hello.")],
+                    gateway=IntentGateway({"label": "other_chat", "confidence": 0.95}))
+    tid = orch.create_thread()["id"]
+
+    list(orch.chat_stream(tid, "hi"))
+
+    assert counts == {"snapshot": 1, "revert": 0}
+
+
+def test_a_turn_that_ran_a_tool_still_undoes_the_write_it_was_not_allowed(tmp_path, monkeypatch):
+    """The guard that must go red if the flag is ever wired backwards. A turn that both COULD and
+    DID write still reads the tree at both ends, and a write outside `examples/<threadId>/` is
+    undone. Planted on a site that already looks fine — this is the behaviour #418 must not cost.
+
+    It is also the plant for the TRANSCRIPT witness, and that is the half worth keeping. `FakeOpenCode`
+    has no `session_events`, so `_EventTap.ok` is False here and not one `tool_run` event is ever
+    emitted — this turn's tools are visible only as transcript parts. That is not a harness quirk
+    standing in for production: the tap is best-effort there too, and a stream that never connects
+    or dies mid-turn puts a live turn on exactly this path. Keyed on `tool_run` alone, this test
+    fails, and what it would be describing is a denied write left on disk.
+    """
+    from .test_chat_turn import IntentGateway, Turn, _orch
+
+    counts = _counted(monkeypatch)
+    orch, _ = _orch(tmp_path, [Turn(text="Done.", writes={"notes.txt": "the model wrote this\n"})],
+                    gateway=IntentGateway({"label": "other_chat", "confidence": 0.95}))
+    tid = orch.create_thread()["id"]
+    ws = orch.project(start_preview=False).workspace.path
+
+    list(orch.chat_stream(tid, "write notes.txt for me"))
+
+    assert counts == {"snapshot": 1, "revert": 1}
+    assert not (ws / "notes.txt").exists(), (
+        "the denied write survived the turn — the end-of-turn scan was skipped for a turn that ran "
+        "a tool")
+
+
+def test_a_tool_seen_only_on_the_event_stream_still_owes_the_scan(tmp_path, monkeypatch):
+    """The other witness, isolated. The turn above proves the transcript path; this one proves the
+    event path, and it needs a separate test because the two fakes are disjoint — `FakeOpenCode`
+    streams nothing and cannot exercise `tool_run` at all.
+
+    The transcript here carries a plain text answer and NO tool part, so the only evidence a tool
+    ran is the `tool_run` frame on the stream. A live turn reaches this shape when it is stopped or
+    times out with the transcript not yet re-read — which is exactly when a half-written file is
+    most likely to be sitting in the tree.
+    """
+    from .test_chat_turn import IntentGateway, StreamingFake, Turn, _live, _orch
+
+    events = [
+        _live("tool_run", tool="bash", input={"command": "echo hi > notes.txt"},
+              call_id="c1", status="called"),
+        _live("tool_run", tool="bash", call_id="c1", status="completed"),
+        _live("message", text="Done.", final=True),
+        _live("phase", finish="stop"),
+    ]
+    counts = _counted(monkeypatch)
+    orch, _ = _orch(tmp_path,
+                    gateway=IntentGateway({"label": "other_chat", "confidence": 0.95}),
+                    client=lambda ws: StreamingFake(ws, [Turn(text="Done.")], events))
+    tid = orch.create_thread()["id"]
+
+    list(orch.chat_stream(tid, "run that for me"))
+
+    assert counts == {"snapshot": 1, "revert": 1}, (
+        "a tool visible only on the event stream left the turn owing no scan — the `tool_run` "
+        "witness is not wired, and a stopped turn's denied write would survive")
