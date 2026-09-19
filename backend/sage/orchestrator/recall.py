@@ -38,6 +38,7 @@ EMPTY = "empty"       # cleared, told nothing
 SEARCH = "withhold-search"      # a search is running; the card shows a spinner
 FOUND = "withhold-found"        # the search finished, with or without an answer
 WITHHELD = "recall-withheld"    # the person said yes; this content is no longer sent
+REBUILT = "recall-rebuilt"      # the session was gone; what it held was rebuilt from the transcript
 
 
 def withheld(history: list[dict]) -> frozenset[str]:
@@ -193,3 +194,49 @@ def seed(history: list[dict]) -> str:
                 return ""
             return chat_summary(rows[:i])
     return ""
+
+
+def reseed(history: list[dict]) -> str:
+    """What a freshly minted session is told this Conversation already holds (ADR-0060).
+
+    `seed` above answers "did the person just clear Recall". This answers a different question about
+    a different fact: the session this Thread was talking to is GONE. OpenCode's store sits on the
+    container overlay and dies with the workspace, while `history.jsonl` sits on the Project volume
+    and does not — so `_ensure_thread_session` mints a new session, the model starts at nothing, and
+    the person goes on reading a full transcript (#427). Only that caller knows a session was just
+    minted, which is why nothing here tries to infer it from the rows.
+
+    Deliberately NOT built on `seed`'s guard, and this is the whole reason it is a separate
+    function. That guard returns "" at the first `user` row, and the caller appends the current
+    turn's `user` row (`service.py:10955`) before reading the transcript back (`:11408`) — so on any
+    ordinary turn it already returns "" and always has. Widening it would have hung this decision on
+    a branch that has never run in production. Filed separately rather than fixed here, because
+    making it fire would start seeding the summary-scoped clear for the first time, which is a live
+    change to the recall ladder (ADR-0022) that ADR-0060 did not decide.
+    """
+    rows = [e for e in (history or []) if isinstance(e, dict)]
+    # The turn being assembled has already written its own `user` row, and this prompt ends with
+    # that same text. Summarising it as well would hand the model its question twice — once as
+    # something already said, once as the thing being asked.
+    if rows and rows[-1].get("type") == "user":
+        rows = rows[:-1]
+    # EITHER scope, and the scope is deliberately not read. `clear_recall` calls
+    # `ThreadStore.clear_session_id` OUTSIDE its `if scope == recall.EMPTY:` block, so a clear of
+    # any kind is carried out by dropping the session — which means the next turn mints one and
+    # lands here BY CONSTRUCTION, for a loss that was requested rather than suffered.
+    #
+    # Truncating at the newest clear of either scope is what keeps this decision to its subject.
+    # Reading the scope and carrying a SUMMARY clear whole looks right — that rung did promise a
+    # summary survives — and is wrong twice over: it answers "start over, keep the gist" by shovelling
+    # the WHOLE pre-clear transcript into the fresh session, and it hands the ladder's softer rung
+    # a fresh chance to re-poison a Conversation the person cleared to escape a refusal. Keeping
+    # that promise is `seed`'s job, it has never actually done it (#432), and turning it on here
+    # would be ADR-0022's decision made silently inside ADR-0060's.
+    #
+    # Rows said AFTER the newest clear are carried: nobody asked to forget those, and losing them
+    # to a restart is the thing this function exists for.
+    for i in range(len(rows) - 1, -1, -1):
+        if rows[i].get("type") == CLEARED:
+            rows = rows[i + 1:]
+            break
+    return chat_summary(rows)

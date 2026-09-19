@@ -56,7 +56,9 @@ def _chat_session(tmp_path: Path):
     project = orch.project(start_preview=False)
     store = ThreadStore(project.record.path)
     tid = orch.create_thread()["id"]
-    first = orch._ensure_thread_session(store, tid, project, oc)
+    # `(session_id, rebuild_owed)` since #427 — the second half is that ticket's business, not
+    # this one's, and is deliberately not asserted on here.
+    first, _owed = orch._ensure_thread_session(store, tid, project, oc)
     assert first, "setup did not produce a session id"
     assert store.read_session(tid).get("session_id") == first
     return orch, oc, project, store, tid, first
@@ -69,7 +71,7 @@ def test_the_chat_rail_logs_the_status_opencode_answered(
     oc.messages = _raises(status)  # type: ignore[method-assign]
 
     with caplog.at_level(logging.INFO, logger="sage.orchestrator"):
-        again = orch._ensure_thread_session(store, tid, project, oc)
+        again, _ = orch._ensure_thread_session(store, tid, project, oc)
 
     assert str(status) in caplog.text, caplog.text
     assert first in caplog.text, "the id that was given up on is what makes the line traceable"
@@ -104,7 +106,7 @@ def test_every_status_still_mints_today(tmp_path: Path):
     for status in STATUSES:
         orch, oc, project, store, tid, first = _chat_session(tmp_path / f"s{status}")
         oc.messages = _raises(status)  # type: ignore[method-assign]
-        again = orch._ensure_thread_session(store, tid, project, oc)
+        again, _ = orch._ensure_thread_session(store, tid, project, oc)
         assert again != first, status
         assert store.read_session(tid).get("session_id") == again, (
             f"{status}: the stored id was overwritten, which is the destructive half")
