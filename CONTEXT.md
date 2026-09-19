@@ -324,6 +324,15 @@ permission ([ADR-0052](docs/adr/0052-the-llm-gateway-is-the-trusted-enforcement-
 _Kind_: name
 _Avoid_: consent, approval, sensitivity classification
 
+**Data access**:
+The group a viewer can hide: [[Data used]] and the line saying when an investigation
+opened or closed. It names what Sage read and when it was allowed to read, so it is wider
+than [[Data used]] alone and narrower than everything drawn beside an answer — an
+investigation's offer is never in it, and neither is a read that fell short
+([ADR-0062](docs/adr/0062-a-viewer-hides-what-sage-read-but-never-a-read-that-fell-short.md)).
+_Kind_: name
+_Avoid_: details, steps, workings, sources, verbose mode
+
 **Kept rows**:
 The Project's standing answer to whether real data rows may be committed into its files. On
 until someone turns it off, and turned off beside the name of the git remote they will be pushed
