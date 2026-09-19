@@ -1936,6 +1936,7 @@ window.SW = window.SW || {};
     dataset_files: shown,
     investigation_offer: shown,
     other_lane_offer: shown,
+    continue_offer: shown,
     build_stalled: shown,
     plan_suggestion: shown,
     withhold: shown,
@@ -1950,9 +1951,9 @@ window.SW = window.SW || {};
   // block type added to the dispatcher without a row here reds there, and until it does the new
   // card shows, which is the safe direction for a disclosure.
   //
-  // WHY THIRTY-ONE ROWS LOOK UNUSED, and why deleting them would be a defect. `pushBlock` is
+  // WHY THIRTY-TWO ROWS LOOK UNUSED, and why deleting them would be a defect. `pushBlock` is
   // reached two ways. At MINT it is reached from the two governed sites only — `putDataUsed` and
-  // the `investigation-state` status — because the other thirty-one blocks are pushed straight
+  // the `investigation-state` status — because the other thirty-two blocks are pushed straight
   // onto the message, so on a first read their rows are never consulted. On a RE-PARTITION it is
   // reached for every block on the message, because `applyDataAccess` puts the whole sequence back
   // through it, and that is the path the drawer's checkbox and the answer's nudge both take.
@@ -2247,6 +2248,23 @@ window.SW = window.SW || {};
           grant: ev.grant || '',
           live: !!ev.live,
         });
+      } else if (ev.type === 'continue-offer' && ev.message) {
+        // The way back into a turn the ceiling stopped (#454). Same `live` rule as the three cards
+        // above, and here it is the cheapest of the four to justify: the button starts a fresh ten
+        // minutes of work, and a question somebody is scrolling back through a week later must not
+        // be able to do that on one click.
+        //
+        // No grant on this one, unlike the card above it. Continue asks for nothing the first turn
+        // did not already have — it replays the same question as an ordinary turn, on a full
+        // clock, and reads the findings by the path every turn reads them. There is no capability
+        // to mint, so there is none to spend.
+        ensureAssistant().blocks.push({
+          type: 'continue_offer',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          threadId: ev.threadId || '',
+          live: !!ev.live,
+        });
       } else if (ev.type === 'investigation-state') {
         // The grant and its end, in the conversation rather than only in the record. The bar above
         // the composer says what is true NOW; this says when it changed, which is the half a
@@ -2523,10 +2541,17 @@ window.SW = window.SW || {};
   // test that pins `queries failed` says "or every broken table buys a listing that cannot say
   // anything about it" — so this is the entry that sentence was about, added late.
   //
+  // `timeout` is here for the same reason and the sharpest version of it (#454): the cap that
+  // fired is one Sage set itself — `_CHAT_TURN_MAX_S`, ten minutes — so a listing of models has
+  // nothing to say about it, and the turn that ends this way is the one where a red platform card
+  // is most misleading. The person waited ten minutes, the block above already tells them what
+  // happened and offers Continue, and a "problems need attention" chip beside it sends them to
+  // look at a gateway that was answering fine the whole time.
+  //
   // This withdraws the PLATFORM flag and nothing else. The `error` frame still goes up, the
   // person still reads which table failed, and `done.ok` is untouched.
   const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true,
-                              'table generation failed': true };
+                              'table generation failed': true, timeout: true };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
   // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
@@ -7281,6 +7306,25 @@ window.SW = window.SW || {};
       return store.sendMessage(prompt, { echo: false, otherLaneGrant: grant });
     },
 
+    // Continue, from the card the ceiling draws (#454). An ORDINARY turn, and that is the whole
+    // decision: one resume, a full clock, no grant, no gate skipped. The resumed turn reads what
+    // the last one measured because `_findings_note` names this Thread's `findings.md` into every
+    // prompt that has one, and the reserved slice has just made this Thread have one — so nothing
+    // is bolted onto the question here, and the question is the one that was asked.
+    //
+    // Re-read first, for the reason the three actions above it do: `sendMessage` reads
+    // `state.thread`, so replaying after a click onto another conversation would post this
+    // question into the one the person moved to, with `echo` off, where they would never see it.
+    //
+    // `echo: false`, like the card above. The question is already in the transcript directly under
+    // the block this button sits on, and echoing it would read as a second question having been
+    // asked rather than the first one being picked back up.
+    async continueAfterTheCeiling(prompt, threadId) {
+      const opened = await store.openThread(threadId);
+      if (!opened || !state.thread || state.thread.id !== threadId) return null;
+      return store.sendMessage(prompt, { echo: false });
+    },
+
     // The bar's Close. No replay: nothing was asked, and nothing is owed an answer. Closing takes
     // back the capability and LEAVES the findings where they are — see ADR-0056.
     async closeInvestigation(threadId) {
@@ -8143,6 +8187,15 @@ window.SW = window.SW || {};
             ensurePushed();
             assistant.blocks = [...assistant.blocks,
                                 { ...ev, type: 'other_lane_offer', live: true }];
+            notify();
+          } else if (ev.type === 'continue-offer') {
+            // The ceiling's own card (#454). `state.typing` is already null by the time this
+            // arrives — the `error` and `done` frames that close a timed-out turn come first, and
+            // this rides after them exactly as the handoff card does — so there is nothing here to
+            // clear, and clearing it again would be a claim about a turn that has already ended.
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks,
+                                { ...ev, type: 'continue_offer', live: true }];
             notify();
           }
         });
