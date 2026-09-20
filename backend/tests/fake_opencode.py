@@ -76,11 +76,26 @@ class FakeOpenCode:
     after a dispatch ended the slice immediately, the work it had just asked for was interrupted,
     and the feature did nothing at all — with seventeen tests green over it.
 
-    Reachable today? No, and it was checked rather than assumed: every waiter in `sage/` is either
-    `wait_for_idle` (which carries the grace), a poll loop holding the latch, or a post-interrupt
-    wait where returning on the first not-running reading is the point. Derive that population
-    again rather than trusting this sentence — `grep -rn '\\.is_running(\\|\\.wait_for_idle('
-    sage/` — because the list rots the next time somebody waits on a session.
+    Reachable today? No, and it was checked rather than assumed. Derive the population again
+    rather than trusting this sentence — `grep -rn '\\.is_running(\\|\\.wait_for_idle(' sage/` —
+    because the list rots the next time somebody waits on a session, and because the FIRST pass
+    over it here was short. Four shapes, not the three it originally named:
+
+    * `wait_for_idle`, which carries the grace itself.
+    * A poll loop holding its own `appeared` latch (`_chat_stream`, `_build_stream`).
+    * A wait after an INTERRUPT (`_stop_wedged_session`), where returning on the first
+      not-running reading is the point rather than the bug.
+    * A one-shot `is_running` GUARD in front of a graced wait — `_maybe_compact_chat` dispatches
+      `summarize` and then `if client.is_running(sid): client.wait_for_idle(sid,
+      appear_grace_s=2.0)`. The guard is a single unlatched read, so it has the shape, and it is
+      tolerated rather than safe by construction: `summarize` usually blocks until the summary
+      loop finishes (its own docstring says so), and when it does not, the cost is a compaction
+      running on past the lock rather than a feature that does nothing. Not the same blast radius,
+      and worth knowing it is the same shape.
+
+    That fourth one was missed on the first sweep and found by a second pair of eyes re-deriving
+    the same grep. A classification is a claim about a population, and a three-item one written
+    from the instance that bit you is short in depth as well as in count.
 
     If you are writing a new wait that follows a dispatch, this fake cannot test it. Subclass and
     lag the status the way the server does; `DispatchIsAsync` in
