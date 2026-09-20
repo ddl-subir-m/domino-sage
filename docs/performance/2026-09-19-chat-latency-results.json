@@ -1,0 +1,362 @@
+[
+ {
+  "kind": "chat",
+  "startedAt": 1789860881.2437942,
+  "prompt": "How many Mixpanel events in 30 days, and distinct users?",
+  "ms": 68235,
+  "ok": true,
+  "decision": "answered",
+  "running": false,
+  "spans": [
+   {
+    "name": "turn.acquire",
+    "depth": 0,
+    "atMs": 0,
+    "ms": 0,
+    "open": false
+   },
+   {
+    "name": "gate.dataset",
+    "depth": 0,
+    "atMs": 1,
+    "ms": 0,
+    "open": false
+   },
+   {
+    "name": "gate.remote.incoming",
+    "depth": 0,
+    "atMs": 260,
+    "ms": 7,
+    "open": false,
+    "beside": 1
+   },
+   {
+    "name": "setup.opencode",
+    "depth": 0,
+    "atMs": 3694,
+    "ms": 0,
+    "open": false
+   },
+   {
+    "name": "setup.session",
+    "depth": 0,
+    "atMs": 3694,
+    "ms": 45,
+    "open": false
+   },
+   {
+    "name": "setup.snapshot",
+    "depth": 0,
+    "atMs": 3739,
+    "ms": 492,
+    "open": false
+   },
+   {
+    "name": "setup.baseline",
+    "depth": 0,
+    "atMs": 4231,
+    "ms": 29,
+    "open": false
+   },
+   {
+    "name": "setup.mentions",
+    "depth": 0,
+    "atMs": 4260,
+    "ms": 0,
+    "open": false
+   },
+   {
+    "name": "setup.prompt",
+    "depth": 0,
+    "atMs": 4261,
+    "ms": 477,
+    "open": false
+   },
+   {
+    "name": "setup.dispatch",
+    "depth": 0,
+    "atMs": 4738,
+    "ms": 57,
+    "open": false
+   },
+   {
+    "name": "after.artifacts",
+    "depth": 0,
+    "atMs": 63824,
+    "ms": 995,
+    "open": false
+   },
+   {
+    "name": "after.handoff",
+    "depth": 0,
+    "atMs": 64820,
+    "ms": 3391,
+    "open": false
+   },
+   {
+    "name": "after.compact",
+    "depth": 0,
+    "atMs": 68211,
+    "ms": 24,
+    "open": false
+   },
+   {
+    "name": "after.save",
+    "depth": 0,
+    "atMs": 68235,
+    "ms": 0,
+    "open": false
+   }
+  ],
+  "calls": [
+   {
+    "n": 1,
+    "model": "sonnet",
+    "phase": "chat-intent",
+    "reason": "",
+    "atMs": 1,
+    "ttfbMs": 3691,
+    "prepMs": null,
+    "ms": 3691,
+    "chunks": 1,
+    "reqBytes": 0,
+    "tools": [],
+    "inTokens": null,
+    "cachedTokens": null,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 2,
+    "model": "domino/gemini-3.7-flash",
+    "phase": "",
+    "reason": "chat-override",
+    "atMs": 4892,
+    "ttfbMs": 2624,
+    "prepMs": 0,
+    "ms": 2743,
+    "chunks": 3,
+    "reqBytes": 9467,
+    "tools": [],
+    "inTokens": 2316,
+    "cachedTokens": null,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 3,
+    "model": "domino/gemini-3.7-flash",
+    "phase": "",
+    "reason": "chat-override",
+    "atMs": 4977,
+    "ttfbMs": 3826,
+    "prepMs": 0,
+    "ms": 12605,
+    "chunks": 3,
+    "reqBytes": 79818,
+    "tools": [
+     "live_read_query"
+    ],
+    "inTokens": 15315,
+    "cachedTokens": null,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 4,
+    "model": "domino/gemini-3.7-flash",
+    "phase": "",
+    "reason": "chat-override",
+    "atMs": 17775,
+    "ttfbMs": 3149,
+    "prepMs": 1,
+    "ms": 5754,
+    "chunks": 3,
+    "reqBytes": 82389,
+    "tools": [
+     "live_read_query"
+    ],
+    "inTokens": 15825,
+    "cachedTokens": null,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 5,
+    "model": "domino/gemini-3.7-flash",
+    "phase": "",
+    "reason": "chat-override",
+    "atMs": 23603,
+    "ttfbMs": 3006,
+    "prepMs": 1,
+    "ms": 5401,
+    "chunks": 3,
+    "reqBytes": 83697,
+    "tools": [
+     "live_read_query"
+    ],
+    "inTokens": 16066,
+    "cachedTokens": null,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 6,
+    "model": "domino/gemini-3.7-flash",
+    "phase": "",
+    "reason": "chat-override",
+    "atMs": 29079,
+    "ttfbMs": 3856,
+    "prepMs": 1,
+    "ms": 8331,
+    "chunks": 3,
+    "reqBytes": 84752,
+    "tools": [
+     "live_read_query"
+    ],
+    "inTokens": 16286,
+    "cachedTokens": 11608,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 7,
+    "model": "domino/gemini-3.7-flash",
+    "phase": "",
+    "reason": "chat-override",
+    "atMs": 37486,
+    "ttfbMs": 3936,
+    "prepMs": 1,
+    "ms": 6906,
+    "chunks": 3,
+    "reqBytes": 86573,
+    "tools": [
+     "live_read_query"
+    ],
+    "inTokens": 16690,
+    "cachedTokens": 11599,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 8,
+    "model": "domino/gemini-3.7-flash",
+    "phase": "",
+    "reason": "chat-override",
+    "atMs": 44467,
+    "ttfbMs": 5315,
+    "prepMs": 1,
+    "ms": 8276,
+    "chunks": 3,
+    "reqBytes": 88230,
+    "tools": [
+     "live_read_query"
+    ],
+    "inTokens": 17087,
+    "cachedTokens": 11590,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 9,
+    "model": "domino/gemini-3.7-flash",
+    "phase": "",
+    "reason": "chat-override",
+    "atMs": 52847,
+    "ttfbMs": 4054,
+    "prepMs": 1,
+    "ms": 6886,
+    "chunks": 3,
+    "reqBytes": 90627,
+    "tools": [
+     "live_read_query"
+    ],
+    "inTokens": 17614,
+    "cachedTokens": 15448,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 10,
+    "model": "domino/gemini-3.7-flash",
+    "phase": "",
+    "reason": "chat-override",
+    "atMs": 59802,
+    "ttfbMs": 2362,
+    "prepMs": 1,
+    "ms": 3065,
+    "chunks": 7,
+    "reqBytes": 92911,
+    "tools": [],
+    "inTokens": 18137,
+    "cachedTokens": 15443,
+    "ok": true,
+    "error": ""
+   },
+   {
+    "n": 11,
+    "model": "sonnet",
+    "phase": "handoff",
+    "reason": "",
+    "atMs": 64821,
+    "ttfbMs": 3389,
+    "prepMs": null,
+    "ms": 3390,
+    "chunks": 1,
+    "reqBytes": 0,
+    "tools": [],
+    "inTokens": null,
+    "cachedTokens": null,
+    "ok": true,
+    "error": ""
+   }
+  ],
+  "counters": {
+   "poll.iterations": 57
+  },
+  "observations": {
+   "poll.read_ms": {
+    "n": 57,
+    "p50": 47,
+    "p90": 63,
+    "max": 115,
+    "sum": 3020
+   },
+   "poll.sleep_ms": {
+    "n": 56,
+    "p50": 1000,
+    "p90": 1000,
+    "max": 1000,
+    "sum": 56005
+   }
+  }
+ },
+ {
+  "kind": "chat",
+  "startedAt": 1789860794.4202416,
+  "prompt": "How many Mixpanel events in 30 days, and distinct users?",
+  "ms": 8290,
+  "ok": false,
+  "decision": "table candidates",
+  "running": false,
+  "spans": [
+   {
+    "name": "turn.acquire",
+    "depth": 0,
+    "atMs": 0,
+    "ms": 0,
+    "open": false
+   },
+   {
+    "name": "gate.table.rank",
+    "depth": 0,
+    "atMs": 4845,
+    "ms": 3444,
+    "open": false
+   }
+  ],
+  "calls": [],
+  "counters": {},
+  "observations": {}
+ }
+]
