@@ -291,11 +291,13 @@ def wants_an_app(
         call.done()
     except concurrent.futures.TimeoutError:
         call.done(ok=False, error="timeout")
-        log.warning("handoff: classify timed out after %.1fs — no suggestion", timeout_s)
+        log.warning("handoff: classify timed out after %.1fs — no suggestion model=%s",
+                    timeout_s, model)
         return False
     except Exception as e:
         call.done(ok=False, error=f"{type(e).__name__}: {e}")
-        log.warning("handoff: classify failed (%s: %s) — no suggestion", type(e).__name__, e)
+        log.warning("handoff: classify failed (%s: %s) — no suggestion model=%s",
+                    type(e).__name__, e, model)
         return False
     finally:
         pool.shutdown(wait=False)
@@ -324,7 +326,7 @@ def wants_an_app(
     # blank answer the classifier offered to build an app from "what info is there in <file>.json".
     # Nothing about that question was judged; there was no verdict to judge it with.
     if not verdict:
-        log.warning("handoff: classifier returned an empty body — no suggestion")
+        log.warning("handoff: classifier returned an empty body — no suggestion model=%s", model)
         return False
     if verdict.startswith("APP"):
         return _record(True)
