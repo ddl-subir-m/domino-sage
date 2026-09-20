@@ -49,6 +49,13 @@ SAGE_AGENTS: tuple[str, ...] = (
     "sage-chat", "sage-ask", "sage-plan", "sage-architect", "sage-implement",
 )
 
+# The direct vendor keys OpenCode auto-detects and can reach a model with WITHOUT going through the
+# shim's provider. Held here for the same reason `SAGE_AGENTS` is: the caller reads the environment
+# and this module stays pure, and the failure being reported is one where the shim never ran, so the
+# names cannot be sourced from the wiring that was skipped. `service.py` holds its own copy for the
+# turn-summary it computes; that copy goes when the event does (#474).
+VENDOR_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY")
+
 
 @dataclass(frozen=True)
 class Problem:
@@ -140,23 +147,48 @@ def binding_problems(bindings: dict) -> list[Problem]:
 
 
 def port_problem(ports: dict) -> Problem | None:
-    """The build agent is configured to call a port nothing is listening on.
+    """The build agent dials a port this process does not serve, so every call skips the shim.
+
+    A STANDING misconfiguration, read from two config values and never from a turn (#475). The turn
+    that records zero model calls is evidence of this condition, not the condition: the next turn
+    dials the same wrong port, which is what ADR-0064's test for a Problem asks and what an event
+    ("a turn bypassed the shim") fails. So this says nothing about any turn, and is decidable at
+    Preflight with no turn having run.
+
+    What it costs is not that calls fail — on a workspace with direct vendor keys they succeed, and
+    that is the whole difficulty: OpenCode reaches the vendor itself, answers arrive, the turn looks
+    normal, and routing, sovereignty and cost tagging were all silently skipped. The message says
+    what is actually lost rather than predicting a failure the reader may never see.
 
     Silent when the configured port could not be read at all. `match` is false in that case too —
     `None` never equals a port number — and reporting it would turn "we could not check" into "this
     is broken", which is the one thing a Preflight may not do.
+
+    The id is the constant `ports` and carries no port number in it. Load-bearing: the toast fires
+    once per id per session and `survivors` counts survival per id, so an id built from the ports
+    would mint a new Problem the moment either port changed — re-toasting, resetting survival to
+    zero, and never being reported at all (ADR-0064).
     """
     control, configured = ports.get("control_port"), ports.get("base_port")
     if configured is None or control is None or configured == control:
         return None
+    # Their presence is the likely reason inference still worked, and naming them is what turns "a
+    # port is wrong" into "and here is why nothing looked broken". They travel in `body` as the bare
+    # names the deployment set, un-rewritten, because the administrator who owns this remedy is the
+    # one who set them and is the person this half gets forwarded to.
+    keys = ports.get("vendor_keys") or []
     return Problem(
         id="ports",
         message=brand.text(
-            "{assistantName} is on port {control}, but the build agent calls {configured}, so "
-            "model calls will fail.",
+            "{assistantName} is on port {control}, but the build agent calls {configured}, so its "
+            "model calls never reach the {llmGateway}: nothing routes them, and {platformName} "
+            "doesn't record them."
+            + (" Answers may still arrive, because this workspace has direct vendor keys set."
+               if keys else ""),
             control=control, configured=configured),
         fix=brand.text("Ask your administrator to check this deployment's port configuration."),
         owner=OWNER_ADMIN,
+        body=", ".join(keys) or None,
     )
 
 
