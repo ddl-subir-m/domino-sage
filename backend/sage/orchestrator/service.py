@@ -7800,7 +7800,19 @@ class Orchestrator:
 
         A pin that cannot be seeded costs its own chip and nothing else. The alternative is a person
         who cannot open a conversation at all because a store they pinned a table in last week is
-        down, and the conversation is the one thing they were trying to start.
+        down, and the conversation is the one thing they were trying to start. The failure is logged
+        and not drawn, which is a real gap: a store that will not answer gives a conversation with no
+        chips and no reason, which is the symptom this ticket exists to remove, wearing a different
+        hat. Closing it means a field on the create response and copy to render it, and neither is
+        asked for here.
+
+        WHAT THIS COSTS, per new conversation. A pinned TABLE is one `list_columns` round trip, every
+        time, and they are serial — four pins are four. It is the same read `Use here` pays for and
+        the same one a turn otherwise buys with a failed statement and a recovery (#440), so it is
+        moved rather than added; what IS new is that it lands on a button click instead of on a turn
+        somebody is already waiting through. A pinned Dataset FILE fetches its bytes, but only the
+        first time: `fetch_dataset_file_for_chat` is idempotent per project and a mounted Dataset is
+        a symlink, so every conversation after the first is a `stat`.
         """
         for parent in self._chat_project().record.read_project_resources():
             for pin in (parent.get("pins") or []):

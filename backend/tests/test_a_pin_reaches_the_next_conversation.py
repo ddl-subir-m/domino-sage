@@ -255,14 +255,23 @@ def test_a_pinned_leaf_wears_the_mark_and_its_neighbours_do_not(tmp_path: Path):
 @needs_node
 def test_the_mark_says_the_same_thing_to_a_hover_and_to_a_screen_reader(tmp_path: Path):
     """One string reaching both, and it names the EFFECT rather than the state: what nobody could
-    see was not that a row was pinned, it was what pinning did. `clickable` is the other half — the
-    mark is a status and the row already holds the control that changes it, so a mark that could be
-    pressed would be a second door onto one act."""
+    see was not that a row was pinned, it was what pinning did.
+
+    `role` and `iconHidden` are what make the label REACH anybody, and the sentence was written
+    before either was true. An `aria-label` on a bare `span` sits on a generic element and is not
+    exposed; the antd icon inside carries `role="img" aria-label="pushpin"` of its own, and that is
+    what a screen reader would have read instead. So hover said why the row was marked and audio
+    said "pushpin" — two grains of the same mark disagreeing, which is what this assertion is for.
+
+    `clickable` is the last half: the mark is a status and the row already holds the control that
+    changes it, so a mark that could be pressed would be a second door onto one act."""
     (pinned,) = _leaves([{"pins": [dict(PIN, name=TABLE)]}])
     mark = next(leaf["mark"] for leaf in pinned["leaves"] if leaf["mark"])
 
     assert mark["title"] == MARK
     assert mark["label"] == MARK
+    assert mark["role"] == "img"
+    assert mark["iconHidden"] is True
     assert mark["clickable"] is False
 
 

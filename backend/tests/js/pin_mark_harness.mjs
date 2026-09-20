@@ -185,6 +185,11 @@ function walk(node, out = [], depth = 0) {
     // Whether this element does anything when pressed. The mark's whole claim is that it does not,
     // and "no `onClick`" is a fact about the element rather than about its words.
     clickable: typeof props.onClick === 'function',
+    // What the element is, to anything reading the page rather than looking at it. An `aria-label`
+    // on a generic element is not exposed, so a report carrying the label and not the role can say
+    // the sentence is present while nobody can hear it.
+    role: props.role || '',
+    hidden: props['aria-hidden'] === true,
   };
   if (typeof props.onClick === 'function') entry.onClick = props.onClick;
   const direct = (Array.isArray(node.c) ? node.c : [node.c]).filter(
@@ -245,7 +250,15 @@ function leavesOf(nodes) {
     }
     if (!leaf) continue;
     if (cls === 'sw-tree-leaf-pin') {
-      leaf.mark = { title: n.title, label: n.label, clickable: n.clickable };
+      leaf.mark = { title: n.title, label: n.label, clickable: n.clickable, role: n.role,
+                    // The icon the mark wraps, which carries an `aria-label` of antd's own unless
+                    // it is hidden — the one thing that would speak over the sentence beside it.
+                    iconHidden: null };
+      continue;
+    }
+    if (leaf.mark && leaf.mark.iconHidden === null && n.el && n.el !== 'Tooltip'
+        && !cls.startsWith('sw-tree-leaf')) {
+      leaf.mark.iconHidden = n.hidden;
       continue;
     }
     if (cls === 'sw-tree-leaf-name') {
@@ -256,8 +269,13 @@ function leavesOf(nodes) {
     if (n.el === 'Button') {
       const ink = (n.texts || []).join('');
       const last = leaf.acts[leaf.acts.length - 1];
-      if (last && !last.ink) { last.ink = ink; last.clickable = n.clickable; }
-      else leaf.acts.push({ tip: '', ink, clickable: n.clickable });
+      // The handler is carried on the act, beside the ink that names it, and dropped before the
+      // record is serialised. Found by POSITION instead — the nth Pin button in a flat walk for the
+      // nth leaf — it would go on working only while `LeafRow` is the one thing in this file that
+      // draws a Pin, and the day a folder row gains one the click lands on a different row and
+      // "the control carries the leaf it sits beside" starts asserting its own opposite.
+      if (last && !last.ink) { last.ink = ink; last.clickable = n.clickable; last.press = n.onClick; }
+      else leaf.acts.push({ tip: '', ink, clickable: n.clickable, press: n.onClick });
     }
   }
   return out;
@@ -274,18 +292,21 @@ for (let i = 0; i < steps.length; i += 1) {
   const leaves = leavesOf(nodes);
 
   if (step.pin) {
-    const at = leaves.findIndex((l) => l.name === step.pin);
-    if (at < 0) throw new Error(`no leaf named ${step.pin} on screen`);
-    const act = leaves[at].acts.find((a) => a.ink === 'Pin' || a.ink === 'Unpin');
-    if (!act) throw new Error(`${step.pin} offered neither Pin nor Unpin`);
-    // The handler off the walk rather than off the record above, which keeps only what it is safe
-    // to serialise.
-    const buttons = nodes.filter((n) => n.el === 'Button' && (n.texts || []).some(
-      (t) => t === 'Pin' || t === 'Unpin'));
-    buttons[at].onClick();
+    const row = leaves.find((l) => l.name === step.pin);
+    if (!row) throw new Error(`no leaf named ${step.pin} on screen`);
+    const act = row.acts.find((a) => a.ink === 'Pin' || a.ink === 'Unpin');
+    if (!act || typeof act.press !== 'function') {
+      throw new Error(`${step.pin} offered no Pin or Unpin to press`);
+    }
+    act.press();
     await settle();
   }
 
-  report.push({ leaves, posted: posted.slice() });
+  report.push({
+    leaves: leaves.map((l) => ({
+      ...l, acts: l.acts.map(({ press, ...a }) => a),
+    })),
+    posted: posted.slice(),
+  });
 }
 console.log(JSON.stringify(report));

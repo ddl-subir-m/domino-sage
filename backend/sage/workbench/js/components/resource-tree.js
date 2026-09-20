@@ -320,11 +320,19 @@ window.SW = window.SW || {};
         // fact at is a `title` — `sw-tree-leaf-name` carries one two lines down — while `Tooltip`
         // is what its ACTS wait behind. Drawn the other way round, a mark that nothing can be
         // done to would hover exactly like the two things that can.
+        //
+        // `role: 'img'` is what makes the label reach anybody. An `aria-label` on a bare `span` is
+        // on a generic element and is not exposed, so the sentence would have been dropped — and
+        // the icon inside carries an `aria-label` of its OWN (antd renders every icon
+        // `role="img" aria-label="pushpin"`), which is what a screen reader would have read
+        // instead. Hover said why the row was marked and audio said "pushpin". So the role goes on
+        // the span that holds the sentence and the icon is hidden behind it: one mark, one name.
         ? h('span', {
             className: 'sw-tree-leaf-pin',
+            role: 'img',
             title: PINNED_MARK,
             'aria-label': PINNED_MARK,
-          }, h(PushpinFilled, null))
+          }, h(PushpinFilled, { 'aria-hidden': true }))
         : null,
       h('span', { className: 'sw-tree-leaf-name', title: subtitle || name }, name),
       h(
