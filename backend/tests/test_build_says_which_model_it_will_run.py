@@ -1388,3 +1388,48 @@ def test_a_model_that_advertises_tools_carries_no_mark():
     plain = _chat_rows("openai/gpt-5.4")["openai/gpt-5.4"]
     assert "no tool support advertised" not in plain["detail"]
     assert plain["title"] is None
+
+
+def _build_rows(step: dict) -> dict:
+    (drawn,) = _drawn([{"mode": "plan", **step}])
+    return {i["key"]: i for i in _flat(drawn["items"])}
+
+
+# `slots` points the implement slot at the one alias in the fixture declaring no `tools`, which is
+# how a marked model reaches BUILD's menu: its rows are the catalog's slots, not the alias list.
+_MARKED = {"slots": {"implement": "google/gemini-3.7-flash"}}
+
+
+def test_the_build_picker_marks_a_model_that_advertises_no_tool_support():
+    """Build earns the mark more than Chat does: every Build turn carries tools (#463).
+
+    Found by review — the first pass marked the Chat menu and left this one silent, which put the
+    sentence in Manage and in Chat and nowhere in the one place a pick is most likely to cost
+    something.
+    """
+    marked = _build_rows(_MARKED)["google/gemini-3.7-flash"]
+    assert "no tool support advertised" in marked["label"]
+    assert "doesn't advertise tool support" in marked["title"]
+    # THE PLANT. Mark it; do not hide it — a Build menu that refused on this metadata would refuse
+    # models that work, and the two aliases it is most wrong about are among the most picked.
+    assert marked["disabled"] is False
+
+
+def test_a_marked_build_row_keeps_the_levels_under_it():
+    """The mark is drawn on the row `withEfforts` is handed, so it is the one change that could
+    have cost the submenu. A model advertising no tools still advertises levels, and losing them
+    would take a setting away as the side effect of a sentence."""
+    marked = _build_rows(_MARKED)["google/gemini-3.7-flash"]
+    assert [c["label"] for c in marked["children"]] == [
+        "Model default", "Low", "Medium", "High", "Max"]
+
+
+def test_a_build_row_whose_model_advertises_tools_carries_no_mark():
+    """A mark on every row is a mark on none — including in the open-weight group, whose rows have
+    alias rows of their own here and so are judged by the same rule rather than skipped by it."""
+    rows = _build_rows(_MARKED)
+    # `__pinned__` is the plan/ask model's row — it is keyed by the way BACK rather than by its own
+    # id, because picking it CLEARS the override.
+    for key in ("__pinned__", "deepseek/deepseek-v3", "openai/gpt-5.4"):
+        assert "no tool support advertised" not in rows[key]["label"], key
+        assert rows[key].get("title") is None, key

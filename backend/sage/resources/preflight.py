@@ -260,7 +260,7 @@ def alias_problem(alias_name: str, aliases: list[LlmAlias],
     )
 
 
-def tool_capability_note(capabilities: list[str] | None) -> str | None:
+def tool_capability_note(capabilities: list[str] | None, model: str = "") -> str | None:
     """Why a model may not be able to do what a Chat turn asks of it, or None when nothing is known.
 
     A MARK and never a filter. #296 already records what this metadata is worth — "last-known
@@ -282,8 +282,21 @@ def tool_capability_note(capabilities: list[str] | None) -> str | None:
     caps = capabilities or []
     if not caps or "chat" not in caps or "tools" in caps:
         return None
-    return ("This model doesn't advertise tool support, and every Chat turn sends tools. The "
-            "capability list is what the provider last reported, not a test, so it may work anyway.")
+    # NAMES the model, which is not decoration and is the lesson #467 landed one ticket earlier: a
+    # degradation line that names no model cannot be acted on. It matters most on a row where the
+    # sentence and the control above it are about DIFFERENT models — the model panel substitutes
+    # what a slot RUNS into its select when the signing pin or the sensitivity lock has moved the
+    # row, while this note is about the model the slot is ASSIGNED. "This model" under that control
+    # points at whichever of the two the reader happens to think it means. The name settles it, and
+    # it costs nothing on the rows where there is only one model in view.
+    #
+    # The caller supplies the name rather than this reading it off the alias, because the two are
+    # not always the same string and the reader must be told the one they can act on: a slot can
+    # hold `sage-gateway/sonnet` or `domino/gemini-3.7-flash`, and `slot_alias` above records that
+    # both shapes occur live. The name in the row is the name in the sentence.
+    subject = f"{model} doesn't" if model else "This model doesn't"
+    return (f"{subject} advertise tool support, and every Chat turn sends tools. The capability "
+            "list is what the provider last reported, not a test, so it may work anyway.")
 
 
 def slots_on_dead_endpoints(catalog: ModelCatalog, aliases: list[LlmAlias],

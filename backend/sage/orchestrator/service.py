@@ -6730,7 +6730,7 @@ class Orchestrator:
         # the model somebody chose, and the slot they chose it for. `/api/diag/log?warn=1` is then
         # able to answer "was this turn's Chat model one that never advertised tools" for a session
         # that has already ended, which no panel read can do.
-        if note := tool_capability_note(caps):
+        if note := tool_capability_note(caps, model):
             log.warning("chat pick: %s — %s", model, note)
         efforts = reasoning_efforts_with_tools(model)
         if effort in ("", None, "default"):
@@ -18954,6 +18954,17 @@ class Orchestrator:
         # One join for every row, off the listing already in hand. Keyed on the model the slot RUNS
         # (`live`) and not on `assigned_model`: the note answers what this mode's turns will send
         # tools to, and on a row the file and the catalog disagree about, that is still the catalog.
+        #
+        # Through `slot_alias` and NOT by looking the raw catalog string up in the listing, which is
+        # the mistake that docstring exists to stop and which this line made until review caught it.
+        # A slot holds one of two strings and only one of them is an Alias name: `domino/gemini-3.7
+        # -flash` is an Alias name in full, `sage-gateway/sonnet` is an OpenCode model id whose first
+        # segment is a provider no Alias carries. A dict keyed on `a.name` resolves the first and
+        # misses the second, silently — and `slot_alias`'s own note records six of six slots carrying
+        # a slash on a real deployment. Measured on this change before the fix: a slot on
+        # `sage-gateway/chat-only` reported `problem: None` (preflight resolved it, because preflight
+        # goes through this same join) beside `capability_note: None`, so the mark was dead on
+        # exactly the deployments it was written for while every bare-name fixture stayed green.
         caps_by_alias = {a.name: a.capabilities for a in aliases}
         for row in slots:
             # A shadow already on the row keeps it. Those two verdicts say "turns that use this
@@ -19014,7 +19025,8 @@ class Orchestrator:
             # Outside the precedence above and deliberately below it in the file, so the next reader
             # of that comment meets this one before reaching for a fifth rank: it is not competing
             # for `problem`'s one line, it has a line of its own.
-            row["capability_note"] = tool_capability_note(caps_by_alias.get(row["model"]))
+            row["capability_note"] = tool_capability_note(
+                caps_by_alias.get(slot_alias(row["model"], aliases)), row["model"])
         return {
             "slots": slots,
             "aliases": [
@@ -19036,7 +19048,7 @@ class Orchestrator:
                     # two apart: `problem` here means "picking this would not work" and closes the
                     # menu row, and this one must not close anything (#463, #296). A row carrying
                     # only this stays pickable.
-                    "capability_note": tool_capability_note(a.capabilities),
+                    "capability_note": tool_capability_note(a.capabilities, a.name),
                 }
                 for a in aliases
             ],
@@ -19286,7 +19298,7 @@ class Orchestrator:
              # re-derives it from `capabilities`, which is what keeps this and the assignments
              # panel from drifting into two opinions about the same alias (ADR-0017's argument for
              # `SW.util.chatCapable`, applied to the second question asked of the same list).
-             "capability_note": tool_capability_note(row.get("capabilities"))}
+             "capability_note": tool_capability_note(row.get("capabilities"), row["alias"])}
             if row.get("kind") in ("llm_alias", "model_llm") and isinstance(row.get("alias"), str) else row
             for row in rows
         ]

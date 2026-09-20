@@ -95,6 +95,21 @@ def test_a_model_that_declares_chat_without_tools_is_marked():
     assert "advertise" in note
 
 
+def test_the_sentence_names_the_model_it_is_about():
+    """#467's lesson, one ticket on: a line that names no model cannot be acted on.
+
+    It matters most where the sentence and the control above it are about different models — the
+    panel substitutes what a slot RUNS into its select when the pin or the lock has moved the row,
+    while this note is about the model the slot is ASSIGNED. "This model" under that control points
+    at whichever of the two the reader happens to think it means.
+    """
+    named = tool_capability_note(["chat"], "chat-only")
+    assert named.startswith("chat-only doesn't")
+    # And it still says something true with no name, which is the shape a caller with nothing to
+    # name gets rather than a crash or a blank subject.
+    assert tool_capability_note(["chat"]).startswith("This model doesn't")
+
+
 def test_a_model_that_declares_tools_is_not_marked():
     assert tool_capability_note(["chat", "tools"]) is None
 
@@ -127,7 +142,29 @@ def test_the_slot_row_carries_the_mark_for_the_model_it_runs(tmp_path):
     # that and this line is what closed it.
     note = _slot(orch, "ask")["capability_note"]
     assert note
-    assert note == tool_capability_note(["chat"])
+    # The model NAMED is the one the row shows, which is what makes the sentence readable on a
+    # row whose select has been substituted by the pin or the lock.
+    assert note == tool_capability_note(["chat"], "chat-only")
+
+
+def test_a_slot_holding_a_prefixed_model_string_is_still_marked(tmp_path):
+    """A slot holds one of TWO strings and only one of them is an Alias name.
+
+    `domino/gemini-3.7-flash` is an Alias name in full; `sage-gateway/sonnet` is an OpenCode model
+    id whose first segment is a provider no Alias carries. `preflight.slot_alias` exists for exactly
+    this and records six of six slots carrying a slash on a real deployment. This change looked the
+    raw catalog string up in the alias listing until review caught it, which left the mark dead on
+    those deployments while every bare-name fixture here stayed green — `problem` resolved (it goes
+    through `slot_alias`) and the mark beside it did not.
+    """
+    orch = _orch(tmp_path)
+    orch.set_catalog(ask="sage-gateway/chat-only")
+    row = _slot(orch, "ask")
+    assert row["model"] == "sage-gateway/chat-only"
+    assert row["capability_note"]
+    # Named as the ROW spells it, not as the alias listing does: the string in the sentence has to
+    # be the one the reader can find and change.
+    assert row["capability_note"].startswith("sage-gateway/chat-only doesn't")
 
 
 def test_a_slot_on_a_tool_carrying_model_says_nothing(tmp_path):
@@ -161,7 +198,7 @@ def test_the_alias_rows_carry_the_mark_without_closing_the_row(tmp_path):
     orch = _orch(tmp_path)
     marked = _alias_row(orch, "chat-only")
     assert marked["capability_note"]
-    assert marked["capability_note"] == tool_capability_note(["chat"])
+    assert marked["capability_note"] == tool_capability_note(["chat"], "chat-only")
     assert marked["serving"] is True
     assert marked["problem"] is None
     assert _alias_row(orch, "toolful")["capability_note"] is None
@@ -182,7 +219,7 @@ def test_the_composer_rows_carry_the_mark_so_it_is_visible_at_pick_time(tmp_path
     rows = {r["alias"]: r for r in orch.list_project_resources()
             if r.get("kind") == "model_llm"}
     assert rows["chat-only"]["capability_note"]
-    assert rows["chat-only"]["capability_note"] == tool_capability_note(["chat"])
+    assert rows["chat-only"]["capability_note"] == tool_capability_note(["chat"], "chat-only")
     assert rows["toolful"]["capability_note"] is None
 
 

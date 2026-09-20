@@ -353,6 +353,11 @@ window.SW = window.SW || {};
     // and a menu offering a level its alias refuses is a 400 on the turn rather than a wrong label.
     const aliasRow = (id) => aliases.find((a) => a.alias === id);
     const effortsFor = (id) => ((aliasRow(id) || {}).reasoning_efforts_with_tools) || [];
+    // The server's sentence about what an alias never claimed it could do, read off the same row
+    // `effortsFor` reads and never re-derived from `capabilities` here (#463). Empty for a model
+    // with no alias row at all — the open-weight options are ids from `/healthz` and carry no
+    // capability list, and no evidence must not be drawn as a fault.
+    const capabilityFor = (id) => ((aliasRow(id) || {}).capability_note) || '';
     // No field means no evidence, not a measured refusal. Offer no levels without evidence;
     // the separate stranded-level checks keep stored values visible until evidence arrives.
     const efforts = effortsFor(effectiveModel);
@@ -863,11 +868,20 @@ window.SW = window.SW || {};
           disabled: id !== pinnedModel && barredModel(id),
           // `title` and not a wrapped element, so the label stays the plain string every reader of
           // this menu already expects — the menu is drawn headless in a test that reads it as JSON.
-          title: id !== pinnedModel && barredModel(id) ? lockNote(id) : undefined,
+          //
+          // The capability note is LAST of the two reasons a row can carry a tooltip, because the
+          // lock is a reason the row cannot be used and this is a note about a row that can (#463).
+          // It never reaches `disabled` for the same reason: this metadata has been measured wrong
+          // in both directions, and a Build menu that refused a model on it would refuse one that
+          // works. Build earns the mark more than Chat does — every Build turn carries tools.
+          title: id !== pinnedModel && barredModel(id) ? lockNote(id)
+            : (capabilityFor(id) || undefined),
           label: id === pinnedModel
             ? `${id} (default)`
             : barredModel(id)
             ? `${id} — not allowed`
+            : capabilityFor(id)
+            ? `${id} — no tool support advertised`
             : id,
         }, id)),
         ...(extraModels.length
@@ -877,9 +891,16 @@ window.SW = window.SW || {};
               children: extraModels.map((o) => withEfforts({
                 key: o.id,
                 disabled: barredModel(o.id),
-                title: barredModel(o.id) ? lockNote(o.id) : undefined,
+                // Silent in practice rather than by a rule of its own: an open-weight option is an
+                // id out of `/healthz` with no Alias row behind it, so `capabilityFor` finds no
+                // capability list and says nothing. That is the right answer — no evidence is not
+                // a fault — and it is the same expression as the rows above so the day one of
+                // these does gain a row, it is marked without anybody remembering this line.
+                title: barredModel(o.id) ? lockNote(o.id) : (capabilityFor(o.id) || undefined),
                 label: barredModel(o.id)
                   ? `${o.id} — not allowed`
+                  : capabilityFor(o.id)
+                  ? `${o.id} (${o.provider}) — no tool support advertised`
                   : `${o.id} (${o.provider})`,
               }, o.id)),
             }]

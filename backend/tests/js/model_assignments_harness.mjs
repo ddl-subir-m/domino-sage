@@ -49,8 +49,9 @@ const overrides = {};
 // the reason it is the exception live: measured on the gateway 2026-09-20 it declares `chat` alone,
 // which is not credible for a model that calls tools every day (#463). One marked row rather than
 // six is what lets a test say the mark is on the row it belongs to.
-const NO_TOOLS = 'This model doesn\'t advertise tool support, and every Chat turn sends tools. '
-  + 'The capability list is what the provider last reported, not a test, so it may work anyway.';
+const NO_TOOLS = "gemini-3.7-flash doesn't advertise tool support, and every Chat turn sends "
+  + 'tools. The capability list is what the provider last reported, not a test, so it may work '
+  + 'anyway.';
 const ALIASES = [
   {
     name: 'gpt-5.4', display_name: 'GPT-5.4', capabilities: ['chat', 'tools'], serving: true,

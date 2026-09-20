@@ -117,8 +117,9 @@ const LEGACY_MEMBER_ROWS = () =>
 // belongs to. Served, never derived here: `preflight.tool_capability_note` owns the rule, and a
 // harness that re-derived it would let the picker agree with a copy.
 const NO_TOOLS_ALIAS = 'google/gemini-3.7-flash';
-const NO_TOOLS_NOTE = 'This model doesn\'t advertise tool support, and every Chat turn sends tools.'
-  + ' The capability list is what the provider last reported, not a test, so it may work anyway.';
+const NO_TOOLS_NOTE = `${NO_TOOLS_ALIAS} doesn't advertise tool support, and every Chat turn `
+  + 'sends tools. The capability list is what the provider last reported, not a test, so it may '
+  + 'work anyway.';
 
 const ALIAS_ROWS = () => Object.keys(ALIAS_EFFORTS).map((alias) => ({
   id: `llm_alias:${alias.replace('/', '-')}`,
