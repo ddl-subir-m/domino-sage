@@ -1,4 +1,4 @@
-"""A Chat turn that sent tools and got none back says so, naming the model that did not call (#469).
+"""A model that never calls a tool is named after a streak, not after one turn (#469).
 
 WHY THIS EXISTS. A person assigned an alias to the `ask` slot whose declared capabilities were
 `chat, vision, responses` — no `tools`. Sage accepted it, drew it in the composer like any other,
@@ -6,38 +6,41 @@ and every Chat turn then handed it eleven tools. One measured turn streamed 426 
 seconds and came back with no tool call in any of them: an essay where a data answer was asked for.
 Nothing on screen, in the transcript or in the log said that had happened.
 
-WHY THE FIX IS AN OBSERVATION AND NOT A REFUSAL, which is also why these tests never read a
-capability list. The same alias declares no `streaming` and demonstrably streamed. The metadata is
-incomplete, so it cannot answer "can this model call a tool" — and a hard refusal built on it would
-lock a person out of a working model and remove the only witness that the metadata is wrong. What
-the turn DID is not in doubt: `app.py` already counts every inference and flags the ones carrying a
-`tool_calls` frame, for `build_stream`'s benefit. Chat reading the same two numbers is the change.
+WHY THE WITNESS IS NOT A CAPABILITY CHECK, which is also why these tests never read a capability
+list. The declared list is wrong in BOTH directions, measured live on 2026-09-20: `GLM 5.3 OR`
+declared no `streaming` and demonstrably streamed, while `domino-gcp/claude-sonnet-5` and
+`domino/gemini-3.7-flash` declare bare `chat` today and are the models most turns actually run on.
+Warning only on models that declare `tools` silences the witness on those two; warning only on
+models that do not would have suppressed the one true positive on record. #463 marks what the list
+SAYS and is explicit that it is "a MARK and never a filter"; this file is about what the model DID.
+The two are kept independent so they can contradict each other, because that contradiction is the
+bug report.
+
+WHY A STREAK AND NOT A TURN, which is the shape of the whole change. One turn cannot distinguish
+"this model cannot call a tool" from "this turn did not need one" — a follow-up answered from
+context is a perfectly good Chat turn that calls nothing. #467 landed the measurement that settles
+it: the classifier on the same slot proved intermittent, two clean answers and then two unparseable
+ones in one session. So a turn only ever COUNTS here, and the warning belongs to a model that has
+reached `_TOOLLESS_TURNS` turns having never once returned a tool call in this process.
+
+The clearing is monotonic, and that is what removes the noise by construction rather than by tuning:
+a model that calls a tool is cleared PERMANENTLY and can never warn again, so ordinary conversation
+contributes only while the model has never proved itself. Two properties invert the whole thing if
+they break, and each has a test below: the counter is keyed PER MODEL, and clearing is IRREVERSIBLE.
 
 WHAT THESE TESTS ARE CAREFUL NOT TO ASSERT is the wording. Every assertion reads the emitted
 `LogRecord`'s interpolation ARGUMENTS, never `getMessage()`, and the records are SELECTED by the
 function that emitted them rather than by anything in them — see `_toolless`, which explains why
-selecting on the model name would have made one of these tests unable to fail. A test that greps
-`"model="` out of the rendered line passes just as happily with the name hardcoded into the format
-string, which is the one defect that would make the change worthless. `RESOLVED` below is
-deliberately not a plausible model name for the same reason: a real-looking one could be a literal
-somebody typed, and this one could only have arrived by being threaded from what the shim recorded.
+selecting on the model name would have made one of these tests unable to fail. `TOOLLESS` and
+`WORKING` below are deliberately not plausible model names: a real-looking one could be a literal
+somebody typed, and these could only have arrived by being threaded from what the shim recorded.
 
-WHAT THE FAKE STANDS IN FOR, said plainly because it is the limit of this file. The two counters are
-written by the real `/v1/chat/completions` route in `app.py`, which no fake-OpenCode test reaches —
-`test_a_streaming_call_is_not_a_quiet_turn.py` drives that route for real and is the file that
-covers the write. Here the fake plants the same two fields at the moment the route would have moved
-them, while the prompt is being served. So these tests exercise the READ, the condition and the
-per-turn reset over real `chat_stream` turns, and they take the write on trust.
-
-THE PLANTS ARE THE POINT, and here is exactly how much they hold. Two conditions narrow the line
-and each has its own test: a turn WITH a tool call stays quiet, and a turn that ended before the
-model ran stays quiet, because "called no tool" is not a finding about a turn that called no model.
-
-What neither plant holds, said here rather than left for a reader to discover: an ORDINARY
-conversational turn answered from context runs one inference, calls no tool, and warns. That is
-#469's decision, not a gap these tests failed to close — the alternative is asking whether a tool
-was NEEDED, which nothing on this path can answer. `model_calls` is the whole of the noise guard.
-Do not read the two plants below as evidence that the warning is rare.
+WHAT THE FAKE STANDS IN FOR, said plainly because it is the limit of this file. `tool_call_responses`
+is written by the real `/v1/chat/completions` route in `app.py`, which no fake-OpenCode test reaches
+— `test_a_streaming_call_is_not_a_quiet_turn.py` drives that route for real. Here the fake plants
+the same field, and the resolved model, at the moment the route would have. So these tests exercise
+the READ, the streak, the clearing and the per-turn reset over real `chat_stream` turns, and they
+take the write on trust.
 """
 
 from __future__ import annotations
@@ -56,12 +59,15 @@ from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
 
-# Neither is a model anyone could have typed by accident, and they are different on purpose: the
-# warning must name what the router RESOLVED to, not what the slot asked for.
-RESOLVED = "resolved-model-under-test"
+# None of these is a model anyone could have typed by accident. TOOLLESS and REQUESTED differ on
+# purpose: the warning must name what the router RESOLVED to, not what the slot asked for.
+TOOLLESS = "toolless-model-under-test"
+WORKING = "working-model-under-test"
 REQUESTED = "requested-model-under-test"
 
 LOGGER = "sage.orchestrator"
+
+N = svc._TOOLLESS_TURNS
 
 
 class OkFeedback:
@@ -78,16 +84,16 @@ class ScriptedGateway:
 
 
 class CountingOpenCode(FakeOpenCode):
-    """Stands in for the `/v1` route's bookkeeping: inferences, and which of them called a tool.
+    """Stands in for the `/v1` route: which model served the turn, and whether it called a tool.
 
-    `script` is one `(model_calls, tool_call_responses)` pair per turn, consumed in the same order
-    as `FakeOpenCode`'s own turn script, so a test that wants "tool calls on turn one and none on
-    turn two" writes exactly that. A turn past the end of the script plants nothing, which is the
-    honest stand-in for a turn that never reached the route.
+    `script` is one `(model, tool_call_responses)` pair per turn, consumed in the same order as
+    `FakeOpenCode`'s own turn script, so "model A calls a tool, then model B does not" is written
+    as exactly that. A turn past the end of the script plants nothing, which is the honest stand-in
+    for a turn that never reached the route.
     """
 
     def __init__(self, workspace: Path, turns: list[Turn] | None = None, *,
-                 script: list[tuple[int, int]] | None = None) -> None:
+                 script: list[tuple[str, int]] | None = None) -> None:
         super().__init__(workspace, turns)
         self.script = list(script or [])
         self.project = None
@@ -97,13 +103,21 @@ class CountingOpenCode(FakeOpenCode):
         nth = self.planted
         self.planted += 1
         if self.project is not None and nth < len(self.script):
-            calls, tool_calls = self.script[nth]
-            self.project.model_calls += calls
+            model, tool_calls = self.script[nth]
+            self.project.model_calls += 1
             self.project.tool_call_responses += tool_calls
-            if calls:
-                # What the shim reports through `on_resolved` on every inference it serves.
-                self.project.note_resolved(RESOLVED, "ask", "test")
+            # What the shim reports through `on_resolved` on every inference it serves.
+            self.project.note_resolved(model, "ask", "test")
         super().send_prompt(session_id, text, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _reset_tool_use():
+    """`_tool_use` is process-wide by design, and an unreset one carries a streak — or a clearing —
+    from whichever test ran before into whichever runs next."""
+    svc._tool_use.reset()
+    yield
+    svc._tool_use.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -160,144 +174,268 @@ def _toolless(caplog) -> list[logging.LogRecord]:
             if r.name == LOGGER and r.levelno == logging.WARNING and r.funcName == "finish"]
 
 
-def _run(orch: Orchestrator, tid: str, prompt: str = "fit a regression on the event table"):
-    return list(orch.chat_stream(tid, prompt))
+def _turns(orch: Orchestrator, tid: str, n: int, prompt: str = "summarise the event table"):
+    for i in range(n):
+        list(orch.chat_stream(tid, f"{prompt} ({i})"))
 
 
-# --- Condition 1: the bug. A turn that sent tools and saw no tool call says so. -----------------
+# --- The streak. One turn counts; N turns speak. ------------------------------------------------
 
 
-def test_a_turn_whose_model_never_called_a_tool_warns_and_names_the_resolved_model(tmp_path, caplog):
+def test_a_model_that_never_calls_a_tool_is_named_once_it_reaches_the_streak(tmp_path, caplog):
     ws = tmp_path / "mnt" / "code"
-    oc = CountingOpenCode(ws, [Turn(text="A long essay about the event table.")],
-                          script=[(4, 0)])
+    oc = CountingOpenCode(ws, [Turn(text="An essay.")] * N, script=[(TOOLLESS, 0)] * N)
     orch = _orch(tmp_path, oc)
     tid = orch.create_thread()["id"]
 
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        events = _run(orch, tid)
+        _turns(orch, tid, N)
 
-    assert next(e for e in events if e.get("type") == "done")["ok"] is True, (
-        "the turn under test has to be an ORDINARY one — a failing turn would be explained already")
     records = _toolless(caplog)
     assert len(records) == 1, [r.getMessage() for r in records]
-    assert RESOLVED in records[0].args
-    # The count is an argument too, so "four inferences and not one tool call" is readable as data.
-    assert 4 in records[0].args
+    assert TOOLLESS in records[0].args
+    # The streak rides as its own argument, so "this is the Nth" is readable as data.
+    assert N in records[0].args
+
+
+def test_the_turns_before_the_streak_only_count(tmp_path, caplog):
+    """The plant that catches a per-turn warning wearing a streak's clothes.
+
+    One turn cannot tell a tool-blind model from a turn that needed no tool, so the first N-1 say
+    nothing at all. Without this, `_TOOLLESS_TURNS` could be 1 and every test above still passes.
+    """
+    ws = tmp_path / "mnt" / "code"
+    oc = CountingOpenCode(ws, [Turn(text="An essay.")] * (N - 1), script=[(TOOLLESS, 0)] * (N - 1))
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        _turns(orch, tid, N - 1)
+
+    assert _toolless(caplog) == [], f"a model was accused after {N - 1} turns, short of the streak"
+
+
+def test_a_model_past_the_streak_keeps_saying_so(tmp_path, caplog):
+    """A tool-blind model does not get to go quiet once it has been named."""
+    ws = tmp_path / "mnt" / "code"
+    oc = CountingOpenCode(ws, [Turn(text="An essay.")] * (N + 2), script=[(TOOLLESS, 0)] * (N + 2))
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        _turns(orch, tid, N + 2)
+
+    records = _toolless(caplog)
+    assert len(records) == 3, [r.getMessage() for r in records]
+    assert [r.args[1] for r in records] == [N, N + 1, N + 2]
+
+
+# --- Monotonic clearing. The property that removes the noise. -----------------------------------
+
+
+def test_a_model_that_has_called_a_tool_is_never_accused_again(tmp_path, caplog):
+    """The ordinary-conversation case, and the reason there is no threshold to tune.
+
+    One real data turn, then a long run of turns answered from context. Without irreversible
+    clearing this is the noise the change would have shipped: a working model re-accused for
+    holding a conversation.
+    """
+    ws = tmp_path / "mnt" / "code"
+    script = [(WORKING, 2)] + [(WORKING, 0)] * (N + 3)
+    oc = CountingOpenCode(ws, [Turn(text="Here you go.")] * len(script), script=script)
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        _turns(orch, tid, len(script))
+
+    assert _toolless(caplog) == [], "a model that had already called a tool was accused"
+
+
+def test_a_tool_call_partway_through_a_streak_clears_it_for_good(tmp_path, caplog):
+    """Clearing is irreversible, not a counter reset.
+
+    A model two turns into a streak calls a tool, then goes quiet for longer than the streak. If
+    clearing merely zeroed the count it would be re-accused here, which is exactly the re-accusation
+    the monotonic set exists to prevent.
+    """
+    ws = tmp_path / "mnt" / "code"
+    script = [(WORKING, 0)] * (N - 1) + [(WORKING, 1)] + [(WORKING, 0)] * (N + 2)
+    oc = CountingOpenCode(ws, [Turn(text="...")] * len(script), script=script)
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        _turns(orch, tid, len(script))
+
+    assert _toolless(caplog) == [], "a cleared model was accused again after a later quiet run"
+
+
+# --- Per-model keying. The property that inverts the whole thing if it breaks. ------------------
+
+
+def test_one_model_calling_a_tool_does_not_clear_another(tmp_path, caplog):
+    """The plant to write first: a process-global counter would let the working model clear the
+    broken one, and the models most turns run on are not the one under suspicion.
+
+    The two are interleaved rather than run in blocks, so a global counter cannot reach the streak
+    by accident either — every toolless turn here is followed by a tool-calling one.
+    """
+    ws = tmp_path / "mnt" / "code"
+    script = []
+    for _ in range(N):
+        script += [(TOOLLESS, 0), (WORKING, 2)]
+    oc = CountingOpenCode(ws, [Turn(text="...")] * len(script), script=script)
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        _turns(orch, tid, len(script))
+
+    records = _toolless(caplog)
+    assert len(records) == 1, [r.getMessage() for r in records]
+    assert TOOLLESS in records[0].args
+    assert WORKING not in (records[0].args or ()), "the cleared model was named in the accusation"
+
+
+def test_the_working_model_is_never_named(tmp_path, caplog):
+    """The other direction of the same keying: a model that calls tools throughout, beside a model
+    that never does, must not pick up the other's streak."""
+    ws = tmp_path / "mnt" / "code"
+    script = []
+    for _ in range(N + 1):
+        script += [(WORKING, 3), (TOOLLESS, 0)]
+    oc = CountingOpenCode(ws, [Turn(text="...")] * len(script), script=script)
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        _turns(orch, tid, len(script))
+
+    named = {a for r in _toolless(caplog) for a in (r.args or ()) if isinstance(a, str)}
+    assert WORKING not in named
+    assert TOOLLESS in named
+
+
+def test_two_quiet_models_do_not_pool_into_one_accusation(tmp_path, caplog):
+    """The other half of per-model keying, and the direction the two tests above cannot see.
+
+    Both of them have a CLEARED model in the script, so a pooled `called` flag is what they catch.
+    This one has no cleared model at all: two different models, each one turn short of the streak,
+    and neither has earned an accusation. A single pooled COUNTER reaches the streak here on turns
+    belonging to two models and names one of them for the other's silence — a false positive, where
+    the pooled-flag fault is a false negative. The same word "global" covers both, and they fail in
+    opposite directions.
+    """
+    ws = tmp_path / "mnt" / "code"
+    script = [(TOOLLESS, 0)] * (N - 1) + [(WORKING, 0)] * (N - 1)
+    oc = CountingOpenCode(ws, [Turn(text="...")] * len(script), script=script)
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        _turns(orch, tid, len(script))
+
+    assert _toolless(caplog) == [], (
+        "two models each short of the streak were pooled into one accusation")
+
+
+# --- The name is the resolved one. --------------------------------------------------------------
 
 
 def test_the_warning_names_the_resolved_model_and_not_the_one_the_slot_asked_for(tmp_path, caplog):
-    """Condition 3. Four rules move a request off the alias a person picked, so the requested name
-    answers a different question than the one this line asks."""
+    """Four rules move a request off the alias a person picked, so the requested name answers a
+    different question than the one this line asks."""
     ws = tmp_path / "mnt" / "code"
-    oc = CountingOpenCode(ws, [Turn(text="An essay.")], script=[(1, 0)])
+    oc = CountingOpenCode(ws, [Turn(text="An essay.")] * N, script=[(TOOLLESS, 0)] * N)
     orch = _orch(tmp_path, oc)
     tid = orch.create_thread()["id"]
 
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        _run(orch, tid)
+        _turns(orch, tid, N)
 
     records = _toolless(caplog)
     assert len(records) == 1, [r.getMessage() for r in records]
     # Both halves, and both are live: `_toolless` selects on the emitting function, so a warning
     # that named the slot's model is still IN this list and fails on the second line rather than
     # disappearing from the list and failing on the first with the wrong reason.
-    assert RESOLVED in (records[0].args or ())
+    assert TOOLLESS in (records[0].args or ())
     assert REQUESTED not in (records[0].args or ()), (
         "the warning named the slot's model, which is the derivation this ticket exists to avoid")
 
 
-# --- Plant 1: a healthy turn. Without this the line is noise on every turn that works. ----------
+# --- A turn that ended before any model ran is not evidence about a model. ----------------------
 
 
-def test_a_turn_that_did_call_a_tool_says_nothing(tmp_path, caplog):
-    ws = tmp_path / "mnt" / "code"
-    oc = CountingOpenCode(ws, [Turn(text="Here you go.", tools=["read"])], script=[(4, 2)])
-    orch = _orch(tmp_path, oc)
-    tid = orch.create_thread()["id"]
+def test_turns_that_ended_before_the_model_never_reach_the_streak(tmp_path, caplog):
+    """A REAL ending rather than a stand-in for one, and the distinction is the test.
 
-    with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        _run(orch, tid)
+    "build me a dashboard" matches `handoff.looks_like_build_request`, so `_explicit_handoff` offers
+    Build and ends the turn through the same `finish()` seam without ever prompting OpenCode — the
+    shape every door refusal and gate card also has. `_acquire_turn` clears `resolved_model` at the
+    grant, so these turns carry no model, and a streak keyed on a placeholder would pool them.
 
-    assert _toolless(caplog) == [], "a healthy turn was reported as toolless"
+    Run `N` times on purpose. One would pass with the guard removed, because one turn is short of
+    the streak either way; `N` of them is what makes the guard's absence visible.
 
-
-# --- Plant 2: a turn that reached no model at all. ---------------------------------------------
-
-
-def test_a_turn_ended_before_the_model_says_nothing(tmp_path, caplog):
-    """"Called no tool" is not a finding about a turn that called no model.
-
-    A REAL ending rather than a stand-in for one, and the distinction is the test. "build me a
-    dashboard" matches `handoff.looks_like_build_request`, so `_explicit_handoff` offers Build and
-    ends the turn through the same `finish()` seam without ever prompting OpenCode — which is the
-    shape every door refusal and gate card also has.
-
-    The script is deliberately NOT empty. Withholding the plant would pin `model_calls == 0` in a
-    world where nothing could have incremented it, and the test would still pass if this ending
-    ever started reaching OpenCode. Armed this way, a turn that reached the agent plants four
-    inferences and no tool call, and the assertion below catches it.
+    The script is deliberately NOT empty, so a turn that ever did reach the agent would plant a
+    resolved model and be caught by the assertion below rather than pass for the wrong reason.
     """
     ws = tmp_path / "mnt" / "code"
-    oc = CountingOpenCode(ws, [Turn(text="never said")], script=[(4, 0)])
+    oc = CountingOpenCode(ws, [Turn(text="never said")] * N, script=[(TOOLLESS, 0)] * N)
     orch = _orch(tmp_path, oc)
     tid = orch.create_thread()["id"]
     project = orch.project(start_preview=False)
 
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        events = _run(orch, tid, "build me a dashboard")
+        for i in range(N):
+            events = list(orch.chat_stream(tid, f"build me a dashboard ({i})"))
+            assert next(e for e in events if e.get("type") == "done")["decision"] == "handoff", (
+                "this turn was meant to end at the handoff offer, before the agent ran")
 
-    assert next(e for e in events if e.get("type") == "done")["decision"] == "handoff", (
-        "this turn was meant to end at the handoff offer, before the agent ran")
     assert oc.prompts == [], "the ending under test prompted OpenCode, so it is not the one named"
-    assert project.model_calls == 0
-    assert _toolless(caplog) == [], (
-        "a turn that reached no model was reported as one that called no tool")
+    assert project.resolved_model is None
+    assert _toolless(caplog) == [], "turns that reached no model were counted against one"
 
 
-# --- Condition 2: the counters are this turn's. ------------------------------------------------
+# --- The per-turn counter is this turn's. -------------------------------------------------------
 
 
-def test_the_second_toolless_turn_in_a_row_still_warns(tmp_path, caplog):
-    """The reset condition, and the reason it needed its own test.
+def test_a_tool_call_by_one_model_does_not_clear_the_next_turns_model(tmp_path, caplog):
+    """Why `chat_stream` clears `tool_call_responses` at the grant, in the one direction that
+    cannot be undone.
 
-    Nothing in Chat has ever zeroed these two — the only resets in the tree are `build_stream`'s.
-    So without the clear at Chat's grant the second turn reads turn one's tool call and reports
-    itself healthy, and the run of turns this ticket is about is exactly a run: the model that did
-    not call a tool on one turn does not call one on the next either.
+    The router moves a request off the picked model, so turn one can resolve to a model that calls
+    a tool and turn two to one that does not. Without the clear, turn two reads turn one's count and
+    CLEARS the second model permanently — and monotonic clearing means nothing later can take that
+    back. The streak below would then never be reached.
     """
     ws = tmp_path / "mnt" / "code"
-    oc = CountingOpenCode(ws, [Turn(text="Here you go.", tools=["read"]), Turn(text="An essay.")],
-                          script=[(3, 2), (3, 0)])
+    script = [(WORKING, 2)] + [(TOOLLESS, 0)] * N
+    oc = CountingOpenCode(ws, [Turn(text="...")] * len(script), script=script)
     orch = _orch(tmp_path, oc)
     tid = orch.create_thread()["id"]
 
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        _run(orch, tid, "read the event table")
-        first = list(_toolless(caplog))
-        _run(orch, tid, "now summarise it")
+        _turns(orch, tid, len(script))
 
-    assert first == [], "the first turn called a tool and should have said nothing"
-    assert len(_toolless(caplog)) == 1, [r.getMessage() for r in _toolless(caplog)]
+    records = _toolless(caplog)
+    assert len(records) == 1, [r.getMessage() for r in records]
+    assert TOOLLESS in records[0].args
 
 
-def test_a_chat_turn_clears_the_counts_it_inherits(tmp_path, caplog):
-    """The other half of the same rule, from the other side: a count left by a previous lane.
-
-    `build_stream` resets at its own grant, so what a Chat turn inherits is whatever the last Build
-    turn ended on. A Chat turn that reaches no model must still report no model, not the Build
-    turn's four.
-    """
+def test_a_chat_turn_clears_the_count_it_inherits(tmp_path, caplog):
+    """The same rule from the other side: a count left by the Build lane is not this turn's."""
     ws = tmp_path / "mnt" / "code"
-    oc = CountingOpenCode(ws, [Turn(text="never said")], script=[])
+    oc = CountingOpenCode(ws, [Turn(text="...")], script=[(TOOLLESS, 0)])
     orch = _orch(tmp_path, oc)
     tid = orch.create_thread()["id"]
     project = orch.project(start_preview=False)
-    project.model_calls = 9          # a previous lane's, and nothing to do with this turn
-    project.tool_call_responses = 9
+    project.tool_call_responses = 9      # a previous Build turn's
 
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        _run(orch, tid)
+        _turns(orch, tid, 1)
 
-    assert project.model_calls == 0
     assert project.tool_call_responses == 0
+    assert svc._tool_use.no_tool_call(TOOLLESS) == 2, (
+        "the turn inherited a tool call it did not make, and cleared the model on it")
