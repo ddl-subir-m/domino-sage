@@ -8632,14 +8632,28 @@ class Orchestrator:
             return None
 
     def _maybe_suggest_handoff(self, store: ThreadStore, project: Project,
-                               thread_id: str, prompt: str) -> dict | None:
-        """Detect once: persist handoff.json and emit a callout, or stay silent. Never raises."""
+                               thread_id: str, prompt: str,
+                               *, already_classified: bool = False) -> dict | None:
+        """Detect once: persist handoff.json and emit a callout, or stay silent. Never raises.
+
+        `already_classified` is the pre-turn intent classifier's `build_app` verdict handed down
+        rather than asked for a second time (#453). It stands in for `wants_an_app` and for nothing
+        else: `should_classify` above it still decides whether this Thread may be offered anything
+        at all, which is what keeps `Not now` permanent.
+
+        It defaults False so the wall-clock ceiling's own call is unchanged (#453 constraint 4).
+        That turn already ran, so what the ask was classified as before it started is the weaker
+        evidence there — `wants_an_app` reads the reply too.
+        """
         try:
             explicit = self._explicit_handoff(store, thread_id, prompt)
             if explicit:
                 return explicit
             if not chat_handoff.should_classify(store.read_handoffs(thread_id)):
                 return None
+            if already_classified:
+                store.mark_handoff_suggested(thread_id)
+                return {"type": "handoff-suggest", "reason": "classifier"}
             thread = store.get(thread_id) or {}
             history = store.read_history(thread_id)
             _warn_if_history_lossy(history, "_maybe_suggest_handoff")
@@ -11925,9 +11939,11 @@ class Orchestrator:
         # spends a whole turn and ends exactly where this starts — which is how a build request
         # became 90 seconds of spinner and "ask again with a smaller question".
         #
-        # The regex handles explicit asks without spending a call. The intent classifier below
-        # may also offer Build before Chat runs. The legacy reply classifier remains for uncertain
-        # or other Chat turns, where it judges the reply as well as the ask.
+        # The regex handles explicit asks without spending a call, and it is the ONLY thing that
+        # offers Build before Chat runs. The intent classifier below used to do it too, and that is
+        # what #453 took out: a guess offered instead of an answer loses the question when someone
+        # declines it. Its verdict now rides to the post-turn site. The legacy reply classifier
+        # remains for uncertain or other Chat turns, where it judges the reply as well as the ask.
         #
         # NOT under `asking`, which is the guard on echoing the person's sentence back and nothing
         # more. `asking` is false on exactly the turns a card replays into (`skip_table_gate`,
@@ -11954,16 +11970,28 @@ class Orchestrator:
         urls = _urls_in_chat(prompt, history)
         intent = classified()
         bounded_intent = intent.valid and intent.label in {"plain_answer", "data_answer", "data_artifact"}
-        if (intent.valid and intent.label == "build_app"
-                and chat_handoff.should_offer_explicit(store.read_handoffs(thread_id))):
-            store.mark_handoff_suggested(thread_id)
-            offer = {"type": "handoff-suggest", "reason": "classifier"}
-            store.append_history(thread_id, offer)
-            done = {"type": "done", "ok": True, "decision": "handoff"}
-            finish(done)
-            yield offer
-            yield done
-            return
+        # The classifier's verdict is CARRIED to the end of the turn, not spent here (#453). It used
+        # to end the turn — offer, `done`, return — and that is what made `reason: "classifier"` a
+        # lie. The client reads exactly that word to decide that declining owes nothing
+        # (`message-blocks.js:425`, `store.js:8274`), which is true of a card sitting under an
+        # answer and false of one raised INSTEAD of it: `Not now` threw the question away and Retry
+        # was the only way back to it. `handoff.md` §2 already says which way round it goes — run
+        # the classifier AFTER each turn. Answer, then offer.
+        #
+        # Carried rather than simply dropped. `bounded_intent` above excludes `build_app`, so the
+        # turn reaches `_maybe_suggest_handoff` unaided — but that site asks `wants_an_app`, a
+        # SECOND model call with a deliberately narrower prompt: "APP only if you would be
+        # uncomfortable treating this as a one-off analysis", default CHAT. `build_app` counts a
+        # report or a page (`chat_intent.py:34`); `wants_an_app` calls those CHAT. Deleting this
+        # block and nothing else would answer the question and then drop the offer on exactly the
+        # turns this ticket is about, and pay a five-second call to re-ask what was already asked.
+        #
+        # The gate moves with the verdict. `should_offer_explicit` was the wrong one here anyway —
+        # its own docstring says so — and `_maybe_suggest_handoff` already stands behind
+        # `should_classify`, which is the classifier's policy and which keeps `Not now` permanent.
+        # The explicit arm above is untouched: a sentence is not a guess, so it is still offered
+        # instead of the turn and still owes the answer through `/handoff/decline`.
+        build_app_intent = intent.valid and intent.label == "build_app"
         # The third gate, and the only one that asks about a CAPABILITY rather than about a record
         # (#386, ADR-0056). The two above ask which table and which file; this one asks whether this
         # question is worth an investigation, and the answer is a grant the person makes rather than
@@ -13050,7 +13078,8 @@ class Orchestrator:
             yield done
             with timing.span("after.handoff"):
                 suggestion = (None if bounded_intent else
-                              self._maybe_suggest_handoff(store, project, thread_id, prompt))
+                              self._maybe_suggest_handoff(store, project, thread_id, prompt,
+                                                          already_classified=build_app_intent))
             if suggestion:
                 store.append_history(thread_id, suggestion)
                 yield suggestion

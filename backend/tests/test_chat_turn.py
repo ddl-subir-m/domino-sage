@@ -643,13 +643,17 @@ def test_dashboard_app_asks_still_offer_handoff_before_chat_runs(tmp_path: Path)
     assert oc.prompts == []
 
 
-def test_a_model_classified_dashboard_ask_offers_handoff_before_chat_runs(tmp_path):
+def test_a_model_classified_dashboard_ask_is_answered_and_then_offered_handoff(tmp_path):
+    """It used to end the turn here, and the card it minted said `classifier` — the word the
+    client reads as "declining owes nothing". `Not now` then lost the question (#453). The turn
+    runs; the offer rides out after the answer. Order and cause are pinned in
+    `test_a_build_app_turn_answers_before_it_offers.py`."""
     gateway = IntentGateway({"label": "build_app", "confidence": 0.93})
-    orch, oc = _orch(tmp_path, [Turn(text="should not run")], gateway=gateway)
+    orch, oc = _orch(tmp_path, [Turn(text="Colleagues opened it 40 times.")], gateway=gateway)
     tid = orch.create_thread()["id"]
     events = list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
     assert any(e.get("type") == "handoff-suggest" and e.get("reason") == "classifier" for e in events)
-    assert oc.prompts == []
+    assert len(oc.prompts) == 1
 
 
 def test_chat_turn_records_artifact_and_reverts_a_write_outside_its_thread(tmp_path: Path):
