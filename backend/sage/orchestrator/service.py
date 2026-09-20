@@ -11847,6 +11847,27 @@ class Orchestrator:
             # refused also called no tool. Without it the line reads identically on a turn that was
             # already explained and on the one this ticket is about, which is the answer-shaped-like
             # -an-essay turn: `decision=answered`.
+            #
+            # TWO THINGS THIS LINE ASSERTS AND DOES NOT MEASURE, written down because the line is
+            # the only witness anyone will have and a reader deserves to know what is behind it.
+            #
+            # "sent tools" is a property of the REQUEST, and nothing on this path reads the request.
+            # It is true because Chat's tool list is assembled unconditionally above and `sage.shim`
+            # logs it every turn — an inference, not a check. A lane that ever ships no tools would
+            # keep saying "sent tools" and point the reader at the model instead of at the request.
+            #
+            # "no tool call came back" is `app.py`'s per-chunk `b"tool_calls" in chunk`, and nothing
+            # reassembles chunks — a gateway that splits the frame across two of them never sets the
+            # flag. That was a slightly-wrong `build_stream` diagnostic before this read existed and
+            # is now a WARNING saying a healthy turn called no tool. The counter is deliberately
+            # reused rather than replaced (#469): a second sniff would be a second answer to the
+            # same question. If this line is ever wrong in that direction, the fix belongs at the
+            # write site, not here.
+            #
+            # An ordinary conversational turn answered from context DOES warn, and that is the
+            # ticket's decision rather than an oversight. It is what the two conditions leave, and
+            # the alternative — asking whether a tool was NEEDED — is a judgement nothing on this
+            # path can make. The guard against noise is `model_calls`, not the shape of the answer.
             if project.model_calls and not project.tool_call_responses:
                 resolved = project.resolved_model
                 log.warning(

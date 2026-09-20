@@ -14,11 +14,13 @@ the turn DID is not in doubt: `app.py` already counts every inference and flags 
 `tool_calls` frame, for `build_stream`'s benefit. Chat reading the same two numbers is the change.
 
 WHAT THESE TESTS ARE CAREFUL NOT TO ASSERT is the wording. Every assertion reads the emitted
-`LogRecord`'s interpolation ARGUMENTS, never `getMessage()`. A test that greps `"model="` out of the
-rendered line passes just as happily with the name hardcoded into the format string, which is the
-one defect that would make the change worthless. `RESOLVED` below is deliberately not a plausible
-model name for the same reason: a real-looking one could be a literal somebody typed, and this one
-could only have arrived by being threaded from what the shim recorded.
+`LogRecord`'s interpolation ARGUMENTS, never `getMessage()`, and the records are SELECTED by the
+function that emitted them rather than by anything in them — see `_toolless`, which explains why
+selecting on the model name would have made one of these tests unable to fail. A test that greps
+`"model="` out of the rendered line passes just as happily with the name hardcoded into the format
+string, which is the one defect that would make the change worthless. `RESOLVED` below is
+deliberately not a plausible model name for the same reason: a real-looking one could be a literal
+somebody typed, and this one could only have arrived by being threaded from what the shim recorded.
 
 WHAT THE FAKE STANDS IN FOR, said plainly because it is the limit of this file. The two counters are
 written by the real `/v1/chat/completions` route in `app.py`, which no fake-OpenCode test reaches —
@@ -27,11 +29,15 @@ covers the write. Here the fake plants the same two fields at the moment the rou
 them, while the prompt is being served. So these tests exercise the READ, the condition and the
 per-turn reset over real `chat_stream` turns, and they take the write on trust.
 
-THE PLANTS ARE THE POINT. Warning when a model does not call a tool is easy; warning on every turn
-that calls no tool would bury the one line worth reading. Two conditions hold that line and each has
-its own test: a turn WITH a tool call must stay quiet, and a turn that reached no model at all —
-refused at the door, or ended by a gate card — must stay quiet too, because "called no tool" is not
-a finding about a turn that called no model.
+THE PLANTS ARE THE POINT, and here is exactly how much they hold. Two conditions narrow the line
+and each has its own test: a turn WITH a tool call stays quiet, and a turn that ended before the
+model ran stays quiet, because "called no tool" is not a finding about a turn that called no model.
+
+What neither plant holds, said here rather than left for a reader to discover: an ORDINARY
+conversational turn answered from context runs one inference, calls no tool, and warns. That is
+#469's decision, not a gap these tests failed to close — the alternative is asking whether a tool
+was NEEDED, which nothing on this path can answer. `model_calls` is the whole of the noise guard.
+Do not read the two plants below as evidence that the warning is rare.
 """
 
 from __future__ import annotations
@@ -138,15 +144,20 @@ def _orch(tmp: Path, oc: CountingOpenCode) -> Orchestrator:
 
 
 def _toolless(caplog) -> list[logging.LogRecord]:
-    """The warnings this change emits, selected by the model name carried as an ARGUMENT.
+    """The warnings this change emits, selected by the FUNCTION that emitted them.
 
-    Not by matching the message, for the reason the module docstring gives, and not by "every
-    warning from the service logger" either — an unrelated warning on a failing turn would then
-    read as this one and a missing one would hide behind it.
+    Not by matching the message, for the reason the module docstring gives. Not by "every warning
+    from the service logger" either — an unrelated warning on a failing turn would then read as
+    this one, and a missing one would hide behind it.
+
+    And deliberately NOT by the model name in `args`, which is the obvious selector and is circular:
+    it would make `test_the_warning_names_the_resolved_model_...` unable to fail for its own reason.
+    A run that logged the requested name would return an EMPTY list here, so that test would red on
+    "no warning was emitted" and its named assertion could never run. `finish` holds exactly one
+    `log` call, so the function is a precise handle that owes the assertions nothing.
     """
     return [r for r in caplog.records
-            if r.name == LOGGER and r.levelno == logging.WARNING
-            and RESOLVED in (r.args or ())]
+            if r.name == LOGGER and r.levelno == logging.WARNING and r.funcName == "finish"]
 
 
 def _run(orch: Orchestrator, tid: str, prompt: str = "fit a regression on the event table"):
@@ -170,6 +181,7 @@ def test_a_turn_whose_model_never_called_a_tool_warns_and_names_the_resolved_mod
         "the turn under test has to be an ORDINARY one — a failing turn would be explained already")
     records = _toolless(caplog)
     assert len(records) == 1, [r.getMessage() for r in records]
+    assert RESOLVED in records[0].args
     # The count is an argument too, so "four inferences and not one tool call" is readable as data.
     assert 4 in records[0].args
 
@@ -187,6 +199,10 @@ def test_the_warning_names_the_resolved_model_and_not_the_one_the_slot_asked_for
 
     records = _toolless(caplog)
     assert len(records) == 1, [r.getMessage() for r in records]
+    # Both halves, and both are live: `_toolless` selects on the emitting function, so a warning
+    # that named the slot's model is still IN this list and fails on the second line rather than
+    # disappearing from the list and failing on the first with the wrong reason.
+    assert RESOLVED in (records[0].args or ())
     assert REQUESTED not in (records[0].args or ()), (
         "the warning named the slot's model, which is the derivation this ticket exists to avoid")
 
@@ -209,26 +225,33 @@ def test_a_turn_that_did_call_a_tool_says_nothing(tmp_path, caplog):
 # --- Plant 2: a turn that reached no model at all. ---------------------------------------------
 
 
-def test_a_turn_that_ran_no_model_calls_says_nothing(tmp_path, caplog):
+def test_a_turn_ended_before_the_model_says_nothing(tmp_path, caplog):
     """"Called no tool" is not a finding about a turn that called no model.
 
-    An empty script is the stand-in for every ending that never prompts OpenCode — refused at the
-    door, ended by a gate card, handed off. Without the `model_calls` guard this turn warns, and
-    the warning then fires on endings that had nothing to do with a model's tool support.
+    A REAL ending rather than a stand-in for one, and the distinction is the test. "build me a
+    dashboard" matches `handoff.looks_like_build_request`, so `_explicit_handoff` offers Build and
+    ends the turn through the same `finish()` seam without ever prompting OpenCode — which is the
+    shape every door refusal and gate card also has.
+
+    The script is deliberately NOT empty. Withholding the plant would pin `model_calls == 0` in a
+    world where nothing could have incremented it, and the test would still pass if this ending
+    ever started reaching OpenCode. Armed this way, a turn that reached the agent plants four
+    inferences and no tool call, and the assertion below catches it.
     """
     ws = tmp_path / "mnt" / "code"
-    oc = CountingOpenCode(ws, [Turn(text="never said")], script=[])
+    oc = CountingOpenCode(ws, [Turn(text="never said")], script=[(4, 0)])
     orch = _orch(tmp_path, oc)
     tid = orch.create_thread()["id"]
     project = orch.project(start_preview=False)
 
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        _run(orch, tid)
+        events = _run(orch, tid, "build me a dashboard")
 
-    assert project.model_calls == 0, "the fake planted an inference this test needs it not to"
-    assert [r for r in caplog.records
-            if r.name == LOGGER and r.levelno == logging.WARNING
-            and any(a == "unknown" for a in (r.args or ()))] == [], (
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "handoff", (
+        "this turn was meant to end at the handoff offer, before the agent ran")
+    assert oc.prompts == [], "the ending under test prompted OpenCode, so it is not the one named"
+    assert project.model_calls == 0
+    assert _toolless(caplog) == [], (
         "a turn that reached no model was reported as one that called no tool")
 
 
