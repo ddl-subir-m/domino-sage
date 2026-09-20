@@ -3665,6 +3665,12 @@ window.SW = window.SW || {};
   // fault is the one a repeated toast would be worst for.
   const toastedProblems = new Set();
 
+  // How many Preflights the failed-save door has already spent on the failure standing now, and
+  // what that failure says. Bookkeeping like `toastedProblems` above and outside `state` for the
+  // same reason — but RESET rather than never cleared, because two sightings has to mean two
+  // consecutive ones. A save that lands clears it, so the next failure gets its own two.
+  let kickedFor = { key: null, n: 0 };
+
   // How long the boot leaves between its two Preflights. Long enough that a workspace whose proxy
   // was still coming up on the first ask is serving by the second — Domino reports one running
   // about a second early — and short enough that a real fault is on the chip before somebody has
@@ -4593,7 +4599,7 @@ window.SW = window.SW || {};
     // this work started from.
     async refreshProblems() {
       // The list already on screen survives a read that did not land. The route answers 200 even
-      // when every one of its own five reads failed, so a rejection is the route being unreachable
+      // when every one of its own six reads failed, so a rejection is the route being unreachable
       // rather than a verdict of "clean" — and replacing a true chip with silence on that is how a
       // person comes to report a failed build as a bug.
       const found = await SW.api.health().then(
@@ -4622,6 +4628,57 @@ window.SW = window.SW || {};
       }
       notify();
       return found;
+    },
+
+    // A save that did not reach the remote asks again, immediately (ADR-0064).
+    //
+    // `saveFailed` rides out on every thread payload and nothing draws it, which is the whole of
+    // #460's symptom — but it is not what gets drawn here either. It is past tense: the save that
+    // failed already happened, the next turn works, and the glossary rules an error out of being a
+    // Problem by name. What is drawn is the standing condition the server derives from git, and
+    // this is only the nudge that makes the server look.
+    //
+    // It matters because survival needs TWO consecutive Preflights. Without a kick the second
+    // sighting waits for the next failed turn or the next boot, so a person can be hours into work
+    // that exists in one place only before the chip lights. The same shape a failed turn already
+    // uses, for the same reason.
+    //
+    // Two doors, one rule, and the rule is the SERVER'S. A thread payload carries the last failed
+    // save as `saveFailed`, which the server already set through `_chat_save_landed`; the
+    // leave-Chat flush answers with `landed`, which is that same verdict composed at the route.
+    //
+    // Nothing here re-derives it, and that is the point rather than tidiness. Three of the four
+    // unhappy answers carry no `rejected` key at all — an unresolved merge, a raised exception, a
+    // save that fell over before git — so a client testing `rejected` is silent on exactly the
+    // case it was added for. `ok` is worse: it is TRUE for a refused push. `pushed: false` is
+    // worse again: a workspace with no remote says it and is saved. Four ways to be wrong and one
+    // place that already knows, so this asks that place.
+    //
+    // Two sightings and no more. Survival needs a Problem in two consecutive Preflights, and this
+    // door's whole job is to buy those quickly rather than hours later. `saveFailed` is sticky
+    // until a save lands, so without a cap every click through the Conversation rail would spend
+    // another Preflight — six git spawns and a Binding listing each — on a workspace somebody is
+    // clicking around precisely BECAUSE it is broken. The route's cost model says boot, failed
+    // turn, failed save; a per-click probe is not in it and must not become one.
+    //
+    // Keyed on what the failure says, so a DIFFERENT failure gets its own two, and reset the
+    // moment anything lands — which is what makes the two consecutive rather than two ever.
+    //
+    // Fire-and-forget: a Preflight that did not land leaves the list on screen exactly as it was,
+    // and nothing here is allowed to make opening a Conversation slower or able to fail. The
+    // `catch` is what makes that true rather than stated — the fetch failing is handled inside
+    // `refreshProblems`, but the toast and the render after it are not.
+    noteSaveFailed(answer) {
+      const failed = answer && (answer.saveFailed || (answer.landed === false ? answer : null));
+      if (!failed) {
+        kickedFor = { key: null, n: 0 };
+        return;
+      }
+      const key = String(failed.detail || 'a save that did not reach the remote');
+      if (kickedFor.key !== key) kickedFor = { key, n: 0 };
+      if (kickedFor.n >= 2) return;
+      kickedFor.n += 1;
+      store.refreshProblems().catch(() => {});
     },
 
     // The chip's drawer. No read of its own: opening is not a Preflight, because the answer it
@@ -6635,6 +6692,7 @@ window.SW = window.SW || {};
         const messages = await store.conversationMessages(thread);
         if (gen !== openSeq) return null;
         state.thread = thread;
+        store.noteSaveFailed(thread);
         state.pendingConversation = false;
         // In the single write, so the marker and the view it describes move in the same frame.
         // Cleared a line later and the skeleton flashes off over the old Conversation's turns.
@@ -8637,6 +8695,7 @@ window.SW = window.SW || {};
         await Promise.all([loadScopeData(), loadThreadList()]);
       }
       state.thread = await SW.api.thread(state.thread.id);
+      store.noteSaveFailed(state.thread);
       notify();
       return result;
     },

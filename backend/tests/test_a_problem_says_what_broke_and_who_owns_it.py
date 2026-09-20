@@ -1,6 +1,6 @@
-"""The six Problems, composed once, server-side (ADR-0027).
+"""The seven Problems, composed once, server-side (ADR-0027).
 
-Sage already knew all six before this existed and told the log. What is under test is the composing:
+Sage already knew all of them before this existed and told the log. What is under test is the composing:
 which conditions earn a sentence, which stay silent, who owns the remedy, and the two rules that
 decide whether a Problem is said at all — the line on silence, and survival across two consecutive
 Preflights.
@@ -51,6 +51,10 @@ CLEAN = {
     "ports": {"control_port": 8080, "base_port": 8080},
     "agents": ALL_AGENTS,
     "data_library": "",
+    # Everything this workspace has committed is on the remote. The other shape — the read itself
+    # failing, which arrives as `{}` — is not clean, it is unknown, and it is silent for a
+    # different reason (`test_unsent_work_is_a_problem_a_person_can_see.py`).
+    "unsent": {"unsent": False, "detail": None},
 }
 
 
@@ -58,7 +62,7 @@ def _ids(found: list[Problem]) -> list[str]:
     return [p.id for p in found]
 
 
-# ---- the six, one at a time ----------------------------------------------------------------------
+# ---- the seven, one at a time ----------------------------------------------------------------------
 
 
 def test_a_dead_model_slot_is_the_creators_to_fix():
@@ -147,7 +151,7 @@ def test_a_deployment_with_nothing_wrong_says_nothing():
     assert problems(**CLEAN) == []
 
 
-def test_every_one_of_the_six_is_composed_by_one_call():
+def test_every_one_of_the_seven_is_composed_by_one_call():
     found = problems(
         slots={"state": "problems", "error": "ConnectError", "reached": False, "slots": [
             {"slot": "ask", "alias": "ghost", "fault": "m", "fix": "f"}]},
@@ -155,12 +159,13 @@ def test_every_one_of_the_six_is_composed_by_one_call():
         ports={"control_port": 8080, "base_port": 8888},
         agents=[],
         data_library="ImportError: boom",
+        unsent={"unsent": True, "detail": "push failed: remote rejected"},
     )
     # The creator's own first: the drawer groups by owner, and a payload that arrives in the order it
     # will be read spares the client from deciding what "first" means.
-    assert _ids(found) == ["slot:ask", "binding:llm_alias:id-x",
+    assert _ids(found) == ["slot:ask", "binding:llm_alias:id-x", "workspace-unsent-work",
                           "gateway", "ports", "agents", "data-library"]
-    assert [p.owner for p in found] == [OWNER_YOU, OWNER_YOU] + [OWNER_ADMIN] * 4
+    assert [p.owner for p in found] == [OWNER_YOU] * 3 + [OWNER_ADMIN] * 4
 
 
 # ---- the line on silence -------------------------------------------------------------------------
@@ -249,6 +254,7 @@ def test_every_problem_carries_the_four_fields_the_client_renders():
         ports={"control_port": 8080, "base_port": 8888},
         agents=[],
         data_library="boom",
+        unsent={"unsent": True, "detail": "push failed: remote rejected"},
     )
     for p in found:
         row = p.to_dict()

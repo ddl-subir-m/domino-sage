@@ -5313,6 +5313,13 @@ class Orchestrator:
         # was saving beats one a reader has to know the caller to interpret. `get_thread` hands it
         # back (#456).
         self._chat_save_failed: dict | None = None
+        # Git's own words from the last push the remote refused, or None. Not the condition —
+        # that is `git.unsent()`, read from refs (ADR-0064) — only the quotation a reader forwards
+        # to whoever owns the remedy. Written here rather than taken off `_chat_save_failed`
+        # because a save commits the WHOLE tree and five of the six savers are not Chat's: a
+        # build's refusal strands a Built App exactly as far. It dies with the process while the
+        # condition does not, which is why the Problem's `body` is optional.
+        self._last_push_refusal: str | None = None
         # True while a queued Chat save holds the turn lock, or is about to ask for it. See
         # `_acquire_for_door`, which reads it to tell a commit from a build.
         self._chat_saving = False
@@ -8394,6 +8401,49 @@ class Orchestrator:
         from ..workspace import git
 
         return self._project is not None and git.unsent(self._project.record.path)
+
+    def _record_push(self, result) -> None:
+        """Keep the quotation for [[Unsent work]] matching the last attempt to send.
+
+        Every `git.push` in this class goes through here, because the Problem that renders this
+        does not care which door pushed. A Chat save is refused and stores refusal A; a Pull and
+        build then pushes successfully through its own site; `unsent()` goes False and the Problem
+        goes with it — but A would sit here until something else overwrote it, ready to be quoted
+        under the NEXT refusal as though it were the reason.
+
+        `rejected` is the whole test. `ok` is True for a refusal and `pushed` is False for a
+        workspace with no remote, which is saved (`_chat_save_landed`, ADR-0064).
+        """
+        self._last_push_refusal = result.detail if result.rejected else None
+
+    def unsent_work(self) -> dict:
+        """Whether this workspace holds commits the remote has never been given, and git's words.
+
+        The one input `/api/health` takes that is not already in hand. `problems()` stays a pure
+        function over a dict it is handed, exactly as it is for the other six; the read happens
+        here, at the caller that owns its own I/O.
+
+        Six git spawns and no network call — `unsent()` reads refs a push or a fetch already left
+        behind. That is the whole of what makes it affordable on a route whose docstring says it
+        has no probe of its own: the route is asked at boot, after a failed turn and after a failed
+        save, never on a timer (ADR-0027 rejects the poll by name), so this is a local ref read a
+        handful of times per session rather than a round trip per tab per interval.
+
+        `detail` is best-effort and absent after a restart. The condition is git's and survives.
+
+        A Project that is not bound yet answers `{}` — the same "we could not check" the route's
+        own fallback means — and NOT `unsent: False`. `_has_unsent_work` is right to say False
+        there, because its caller is asking "is there anything to save" and an unbound Project has
+        committed nothing. This caller is asking a different question, and the two answers differ:
+        after a restart with work stranded on disk, the commits are on the volume whether or not
+        anything has bound the Project yet, so False here would record a clean Preflight about a
+        workspace nobody had looked at. Both boot Preflights can land in that window — the read
+        that normally binds first falls back silently on the startup 502 — and two false cleans
+        are enough to stop the survival count ever starting.
+        """
+        if self._project is None:
+            return {}
+        return {"unsent": self._has_unsent_work(), "detail": self._last_push_refusal}
 
     def _flush_chat_save(self, reason: str, *, holding_turn: bool = False) -> dict | None:
         """Commit + push if Chat has unsaved files, or if the repo has commits still owing to the
@@ -17244,8 +17294,13 @@ class Orchestrator:
             # the build's work silently never reaches the repo.
             synced = self._integrate_remote(project)
             if synced is not None and synced.status in ("conflict-unresolved", "error"):
+                # Why this attempt did not send, replacing whatever the last one said. Returning
+                # here with the earlier value still in place quoted a credential refusal under a
+                # Problem whose real blocker is an unresolved merge — and `unsent()` is still True
+                # on this path, so that stale quotation is one a person actually reads.
+                self._last_push_refusal = f"couldn't sync with the repo — {synced.detail}"
                 return {"type": "saved", "ok": False, "pushed": False,
-                        "detail": f"couldn't sync with the repo — {synced.detail}"}
+                        "detail": self._last_push_refusal}
             # Narrowed by `unsent`, not deleted (#459, ADR-0065). Nothing committed is not the same
             # question as nothing to send: a workspace that is AHEAD but clean — commits made, an
             # earlier push refused, nothing typed since — returned here and never reached
@@ -17257,6 +17312,7 @@ class Orchestrator:
                     and not git.unsent(path)):
                 return {"type": "saved", "ok": True, "pushed": False, "detail": "no changes to commit"}
             result = git.push(path)
+            self._record_push(result)
             detail = result.detail
             if leaked:
                 detail += f" — kept {len(leaked)} copied data file(s) out of git; fetch attached data from data/ instead"
@@ -17264,7 +17320,10 @@ class Orchestrator:
                      "rejected": result.rejected, "detail": detail}
         except Exception as e:
             log.exception("git save failed")
-            return {"type": "saved", "ok": False, "pushed": False, "detail": f"{type(e).__name__}: {e}"}
+            # Same reason as the sync return above: this attempt did not send, the commits may
+            # still be here, and the last refusal is no longer why.
+            self._last_push_refusal = f"{type(e).__name__}: {e}"
+            return {"type": "saved", "ok": False, "pushed": False, "detail": self._last_push_refusal}
 
     def _integrate_remote(self, project: Project):
         """Pull the remote into the (already-committed, clean) Project, resolving merge conflicts
@@ -17372,6 +17431,7 @@ class Orchestrator:
                         "conflicts": result.conflicts if result else [], "pushed": False,
                         "rejected": False, "detail": detail, "pushDetail": ""}
             pushed = git.push(path)
+            self._record_push(pushed)
             return {"status": result.status, "conflicts": result.conflicts,
                     "pushed": pushed.pushed, "rejected": pushed.rejected,
                     "detail": result.detail, "pushDetail": pushed.detail}
@@ -17457,6 +17517,7 @@ class Orchestrator:
                 log.exception("the undo committed but the push did not run")
                 pushed = git.SaveResult(pushed=False,
                                         detail=f"push failed: {type(e).__name__}: {e}")
+            self._record_push(pushed)
             # The offer is derived, so this is what retires it: a local re-read, no fetch.
             self._check_remote(project, fetch=False)
             return {"ok": True, "sha": found.sha, "pushed": pushed.pushed,
