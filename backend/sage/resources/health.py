@@ -1,13 +1,13 @@
-"""Health — the six Problems a creator is owed, composed into one payload (ADR-0027).
+"""Health — the seven Problems a creator is owed, composed into one payload (ADR-0027).
 
 A [[Problem]] is a condition Sage already knows will make the person's next act fail, or make it
-silently do something other than what it says. Sage knew all six of these before this module
+silently do something other than what it says. Sage knew all of these before this module
 existed and told only the log and `/api/diag`. Nothing here probes anything: every input is
 something a boot Preflight, a turn or a diagnostics read already paid for, so composing them costs
 one dict lookup each.
 
 Pure functions on purpose, exactly as `preflight.py` is: each takes an already-fetched input and
-returns sentences, so the whole six are decidable in a test with no gateway, no sidecar and no
+returns sentences, so the whole set is decidable in a test with no gateway, no sidecar and no
 `domino_data`. The one caller owns its own I/O and its own failure handling — and owes every read a
 `try`, because ADR-0027's rule for this route is that it always answers.
 
@@ -33,6 +33,13 @@ from ..orchestrator import brand
 # `you`, because one the reader can act on belongs in the reader's own group.
 OWNER_YOU = "you"
 OWNER_ADMIN = "admin"
+
+# The one Problem that is not keyed on something the platform named, so its id is written here as a
+# literal. Constant on purpose and load-bearing: the toast fires once per id per session and
+# survival is counted per id, so an id carrying the commit count or the branch head would mint a
+# new Problem on every commit — re-toasting, resetting the count to zero, and never surviving two
+# consecutive Preflights. The Problem would then never report at all (ADR-0064).
+UNSENT_WORK = "workspace-unsent-work"
 
 # The agents `opencode.json` defines, one per mode plus the architect the plan path hands to. Held
 # here as a tuple rather than read back off the file, because the failure being reported is exactly
@@ -156,7 +163,7 @@ def port_problem(ports: dict) -> Problem | None:
 def agent_problem(agents: list[dict] | None) -> Problem | None:
     """The agent definitions did not load, so every mode is running one that denies nothing.
 
-    The worst of the six, and the reason ADR-0027's test has a second clause: this one does not fail
+    The worst of them, and the reason ADR-0027's test has a second clause: this one does not fail
     loudly. A question can change files, a build looks like it ran, and nothing says the rules it
     was meant to follow were never applied.
 
@@ -200,8 +207,44 @@ def data_library_problem(detail: str) -> Problem | None:
     )
 
 
+def unsent_problem(unsent: dict) -> Problem | None:
+    """This workspace holds commits the {project}'s git remote has never been given (ADR-0064).
+
+    A standing state read from git, never the event that produced it. "Your last save failed" is
+    past tense — the next turn works, nothing downstream misbehaves — and the glossary rules that
+    out by name. What stands is the work existing in one place only: a remote that refused once
+    refuses the next turn too, so every turn from here silently does something other than what Chat
+    says it does.
+
+    One Problem for the whole workspace and no Conversation named, because a save commits the whole
+    tree: naming one sends a person to re-type one thing while the rest is equally unsent.
+
+    `unsent` is the reader's answer already taken — `{"unsent": bool, "detail": str | None}` — and
+    an answer that is ABSENT says nothing. An empty dict is the route's fallback when the read
+    itself failed, and "we could not check" may never be reported as "this is broken".
+
+    `detail` is git's own refusal, quoted and never rewritten (ADR-0014). It is best-effort and
+    absent after a restart: the condition is git's and survives, the words are the last attempt's
+    and do not. `body` being optional is what makes that honest rather than lossy.
+    """
+    if not unsent.get("unsent"):
+        return None
+    return Problem(
+        id=UNSENT_WORK,
+        message=brand.text(
+            "{assistantName} has committed work in this {project} that its git repository has "
+            "never received, so that work exists in this workspace only."),
+        fix=brand.text(
+            "Every save tries again, so sending another message or leaving {chat} will retry it. "
+            "If it keeps failing, check this workspace's git credentials and its access to the "
+            "repository."),
+        owner=OWNER_YOU,
+        body=unsent.get("detail") or None,
+    )
+
+
 def problems(*, slots: dict, bindings: dict, ports: dict,
-             agents: list[dict] | None, data_library: str) -> list[Problem]:
+             agents: list[dict] | None, data_library: str, unsent: dict) -> list[Problem]:
     """Every Problem this deployment has, the creator's own first.
 
     Ordered rather than grouped: the drawer groups by owner, and a payload that arrives in the order
@@ -210,7 +253,7 @@ def problems(*, slots: dict, bindings: dict, ports: dict,
     nouns on an OEM screen).
     """
     found = slot_problems(slots) + binding_problems(bindings)
-    for one in (gateway_problem(slots), port_problem(ports),
+    for one in (unsent_problem(unsent), gateway_problem(slots), port_problem(ports),
                 agent_problem(agents), data_library_problem(data_library)):
         if one is not None:
             found.append(one)

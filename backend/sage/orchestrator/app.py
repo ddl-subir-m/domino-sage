@@ -111,6 +111,7 @@ from .service import (
     ResourceStillBound,
     TurnBusy,
     UploadUnavailable,
+    _chat_save_landed,
 )
 
 _feedback = FeedbackRunner()
@@ -2836,14 +2837,23 @@ _PREFLIGHT_LOCK = threading.Lock()
 def health_problems() -> JSONResponse:
     """Every [[Problem]] this deployment has, in the creator's own words (ADR-0027).
 
-    One composed route rather than six raw ones. The person reading it opened a Workbench to build
+    One composed route rather than seven raw ones. The person reading it opened a Workbench to build
     something; `/api/diag` is the maintainer's surface and stays exactly as it is.
 
-    No probe of its own. Four of the five reads are free — a global the boot Preflight filled, two
-    numbers, an import that has already happened — and the fifth is the Binding check `/api/preflight`
-    used to make, which costs a listing only for an app that has a Binding at all. The slot verdict
-    is the boot one: `_run_slot_preflight` writes it once, `/healthz` serves the same global, and the
-    two cannot drift because there is only one.
+    Four of the six reads are free — a global the boot Preflight filled, two numbers, an import
+    that has already happened. The fifth is the Binding check `/api/preflight` used to make, which
+    costs a listing only for an app that has a Binding at all. The slot verdict is the boot one:
+    `_run_slot_preflight` writes it once, `/healthz` serves the same global, and the two cannot
+    drift because there is only one.
+
+    The sixth is the only one that spawns anything, and it was added knowing what it cost this
+    docstring to say (ADR-0064). "No probe of its own" was written to keep a route that reports
+    Problems from becoming one, and what made that true was never that every read was literally
+    free — the Binding listing is a network call. It was that nothing here is paid per tab per
+    interval, because ADR-0027 rejects the background poll by name: this is asked at boot, after a
+    failed turn and after a failed save. `unsent_work` is six local git spawns, ~100ms, and no
+    network at all, a handful of times per session. That is inside the rule rather than an
+    exception to it, and the rule is now stated as what it was defending.
 
     Always 200, never 502. "We could not check" is a state, not a failure of the request; a 502 here
     would read to the UI exactly like the Resource rail's, where it means "you have no models". Each
@@ -2868,6 +2878,15 @@ def health_problems() -> JSONResponse:
                "base_port": _read(lambda: _opencode_base_port(orchestrator._opencode_cwd), None)},
         agents=_read(orchestrator.resolved_agents, None),
         data_library=_read(data_library_ready, ""),
+        # The one read here that spawns a process, and the reason this route's "no probe of its
+        # own" needed re-deciding rather than quietly bending (ADR-0064). Six git spawns, ~100ms,
+        # and no network at all: `unsent()` reads refs a push or a fetch already left behind, the
+        # way `incoming()` does. It is affordable because this route is asked at boot, after a
+        # failed turn and after a failed save — never on a timer — so the cost is a handful of
+        # local ref reads per session rather than one listing per tab per interval, which is the
+        # shape ADR-0027 rejected. Inside `_read` like the rest: a workspace whose git will not
+        # answer costs this Problem its sentence and no other.
+        unsent=_read(orchestrator.unsent_work, {}),
     )
     global _PREFLIGHT_SEEN
     with _PREFLIGHT_LOCK:
@@ -3375,11 +3394,21 @@ def create_thread() -> JSONResponse:
 
 @control_app.post("/api/threads/save")
 def flush_chat_save() -> JSONResponse:
-    """Push dirty Chat files now (leaving Chat, or switching Thread). No-op if nothing is dirty."""
+    """Push dirty Chat files now (leaving Chat, or switching Thread). No-op if nothing is dirty.
+
+    Carries `landed` — whether the work reached the remote — because this is the retry path
+    [[Unsent work]]'s remedy names, and its caller has to know (ADR-0064). Composed here rather
+    than left to the client for the same reason `_chat_save_landed` exists at all: three of the
+    four unhappy answers carry no `rejected` key, `ok` is True for the one that does, and
+    `pushed: False` is also what a saved workspace with no remote says. A client deriving that
+    would be a fourth place to get it wrong, and the issue's own constraint 2 forbids the two
+    reads it would reach for first.
+    """
     result = orchestrator.flush_chat_save()
     if result is None:
-        return JSONResponse({"type": "saved", "ok": True, "pushed": False, "detail": "nothing to save"})
-    return JSONResponse(result)
+        return JSONResponse({"type": "saved", "ok": True, "pushed": False,
+                             "detail": "nothing to save", "landed": True})
+    return JSONResponse({**result, "landed": _chat_save_landed(result)})
 
 
 @control_app.get("/api/threads/{thread_id}")

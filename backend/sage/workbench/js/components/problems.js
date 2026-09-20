@@ -11,7 +11,7 @@ window.SW = window.SW || {};
   //
   // The heading is the client's own furniture rather than a sentence about the deployment, which is
   // why it is written here while every Problem's own words come composed off the wire. It names who
-  // holds the remedy, not who is at fault: four of the six are nobody the reader can chase, and the
+  // holds the remedy, not who is at fault: four of the seven are nobody the reader can chase, and the
   // creator still has to know, because those failures land on their build.
   const GROUPS = [
     { owner: 'you', title: 'You can fix' },

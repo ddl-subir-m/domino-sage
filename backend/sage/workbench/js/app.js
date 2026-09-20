@@ -96,7 +96,14 @@ window.SW = window.SW || {};
     }, []);
 
     useEffect(() => {
-      if (route.mode !== 'chat') SW.api.flushChat().catch(() => {});
+      // The flush's own answer, not just fire-and-forget. This is the retry path
+      // `unsent_problem`'s remedy names by name ("leaving Chat will retry it"), and ADR-0065 made
+      // it genuinely push an ahead-but-clean workspace. Discarding the answer meant a person who
+      // followed that sentence literally got the retry and no Preflight, so a refusal that is
+      // still true went unreported until something else asked.
+      if (route.mode !== 'chat') {
+        SW.api.flushChat().then((r) => SW.store.noteSaveFailed(r), () => {});
+      }
     }, [route.mode]);
 
     const shellMode = SUBROUTES[route.mode] || route.mode;
