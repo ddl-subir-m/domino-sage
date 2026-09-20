@@ -273,9 +273,11 @@ export const query = {
     "a ranking, a correlation, a group-by, a join across tables. Sage runs the statement " +
     "server-side and puts the result on a table card the person sees. You get the numbers back " +
     "when every column you select is one worked out from the rows — COUNT, SUM, AVG, MEDIAN, CORR " +
-    "and the like, plus whatever you GROUP BY. A column holding values stored in rows stays on the " +
-    "card and does not come back to you; the reply says so and says which column it was, so you " +
-    "can ask for a count instead. Prefer this over reading rows and adding them up yourself.",
+    "and the like, plus whatever you GROUP BY. One unsupported column keeps the entire result " +
+    "on the card; none of its values come back to you. For a regression, return REGR_* statistics " +
+    "and numeric counts together. Keep MIN/MAX of dates or text in a separate display query if " +
+    "needed; mixing them with numeric statistics withholds those statistics too. Prefer this " +
+    "over reading rows and adding them up yourself.",
   args: {
     token,
     source: { type: "string", description: "The Data Source name." },

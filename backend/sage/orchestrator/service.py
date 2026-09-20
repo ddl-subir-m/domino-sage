@@ -3816,7 +3816,9 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                         (c.get("type") if isinstance(c, dict) else None),
                     ) if p
                 )
-                for c in cols[:40]
+                # Wide tables often put timestamps last. Dropping those names forces the
+                # agent to rediscover metadata this chip already holds (#472).
+                for c in cols
             ).strip()
             extra = f" Columns: {col_txt}." if col_txt else ""
             # The tools come first and Python second, because on this side of the fork Python is

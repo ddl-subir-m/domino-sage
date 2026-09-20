@@ -208,3 +208,27 @@ def test_a_later_turn_in_the_same_thread_still_renders_the_columns(tmp_path: Pat
 
     assert len(oc.prompts) == 2, oc.prompts
     assert "CALL_ID" in oc.prompts[-1]["text"], oc.prompts[-1]["text"]
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+def test_a_wide_tables_last_columns_reach_the_first_turn(tmp_path: Path, pinned: bool):
+    """#472: the live table's four date columns follow 102 other columns."""
+    orch, oc = _orch(tmp_path)
+    _gong_warehouse(orch)
+    orch._resources.tree["ds-dwh"]["DWH"]["MARTS"].append("MIXPANEL__EVENT")
+    columns = [("DISTINCT_ID", "TEXT")]
+    columns += [(f"PROPERTY_{i}", "TEXT") for i in range(101)]
+    columns += [("DATE_PART", "DATE"), ("MIXPANEL_API_RECEIVED_AT", "TIMESTAMP"),
+                ("MIXPANEL_PROCESSED_AT", "TIMESTAMP"), ("EVENT_OCCURRED_AT", "TIMESTAMP")]
+    orch._resources.columns["MIXPANEL__EVENT"] = columns
+    scope = {"database": "DWH", "schema": "MARTS", "table": "MIXPANEL__EVENT"}
+    tid = _thread_with_source(orch, scope=scope if pinned else None)
+
+    list(orch.chat_stream(tid, "@Snowflake-Data-Warehouse fit a regression predicting event "
+                          "count per user from signup month using DWH.MARTS.MIXPANEL__EVENT."))
+
+    assert len(_row(orch, tid)["columns"]) == 106
+    assert oc.prompts, "the turn reached the agent"
+    said = oc.prompts[-1]["text"]
+    for name, dtype in columns:
+        assert f"{name} {dtype}" in said, f"The first turn lost column {name}"

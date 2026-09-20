@@ -480,3 +480,39 @@ def test_the_dropped_effort_is_announced_once_and_not_on_every_inference(caplog)
     assert len(dropped) == 1
     assert "high" in dropped[0].getMessage()
     assert "sonnet" in dropped[0].getMessage()
+
+
+@pytest.mark.parametrize("effort", ["low", "high", "max"])
+@pytest.mark.parametrize("picked", [False, True])
+def test_glm_keeps_explicit_chat_pick_and_assignment_efforts(effort, picked):
+    control = ModelControl()
+    catalog = _replace(CATALOG, ask="GLM 5.3 OR", ask_effort=effort)
+    if picked:
+        control.pick_chat("GLM 5.3 OR", effort)
+        catalog = _replace(catalog, ask_effort="high")
+    token = control.arm_chat("thr_glm")
+    try:
+        assert _sent(control, catalog, tools=TOOLS).get("reasoning_effort") == effort
+    finally:
+        control.disarm_chat(token)
+
+
+def test_glm_build_with_no_assigned_effort_keeps_the_provider_default():
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    catalog = _replace(CATALOG, implement="GLM 5.3 OR")
+    assert "reasoning_effort" not in _sent(control, catalog, tools=TOOLS)
+
+
+@pytest.mark.parametrize("alias", ["GLM 5.3 OR", "domino/GLM 5.3 OR"])
+@pytest.mark.parametrize("picked", [False, True])
+def test_glm_model_default_stays_unset_with_tools(alias, picked):
+    control = ModelControl()
+    if picked:
+        control.pick_chat(alias, None)
+    token = control.arm_chat("thr_glm")
+    try:
+        sent = _sent(control, _replace(CATALOG, ask=alias), tools=TOOLS)
+        assert sent["model"] == alias
+        assert "reasoning_effort" not in sent
+    finally:
+        control.disarm_chat(token)
