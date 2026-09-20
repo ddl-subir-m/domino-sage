@@ -119,6 +119,19 @@ TOOLS: list[dict[str, Any]] = [
                     "What this is being worked out for, in a few words. It goes in the record, not "
                     "to the person."
                 )},
+                # The declared half of the role rule (ADR-0063). No rule over SQL can reach this:
+                # `SELECT COUNT(*) FROM GONG_CALLS` is a step when the question is which customers
+                # use monitoring and is the answer when the question is how many calls there are.
+                # Only the caller knows which, so only the caller can say. Left out means the
+                # answer, and the card draws.
+                "step": {"type": "boolean", "description": (
+                    "True when this statement is a step towards the answer rather than the "
+                    "answer itself — counting rows to see whether a table is worth using, "
+                    "measuring how often a column is filled, checking that a join key matches. "
+                    "Its card is folded out of the way so the answer is readable. Leave it out "
+                    "for the statement that answers the question. Catalogue reads count as steps "
+                    "without being told."
+                )},
             },
             "required": ["token", "source", "sql"],
         },

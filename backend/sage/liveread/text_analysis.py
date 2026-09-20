@@ -137,6 +137,9 @@ def analyze(args: dict, turn) -> str:
     event = {
         "operation_id": operation,
         "operation": "text_analysis",
+        # Always drawn, for the reason `calculate` states: the turn was asked to do this
+        # (ADR-0063, *What this does not decide*).
+        "role": "answer",
         "source": source,
         "source_sha256": source_sha,
         "artifact": receipt.path,

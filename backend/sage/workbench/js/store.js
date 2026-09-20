@@ -1698,17 +1698,49 @@ window.SW = window.SW || {};
     }
   }
 
-  async function blocksForArtifacts(items, hiddenTables = new Set()) {
+  // Which Artifacts a turn wrote while finding the way, rather than to answer (ADR-0063). Read off
+  // the row and nothing else: the role was decided where the statement was still in hand and
+  // carried here on the `DataUse` event's own path. Never off the title and never off the path —
+  // `staging-gong-table-names` reads like scaffolding and a substring test over an Artifact path is
+  // open bug #450, which already makes the disclosure record report data that was withheld.
+  //
+  // An absent role is an ANSWER. Every Artifact in every Thread written before this field existed
+  // has none, so this is the clause that makes those transcripts draw exactly as they did.
+  const isWorkingRead = (art) => !!art && art.role === 'working';
+
+  async function blocksForArtifacts(items, hiddenTables = new Set(), fold = true) {
     const list = items || [];
     // One slot per Artifact, filled in place. The callers splice the result straight into a
     // message's blocks (`store.js:1865`), so returning the reads in the order they came back
     // would silently rearrange the transcript.
     const slots = new Array(list.length);
     const reads = [];
+    // The turn's steps, and where the first of them sat. One fold per call, positioned there, so
+    // the answer's prose and the answer's tables still read continuously down the transcript.
+    const folded = [];
+    let foldAt = -1;
     for (let i = 0; i < list.length; i += 1) {
       const art = list[i];
       const path = art.path || '';
       const lower = path.toLowerCase();
+      if (fold && isWorkingRead(art)) {
+        // NOT queued for the pool below, and that is the larger half of this ticket. A folded row
+        // is a row nobody has asked to see, and #451 measured what asking costs: sixty round trips
+        // through the Domino proxy before the first card of an investigation drew. The fold reads
+        // its own rows when it is opened, through `SW.hydrateArtifacts`.
+        //
+        // WHAT THIS COSTS, said plainly because it is a real gap and not an oversight.
+        // `hiddenTables` below is filled from the READ — a `.table.json` that turns out to be
+        // blank is put there so the caller can strip its dead link out of the surrounding prose.
+        // A folded row is never read, so it can never join that set, and a blank one leaves its
+        // link in the answer's text. There is no way to have both: knowing the file is blank IS
+        // the round trip this exists to avoid. The link is a dead click; the round trips were the
+        // measured cost of opening the Thread at all.
+        if (foldAt < 0) foldAt = i;
+        folded.push(art);
+        slots[i] = [];
+        continue;
+      }
       if (art.kind === 'chart' || lower.endsWith('.png')) {
         // `missing` and `producedAt` are what the card falls back to when the PNG is not in this
         // clone. A chart follows the rows it draws (ADR-0045), so a Project with **Kept rows** off
@@ -1764,6 +1796,11 @@ window.SW = window.SW || {};
     // above or by a worker.
     const blocks = [];
     for (let i = 0; i < list.length; i += 1) {
+      // Where the first step sat, which is where the fold goes. A turn with no steps never reaches
+      // this — `foldAt` stays -1 — so there is no empty face and no "0 tables" (constraint 3).
+      if (i === foldAt) {
+        blocks.push({ type: 'working_reads_fold', count: folded.length, items: folded });
+      }
       if (slots[i] === null) hiddenTables.add(list[i].path || '');
       else blocks.push(...slots[i]);
     }
@@ -1925,6 +1962,7 @@ window.SW = window.SW || {};
     app_change: shown,
     build_run: shown,
     lead_in_fold: shown,
+    working_reads_fold: shown,
     plan_card: shown,
     build_plan: shown,
     status: (block) => block.fromEvent === 'investigation-state',
@@ -1950,9 +1988,9 @@ window.SW = window.SW || {};
   // block type added to the dispatcher without a row here reds there, and until it does the new
   // card shows, which is the safe direction for a disclosure.
   //
-  // WHY THIRTY-ONE ROWS LOOK UNUSED, and why deleting them would be a defect. `pushBlock` is
+  // WHY THIRTY-TWO ROWS LOOK UNUSED, and why deleting them would be a defect. `pushBlock` is
   // reached two ways. At MINT it is reached from the two governed sites only — `putDataUsed` and
-  // the `investigation-state` status — because the other thirty-one blocks are pushed straight
+  // the `investigation-state` status — because the other thirty-two blocks are pushed straight
   // onto the message, so on a first read their rows are never consulted. On a RE-PARTITION it is
   // reached for every block on the message, because `applyDataAccess` puts the whole sequence back
   // through it, and that is the path the drawer's checkbox and the answer's nudge both take.
@@ -2127,6 +2165,23 @@ window.SW = window.SW || {};
     const withheld = withheldKeys(history);
     const shownArts = new Set();
     const hiddenTables = new Set();
+    // Every path this Thread ever published as an ANSWER (ADR-0063). One `.table.json` name can be
+    // written by more than one turn — `live_read_query` slugs an untitled read to `query-result`
+    // every time, and `result.record` overwrites rather than uniquifying — and the `shownArts`
+    // filter below keeps the FIRST row it saw of a repeated path. So without this an answer whose
+    // file a probe had written under the same name two turns earlier would inherit the probe's
+    // verdict and be folded away, which is the one failure ADR-0063 will not have.
+    //
+    // Asked of the whole Thread rather than of the rows before it, and in the direction that
+    // SHOWS: a path that is an answer anywhere is drawn everywhere. The opposite reading would
+    // need to know which turn's bytes are on disk, and the row cannot say.
+    const drewAsAnswer = new Set();
+    for (const ev of history || []) {
+      if (ev.type !== 'artifacts' && !(ev.type === 'done' && ev.artifacts)) continue;
+      for (const a of ev.items || ev.artifacts || []) {
+        if (a && a.path && a.role !== 'working') drewAsAnswer.add(a.path);
+      }
+    }
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
       if (ev.dataUsed) putDataUsed(messages, ensureAssistant, ev.dataUsed);
@@ -2151,7 +2206,10 @@ window.SW = window.SW || {};
           if (!key || shownArts.has(key)) return false;
           shownArts.add(key);
           return true;
-        });
+        // Upgraded here rather than inside the fold, so the ONE row that survives the filter above
+        // carries the role the whole Thread agrees on. See `drewAsAnswer`.
+        }).map((a) => (a.role === 'working' && drewAsAnswer.has(a.path)
+          ? { ...a, role: 'answer' } : a));
         if (items.length) {
           ensureAssistant().blocks.push(...(await blocksForArtifacts(items, hiddenTables)));
         }
@@ -4155,7 +4213,7 @@ window.SW = window.SW || {};
 
     // The table's decision about one block, so a test can DERIVE which types the preference
     // governs instead of reading the rows and trusting them. ADR-0062 claims it governs
-    // `data_used` and the investigation line and "nothing else", and thirty-one rows spell that by
+    // `data_used` and the investigation line and "nothing else", and thirty-two rows spell that by
     // sharing one constant — which means flipping any of them to hide was a one-word edit that
     // cost a viewer their table receipts and reddened nothing. Now the claim is a derived list.
     hidesForDataAccess: (block) => hiddenByDataAccess(block),
@@ -8012,11 +8070,38 @@ window.SW = window.SW || {};
             // "Adverse Events Summary" became two. Titles are not identifiers in the other
             // direction either — a matrix is written as a PNG and a table that share one on
             // purpose — so match on the path and nothing else.
+            //
+            // A FOLDED row is in this set too, off the fold's own `items` (ADR-0063). It draws no
+            // card, so there is no block carrying its path, and without this clause the `done`
+            // that repeats the list would fold the very same rows a second time — one turn, two
+            // faces, each counting the same tables. The fold is the only thing that knows what it
+            // is holding.
             const have = new Set(
-              assistant.blocks.filter((b) => b.type === 'image' || b.type === 'table' || b.type === 'file')
-                .flatMap((b) => [b.src, b.path].filter(Boolean))
+              assistant.blocks.flatMap((b) => (
+                b.type === 'working_reads_fold'
+                  ? (b.items || []).map((a) => a.path)
+                  : (b.type === 'image' || b.type === 'table' || b.type === 'file')
+                    ? [b.src, b.path]
+                    : []
+              )).filter(Boolean)
             );
-            const fresh = (items || []).filter((a) => !have.has(fileUrl(a.path)) && !have.has(a.path));
+            // The same upgrade the reload does (`drewAsAnswer`), off the rows this session has
+            // already seen. One `.table.json` name can be written by more than one turn, so a
+            // path an earlier turn published as an ANSWER must not be folded when a later turn
+            // rewrites it as a step. Read off `state.thread.artifacts`, which the block below
+            // appends to AFTER this — so here it holds exactly the earlier turns' rows.
+            //
+            // Here as well as on reload because two readers of one Artifact list giving two
+            // answers is the drift `SW.hydrateArtifacts` was exported to avoid, one function
+            // along: without it a row folds live and draws after a refresh.
+            const answered = new Set(
+              ((state.thread && state.thread.artifacts) || [])
+                .filter((a) => a && a.path && a.role !== 'working').map((a) => a.path)
+            );
+            const fresh = (items || [])
+              .filter((a) => !have.has(fileUrl(a.path)) && !have.has(a.path))
+              .map((a) => (a.role === 'working' && answered.has(a.path)
+                ? { ...a, role: 'answer' } : a));
             if (fresh.length) {
               assistant.blocks = [...assistant.blocks, ...(await blocksForArtifacts(fresh))];
             }
@@ -8717,6 +8802,14 @@ window.SW = window.SW || {};
   // with, exported rather than copied: one answer to "where does a build start and stop", and two
   // surfaces that draw it differently.
   SW.buildRuns = buildRunMessages;
+
+  // What a fold of a turn's steps reads when somebody opens it (ADR-0063). The same builder the
+  // transcript uses, with the fold itself turned off — the rows it is handed are the ones that
+  // were folded, so a builder that still folded them would hand the card another fold.
+  //
+  // Exported rather than copied, for the reason `buildRuns` above is: a second reader of an
+  // Artifact row is a second answer to "what card does this file draw", and the two drift.
+  SW.hydrateArtifacts = (items) => blocksForArtifacts(items, new Set(), false);
 
   // The Workbench half of orchestrator/brand.py's `text()`. Substitution is author-time
   // (ADR-0014): a user-visible string is a template resolved when it is read, so a new string is

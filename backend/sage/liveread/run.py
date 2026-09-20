@@ -552,6 +552,84 @@ def _statement(args: dict, turn: Turn) -> str:
     return _computed_text(receipt, verdict, answer, sql, args, turn)
 
 
+# The schemas a store keeps its own catalogue in. A read of one is finding the way by definition
+# (ADR-0063) — names, then columns for a shortlist — and that is the ~29 cards of the sixty this
+# rule was measured against.
+_CATALOGUE_SCHEMAS = frozenset({"INFORMATION_SCHEMA", "PG_CATALOG", "SYS"})
+# The catalogue surfaces that are a bare table name rather than a schema.
+_CATALOGUE_TABLES = frozenset({"SQLITE_MASTER"})
+# `SHOW TABLES`, `SHOW SCHEMAS IN DATABASE DWH`, `DESC TABLE …`. `sqlglot` has no node for these on
+# the default dialect and parses them as `Command`, carrying the leading keyword as `this` — so
+# they are read off that keyword rather than off a shape that does not exist here.
+_CATALOGUE_COMMANDS = frozenset({"SHOW", "DESC", "DESCRIBE"})
+
+
+def catalogue_read(sql: str) -> bool:
+    """Whether this statement reads a catalogue surface rather than data (ADR-0063).
+
+    PARSED, never pattern-matched, and the difference is the whole safety of this rule. A regex
+    over SQL cannot tell the word `INFORMATION_SCHEMA` in a `FROM` clause from the same word inside
+    a string literal or a comment, so `WHERE NOTE = 'information_schema'` over a real table would
+    read as scaffolding and its card would be folded away. That is the one failure ADR-0063 refuses
+    — a rule that can hide an answer — and it is exactly the shape of open bug #450, a bare
+    substring test over an artifact path, which this ticket's fourth constraint names.
+
+    Every table in the statement must be a catalogue one, not merely some of them. A statement that
+    joins the catalogue to real rows is measuring real rows, and the conservative reading is the
+    one the ADR asks for: when unsure, say no and let the card draw.
+
+    A statement that does not parse is NOT a catalogue read. Everything here fails towards
+    `'answer'`, which draws, for the reason ADR-0063 gives at length: too much shown is a cluttered
+    transcript, an answer folded away is a lie nobody can see.
+    """
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+    except ImportError:
+        return False
+    try:
+        parsed = sqlglot.parse(sql or "")
+    # Broad for the reason `disclosure.decide` is broad: `sqlglot` raises more than `ParseError` on
+    # malformed input, and every one of them means the same thing here.
+    except Exception:
+        return False
+    statements = [node for node in parsed if node is not None]
+    if not statements:
+        return False
+    return all(_catalogue_statement(node, exp) for node in statements)
+
+
+def declared_step(args: dict) -> bool:
+    """The optional flag, as the caller actually sends it (ADR-0063).
+
+    Both doors declare this as a boolean (`liveread/mcp.py`, `tools/live_read.ts`), and the string
+    `"true"` is accepted beside it because a model relaying a JSON schema's boolean as its word is
+    a call that meant the flag and would otherwise have it silently dropped. Nothing else counts:
+    an absent, null or unreadable value is `'answer'`, which draws.
+    """
+    value = args.get("step")
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() == "true"
+
+
+def _catalogue_statement(node, exp) -> bool:
+    if isinstance(node, exp.Command):
+        return str(node.this or "").strip().upper() in _CATALOGUE_COMMANDS
+    if isinstance(node, exp.Describe):
+        return True
+    # A CTE's name parses as a `Table` where it is selected from, so a `WITH c AS (…) SELECT … FROM
+    # c` would otherwise carry one table nothing can classify and fail the `all` below. The alias is
+    # not a table; the tables are inside the CTE's own body, which `find_all` already reached.
+    aliases = {str(cte.alias or "").upper() for cte in node.find_all(exp.CTE)}
+    tables = [t for t in node.find_all(exp.Table)
+              if not (not t.db and not t.catalog and t.name.upper() in aliases)]
+    if not tables:
+        return False
+    return all(t.db.upper() in _CATALOGUE_SCHEMAS or t.name.upper() in _CATALOGUE_TABLES
+               for t in tables)
+
+
 def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dict,
                    turn: Turn) -> str:
     """What the assistant is told, and what gets written down about it.
@@ -606,6 +684,18 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
             # is committed, and a statement carries literals — see `_statement`'s docstring. This is
             # the same thing `calculate` does with the CSV bytes it read, for the same reason.
             "source_sha256": hashlib.sha256(sql.encode()).hexdigest(),
+            # Whether this read was finding the way or answering the question (ADR-0063). The
+            # VERDICT and never the statement, decided here because here is the only place the
+            # statement is still in hand: by the time `new_artifact_paths` discovers the file this
+            # read wrote, the SQL is gone. The publish side joins the two back together on
+            # `artifact` below.
+            #
+            # Two parts, because one can be mechanical and the other cannot. The catalogue rule is
+            # testable from the statement alone. The rest is the caller's to declare, because
+            # `SELECT COUNT(*) FROM GONG_CALLS` is a step when the question is which customers use
+            # monitoring and is the answer when the question is how many calls there are — the same
+            # statement, and only the caller knows which it is. An absent flag is `'answer'`.
+            "role": "working" if (catalogue_read(sql) or declared_step(args)) else "answer",
             "artifact": receipt.path,
             "columns": list(receipt.columns),
             "selected_fields": [receipt.columns[i] for i in verdict.derived

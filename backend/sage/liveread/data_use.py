@@ -268,6 +268,50 @@ class DataUse:
             save()
 
 
+# The three counts on a `coverage` record that mean a read came back with less than it was asked
+# for, and the request state that means the response never settled. The same two lists
+# `store.js`'s `FELL_SHORT` and `DID_NOT_SETTLE` hold, for the same rule (ADR-0062 §2): a read
+# that fell short is never hidden. Kept in step by
+# `test_a_working_read_is_folded_out_of_the_answer`, which reads both files.
+FELL_SHORT = ("excluded", "failed", "unfinished")
+DID_NOT_SETTLE = ("interrupted",)
+
+
+def fell_short(event: dict) -> bool:
+    """Whether this operation reports less than it was asked for."""
+    coverage = event.get("coverage") or {}
+    if any((coverage.get(key) or 0) > 0 for key in FELL_SHORT):
+        return True
+    return any(r.get("failure") or r.get("state") in DID_NOT_SETTLE
+               for r in (event.get("requests") or []) if isinstance(r, dict))
+
+
+def artifact_roles(events) -> dict[str, str]:
+    """Which role each of a turn's operations claimed, keyed by the path it wrote (ADR-0063).
+
+    This is the publish-side half of the join. The operation site decided the role while the
+    statement was in hand; `new_artifact_paths` finds the file with nothing but its path, and
+    `artifact` is what puts the two back together.
+
+    Two things are downgraded to `'answer'` here rather than at the operation site. A role this
+    function does not recognise, because an unknown word must not be taken for a verdict. And an
+    operation that FELL SHORT — that decision cannot be made where the role is, because a request
+    can fail after the read returned, so it is made here, at the end of the turn, when the event is
+    as complete as it will get.
+
+    Last write wins on a repeated path. Two reads in one turn can slug to the same filename, and
+    the second one is what is on disk, so the second one's role is the one that describes it.
+    """
+    roles: dict[str, str] = {}
+    for event in events or []:
+        path = str(event.get("artifact") or "")
+        if not path:
+            continue
+        role = event.get("role")
+        roles[path] = "working" if role == "working" and not fell_short(event) else "answer"
+    return roles
+
+
 def _gateway_evidence(body):
     """Trust only fields the gateway response actually carries; absent stays unknown."""
     if not isinstance(body, dict):
