@@ -8384,10 +8384,29 @@ class Orchestrator:
             return
         self._flush_chat_save(self._chat_save_reason)
 
+    def _has_unsent_work(self) -> bool:
+        """Whether the bound Project holds commits the remote has never been given.
+
+        Read off `self._project` rather than `project()`, which seeds a Project and can start a
+        preview: this runs on the idle timer's thread and on every door that leaves Chat. A Project
+        that was never bound has committed nothing, so nothing can be owing.
+        """
+        from ..workspace import git
+
+        return self._project is not None and git.unsent(self._project.record.path)
+
     def _flush_chat_save(self, reason: str, *, holding_turn: bool = False) -> dict | None:
-        """Commit + push if Chat has unsaved files. Returns the `saved` event, or None."""
+        """Commit + push if Chat has unsaved files, or if the repo has commits still owing to the
+        remote. Returns the `saved` event, or None.
+
+        Two questions, deliberately not one flag (#459, ADR-0065). `_chat_dirty` means "Chat has
+        files the local repo has not committed", and after a commit whose push was REFUSED the
+        files are committed — so the flag is correctly False and this gate would return before any
+        save, leaving the work on this disk for good. Holding the flag True instead would overload
+        the one flag whose wrong question caused the bug; the second question is asked of git.
+        """
         self._cancel_chat_idle_save()
-        if not self._chat_dirty:
+        if not self._chat_dirty and not self._has_unsent_work():
             return None
         if holding_turn:
             return self._chat_save_now(reason)
@@ -17198,7 +17217,15 @@ class Orchestrator:
             if synced is not None and synced.status in ("conflict-unresolved", "error"):
                 return {"type": "saved", "ok": False, "pushed": False,
                         "detail": f"couldn't sync with the repo — {synced.detail}"}
-            if not committed and (synced is None or synced.status == "up-to-date"):
+            # Narrowed by `unsent`, not deleted (#459, ADR-0065). Nothing committed is not the same
+            # question as nothing to send: a workspace that is AHEAD but clean — commits made, an
+            # earlier push refused, nothing typed since — returned here and never reached
+            # `git.push`, so it could not catch up on the timer, on the next open, or at shutdown,
+            # which takes this same return. The coalescing is still real for the five deliberate
+            # acts that call this, so the return stays; it now skips the push only when there is
+            # genuinely nothing for the remote. `unsent` is a local ref read, not a round trip.
+            if (not committed and (synced is None or synced.status == "up-to-date")
+                    and not git.unsent(path)):
                 return {"type": "saved", "ok": True, "pushed": False, "detail": "no changes to commit"}
             result = git.push(path)
             detail = result.detail
