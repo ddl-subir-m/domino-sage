@@ -44,36 +44,57 @@ const overrides = {};
 // point: gpt-5.4 and gemini accept DIFFERENT levels, which is the only way a row can be retargeted
 // at a model that will not take the level it is carrying; `coder` and `opus` accept none, which is
 // the majority case on the real gateway and the one where no control may be drawn at all.
+//
+// `capabilities` carry `tools` on every alias but one, and `gemini-3.7-flash` is the exception for
+// the reason it is the exception live: measured on the gateway 2026-09-20 it declares `chat` alone,
+// which is not credible for a model that calls tools every day (#463). One marked row rather than
+// six is what lets a test say the mark is on the row it belongs to.
+const NO_TOOLS = "gemini-3.7-flash doesn't advertise tool support, and every Chat turn sends "
+  + 'tools. The capability list is what the provider last reported, not a test, so it may work '
+  + 'anyway.';
 const ALIASES = [
   {
-    name: 'gpt-5.4', display_name: 'GPT-5.4', capabilities: ['chat'], serving: true, problem: null,
+    name: 'gpt-5.4', display_name: 'GPT-5.4', capabilities: ['chat', 'tools'], serving: true,
+    problem: null, capability_note: null,
     reasoning_efforts: ['none', 'low', 'medium', 'high', 'xhigh'],
     reasoning_efforts_with_tools: ['none'],
   },
   {
     name: 'gemini-3.7-flash', display_name: 'Gemini 3.7 Flash', capabilities: ['chat'],
     serving: true, problem: null,
+    // Server-computed, served, never re-derived here — the browser renders the sentence and the
+    // rule stays in `preflight.tool_capability_note`, which is the whole reason the payload carries
+    // a field rather than the panel carrying a predicate.
+    capability_note: NO_TOOLS,
     // `max` is here and `minimal` is not, which is the narrowing itself: the gateway advertises
     // both, and `minimal` 400s at Vertex, so the table takes it off before the panel ever sees it.
     reasoning_efforts: ['low', 'medium', 'high', 'max'],
     reasoning_efforts_with_tools: ['low', 'medium', 'high', 'max'],
   },
   {
-    name: 'coder', display_name: 'Qwen3 Coder', capabilities: ['chat'], serving: true,
-    problem: null, reasoning_efforts: [], reasoning_efforts_with_tools: [],
+    name: 'coder', display_name: 'Qwen3 Coder', capabilities: ['chat', 'tools'], serving: true,
+    problem: null, capability_note: null,
+    reasoning_efforts: [], reasoning_efforts_with_tools: [],
   },
   {
-    name: 'opus', display_name: 'Claude Opus', capabilities: ['chat'], serving: true,
-    problem: null, reasoning_efforts: [], reasoning_efforts_with_tools: [],
+    name: 'opus', display_name: 'Claude Opus', capabilities: ['chat', 'tools'], serving: true,
+    problem: null, capability_note: null,
+    reasoning_efforts: [], reasoning_efforts_with_tools: [],
   },
+  // Stopped AND quiet about tools — the only row here carrying BOTH server fields, which is what
+  // lets a test tell a separate field from a lucky ordering. Every other fixture row has at most
+  // one of them, and "the mark is not in `problem`" is only ever shown on a row where `problem` has
+  // nothing to say unless one row has both.
   {
     name: 'local-llm', display_name: 'Mistral (Domino-hosted)', capabilities: ['chat'],
     serving: false, reasoning_efforts: [], reasoning_efforts_with_tools: [],
+    capability_note: "local-llm doesn't advertise tool support, and every Chat turn sends tools. "
+      + 'The capability list is what the provider last reported, not a test, so it may work anyway.',
     problem: 'This model is Stopped, so turns using it will fail. Start that endpoint, or pick a different model.',
   },
   // Never offered: an embeddings-only Alias cannot hold a conversation, and the panel reuses the
   // same rule the Chat picker applies rather than growing a second copy of it.
-  { name: 'embed-3', display_name: 'Embeddings', capabilities: ['embeddings'], serving: true, problem: null, reasoning_efforts: [], reasoning_efforts_with_tools: [] },
+  { name: 'embed-3', display_name: 'Embeddings', capabilities: ['embeddings'], serving: true, problem: null, capability_note: null, reasoning_efforts: [], reasoning_efforts_with_tools: [] },
 ];
 // What `_merge_assignment` validates a saved level against: the tool-carrying local answer.
 const accepts = (name) =>
@@ -175,6 +196,10 @@ const panel = () => ({
     // a row whose catalog has not been rebuilt since the file broke, and the panel draws whichever
     // string arrives without branching on it — so the short form needs no step of its own here, and
     // a JS test asserting one exact sentence is asserting about this fixture, not about that rule.
+    // Its own field beside `problem` and never inside it (#463). Served from the alias the slot's
+    // model names, which is the join `service.model_assignments` makes with the one listing it
+    // already has in hand.
+    capability_note: (ALIASES.find((a) => a.name === model(slot)) || {}).capability_note || null,
     problem: shadow(slot)
       || (unreadableSlots.includes(slot)
         ? `The ${slot} row in .sage/model_overrides.json couldn't be read, so this slot is following the default. Fix that row, or remove it.`
@@ -354,6 +379,10 @@ for (const step of steps) {
     labels: text(tree, 'sw-assignment-label'),
     rows,
     problems: text(tree, 'sw-assignment-problem'),
+    // Its own list for the reason `effortNotes` has one: it is drawn on its own condition, outside
+    // the gate that decides whether `problems` renders at all, and folding the two together would
+    // make the one assertion that tells them apart impossible to write (#463).
+    capabilities: text(tree, 'sw-assignment-capability'),
     details: text(tree, 'sw-assignment-detail'),
     // Why a level a person set is gone (ADR-0049). Its own list rather than a fourth entry in
     // `details`, for the reason it has its own class on the row: it answers what was SAVED, where

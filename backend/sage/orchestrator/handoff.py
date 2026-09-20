@@ -14,6 +14,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+from .. import degraded
 from ..gateway.client import CostLabels, GatewayClient
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
@@ -127,6 +128,9 @@ class _Health:
         """Record an answer in neither vocabulary; return what wants_an_app should return.
 
         True (suggest) until the breaker trips, then False (stay in Chat) forever after."""
+        # A judgement asked for and not got (#463): the call landed and the contract did not hold,
+        # so the Build offer is a default rather than a verdict.
+        degraded.judgement_lost()
         self.unreadable += 1
         if self.unreadable < MAX_UNREADABLE:
             log.warning("handoff: unrecognised verdict %r (%d in a row) — suggesting",
@@ -225,6 +229,10 @@ def wants_an_app(
     came FROM is the one whose lock is read — the two could not drift apart without this line
     changing."""
     if _health.broken:
+        # Counted with no line of its own (#463). The breaker announced itself once at ERROR and is
+        # silent from here on, so without this the turns that lost this judgement for good are the
+        # turns whose count reads zero.
+        degraded.judgement_lost()
         return False
     text = _payload(title, user, assistant).strip()
     if not text:
@@ -291,11 +299,13 @@ def wants_an_app(
         call.done()
     except concurrent.futures.TimeoutError:
         call.done(ok=False, error="timeout")
+        degraded.judgement_lost()
         log.warning("handoff: classify timed out after %.1fs — no suggestion model=%s",
                     timeout_s, model)
         return False
     except Exception as e:
         call.done(ok=False, error=f"{type(e).__name__}: {e}")
+        degraded.judgement_lost()
         log.warning("handoff: classify failed (%s: %s) — no suggestion model=%s",
                     type(e).__name__, e, model)
         return False
@@ -326,6 +336,7 @@ def wants_an_app(
     # blank answer the classifier offered to build an app from "what info is there in <file>.json".
     # Nothing about that question was judged; there was no verdict to judge it with.
     if not verdict:
+        degraded.judgement_lost()
         log.warning("handoff: classifier returned an empty body — no suggestion model=%s", model)
         return False
     if verdict.startswith("APP"):

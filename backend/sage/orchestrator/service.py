@@ -39,7 +39,7 @@ import httpx
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
 
-from .. import timing
+from .. import degraded, timing
 from ..assets.provider import (
     Asset,
     AssetProvider,
@@ -122,6 +122,7 @@ from ..resources.preflight import (
     stale_bindings,
     stale_fault,
     stale_fix,
+    tool_capability_note,
     turn_refusal,
     turn_slots,
     unresolved_slots,
@@ -6719,6 +6720,18 @@ class Orchestrator:
         caps = alias.get("capabilities") or []
         if caps and "embeddings" in caps and "chat" not in caps:
             raise ValueError(f"{model!r} is not a chat model")
+        # Recorded, never refused (#463). A pick that raised here would be this metadata deciding
+        # what a person may run, and the comment four lines up is the standing argument against
+        # that — it is last-known, it has been wrong in both directions, and the two aliases it is
+        # most wrong about are the ones most people pick. So the pick goes through and the panel
+        # and the picker carry the same sentence on the row, where the reader can weigh it.
+        #
+        # A log line as well as the rows, because this is the moment the two facts are together:
+        # the model somebody chose, and the slot they chose it for. `/api/diag/log?warn=1` is then
+        # able to answer "was this turn's Chat model one that never advertised tools" for a session
+        # that has already ended, which no panel read can do.
+        if note := tool_capability_note(caps, model):
+            log.warning("chat pick: %s — %s", model, note)
         efforts = reasoning_efforts_with_tools(model)
         if effort in ("", None, "default"):
             effort = None
@@ -15313,7 +15326,14 @@ class Orchestrator:
 
         Silent before the project is attached. The first turn of a session can reach this with
         nothing to clear, which is not a condition worth branching at the call sites for.
+
+        The classifier degradation count is reset from here too (#463), and it is the same fact
+        about the same boundary rather than a second job this method has grown: both answer "what
+        happened on THIS turn", both must start empty so a quiet turn cannot inherit a loud one's
+        answer, and both are read while the turn is still live. Unconditional, unlike the line
+        below it — the count is process-wide, so there is no project for it to be missing.
         """
+        degraded.reset()
         if self._project is not None:
             self._project.resolved_model = None
 
@@ -18900,6 +18920,20 @@ class Orchestrator:
                 # `shadowed` says the catalog casts a signing shadow; this says the router's answer
                 # for the Build turn still came from that pin after picks and the lock were applied.
                 "pin_decided": _pin_decided(slot),
+                # A property of the MODEL, where every kind `problem` carries is a property of the
+                # assignment or of the route — which is why it is a field of its own and not a
+                # fifth rank in that string (#463). Filled from the Alias listing below, so it is
+                # None on the read that could not get one: absence of a listing is no evidence
+                # about capabilities, and `tool_capability_note` takes an empty list the same way.
+                #
+                # Held apart from `problem` by the PANEL as well as by the payload. The gate at
+                # `model-assignments.js` drops `problem` whenever the row is shadowed and the pin
+                # did not decide it, and a pinned slot is the one most likely to be carrying a
+                # capability mark — a warning that renders as nothing is the bug, not the fix. The
+                # split is held by `test_the_capability_note_survives_the_gate_that_eats_problem`;
+                # without it the next reader folds this back into `problem` and it silently stops
+                # rendering on exactly the rows it was written for.
+                "capability_note": None,
             }
             for slot in ASSIGNABLE_SLOTS
         ]
@@ -18917,6 +18951,21 @@ class Orchestrator:
         verdicts = {p.slot: p.message for p in
                     list(unresolved_slots(live, aliases))
                     + list(slots_on_dead_endpoints(live, aliases, endpoints))}
+        # One join for every row, off the listing already in hand. Keyed on the model the slot RUNS
+        # (`live`) and not on `assigned_model`: the note answers what this mode's turns will send
+        # tools to, and on a row the file and the catalog disagree about, that is still the catalog.
+        #
+        # Through `slot_alias` and NOT by looking the raw catalog string up in the listing, which is
+        # the mistake that docstring exists to stop and which this line made until review caught it.
+        # A slot holds one of two strings and only one of them is an Alias name: `domino/gemini-3.7
+        # -flash` is an Alias name in full, `sage-gateway/sonnet` is an OpenCode model id whose first
+        # segment is a provider no Alias carries. A dict keyed on `a.name` resolves the first and
+        # misses the second, silently — and `slot_alias`'s own note records six of six slots carrying
+        # a slash on a real deployment. Measured on this change before the fix: a slot on
+        # `sage-gateway/chat-only` reported `problem: None` (preflight resolved it, because preflight
+        # goes through this same join) beside `capability_note: None`, so the mark was dead on
+        # exactly the deployments it was written for while every bare-name fixture stayed green.
+        caps_by_alias = {a.name: a.capabilities for a in aliases}
         for row in slots:
             # A shadow already on the row keeps it. Those two verdicts say "turns that use this
             # model will fail"; on a shadowed slot no turn uses it, so the sentence is false in its
@@ -18973,6 +19022,11 @@ class Orchestrator:
             # input to what the row reports as RUNNING, beside the others that move a turn), so
             # moving it would change a shadowed row's answer to a question this ticket is not about.
             row["problem"] = row["problem"] or verdicts.get(row["slot"])
+            # Outside the precedence above and deliberately below it in the file, so the next reader
+            # of that comment meets this one before reaching for a fifth rank: it is not competing
+            # for `problem`'s one line, it has a line of its own.
+            row["capability_note"] = tool_capability_note(
+                caps_by_alias.get(slot_alias(row["model"], aliases)), row["model"])
         return {
             "slots": slots,
             "aliases": [
@@ -18990,6 +19044,11 @@ class Orchestrator:
                     "reasoning_efforts_with_tools": a.reasoning_efforts_with_tools,
                     "serving": (problem := alias_problem(a.name, aliases, endpoints)) is None,
                     "problem": problem,
+                    # Beside `problem` and not folded into it, for the reason the slot rows keep the
+                    # two apart: `problem` here means "picking this would not work" and closes the
+                    # menu row, and this one must not close anything (#463, #296). A row carrying
+                    # only this stays pickable.
+                    "capability_note": tool_capability_note(a.capabilities, a.name),
                 }
                 for a in aliases
             ],
@@ -19227,7 +19286,19 @@ class Orchestrator:
         rows = [
             {**row,
              "reasoning_efforts": list(reasoning_efforts_for(row["alias"])),
-             "reasoning_efforts_with_tools": list(reasoning_efforts_with_tools(row["alias"]))}
+             "reasoning_efforts_with_tools": list(reasoning_efforts_with_tools(row["alias"])),
+             # Here for the reason the two lists above are here: computed on read, never written to
+             # the membership file. The sentence is derived from `capabilities`, which IS persisted
+             # and can outlive the provider changing its mind — a maintainer wiring tool calling
+             # for an alias is exactly that, and it happened to GLM 5.3 during #463. A stored note
+             # would go on marking a model that had since been fixed.
+             #
+             # The composer's picker reads these rows, so the mark is visible at PICK time and not
+             # only in Manage. One rule, one place: the browser renders the sentence and never
+             # re-derives it from `capabilities`, which is what keeps this and the assignments
+             # panel from drifting into two opinions about the same alias (ADR-0017's argument for
+             # `SW.util.chatCapable`, applied to the second question asked of the same list).
+             "capability_note": tool_capability_note(row.get("capabilities"), row["alias"])}
             if row.get("kind") in ("llm_alias", "model_llm") and isinstance(row.get("alias"), str) else row
             for row in rows
         ]
