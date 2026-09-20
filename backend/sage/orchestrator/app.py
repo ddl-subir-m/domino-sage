@@ -3679,9 +3679,17 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     # suppresses bounded arming, so a forged one would buy the shell lane. It is checked against a
     # server-minted single-use grant rather than believed — `str()` here and no more, because the
     # validation belongs where the grants are held.
+    #
+    # `alreadyAsked` is Continue, from the card the ceiling draws (#454). It skips no gate and buys
+    # nothing: it says only that this question is already on the Thread, written there by the turn
+    # that ran out of time, and the card sits directly under it. Without it the replay records the
+    # sentence a second time and the reload reads question, ceiling, card, question — the doubling
+    # the four flags above all carry their own note about. In a local for the reason the comment
+    # above gives: the call below must stay within 500 characters of its media type.
+    asked = bool((body or {}).get("alreadyAsked"))
     return StreamingResponse(
         _turn_sse(orchestrator.chat_stream(
-            thread_id, prompt,
+            thread_id, prompt, already_asked=asked,
             skip_table_gate=bool((body or {}).get("skipTableGate")),
             skip_dataset_gate=bool((body or {}).get("skipDatasetGate")),
             dismissed_dataset=str((body or {}).get("datasetDismissed") or ""),

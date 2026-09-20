@@ -7316,13 +7316,17 @@ window.SW = window.SW || {};
     // `state.thread`, so replaying after a click onto another conversation would post this
     // question into the one the person moved to, with `echo` off, where they would never see it.
     //
-    // `echo: false`, like the card above. The question is already in the transcript directly under
-    // the block this button sits on, and echoing it would read as a second question having been
-    // asked rather than the first one being picked back up.
+    // `echo: false` and `alreadyAsked: true` for the one reason between them, which is the reason
+    // every sibling above pairs the two: the question is already in the transcript directly under
+    // the block this button sits on. `echo` is this tab's copy and `alreadyAsked` is the server's
+    // — `asking` at `service.py:11692` writes the `user` row unless one of these flags says not to
+    // — and suppressing only the first leaves the record reading question, ceiling, card,
+    // question, which is the doubling and not the fix for it. `alreadyAsked` skips no gate: it is
+    // the one flag of the five that answers only "this is on the record already".
     async continueAfterTheCeiling(prompt, threadId) {
       const opened = await store.openThread(threadId);
       if (!opened || !state.thread || state.thread.id !== threadId) return null;
-      return store.sendMessage(prompt, { echo: false });
+      return store.sendMessage(prompt, { echo: false, alreadyAsked: true });
     },
 
     // The bar's Close. No replay: nothing was asked, and nothing is owed an answer. Closing takes
@@ -7838,7 +7842,7 @@ window.SW = window.SW || {};
     async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride,
                               skipTableGate = false, skipDatasetGate = false,
                               datasetDismissed = '', investigationAnswered = false,
-                              otherLaneGrant = '' } = {}) {
+                              otherLaneGrant = '', alreadyAsked = false } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
       // and said so in the transcript — which read as Sage answering a question about data with a
@@ -7945,7 +7949,7 @@ window.SW = window.SW || {};
           // The decline route ignores this and reads the pending question off the Thread, so a
           // stale tab cannot put a turn under a question it does not match.
           body: JSON.stringify({ prompt: text, skipTableGate, skipDatasetGate, datasetDismissed,
-                               investigationAnswered, otherLaneGrant }),
+                               investigationAnswered, otherLaneGrant, alreadyAsked }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));

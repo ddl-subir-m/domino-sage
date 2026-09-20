@@ -96,6 +96,52 @@ class WorksUntilStopped(FakeOpenCode):
             self.stay_running = True
 
 
+class DispatchIsAsync(WorksUntilStopped):
+    """The driver Sage actually has, which `FakeOpenCode` is not.
+
+    `send_prompt` posts to `/prompt_async` and returns before the turn begins
+    (`driver/opencode.py:354`), and `/session/status` does not flip to busy with the POST — which
+    is why `wait_for_idle` carries `appear_grace_s` and an `appeared` latch. `FakeOpenCode` marks
+    the session running INSIDE `send_prompt` and performs the scripted writes there too, so every
+    other fake in this file models a driver that dispatches synchronously.
+
+    That difference is not cosmetic: it hid a defect that turned the whole feature off. A wait
+    that returned on the first not-busy reading returned on the first poll, the caller cut the
+    turn, the ceiling arm interrupted, and nothing was ever written — measured here at one poll,
+    an empty file and no Continue, with the rest of the file green throughout.
+
+    `lag` is how many polls the status takes to catch up, `work` how many it is then busy for,
+    and the scripted write lands as it goes idle, where a real one would.
+    """
+
+    def __init__(self, workspace: Path, turns: list[Turn] | None = None, *, lag: int = 2,
+                 work: int = 2, late: dict[str, str] | None = None):
+        super().__init__(workspace, turns)
+        self.lag, self.work, self.late = lag, work, late or {}
+        self._polls_after_dispatch: int | None = None
+
+    def send_prompt(self, session_id: str, *args, **kwargs) -> None:
+        super().send_prompt(session_id, *args, **kwargs)
+        if len(self.prompts) == 2:
+            # The findings request. The POST has returned and nothing is busy yet.
+            self._running[session_id] = False
+            self._polls_after_dispatch = 0
+
+    def is_running(self, session_id: str) -> bool:
+        if self._polls_after_dispatch is None:
+            return super().is_running(session_id)
+        self._polls_after_dispatch += 1
+        if self._polls_after_dispatch <= self.lag:
+            return False
+        if self._polls_after_dispatch <= self.lag + self.work:
+            return True
+        for rel, body in self.late.items():
+            path = self._session_dir(session_id) / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+        return False
+
+
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda *_: None)
@@ -161,6 +207,34 @@ def test_a_turn_cut_at_the_ceiling_leaves_what_it_measured_on_disk(tmp_path: Pat
 
     root = orch.project(start_preview=False, seed_app=False).record.path
     assert findings_file(root, tid).read_text() == MEASURED
+
+
+def test_the_slice_waits_for_a_dispatch_that_has_not_registered_yet(tmp_path: Path, monkeypatch):
+    """The defect that would have shipped the whole feature dead, and the reason nothing caught it.
+
+    The wait after the findings request cannot be "return on the first not-busy reading".
+    `send_prompt` returns before the turn starts and `/session/status` lags the POST, so that
+    wait returns on its FIRST poll — the caller then sets the ceiling, the ceiling arm interrupts,
+    and the write it just asked for never happens. Measured against an asynchronous dispatch:
+    one poll, an empty `findings.md`, no Continue, and every other test in this file still green.
+
+    They stayed green because `FakeOpenCode` marks the session running inside `send_prompt`. A
+    fake is a claim about the producer, and that one claims a driver Sage does not have.
+    """
+    _short_ceiling(monkeypatch, ceiling=30.0, slice_s=15.0)
+    oc = DispatchIsAsync(tmp_path / "mnt" / "code", [Turn(text="working on it")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    oc.late = _findings_write(tid)
+
+    out = _run(orch, tid)
+
+    root = orch.project(start_preview=False, seed_app=False).record.path
+    assert findings_file(root, tid).read_text() == MEASURED
+    assert oc._polls_after_dispatch > oc.lag, (
+        "the slice gave up before the session had even registered as busy")
+    offer = next(e for e in out if e["type"] == "continue-offer")
+    assert offer["prompt"] == QUESTION
 
 
 def test_the_slice_asks_for_the_file_by_the_path_the_turn_can_write(tmp_path: Path, monkeypatch):
@@ -276,6 +350,61 @@ def test_the_resumed_turn_is_handed_what_the_last_one_measured(tmp_path: Path, m
     resumed = oc.prompts[-1]["text"]
     assert f".sage/threads/{tid}/findings.md" in resumed
     assert "Read it before you plan this turn" in resumed
+
+
+def test_continue_does_not_ride_under_another_arms_sentence(tmp_path: Path, monkeypatch):
+    """The card and the sentence above it have to be about the same thing.
+
+    The slice runs on the way to the ceiling, but which arm then writes the copy is decided by an
+    `elif` chain the slice does not control: `looped`, the handoff suggestion, `step_error` and
+    the two quiet arms all sit above the ceiling's. #453 makes this live rather than theoretical
+    — it lets a `build_app` turn reach here, where `suggestion` is set and fires first — so a
+    person would read "Building an app is a job for Build" and then a card offering to continue
+    from measurements that sentence never mentions.
+
+    The findings are still on disk and the next turn still reads them through `_findings_note`.
+    What is withheld is the button, not the work.
+    """
+    _short_ceiling(monkeypatch)
+    oc = WorksUntilStopped(tmp_path / "mnt" / "code", [Turn(text="working on it")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    oc.turns.append(Turn(writes=_findings_write(tid)))
+    monkeypatch.setattr(
+        Orchestrator, "_maybe_suggest_handoff",
+        lambda *a, **k: {"type": "handoff-suggest", "reason": "classifier"})
+
+    out = _run(orch, tid)
+
+    said = next(e for e in out if e["type"] == "error")["message"]
+    assert "Building an app is a job for Build" in said
+    assert not [e for e in out if e["type"] == "continue-offer"], (
+        "no Continue under a sentence that says nothing about what was measured")
+    # And the slice still did its job — the measurements are kept whether or not a button offers
+    # them, because the next turn reads them by the ordinary path.
+    root = orch.project(start_preview=False, seed_app=False).record.path
+    assert findings_file(root, tid).read_text() == MEASURED
+
+
+def test_continue_does_not_write_the_question_into_the_thread_twice(tmp_path: Path, monkeypatch):
+    """`echo: false` is the client's copy. The server keeps its own, and needs telling separately.
+
+    `asking` at `service.py:11692` appends the `user` row unless one of five flags says the
+    question is already on the record. Continue is a replay under a card that sits directly below
+    the question, exactly like the table, Dataset, investigation and other-lane cards — and every
+    one of those pairs `echo: false` with a server-side flag whose comment says so. Without
+    `already_asked` the reload reads question, ceiling, card, question.
+    """
+    _short_ceiling(monkeypatch, ceiling=600.0, slice_s=60.0)
+    oc = WorksUntilStopped(tmp_path / "mnt" / "code", [Turn(text="Four accounts score above 0.8.")])
+    oc.stay_running = False
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    list(orch.chat_stream(tid, QUESTION, already_asked=True))
+
+    asked = [e for e in orch.get_thread(tid)["history"] if e.get("type") == "user"]
+    assert asked == [], "the replay records nothing; the ceiling's own turn wrote the question"
 
 
 def test_a_ceiling_that_measured_nothing_offers_nothing(tmp_path: Path, monkeypatch):
@@ -433,6 +562,70 @@ def test_the_reserved_slice_fits_inside_the_ceiling_it_is_taken_from():
 
 
 # ---- the other arms -------------------------------------------------------------------------
+
+
+def test_stop_pressed_during_the_slice_is_a_stop_and_not_a_ceiling(tmp_path: Path, monkeypatch):
+    """The turn lock is held for the length of the slice, so the slice has to read the flag.
+
+    `project.stop_requested` is consumed at the top of the loop and nowhere else. A slice that
+    never read it left a person who pressed Stop at nine and a half minutes — which is when
+    somebody presses it — waiting out the rest of the minute, and then the flag outlived the turn
+    and answered their NEXT question with "Stopped" before it ran a step. Both halves are here:
+    the block says Stopped rather than out of time, and the flag is gone afterwards.
+    """
+    _short_ceiling(monkeypatch, ceiling=1.2, slice_s=0.6)
+    oc = WorksUntilStopped(tmp_path / "mnt" / "code", [Turn(text="working on it")], deaf=True)
+    orch = _orch(tmp_path, oc)
+    project = orch.project(start_preview=False, seed_app=False)
+    tid = orch.create_thread()["id"]
+
+    # Pressed the instant the slice asks whether it was: `deaf` means the first wait never gets
+    # its idle reading, so without the check that wait runs to the deadline regardless.
+    real_is_running = oc.is_running
+
+    def press_stop_once_the_slice_is_waiting(session_id: str) -> bool:
+        if oc.interrupted:
+            project.stop_requested = True
+        return real_is_running(session_id)
+
+    oc.is_running = press_stop_once_the_slice_is_waiting
+
+    out = _run(orch, tid)
+
+    kinds = [e["type"] for e in out]
+    assert "stopped" in kinds, f"a Stop during the slice must say Stopped, got {kinds}"
+    assert next(e for e in out if e["type"] == "done")["decision"] == "stopped"
+    assert not project.stop_requested, "and the flag must not outlive the turn"
+
+
+def test_a_bounded_turn_keeps_its_whole_ceiling(tmp_path: Path, monkeypatch):
+    """The slice costs a minute of work, so it must not open where it can buy nothing.
+
+    `plain_answer`, `data_answer` and `data_artifact` are armed without a general write tool —
+    `data_artifact` may write `examples/<threadId>/*.png|.table.json` and nothing else — so a
+    bounded turn cannot write `.sage/threads/<threadId>/findings.md` however long it is given.
+    Opening the slice there cuts the work at 540s and buys nothing with the 60s.
+
+    `bounded_intent` is the predicate the turn already computed, rather than a second reading of
+    the same question that could drift from the arming it is about.
+    """
+    from sage.orchestrator import chat_intent
+
+    _short_ceiling(monkeypatch)
+
+    class Classified:
+        def result(self):
+            return chat_intent.Intent(label="data_answer", confidence=0.95)
+
+    monkeypatch.setattr(chat_intent, "start", lambda *a, **k: Classified())
+    oc = WorksUntilStopped(tmp_path / "mnt" / "code", [Turn(text="working on it")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    out = _run(orch, tid)
+
+    assert len(oc.prompts) == 1, "a lane that cannot write findings is not asked for them"
+    assert not [e for e in out if e["type"] == "continue-offer"]
 
 
 def test_a_turn_that_went_quiet_does_not_spend_the_slice(tmp_path: Path, monkeypatch):

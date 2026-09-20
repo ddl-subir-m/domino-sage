@@ -86,6 +86,10 @@ def test_continue_sends_the_original_question_and_nothing_else():
     result = _run(A_CEILING_THAT_KEPT_SOMETHING)
 
     assert result["replay"]["prompt"] == QUESTION
+    # The server's own copy of "do not write this down again". `echo: false` suppresses only this
+    # tab's bubble; without this flag `asking` at `service.py:11692` appends a second `user` row
+    # and the reload reads question, ceiling, card, question. Every sibling card pairs the two.
+    assert result["replay"]["alreadyAsked"] is True
     # No gate is walked past and no capability is spent. `otherLaneGrant` is `sendMessage`'s own
     # default and is empty here, which is the claim: Continue mints nothing and redeems nothing.
     assert result["replay"]["otherLaneGrant"] == ""
