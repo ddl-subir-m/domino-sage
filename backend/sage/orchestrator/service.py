@@ -4647,9 +4647,10 @@ class Project:
     # build_stream() to explain why a turn wrote nothing, and `tool_call_responses` also by
     # chat_stream()'s terminal row, which feeds it to `_tool_use` (#469). model_calls = model
     # inferences OpenCode ran this turn; tool_call_responses = how many of those responses carried
-    # a tool_call. build_stream resets both before each send; chat_stream resets only
-    # `tool_call_responses`, which is the only one it reads — so `model_calls` on a Chat turn is
-    # still whatever the last Build left, as it has always been.
+    # a tool_call. build_stream resets both before each send; chat_stream resets both at its grant.
+    # The two lanes therefore scope this counter differently and on purpose: on Build it is "this
+    # SEND", which on a phased build is this PHASE, and on Chat it is the turn (#471). Both readings
+    # are "this turn" as the lane defines a turn; neither is a running total.
     # Reading them apart splits the three failure modes: 0 model calls =
     # OpenCode never invoked the model; model calls but 0 tool-call responses = the model never tried a
     # tool; tool calls but no disk edits = OpenCode received tool calls but didn't apply them.
@@ -8556,15 +8557,41 @@ class Orchestrator:
             return
         # Empty at the start of this turn, for the reason build_stream gives at its own grant (#466).
         self.project().last_stream_chunk_at = 0.0
-        # The same rule, one line down, for the counter `finish()` reads to decide whether this
-        # turn's model called a tool (#469). It is cumulative until something zeroes it, and until
-        # now only the Build loop ever did, so a Chat turn inherited whatever the last turn left.
-        # That is not a stale diagnostic, it is the wrong verdict in the one direction that cannot
-        # be undone: the router moves a request off the picked model, so turn one can resolve to a
-        # model that calls a tool and turn two to a model that does not — and turn two reading turn
-        # one's count CLEARS the second model permanently. `model_calls` is deliberately left alone;
-        # nothing here reads it, and Chat never having reset it is #469's business only as far as
-        # this one line goes.
+        # The same rule, one line down, for both counters the shim's stream wrapper fills. Each is
+        # cumulative until something zeroes it, and until #471 only the Build loop ever did — so a
+        # Chat turn inherited whatever the last turn left.
+        #
+        # `tool_call_responses` is the one `finish()` reads, to decide whether this turn's model
+        # called a tool (#469). There, inheriting is not a stale diagnostic but the wrong verdict in
+        # the one direction that cannot be undone: the router moves a request off the picked model,
+        # so turn one can resolve to a model that calls a tool and turn two to a model that does
+        # not — and turn two reading turn one's count CLEARS the second model permanently.
+        #
+        # `model_calls` is read by nothing in this generator, and is reset for a different reason
+        # (#471): /api/diag PUBLISHES it as "inferences THIS turn", and on Chat it was a running
+        # total on top of whatever the last Build or approve turn left, plus every Chat turn since.
+        # The published sentence is the promise; this is where it gets kept.
+        #
+        # "Nothing in this generator" is narrower than "nothing a Chat conversation can reach", and
+        # the difference is left standing on purpose. `draft_handoff_plan` — the Build-this door off
+        # a Thread — runs sage-plan through the shim and READS this counter in `_run_sage_plan` to
+        # tell "no inference reached us" from "the model answered with nothing". It is a door, not a
+        # streaming turn: it takes the lock through `_acquire_for_door` and passes through none of
+        # the three resets, so its reading is this plan's inferences ON TOP of whatever the last
+        # turn left. That was true before #471 and is true after — the carried number is smaller
+        # now, not absent. It is the same defect one layer over, on a log line rather than on a
+        # published field, and `last_gateway_error` is already reset beside that read while this is
+        # not. Out of #471's scope deliberately; fixing it is a one-line change at that door.
+        #
+        # At the grant, and deliberately NOT hoisted into `_acquire_turn`, which is the obvious move
+        # — all three lanes pass through it and it already clears `resolved_model` there. Build's
+        # reset lives in `_build_stream`'s per-send loop, which is the loop and not the door: a
+        # phased build runs each phase through `_build_stream` without re-acquiring the turn, so on
+        # Build this counter answers "inferences in THIS PHASE". Hoisting would silently make it
+        # answer "inferences in the whole turn" and flatten the three-way failure split it exists
+        # for. What the number should mean on a phased build is a separate decision, not a detail of
+        # this one.
+        self.project().model_calls = 0
         self.project().tool_call_responses = 0
         # The lock goes at `done`, not at the end of this generator. What comes after `done` is
         # aftercare — classify the turn for a Build offer, compact the session, commit and push —
