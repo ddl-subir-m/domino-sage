@@ -1887,6 +1887,54 @@ def _pin_key(pin: dict) -> tuple:
     )
 
 
+def _pin_context_item(parent: dict, pin: dict) -> dict | None:
+    """One pinned leaf, as the chip `Use here` would have posted for it (#468). None if it is neither.
+
+    A second copy of `pinRow` (`js/api.js:225`), and one on purpose: that one builds the leaf for the
+    @ menu in a browser somebody is looking at, this one builds it for a Conversation nobody has
+    opened yet, and there is no moment where either could ask the other. What keeps the two from
+    drifting is that neither is a chip until `add_thread_context` has read it — so a field only one
+    of them sets is a field the chip never had.
+
+    Pins are stored by `_normalize_pin`, which accepts `datasource` and `data_source` for the same
+    parent, so both are read back here. A row of any other kind holds no leaves to pin.
+    """
+    kind = str(parent.get("kind") or "")
+    parent_id = str(parent.get("id") or "")
+    if kind == "dataset":
+        bare = _bare_kind_id(parent_id, "dataset")
+        rel = str(pin.get("path") or "")
+        if not bare or not rel:
+            return None
+        return {
+            "kind": "file",
+            "name": str(pin.get("name") or rel.rsplit("/", 1)[-1]),
+            "resourceId": f"dsfile:{bare}:{rel}",
+            "parentId": parent_id,
+            "datasetId": bare,
+            "datasetRelPath": rel,
+            "datasetName": str(parent.get("name") or ""),
+        }
+    if kind in ("datasource", "data_source"):
+        bare = _bare_kind_id(parent_id, "data_source")
+        table = str(pin.get("table") or "")
+        if not bare or not table:
+            return None
+        database = str(pin.get("database") or "")
+        schema = str(pin.get("schema") or "")
+        return {
+            # The kind the tree's own click sends: a table leaf is posted as its Data Source
+            # (`addToConversation`, `js/api.js:529`), and `scope` beside it says which table.
+            "kind": "data_source",
+            "name": str(pin.get("name") or table),
+            "resourceId": f"table:{bare}:{'.'.join(p for p in (database, schema, table) if p)}",
+            "parentId": parent_id,
+            "bindingKey": parent.get("bindingKey") or ["data_source", bare],
+            "scope": {"database": database, "schema": schema, "table": table},
+        }
+    return None
+
+
 def _describe_context_file(workspace: Path, item: dict) -> str:
     """Shape of a file chip. Empty when the bytes are not here to read.
 
@@ -4540,6 +4588,22 @@ class Project:
     # tool; tool calls but no disk edits = OpenCode received tool calls but didn't apply them.
     model_calls: int = 0
     tool_call_responses: int = 0
+    # Also from that wrapper, and the only one of its records a turn reads WHILE it runs: when the
+    # last gateway chunk arrived (`time.monotonic()`; 0.0 = none since this turn was granted). Both
+    # quiet windows measure silence from what OpenCode sends, and a single long model call sends
+    # OpenCode nothing — so a turn streaming its answer read as a turn that had stopped, and was
+    # killed mid-sentence and told the person so (#466). The shim serves the /v1 endpoint OpenCode
+    # calls from this same process, so the liveness the windows need is one layer below them; this
+    # carries it up.
+    #
+    # A plain float needs no lock. `_turn_lock` admits one streaming turn at a time — only
+    # build_stream, chat_stream and approve_stream take it — so there is no second turn to interleave
+    # with, and a single write and a single read of a float are each one bytecode op besides.
+    #
+    # Written unconditionally, never through `timing.model_call()`: that object no-ops when
+    # SAGE_TIMING is off, and whether a person's turn survives must not be switchable by a
+    # performance flag. Same reasoning `_resolved` already records for the Project's copy.
+    last_stream_chunk_at: float = 0.0
     # The same wrapper's third record: what the router resolved on the LAST inference of this turn
     # (#316). Separate from the counters above because it answers a different question — those say
     # whether a model was reached, this says WHICH, and which rule chose it. Cleared when a turn is
@@ -7492,6 +7556,11 @@ class Orchestrator:
         if not ticket.granted:
             timing.finish_turn(decision="not granted")
             return
+        # A warm OpenCode can call /v1 outside a turn (compaction, the classifiers), so the stamp
+        # this turn's quiet window reads has to start empty (#466). The `>= start` guard at the read
+        # is the other half of the same rule, and it is here rather than in `_acquire_turn` so that
+        # each reader clears what it reads.
+        self.project().last_stream_chunk_at = 0.0
         try:
             self._turn_gave_up = False
             self._begin_conversation(conversation)
@@ -7735,9 +7804,60 @@ class Orchestrator:
             timing.finish_turn()
 
     def create_thread(self) -> dict:
-        """A new Chat Thread in this project. Does not provision a Domino project."""
+        """A new Chat Thread in this project, holding the Project's pinned leaves. No Domino project.
+
+        Pinning was a durable, project-level, explicitly-toggled statement that a table matters, and
+        it bought a sort of the @ menu and nothing else — so a person who had made it still re-added
+        the same table to every conversation by hand, three in a row, and read Pin as broken (#468).
+        This is what the statement now buys.
+        """
         self._flush_chat_save("leave")
-        return ThreadStore(self._chat_project().record.path).create()
+        row = ThreadStore(self._chat_project().record.path).create()
+        self._seed_context_from_pins(row["id"])
+        return row
+
+    def _seed_context_from_pins(self, thread_id: str) -> None:
+        """Every pinned leaf, as a chip on a Conversation that has just been minted (#468).
+
+        ON CREATE, NEVER ON READ. `context.json` is the record of what this Conversation was decided
+        to hold, and closing a chip is a decision. Seeding where the Thread is READ would put it back
+        on the next open, and a chip that will not stay closed is worse than one that never arrived —
+        it is the same invisible mechanism this ticket is about, pointed the other way.
+
+        Through `add_thread_context` rather than the `ThreadStore.add_context` underneath it, because
+        that is the whole path `POST /api/threads/{id}/context` takes and the chip is only worth
+        having complete: a table chip seeded here carries the columns from the same
+        `_columns_for_context` read `Use here` pays for, which is the read a turn otherwise buys with
+        a failed statement and a recovery (#440). Nothing tells it this is Build, because nothing
+        does — seeding is Chat's, and Build's Attachment is a different act with a lock and a
+        manifest entry behind it (ADR-0048).
+
+        A pin that cannot be seeded costs its own chip and nothing else. The alternative is a person
+        who cannot open a conversation at all because a store they pinned a table in last week is
+        down, and the conversation is the one thing they were trying to start. The failure is logged
+        and not drawn, which is a real gap: a store that will not answer gives a conversation with no
+        chips and no reason, which is the symptom this ticket exists to remove, wearing a different
+        hat. Closing it means a field on the create response and copy to render it, and neither is
+        asked for here.
+
+        WHAT THIS COSTS, per new conversation. A pinned TABLE is one `list_columns` round trip, every
+        time, and they are serial — four pins are four. It is the same read `Use here` pays for and
+        the same one a turn otherwise buys with a failed statement and a recovery (#440), so it is
+        moved rather than added; what IS new is that it lands on a button click instead of on a turn
+        somebody is already waiting through. A pinned Dataset FILE fetches its bytes, but only the
+        first time: `fetch_dataset_file_for_chat` is idempotent per project and a mounted Dataset is
+        a symlink, so every conversation after the first is a `stat`.
+        """
+        for parent in self._chat_project().record.read_project_resources():
+            for pin in (parent.get("pins") or []):
+                item = _pin_context_item(parent, pin) if isinstance(pin, dict) else None
+                if item is None:
+                    continue
+                try:
+                    self.add_thread_context(thread_id, item)
+                except Exception:
+                    log.warning("could not seed pinned %r onto %s", item.get("name"), thread_id,
+                                exc_info=True)
 
     def get_thread(self, thread_id: str) -> dict:
         """Open a Conversation. Leaving a dirty one still commits it — off this read's thread.
@@ -8367,6 +8487,8 @@ class Orchestrator:
         if not ticket.granted:
             timing.finish_turn(decision="not granted")
             return
+        # Empty at the start of this turn, for the reason build_stream gives at its own grant (#466).
+        self.project().last_stream_chunk_at = 0.0
         # The lock goes at `done`, not at the end of this generator. What comes after `done` is
         # aftercare — classify the turn for a Build offer, compact the session, commit and push —
         # and it used to run with the lock still held, so the next question was refused as busy for
@@ -11993,6 +12115,26 @@ class Orchestrator:
             if offer is not None:
                 yield from offer
                 return
+            # #440. This gate does not only ASK. Where the sentence named the table outright it
+            # RECORDS it and lets the turn run on (#426) — through `confirm_thread_table_candidate`,
+            # which reads that table's columns and writes them onto this Thread's context row. So
+            # the columns a bare Data Source chip lacks are already read and already written by the
+            # time the prompt is rendered, and the prompt still went without them: `read_context`
+            # returns a fresh object off disk every call, the recording is a read-modify-write of
+            # its own, and the snapshot taken at the top of this turn is therefore stale by exactly
+            # the field the agent needs. It aimed its first SELECT at columns it had never seen,
+            # the statement failed `000904`, and the turn spent a schema probe and a retry
+            # recovering — measured four times over two revs.
+            #
+            # This is a local read of the Thread's own file, not a lookup: `_chat_context_line`'s
+            # refusal to put a Domino round trip inside prompt rendering (#400, #417) is untouched,
+            # and no read is added anywhere — the one this makes visible had already happened.
+            #
+            # `items` is refreshed beside `ctx` rather than only the value the prompt takes,
+            # because everything below reads one or the other and two snapshots of one record are
+            # free to disagree.
+            ctx = store.read_context(thread_id)
+            items = [i for i in (ctx.get("items") or []) if i.get("id")]
 
         # And a Dataset on this Thread with no file pinned from it (#196, ADR-0039), asked after the
         # table for the reason Build asks it after: a store with no table cannot be read at all,
@@ -12550,7 +12692,23 @@ class Orchestrator:
                     return
                 now = time.monotonic()
                 quiet_limit = tool_quiet if running_tools else idle_quiet
-                quiet = now - last_activity >= quiet_limit
+                # Two witnesses to a turn being alive, not one (#466). `last_activity` is what
+                # OpenCode says, and OpenCode says nothing at all during a model call — so a single
+                # call slower than this window read as a stopped turn and was killed mid-answer.
+                # The other witness is the gateway stream itself, stamped by the /v1 shim in this
+                # same process.
+                chunk_at = project.last_stream_chunk_at
+                # Only a stamp from THIS turn counts. A warm OpenCode can call /v1 outside a turn,
+                # and a stale stamp would keep a wedged turn alive for ever — which is the fault
+                # the window exists to catch (#39).
+                #
+                # Defence in depth rather than the load-bearing half: `last_activity` starts at
+                # `started` and only moves forward, so a stamp older than `started` already loses
+                # the `max()` and this clause changes no outcome TODAY. It is what keeps the rule
+                # true if that seeding ever changes, and it says out loud which stamps are in scope.
+                # The half that is doing work is the reset at the grant, in `chat_stream`.
+                alive = max(last_activity, chunk_at if chunk_at >= started else 0.0)
+                quiet = now - alive >= quiet_limit
                 ceiling = now - started >= _CHAT_TURN_MAX_S
                 # When the work stops and the writing starts. A ceiling no longer than the slice
                 # reserves nothing at all rather than reserving everything: the tail is carved OUT
@@ -12595,7 +12753,7 @@ class Orchestrator:
                     log.warning("chat: turn stopped after %.0fs — %s%s",
                                 time.monotonic() - started,
                                 f"repeated {brake.label} {_REPEAT_LIMIT} times" if looped
-                                else f"quiet for {now - last_activity:.0f}s" if quiet
+                                else f"quiet for {now - alive:.0f}s" if quiet
                                 else f"hit the {_CHAT_TURN_MAX_S:.0f}s ceiling",
                                 f"; still open: {open_now}" if open_now else "; nothing open")
                     # Which of the two it was. A turn that stops with a read open has said nothing
@@ -16535,8 +16693,17 @@ class Orchestrator:
                 # Which of the two silences this is (#98). A call still open is a step that has
                 # not come back; nothing open is a turn that stopped taking them.
                 quiet_limit = _BUILD_TOOL_QUIET_TIMEOUT_S if tool_open else _BUILD_QUIET_TIMEOUT_S
-                if appeared and time.monotonic() - last_event >= quiet_limit:
-                    quiet_for = time.monotonic() - last_event
+                # The gateway stream is the second witness, exactly as in Chat — see the read in
+                # `_chat_stream` for why one is not enough, and for what the `>= start` clause is
+                # and is not doing. Build has not been seen failing this way: 120s is more headroom
+                # and a build's model calls are punctuated by tool steps that do produce frames. It
+                # reads the stamp anyway, because the write site and the field are shared and
+                # leaving one of two identical readers unfixed is how the next reader concludes the
+                # split was deliberate.
+                chunk_at = project.last_stream_chunk_at
+                alive = max(last_event, chunk_at if chunk_at >= start else 0.0)
+                if appeared and time.monotonic() - alive >= quiet_limit:
+                    quiet_for = time.monotonic() - alive
                     log.error("build turn wedged: no OpenCode output for %.0fs (%s) — giving up",
                               quiet_for, "a call was still open" if tool_open else "nothing open")
                     stopped = self._stop_wedged_session(client, sid)
@@ -16559,7 +16726,7 @@ class Orchestrator:
                         self._turn_gave_up = True
                     if not stopped:
                         yield from refused_to_stop(
-                            in_tool=tool_open, quiet_for=time.monotonic() - last_event)
+                            in_tool=tool_open, quiet_for=time.monotonic() - alive)
                     # It stopped, so the tree is ours again: put the mode pins back and hand the
                     # person an offer they can act on rather than an error row they cannot.
                     #

@@ -4334,6 +4334,12 @@ async def chat_completions(request: Request):
             nonlocal flagged
             call.first_byte()   # no-op after the first; catches the keepalive path's real first chunk
             call.chunk()
+            # The turn loops' proof of life, carried up from the layer that has it (#466). A model
+            # call sends OpenCode nothing until it finishes, so a long one looked like silence to
+            # the quiet windows and a streaming answer was killed as a wedge. Beside `call.chunk()`
+            # and not inside it: the ledger no-ops when SAGE_TIMING is off, and this decides whether
+            # a person's turn lives.
+            project.last_stream_chunk_at = time.monotonic()
             if not flagged and b"tool_calls" in chunk:
                 flagged = True
                 project.tool_call_responses += 1

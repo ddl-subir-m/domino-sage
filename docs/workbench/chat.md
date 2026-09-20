@@ -24,7 +24,7 @@ There is no Control Plane rename API. They never get a second Default.
 The chip lists only Projects whose Control Plane and git name start with `sage-`. Switching it
 starts or resumes this viewer's Sage Builder in that Project and takes them there.
 
-**New conversation** creates a Thread in the current Project. It does not create a Domino project.
+**New conversation** creates a Thread in the current Project and seeds its Session context from the Project's **pins** (#468). It does not create a Domino project. The seeding is on create only: close a seeded chip and it stays closed, because `context.json` is the record of what this Thread was decided to hold.
 
 **New project** creates a git-backed `sage-*` Project (GitHub repo + git-based Domino project +
 this viewer's Sage Builder) and lands in Chat there.
@@ -181,7 +181,7 @@ Three bags, never one (the prototype's P0 bug was using `planId || threadId` as 
 | Bag | File | Lifetime | UI |
 |-----|------|----------|----|
 | Session context | `.sage/threads/<id>/context.json` | This Thread | Chips on the composer, and a tick on the row in the resource panel |
-| Working set | `.sage/project-resources.json` | This project | The working-set rail. What the list means, and why it never reaches a prompt, is the **Working set** entry in `CONTEXT.md` and [ADR-0020](../adr/0020-the-working-set-is-orientation-never-context.md) — not repeated here. Mechanics: parents plus optional **pins** (Dataset files, Data Source tables), and pins are not prompt context either. Putting a **parent** in Session context joins it here in the same click, and the answer carries `joinedProject: true` so the rail refreshes. Leaves (a `dsfile:` file, a `table:` table) join nothing — they are reached by expanding a parent that is already a member. |
+| Working set | `.sage/project-resources.json` | This project | The working-set rail. What the list means, and why it never reaches a prompt, is the **Working set** entry in `CONTEXT.md` and [ADR-0020](../adr/0020-the-working-set-is-orientation-never-context.md) — not repeated here. Mechanics: parents plus optional **pins** (Dataset files, Data Source tables). The list itself is never prompt context. A pin is not context where it sits either — it becomes context by being SPENT on a Thread, which since #468 happens once, at create, as an ordinary chip through `add_thread_context`. Nothing is injected as a working-set row (ADR-0020). Putting a **parent** in Session context joins it here in the same click, and the answer carries `joinedProject: true` so the rail refreshes. Leaves (a `dsfile:` file, a `table:` table) join nothing — they are reached by expanding a parent that is already a member. |
 | Bindings | `.sage/bindings.json` | The Built App | The App dependencies modal, off Build's header; and a mark on the Project row the panel draws |
 
 Chat-local files live in gitignored `.sage/scratch/`. They persist on this workspace volume. **Add to a Dataset** copies them onto a writable Dataset so they outlive this workspace.

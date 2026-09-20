@@ -303,11 +303,19 @@ def test_nothing_outside_the_rail_reads_the_working_set(tmp_path: Path) -> None:
     """The other half of the same no, and the durable half.
 
     "It reaches no prompt, no instruction file and no tool listing" is a claim about every caller,
-    which no single turn can demonstrate. What can be pinned is that the list has no reader outside
-    the rail's own read path, its own writer, and the one-shot migration between them — so no prompt
-    builder, no AGENTS.md region and no tool listing is in a position to carry it.
+    which no single turn can demonstrate. What can be pinned is that the list has a named and short
+    set of readers — so nothing else is in a position to carry it.
 
     A new entry here is not a test to update. It is a reader to justify against ADR-0020 first.
+
+    ONE OF THEM NOW REACHES A TURN, which is why the sentence above no longer says that none of them
+    does. `_seed_context_from_pins` (#468) reads the pins and mints an ordinary Session context chip
+    per pinned leaf, and a chip reaches a turn — that is what a chip is for. It is not the injection
+    ADR-0020 refuses: nothing hands the model the LIST, or a member it holds no chip for, and what
+    does reach the turn went through `add_thread_context`, one of the two joining doors that ADR's
+    own consequences already name. The line that did NOT move is held by the test above, which
+    asserts the membership file's contents reach no prompt file and no chat prompt, and which passes
+    unchanged.
     """
     root = Path(__file__).resolve().parents[1] / "sage"
     allowed = {
@@ -321,6 +329,11 @@ def test_nothing_outside_the_rail_reads_the_working_set(tmp_path: Path) -> None:
         ("orchestrator/service.py", "_apps_that_carry"),
         # Its own writer, reading before it republishes.
         ("workspace/manager.py", "update_project_resources"),
+        # Seeding a new Conversation from the Project's pins (#468). The one reader whose output
+        # does reach a turn, justified in the docstring above: it mints a chip per pinned LEAF
+        # through `add_thread_context`, the same door a click takes, rather than handing the model
+        # the list. On create only, and a member with nothing pinned under it produces nothing.
+        ("orchestrator/service.py", "_seed_context_from_pins"),
     }
 
     found: set[tuple[str, str]] = set()

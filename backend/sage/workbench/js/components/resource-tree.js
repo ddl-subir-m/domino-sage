@@ -3,7 +3,7 @@ window.SW = window.SW || {};
 (function () {
   const { createElement: h, Fragment, useState, useEffect, useRef } = React;
   const { Button, Spin, Tooltip } = antd;
-  const { DownOutlined, RightOutlined } = icons;
+  const { DownOutlined, RightOutlined, PushpinFilled } = icons;
 
   function bareId(id, kind) {
     const s = String(id || '');
@@ -17,6 +17,11 @@ window.SW = window.SW || {};
     const q = (query || '').trim().toLowerCase();
     return !q || String(name || '').toLowerCase().includes(q);
   }
+
+  // What the mark on a pinned leaf says, to a hover and to a screen reader alike — one string, so
+  // the two cannot come apart. It names the EFFECT rather than the state: "Pinned" alone is what
+  // the mark already looks like, and the thing nobody could see is what pinning now does.
+  const PINNED_MARK = 'Pinned \u2014 starts every new conversation';
 
   function pinSet(pins) {
     const files = new Set();
@@ -293,12 +298,42 @@ window.SW = window.SW || {};
   // commits a manifest entry that rehydrates it on publish, and arms the lock (ADR-0048) — so the
   // Dataset file leaf hands its own pair down. The table leaf one branch over passes neither: it is
   // `kind: "table"`, it never reaches that fork, and `Use here` stays true for it.
+  //
+  // A pinned leaf wears a mark, on the left of its name. Pin is a durable statement about a table
+  // and it used to leave no trace on the thing it was made about — so the row that had been pinned
+  // and the row beside it drew identically, and the only place the statement showed was a menu
+  // somewhere else (#468). The mark is a STATUS, not a second control: no `onClick`, and outside
+  // `sw-tree-leaf-acts`, which already holds Unpin. Inside that cluster it would read as one more
+  // button; on the left edge it scans straight down the column instead.
+  //
+  // The row does not MOVE for it. What a Data Source contains is the one thing this tree is for,
+  // and a row that jumps when clicked breaks the structure the person just drilled through. The @
+  // menu is where a pin reorders anything, and it stays the only one (`groupsFromMembership`).
   function LeafRow({ name, subtitle, pinned, useLabel, useGlossary, onMention, onPin, onUnpin }) {
     const label = useLabel || 'Use here';
     const glossary = useGlossary || 'Use in this conversation';
     return h(
       'div',
       { className: 'sw-tree-leaf' },
+      pinned
+        // Native `title`, unlike the acts beside it, and on purpose: the grain the tree draws a
+        // fact at is a `title` — `sw-tree-leaf-name` carries one two lines down — while `Tooltip`
+        // is what its ACTS wait behind. Drawn the other way round, a mark that nothing can be
+        // done to would hover exactly like the two things that can.
+        //
+        // `role: 'img'` is what makes the label reach anybody. An `aria-label` on a bare `span` is
+        // on a generic element and is not exposed, so the sentence would have been dropped — and
+        // the icon inside carries an `aria-label` of its OWN (antd renders every icon
+        // `role="img" aria-label="pushpin"`), which is what a screen reader would have read
+        // instead. Hover said why the row was marked and audio said "pushpin". So the role goes on
+        // the span that holds the sentence and the icon is hidden behind it: one mark, one name.
+        ? h('span', {
+            className: 'sw-tree-leaf-pin',
+            role: 'img',
+            title: PINNED_MARK,
+            'aria-label': PINNED_MARK,
+          }, h(PushpinFilled, { 'aria-hidden': true }))
+        : null,
       h('span', { className: 'sw-tree-leaf-name', title: subtitle || name }, name),
       h(
         'span',
@@ -321,16 +356,27 @@ window.SW = window.SW || {};
             onClick: onMention,
           }, label)
         ),
+        // Both arms carry the hover now. Pin's said it sent nothing, which stopped being true the
+        // moment a pinned leaf started every new conversation (#468); Unpin's said nothing at all,
+        // and a bare Unpin beside an explained Pin leaves the person who has to undo the durable
+        // act as the only one not told what it reaches. Each names BOTH halves — the conversations
+        // it changes and the one it does not — because the confusion this row keeps producing is
+        // about which conversation an act lands in, not about what pinning is.
         pinned
-          ? h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin')
-          // Pin only reorders the @ menu — it sends nothing. Sitting unlabelled beside the control
-          // that DOES send, it read as a second way to attach (docs/workbench/chat.md). The title
-          // goes through the pack because it names the assistant.
+          ? h(
+              Tooltip,
+              {
+                title: SW.brand.text(
+                  "Removes this from new conversations. Your current conversation doesn't change."
+                ),
+              },
+              h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin')
+            )
           : h(
               Tooltip,
               {
                 title: SW.brand.text(
-                  'Pins this in the @ menu. It does not send it yet.'
+                  "Adds this to every new conversation. Your current conversation doesn't change."
                 ),
               },
               h(Button, { size: 'small', type: 'link', onClick: onPin }, 'Pin')
