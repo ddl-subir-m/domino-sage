@@ -498,18 +498,8 @@ class EnforcementShim:
                     " on a request carrying tools" if tool_call else "",
                 )
             effort = None
-        if effort is None and state.chat_thread_id and "low" in accepted:
-            # Chat on Auto: no pick means no effort, so a data question was answered at the alias's
-            # own default — a full reasoning pass, paid before the first token, on turns as small as
-            # "hi". Low is the floor for this kind of work. An effort that reached here beats it,
-            # including one on the `ask` assignment, because an assignment IS somebody's pick
-            # (ADR-0049) — which is why this tests `is None` and not falsiness: `none` is a level.
-            #
-            # AFTER the acceptance test, not before it. A level that was dropped just above leaves
-            # this turn with no effort at all, which is the state the floor was written for — put
-            # first, the floor would be skipped by the very stale assignment that most needs it, and
-            # a Chat turn would pay the alias's full default because somebody once picked `xhigh`.
-            effort = "low"
+        # Model default means no override, in Chat and Build alike. A hidden Low
+        # fallback would contradict both the picker and the saved assignment.
         if effort is not None:
             request = {**request, "reasoning_effort": effort}
         # Handoff note. A rescued step lands on a different model mid-turn with the transcript but

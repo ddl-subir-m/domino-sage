@@ -384,6 +384,7 @@ for (const step of steps) {
     // make the one assertion that tells them apart impossible to write (#463).
     capabilities: text(tree, 'sw-assignment-capability'),
     details: text(tree, 'sw-assignment-detail'),
+    effortLimits: text(tree, 'sw-assignment-detail sw-assignment-effort-limit'),
     // Why a level a person set is gone (ADR-0049). Its own list rather than a fourth entry in
     // `details`, for the reason it has its own class on the row: it answers what was SAVED, where
     // all three lists above answer what will RUN, and folding it in would make the one assertion

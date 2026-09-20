@@ -71,6 +71,19 @@ window.SW = window.SW || {};
     PLAN_STATUS,
     APP_STATUS,
 
+    // Use the server's measured choices; model names do not establish support.
+    effortNote: (alias) => {
+      if (!alias || !Array.isArray(alias.reasoning_efforts_with_tools)) return '';
+      const levels = alias.reasoning_efforts_with_tools;
+      if (!levels.length) return 'Reasoning effort cannot be set for this model through the current gateway.';
+      if ((alias.reasoning_efforts || []).some((level) => !levels.includes(level))) {
+        const choices = levels.map((level) => level.charAt(0).toUpperCase() + level.slice(1)).join(', ');
+        return `With tools, this gateway supports only these effort settings: ${choices}. `
+          + 'Model default leaves effort unset.';
+      }
+      return '';
+    },
+
     // One sentence, two surfaces: the catalogue row and the panel row wear the same tag, so the
     // tag has to say the same thing in both. It was written out twice and drifted apart once.
     SOVEREIGN_TITLE: 'Runs inside your environment.',

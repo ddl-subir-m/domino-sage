@@ -563,16 +563,13 @@ def test_a_tool_carrying_turn_is_sent_without_an_effort():
     control.disarm_chat(token)
 
 
-def test_the_auto_low_effort_is_dropped_for_a_tool_carrying_turn_too():
-    """The cost floor takes the same exit. Both branches send the field the gateway refuses."""
+def test_chat_model_default_leaves_effort_unset_with_or_without_tools():
     control = ModelControl()
     token = control.arm_chat("thr_1")
     gw = FakeGatewayClient()
-    # Auto routes Chat to the ask slot, so that is the slot that has to be a GPT-5 for the floor
-    # to apply at all.
     handler = EnforcementShim(control, _replace(CATALOG, ask="gpt-5.4"), gw)
     list(handler.handle({"model": "opencode-default", "messages": []}, project="p"))
-    assert gw.seen[-1][0]["reasoning_effort"] == "low"   # no tools: the floor still applies
+    assert "reasoning_effort" not in gw.seen[-1][0]
     list(handler.handle({"model": "opencode-default", "messages": [],
                          "tools": [{"function": {"name": "read"}}]}, project="p"))
     assert "reasoning_effort" not in gw.seen[-1][0]

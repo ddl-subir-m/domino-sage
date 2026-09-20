@@ -1,0 +1,933 @@
+{
+  "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1",
+  "model": "GLM 5.3 OR",
+  "date": "2026-09-20",
+  "notes": [
+    "Only aggregate statistics and visible answers are retained; reasoning text and credentials are omitted.",
+    "default_1 is a gateway response-cache hit and must be excluded from model-latency comparisons.",
+    "count_tool_banana returned no terminal event; HTTP 200 alone is not success.",
+    "focused_final_max overlaps short_full_final_high and short_full_final_low; do not treat these as isolated latency samples.",
+    "concise_* use a short system prompt and a comparison label in the user message. focused_final_* use the full original Chat prompt and only fit statistics. current_prompt_* use the revised full Chat prompt.",
+    "All requests use temperature 0.7 and max_tokens 8192. Only low_native_1 uses nested reasoning.effort; others use reasoning_effort or no field.",
+    "Provider routing and input-prefix cache state were not controlled. The measurements do not establish an end-to-end speedup."
+  ],
+  "model_runs": [
+    {
+      "label": "default_1",
+      "extra": {},
+      "started_utc": "2026-09-20T17:05:12Z",
+      "status": 200,
+      "wall_seconds": 0.374,
+      "first_chunk_seconds": 0.374,
+      "completion_tokens": null,
+      "reasoning_tokens": null,
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "done": true,
+      "content": "**Result: signup month has essentially no relationship with lifetime event count.**\n\nThe fitted line across 1,377,272 users is:\n\n**events ≈ 74.53 + 0.0326 × (months since Jan 1970 of first event)**\n\n- **Slope:** +0.033 events per later signup month. Across the observed span (first-event months 651–680, i.e., April 2024 through September 2025), predicted counts rise from ~95.7 to ~96.7 — under one extra event over 29 months.\n- **R² ≈ 2.7 × 10⁻¹⁰:** signup month explains effectively 0% of the variation in event counts. For practical purposes the relationship is flat.\n\nThe near-zero fit reflects how skewed the outcome is: the median user has just **1** lifetime event and the 90th percentile only **3**, while the mean is **96** and the maximum is **11,038,732**. A handful of extreme power users account for nearly all activity, so a regression on raw counts is dominated by that tail and month-to-month differences among typical users are invisible.\n\nTwo caveats: signup month is proxied by each user's first recorded event (true signup dates aren't available), and counts are raw lifetime totals with no adjustment for how long each user has been observed.",
+      "tool_calls": [],
+      "usage": {}
+    },
+    {
+      "label": "low_legacy_1",
+      "extra": {
+        "reasoning_effort": "low"
+      },
+      "started_utc": "2026-09-20T17:05:13Z",
+      "status": 200,
+      "wall_seconds": 5.656,
+      "first_chunk_seconds": 1.002,
+      "completion_tokens": 347,
+      "reasoning_tokens": 0,
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "done": true,
+      "content": "The regression of per-user event counts on signup month (proxied by the month of each user's first recorded event, since true signup dates aren't available) covers 1,377,272 users, with x measured in months since January 1970 (X0 = 651, X1 = 680). The fitted line is:\n\n**Events ≈ 74.53 + 0.0326 × (months since Jan 1970)**\n\nThat slope means each later signup month is associated with about 0.033 more lifetime events — roughly 1 additional event per 30 months, or about 0.39 extra events across the 29-month span in the data. The intercept (74.53) is the projected count for a January 1970 cohort and mostly anchors the line rather than being meaningful on its own.\n\nThe fit is essentially flat: R² ≈ 2.7e-10, so signup month explains virtually none of the variation in event counts. This is largely because the distribution is extremely skewed — the median user has just 1 event and the 90th percentile only 3, while the mean is 96 and the maximum is over 11 million. A handful of hyper-active users dominate the average, so a linear fit on raw counts mostly chases those outliers and finds no real trend for typical users. Counts also aren't adjusted for how long each user has been observed, which further muddies any cohort effect.\n\nBottom line: event activity per user is effectively independent of signup month in this data; differences in engagement are driven by a small tail of very heavy users, not by when users joined.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 263,
+        "completion_tokens": 347,
+        "total_tokens": 610,
+        "cost": 0.00021295,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00021295,
+          "upstream_inference_prompt_cost": 3.945e-05,
+          "upstream_inference_completions_cost": 0.0001735
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "low_native_1",
+      "extra": {
+        "reasoning": {
+          "effort": "low"
+        }
+      },
+      "started_utc": "2026-09-20T17:05:18Z",
+      "status": 200,
+      "wall_seconds": 3.758,
+      "first_chunk_seconds": 0.605,
+      "completion_tokens": 291,
+      "reasoning_tokens": 0,
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "done": true,
+      "content": "Regression of lifetime event count per user on signup month (proxied by each user's first recorded event month, x = months since January 1970), across 1,377,272 users:\n\n**Event count ≈ 74.53 + 0.0326 × (months since Jan 1970)**\n\n- Fitted at x₀ = 651 (June 2014) and x₁ = 680 (November 2016): 95.78 and 96.72 events respectively — a rise of about 0.95 events per user over the ~29 months between them.\n- The slope implies roughly +0.033 events per month of later signup (~0.39 per year).\n- R² ≈ 2.7e-10, so signup month explains essentially none of the variation in event counts.\n- Overall distribution: mean 96.05 events per user, but median 1 and 90th percentile 3, with a maximum of 11,038,732 — the mean is driven by a small number of extremely active users.\n\nIn short: later signups show a very slight upward shift in average lifetime events, but the relationship is negligible, and the highly skewed count distribution means these averages are not representative of the typical user. Counts also don't adjust for how long each user has been observed, which compounds the skew.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 263,
+        "completion_tokens": 291,
+        "total_tokens": 554,
+        "cost": 0.00016191,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 192,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00016191,
+          "upstream_inference_prompt_cost": 1.641e-05,
+          "upstream_inference_completions_cost": 0.0001455
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "concise_default_r1",
+      "extra": {},
+      "started_utc": "2026-09-20T17:06:06Z",
+      "status": 200,
+      "wall_seconds": 5.76,
+      "first_chunk_seconds": 0.949,
+      "completion_tokens": 854,
+      "reasoning_tokens": 652,
+      "reasoning_chars": 2358,
+      "finish": "stop",
+      "done": true,
+      "content": "**Regression: lifetime events per user ~ signup month** (proxy: month of first recorded event), N_USERS = 1,377,272:\n\nevents = 74.5286 + 0.03259 × x, where x = months since January 1970 (observed x spans 651–680).\n\nThe slope is +0.0326 events per later signup month — across the full 29-month span, predicted counts differ by only ~0.95 events, negligible next to the mean of 96.05. R² = 2.7e-10, so signup month explains essentially none of the variation in event counts. The fit is dominated by an extremely skewed distribution: median 1 event, P90 3, mean 96.05, max 11,038,732. Note that lifetime counts do not adjust for differing observation time, so cohort comparisons here are not time-normalized.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 907,
+        "completion_tokens": 854,
+        "total_tokens": 1761,
+        "cost": 0.00056305,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00056305,
+          "upstream_inference_prompt_cost": 0.00013605,
+          "upstream_inference_completions_cost": 0.000427
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 652,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "concise_low_r1",
+      "extra": {
+        "reasoning_effort": "low"
+      },
+      "started_utc": "2026-09-20T17:06:12Z",
+      "status": 200,
+      "wall_seconds": 1.821,
+      "first_chunk_seconds": 0.924,
+      "completion_tokens": 219,
+      "reasoning_tokens": 0,
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "done": true,
+      "content": "The regression of per-user lifetime event count on signup month (month of first recorded event, a proxy for signup) is:\n\n**Events ≈ 74.53 + 0.0326 × (months since Jan 1970)**\n\nbased on 1,377,272 users, with signup months spanning 651–680 (roughly mid-2024 through mid-2025).\n\nThe fit is essentially zero: R² ≈ 2.7e-10, meaning signup month explains virtually none of the variation in event counts. The slope of ~0.033 extra events per month is statistically meaningless against this data. The reason is visible in the distribution: the mean is 96 events but the median is just 1, with a maximum over 11 million — a tiny number of extreme users dominates the mean, while the typical user has very few events. Counts also don't adjust for how long each user has been observed, so newer users are mechanically undercounted. Signup month is not a useful predictor here.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 907,
+        "completion_tokens": 219,
+        "total_tokens": 1126,
+        "cost": 0.00024555,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00024555,
+          "upstream_inference_prompt_cost": 0.00013605,
+          "upstream_inference_completions_cost": 0.0001095
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "concise_low_r2",
+      "extra": {
+        "reasoning_effort": "low"
+      },
+      "started_utc": "2026-09-20T17:06:14Z",
+      "status": 200,
+      "wall_seconds": 24.993,
+      "first_chunk_seconds": 0.953,
+      "completion_tokens": 303,
+      "reasoning_tokens": 49,
+      "reasoning_chars": 164,
+      "finish": "stop",
+      "done": true,
+      "content": "The regression of lifetime event count per user on signup month (proxied by each user's first event month, encoded as months since January 1970) gives:\n\n- **Slope:** 0.0326 events per later signup month\n- **Intercept:** 74.53 events at the fitted origin\n- **N = 1,377,272 users**, x ranging from 651 to 680 (Jan 2014 to May 2016)\n- **R² = 2.75 × 10⁻¹⁰** — effectively zero\n\nThe comparison case R² confirms this is essentially the worst possible fit: signup month explains about 0.00000003% of the variance in event counts. Despite a nominally positive slope, knowing when a user signed up tells you nothing about their lifetime activity. The reason is visible in the distribution: the mean is 96.1 events but the median is just 1, with a max of 11,038,732 — event counts are overwhelmingly skewed by a few hyper-active users, so no linear predictor of the typical user will fit well. Counts also don't adjust for how long each user has been observed.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 901,
+        "completion_tokens": 303,
+        "total_tokens": 1204,
+        "cost": 0.00028665,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00028665,
+          "upstream_inference_prompt_cost": 0.00013515,
+          "upstream_inference_completions_cost": 0.0001515
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 49,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "concise_default_r2",
+      "extra": {},
+      "started_utc": "2026-09-20T17:06:39Z",
+      "status": 200,
+      "wall_seconds": 5.54,
+      "first_chunk_seconds": 0.84,
+      "completion_tokens": 1119,
+      "reasoning_tokens": 911,
+      "reasoning_chars": 2897,
+      "finish": "stop",
+      "done": true,
+      "content": "**Regression of lifetime event count on signup month (first-event month proxy), 1,377,272 users:**\n\nEvents ≈ 74.53 + 0.0326 × (months since Jan 1970)\n\nFirst-event months span X0 = 651 to X1 = 680 (Apr 2024 – Sep 2025), so the fitted line rises only from ~95.7 to ~96.7 events — under one extra event across the whole 29-month window.\n\nR² = 2.75e-10: signup month explains essentially none of the variation in event counts, effectively zero. That is unsurprising given the extreme skew — median 1 event, mean 96.1, 90th percentile 3, max 11,038,732 — the fit is driven by a handful of extreme users. Lifetime counts also don't adjust for differing observation time, so the tiny positive slope should not be read as a real cohort trend.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 907,
+        "completion_tokens": 1119,
+        "total_tokens": 2026,
+        "cost": 0.00069555,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00069555,
+          "upstream_inference_prompt_cost": 0.00013605,
+          "upstream_inference_completions_cost": 0.0005595
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 911,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "count_tool_high",
+      "extra": {
+        "reasoning_effort": "high"
+      },
+      "started_utc": "2026-09-20T17:06:44Z",
+      "status": 200,
+      "wall_seconds": 1.564,
+      "first_chunk_seconds": 0.92,
+      "completion_tokens": 94,
+      "reasoning_tokens": 33,
+      "reasoning_chars": 127,
+      "finish": "tool_calls",
+      "done": true,
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "770d537a-5c40-4b9b-842c-1465e0041da4",
+          "name": "live_read_query",
+          "arguments": "{\"title\":\"Distinct IDs in Mixpanel events\",\"source\":\"Snowflake-Data-Warehouse\",\"token\":\"probe-only\",\"sql\":\"SELECT COUNT(DISTINCT DISTINCT_ID) AS DISTINCT_ID_COUNT FROM DWH.MARTS.MIXPANEL__EVENT\"}"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 630,
+        "completion_tokens": 94,
+        "total_tokens": 724,
+        "cost": 0.0001415,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0001415,
+          "upstream_inference_prompt_cost": 9.45e-05,
+          "upstream_inference_completions_cost": 4.7e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 33,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "count_tool_max",
+      "extra": {
+        "reasoning_effort": "max"
+      },
+      "started_utc": "2026-09-20T17:06:46Z",
+      "status": 200,
+      "wall_seconds": 4.285,
+      "first_chunk_seconds": 2.296,
+      "completion_tokens": 195,
+      "reasoning_tokens": 125,
+      "reasoning_chars": 530,
+      "finish": "tool_calls",
+      "done": true,
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_01a0bfc8e67077c3919816b6",
+          "name": "live_read_query",
+          "arguments": "{\"purpose\":\"Probe: count distinct DISTINCT_ID in Mixpanel event table\",\"source\":\"Snowflake-Data-Warehouse\",\"sql\":\"SELECT COUNT(DISTINCT DISTINCT_ID) AS DISTINCT_ID_COUNT FROM DWH.MARTS.MIXPANEL__EVENT\",\"token\":\"probe-only\"}"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 630,
+        "completion_tokens": 195,
+        "total_tokens": 825,
+        "cost": 0.000192,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.000192,
+          "upstream_inference_prompt_cost": 9.45e-05,
+          "upstream_inference_completions_cost": 9.75e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 125,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "count_tool_banana",
+      "extra": {
+        "reasoning_effort": "banana"
+      },
+      "started_utc": "2026-09-20T17:06:50Z",
+      "status": 200,
+      "wall_seconds": 0.322,
+      "first_chunk_seconds": 0.322,
+      "completion_tokens": null,
+      "reasoning_tokens": null,
+      "reasoning_chars": 0,
+      "finish": null,
+      "done": false,
+      "content": "",
+      "tool_calls": [],
+      "usage": {}
+    },
+    {
+      "label": "regression_tool_low",
+      "extra": {
+        "reasoning_effort": "low"
+      },
+      "started_utc": "2026-09-20T17:06:50Z",
+      "status": 200,
+      "wall_seconds": 1.357,
+      "first_chunk_seconds": 1.35,
+      "completion_tokens": 181,
+      "reasoning_tokens": 0,
+      "reasoning_chars": 0,
+      "finish": "tool_calls",
+      "done": true,
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "3017972f-23aa-4118-82c1-3c0a88b683e4",
+          "name": "live_read_query",
+          "arguments": "{\"source\":\"Snowflake-Data-Warehouse\",\"title\":\"Event count vs first-event month index\",\"token\":\"probe-only\",\"purpose\":\"Regression of event count per user on first-event month index\",\"sql\":\"SELECT COUNT(*) AS N_USERS, REGR_SLOPE(cnt, m) AS SLOPE, REGR_INTERCEPT(cnt, m) AS INTERCEPT, REGR_R2(cnt, m) AS R2 FROM (SELECT DISTINCT_ID, DATE_TRUNC('month', MIN(EVENT_OCCURRED_AT)) AS fm, COUNT(*) AS cnt FROM DWH.MARTS.MIXPANEL__EVENT WHERE DISTINCT_ID IS NOT NULL GROUP BY DISTINCT_ID) t, LATERAL (SELECT TIMESTAMPDIFF('month', '1970-01-01'::TIMESTAMP_TZ, fm) AS m) x\"}"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 711,
+        "completion_tokens": 181,
+        "total_tokens": 892,
+        "cost": 0.00019715,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00019715,
+          "upstream_inference_prompt_cost": 0.00010665,
+          "upstream_inference_completions_cost": 9.05e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "focused_final_low",
+      "extra": {
+        "reasoning_effort": "low"
+      },
+      "started_utc": "2026-09-20T17:07:22Z",
+      "status": 200,
+      "wall_seconds": 41.336,
+      "first_chunk_seconds": 6.329,
+      "completion_tokens": 370,
+      "reasoning_tokens": 15,
+      "reasoning_chars": 77,
+      "finish": "stop",
+      "done": true,
+      "content": "Here's the final answer for the regression of event count per user on signup month in MIXPANEL__EVENT:\n\n**Model:** lifetime events per user = 74.53 + 0.0326 × (months since January 1970 of first recorded event)\n\n- **Users analyzed:** 1,377,272\n- **Slope:** +0.033 events per month of later signup — essentially flat\n- **Intercept:** ~74.5 lifetime events per user at the earliest signups\n- **R² ≈ 2.7 × 10⁻¹⁰** — the model explains effectively **0%** of the variance\n\n**Interpretation:** There is no meaningful relationship between when a user signed up and how many events they generated over their lifetime. The R² is so close to zero that signup month accounts for essentially none of the variation in per-user event counts, even though the fitted slope is slightly positive. Any apparent drift of ~0.03 events/month over the data's timespan is negligible.\n\n**Important caveats:**\n- Signup month is proxied by the month of the user's *first recorded event*, since true signup dates aren't available.\n- Lifetime event counts don't adjust for observation time — newer users have had less time to accumulate events, which would bias the slope downward if anything; the fact that it's still slightly positive makes the \"no relationship\" conclusion even more robust.\n- No standard errors or significance tests were computed, so treat the slope's precision as unknown (though with R² this low, it wouldn't be meaningful anyway).\n\nBottom line: **signup month is not a useful predictor of user engagement volume in this data.**",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 4997,
+        "completion_tokens": 370,
+        "total_tokens": 5367,
+        "cost": 0.00093455,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00093455,
+          "upstream_inference_prompt_cost": 0.00074955,
+          "upstream_inference_completions_cost": 0.000185
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 15,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "focused_final_high",
+      "extra": {
+        "reasoning_effort": "high"
+      },
+      "started_utc": "2026-09-20T17:08:03Z",
+      "status": 200,
+      "wall_seconds": 50.39,
+      "first_chunk_seconds": 2.021,
+      "completion_tokens": 408,
+      "reasoning_tokens": 5,
+      "reasoning_chars": 26,
+      "finish": "stop",
+      "done": true,
+      "content": "The regression is done, and the short answer is: **signup month explains essentially none of the variation in how many events users record.**\n\nHere's the fitted line, predicting lifetime events per user from months since January 1970 of the user's first recorded event (used as a proxy for signup month, since actual signup dates aren't in the data):\n\n- **Slope:** +0.0326 events per month — users' first-event month being one month later is associated with about 0.03 more lifetime events, on average.\n- **Intercept:** 74.53 events, the predicted lifetime count for a user whose first event was in January 1970.\n- **R²:** ≈ 0.0000000003 — effectively zero. The first-event month explains virtually none of the variance in event counts across the 1,377,272 users.\n\nIn practical terms, cohort (as proxied by first-event month) is not a useful predictor of user activity level in this data.\n\nTwo caveats worth keeping in mind:\n\n1. **First event is not signup.** Users who signed up but took a while to record their first event will have their start date shifted, which blurs the predictor — though the near-zero R² suggests this isn't hiding a strong signal.\n2. **No adjustment for observation time.** A user who joined a year ago has had less calendar time to accumulate events than one who joined three years ago. A fairer comparison would be events per month of observed tenure, or a model that accounts for differing exposure windows. As computed, the slope partly reflects that older cohorts simply have had longer to accrue events — but the near-zero fit indicates even that expected bias isn't producing a visible trend here.\n\nNo standard errors or significance tests were computed, so the slope shouldn't be treated as a tested estimate — though with an R² this close to zero, it wouldn't be meaningful anyway.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 4997,
+        "completion_tokens": 408,
+        "total_tokens": 5405,
+        "cost": 0.00041595,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 4480,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00041595,
+          "upstream_inference_prompt_cost": 0.00021195,
+          "upstream_inference_completions_cost": 0.000204
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 5,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "focused_final_max",
+      "extra": {
+        "reasoning_effort": "max"
+      },
+      "started_utc": "2026-09-20T17:08:54Z",
+      "status": 200,
+      "wall_seconds": 94.375,
+      "first_chunk_seconds": 20.046,
+      "completion_tokens": 3951,
+      "reasoning_tokens": 3543,
+      "reasoning_chars": 13010,
+      "finish": "stop",
+      "done": true,
+      "content": "Here's the final answer for the MIXPANEL__EVENT regression.\n\n**Fitted model** (n = 1,377,272 users):\n\n> lifetime events per user ≈ 74.53 + 0.0326 × (months since Jan 1970 of first recorded event)\n\n**How to read it**\n\n- **Intercept 74.53** is the fitted value at the start of the time axis. Since real first events all fall years after 1970, the practical predictions sit in the low-to-mid 90s: roughly **92 events** for a user first seen in Jan 2015, **94** for Jan 2020.\n- **Slope +0.0326 events/month** (about +0.39 events per year) means a five-year gap in first activity moves the prediction by only ~2 events.\n- **R² ≈ 2.7 × 10⁻¹⁰** — the first-event month explains essentially none of the variation in how many events users generate (about 0.00000003% of it). The fitted line is effectively flat.\n\n**Bottom line:** when a user first appeared has no meaningful relationship with how active they are. The visible differences in engagement live in other factors, not in signup timing.\n\n**Caveats carried over from the fit:**\n\n- \"Signup month\" is a proxy — the month of each user's first recorded event, since true signup dates aren't available.\n- Counts don't adjust for observation time, so recent cohorts are mechanically disadvantaged (less time to accrue events). That bias pushes the slope down, and it's still slightly positive — which reinforces \"no relationship\" rather than weakening it.\n- No standard errors or significance tests were computed. With 1.4M users even a trivial slope could test as significant, so the R² is the number that matters: the effect is practically zero.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 4997,
+        "completion_tokens": 3951,
+        "total_tokens": 8948,
+        "cost": 0.002561547,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.002561547,
+          "upstream_inference_prompt_cost": 0.000704577,
+          "upstream_inference_completions_cost": 0.00185697
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 3543,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "short_full_final_high",
+      "extra": {
+        "reasoning_effort": "high"
+      },
+      "started_utc": "2026-09-20T17:10:01Z",
+      "status": 200,
+      "wall_seconds": 14.012,
+      "first_chunk_seconds": 1.95,
+      "completion_tokens": 280,
+      "reasoning_tokens": 7,
+      "reasoning_chars": 35,
+      "finish": "stop",
+      "done": true,
+      "content": "The regression is fitted. Predicting lifetime event count per user from signup month (proxied by the month of the user's first event in MIXPANEL__EVENT, expressed as months since January 1970):\n\n**Events per user ≈ 0.0326 × (months since Jan 1970) + 74.53**\n\nWhat it says:\n\n- **Slope ≈ +0.033 events per month**: each later signup month is associated with about 0.03 more lifetime events — roughly 0.39 extra events per year of later signup.\n- **Intercept ≈ 74.5**: the fitted baseline at month 0 (Jan 1970), not meaningful on its own since no real users signed up then.\n- **R² ≈ 2.7 × 10⁻¹⁰**: essentially zero. Signup month explains virtually none of the variation in per-user event counts — the relationship, while slightly positive, is practically flat. 1,377,272 users were included.\n\nCaveats: x is a proxy (signup dates aren't in the data), counts don't adjust for differing observation windows (later signups have had less time to accumulate events, which this doesn't correct for), and no standard errors or significance tests were computed.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 5080,
+        "completion_tokens": 280,
+        "total_tokens": 5360,
+        "cost": 0.0003644,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 4480,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0003644,
+          "upstream_inference_prompt_cost": 0.0002244,
+          "upstream_inference_completions_cost": 0.00014
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 7,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "short_full_final_low",
+      "extra": {
+        "reasoning_effort": "low"
+      },
+      "started_utc": "2026-09-20T17:10:15Z",
+      "status": 200,
+      "wall_seconds": 9.15,
+      "first_chunk_seconds": 0.986,
+      "completion_tokens": 167,
+      "reasoning_tokens": 0,
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "done": true,
+      "content": "The regression is fitted: each later signup month adds about **0.033 events per user** (slope 0.0326, intercept 74.53), so a user whose first event is one month later is predicted to log ~0.03 more lifetime events.\n\nThe key caveat is the fit quality: **R² ≈ 2.7 × 10⁻¹⁰**, essentially zero. Signup month explains effectively none of the variation in per-user event counts — the slope is a meaningless wobble around the intercept of ~74.5 events, which is the only number worth taking away. This is based on 1,377,272 users, with first-event month standing in for signup date (unavailable) and no adjustment for how long each user has been observed.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 5080,
+        "completion_tokens": 167,
+        "total_tokens": 5247,
+        "cost": 0.0003079,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 4480,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0003079,
+          "upstream_inference_prompt_cost": 0.0002244,
+          "upstream_inference_completions_cost": 8.35e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "current_prompt_count_high",
+      "extra": {
+        "reasoning_effort": "high"
+      },
+      "started_utc": "2026-09-20T17:15:10Z",
+      "status": 200,
+      "wall_seconds": 2.61,
+      "first_chunk_seconds": 2.61,
+      "completion_tokens": 66,
+      "reasoning_tokens": 0,
+      "reasoning_chars": 0,
+      "finish": "tool_calls",
+      "done": true,
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_ebba8d91467f431287bb63c6",
+          "name": "live_read_query",
+          "arguments": "{\"sql\": \"SELECT COUNT(DISTINCT DISTINCT_ID) AS DISTINCT_USERS FROM DWH.MARTS.MIXPANEL__EVENT\", \"source\": \"Snowflake-Data-Warehouse\", \"title\": \"Distinct users in MIXPANEL__EVENT\", \"token\": \"probe-only\"}"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 5107,
+        "completion_tokens": 66,
+        "total_tokens": 5173,
+        "cost": 0.00047943,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00047943,
+          "upstream_inference_prompt_cost": 0.00045963,
+          "upstream_inference_completions_cost": 1.98e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "current_prompt_regression_high",
+      "extra": {
+        "reasoning_effort": "high"
+      },
+      "started_utc": "2026-09-20T17:15:12Z",
+      "status": 200,
+      "wall_seconds": 8.402,
+      "first_chunk_seconds": 0.947,
+      "completion_tokens": 482,
+      "reasoning_tokens": 223,
+      "reasoning_chars": 866,
+      "finish": "tool_calls",
+      "done": true,
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_4b236403442c4ce3b62b2681",
+          "name": "live_read_query",
+          "arguments": "{\"purpose\": \"Fit regression of per-user event count on first-event month (months since 1970-01)\", \"source\": \"Snowflake-Data-Warehouse\", \"sql\": \"WITH per_user AS (\\n  SELECT DISTINCT_ID,\\n         DATE_TRUNC('month', MIN(EVENT_OCCURRED_AT)) AS first_month,\\n         COUNT(*) AS event_count\\n  FROM DWH.MARTS.MIXPANEL__EVENT\\n  GROUP BY DISTINCT_ID\\n),\\nscored AS (\\n  SELECT event_count AS y,\\n         DATEDIFF('month', DATE '1970-01-01', first_month) AS x\\n  FROM per_user\\n)\\nSELECT\\n  COUNT(*) AS n_users,\\n  REGR_SLOPE(y, x) AS slope,\\n  REGR_INTERCEPT(y, x) AS intercept,\\n  REGR_R2(y, x) AS r2,\\n  REGR_AVGX(y, x) AS mean_signup_month,\\n  REGR_AVGY(y, x) AS mean_event_count\\nFROM scored\", \"title\": \"Regression: event count per user vs first-event month\", \"token\": \"probe-only\"}"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 5139,
+        "completion_tokens": 482,
+        "total_tokens": 5621,
+        "cost": 0.00060711,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00060711,
+          "upstream_inference_prompt_cost": 0.00046251,
+          "upstream_inference_completions_cost": 0.0001446
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 223,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "current_prompt_final_high",
+      "extra": {
+        "reasoning_effort": "high"
+      },
+      "started_utc": "2026-09-20T17:15:21Z",
+      "status": 200,
+      "wall_seconds": 9.148,
+      "first_chunk_seconds": 1.138,
+      "completion_tokens": 259,
+      "reasoning_tokens": 0,
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "done": true,
+      "content": "Here's the result of the regression fit on MIXPANEL__EVENT:\n\n**Predicting lifetime events per user from signup month (proxy: month of first recorded event)**\n\n- **Slope:** +0.0326 events per user per month\n- **Intercept:** 74.53 events\n- **R²:** 2.7 × 10⁻¹⁰ (essentially zero)\n- **N:** 1,377,272 users\n\n**Interpretation:** The slope suggests a tiny average increase of about 0.03 events per user per month of signup, but the R² is effectively zero — signup month explains essentially none of the variance in how many events users generate. In practical terms, there is no meaningful relationship between when a user signed up and their lifetime event count.\n\nTwo caveats to keep in mind:\n1. **Proxy for signup:** First recorded event month is used in place of signup date, which may not line up exactly.\n2. **Unequal observation windows:** Lifetime event counts don't correct for the fact that earlier cohorts have had more time to accumulate events — part of the small positive slope likely reflects that, not cohort differences.\n\nNo standard errors or significance tests were computed for this fit.",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 5174,
+        "completion_tokens": 259,
+        "total_tokens": 5433,
+        "cost": 0.0005984,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 2560,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0005984,
+          "upstream_inference_prompt_cost": 0.0004689,
+          "upstream_inference_completions_cost": 0.0001295
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    },
+    {
+      "label": "current_prompt_final_max",
+      "extra": {
+        "reasoning_effort": "max"
+      },
+      "started_utc": "2026-09-20T17:16:26Z",
+      "status": 200,
+      "wall_seconds": 9.546,
+      "first_chunk_seconds": 1.542,
+      "completion_tokens": 253,
+      "reasoning_tokens": 0,
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "done": true,
+      "content": "The regression is fitted, and the honest reading of it is: signup month explains essentially none of the variation in event count per user.\n\n- **Slope: +0.033 events per user per month.** Each month later a user signed up, their lifetime event count rises by about 0.03 events on average — under 0.4 events per year.\n- **Intercept: 74.5 events.** A user at the very start of the observed period averages ~74.5 lifetime events.\n- **R² ≈ 2.7e-10.** Effectively zero. Signup month accounts for roughly none of the user-to-user variance in event counts; the differences between users are driven by something else entirely.\n\nTwo caveats baked into the result: the predictor is the month of a user's first recorded event (a proxy for signup, since signup dates aren't available), and the response is total lifetime events with no adjustment for how long each user has been observed — so older cohorts mechanically have more time to accumulate events, which the small positive slope partly reflects.\n\nBottom line: on this data, when a user joined tells you almost nothing about how active they'll be.\n\nNEEDS_MORE_THAN_SQL",
+      "tool_calls": [],
+      "usage": {
+        "prompt_tokens": 5174,
+        "completion_tokens": 253,
+        "total_tokens": 5427,
+        "cost": 0.0002882,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 5120,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0002882,
+          "upstream_inference_prompt_cost": 0.0001617,
+          "upstream_inference_completions_cost": 0.0001265
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      }
+    }
+  ],
+  "snowflake": {
+    "warehouse": "HUMANS",
+    "size": "X-Small",
+    "role": "DDL_STAFF",
+    "table": "DWH.MARTS.MIXPANEL__EVENT",
+    "table_rows": 132293377,
+    "original_history_access": false,
+    "queries": [
+      {
+        "label": "distinct_users_only",
+        "query_id": "01c7337b-070d-a89f-0060-bc0310891e0e",
+        "total_ms": 2131,
+        "compilation_ms": 170,
+        "execution_ms": 1961,
+        "queued_provisioning_ms": 0,
+        "queued_overload_ms": 0,
+        "bytes_scanned": 22743152128,
+        "client_seconds": 2.283
+      },
+      {
+        "label": "expanded_count",
+        "query_id": "01c7337c-070d-a5c6-0060-bc031089683e",
+        "total_ms": 4021,
+        "compilation_ms": 260,
+        "execution_ms": 3761,
+        "queued_provisioning_ms": 0,
+        "queued_overload_ms": 0,
+        "bytes_scanned": 22743152128,
+        "client_seconds": 4.108
+      },
+      {
+        "label": "numeric_regression_first_seen_proxy",
+        "query_id": "01c7337c-070d-a461-0060-bc0310899322",
+        "total_ms": 7641,
+        "compilation_ms": 5265,
+        "execution_ms": 2376,
+        "queued_provisioning_ms": 0,
+        "queued_overload_ms": 0,
+        "bytes_scanned": 22743152128,
+        "client_seconds": 8.061
+      },
+      {
+        "label": "glm_low_generated_regression",
+        "query_id": "01c73383-070d-a5c6-0060-bc0310896d1a",
+        "total_ms": 3557,
+        "compilation_ms": 609,
+        "execution_ms": 2826,
+        "queued_provisioning_ms": 122,
+        "queued_overload_ms": 0,
+        "bytes_scanned": 22743152128,
+        "client_seconds": 3.832
+      },
+      {
+        "label": "glm_high_generated_regression",
+        "query_id": "01c7338c-070d-a89f-0060-bc031089c39a",
+        "total_ms": 4598,
+        "compilation_ms": 1350,
+        "execution_ms": 3079,
+        "queued_provisioning_ms": 169,
+        "queued_overload_ms": 0,
+        "bytes_scanned": 22743152128,
+        "client_seconds": 4.965
+      }
+    ]
+  },
+  "reproducible_probe_runs": [
+    {
+      "effort": "high",
+      "started_utc": "2026-09-20T17:18:33Z",
+      "status": 200,
+      "wall_seconds": 8.902,
+      "first_chunk_seconds": 1.258,
+      "finish": "stop",
+      "done": true,
+      "reasoning_chars": 0,
+      "usage": {
+        "prompt_tokens": 5174,
+        "completion_tokens": 301,
+        "total_tokens": 5475,
+        "cost": 0.0003122,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 5120,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0003122,
+          "upstream_inference_prompt_cost": 0.0001617,
+          "upstream_inference_completions_cost": 0.0001505
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "content": "The regression is fitted. Here's the result:\n\n**Predicting lifetime events per user from signup month (proxied by first-event month):**\n\n- **Slope:** 0.0326 extra events per user per month since January 1970\n- **Intercept:** 74.53 events (fitted level at the epoch)\n- **R²:** 2.75 × 10⁻¹⁰ — essentially zero\n- **N users:** 1,377,272\n\n**Interpretation:** while the fitted slope is slightly positive, the R² is effectively zero, so signup month explains none of the variation in how many events a user generates. The tiny slope over ~650 months of span (roughly +21 events across the whole range) sits on top of noise, not signal.\n\n**Caveats to keep in mind:**\n\n1. Signup date isn't in the data; the first recorded event's month is used as a proxy, which biases early users (their first event may postdate their actual signup).\n2. Counts are raw lifetime events — users who signed up later have had less time to accumulate events, which would bias the slope *downward* if anything, yet the effect is still nil.\n3. No standard errors or significance tests were computed, so the slope's uncertainty isn't quantified here.\n\nBottom line: there is no meaningful relationship between when a user joined and how active they became."
+    },
+    {
+      "effort": "max",
+      "started_utc": "2026-09-20T17:18:42Z",
+      "status": 200,
+      "wall_seconds": 9.18,
+      "first_chunk_seconds": 1.269,
+      "finish": "stop",
+      "done": true,
+      "reasoning_chars": 23,
+      "usage": {
+        "prompt_tokens": 5174,
+        "completion_tokens": 214,
+        "total_tokens": 5388,
+        "cost": 0.0008831,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0008831,
+          "upstream_inference_prompt_cost": 0.0007761,
+          "upstream_inference_completions_cost": 0.000107
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 5,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "content": "The regression is fit and on the card. In short:\n\n**Events per user ≈ 0.033 × (months since Jan 1970 of first event) + 74.5**, with N = 1,377,272 users.\n\nThe fit is essentially flat in practice: R² is about 0.0000000003, meaning signup month (proxied by the month of each user's first recorded event) explains effectively none of the variation in lifetime event counts. The tiny positive slope of ~0.033 events per month is not a meaningful trend given the near-zero R².\n\nTwo caveats to keep in mind when reading the result:\n\n- **Proxy predictor:** true signup dates aren't available, so the month of the first recorded event stands in for signup month.\n- **Unadjusted exposure:** lifetime counts don't account for how long each user has been observed, so newer users are compared against older ones on unequal footing.\n\nNo standard errors or significance tests were computed."
+    }
+  ]
+}
