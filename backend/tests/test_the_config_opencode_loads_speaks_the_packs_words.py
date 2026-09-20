@@ -71,8 +71,9 @@ def test_the_project_config_carries_no_unresolved_pack_tokens(installed):
 def test_the_project_config_dials_the_port_the_shim_serves(installed):
     """Voicing the config is worthless if it routes inference away from the shim.
 
-    `_opencode_base_port` reads this same dir for /api/diag and the turn summary, so this is also
-    what those two report — the file the server sits beside, aligned with the global copy it loads.
+    `_opencode_base_port` reads this same dir for /api/diag and for the port Problem in
+    `health.py` (#475), so this is also what those two report — the file the server sits beside,
+    aligned with the global copy it loads.
     """
     from sage.orchestrator.service import _opencode_base_port
 

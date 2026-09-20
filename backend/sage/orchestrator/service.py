@@ -16385,16 +16385,6 @@ class Orchestrator:
         # plan-tier model for the retry (works from Auto or explicit Implement). On by default;
         # set SAGE_IMPLEMENT_STRONG_FALLBACK=0 to keep retries on the originally-routed model.
         strong_fallback = os.environ.get("SAGE_IMPLEMENT_STRONG_FALLBACK", "1").strip().lower() not in ("0", "false", "no")
-        # Ports for the OpenCode->shim wiring check surfaced in each turn-summary: control_port is what
-        # this process serves /v1 on; base_port is what opencode.json tells OpenCode to dial. If they
-        # differ and a turn records 0 model calls, inference bypassed the shim (routing/sovereignty
-        # never ran) — shown as a warning in-stream since the deployed workspace has no shell/logs.
-        control_port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
-        base_port = _opencode_base_port(self._opencode_cwd)
-        # Direct vendor keys OpenCode can auto-detect and use to reach a model WITHOUT going through
-        # the shim's provider (localhost baseURL). If the shim is bypassed, their presence is the
-        # likely reason inference still worked — and means sovereignty/routing were silently skipped.
-        vendor_keys = [k for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY") if os.environ.get(k)]
         # A clean typecheck doesn't mean the app runs: a render/runtime throw (e.g. calling a Date
         # method on a string) blanks the preview but passes tsc. The open preview reports such throws
         # to project.runtime_error; we feed them back to fix, bounded so a crash we can't fix can't loop.
@@ -17087,16 +17077,6 @@ class Orchestrator:
                 if not plan_md:
                     log.warning("%s gate produced no text (model_calls=%d) — reporting empty plan",
                                 "architecture" if arch else "plan", project.model_calls)
-                    yield {"type": "turn-summary", "model_calls": project.model_calls,
-                           "tool_call_responses": project.tool_call_responses, "wrote_code": False,
-                           "shim_bypassed": (project.model_calls == 0 and base_port is not None
-                                             and base_port != control_port),
-                           "base_port": base_port, "control_port": control_port,
-                           "vendor_keys": vendor_keys, "gate": True, "read_only": read_only}
-                    if project.model_calls == 0:
-                        tail = self._opencode_log_tail()
-                        if tail:
-                            yield {"type": "opencode-log", "lines": tail}
                     yield persist({"type": "error", "message": (
                         "Describing the architecture didn't produce anything this time. Send the "
                         "request again — naming the parts you care about can help."
@@ -17225,19 +17205,6 @@ class Orchestrator:
                 # so a real edit is never misread as "planned but wrote no code". Compare the tree hash
                 # to this turn's start (not the build-start baseline) so only edits made THIS turn count.
                 wrote_code = agent_wrote()
-                # Surface why a turn landed where it did — especially a no-edit turn. Reads apart the
-                # three failure modes (see Project.model_calls); rendered as a status line in the UI.
-                shim_bypassed = (project.model_calls == 0 and base_port is not None and base_port != control_port)
-                yield {"type": "turn-summary", "model_calls": project.model_calls,
-                       "tool_call_responses": project.tool_call_responses, "wrote_code": wrote_code,
-                       "shim_bypassed": shim_bypassed, "base_port": base_port, "control_port": control_port,
-                       "vendor_keys": vendor_keys, "gate": gate, "read_only": read_only}
-                # No inference reached the shim this turn: surface OpenCode's own log tail so its actual
-                # error (which port it dialed, provider/model/auth failure) is visible without a shell.
-                if project.model_calls == 0:
-                    tail = self._opencode_log_tail()
-                    if tail:
-                        yield {"type": "opencode-log", "lines": tail}
                 # A gated turn that wrote code broke the guarantee it exists to provide: the user was
                 # promised a plan to approve and got an unreviewed build instead. Don't fall through
                 # to the ordinary build path (that's what silently swallowed the gate before the shim
@@ -17301,7 +17268,6 @@ class Orchestrator:
                 # blanks the preview. Wait briefly for the open preview to report one; if it does,
                 # feed the error back so the agent fixes it before we call the build done.
                 if report.ok and wrote_code and runtime_fixes < MAX_RUNTIME_FIXES:
-                    yield {"type": "runtime-check"}
                     rt = self._await_runtime_error(project, since=send_ts)
                     if rt is not None:
                         runtime_fixes += 1

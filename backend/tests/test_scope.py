@@ -442,11 +442,11 @@ def test_a_failed_classify_still_closes_its_ledger_entry():
 
 
 def test_the_classifier_is_kept_off_the_shim_counter():
-    """`project.model_calls` counts inferences that reached the SHIM, and `model_calls == 0` is what
-    `shim_bypassed` reads to tell broken OpenCode->shim wiring from working wiring. This call
-    bypasses the shim by design, so counting it there would hide the very fault that counter exists
-    to surface. Asserted rather than commented, because the ledger fix above is one obvious edit
-    away from breaking it."""
+    """`project.model_calls` counts inferences that reached the SHIM, and `/api/diag` publishes it
+    as the first of the three failure modes `Project.model_calls` splits apart — 0 model calls =
+    OpenCode never invoked the model. This call bypasses the shim by design, so counting it there
+    would hide the very fault that counter exists to surface. Asserted rather than commented,
+    because the ledger fix above is one obvious edit away from breaking it."""
     import ast
     import inspect
 
