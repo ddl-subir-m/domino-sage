@@ -4532,9 +4532,12 @@ class Project:
     # them back to the agent to autofix. ts-gated so a stale error from a prior turn is ignored.
     runtime_error: dict | None = None
     # Per-turn model-call telemetry, wired by the /v1/chat/completions stream wrapper and read by
-    # build_stream() to explain why a turn wrote nothing. model_calls = model inferences OpenCode ran
-    # this turn; tool_call_responses = how many of those responses carried a tool_call. build_stream
-    # resets both before each send. Reading them apart splits the three failure modes: 0 model calls =
+    # build_stream() to explain why a turn wrote nothing, and by chat_stream()'s terminal row to say
+    # when a turn that sent tools got no tool call back (#469). model_calls = model inferences
+    # OpenCode ran this turn; tool_call_responses = how many of those responses carried a tool_call.
+    # build_stream resets both before each send and chat_stream at its grant; a reader that clears
+    # neither is reading the previous turn's numbers, which is why each lane clears its own.
+    # Reading them apart splits the three failure modes: 0 model calls =
     # OpenCode never invoked the model; model calls but 0 tool-call responses = the model never tried a
     # tool; tool calls but no disk edits = OpenCode received tool calls but didn't apply them.
     model_calls: int = 0
@@ -8377,6 +8380,14 @@ class Orchestrator:
             return
         # Empty at the start of this turn, for the reason build_stream gives at its own grant (#466).
         self.project().last_stream_chunk_at = 0.0
+        # The same rule, one line down, for the two counters `finish()` reads to decide whether this
+        # turn's model ever called a tool (#469). Both are cumulative until something zeroes them,
+        # and until now only the Build loop ever did — so a Chat turn inherited whatever the last
+        # Build or the last Chat turn left. That is not a stale diagnostic, it is the wrong verdict:
+        # a second toolless turn in a row reads as healthy on the first turn's tool call, which is
+        # exactly the run of turns the warning exists to name.
+        self.project().model_calls = 0
+        self.project().tool_call_responses = 0
         # The lock goes at `done`, not at the end of this generator. What comes after `done` is
         # aftercare — classify the turn for a Build offer, compact the session, commit and push —
         # and it used to run with the lock still held, so the next question was refused as busy for
@@ -11814,6 +11825,35 @@ class Orchestrator:
             # The guard is load-bearing. An empty set is a subset of everything, so without "wrote
             # at least one" every ordinary conversational turn would report `advanced: false`.
             done["advanced"] = not (turn_writes and set(turn_writes) <= turn_rewrites)
+            # Chat hands the model eleven tools on every turn. A turn whose model calls carried a
+            # tool call in none of them is the one thing nobody observes today, and it has to be
+            # observed rather than declared: the gateway's `tools` capability is demonstrably
+            # incomplete — the alias measured on #469 declares no `streaming` either and streamed
+            # 426 chunks — so the metadata cannot answer "can this model call a tool", and a
+            # refusal built on it would lock a person out of a model that works. What DID happen
+            # is not in doubt. `app.py` already counts it on the way past each chunk for
+            # `build_stream`; this is Chat reading the same two numbers.
+            #
+            # `model_calls` is the guard, not decoration: a turn refused at the door or ended by a
+            # gate card never prompted OpenCode at all, and "called no tool" is not a finding about
+            # a turn that called no model. Both are cleared at this turn's grant, so neither can be
+            # a previous turn's.
+            #
+            # The RESOLVED model, read from what the shim recorded (#316) rather than derived here
+            # a second time — four rules move a request off the model the person picked, so the
+            # requested name would answer a different question than the one this line asks.
+            #
+            # `decision` rides along because this seam sees every ending, and a turn the gateway
+            # refused also called no tool. Without it the line reads identically on a turn that was
+            # already explained and on the one this ticket is about, which is the answer-shaped-like
+            # -an-essay turn: `decision=answered`.
+            if project.model_calls and not project.tool_call_responses:
+                resolved = project.resolved_model
+                log.warning(
+                    "chat: sent tools and no model call came back with one — model=%s, "
+                    "model_calls=%d, decision=%s",
+                    resolved.model if resolved else "unknown", project.model_calls,
+                    done.get("decision", "-"))
             store.append_history(thread_id, done)
             return done
 
