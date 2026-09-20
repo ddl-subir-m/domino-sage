@@ -843,7 +843,9 @@ with uncommitted files is not this: Sage commits on a timer, so that state is or
 in seconds. What makes it a [[Problem]] rather than an error that already happened is that it
 stands: the save that failed is past tense, but a remote that refused once refuses the next turn
 too, so every turn after it silently does something other than what Chat says it does. See
-[ADR-0064](docs/adr/0064-a-failed-save-is-past-tense-and-unsent-work-is-not.md).
+[ADR-0064](docs/adr/0064-a-failed-save-is-past-tense-and-unsent-work-is-not.md), and
+[ADR-0065](docs/adr/0065-a-save-with-nothing-new-to-commit-still-has-something-to-send.md) for the
+reader it is read with, `git.unsent()`.
 _Kind_: word
 _Avoid_: ahead, unpushed, unsynced, out of sync (git internals rather than work someone did),
 unsaved (the commit did happen), uncommitted or dirty (a different state, and not this one),
