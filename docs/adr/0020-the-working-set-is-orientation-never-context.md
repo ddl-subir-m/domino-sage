@@ -42,6 +42,14 @@ oversight; it is the design.
 `docs/workbench/chat.md` had already reached the same answer for the leaf case — "Pins are not
 prompt context" — a year before anyone asked the question about parents.
 
+That sentence was rewritten by [#468](https://github.com/ddl-subir-m/domino-sage/issues/468) and
+the decision here is unchanged. A pinned leaf now seeds a new Thread's Session context, so it
+reaches a prompt — as a CHIP, minted through `add_thread_context`, which is one of the two doors
+the consequence below already names. That is the pool being spent on a Conversation, which is
+what this ADR says the pool is for; what stays refused is handing the model the LIST. The
+false-availability argument does not reach it either: a chip is the mechanism by which a Chat
+turn reaches a Data Source, so a seeded table is one the agent can actually read.
+
 ## Why not deleted
 
 ADR-0018 rejected deriving the rail from Bindings and chips, because staging a Resource before you

@@ -856,6 +856,15 @@ a.sw-topnav-link {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The mark on a pinned leaf. `flex: none` so it never takes width from the name beside it, which
+   is the one thing in the row that must not truncate. */
+.sw-tree-leaf-pin {
+  flex: none;
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-11);
+  color: var(--gray-500);
+}
 .sw-tree-leaf-acts { flex: none; display: flex; gap: 4px; }
 .sw-tree-crumb {
   display: flex;

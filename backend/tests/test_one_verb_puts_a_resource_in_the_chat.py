@@ -42,14 +42,20 @@ def _flat(src: str) -> str:
 
 TREE_FLAT = _flat(TREE)
 
-# The whole Pin/Unpin ternary in one string, which pins four claims at once: Unpin is a bare Button,
-# Pin is the one inside the Tooltip, the title is built by the pack, and the assistant is named by a
-# token rather than in ink.
+# The whole Pin/Unpin ternary in one string, which pins three claims at once: each arm's words are
+# inside a Tooltip wrapping that arm's own Button, both titles are built by the pack, and neither
+# sentence is in ink.
+#
+# Unpin was a bare Button here until #468. It became the durable act's undo the moment a pinned leaf
+# started every new conversation, and a bare control beside an explained one leaves the person who
+# has to reverse the standing decision as the only one not told what reversing it reaches.
 PIN_BRANCH = (
     "pinned "
-    "? h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin') "
+    "? h( Tooltip, { title: SW.brand.text( "
+    '"Removes this from new conversations. Your current conversation doesn\'t change." '
+    "), }, h(Button, { size: 'small', type: 'link', onClick: onUnpin }, 'Unpin') ) "
     ": h( Tooltip, { title: SW.brand.text( "
-    "'Pins this in the @ menu. It does not send it yet.' "
+    '"Adds this to every new conversation. Your current conversation doesn\'t change." '
     "), }, h(Button, { size: 'small', type: 'link', onClick: onPin }, 'Pin') )"
 )
 
@@ -156,34 +162,48 @@ def test_the_rename_moved_no_wiring():
     assert "key: inContext ? 'remove-resource-from-conversation' : 'mention'," in PANEL
 
 
-def test_pin_says_that_it_does_not_send_anything():
-    """Pin reorders the `@` menu and nothing else. Unlabelled beside the attach control, it read as
-    a second way to attach. The sentence is only on screen if it is a Tooltip's title AND that
-    Tooltip is the thing wrapping Pin, so assert the wrapper, not the loose string."""
+def test_pin_says_which_conversations_it_reaches():
+    """Pin's old sentence — *Pins this in the @ menu. It does not send it yet.* — was true when the
+    only thing a pin bought was a menu sort, and false from #468 onward. Both arms now name both
+    halves: the conversations the act changes, and the one it does not.
+
+    The wrapper is asserted rather than the loose string, for the reason it always was: a sentence is
+    only on screen if it is a Tooltip's title AND that Tooltip is the thing wrapping the control.
+
+    What it says on SCREEN, off a rendered row rather than off this source, is in
+    `test_a_pin_reaches_the_next_conversation.py`. This assertion pins the shape; that one pins the
+    behaviour, and neither is the other's evidence."""
     assert "Tooltip" in TREE.split("= antd;")[0], "Tooltip is not destructured from antd"
-    assert PIN_BRANCH in TREE_FLAT, "the Pin/Unpin branch is not the shape the tooltip needs"
+    assert PIN_BRANCH in TREE_FLAT, "the Pin/Unpin branch is not the shape the tooltips need"
+    assert "Pins this in the @ menu" not in TREE, "the sentence that stopped being true is back"
 
 
-def test_the_pin_tooltip_goes_through_the_brand_pack():
-    """Counted, so a second copy of the sentence cannot appear outside `SW.brand.text`."""
-    assert TREE_FLAT.count("Pins this in the @ menu") == 1
-    assert "SW.brand.text( 'Pins this in the @ menu." in TREE_FLAT
+def test_the_pin_tooltips_go_through_the_brand_pack():
+    """Counted, so a second copy of either sentence cannot appear outside `SW.brand.text`."""
+    for words in ("Adds this to every new conversation",
+                  "Removes this from new conversations"):
+        assert TREE_FLAT.count(words) == 1
+        assert f'SW.brand.text( "{words}' in TREE_FLAT
 
 
-def test_only_pin_carries_the_tooltip():
-    """Unpin needs no explanation — the thing is already pinned, and whoever pinned it has seen the
-    tooltip. Counted over the `h(` call rather than the word, so that importing another antd
-    component whose name sits beside Tooltip in the destructure does not read as a second one.
+def test_both_arms_of_the_pin_control_carry_a_tooltip():
+    """Counted over the `h(` call rather than the word, so that importing another antd component
+    whose name sits beside Tooltip in the destructure does not read as one more.
 
     Counted over `LeafRow`, which is the row this claim is about. The folder row beside it carries
-    one too, for the opposite reason: its act is sometimes UNAVAILABLE, and a disabled control that
-    does not say why is the dead end (ADR-0029).
+    one too, for a different reason: its act is sometimes UNAVAILABLE, and a disabled control that
+    does not say why is a dead end (ADR-0029).
 
-    Two, not one, since ADR-0048: the act's own hover moved off the native `title` attribute onto
-    the same `Tooltip` the folder row uses, so one act drawn at two grains no longer reads as two
-    affordances. Unpin is still the bare Button `PIN_BRANCH` above pins it to."""
+    Three, and each arrival is on the record. Two since ADR-0048, when the act's own hover moved off
+    the native `title` attribute onto the same `Tooltip` the folder row uses, so one act drawn at two
+    grains no longer read as two affordances. The third is Unpin's (#468): it had none while it
+    undid a menu sort, and it undoes a standing decision about every conversation now.
+
+    The pin MARK is not among them, deliberately. It is a status rather than an act, and it carries a
+    native `title` — the grain this tree draws facts at, two lines above on `sw-tree-leaf-name`. Drawn
+    as a Tooltip it would hover exactly like the two controls beside it."""
     leaf = _flat(TREE.split("function LeafRow(")[1].split("\n  }")[0])
-    assert leaf.count("h( Tooltip,") == 2
+    assert leaf.count("h( Tooltip,") == 3
 
 
 # Membership stopped being a gate in front of the verb ------------------------
