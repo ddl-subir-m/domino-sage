@@ -52,8 +52,8 @@ SAGE_AGENTS: tuple[str, ...] = (
 # The direct vendor keys OpenCode auto-detects and can reach a model with WITHOUT going through the
 # shim's provider. Held here for the same reason `SAGE_AGENTS` is: the caller reads the environment
 # and this module stays pure, and the failure being reported is one where the shim never ran, so the
-# names cannot be sourced from the wiring that was skipped. `service.py` holds its own copy for the
-# turn-summary it computes; that copy goes when the event does (#474).
+# names cannot be sourced from the wiring that was skipped. `service.py` held a second copy for the
+# turn-summary it computed; #474 deleted that event, so this is now the only one.
 VENDOR_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY")
 
 
