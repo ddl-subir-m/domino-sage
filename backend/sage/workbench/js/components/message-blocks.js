@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useEffect } = React;
+  const { createElement: h, useState, useEffect, useRef } = React;
   const { Button, Table, Tooltip, Tag, Space, Input, Spin } = antd;
   const {
     CopyOutlined, RightOutlined, DownOutlined, PushpinOutlined, ReloadOutlined,
@@ -2021,6 +2021,99 @@ window.SW = window.SW || {};
     );
   }
 
+  // A turn's STEPS, folded behind one face (ADR-0063). An investigation spends most of its reads
+  // finding out where to read — sixty table cards for one question, measured — and every one of
+  // them was drawn as though it were the answer.
+  //
+  // The same fold as `LeadInFold` above, and deliberately the same one rather than a new pattern:
+  // open is view state held here and nowhere else, it closes on reload, and the face counts what
+  // is behind it so the gap in the transcript reads as work rather than as a hole.
+  //
+  // What is NOT the same is that the rows behind this face have not been READ. A `.table.json` is
+  // the only Artifact kind that costs a round trip, and a sixty-row investigation is sixty of them
+  // through the Domino proxy (#451) — so the fetch is deferred with the render, and the one moment
+  // that can start it is somebody opening this.
+  //
+  // The face never says what was IN the rows, only how many there were. That is what makes the
+  // fallback safe: a viewer who sees a step they did not need has a cluttered transcript, and a
+  // viewer whose answer was folded away has been lied to with no way to find out.
+  function WorkingReadsFold({ block }) {
+    const [open, setOpen] = useState(false);
+    // ONE state, the shape `SandboxRun` uses two hundred lines up and for the same reason: `null`
+    // is "nobody has asked yet" and an array is the answer, so "still reading" is derived rather
+    // than stored and cannot disagree with itself.
+    //
+    // There is no third, failed state here, and that is deliberate rather than an omission.
+    // `blocksForArtifacts` catches per ROW — a file that will not read comes back as its own
+    // "Open the file" link, in its own place in the order — so this promise has no rejection to
+    // report, and a branch nothing can reach is a branch nothing has run.
+    // `test_a_fold_whose_rows_cannot_be_read_offers_the_way_back` is that claim.
+    //
+    // One row does come back as NOTHING rather than as a link: a `.table.json` that is there but
+    // blank is hidden outright, and it is hidden the same way inside this fold as outside it. So
+    // `count` — which is what the turn WROTE — can be larger than the number of cards behind the
+    // face. The face says "read N tables", which is a claim about reads and stays true; it is
+    // worth knowing that the two numbers are not the same number.
+    const [rows, setRows] = useState(null);
+    // Whether a read is already on its way. A ref rather than state, because nothing renders it
+    // and a re-render must not reset it.
+    //
+    // Without this, closing and reopening the fold before the first read lands reads everything
+    // twice. The deps below go `[true, true]` → `[false, true]` → `[true, true]`, which React
+    // sees as changed, and `rows` is still `null` so the guard lets it through. On the sixty-read
+    // investigation this card exists for, one impatient double-click is sixty duplicate round
+    // trips through the Domino proxy — the exact cost #451 measured and this ticket defers.
+    const inFlight = useRef(false);
+    const items = block.items || [];
+    const count = typeof block.count === 'number' ? block.count : items.length;
+    const reading = open && rows === null;
+
+    // The condition IS the trigger, not the click: a fold can be open without anyone having
+    // clicked it, which is a state a re-render can arrive in on its own.
+    useEffect(() => {
+      if (!(open && rows === null) || inFlight.current) return;
+      inFlight.current = true;
+      SW.hydrateArtifacts(items).then((blocks) => {
+        inFlight.current = false;
+        setRows(blocks);
+      });
+    }, [open, rows === null]);
+
+    return h(
+      'div',
+      { className: 'sw-leadin sw-working-reads' },
+      h(
+        'div',
+        { className: 'sw-leadin-head' },
+        h('span', { className: 'sw-leadin-face' },
+          SW.brand.text('{assistantName} read {count} table{plural} to answer this',
+                        { count, plural: count === 1 ? '' : 's' })),
+        h(
+          Button,
+          { type: 'link', size: 'small', onClick: () => setOpen(!open) },
+          open ? 'Hide the steps' : 'Show the steps'
+        )
+      ),
+      open && h(
+        'div',
+        { className: 'sw-leadin-turns' },
+        reading && h('div', { className: 'sw-block-sub' }, 'Reading those tables…'),
+        // Opened onto nothing, which is a dead end and needs a sentence rather than an empty box.
+        // Every row behind this face can come back as no card at all: a `.table.json` that is
+        // there but blank draws neither a card nor a link, inside this fold exactly as outside it.
+        // The face still counted them, because `count` is what the turn WROTE.
+        !reading && rows && rows.length === 0 && h(
+          'div',
+          { className: 'sw-block-sub' },
+          count === 1
+            ? "That table's file is empty, so there is nothing to show here."
+            : "Those tables' files are empty, so there is nothing to show here."
+        ),
+        !reading && (rows || []).map((b, i) => h(SW.MessageBlock, { key: `wr_${i}`, block: b }))
+      )
+    );
+  }
+
   function FileCard({ block }) {
     const href = `./api/project/file/raw?path=${encodeURIComponent(block.path || '')}`;
     return h(
@@ -2193,6 +2286,8 @@ window.SW = window.SW || {};
         return h(BuildRun, { block });
       case 'lead_in_fold':
         return h(LeadInFold, { block });
+      case 'working_reads_fold':
+        return h(WorkingReadsFold, { block });
       case 'plan_card':
         return h(SW.PlanCard, { planId: block.planId });
       case 'build_plan':

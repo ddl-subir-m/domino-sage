@@ -208,7 +208,7 @@ def test_the_preference_leaves_every_other_status_on_screen():
         {"type": "error", "message": "Timed out. Try a narrower question."},
     )
     # Started ON and then put away, which is the round trip that makes the TABLE the thing under
-    # test. Thirty-one mint sites push straight onto the message and only the two governed ones go
+    # test. Thirty-two mint sites push straight onto the message and only the two governed ones go
     # through the filter, so reading a transcript that began with the preference off would leave
     # these two statuses on screen whatever the `status` row said — a green that proves the mint
     # site and not the rule. `setDataAccessShown` re-partitions every block through `pushBlock`, so
