@@ -59,7 +59,32 @@ class FakeOpenCode:
     Polling: `is_running` reports True exactly once per prompt, then False. The orchestrator's loop
     needs to SEE a turn start before it will believe it finished (`appeared and not running`), and a
     fake that was never running would sit in the 12-second not-appeared timeout instead — turning
-    every test into a 12-second test. One True is the shortest script that exercises the real exit."""
+    every test into a 12-second test. One True is the shortest script that exercises the real exit.
+
+    THIS FAKE DISPATCHES SYNCHRONOUSLY AND THE REAL DRIVER DOES NOT, which is safe for every caller
+    in the tree today and is a trap for the next one. `send_prompt` here marks the session running
+    and performs the scripted writes inline, both before it returns. `OpenCodeClient.send_prompt`
+    posts to `/prompt_async` and returns before the turn begins (`driver/opencode.py:354`), and
+    `/session/status` does not go busy with the POST — so a real "is it still running?" a moment
+    after dispatching answers "not yet" far more often than "done". `wait_for_idle` carries
+    `appear_grace_s` and an `appeared` latch for exactly that, and the poll loops in `_chat_stream`
+    and `_build_stream` keep the same latch themselves.
+
+    The hazard is not that the gap exists; it is that this fake makes the CORRECT wait and the
+    BROKEN one indistinguishable. A wait written as "return on the first not-busy reading" is green
+    here and returns on its first poll against the real server. Measured on #454: a bounded wait
+    after a dispatch ended the slice immediately, the work it had just asked for was interrupted,
+    and the feature did nothing at all — with seventeen tests green over it.
+
+    Reachable today? No, and it was checked rather than assumed: every waiter in `sage/` is either
+    `wait_for_idle` (which carries the grace), a poll loop holding the latch, or a post-interrupt
+    wait where returning on the first not-running reading is the point. Derive that population
+    again rather than trusting this sentence — `grep -rn '\\.is_running(\\|\\.wait_for_idle('
+    sage/` — because the list rots the next time somebody waits on a session.
+
+    If you are writing a new wait that follows a dispatch, this fake cannot test it. Subclass and
+    lag the status the way the server does; `DispatchIsAsync` in
+    `test_a_turn_stopped_at_the_ceiling_keeps_what_it_measured.py` is one that does."""
 
     def __init__(self, workspace: Path, turns: list[Turn] | None = None) -> None:
         self.workspace = Path(workspace)
