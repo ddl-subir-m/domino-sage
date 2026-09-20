@@ -22,6 +22,7 @@ jumps when it is clicked breaks the structure the person just drilled through to
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -32,6 +33,7 @@ from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
 _HARNESS = Path(__file__).resolve().parent / "js" / "pin_mark_harness.mjs"
+_JS = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
 
 needs_node = pytest.mark.skipif(
     shutil.which("node") is None, reason="node is not on PATH (it is in the Sage image)"
@@ -232,6 +234,34 @@ def test_a_pin_that_cannot_be_seeded_still_opens_the_conversation(tmp_path: Path
 
 
 # ---- the tree half -------------------------------------------------------------------------
+
+
+def test_every_icon_the_tree_destructures_is_really_in_the_bundle():
+    """The one hole a React-props harness cannot see, and it ships a blank tree.
+
+    `tests/js/*_harness.mjs` stubs icons as `new Proxy({}, { get: (_, name) => String(name) })`,
+    which answers to ANY identifier. So a misspelt icon is a valid element type in every harness and
+    `undefined` in the browser, where destructuring it throws "Element type is invalid" and takes
+    out every Data Source leaf on the page. Measured by the review on this branch: renaming
+    `PushpinFilled` to `PushpinFilledXX` left all fourteen tests in this file green.
+
+    Asserted against the VENDORED BUNDLE rather than a list written here, because a list is the same
+    claim one indirection further from the thing that has to be true. The names are derived from the
+    destructure rather than named, so an icon added later is covered without anyone remembering to
+    come back.
+
+    Scoped to `resource-tree.js`, which is this ticket's file. The hole is not: every component
+    carrying a `} = icons` destructure has it, and `grep -rn "} = icons" sage/workbench/js` is how
+    to find them — a derivation, not a file list, which rots the next time somebody adds a component.
+    """
+    tree = (_JS / "components" / "resource-tree.js").read_text()
+    bundle = (_JS.parent / "vendor" / "icons.umd.min.js").read_text()
+    names = re.search(r"const \{([^}]*)\} = icons;", tree).group(1)
+    names = [n.strip() for n in names.split(",") if n.strip()]
+
+    assert len(names) >= 3, f"the destructure was not read: {names}"
+    missing = [n for n in names if not re.search(rf"\b{re.escape(n)}\b", bundle)]
+    assert missing == [], f"resource-tree.js destructures icons the bundle does not export: {missing}"
 
 
 def _leaves(steps: list[dict]) -> list[dict]:

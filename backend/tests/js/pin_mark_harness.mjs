@@ -253,6 +253,15 @@ function leavesOf(nodes) {
       leaf.mark = { title: n.title, label: n.label, clickable: n.clickable, role: n.role,
                     // The icon the mark wraps, which carries an `aria-label` of antd's own unless
                     // it is hidden — the one thing that would speak over the sentence beside it.
+                    //
+                    // PROP-LEVEL, and it has to be said out loud because it looks stronger than it
+                    // is. Nothing here renders antd's `AntdIcon`, so this reports the prop the
+                    // author wrote, not the attribute the browser ends up with. The two agree only
+                    // because the vendored bundle spreads restProps AFTER its own
+                    // `{role:"img","aria-label":l.name}` — verified against
+                    // `vendor/icons.umd.min.js` on 2026-09-19. A bundle upgrade that moved that
+                    // spread would put "pushpin" back over the sentence with this still green, so
+                    // re-check the spread order when the bundle moves, not when this test fails.
                     iconHidden: null };
       continue;
     }
