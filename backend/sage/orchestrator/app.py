@@ -1706,8 +1706,17 @@ def diag() -> JSONResponse:
         `domino_data` and `pyarrow` imports actually resolved to. `data_library` says yes or no;
         this says who said it, which is the only way to compare Sage's answer against the same
         question asked from the builder's `bash` step
-      - model_calls: how many inferences reached the shim THIS turn. 0 while a turn is live means the
-        model call never got to the gateway (OpenCode stuck earlier, e.g. on a tool), not a gateway hang
+      - model_calls: how many inferences reached the shim THIS turn. Reset at a Chat turn's grant and
+        before each of a Build turn's sends, so on a phased build it counts THIS PHASE (#471). The
+        plan-draft door (`draft_handoff_plan`) resets neither, so its own reading is still a carry.
+        0 while a turn is live means OpenCode has sent no inference yet. It does NOT mean no gateway
+        call is in flight, and so it cannot on its own tell a stuck OpenCode from a gateway hang:
+        EVERY caller that reaches the gateway directly rather than through the shim bypasses this
+        counter by design (scope.py says why), and several of them run inside a live turn — the
+        ask-slot classifiers, `askmodel`'s delegated call, and the withhold bisection, which can have
+        many calls in flight at once. Do not read that as the population: it is a sample, and a list
+        written here cannot know it is short. `test_model_calls_answers_this_turn_on_chat.py` derives
+        the population instead, and names the one shape even that derivation cannot see
       - last_gateway_error: set if a model call failed/severed
       - classifier_degradations: how many judgements THIS turn asked one of the four ask-slot
         classifiers for and did not get. Anything above 0 means the turn ran with a default in
