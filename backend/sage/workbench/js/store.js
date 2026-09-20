@@ -1989,9 +1989,9 @@ window.SW = window.SW || {};
   // block type added to the dispatcher without a row here reds there, and until it does the new
   // card shows, which is the safe direction for a disclosure.
   //
-  // WHY THIRTY-TWO ROWS LOOK UNUSED, and why deleting them would be a defect. `pushBlock` is
+  // WHY THIRTY-THREE ROWS LOOK UNUSED, and why deleting them would be a defect. `pushBlock` is
   // reached two ways. At MINT it is reached from the two governed sites only — `putDataUsed` and
-  // the `investigation-state` status — because the other thirty-two blocks are pushed straight
+  // the `investigation-state` status — because the other thirty-three blocks are pushed straight
   // onto the message, so on a first read their rows are never consulted. On a RE-PARTITION it is
   // reached for every block on the message, because `applyDataAccess` puts the whole sequence back
   // through it, and that is the path the drawer's checkbox and the answer's nudge both take.
@@ -4238,7 +4238,7 @@ window.SW = window.SW || {};
 
     // The table's decision about one block, so a test can DERIVE which types the preference
     // governs instead of reading the rows and trusting them. ADR-0062 claims it governs
-    // `data_used` and the investigation line and "nothing else", and thirty-two rows spell that by
+    // `data_used` and the investigation line and "nothing else", and thirty-three rows spell that by
     // sharing one constant — which means flipping any of them to hide was a one-word edit that
     // cost a viewer their table receipts and reddened nothing. Now the claim is a derived list.
     hidesForDataAccess: (block) => hiddenByDataAccess(block),
