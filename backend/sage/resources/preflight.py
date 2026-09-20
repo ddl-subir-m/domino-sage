@@ -274,6 +274,16 @@ def tool_capability_note(capabilities: list[str] | None, model: str = "") -> str
     So the sentence is worded as the uncertainty it is. It says the model does not ADVERTISE tool
     support and that Chat turns always send tools; it does not say the model cannot use them.
 
+    THE RULE THAT FOLLOWS FROM THAT, and it binds readers of this function rather than this
+    function: nothing downstream may treat the mark as EVIDENCE. Not a filter on any picker, not a
+    refusal on any save, and not a condition on any other surface's warning — #469 observes what a
+    model actually did with tools on a turn, and it is deliberately NOT gated on this (decided
+    2026-09-20, across #463 and #469). The two disagreeing is the product: a model marked "doesn't
+    advertise tool support" that then returns tool calls is a gateway metadata fault, caught with
+    nobody watching. Gate one on the other and that finding becomes unreachable — and the gate
+    would today be shut by `domino-gcp/claude-sonnet-5` and `domino/gemini-3.7-flash`, which both
+    declare bare `chat` and both work, so it fails in the false-free direction.
+
     Empty capabilities mean "not known" rather than "none", which is the same reading the chat-model
     guard in `service.set_chat_pick` takes of the same list — an unknown must not be reported as a
     fault. `chat` is required before the note is worth making: a row that does not claim to hold a
