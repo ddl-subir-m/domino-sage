@@ -81,9 +81,15 @@ const ALIASES = [
     problem: null, capability_note: null,
     reasoning_efforts: [], reasoning_efforts_with_tools: [],
   },
+  // Stopped AND quiet about tools — the only row here carrying BOTH server fields, which is what
+  // lets a test tell a separate field from a lucky ordering. Every other fixture row has at most
+  // one of them, and "the mark is not in `problem`" is only ever shown on a row where `problem` has
+  // nothing to say unless one row has both.
   {
-    name: 'local-llm', display_name: 'Mistral (Domino-hosted)', capabilities: ['chat', 'tools'],
-    serving: false, reasoning_efforts: [], reasoning_efforts_with_tools: [], capability_note: null,
+    name: 'local-llm', display_name: 'Mistral (Domino-hosted)', capabilities: ['chat'],
+    serving: false, reasoning_efforts: [], reasoning_efforts_with_tools: [],
+    capability_note: "local-llm doesn't advertise tool support, and every Chat turn sends tools. "
+      + 'The capability list is what the provider last reported, not a test, so it may work anyway.',
     problem: 'This model is Stopped, so turns using it will fail. Start that endpoint, or pick a different model.',
   },
   // Never offered: an embeddings-only Alias cannot hold a conversation, and the panel reuses the

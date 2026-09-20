@@ -33,7 +33,12 @@ import pytest
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
 from sage.resources.preflight import tool_capability_note
-from sage.resources.provider import FakeResourceProvider, LlmAlias
+from sage.resources.provider import (
+    FakeResourceProvider,
+    HostedEndpoint,
+    LlmAlias,
+    ResourceUnavailable,
+)
 from sage.router.models import ModelCatalog
 
 # `tools` on the first and not on the second, which is the live shape rather than an invented one:
@@ -61,14 +66,15 @@ def _template(tmp: Path) -> Path:
     return t
 
 
-def _orch(tmp_path: Path) -> Orchestrator:
+def _orch(tmp_path: Path, aliases=None, endpoints=()) -> Orchestrator:
     orch = Orchestrator(
         workspace_dir=tmp_path / "mnt" / "code",
         template=_template(tmp_path),
         gateway=FakeGatewayClient(),
         catalog=CATALOG,
         project_id="Sage",
-        resources=FakeResourceProvider(list(ALIASES)),
+        resources=FakeResourceProvider(list(aliases or ALIASES),
+                                       hosted_endpoints=list(endpoints)),
     )
     orch.project(start_preview=False)
     return orch
@@ -262,3 +268,61 @@ def test_the_embeddings_guard_beside_it_still_refuses(tmp_path):
         [*ALIASES, LlmAlias("id-embed", "embed-3", "Embeddings", None, ["embeddings"], {})])
     with pytest.raises(ValueError, match="not a chat model"):
         orch.set_chat_pick("embed-3", None)
+
+
+# ---- the separate pass: what did EVERY fixture above happen to share? ---------------------------
+#
+# Every capability fixture in this file has a working Alias listing and every alias in it serves,
+# because those are the conditions that made the fixtures easy to write. Neither was chosen, and a
+# suite that accretes from the cases that came up carries its masking state in every case at once —
+# so a plant goes green for the same reason the bug would hide. The review's HIGH on this ticket was
+# one of these (every fixture used a bare model name over a join that was dead on prefixed ones),
+# and #469 hit the same shape on its own keying tests the same afternoon.
+#
+# These three are written to LACK the property the rest share, one each.
+
+
+def test_a_listing_that_never_landed_marks_nothing(tmp_path):
+    """No listing is no evidence about capabilities, and the field says so by being present.
+
+    PRESENT carrying None, not missing. `model_assignments` returns early on this path, so the key
+    is set in the slot dict itself as well as in the join below it — and `null` and `undefined`
+    render identically in the panel today, which is exactly why this wants a test rather than a
+    second comment. Nothing downstream would fail if it regressed.
+    """
+    orch = _orch(tmp_path)
+    orch.set_catalog(ask="chat-only")
+    assert _slot(orch, "ask")["capability_note"]
+
+    def down():
+        raise ResourceUnavailable("The LLM Gateway did not answer.", None)
+
+    orch._resources.list_llm_aliases = down
+    panel = orch.model_assignments()
+    row = next(r for r in panel["slots"] if r["slot"] == "ask")
+    assert panel["error"] == "The LLM Gateway did not answer."
+    assert "capability_note" in row
+    assert row["capability_note"] is None
+
+
+def test_a_stopped_model_that_also_advertises_no_tools_carries_both_sentences(tmp_path):
+    """The two fields are independent, and this is the row that proves it rather than asserting it.
+
+    Every other fixture here serves, so `problem` is None on all of them and "the mark is not in
+    `problem`" was only ever shown on rows where `problem` had nothing to say. A row carrying BOTH
+    is the one that can tell a separate field from a lucky ordering — and the panel comment claims
+    they are "drawn together when both apply", which is a sentence nothing held until now.
+    """
+    stopped = [*ALIASES,
+               LlmAlias("id-stopped", "stopped-and-toolless", "Stopped, and quiet about tools",
+                        None, ["chat"], {},
+                        endpoint_url="https://domino.example.com/models/mistral/v1")]
+    orch = _orch(tmp_path, stopped,
+                 [HostedEndpoint("ep-1", "mistral-endpoint",
+                                 "https://domino.example.com/models/mistral", "Stopped")])
+    orch.set_catalog(ask="stopped-and-toolless")
+    row = _slot(orch, "ask")
+    # Preflight's verdict, in its own words, unchanged by the field beside it.
+    assert row["problem"] and "Stopped" in row["problem"]
+    # And the mark, in full, not truncated into the other sentence or displaced by it.
+    assert row["capability_note"] == tool_capability_note(["chat"], "stopped-and-toolless")

@@ -345,6 +345,22 @@ def test_a_lock_that_closes_every_model_still_takes_the_shadow_off():
     assert drawn["problems"] == []
 
 
+def test_a_row_can_carry_a_verdict_and_a_capability_note_at_once():
+    """The two are independent fields and this is the row that shows it (#463).
+
+    Written in the separate pass that asks what every OTHER fixture happens to share: all of them
+    serve, so `problem` is silent on all of them, and "the mark is not in `problem`" had only ever
+    been shown where `problem` had nothing to say. `local-llm` is the harness's stopped alias and
+    now also declares no `tools`, so a slot on it draws both sentences — which is what the component
+    comment claims and what nothing held until now.
+    """
+    (drawn,) = _drawn([{"seed": {"plan": {"model": "local-llm"}}}])
+    (problem,) = drawn["problems"]
+    assert "Stopped" in problem
+    (capability,) = drawn["capabilities"]
+    assert "doesn't advertise tool support" in capability
+
+
 def test_the_capability_note_survives_the_gate_that_eats_problem():
     """#463, and this test is the entire reason the mark is a field of its own.
 
