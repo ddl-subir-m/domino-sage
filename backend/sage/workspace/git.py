@@ -204,7 +204,15 @@ def push(path: Path) -> SaveResult:
     rejected (e.g. a non-fast-forward — the caller should pull first)."""
     if not has_remote(path):
         return SaveResult(pushed=False, detail="committed (no remote)")
-    r = _git(path, "push", check=False)
+    # A branch with no upstream is refused outright by a bare `git push` — `fatal: the current
+    # branch X has no upstream branch`, exit 128, which reads here as `rejected` and is the one
+    # refusal a retry genuinely could fix. `unsent()` calls that branch the worst case rather than
+    # a quiet one (#459), so the save path now drives a push at it; setting the upstream is what
+    # makes that answer true instead of a permanent refusal. Only when there is none: a branch that
+    # already tracks something keeps `push.default` and its own upstream.
+    tracked = _git(path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False)
+    args = ["push"] if tracked.returncode == 0 else ["push", "-u", "origin", "HEAD"]
+    r = _git(path, *args, check=False)
     if r.returncode != 0:
         detail = f"push failed: {(r.stderr or r.stdout).strip()[:200]}"
         return SaveResult(pushed=False, detail=detail, rejected=True)
@@ -434,3 +442,44 @@ def incoming(path: Path) -> Incoming:
     changed = _git(path, "diff", "--name-only", f"HEAD...{ref}", check=False)
     files = [f for f in changed.stdout.splitlines() if f.strip()]
     return Incoming(_git(path, "rev-parse", ref, check=False).stdout.strip(), files)
+
+
+def unsent(path: Path) -> bool:
+    """Whether this branch holds commits the remote has never been given.
+
+    The mirror of `incoming()` and built the same way — a `rev-list --count` over refs that a push
+    or a fetch already left behind, and **no network call of its own**. That is sound because the
+    refs record what the remote actually took: a refused push does not advance `origin/<branch>`,
+    and a successful one does.
+
+    Where it stops being a mirror is a missing `origin/<branch>`. `incoming()` reads that as
+    nothing to pull, which is right for it; here it means nothing has EVER been sent, which is the
+    worst case rather than a quiet one, so it answers True. A repo with no commits at all is the
+    other side of the same missing ref and answers False — there is no HEAD to send, and a `git
+    push` on an empty repo fails in a way the caller would read as a refusal.
+
+    False without a remote, and false outside a repo root: neither is saved through a push, and a
+    workspace that is not the root of its own repo is not saved through git at all (#20).
+    """
+    if not is_repo_root(path) or not has_remote(path):
+        return False
+    if _git(path, "rev-parse", "--verify", "--quiet", "HEAD", check=False).returncode != 0:
+        return False
+    branch = current_branch(path)
+    if branch == "HEAD":
+        # Detached. `current_branch`'s `or "main"` does not catch this — `rev-parse --abbrev-ref`
+        # succeeds and prints the literal "HEAD" — and `origin/HEAD` RESOLVES in a clone, which
+        # every Domino workspace is, so the naive read counts against the remote's default branch.
+        # There is no branch to send and `git push` refuses a detached head anyway.
+        return False
+    ref = f"origin/{branch}"
+    if _git(path, "rev-parse", "--verify", "--quiet", ref, check=False).returncode != 0:
+        return True
+    counted = _git(path, "rev-list", "--count", f"{ref}..HEAD", check=False)
+    if counted.returncode != 0:
+        # Follows the missing-ref branch, not the zero one. A count that could not be read is no
+        # evidence that the remote has everything, and "the remote has everything" is the single
+        # answer this reader must never guess — it is the one that strands the work.
+        return True
+    ahead = counted.stdout.strip()
+    return bool(ahead) and ahead != "0"
