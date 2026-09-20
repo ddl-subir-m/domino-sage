@@ -200,7 +200,9 @@ ISSUE and the lock is per MACHINE, so a session working a ticket you are not rea
 in them. Measured 2026-09-19: a landing session swept three issues, missed a fourth holding the
 slot with a live run, and told two sessions to start on top of it.
 
-    for p in $(pgrep -f "bin/pytest"); do
+    for p in $(pgrep -f "[p]ytest"); do
+      exe=$(ps -o comm= -p $p); [ -x "$exe" ] || continue        # stat, do not pattern-match
+      case "$exe" in *python*|*Python*|*pytest*) ;; *) continue ;; esac
       kids=$(pgrep -P $p | wc -l | tr -d ' ')
       cwd=$(lsof -a -p $p -d cwd -Fn | grep '^n' | head -1 | cut -c2-)
       echo "pid $p kids=$kids cwd=${cwd:-?}"        # 8+ children = a full -n auto
@@ -221,14 +223,37 @@ to every other one running it. Worse, it is INTERMITTENT: it fires only when the
 long enough to be scanned, so one session sees it, the next cannot reproduce it, and it gets filed
 as a fluke.
 
+**And underneath that false-BUSY sat a false-FREE, which is the dangerous direction.** Measured
+2026-09-20: `pgrep -f "bin/pytest"` **cannot see a suite started as `python -m pytest`**, because
+argv is `.venv/bin/python -m pytest` and never contains `bin/pytest`. Reproduced twice against a
+live run: the documented pattern returned EMPTY while `pgrep -f "[p]ytest"` returned the
+interpreter. So `uv run pytest` is visible and `python -m pytest` is not, the same session can be
+visible one hour and invisible the next by changing nothing but how it invokes, and **a miss reads
+as "the box is free"** — which is what starts a second `-n auto` on a live run. A landing session
+used the old sweep all afternoon and told sessions the box was clear on readings that could not have
+seen half the ways of running. Nothing collided, and the only reason is that every session ordered
+by the CLAIM MARKER rather than by the machine reading. That is the marker rule earning its keep,
+not a near miss to be relieved about.
+
+Note the shape: the rule above was written about a pattern matching too MUCH, was corrected for that,
+and the same sentence was wrong in the opposite direction at the same time. A filter has two failure
+modes and finding one of them is no evidence about the other.
+
 `[ -x "$exe" ]` is the part doing the work. Matching argv[0] against `*/bin/pytest*` is still
 pattern-matching — measured, a process whose argv[0] is `/fake/path/bin/pytest` passes that glob and
 reports REAL. **Shape alone is a claim; the stat is the check.**
 
-And do not reach for the `bin/py[t]est` bracket trick. It stops the pattern matching its own literal
-text and nothing else, so it holds only where the bracketed form is the SOLE occurrence — it breaks
-the moment the plain string appears in a comment, a message, or a neighbouring variant of the same
-script. Measured failing here for exactly that reason.
+Do not reach for a bracket trick to make the PATTERN correct. `bin/py[t]est` stops the pattern
+matching its own literal text and nothing else, so it holds only where the bracketed form is the
+SOLE occurrence — it breaks the moment the plain string appears in a comment, a message, or a
+neighbouring variant of the same script. Measured failing here for exactly that reason.
+
+The sweep above uses `[p]ytest`, and that is not a counter-example: **the pattern's job there is to
+OVER-COLLECT, never to decide.** It is deliberately wide enough to catch every invocation, and it
+duly also catches the `zsh -c` wrapper quoting it and the `uv` launcher. Both are then thrown out by
+the stat and the child count, not by a cleverer string. A bracket trick load-bearing for the VERDICT
+is the mistake; one used to widen a candidate set that structure will filter is not. If you find
+yourself tuning the pattern to exclude something, move that exclusion into the stat instead.
 
 This is one instance of a class that cost three separate findings in one afternoon: **a scanner
 cannot tell a signal from a quote of the signal.** `git log -S` answered about two docstrings that
