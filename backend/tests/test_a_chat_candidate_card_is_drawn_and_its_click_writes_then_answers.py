@@ -100,10 +100,16 @@ def test_the_click_writes_the_record_first_and_then_asks_the_question_again():
     assert out["routes"].index("api/threads/thr_1/chat/stream") > 0
     # The other cards' fields ride along at their defaults, because a Chat turn carries every gate
     # flag the route reads (#196, #386) and this click answers only the table one.
+    #
+    # `alreadyAsked` is the odd one out and is False here on purpose (#454). It is not a gate flag:
+    # it says the question is already on the Thread, which is true of Continue after a ceiling and
+    # not of this click — this one DOES write the question, and the test above it checks that the
+    # record is written before the replay. An exact-shape assertion is what caught the new key
+    # arriving, which is the reason to keep asserting the whole dict rather than the keys in play.
     assert out["replay"] == {"prompt": PROMPT, "skipTableGate": True,
                              "skipDatasetGate": False, "datasetDismissed": "",
                              "investigationAnswered": False,
-                             "otherLaneGrant": ""}
+                             "otherLaneGrant": "", "alreadyAsked": False}
 
 
 @needs_node

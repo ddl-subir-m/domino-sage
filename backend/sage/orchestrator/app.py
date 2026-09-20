@@ -3686,14 +3686,22 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     # sentence a second time and the reload reads question, ceiling, card, question — the doubling
     # the four flags above all carry their own note about. In a local for the reason the comment
     # above gives: the call below must stay within 500 characters of its media type.
+    # All five in locals now, not just the new one, because a local for the PARSE was never what
+    # the guard measures — it measures the call, and a fifth keyword pushed `media_type` to 489
+    # characters where the window is 500 and the phrase itself is 30 long. It read as passing at
+    # +489 and failed, which is the whole reason the rule is a test and not a comment. Hoisting
+    # the four that were already inline buys back far more than the one added costs, and leaves
+    # the next person more room than this found.
     asked = bool((body or {}).get("alreadyAsked"))
+    tbl = bool((body or {}).get("skipTableGate"))
+    dset = bool((body or {}).get("skipDatasetGate"))
+    dropped = str((body or {}).get("datasetDismissed") or "")
+    invq = bool((body or {}).get("investigationAnswered"))
     return StreamingResponse(
         _turn_sse(orchestrator.chat_stream(
-            thread_id, prompt, already_asked=asked,
-            skip_table_gate=bool((body or {}).get("skipTableGate")),
-            skip_dataset_gate=bool((body or {}).get("skipDatasetGate")),
-            dismissed_dataset=str((body or {}).get("datasetDismissed") or ""),
-            skip_investigation_gate=bool((body or {}).get("investigationAnswered")),
+            thread_id, prompt, already_asked=asked, skip_table_gate=tbl,
+            skip_dataset_gate=dset, dismissed_dataset=dropped,
+            skip_investigation_gate=invq,
             other_lane_grant=grant), "chat_stream"),
         media_type="text/event-stream")
 
