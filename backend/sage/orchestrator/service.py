@@ -4650,7 +4650,9 @@ class Project:
     # a tool_call. build_stream resets both before each send; chat_stream resets both at its grant.
     # The two lanes therefore scope this counter differently and on purpose: on Build it is "this
     # SEND", which on a phased build is this PHASE, and on Chat it is the turn (#471). Both readings
-    # are "this turn" as the lane defines a turn; neither is a running total.
+    # are "this turn" as the lane defines a turn; neither is a running total. `model_calls` alone
+    # has a third reset, in `_run_sage_plan`, which is not a lane but a door that reads the number
+    # itself (#473); `tool_call_responses` is not read there and is not reset there.
     # Reading them apart splits the three failure modes: 0 model calls =
     # OpenCode never invoked the model; model calls but 0 tool-call responses = the model never tried a
     # tool; tool calls but no disk edits = OpenCode received tool calls but didn't apply them.
@@ -8573,15 +8575,15 @@ class Orchestrator:
         # The published sentence is the promise; this is where it gets kept.
         #
         # "Nothing in this generator" is narrower than "nothing a Chat conversation can reach", and
-        # the difference is left standing on purpose. `draft_handoff_plan` — the Build-this door off
-        # a Thread — runs sage-plan through the shim and READS this counter in `_run_sage_plan` to
-        # tell "no inference reached us" from "the model answered with nothing". It is a door, not a
-        # streaming turn: it takes the lock through `_acquire_for_door` and passes through none of
-        # the three resets, so its reading is this plan's inferences ON TOP of whatever the last
-        # turn left. That was true before #471 and is true after — the carried number is smaller
-        # now, not absent. It is the same defect one layer over, on a log line rather than on a
-        # published field, and `last_gateway_error` is already reset beside that read while this is
-        # not. Out of #471's scope deliberately; fixing it is a one-line change at that door.
+        # the difference used to be left standing on purpose. `draft_handoff_plan` — the Build-this
+        # door off a Thread — runs sage-plan through the shim and READS this counter in
+        # `_run_sage_plan` to tell "no inference reached us" from "the model answered with nothing".
+        # It is a door, not a streaming turn: it takes the lock through `_acquire_for_door` and
+        # passes through none of the three resets here, so its reading was this plan's inferences ON
+        # TOP of whatever the last turn left. That was the same defect one layer over, on a log line
+        # rather than on a published field. Closed in #473 by a fourth reset, at the top of
+        # `_run_sage_plan` beside the `last_gateway_error` clear that was already there — that is,
+        # where the number is read, not at the door's lock.
         #
         # At the grant, and deliberately NOT hoisted into `_acquire_turn`, which is the obvious move
         # — all three lanes pass through it and it already clears `resolved_model` there. Build's
@@ -9323,9 +9325,24 @@ class Orchestrator:
         sid = session_id
         project.active_session_id = sid
         token = project.control.arm_read_only("plan")
-        # Cleared here, at the start of the turn that will read it, so what is left afterwards
-        # belongs to this plan and not to some earlier turn's gateway.
+        # Both cleared here, at the start of the turn that will read them, so what is left
+        # afterwards belongs to this plan and not to some earlier turn's gateway. `model_calls` was
+        # not, and the read at the bottom of this method is the whole reason it has to be: this door
+        # passes through none of the three streaming lanes' resets (#473), so the count it logged was
+        # this plan's inferences ON TOP of whatever the last turn left. 0 — "no inference reached
+        # us", the one thing that line exists to separate from "the model answered with nothing" —
+        # was therefore unreachable once any turn had run in this process, and the line could never
+        # report half of what it is for.
+        #
+        # Here rather than in `_acquire_for_door`, which is the obvious move and the wrong one for
+        # the reason #471 gives one door over: that lock has ten call sites — create, delete, confirm,
+        # cross, clear, sync and others — and most of them run no inference at all, so a reset there
+        # would zero the counter on acts that never touch the model and an `/api/diag` read taken
+        # after one would report 0 for a turn that really ran inferences. It is reset where it is
+        # READ, by the thing that reads it, which also gives the second caller
+        # (`_repair_plan_heading`) its own count instead of the draft's on top of it.
         project.last_gateway_error = None
+        project.model_calls = 0
         try:
             seen = self._seen_baseline(client, sid)
             client.send_prompt(sid, prompt, agent="sage-plan")

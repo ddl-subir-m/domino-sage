@@ -6,6 +6,14 @@ extends: ADR-0017 (the catalog is the door for Auto and Ask), bounded by ADR-003
 
 # An effort belongs to an assignment, and follows the model that runs
 
+**Updated 2026-09-20 (#477):** Model default now leaves `reasoning_effort` unset in Chat
+as well as Build. The hidden Chat `low` fallback described below was removed because it
+overrode the setting shown in the picker and assignments drawer. Explicit saved efforts still
+apply. Invalid stored efforts fall back to the model default, without a Sage-selected level.
+Live gateway checks still reject GPT-5.4 `low` with tools and accept `none`. Opus-4.8 still
+accepts invalid `reasoning_effort`, `thinking.type`, and `output_config.effort` values without
+validation. These checks do not justify adding effort choices; the UI now explains the limits.
+
 Reasoning effort is modelled today as a Chat setting: `SessionState.reasoning_effort` is one
 string, its comment says "for Chat", and `enforcement.py` sends the field only when
 `state.chat_thread_id` is set, the turn carries no tools, and the resolved model is the one the

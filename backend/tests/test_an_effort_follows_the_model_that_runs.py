@@ -349,10 +349,25 @@ def test_an_ask_turn_sends_the_ask_slots_effort():
     assert _sent(control, catalog)["reasoning_effort"] == "medium"
 
 
-# ---------------------------------------------------------------- Chat is unchanged, plus one
+# ---------------------------------------------------------------- Chat defaults and explicit choices
 
 
-def test_the_chat_pick_still_wins_and_the_floor_still_applies():
+@pytest.mark.parametrize("picked", [False, True])
+@pytest.mark.parametrize("tools", [[], TOOLS])
+@pytest.mark.parametrize("model", ["gemini-3.7-flash", "sonnet"])
+def test_chat_model_default_does_not_select_an_effort(picked, tools, model):
+    control = ModelControl()
+    if picked:
+        control.pick_chat(model, None)
+    token = control.arm_chat("model-default")
+    try:
+        catalog = _replace(CATALOG, ask=model)
+        assert "reasoning_effort" not in _sent(control, catalog, tools=tools)
+    finally:
+        control.disarm_chat(token)
+
+
+def test_the_chat_pick_still_wins():
     control = ModelControl()
     control.pick_chat("gpt-5.4", "high")
     token = control.arm_chat("thr_1")
@@ -361,41 +376,13 @@ def test_the_chat_pick_still_wins_and_the_floor_still_applies():
     finally:
         control.disarm_chat(token)
 
+
+def test_chat_uses_the_ask_assignments_effort():
     control = ModelControl()
     token = control.arm_chat("thr_1")
     try:
-        # Chat on Auto: no pick, so the floor answers rather than the alias's own default.
-        assert _sent(control, _replace(CATALOG, ask="gpt-5.4"))["reasoning_effort"] == "low"
-        # But a real Chat turn always carries tools, and gpt-5.4 — the shipped `ask` model — keeps
-        # only `none` in that shape, so the floor does not reach the turns it was written for.
-        # Stated here rather than left implied: the tool-less assertion above is the mechanism, and
-        # on its own it reads as a promise the product does not keep. See the gpt-5.4 test above.
-        assert "reasoning_effort" not in _sent(
-            control, _replace(CATALOG, ask="gpt-5.4"), tools=TOOLS)
-        # On an alias that takes an effort beside tools, the floor does reach the real shape.
-        assert _sent(
-            control, _replace(CATALOG, ask="gemini-3.7-flash"), tools=TOOLS
-        )["reasoning_effort"] == "low"
-    finally:
-        control.disarm_chat(token)
-
-
-def test_an_effort_on_the_ask_assignment_beats_the_chat_floor():
-    """ADR-0049: the floor exists because no pick meant no field. An assignment IS a pick."""
-    control = ModelControl()
-    token = control.arm_chat("thr_1")
-    try:
-        catalog = _replace(CATALOG, ask="gpt-5.4", ask_effort="xhigh")
-        assert _sent(control, catalog)["reasoning_effort"] == "xhigh"
-    finally:
-        control.disarm_chat(token)
-
-
-def test_the_chat_floor_is_not_offered_to_an_alias_that_never_advertised_it():
-    control = ModelControl()
-    token = control.arm_chat("thr_1")
-    try:
-        assert "reasoning_effort" not in _sent(control, _replace(CATALOG, ask="sonnet"))
+        catalog = _replace(CATALOG, ask="gemini-3.7-flash", ask_effort="high")
+        assert _sent(control, catalog, tools=TOOLS)["reasoning_effort"] == "high"
     finally:
         control.disarm_chat(token)
 
@@ -443,20 +430,12 @@ def test_only_one_level_survives_a_real_build_turn_on_the_deployments_own_plan_m
 # ---------------------------------------------------------------- what the send path owns
 
 
-def test_a_stale_unacceptable_effort_falls_back_to_the_chat_floor():
-    """The floor is asked AFTER acceptance, so the level that was dropped leaves no effort behind.
-
-    Reachable, and it is the case the floor matters most on: an `ask` assignment saved as `xhigh`
-    while the deployment default was gpt-5.4 (which `set_catalog` accepts), then the default moves
-    to gemini, whose enum has no `xhigh`. Asked first, the floor would see a non-None effort, skip,
-    and hand the turn gemini's own full-reasoning default — paying the exact bill it was installed
-    to stop, on the one assignment already known to be stale.
-    """
+def test_a_stale_unacceptable_chat_effort_uses_the_model_default():
     control = ModelControl()
     token = control.arm_chat("thr_1")
     try:
         catalog = _replace(CATALOG, ask="gemini-3.7-flash", ask_effort="xhigh")
-        assert _sent(control, catalog)["reasoning_effort"] == "low"
+        assert "reasoning_effort" not in _sent(control, catalog, tools=TOOLS)
     finally:
         control.disarm_chat(token)
 

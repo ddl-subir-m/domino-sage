@@ -102,6 +102,17 @@ def test_local_choices_agree_across_three_controls_save_and_send(tmp_path, monke
     children = _children(build, model) or []
     assert [c["key"].split("::", 1)[1] for c in children[1:]] == expected
 
+    # The missing/narrowed control must have an explanation on all three surfaces.
+    if not expected or expected != listed[0]["reasoning_efforts"]:
+        fragment = "cannot be set" if not expected else "With tools"
+        assert any(fragment in detail for detail in drawer["effortLimits"])
+        chat_row = next(row for row in chat["chatModelRows"] if row["key"] == model)
+        assert fragment in chat_row["title"]
+        build_rows = [child for row in build["items"]
+                      for child in (row["children"] if "group" in row else [row])]
+        build_row = next(row for row in build_rows if row["key"] == model)
+        assert fragment in build_row["title"]
+
     # Save has only tool-carrying surfaces; no-tools listing and send retain the wider choices.
     for effort in [None, *REASONING_EFFORTS.get(model, ()), "minimal"]:
         if effort is None or effort in expected:
@@ -119,8 +130,8 @@ def test_local_choices_agree_across_three_controls_save_and_send(tmp_path, monke
             chat_control = orch.project().control
             token = chat_control.arm_chat("test-local-choices")
             try:
-                # Chat's existing low floor still applies when the person selected no override.
-                chat_expected = effort if effort is not None else ("low" if "low" in expected else None)
+                # Model default stays unset through the Chat send path too.
+                chat_expected = effort
                 assert _sent(chat_control, orch.project().shim.catalog, tools=TOOLS).get("reasoning_effort") == chat_expected
             finally:
                 chat_control.disarm_chat(token)
