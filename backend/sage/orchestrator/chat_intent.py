@@ -42,6 +42,16 @@ Rules:
 """
 
 
+# The fallbacks that are the classifier WORKING, so the report stays at INFO (#467). `""` is a
+# clean answer; `low-confidence` and `no-bound-context` are it answering and then declining, which
+# the turn is designed to proceed from. Every other fallback is the classifier failing to answer at
+# all — `invalid-json` is a model whose JSON mode cannot hold, and a turn that silently lost intent
+# detection is a turn nobody can explain afterwards. Named rather than derived from `Intent.valid`,
+# which is False for `low-confidence` too and would put the ordinary outcome in the warning stream:
+# a level split that warns on everything buries the one line worth reading.
+_WORKING = ("", "low-confidence", "no-bound-context")
+
+
 @dataclass(frozen=True)
 class Intent:
     label: str = ""
@@ -114,6 +124,10 @@ class Pending:
     box: dict | None = None
     deadline: float = 0.0
     timeout_s: float = TIMEOUT_S
+    # The model the call was routed to, carried so the two warnings below can name it. A timeout and
+    # a raised error are the same degradation as an unparseable body, and `/api/diag/log?warn=1`
+    # cannot answer "which model" for them unless the answer travels here (#467).
+    model: str = ""
 
     def result(self) -> Intent:
         if self.done is True:
@@ -122,12 +136,12 @@ class Pending:
         assert self.box is not None
         remaining = max(0.0, self.deadline - time.monotonic())
         if not self.done.wait(remaining):
-            log.warning("chat intent: classify timed out after %.1fs - using current Chat behavior",
-                        self.timeout_s)
+            log.warning("chat intent: classify timed out after %.1fs - using current Chat behavior"
+                        " model=%s", self.timeout_s, self.model or "-")
             return Intent(fallback="timeout")
         if err := self.box.get("error"):
-            log.warning("chat intent: classify failed (%s: %s) - using current Chat behavior",
-                        type(err).__name__, err)
+            log.warning("chat intent: classify failed (%s: %s) - using current Chat behavior"
+                        " model=%s", type(err).__name__, err, self.model or "-")
             return Intent(fallback="error")
         intent = self.box.get("intent")
         return intent if isinstance(intent, Intent) else Intent(fallback="invalid-json")
@@ -151,8 +165,12 @@ def start(
         log.info("chat intent: fallback=prompt-too-long - using current Chat behavior")
         return Pending(True, {"intent": Intent(fallback="prompt-too-long")})
 
+    # Bound once and threaded everywhere this call names a model: the request, the timing ledger and
+    # the report below. It used to be derived twice, and the report is a third site that would have
+    # to agree with both — the drift `scope._extract` exists to prevent (#467).
+    model = _model_for(catalog)
     request = {
-        "model": _model_for(catalog),
+        "model": model,
         "messages": [
             {"role": "system", "content": _SYSTEM},
             {"role": "user", "content": _user_payload(text, context, has_bound_context)},
@@ -166,7 +184,7 @@ def start(
                         session=session, version=version)
 
     def _call() -> Intent:
-        call = timing.model_call(_model_for(catalog), "chat-intent")
+        call = timing.model_call(model, "chat-intent")
         chunks = []
         try:
             for chunk in gateway.route(request, labels):
@@ -183,8 +201,9 @@ def start(
                             raw=intent.raw, fallback="no-bound-context")
         label = intent.label or "-"
         suffix = f" fallback={intent.fallback}" if intent.fallback else ""
-        log.info("chat intent: label=%s confidence=%.2f context=%s%s",
-                 label, intent.confidence, "yes" if has_bound_context else "no", suffix)
+        level = log.info if intent.fallback in _WORKING else log.warning
+        level("chat intent: label=%s confidence=%.2f context=%s%s model=%s",
+              label, intent.confidence, "yes" if has_bound_context else "no", suffix, model)
         return intent
 
     done = threading.Event()
@@ -199,4 +218,5 @@ def start(
             done.set()
 
     threading.Thread(target=_worker, name="sage-chat-intent", daemon=True).start()
-    return Pending(done=done, box=box, deadline=time.monotonic() + timeout_s, timeout_s=timeout_s)
+    return Pending(done=done, box=box, deadline=time.monotonic() + timeout_s, timeout_s=timeout_s,
+                   model=model)

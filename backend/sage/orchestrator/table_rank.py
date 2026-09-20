@@ -334,14 +334,18 @@ def _ask(
     stage: str,
 ) -> list[Candidate]:
     """One bounded call, and the tables its answer named, best first. Empty on every failure."""
+    # Bound before the budget check so every warning below names it, including the one for a stage
+    # that never got to make a call. All four are the same degradation seen from four angles, and
+    # `/api/diag/log?warn=1` can only answer "which model" if they all carry the answer (#467).
+    model = _model_for(catalog)
     timeout_s = _left(deadline)
     if not timeout_s:
         # An earlier step spent the whole budget. Skipped rather than called with nothing left,
         # because the caller of a stage that cannot finish already has the answer it will keep.
-        log.warning("table rank: no budget left for the %s stage", stage)
+        log.warning("table rank: no budget left for the %s stage model=%s", stage, model)
         return []
     request = {
-        "model": _model_for(catalog),
+        "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": payload}],
         # A ceiling, not a spend: the answer is a handful of names, but a route with extended
@@ -365,10 +369,11 @@ def _ask(
     try:
         answer = pool.submit(_call).result(timeout=timeout_s)
     except concurrent.futures.TimeoutError:
-        log.warning("table rank: %s stage timed out after %.1fs", stage, timeout_s)
+        log.warning("table rank: %s stage timed out after %.1fs model=%s", stage, timeout_s, model)
         return []
     except Exception as e:
-        log.warning("table rank: %s stage failed (%s: %s)", stage, type(e).__name__, e)
+        log.warning("table rank: %s stage failed (%s: %s) model=%s",
+                    stage, type(e).__name__, e, model)
         return []
     finally:
         pool.shutdown(wait=False)
@@ -378,7 +383,7 @@ def _ask(
         # An empty body is a route that said nothing rather than a model that answered badly, so it
         # belongs with the timeout above and not with the garbage the breaker counts.
         if not answer.strip():
-            log.warning("table rank: %s stage returned an empty body", stage)
+            log.warning("table rank: %s stage returned an empty body model=%s", stage, model)
         else:
             _health.unreadable_answer(stage, answer)
         return []
