@@ -328,9 +328,24 @@ def _client(tmp_path, monkeypatch, orch):
     monkeypatch.setattr(appmod, "orchestrator", orch)
     # Both are process-wide state the route reads and writes. Through monkeypatch so one test's
     # Preflight cannot leave its verdict, or its survival count, behind for another.
-    monkeypatch.setattr(appmod, "PREFLIGHT_SLOTS", dict(appmod.PREFLIGHT_SLOTS))
+    #
+    # `PREFLIGHT_SLOTS` is set to a CLEAN verdict rather than to a copy of whatever the process is
+    # holding, and that difference is the whole of a red this file took on the gating run. The
+    # global is filled by `_run_slot_preflight` in the boot sequence (`app.py:717`), and sixty test
+    # files build a `TestClient` on `control_app` without pinning it — so by the time these tests
+    # run it can already carry real slot faults, for the rest of that worker's session.
+    #
+    # `dict(...)` copies those faults in faithfully. Nothing else noticed, because every other
+    # route test here asks "is my id in the list"; these are the first to assert the list is
+    # EXACTLY one Problem, which is the only shape that can see it. Under `-n auto` whether a
+    # filler lands on this worker first is a coin flip, so the file passed one full run and reds
+    # the next with nothing changed but the deal.
+    monkeypatch.setattr(appmod, "PREFLIGHT_SLOTS",
+                        {"state": "ok", "error": None, "slots": [], "reached": True})
     monkeypatch.setattr(appmod, "_PREFLIGHT_SEEN", set())
     monkeypatch.setattr(orch, "resolved_agents", lambda: [{"name": n} for n in SAGE_AGENTS])
+    monkeypatch.setattr(orch, "preflight_bindings",
+                        lambda: {"state": "ok", "error": None, "bindings": []})
     monkeypatch.setattr(appmod, "data_library_ready", lambda: "")
     return appmod, TestClient(appmod.control_app)
 
