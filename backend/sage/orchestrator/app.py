@@ -2896,7 +2896,11 @@ def health_problems() -> JSONResponse:
         # Read inside `_read` rather than above it: a port that will not parse is a deployment this
         # route still has to answer for, and the port Problem it cannot judge stays silent.
         ports={"control_port": _read(lambda: int(os.environ.get("SAGE_CONTROL_PORT", "8080")), None),
-               "base_port": _read(lambda: _opencode_base_port(orchestrator._opencode_cwd), None)},
+               "base_port": _read(lambda: _opencode_base_port(orchestrator._opencode_cwd), None),
+               # Read here rather than in `health.py` for the same reason as everything else on this
+               # call: that module is pure functions over already-fetched inputs. Three `getenv`s.
+               "vendor_keys": _read(
+                   lambda: [k for k in health.VENDOR_KEYS if os.environ.get(k)], [])},
         agents=_read(orchestrator.resolved_agents, None),
         data_library=_read(data_library_ready, ""),
         # The one read here that spawns a process, and the reason this route's "no probe of its
