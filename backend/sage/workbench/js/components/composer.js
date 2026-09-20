@@ -933,10 +933,19 @@ window.SW = window.SW || {};
       selectedKeys: effectiveModel ? [effectiveModel] : [],
       items: aliases.map((option) => {
         const barred = barredModel(option.alias);
+        // The server's sentence about what this model never claimed it could do, carried on the row
+        // rather than re-derived from `option.capabilities` here (#463). One rule, one place: the
+        // same argument `SW.util.chatCapable` makes for the other question asked of that list, and
+        // the drawer renders the same field, so the two controls cannot come to disagree.
+        //
+        // It marks and never disables. The capability list has been measured wrong in both
+        // directions on this gateway, and hiding or closing a row would take away the only way
+        // anybody could find that out (#296).
+        const capability = !barred && option.capability_note;
         return {
           key: option.alias,
           disabled: barred,
-          title: barred ? lockNote(option.alias) : undefined,
+          title: barred ? lockNote(option.alias) : (capability || undefined),
           label: h(
             'div',
             { style: { minWidth: 200 } },
@@ -944,7 +953,9 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-model-option-detail' },
-              barred ? `${option.alias} — not allowed` : option.alias
+              barred ? `${option.alias} — not allowed`
+                : capability ? `${option.alias} — no tool support advertised`
+                : option.alias
             )
           ),
         };

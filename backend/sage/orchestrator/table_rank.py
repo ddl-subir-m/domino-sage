@@ -33,6 +33,7 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 
+from .. import degraded
 from ..gateway.client import CostLabels, GatewayClient
 from ..resources.bindings import Binding
 from ..resources.table_search import Candidate, Ranking
@@ -138,6 +139,9 @@ class _Health:
 
     def unreadable_answer(self, stage: str, answer: str) -> None:
         """Record an answer naming none of the tables it was given, and trip after three."""
+        # Per STAGE, like the streak it feeds (#463). Two stages that both answer badly on one turn
+        # are two judgements lost, and the card is ordered by the heuristic in place of both.
+        degraded.judgement_lost()
         streak = self.unreadable.get(stage, 0) + 1
         self.unreadable[stage] = streak
         if streak < MAX_UNREADABLE:
@@ -229,12 +233,20 @@ def rank_with_model(
     if len(ranking.candidates) < 2:
         return ranking
     if _health.is_broken("names"):
+        # Counted with no line of its own, as the other two breakers are (#463): the ERROR was said
+        # once and every turn after it silently ships a heuristic ordering.
+        degraded.judgement_lost()
         return by_layer(ranking)
     try:
         return _ranked(prompt, source, ranking, columns_for=columns_for, gateway=gateway,
                        catalog=catalog, session=session, version=version,
                        deadline=time.monotonic() + timeout_s)
     except Exception:
+        # The catch-all, and the reason it counts as well as the four inside it (#463): a raise
+        # before any stage got as far as its own report loses the whole ranking with nothing having
+        # counted. It can also count a SECOND loss on a turn where a stage already reported one —
+        # which is what happened, two judgements replaced by the heuristic, and the number says so.
+        degraded.judgement_lost()
         log.exception("table rank: ranking failed outright — ordering by layer instead")
         return by_layer(ranking)
 
@@ -299,10 +311,15 @@ def _rerank_on_columns(
     already known to be unusable is the cost the breaker exists to stop.
     """
     if _health.is_broken("columns"):
+        degraded.judgement_lost()
         return shortlist
     try:
         columns = columns_for(shortlist, _left(deadline))
     except Exception:
+        # The warehouse read, not the model call — and it costs the same judgement. Stage two never
+        # runs, so the same shape as "no budget left for the columns stage" a few lines on, which
+        # already counts.
+        degraded.judgement_lost()
         log.exception("table rank: could not read columns for the shortlist — keeping the name rank")
         return shortlist
     described = [c for c in shortlist if columns.get(c)]
@@ -342,6 +359,7 @@ def _ask(
     if not timeout_s:
         # An earlier step spent the whole budget. Skipped rather than called with nothing left,
         # because the caller of a stage that cannot finish already has the answer it will keep.
+        degraded.judgement_lost()
         log.warning("table rank: no budget left for the %s stage model=%s", stage, model)
         return []
     request = {
@@ -369,9 +387,11 @@ def _ask(
     try:
         answer = pool.submit(_call).result(timeout=timeout_s)
     except concurrent.futures.TimeoutError:
+        degraded.judgement_lost()
         log.warning("table rank: %s stage timed out after %.1fs model=%s", stage, timeout_s, model)
         return []
     except Exception as e:
+        degraded.judgement_lost()
         log.warning("table rank: %s stage failed (%s: %s) model=%s",
                     stage, type(e).__name__, e, model)
         return []
@@ -383,6 +403,7 @@ def _ask(
         # An empty body is a route that said nothing rather than a model that answered badly, so it
         # belongs with the timeout above and not with the garbage the breaker counts.
         if not answer.strip():
+            degraded.judgement_lost()
             log.warning("table rank: %s stage returned an empty body model=%s", stage, model)
         else:
             _health.unreadable_answer(stage, answer)

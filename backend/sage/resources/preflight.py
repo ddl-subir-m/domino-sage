@@ -260,6 +260,32 @@ def alias_problem(alias_name: str, aliases: list[LlmAlias],
     )
 
 
+def tool_capability_note(capabilities: list[str] | None) -> str | None:
+    """Why a model may not be able to do what a Chat turn asks of it, or None when nothing is known.
+
+    A MARK and never a filter. #296 already records what this metadata is worth — "last-known
+    filters, not proof of the provider's current verdict" — and #463 re-measured it on the live
+    gateway: `domino-gcp/claude-sonnet-5` and `domino/gemini-3.7-flash` both declare `chat` alone,
+    which is not credible for either, and `GLM 5.3 OR` declared no `tools` while a maintainer wired
+    tool calling for it by hand. Both fields anyone has ever checked against reality were wrong, in
+    both directions. A filter keyed on this would today hide Sonnet 5, and a person who cannot see a
+    model at all cannot report that the list is wrong.
+
+    So the sentence is worded as the uncertainty it is. It says the model does not ADVERTISE tool
+    support and that Chat turns always send tools; it does not say the model cannot use them.
+
+    Empty capabilities mean "not known" rather than "none", which is the same reading the chat-model
+    guard in `service.set_chat_pick` takes of the same list — an unknown must not be reported as a
+    fault. `chat` is required before the note is worth making: a row that does not claim to hold a
+    conversation is not being judged on what it would do in one.
+    """
+    caps = capabilities or []
+    if not caps or "chat" not in caps or "tools" in caps:
+        return None
+    return ("This model doesn't advertise tool support, and every Chat turn sends tools. The "
+            "capability list is what the provider last reported, not a test, so it may work anyway.")
+
+
 def slots_on_dead_endpoints(catalog: ModelCatalog, aliases: list[LlmAlias],
                             endpoints: list[HostedEndpoint] | None) -> list[EndpointProblem]:
     """The configured slots whose Alias resolves but whose endpoint will not answer, in SLOTS order.

@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from .. import timing
+from .. import degraded, timing
 from ..gateway.client import CostLabels, GatewayClient
 from ..router.models import ModelCatalog
 from .scope import _extract, _model_for
@@ -136,10 +136,17 @@ class Pending:
         assert self.box is not None
         remaining = max(0.0, self.deadline - time.monotonic())
         if not self.done.wait(remaining):
+            # Counted here and possibly again on the worker (#463). The thread is abandoned rather
+            # than cancelled — a blocked socket read cannot be interrupted — so a call that lands
+            # after the wall reports for itself below, and the turn is credited with two lost
+            # judgements for one classify. Left that way: the alternative is holding the count open
+            # for a thread this class exists to stop waiting for, and the log ring shows both lines.
+            degraded.judgement_lost()
             log.warning("chat intent: classify timed out after %.1fs - using current Chat behavior"
                         " model=%s", self.timeout_s, self.model or "-")
             return Intent(fallback="timeout")
         if err := self.box.get("error"):
+            degraded.judgement_lost()
             log.warning("chat intent: classify failed (%s: %s) - using current Chat behavior"
                         " model=%s", type(err).__name__, err, self.model or "-")
             return Intent(fallback="error")
@@ -201,7 +208,13 @@ def start(
                             raw=intent.raw, fallback="no-bound-context")
         label = intent.label or "-"
         suffix = f" fallback={intent.fallback}" if intent.fallback else ""
-        level = log.info if intent.fallback in _WORKING else log.warning
+        degraded_here = intent.fallback not in _WORKING
+        if degraded_here:
+            # The same condition the level split turns on, asked once and used twice (#463). `_WORKING`
+            # is the line between the classifier answering-and-declining and the classifier failing to
+            # answer, and the count means what the warning stream means or it means nothing.
+            degraded.judgement_lost()
+        level = log.warning if degraded_here else log.info
         level("chat intent: label=%s confidence=%.2f context=%s%s model=%s",
               label, intent.confidence, "yes" if has_bound_context else "no", suffix, model)
         return intent

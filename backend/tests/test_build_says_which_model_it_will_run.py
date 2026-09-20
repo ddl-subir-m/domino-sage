@@ -1348,3 +1348,43 @@ def test_an_approved_set_that_resolves_to_nothing_refuses_rather_than_announcing
     assert offered and all(i["disabled"] for i in offered)
     assert all(i["title"] == refusal for i in offered)
     assert row["lockNotice"] is None
+
+
+# ---- the Chat picker's capability mark (#463) ---------------------------------------------------
+
+
+def _chat_rows(chat_model: str) -> dict:
+    (drawn,) = _drawn([{"mode": "plan", "chat": True, "chatModel": chat_model}])
+    return {r["key"]: r for r in drawn["chatModelRows"]}
+
+
+def test_the_chat_picker_marks_a_model_that_advertises_no_tool_support():
+    """Manage is not where most picks happen, so the mark has to be readable at PICK time (#463).
+
+    The sentence is the server's, carried on the row — the browser renders it and never re-derives
+    it from `capabilities`, which is what keeps this menu and the assignments drawer from growing
+    two opinions about one alias.
+    """
+    rows = _chat_rows("google/gemini-3.7-flash")
+    marked = rows["google/gemini-3.7-flash"]
+    assert "no tool support advertised" in marked["detail"]
+    assert "doesn't advertise tool support" in marked["title"]
+
+
+def test_a_marked_row_is_still_pickable():
+    """THE PLANT. Mark it; do not hide it (#296).
+
+    The capability list has been measured wrong in both directions on this gateway — the two aliases
+    it is most wrong about are among the most picked — so a row closed on it would refuse a model
+    that works and leave nobody able to report that the list is wrong.
+    """
+    rows = _chat_rows("google/gemini-3.7-flash")
+    assert rows["google/gemini-3.7-flash"]["disabled"] is False
+    assert set(rows) == set(_chat_rows("openai/gpt-5.4"))
+
+
+def test_a_model_that_advertises_tools_carries_no_mark():
+    """A mark on every row is a mark on none."""
+    plain = _chat_rows("openai/gpt-5.4")["openai/gpt-5.4"]
+    assert "no tool support advertised" not in plain["detail"]
+    assert plain["title"] is None

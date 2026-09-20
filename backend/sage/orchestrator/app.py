@@ -49,7 +49,7 @@ _UI = _WB / "index.html"
 _DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
-from .. import timing
+from .. import degraded, timing
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import (
@@ -1709,6 +1709,12 @@ def diag() -> JSONResponse:
       - model_calls: how many inferences reached the shim THIS turn. 0 while a turn is live means the
         model call never got to the gateway (OpenCode stuck earlier, e.g. on a tool), not a gateway hang
       - last_gateway_error: set if a model call failed/severed
+      - classifier_degradations: how many judgements THIS turn asked one of the four ask-slot
+        classifiers for and did not get. Anything above 0 means the turn ran with a default in
+        place of a judgement — intent detection, the plan gate, the Build offer or the table
+        shortlist — while answering normally and reporting `ok: true`. It is one number in place of
+        three grep strings; `/api/diag/log?warn=1` says which classifier and which model. Unlike
+        `/api/diag/timing` it is NOT behind SAGE_TIMING (see `sage.degraded`)
       - ports: base_port (what opencode.json tells OpenCode to dial) must equal control_port
       - agents: the agents OpenCode actually resolved. There are five — sage-chat, sage-ask, sage-plan,
         sage-architect, sage-implement — and any of them missing means that mode silently ran the
@@ -1766,6 +1772,12 @@ def diag() -> JSONResponse:
             "last_gateway_error": p.last_gateway_error,
             "session_id": p.session_id,
         },
+        # Outside `project` although it reads like its siblings there, because it is not the
+        # project's: the classifiers' breakers and this count are process-wide, for the reason each
+        # `_Health` gives — what is being tracked is a gateway route and a model, and a Sage builder
+        # serves one project anyway. Put inside, it would be the one key in that dict that survives
+        # the project being swapped.
+        "classifier_degradations": degraded.count(),
         "artifacts": _artifacts_diag(),
         "git_credential": _git_credential_diag(),
         "git_credential_list": _git_credential_list_diag(),

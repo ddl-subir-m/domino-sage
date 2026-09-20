@@ -110,12 +110,23 @@ const MEMBER_ROWS = () => ALIAS_ROWS();
 const LEGACY_MEMBER_ROWS = () =>
   ALIAS_ROWS().map(({ reasoning_efforts_with_tools, ...row }) => row);
 
+// The one alias that declares no `tools`, and its server-computed sentence (#463). Real name and
+// real shape: measured on the gateway 2026-09-20, `domino/gemini-3.7-flash` declares `chat` alone,
+// which is not credible for a model that calls tools every day — and that is the point of marking
+// rather than filtering. One row rather than seven, so a test can say the mark is on the row it
+// belongs to. Served, never derived here: `preflight.tool_capability_note` owns the rule, and a
+// harness that re-derived it would let the picker agree with a copy.
+const NO_TOOLS_ALIAS = 'google/gemini-3.7-flash';
+const NO_TOOLS_NOTE = 'This model doesn\'t advertise tool support, and every Chat turn sends tools.'
+  + ' The capability list is what the provider last reported, not a test, so it may work anyway.';
+
 const ALIAS_ROWS = () => Object.keys(ALIAS_EFFORTS).map((alias) => ({
   id: `llm_alias:${alias.replace('/', '-')}`,
   kind: 'llm_alias',
   alias,
   name: alias,
-  capabilities: ['chat'],
+  capabilities: alias === NO_TOOLS_ALIAS ? ['chat'] : ['chat', 'tools'],
+  capability_note: alias === NO_TOOLS_ALIAS ? NO_TOOLS_NOTE : null,
   reasoning_efforts: ALIAS_EFFORTS[alias],
   // Both lists, as the server sends them. Equal for every alias here except the one that exists to
   // be unequal: `gpt-5.4` advertises levels it will not take beside function tools, which every
@@ -462,6 +473,13 @@ for (const step of steps) {
     && n.p.menu.items.some((i) => i.key === step.chatModel));
   const row = {
     chatModelKeys: chatModelMenu ? chatModelMenu.p.menu.items.map((i) => i.key) : [],
+    // The rows as a person reads them, not just their keys (#463). The detail line and the tooltip
+    // are where a capability mark lands, and a reader that kept only the keys would pass a change
+    // that dropped the mark entirely — the menu would look exactly right.
+    chatModelRows: chatModelMenu ? chatModelMenu.p.menu.items.map((i) => ({
+      key: i.key, disabled: !!i.disabled, title: i.title || null,
+      detail: strings(i.label).join(' '),
+    })) : [],
     step: step.pick ? `${step.mode} → pick ${step.pick}` : step.mode,
     // Every child key drawn anywhere in the menu, so a DUPLICATE is visible. Two items sharing a
     // key is something no `selectedKeys` assertion can see — Ant marks one of them and the other is

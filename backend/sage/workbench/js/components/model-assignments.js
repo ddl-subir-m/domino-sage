@@ -145,9 +145,13 @@ window.SW = window.SW || {};
           // The lock keeps that shape on purpose: a model hidden from the list teaches nobody why
           // it went, and this one has a reason worth reading.
           disabled: barred || !a.serving,
+          // Last of the three, because the two above it are reasons the row cannot be used and this
+          // is a note about a row that can (#463). It never reaches `disabled` for that reason: the
+          // capability list has been measured wrong in both directions, and a person who cannot
+          // pick a model cannot report that the list is wrong about it.
           title: barred
             ? (sensitivity.refusal || SW.util.lockReason(sensitivity, a.name))
-            : (a.problem || undefined),
+            : (a.problem || a.capability_note || undefined),
           label: barred
             ? `${a.name} — not allowed`
             : a.serving
@@ -328,6 +332,25 @@ window.SW = window.SW || {};
         // this field is the narrower answer for the sentence.
         current.problem && !(current.shadowed && !pinDecided)
           ? h('div', { className: 'sw-assignment-problem' }, current.problem)
+          : null,
+        // What this row's model does not advertise (#463). Drawn on its OWN condition, and that is
+        // the entire reason it is a field of its own rather than a fifth rank inside `problem`.
+        //
+        // The gate one line up drops `problem` whenever the row is shadowed and the pin did not
+        // decide it — the precedence comment in `service.model_assignments` records that cost in its
+        // own words ("pin + LOCK — the row shows NOTHING") — and a pinned, locked slot is precisely
+        // the row most likely to be carrying a capability mark. A warning that renders as nothing is
+        // the bug, not the fix.
+        //
+        // So it is not `problem`'s fallback either: both sentences are true at once and they answer
+        // different questions. `problem` says what will happen to this slot's next turn; this says
+        // what the model it holds never claimed it could do. Drawn together when both apply.
+        //
+        // `model_assignments_harness.mjs` holds the split by rendering a row that is shadowed with
+        // `pin_decided` false and asserting this line survives. Without that test the next reader
+        // folds the field back into `problem` and it silently stops rendering.
+        current.capability_note
+          ? h('div', { className: 'sw-assignment-capability' }, current.capability_note)
           : null,
         // What the row would say if the lock were not holding. Not optional once the value above is
         // a substitution: without it the panel simply shows a model nobody chose, and the person who
