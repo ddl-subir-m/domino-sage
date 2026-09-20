@@ -22,10 +22,11 @@ by construction: a Chat turn reports its own count, AND a phased build still re-
 phases. `test_a_phased_build_re_zeroes_between_phases` is the second one, and its docstring
 names the hoisted reset as the thing it exists to catch.
 
-WHAT THESE TESTS OBSERVE. On Build, the `turn-summary` event, which is the surface that carries the
-number out of `_build_stream` and the one `shim_bypassed` is computed beside. On Chat there is no
-such event — `/api/diag` reads the attribute directly (`app.py`, `"model_calls": p.model_calls`), so
-these read the attribute, which is the same read.
+WHAT THESE TESTS OBSERVE. The attribute, on both lanes. `/api/diag` reads it directly (`app.py`,
+`"model_calls": p.model_calls`) and is the only surface it reaches, so reading the attribute is the
+same read the product does. Build once also carried it in a `turn-summary` stream event, but nothing
+in `backend/sage/workbench/` ever handled that event and #474 deleted it; the phased test below
+reads `CountingOpenCode.seen_on_entry` instead, which is a strictly earlier observation.
 
 WHAT THE FAKE STANDS IN FOR. The increment itself is written by the real `/v1/chat/completions`
 route, which no fake-OpenCode test reaches; `test_shim_stream.py` drives that route for real and
@@ -287,18 +288,17 @@ def test_a_phased_build_re_zeroes_between_phases(tmp_path: Path):
     """The rejected fix, named as the thing that would break.
 
     Three phases run through `_build_stream` under ONE turn lock, taken once by `approve_stream`.
-    Each phase's `turn-summary` must carry that phase's own inferences. A reset moved up into
-    `_acquire_turn` — which every lane passes through, and which is the obvious place for it — runs
-    once for all three, and these become a running total while still being published per phase.
+    Each phase must start its own count. A reset moved up into `_acquire_turn` — which every
+    lane passes through, and which is the obvious place for it — runs once for all three, and the
+    count becomes a running total that no longer answers "inferences in THIS PHASE".
     """
     orch, oc, _project = _phased(tmp_path, per_send=[1, 2, 3, 4])
-    events = list(orch.approve_stream())
+    list(orch.approve_stream())
 
-    summaries = [e["model_calls"] for e in events if e.get("type") == "turn-summary"]
-    assert summaries == [2, 3, 4], f"phases did not re-zero: {summaries}"
     # Every send began at zero — the plan turn's included, which is the non-phased loop's own
-    # reset seen once. Asked one layer earlier than the summary, because a summary built from a
-    # stale read would satisfy the line above on its own.
+    # reset seen once. Read at the ENTRY to each send: `CountingOpenCode` records the counter
+    # the moment the route would have incremented it, so a phase that began mid-count is caught
+    # here whatever any later reader of the number does or does not report.
     assert oc.seen_on_entry == [0, 0, 0, 0], f"a phase began mid-count: {oc.seen_on_entry}"
 
 

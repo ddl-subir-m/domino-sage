@@ -410,9 +410,12 @@ def start(
         # every Auto turn on a built app under-counted its own inferences by one.
         #
         # Deliberately NOT added to `project.model_calls`. That counter means "inferences that
-        # reached the SHIM", and `model_calls == 0` is what `shim_bypassed` reads to tell a broken
-        # OpenCode->shim wiring from a working one. A call that bypasses the shim by design would
-        # make that zero non-zero and hide the fault the counter exists to surface.
+        # reached the SHIM", and `/api/diag` publishes it as the first of the three failure modes
+        # `Project.model_calls` splits apart — 0 model calls = OpenCode never invoked the model. A
+        # call that bypasses the shim by design would make that zero non-zero and hide the fault the
+        # counter exists to surface. (Until #474 a `shim_bypassed` flag read the same zero beside a
+        # port mismatch; that flag is gone, and the port mismatch is now a standing Problem of its
+        # own — `health.py:port_problem`, #475 — which does not read this counter at all.)
         call = timing.model_call(model, "scope")
         chunks = []
         try:
