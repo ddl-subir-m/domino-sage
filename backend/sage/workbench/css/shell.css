@@ -857,11 +857,14 @@ a.sw-topnav-link {
   white-space: nowrap;
 }
 /* The mark on a pinned leaf. `flex: none` so it never takes width from the name beside it, which
-   is the one thing in the row that must not truncate. */
+   is the one thing in the row that must not truncate. The negative margin halves the row's 8px gap
+   on this side only: the mark and the name it is about are one thing, the acts on the right are
+   another, and closer-within-than-between is what says so without drawing a line. */
 .sw-tree-leaf-pin {
   flex: none;
   display: flex;
   align-items: center;
+  margin-right: -4px;
   font-size: var(--fs-11);
   color: var(--gray-500);
 }
