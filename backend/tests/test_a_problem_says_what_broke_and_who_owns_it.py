@@ -114,6 +114,49 @@ def test_a_port_mismatch_is_the_administrators():
     assert p.body is None
 
 
+def test_a_bypassed_shim_does_not_promise_the_calls_will_fail():
+    # The condition #475 is about: OpenCode dials the wrong port, reaches the vendor directly with
+    # keys it auto-detected, and the turn looks completely normal. Predicting a failure the reader
+    # will never see is how a true Problem gets read as a false one and the chip becomes furniture.
+    # What is actually lost is the shim: routing, sovereignty and cost tagging all silently skipped.
+    p = port_problem({"control_port": 8080, "base_port": 8888})
+    assert "fail" not in p.message
+    assert "LLM Gateway" in p.message and "Domino" in p.message
+
+
+def test_the_keys_that_explain_why_nothing_looked_broken_travel_in_the_body():
+    p = port_problem({"control_port": 8080, "base_port": 8888,
+                      "vendor_keys": ["ANTHROPIC_API_KEY", "GEMINI_API_KEY"]})
+    # The bare names the deployment set, for the administrator who set them. Not rewritten, and not
+    # described in the abstract: "a vendor key is set" sends nobody to a variable they can unset.
+    assert p.body == "ANTHROPIC_API_KEY, GEMINI_API_KEY"
+    # And the message says what their presence means, or the body is a list with no claim attached.
+    assert "vendor keys" in p.message
+    # Same Problem either way — the keys change what is said, never which Problem it is.
+    assert p.id == port_problem({"control_port": 8080, "base_port": 8888}).id
+
+
+def test_a_workspace_with_no_vendor_keys_says_nothing_about_them():
+    # `body` is absent rather than empty, and the second sentence would be a false reassurance:
+    # with no keys to auto-detect there is nothing to explain why an answer arrived.
+    p = port_problem({"control_port": 8080, "base_port": 8888, "vendor_keys": []})
+    assert p.body is None and "vendor keys" not in p.message
+
+
+def test_the_port_problem_keeps_one_id_across_two_preflights_that_read_different_ports():
+    # The id carries no port number, and nothing else in the suite would catch it if it did. An id
+    # built from the ports mints a new Problem the moment either changes: the toast fires again, and
+    # `survivors` — which needs two CONSECUTIVE sightings of the same id — resets to zero, so the
+    # Problem could never be reported at all. Asserted directly because it is a negative: a passing
+    # toast test on one pair of ports cannot see it.
+    first = port_problem({"control_port": 8080, "base_port": 8888})
+    second = port_problem({"control_port": 9090, "base_port": 7777})
+    assert first.id == second.id == "ports"
+    # And what that id buys, through the rule that actually consumes it: a deployment whose ports
+    # were re-read as different numbers has still had ONE standing Problem across both Preflights.
+    assert _ids(survivors({first.id}, [second])) == ["ports"]
+
+
 def test_a_missing_agent_is_reported_even_when_the_others_resolved():
     # Any one of the five missing means that mode ran the default build agent, so its permission
     # block never applied. Four out of five is not four fifths fine.
@@ -360,6 +403,24 @@ def test_a_port_that_will_not_parse_still_answers(tmp_path, monkeypatch):
         r = client.get("/api/health")
         assert r.status_code == 200
         assert "ports" not in [p["id"] for p in r.json()["problems"]]
+
+
+def test_the_route_carries_the_vendor_keys_that_explain_a_bypassed_shim(tmp_path, monkeypatch):
+    # Every other test here calls `port_problem` with a dict it wrote itself, which makes one thing
+    # impossible to see: whether anything actually reads the environment and hands it over. With the
+    # keys unwired the composed tests all stay green and the drawer shows an empty quotation.
+    _, client = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("SAGE_CONTROL_PORT", "8080")
+    monkeypatch.setattr("sage.orchestrator.service._opencode_base_port", lambda _cwd: 8888)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    client.get("/api/health")  # one sighting is not enough to say anything about
+    rows = {p["id"]: p for p in client.get("/api/health").json()["problems"]}
+    assert rows["ports"]["body"] == "ANTHROPIC_API_KEY"
+    # Only the ones actually set: naming a key the deployment never configured sends an
+    # administrator to unset something that is not there.
+    assert "OPENAI_API_KEY" not in rows["ports"]["body"]
 
 
 def test_the_orphaned_preflight_route_is_gone(tmp_path, monkeypatch):
