@@ -267,6 +267,32 @@ _CHAT_TOOL_QUIET_TIMEOUT_S = 240.0
 # it keeps talking. Generous, because by then the person can see the work and can press Stop — this
 # is the backstop for a turn nobody is watching, not the cap for a turn that is going well.
 _CHAT_TURN_MAX_S = 600.0
+# The tail of that ceiling kept back for writing down what the turn measured (#454). Taken OUT of
+# the number above and never added to it: an investigation never goes quiet, so it reaches the wall
+# clock rather than either quiet window, and everything it established in ten minutes used to end
+# with it. `findings.md` is the file already built to outlive a turn — committed, and named into the
+# next turn's prompt by `_findings_note` — so the work is cut here and the rest of the clock buys
+# the write. #400 rejects raising the ceiling and owns the real remedy (fewer calls); this changes
+# what happens when it fires, not the number it fires at.
+#
+# Bounded and best-effort in BOTH halves, because neither can be trusted to come back: a session
+# that will not go idle after the interrupt, and a write that never lands, both end at the same
+# deadline the work they interrupted would have. Whatever the slice does not spend is not handed
+# back to the work — by then the session has been interrupted and there is nothing to go back to.
+#
+# THE TWO NUMBERS ARE SET TOGETHER. Subtracted from the ceiling, so a slice as long as the ceiling
+# leaves no turn in front of it, and the loop declines to open one at all rather than interrupting
+# a turn on its first pass. That is the safe direction — a turn nobody cut is better than a turn
+# cut before it ran a step — but it is also silent, so `test_the_reserved_slice_fits_inside_the_
+# ceiling_it_is_taken_from` reds if an edit ever brings the two together.
+_CHAT_FINDINGS_FLUSH_S = 60.0
+# How long the slice waits for the findings request to REGISTER before it reads a quiet session as
+# a finished one. `send_prompt` posts to `/prompt_async` and returns before the turn starts, and
+# `/session/status` does not go busy with the POST, so "not busy" a moment after dispatching means
+# "not yet" far more often than it means "done". `wait_for_idle` carries the same grace, with the
+# same number, for the same reason (`driver/opencode.py:470`) — and without it the very first poll
+# ended the slice, the ceiling arm interrupted, and nothing was ever written.
+_CHAT_FLUSH_APPEAR_S = 10.0
 # How many Delegated model calls one turn may make (ADR-0057). Beside the wall-clock ceiling on
 # purpose: without it, a delegated loop is a turn that never goes quiet — every call refreshes the
 # activity clock — so the only thing that could end it is the 600 seconds above, and the person
@@ -3202,6 +3228,25 @@ def _mount_probe(path: str, timeout_s: float = 5.0) -> str:
     th.start()
     th.join(timeout_s)
     return said[0] if said else f"did not answer in {timeout_s:.0f}s"
+
+
+def _findings_bytes(root: Path, thread_id: str) -> int:
+    """What this Thread's findings weigh right now, or 0 when there are none (#454).
+
+    One reader for the two ends of the reserved slice, so the pair cannot drift into asking
+    different questions. A missing file and an empty one answer the same on purpose: what both
+    callers want to know is whether the slice ADDED anything, and neither of those did.
+
+    `findings_file` rather than a second spelling of the path, for the reason its own docstring
+    gives — a caller that spells it itself fails by the feature quietly not working (#381).
+    """
+    try:
+        return findings_file(root, thread_id).stat().st_size
+    except OSError:
+        # Not only "no file". A directory standing at the name, or a mount that has stopped
+        # answering, raises here too, and every one of them means the same thing to the caller:
+        # nothing that can be read back, so nothing to offer to continue from.
+        return 0
 
 
 def _tool_label(payload: dict) -> str:
@@ -11285,6 +11330,140 @@ class Orchestrator:
                 "what is still open. Append what you measure: the statement that produced it, the "
                 "time, and the numbers with their denominators.")
 
+    def _flush_findings(self, client, sid: str, *, root: Path, thread_id: str,
+                        deadline: float, stop: Callable[[], bool]) -> str:
+        """Cut the work and spend what is left of the turn writing down what it measured (#454).
+
+        Beside `_findings_note` because the two are one mechanism seen from its two ends: that one
+        names the file into the next turn's prompt, this one is what puts something in it to read.
+
+        THE SLICE IS THE WHOLE DESIGN. `deadline` is the turn's own ceiling — the caller passes
+        `started + _CHAT_TURN_MAX_S`, never a number of its own — so nothing here can make a turn
+        last longer than it would have. Every wait below is bounded by it, including the one for a
+        session that will not acknowledge the interrupt, which is the case this could most easily
+        have hung on.
+
+        THE WORK IS INTERRUPTED FIRST, and there is no gentler order available. A session that is
+        mid-step will not read a new prompt until the step returns, and the turn that gets here is
+        by definition one whose steps have not been returning fast enough. So the ten minutes are
+        already spent either way; the only question is whether anything survives them.
+
+        BEST-EFFORT AT EVERY STAGE, and the return value is not the answer to "did it work". It is
+        the path this asked for, and the caller decides whether anything landed by weighing the
+        file before and after — after `publish_chat_artifacts`, because `refuse_oversize_findings`
+        runs in there and can put the whole file back. A report from inside here would be a claim
+        about a write that something downstream may have reverted.
+
+        `stop` IS READ IN EVERY WAIT, not only at the caller's next pass. The turn lock is held
+        for the length of the slice and the loop only consumes `stop_requested` at its top, so
+        without this a person who pressed Stop at nine and a half minutes — which is exactly when
+        somebody presses it — waited out the rest of the slice for nothing, and then the flag
+        outlived the turn and answered their NEXT question with "Stopped" before it ran a step.
+        """
+        path = findings_file(root, thread_id)
+        rel = path.relative_to(root).as_posix()
+
+        def idle_by(when: float) -> bool:
+            while True:
+                try:
+                    if not client.is_running(sid):
+                        return True
+                except Exception as e:
+                    # A failed poll is not a refusal — the same reading `_stop_wedged_session`
+                    # takes of the same call. The deadline below is what ends this either way.
+                    log.warning("chat: session state unreadable during the findings slice: %s", e)
+                if stop():
+                    return False
+                if time.monotonic() >= when:
+                    return False
+                time.sleep(1.0)
+
+        def settled_by(when: float) -> bool:
+            """Wait for the turn just dispatched to START and then finish, bounded by `when`.
+
+            NOT the same wait as the one above, and the difference decides whether any of this
+            works at all. `send_prompt` posts to `/prompt_async` and returns before the turn
+            begins (`driver/opencode.py:354`), and `/session/status` does not flip to busy with
+            the POST — `wait_for_idle` carries `appear_grace_s` for precisely this, with the same
+            `appeared` latch as below.
+
+            Written first without it, and the cost was the whole feature: the first poll after
+            the dispatch read "not busy", the wait returned immediately, the caller set the
+            ceiling, the ceiling arm interrupted, and the write never happened. Measured against
+            a driver that dispatches asynchronously — ONE poll, an empty file, and no Continue on
+            every ceiling turn. Nothing in the suite could see it, because `FakeOpenCode` marks
+            the session running inside `send_prompt`, so every test modelled a driver that
+            dispatches synchronously and the real one does not.
+            """
+            appeared = False
+            grace = time.monotonic() + _CHAT_FLUSH_APPEAR_S
+            while True:
+                try:
+                    if client.is_running(sid):
+                        appeared = True
+                    elif appeared or time.monotonic() >= grace:
+                        # Finished, or never registered at all. Which of the two is not this
+                        # function's question — the caller weighs the file, and a turn that never
+                        # started has written nothing for it to weigh.
+                        return True
+                except Exception as e:
+                    log.warning("chat: session state unreadable during the findings slice: %s", e)
+                if stop():
+                    return False
+                if time.monotonic() >= when:
+                    return False
+                time.sleep(1.0)
+
+        try:
+            client.interrupt(sid)
+        except Exception:
+            # Logged and carried on, because the interrupt returning is not what this waits on.
+            log.exception("chat: the interrupt before the findings slice failed")
+        if not idle_by(deadline):
+            log.warning("chat: the session would not go idle inside the findings slice; "
+                        "nothing was asked for")
+            return rel
+        # Says what to write and forbids everything else. A turn arriving here has already spent
+        # its clock, so any word that could be read as "carry on" spends the slice on more of what
+        # ran out of time — and the one thing this must not do is produce an answer, which the
+        # block above it is about to say was never reached.
+        ask = (f"This turn has reached its time limit and is being stopped now. Before it is, "
+               f"append what you have already measured to {rel}: the statement or command that "
+               "produced each number, the numbers with their denominators, and what is still "
+               "open. Write that file and nothing else — start no new work, read nothing further, "
+               "and do not try to answer the question.")
+        sent: list[bool] = []
+
+        def dispatch() -> None:
+            try:
+                client.send_prompt(sid, ask, agent="sage-chat", chat=True)
+                sent.append(True)
+            except Exception:
+                log.warning("chat: the findings request failed")
+
+        # ON A THREAD, bounded by the same deadline as everything else here, because this call is
+        # the one place the slice could still have put five minutes on top of the ceiling.
+        # `send_prompt` posts with the client's own `timeout_s`, which is 300 seconds
+        # (`driver/opencode.py:292`) — every other call in this method is 30 — and the session it
+        # posts to is by definition one that has just been interrupted for not answering. Waiting
+        # it out would make the ceiling negotiable by the exact amount the ticket forbids.
+        # `_mount_probe` bounds a blocking read the same way, a few hundred lines up.
+        #
+        # An abandoned request may still land, and that is the right failure rather than a leak:
+        # it reaches a session this turn interrupts again a moment later, and anything written
+        # after that goes to a file built to outlive the turn. No Continue is offered for it,
+        # because the caller weighs the file before the card is drawn and nothing had landed.
+        th = threading.Thread(target=dispatch, daemon=True)
+        th.start()
+        th.join(max(0.0, deadline - time.monotonic()))
+        if not sent:
+            log.warning("chat: the findings request did not go out inside the slice")
+            return rel
+        with timing.span("chat.findings_flush"):
+            if not settled_by(deadline):
+                log.warning("chat: the findings slice ran out before the write came back")
+        return rel
+
     def _already_read_note(self, history: list[dict] | None) -> str:
         """The sources earlier turns in this Thread already read, and where each result landed.
 
@@ -12273,6 +12452,14 @@ class Orchestrator:
             # second time when it arrived, and a healthy turn would stop after two repeats.
             stream_owned = False
             looped = ""
+            # The reserved tail, and what the findings weighed when it opened (#454). Two locals
+            # rather than one truthy string, because "the slice was opened" and "the slice added
+            # something" are different questions asked at different moments: this one is settled
+            # here, and the other cannot be settled until after `publish_chat_artifacts`, which may
+            # put the file back. `flush_rel` is the path that was asked for and doubles as the
+            # once-only guard — the slice is the end of the turn, so a second one cannot arise.
+            flush_rel = ""
+            flush_before = 0
             while True:
                 if project.stop_requested:
                     # Cleared by the turn that consumes it. Build clears it in its own handle_stop;
@@ -12301,9 +12488,49 @@ class Orchestrator:
                 now = time.monotonic()
                 quiet_limit = tool_quiet if running_tools else idle_quiet
                 quiet = now - last_activity >= quiet_limit
-                if quiet or looped or now - started >= _CHAT_TURN_MAX_S:
+                ceiling = now - started >= _CHAT_TURN_MAX_S
+                # When the work stops and the writing starts. A ceiling no longer than the slice
+                # reserves nothing at all rather than reserving everything: the tail is carved OUT
+                # of the ceiling, so `<= 0` is a ceiling with no work in front of it, and opening
+                # the slice on the first pass of the loop would interrupt a turn that had not yet
+                # run a step. The two numbers are set together, and a test pins that they still
+                # are — see `_CHAT_FINDINGS_FLUSH_S`.
+                flush_at = _CHAT_TURN_MAX_S - _CHAT_FINDINGS_FLUSH_S
+                if (flush_at > 0 and not bounded_intent and not ceiling and not quiet
+                        and not looped and not flush_rel and now - started >= flush_at):
+                    # The reserved tail opens (#454). ONLY on the way to the ceiling: every other
+                    # arm below knows something this one does not, and none of them wants the work
+                    # cut a minute early. A quiet turn has already stopped saying anything, so
+                    # there is nothing in flight to interrupt and no reason to believe a session
+                    # that went silent will answer this prompt either; a looped turn is stopped
+                    # because it kept going, and buying it another minute is the opposite of the
+                    # brake. So this asks for the one shape the ceiling exists for — a turn that
+                    # is alive, working, and out of time.
+                    #
+                    # `ceiling` is then set whatever happens. The work has been interrupted by the
+                    # line below, so there is nothing to hand an unspent slice back to, and a turn
+                    # that returned to the loop here would read the flush's own prose as an answer
+                    # and close `ok: True` over a question it never reached.
+                    flush_before = _findings_bytes(project.record.path, thread_id)
+                    flush_rel = self._flush_findings(
+                        client, sid, root=project.record.path, thread_id=thread_id,
+                        deadline=started + _CHAT_TURN_MAX_S,
+                        stop=lambda: project.stop_requested)
+                    if project.stop_requested:
+                        # Back to the top, which is the only place that consumes the flag and the
+                        # only place that says "Stopped" rather than "this ran out of time". The
+                        # person who pressed Stop asked for a stop, not for a ceiling, and the
+                        # flag left standing here would meet their NEXT question instead.
+                        continue
+                    ceiling = True
+                if quiet or looped or ceiling:
                     open_now = ", ".join(sorted(set(running_tools.values())))
-                    log.warning("chat: turn stopped after %.0fs — %s%s", now - started,
+                    # Read again rather than from `now`, which is the instant the decision was
+                    # taken and can be a whole reserved slice ago (#454). The three arms below
+                    # reason from `now`, as they always have; only the elapsed number here is
+                    # about how long the person waited, and that number must include the slice.
+                    log.warning("chat: turn stopped after %.0fs — %s%s",
+                                time.monotonic() - started,
                                 f"repeated {brake.label} {_REPEAT_LIMIT} times" if looped
                                 else f"quiet for {now - last_activity:.0f}s" if quiet
                                 else f"hit the {_CHAT_TURN_MAX_S:.0f}s ceiling",
@@ -12356,12 +12583,35 @@ class Orchestrator:
                         log.error("chat: the session would not confirm it stopped; cleaning up "
                                   "under it anyway — the next turn may meet a live writer")
                     yield from publish_chat_artifacts("repeated" if looped else "timeout")
+                    # Whether the reserved slice actually left something to come back to (#454).
+                    # Asked HERE and not inside the flush, because `refuse_oversize_findings` runs
+                    # inside the publish above and puts the WHOLE file back when this turn's append
+                    # took it over `FINDINGS_MAX` — read a moment earlier, the sentence and the
+                    # button below would both offer to continue from measurements that had just
+                    # been reverted, and the person would press it into a turn that reads nothing.
+                    #
+                    # Weighed rather than asked for existence: a Thread whose earlier turns wrote
+                    # findings has the file already, so "it is there" says nothing about whether
+                    # THIS turn added to it, and the offer is about this turn's ten minutes.
+                    kept_findings = ""
+                    if flush_rel and _findings_bytes(project.record.path,
+                                                     thread_id) > flush_before:
+                        kept_findings = flush_rel
                     # Detect here too, not only after a turn that finished. Asking Chat to build an
                     # app is exactly what runs long — sage-chat writes an Artifact, not an app — so
                     # the turn the person most needs the nudge on is the one that never reaches the
                     # end of this loop. Without it the timeout is a dead end they retype into.
                     suggestion = (None if bounded_intent else
                                   self._maybe_suggest_handoff(store, project, thread_id, prompt))
+                    # Whether the arm below is the ceiling's (#454). Set by that arm and read by
+                    # the Continue card, rather than re-derived from the conditions the chain
+                    # tests: a second copy of "none of the four above fired" is a copy that can
+                    # drift away from the chain it is meant to mirror, and the chain is the thing
+                    # constraint 5 protects. The slice can run on a turn that then takes an
+                    # EARLIER arm — #453 lets a `build_app` turn reach here, and `suggestion`
+                    # fires above — and a Continue card under "Building an app is a job for
+                    # Build" would promise to carry on measurements that sentence never mentions.
+                    on_the_ceiling = False
                     if looped:
                         # First, because it is the only branch below that knows WHAT the turn was
                         # doing. Every other one reasons from silence; this one was written where
@@ -12408,8 +12658,29 @@ class Orchestrator:
                             "{assistantName} stopped making progress."
                         )
                     else:
-                        message = (
-                            "This took too long. Ask a smaller question, or one step at a time."
+                        on_the_ceiling = True
+                        # The ceiling, and the only arm that reasons from a turn that was WORKING
+                        # when it was stopped (#454). The sentence this replaces named the size of
+                        # the question, and #400 measured that as the wrong lever: 41 of 49 calls
+                        # on the turn that prompted it were bash, and the investigate skill
+                        # PRESCRIBES those steps — so somebody told to ask something smaller went
+                        # and made smaller a thing that was never the problem.
+                        #
+                        # Neither sentence claims an answer. The turn did not reach one, `ok` is
+                        # false, and a block that says what was kept must not be read as saying
+                        # the question was settled.
+                        message = brand.text(
+                            "This ran out of time before {assistantName} had an answer. What it "
+                            "measured is written down in {rel} — Continue picks the question up "
+                            "from there instead of measuring it again. What ends a turn is the "
+                            "number of steps it takes, not the size of the question.",
+                            rel=kept_findings,
+                        ) if kept_findings else brand.text(
+                            "This ran out of time before {assistantName} had an answer, and "
+                            "nothing it measured was written down, so there is nothing to carry "
+                            "forward. What ends a turn is the number of steps it takes, not the "
+                            "size of the question — one step at a time is what keeps a turn "
+                            "inside the limit."
                         )
                     err = {"type": "error", "message": message}
                     done = {"type": "done", "ok": False,
@@ -12426,6 +12697,31 @@ class Orchestrator:
                     if suggestion:
                         store.append_history(thread_id, suggestion)
                         yield suggestion
+                    if kept_findings and on_the_ceiling:
+                        # The way back in, and only where there is something to go back to AND a
+                        # sentence above it that says so (#454). `kept_findings` answers the
+                        # first; `on_the_ceiling` answers the second, and both are needed. The
+                        # slice can run on a turn that then takes an earlier arm, and only the
+                        # ceiling's own copy names the file this card offers to continue from.
+                        #
+                        # The prompt is the ORIGINAL question, unchanged. Nothing is bolted onto
+                        # it: `_findings_note` already names the file into every turn's prompt
+                        # when it exists, and the slice has just made it exist, so the resumed
+                        # turn is handed what this one measured by the ordinary path. That is
+                        # also why it is an ordinary turn in every other way — a full ceiling, no
+                        # grant, no gate skipped.
+                        #
+                        # AFTER the handoff card for the same reason that one rides last: both are
+                        # offers under a settled `done`, and the one that moves the person to
+                        # another mode is the bigger of the two.
+                        resume = {"type": "continue-offer", "prompt": prompt,
+                                  "threadId": thread_id,
+                                  "message": brand.text(
+                                      "Continue from what this turn measured — {assistantName} "
+                                      "reads {rel} first, so the next turn starts where this one "
+                                      "stopped.", rel=kept_findings)}
+                        store.append_history(thread_id, resume)
+                        yield resume
                     return
                 for ev in tap.drain():
                     last_activity = time.monotonic()
