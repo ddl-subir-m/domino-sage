@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from .. import degraded, timing
 from ..gateway.client import CostLabels, GatewayClient
-from ..router.models import ModelCatalog
+from ..router.models import ModelCatalog, reasoning_efforts_for
 from .scope import _extract, _model_for
 
 log = logging.getLogger(__name__)
@@ -187,6 +187,10 @@ def start(
         "stream": True,
         "response_format": {"type": "json_object"},
     }
+    # The Ask assignment owns both fields. GLM's default can spend this small cap on
+    # reasoning alone (#417); honor an explicit Low pick without changing Model default.
+    if catalog.ask_effort in reasoning_efforts_for(model):
+        request["reasoning_effort"] = catalog.ask_effort
     labels = CostLabels(phase="ask", mode="auto", component="chat-intent",
                         session=session, version=version)
 
