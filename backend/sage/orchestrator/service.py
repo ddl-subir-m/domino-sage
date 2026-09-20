@@ -11980,6 +11980,26 @@ class Orchestrator:
             if offer is not None:
                 yield from offer
                 return
+            # #440. This gate does not only ASK. Where the sentence named the table outright it
+            # RECORDS it and lets the turn run on (#426) — through `confirm_thread_table_candidate`,
+            # which reads that table's columns and writes them onto this Thread's context row. So
+            # the columns a bare Data Source chip lacks are already read and already written by the
+            # time the prompt is rendered, and the prompt still went without them: `read_context`
+            # returns a fresh object off disk every call, the recording is a read-modify-write of
+            # its own, and the snapshot taken at the top of this turn is therefore stale by exactly
+            # the field the agent needs. It aimed its first SELECT at columns it had never seen,
+            # the statement failed `000904`, and the turn spent a schema probe and a retry
+            # recovering — measured four times over two revs.
+            #
+            # This is a local read of the Thread's own file, not a lookup: `_chat_context_line`'s
+            # refusal to put a Domino round trip inside prompt rendering (#400, #417) is untouched,
+            # and no read is added anywhere — the one this makes visible had already happened.
+            #
+            # `items` is refreshed beside `ctx` rather than only the value the prompt takes,
+            # because everything below reads one or the other and two snapshots of one record are
+            # free to disagree.
+            ctx = store.read_context(thread_id)
+            items = [i for i in (ctx.get("items") or []) if i.get("id")]
 
         # And a Dataset on this Thread with no file pinned from it (#196, ADR-0039), asked after the
         # table for the reason Build asks it after: a store with no table cannot be read at all,
