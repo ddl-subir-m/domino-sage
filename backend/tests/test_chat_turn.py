@@ -2701,7 +2701,12 @@ def test_a_turn_that_never_stops_talking_hits_the_ceiling(tmp_path: Path, monkey
 
     assert oc.interrupted == 1
     err = next(e for e in out if e["type"] == "error")
-    assert "took too long" in err["message"]
+    # Since #454 the sentence names the lever #400 measured — the number of steps — rather than the
+    # size of the question. This turn reserved no slice and so kept nothing: the ceiling here is
+    # shorter than `_CHAT_FINDINGS_FLUSH_S`, which leaves no turn in front of the slice, and the
+    # loop declines to open one rather than interrupting a turn on its first pass.
+    assert "ran out of time" in err["message"]
+    assert "number of steps it takes" in err["message"]
     assert "stopped making progress" not in err["message"]  # it never stopped; that is the point
     assert next(e for e in out if e["type"] == "done") == {
         "type": "done", "ok": False, "decision": "timeout",

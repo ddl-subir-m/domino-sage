@@ -91,7 +91,7 @@ def test_each_button_records_its_own_word_and_then_asks_the_question_again(
     # route reads, and this click answers only the investigation.
     assert out["replay"] == {"prompt": PROMPT, "skipTableGate": False, "skipDatasetGate": False,
                              "datasetDismissed": "", "investigationAnswered": True,
-                             "otherLaneGrant": ""}
+                             "otherLaneGrant": "", "alreadyAsked": False}
     # And the question stays a single bubble. It comes back with the reload, above the card that
     # quotes it, so the replay draws none of its own.
     assert out["asked"] == [PROMPT]

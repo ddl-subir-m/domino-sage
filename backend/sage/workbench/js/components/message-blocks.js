@@ -1433,6 +1433,47 @@ window.SW = window.SW || {};
     );
   }
 
+  // The way back into a turn the ceiling stopped (#454). Drawn UNDER the block that says what
+  // happened, like the card above it, and for the same reason: the turn has ended, `done` has been
+  // read, and this is an offer rather than a question the turn is waiting on.
+  //
+  // ONE BUTTON, and no decline beside it. "Not now" on the card above retires a card that is
+  // sitting under a finished answer; here there is no answer, the block above says so, and a
+  // second button to say "leave it then" adds a click that does nothing the person is not already
+  // doing by not pressing the first one. Nothing is recorded either way — a ceiling records no
+  // decision, so the next turn that hits one offers again.
+  //
+  // `live` is what keeps a week-old transcript from starting ten minutes of work on a page load
+  // nobody connected to it; without it this is the sentence alone, which is what it is a record of.
+  function ContinueAfterTheCeiling({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        block.live && block.prompt
+          ? h(
+              'div',
+              { style: { marginTop: 8 } },
+              h(Button, {
+                type: 'primary',
+                size: 'small',
+                loading: busy === 'continue',
+                disabled: !!busy,
+                onClick: run('continue', () => SW.store.continueAfterTheCeiling(
+                  block.prompt, block.threadId)),
+              }, 'Continue')
+            )
+          : null
+      )
+    );
+  }
+
   // The turn asked to start over (#36). The gate stops before any inference and hands the decision
   // back, so this card is the decision: it says what a reset does and does not take, and gives the
   // one-click way to do it. "Reset and build this" exists because "clear everything and build X from
@@ -2275,6 +2316,8 @@ window.SW = window.SW || {};
         return h(InvestigationOffer, { block });
       case 'other_lane_offer':
         return h(OtherLaneOffer, { block });
+      case 'continue_offer':
+        return h(ContinueAfterTheCeiling, { block });
       case 'build_stalled':
         return h(BuildStalled, { block });
       case 'plan_suggestion':
