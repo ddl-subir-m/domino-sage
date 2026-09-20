@@ -1886,6 +1886,54 @@ def _pin_key(pin: dict) -> tuple:
     )
 
 
+def _pin_context_item(parent: dict, pin: dict) -> dict | None:
+    """One pinned leaf, as the chip `Use here` would have posted for it (#468). None if it is neither.
+
+    A second copy of `pinRow` (`js/api.js:225`), and one on purpose: that one builds the leaf for the
+    @ menu in a browser somebody is looking at, this one builds it for a Conversation nobody has
+    opened yet, and there is no moment where either could ask the other. What keeps the two from
+    drifting is that neither is a chip until `add_thread_context` has read it — so a field only one
+    of them sets is a field the chip never had.
+
+    Pins are stored by `_normalize_pin`, which accepts `datasource` and `data_source` for the same
+    parent, so both are read back here. A row of any other kind holds no leaves to pin.
+    """
+    kind = str(parent.get("kind") or "")
+    parent_id = str(parent.get("id") or "")
+    if kind == "dataset":
+        bare = _bare_kind_id(parent_id, "dataset")
+        rel = str(pin.get("path") or "")
+        if not bare or not rel:
+            return None
+        return {
+            "kind": "file",
+            "name": str(pin.get("name") or rel.rsplit("/", 1)[-1]),
+            "resourceId": f"dsfile:{bare}:{rel}",
+            "parentId": parent_id,
+            "datasetId": bare,
+            "datasetRelPath": rel,
+            "datasetName": str(parent.get("name") or ""),
+        }
+    if kind in ("datasource", "data_source"):
+        bare = _bare_kind_id(parent_id, "data_source")
+        table = str(pin.get("table") or "")
+        if not bare or not table:
+            return None
+        database = str(pin.get("database") or "")
+        schema = str(pin.get("schema") or "")
+        return {
+            # The kind the tree's own click sends: a table leaf is posted as its Data Source
+            # (`addToConversation`, `js/api.js:529`), and `scope` beside it says which table.
+            "kind": "data_source",
+            "name": str(pin.get("name") or table),
+            "resourceId": f"table:{bare}:{'.'.join(p for p in (database, schema, table) if p)}",
+            "parentId": parent_id,
+            "bindingKey": parent.get("bindingKey") or ["data_source", bare],
+            "scope": {"database": database, "schema": schema, "table": table},
+        }
+    return None
+
+
 def _describe_context_file(workspace: Path, item: dict) -> str:
     """Shape of a file chip. Empty when the bytes are not here to read.
 
@@ -7743,9 +7791,60 @@ class Orchestrator:
             timing.finish_turn()
 
     def create_thread(self) -> dict:
-        """A new Chat Thread in this project. Does not provision a Domino project."""
+        """A new Chat Thread in this project, holding the Project's pinned leaves. No Domino project.
+
+        Pinning was a durable, project-level, explicitly-toggled statement that a table matters, and
+        it bought a sort of the @ menu and nothing else — so a person who had made it still re-added
+        the same table to every conversation by hand, three in a row, and read Pin as broken (#468).
+        This is what the statement now buys.
+        """
         self._flush_chat_save("leave")
-        return ThreadStore(self._chat_project().record.path).create()
+        row = ThreadStore(self._chat_project().record.path).create()
+        self._seed_context_from_pins(row["id"])
+        return row
+
+    def _seed_context_from_pins(self, thread_id: str) -> None:
+        """Every pinned leaf, as a chip on a Conversation that has just been minted (#468).
+
+        ON CREATE, NEVER ON READ. `context.json` is the record of what this Conversation was decided
+        to hold, and closing a chip is a decision. Seeding where the Thread is READ would put it back
+        on the next open, and a chip that will not stay closed is worse than one that never arrived —
+        it is the same invisible mechanism this ticket is about, pointed the other way.
+
+        Through `add_thread_context` rather than the `ThreadStore.add_context` underneath it, because
+        that is the whole path `POST /api/threads/{id}/context` takes and the chip is only worth
+        having complete: a table chip seeded here carries the columns from the same
+        `_columns_for_context` read `Use here` pays for, which is the read a turn otherwise buys with
+        a failed statement and a recovery (#440). Nothing tells it this is Build, because nothing
+        does — seeding is Chat's, and Build's Attachment is a different act with a lock and a
+        manifest entry behind it (ADR-0048).
+
+        A pin that cannot be seeded costs its own chip and nothing else. The alternative is a person
+        who cannot open a conversation at all because a store they pinned a table in last week is
+        down, and the conversation is the one thing they were trying to start. The failure is logged
+        and not drawn, which is a real gap: a store that will not answer gives a conversation with no
+        chips and no reason, which is the symptom this ticket exists to remove, wearing a different
+        hat. Closing it means a field on the create response and copy to render it, and neither is
+        asked for here.
+
+        WHAT THIS COSTS, per new conversation. A pinned TABLE is one `list_columns` round trip, every
+        time, and they are serial — four pins are four. It is the same read `Use here` pays for and
+        the same one a turn otherwise buys with a failed statement and a recovery (#440), so it is
+        moved rather than added; what IS new is that it lands on a button click instead of on a turn
+        somebody is already waiting through. A pinned Dataset FILE fetches its bytes, but only the
+        first time: `fetch_dataset_file_for_chat` is idempotent per project and a mounted Dataset is
+        a symlink, so every conversation after the first is a `stat`.
+        """
+        for parent in self._chat_project().record.read_project_resources():
+            for pin in (parent.get("pins") or []):
+                item = _pin_context_item(parent, pin) if isinstance(pin, dict) else None
+                if item is None:
+                    continue
+                try:
+                    self.add_thread_context(thread_id, item)
+                except Exception:
+                    log.warning("could not seed pinned %r onto %s", item.get("name"), thread_id,
+                                exc_info=True)
 
     def get_thread(self, thread_id: str) -> dict:
         """Open a Conversation. Leaving a dirty one still commits it — off this read's thread.
