@@ -55,7 +55,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .. import timing
+from .. import degraded, timing
 from ..gateway.client import CostLabels, GatewayClient
 from ..router.models import ModelCatalog
 
@@ -112,6 +112,10 @@ class _Health:
         """Record an answer in neither vocabulary; return what wants_a_plan should return.
 
         True (gate) until the breaker trips, then False (build) forever after."""
+        # A judgement the turn asked for and did not get (#463). The call landed, so this is not a
+        # route being down — but the verdict is a default either way, and the count's question is
+        # what the turn LOST rather than whose fault it was.
+        degraded.judgement_lost()
         self.unreadable += 1
         if self.unreadable < MAX_UNREADABLE:
             log.warning("scope: unrecognised verdict %r (%d in a row) — planning instead of building",
@@ -282,8 +286,14 @@ class Pending:
     """
 
     def __init__(self, verdict: bool | None = None, *, done=None, box: dict | None = None,
-                 deadline: float = 0.0, timeout_s: float = TIMEOUT_S) -> None:
+                 deadline: float = 0.0, timeout_s: float = TIMEOUT_S, model: str = "") -> None:
         self._verdict = verdict
+        # The model the call was routed to, carried so the two warnings in `_join` can name it
+        # (#467, extended to this fourth classifier by #463). Without it a capped ask slot and a
+        # model that cannot hold the contract produce the same line, and `/api/diag/log?warn=1`
+        # cannot tell them apart. Bound in `start`, where the request is built, rather than derived
+        # a third time here.
+        self._model = model
         self._done = done
         # `is None`, not `or`: the box starts EMPTY, and `{} or {}` would quietly bind a second
         # dict here that the worker never writes to.
@@ -302,13 +312,15 @@ class Pending:
         if not self._done.wait(max(0.0, self._deadline - time.monotonic())):
             # The worker is abandoned, not cancelled — a blocked socket read can't be interrupted. It
             # holds one thread until the gateway gives up, which is the price of not hanging the turn.
-            log.warning("scope: classify timed out after %.1fs — building without a plan",
-                        self._timeout_s)
+            degraded.judgement_lost()
+            log.warning("scope: classify timed out after %.1fs — building without a plan model=%s",
+                        self._timeout_s, self._model or "-")
             return None
         error = self._box.get("error")
         if error is not None:
-            log.warning("scope: classify failed (%s: %s) — building without a plan",
-                        type(error).__name__, error)
+            degraded.judgement_lost()
+            log.warning("scope: classify failed (%s: %s) — building without a plan model=%s",
+                        type(error).__name__, error, self._model or "-")
             return None
         return self._box.get("answer")
 
@@ -353,8 +365,19 @@ def start(
     if _health.broken:
         # Declared broken earlier in this process (see _Health). Skip the call entirely rather than
         # pay for another answer we already know we can't read.
+        #
+        # Counted, and this is the case the count is worth most on (#463). The breaker says its
+        # piece ONCE at ERROR and is then silent for the life of the process, so from the second
+        # turn onward every Auto turn builds ungated with nothing whatever to say so — the loudest
+        # possible degradation and the quietest possible surface. No log line here on purpose: a
+        # warning per turn is exactly what the breaker was built to stop, and a number is not a line.
+        degraded.judgement_lost()
         return Pending(False)
 
+    # Bound once and threaded everywhere this call names a model: the request, the timing ledger and
+    # the two warnings `Pending._join` can raise. It was derived twice inside `_call` alone, and the
+    # reports are a third and fourth site that would have to agree with both (#467).
+    model = _model_for(catalog)
     # phase="plan": this call decides whether to plan, so it is planning overhead, and tagging it as
     # its own component keeps it separable from build inference in cost analysis.
     labels = CostLabels(phase="plan", mode="auto", component="scope", session=session, version=version)
@@ -365,7 +388,7 @@ def start(
         #
         # File paths are app structure, not user data. Truncate the prompt rather than refuse.
         request = {
-            "model": _model_for(catalog),
+            "model": model,
             "messages": [
                 {"role": "system", "content": _SYSTEM + app_context(root)},
                 {"role": "user", "content": text[:MAX_PROMPT_CHARS]},
@@ -390,7 +413,7 @@ def start(
         # reached the SHIM", and `model_calls == 0` is what `shim_bypassed` reads to tell a broken
         # OpenCode->shim wiring from a working one. A call that bypasses the shim by design would
         # make that zero non-zero and hide the fault the counter exists to surface.
-        call = timing.model_call(_model_for(catalog), "scope")
+        call = timing.model_call(model, "scope")
         chunks = []
         try:
             for chunk in gateway.route(request, labels):
@@ -422,7 +445,8 @@ def start(
     # turn that started a classify and never got back to it. A daemon thread ends when its call does,
     # joined or not.
     threading.Thread(target=_worker, name="sage-scope", daemon=True).start()
-    return Pending(done=done, box=box, deadline=time.monotonic() + timeout_s, timeout_s=timeout_s)
+    return Pending(done=done, box=box, deadline=time.monotonic() + timeout_s, timeout_s=timeout_s,
+                   model=model)
 
 
 def wants_a_plan(

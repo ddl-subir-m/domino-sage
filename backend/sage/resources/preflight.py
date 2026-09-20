@@ -260,6 +260,55 @@ def alias_problem(alias_name: str, aliases: list[LlmAlias],
     )
 
 
+def tool_capability_note(capabilities: list[str] | None, model: str = "") -> str | None:
+    """Why a model may not be able to do what a Chat turn asks of it, or None when nothing is known.
+
+    A MARK and never a filter. #296 already records what this metadata is worth — "last-known
+    filters, not proof of the provider's current verdict" — and #463 re-measured it on the live
+    gateway: `domino-gcp/claude-sonnet-5` and `domino/gemini-3.7-flash` both declare `chat` alone,
+    which is not credible for either, and `GLM 5.3 OR` declared no `tools` while a maintainer wired
+    tool calling for it by hand. Both fields anyone has ever checked against reality were wrong, in
+    both directions. A filter keyed on this would today hide Sonnet 5, and a person who cannot see a
+    model at all cannot report that the list is wrong.
+
+    So the sentence is worded as the uncertainty it is. It says the model does not ADVERTISE tool
+    support and that Chat turns always send tools; it does not say the model cannot use them.
+
+    THE RULE THAT FOLLOWS FROM THAT, and it binds readers of this function rather than this
+    function: nothing downstream may treat the mark as EVIDENCE. Not a filter on any picker, not a
+    refusal on any save, and not a condition on any other surface's warning — #469 observes what a
+    model actually did with tools on a turn, and it is deliberately NOT gated on this (decided
+    2026-09-20, across #463 and #469). The two disagreeing is the product: a model marked "doesn't
+    advertise tool support" that then returns tool calls is a gateway metadata fault, caught with
+    nobody watching. Gate one on the other and that finding becomes unreachable — and the gate
+    would today be shut by `domino-gcp/claude-sonnet-5` and `domino/gemini-3.7-flash`, which both
+    declare bare `chat` and both work, so it fails in the false-free direction.
+
+    Empty capabilities mean "not known" rather than "none", which is the same reading the chat-model
+    guard in `service.set_chat_pick` takes of the same list — an unknown must not be reported as a
+    fault. `chat` is required before the note is worth making: a row that does not claim to hold a
+    conversation is not being judged on what it would do in one.
+    """
+    caps = capabilities or []
+    if not caps or "chat" not in caps or "tools" in caps:
+        return None
+    # NAMES the model, which is not decoration and is the lesson #467 landed one ticket earlier: a
+    # degradation line that names no model cannot be acted on. It matters most on a row where the
+    # sentence and the control above it are about DIFFERENT models — the model panel substitutes
+    # what a slot RUNS into its select when the signing pin or the sensitivity lock has moved the
+    # row, while this note is about the model the slot is ASSIGNED. "This model" under that control
+    # points at whichever of the two the reader happens to think it means. The name settles it, and
+    # it costs nothing on the rows where there is only one model in view.
+    #
+    # The caller supplies the name rather than this reading it off the alias, because the two are
+    # not always the same string and the reader must be told the one they can act on: a slot can
+    # hold `sage-gateway/sonnet` or `domino/gemini-3.7-flash`, and `slot_alias` above records that
+    # both shapes occur live. The name in the row is the name in the sentence.
+    subject = f"{model} doesn't" if model else "This model doesn't"
+    return (f"{subject} advertise tool support, and every Chat turn sends tools. The capability "
+            "list is what the provider last reported, not a test, so it may work anyway.")
+
+
 def slots_on_dead_endpoints(catalog: ModelCatalog, aliases: list[LlmAlias],
                             endpoints: list[HostedEndpoint] | None) -> list[EndpointProblem]:
     """The configured slots whose Alias resolves but whose endpoint will not answer, in SLOTS order.
