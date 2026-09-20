@@ -1,0 +1,312 @@
+{
+  "serving_revision": "5f818a6",
+  "local_revision": "c6ee332f",
+  "model": "GLM 5.3 OR",
+  "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway/v1",
+  "probe": "chat_intent._SYSTEM and _user_payload, temperature=0, response_format=json_object, stream=true, unique user per request",
+  "rows": [
+    {
+      "effort": null,
+      "cap": 160,
+      "seconds": 1.69,
+      "content": "",
+      "reasoning_chars": 708,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 225,
+        "completion_tokens": 160,
+        "total_tokens": 385,
+        "cost": 0.00011375,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00011375,
+          "upstream_inference_prompt_cost": 3.375e-05,
+          "upstream_inference_completions_cost": 8e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 160,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "valid": false,
+      "within_budget": true
+    },
+    {
+      "effort": "low",
+      "cap": 160,
+      "seconds": 1.067,
+      "content": "{\"label\":\"other_chat\",\"confidence\":0.9}",
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "usage": {
+        "prompt_tokens": 225,
+        "completion_tokens": 14,
+        "total_tokens": 239,
+        "cost": 4.075e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 4.075e-05,
+          "upstream_inference_prompt_cost": 3.375e-05,
+          "upstream_inference_completions_cost": 7e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "valid": true,
+      "within_budget": true
+    },
+    {
+      "effort": "low",
+      "cap": 1024,
+      "seconds": 11.837,
+      "content": "{\"label\":\"other_chat\",\"confidence\":0.95}",
+      "reasoning_chars": 351,
+      "finish": "stop",
+      "usage": {
+        "prompt_tokens": 225,
+        "completion_tokens": 99,
+        "total_tokens": 324,
+        "cost": 5.715e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 5.715e-05,
+          "upstream_inference_prompt_cost": 2.25e-05,
+          "upstream_inference_completions_cost": 3.465e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 86,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "valid": true,
+      "within_budget": false
+    },
+    {
+      "prompt": "hi",
+      "effort": "low",
+      "cap": 160,
+      "seconds": 2.385,
+      "content": "{\"label\":\"other_chat\",\"confidence\":0.9}",
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "usage": {
+        "prompt_tokens": 287,
+        "completion_tokens": 14,
+        "total_tokens": 301,
+        "cost": 6.006e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 6.006e-05,
+          "upstream_inference_prompt_cost": 5.166e-05,
+          "upstream_inference_completions_cost": 8.4e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "valid": true,
+      "within_budget": true
+    },
+    {
+      "prompt": "hello",
+      "effort": "low",
+      "cap": 160,
+      "seconds": 1.324,
+      "content": "\n{\"label\":\"other_chat\",\"confidence\":0.9}\n",
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "usage": {
+        "prompt_tokens": 287,
+        "completion_tokens": 18,
+        "total_tokens": 305,
+        "cost": 4.17078e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 64,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 4.17078e-05,
+          "upstream_inference_prompt_cost": 3.32478e-05,
+          "upstream_inference_completions_cost": 8.46e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "valid": true,
+      "within_budget": true
+    },
+    {
+      "prompt": "How many distinct users are in @MIXPANEL__EVENT?",
+      "effort": "low",
+      "cap": 160,
+      "seconds": 0.925,
+      "content": "{\"label\":\"data_answer\",\"confidence\":0.9}",
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "usage": {
+        "prompt_tokens": 246,
+        "completion_tokens": 14,
+        "total_tokens": 260,
+        "cost": 4.39e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 4.39e-05,
+          "upstream_inference_prompt_cost": 3.69e-05,
+          "upstream_inference_completions_cost": 7e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "valid": true,
+      "within_budget": true
+    },
+    {
+      "prompt": "hi",
+      "effort": "low",
+      "cap": 160,
+      "seconds": 1.598,
+      "content": "{\"label\":\"other_chat\",\"confidence\":0.95}",
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "usage": {
+        "prompt_tokens": 234,
+        "completion_tokens": 14,
+        "total_tokens": 248,
+        "cost": 4.21e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 4.21e-05,
+          "upstream_inference_prompt_cost": 3.51e-05,
+          "upstream_inference_completions_cost": 7e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "valid": true,
+      "within_budget": true
+    },
+    {
+      "prompt": "hello",
+      "effort": "low",
+      "cap": 160,
+      "seconds": 1.245,
+      "content": "{\"label\":\"other_chat\",\"confidence\":0.9}",
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "usage": {
+        "prompt_tokens": 287,
+        "completion_tokens": 14,
+        "total_tokens": 301,
+        "cost": 1.81702e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 256,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 1.81702e-05,
+          "upstream_inference_prompt_cost": 1.15902e-05,
+          "upstream_inference_completions_cost": 6.58e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "valid": true,
+      "within_budget": true
+    },
+    {
+      "prompt": "How many distinct users are in @MIXPANEL__EVENT?",
+      "effort": "low",
+      "cap": 160,
+      "seconds": 1.832,
+      "content": "{\"label\":\"data_answer\",\"confidence\":0.9}",
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "usage": {
+        "prompt_tokens": 246,
+        "completion_tokens": 14,
+        "total_tokens": 260,
+        "cost": 4.39e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 4.39e-05,
+          "upstream_inference_prompt_cost": 3.69e-05,
+          "upstream_inference_completions_cost": 7e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "valid": true,
+      "within_budget": true
+    }
+  ]
+}
