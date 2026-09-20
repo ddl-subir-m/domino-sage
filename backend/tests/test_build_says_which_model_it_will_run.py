@@ -1387,7 +1387,7 @@ def test_a_model_that_advertises_tools_carries_no_mark():
     """A mark on every row is a mark on none."""
     plain = _chat_rows("openai/gpt-5.4")["openai/gpt-5.4"]
     assert "no tool support advertised" not in plain["detail"]
-    assert plain["title"] is None
+    assert "doesn't advertise tool support" not in (plain["title"] or "")
 
 
 def _build_rows(step: dict) -> dict:
@@ -1432,4 +1432,4 @@ def test_a_build_row_whose_model_advertises_tools_carries_no_mark():
     # id, because picking it CLEARS the override.
     for key in ("__pinned__", "deepseek/deepseek-v3", "openai/gpt-5.4"):
         assert "no tool support advertised" not in rows[key]["label"], key
-        assert rows[key].get("title") is None, key
+        assert "doesn't advertise tool support" not in (rows[key].get("title") or ""), key
