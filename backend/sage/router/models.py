@@ -136,6 +136,8 @@ REASONING_EFFORTS: dict[str, tuple[str, ...]] = {
     # simply never been checked against the alias.
     "gpt-5.4": ("none", "low", "medium", "high", "xhigh"),
     "gemini-3.7-flash": ("low", "medium", "high", "max"),
+    # cloud-dogfood, 2026-09-20: all three finish with function tools (#472).
+    "GLM 5.3 OR": ("low", "high", "max"),
 }
 
 

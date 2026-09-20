@@ -353,6 +353,7 @@ window.SW = window.SW || {};
     // and a menu offering a level its alias refuses is a 400 on the turn rather than a wrong label.
     const aliasRow = (id) => aliases.find((a) => a.alias === id);
     const effortsFor = (id) => ((aliasRow(id) || {}).reasoning_efforts_with_tools) || [];
+    const effortNoteFor = (id) => SW.util.effortNote(aliasRow(id));
     // The server's sentence about what an alias never claimed it could do, read off the same row
     // `effortsFor` reads and never re-derived from `capabilities` here (#463). Empty for a model
     // with no alias row at all — the open-weight options are ids from `/healthz` and carry no
@@ -822,6 +823,9 @@ window.SW = window.SW || {};
     // cannot be picked at all, so a submenu under it would be a door into a wall.
     const withEfforts = (row, id) => {
       const levels = effortsFor(id);
+      if (!row.disabled) {
+        row = { ...row, title: [row.title, effortNoteFor(id)].filter(Boolean).join(' ') || undefined };
+      }
       // A level standing against this row's model that the model will not take. Reachable without
       // anyone having done anything wrong: a deployment default can move under a live pick, and the
       // measured table can narrow when an alias is probed (#280). Dropped from the menu, the level
@@ -966,7 +970,8 @@ window.SW = window.SW || {};
         return {
           key: option.alias,
           disabled: barred,
-          title: barred ? lockNote(option.alias) : (capability || undefined),
+          title: barred ? lockNote(option.alias)
+            : [capability, effortNoteFor(option.alias)].filter(Boolean).join(' ') || undefined,
           label: h(
             'div',
             { style: { minWidth: 200 } },
@@ -1366,7 +1371,8 @@ window.SW = window.SW || {};
                   size: 'small',
                   // Same alias the menu rows are judged and explained by, so the chip's hover and
                   // the row's hover cannot say different things about one Alias.
-                  title: barredModel(effectiveModel) ? lockNote(effectiveModel) : undefined,
+                  title: barredModel(effectiveModel) ? lockNote(effectiveModel)
+                    : effortNoteFor(effectiveModel) || undefined,
                 },
                 h(Space, { size: 4 },
                   barredModel(effectiveModel)
@@ -1381,7 +1387,7 @@ window.SW = window.SW || {};
               { menu: effortMenu, trigger: ['click'], placement: 'topLeft' },
               h(
                 Button,
-                { size: 'small' },
+                { size: 'small', title: effortNoteFor(effectiveModel) || undefined },
                 h(Space, { size: 4 }, strandedChatEffort
                   ? `${effortLabel(strandedChatEffort)} — not accepted` : effortLabel(reasoningEffort),
                   h(DownOutlined, { style: { fontSize: 9 } }))

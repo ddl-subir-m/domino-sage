@@ -285,9 +285,9 @@ window.SW = window.SW || {};
       //
       // The server's local resolver supplies tool-compatible choices (#284, #298). The measured
       // provider table stays server-side, as ADR-0049 requires.
-      const efforts = staleAssignment
-        ? []
-        : (listed.find((a) => a.name === current.model) || {}).reasoning_efforts_with_tools || [];
+      const effortAlias = staleAssignment ? null : listed.find((a) => a.name === current.model);
+      const efforts = (effortAlias || {}).reasoning_efforts_with_tools || [];
+      const effortNote = SW.util.effortNote(effortAlias);
       // A level on disk that this row's model does not offer. Reachable without anyone having done
       // anything wrong: the deployment default can move under a stored level long after it was
       // saved and nothing re-validates it (`service._effective_catalog` says so in as many words),
@@ -425,6 +425,7 @@ window.SW = window.SW || {};
         // two sentences rather than beside the select (ADR-0049). Below, because it is a property
         // of the model above it: a person picks the model first and the levels on offer are that
         // model's, so a control drawn before it would offer an answer to a question not yet asked.
+        effortNote ? h('div', { className: 'sw-assignment-detail sw-assignment-effort-limit' }, effortNote) : null,
         efforts.length || stranded
           ? h('div', { className: 'sw-assignment-effort' },
               h('label', {
