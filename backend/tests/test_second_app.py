@@ -405,8 +405,8 @@ def test_the_sheet_lists_the_projects_apps_and_preselects_none_of_them(tmp_path:
         # publish would offer ride along because a row is one shape everywhere (#76, #77, #78, #89,
         # #218, #233). Each says what is true of the app rather than what the sheet should do with
         # it, which is why none of them is stripped the way `selected` is.
-        assert set(row) == {"id", "name", "publishName", "built", "createdAt", "builtAt", "planId",
-                            "published", "publishedAt", "url", "building", "behind",
+        assert set(row) == {"id", "name", "stack", "publishName", "built", "createdAt", "builtAt",
+                            "planId", "published", "publishedAt", "url", "building", "behind",
                             "resolvedMerge"}
 
 

@@ -3352,11 +3352,26 @@ def list_apps() -> JSONResponse:
 
 
 @control_app.post("/api/apps")
-def create_app() -> JSONResponse:
+async def create_app(request: Request) -> JSONResponse:
     """New app in the Build rail: minted, seeded and selected, with no Thread and no plan behind
-    it. The plan gate fires on its first turn because it has not been built (#74)."""
+    it. The plan gate fires on its first turn because it has not been built (#74).
+
+    `{"stack": "..."}` says what kind of app to seed (#490). A body without one, or no body at all,
+    seeds the deployment's default — every caller older than the field does. A name Sage cannot
+    seed is a 400, said before anything is minted."""
+    body: object = {}
+    if await request.body():
+        try:
+            body = await request.json()
+        except ValueError:  # a body that is not JSON is a caller bug, not a 500
+            return JSONResponse(status_code=400, content={
+                "error": "Creating an app takes an optional JSON body, and this one isn't JSON."})
+    asked = body.get("stack") if isinstance(body, dict) else None
+    stack = asked.strip() if isinstance(asked, str) and asked.strip() else None
     try:
-        return JSONResponse(orchestrator.create_app())
+        return JSONResponse(await run_in_threadpool(orchestrator.create_app, stack=stack))
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     except TurnBusy as e:
         # Only the turn-lock refusal, as in `select_app` — anything else is a real failure and must
         # not be reported to the person as a build they can wait out. The sentence is the service's:

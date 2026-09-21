@@ -33,13 +33,14 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..orchestrator.brand import apply_voice
-from ..resources.app_helpers import TEMPLATE, HelperNames, helpers_for
+from ..resources.app_helpers import HelperNames, helpers_for
 from ..router.models import ASSIGNABLE_SLOTS
 from . import plan_doc
+from .stack import LEGACY_STACK, REACT_VITE, STACK_KEY, STACKS, Stack, default_stack_name, read_stack_name
 from .threads import CHAT_WORK, HistoryRows, new_id, safe_id
 
 log = logging.getLogger(__name__)
@@ -291,19 +292,13 @@ _RESET_CLEAR = (Path(".sage") / "queries.json",
                 Path(".sage") / "architecture.md")
 # Proof that a node_modules is usable: the binary both `npm run dev` and `npm run build` invoke.
 _DEPS_SENTINEL = Path(".bin") / "vite"
-# What Domino runs to serve a published App: the entry script, the Python server it execs, and the
-# query module that server imports (ADR-0002). All Sage-owned — see refresh_entry_script. The Python
-# files come FIRST: a refreshed app.sh without them is an app that crash-loops, whereas a stale
-# app.sh with a spare serve.py still serves. sage_queries.py and sage_domino.py before serve.py for
-# the same reason one level down: serve.py imports both at startup.
-_DEPLOY_FILES = (
-    "sage_queries.py",
-    "sage_domino.py",
-    "serve.py",
-    "scripts/rehydrate-data.mjs",
-    "scripts/rehydrate_data.py",
-    "app.sh",
-)
+# What Domino runs to serve a published App, and what a refresh of the Sage-owned sources lands, are
+# the STACK's to say (#490): a react-vite app deploys a Python server beside a Node build, and an app
+# of another kind deploys something else, so `WorkspaceManager.stack` answers for the app in hand.
+# These two names are the react-vite answers, kept because the tests read the ORDER off them — the
+# order is the safety property, and it is explained where the tuples are (`stack.py`).
+_DEPLOY_FILES = REACT_VITE.deploy_files
+_OWNED_SOURCES = REACT_VITE.owned_sources
 # One binding writer at a time. Workspace is a frozen value object that callers re-create freely, so
 # the lock cannot live on the instance; a process-wide one is enough because a Sage process serves a
 # single project (D9) and every binding write goes through update_bindings.
@@ -311,32 +306,6 @@ _BINDINGS_LOCK = threading.Lock()
 # Same shape for the project's working set of Domino Resources (Browse → Add). Not Bindings: those
 # are the Built App's recorded uses. This list is what the Resource Browser rail shows.
 _PROJECT_RESOURCES_LOCK = threading.Lock()
-# The helper a Built App calls its model through (#7). Sage-owned like the deploy files above,
-# and committed to the app's repo for the same reason: a published app has no Sage around it.
-# Named as the TEMPLATE names it, here and in _OWNED_SOURCES below: these are the source paths, and
-# `_ensure_helper` asks `app_helpers` what the app in hand calls each one before it writes (#119).
-_LLM_HELPER = TEMPLATE.llm_path
-# The same, for the Model API a Built App calls (#9). Separate file rather than more of the LLM
-# helper: the two call different hosts with different credentials, and only this one carries a secret.
-_MODEL_API_HELPER = TEMPLATE.model_api_path
-# And for the Data Source a Built App queries (#15). Separate again, and for a sharper reason than
-# the other two: this one calls the app's OWN server, which is the only Resource path that does.
-_QUERY_HELPER = TEMPLATE.query_path
-# Everything under `src/` that Sage owns outright: AGENTS.md forbids the agent to edit any of them,
-# and attach brings each one back in line with the template (#40). Enumerated rather than remembered,
-# so a new Sage-owned file joins by being declared here. NOT `HelperNames.owned`, which is a
-# different set for a different job — that one excludes Sage's files from the reference
-# scan on unbind, holds the generated `.config.ts` files this list must never overwrite, and is
-# missing the two below. Two named sets that overlap is honest; one doing both jobs would drift.
-# Order is load-bearing, as it is in _DEPLOY_FILES: ErrorBoundary.tsx imports reportRuntimeError.ts,
-# so the reporter lands first and a refresh that dies partway leaves the older boundary against the
-# newer reporter rather than a newer boundary importing exports that are not there.
-_OWNED_SOURCES = (
-    _MODEL_API_HELPER,
-    _QUERY_HELPER,
-    str(Path("src") / "reportRuntimeError.ts"),
-    str(Path("src") / "ErrorBoundary.tsx"),
-)
 
 
 # settings.json is read and written by two surfaces. ProjectRecord owns the file — skip_planning,
@@ -1130,13 +1099,35 @@ class Workspace:
 
     @property
     def app_entry(self) -> Path:
-        return self.path / "src" / "App.tsx"
+        return self.path / self.stack.entry_file
+
+    @property
+    def stack_name(self) -> str:
+        """The kind of app this is, as its record says (#490): `react-vite` for one born before
+        the record existed. Never worked out from the files — see `stack.py`."""
+        return read_stack_name(self.path)
+
+    @property
+    def stack(self) -> Stack:
+        """The stack behind `stack_name`, for what it names: helpers, entry file, sentinel. A caller
+        that wants the TEMPLATE goes through the manager, whose react-vite entry may point at an
+        overridden directory (`SAGE_TEMPLATE`)."""
+        return STACKS.get(self.stack_name, REACT_VITE)
+
+    def record_stack(self, name: str) -> None:
+        """Write the kind of app this is, once. Write-if-absent like `mark_created`, and for the
+        same reason: it names a fact settled at birth that must never move."""
+        settings = _read_settings_file(self._settings_path)
+        if isinstance(settings.get(STACK_KEY), str) and settings[STACK_KEY].strip():
+            return
+        settings[STACK_KEY] = name
+        _write_settings_file(self._settings_path, settings)
 
     @property
     def helpers(self) -> HelperNames:
-        """What THIS app calls each of the Sage-owned `src/` helpers (#119). One resolver, asked
-        here, so no caller works the scheme out for itself."""
-        return helpers_for(self.path)
+        """What THIS app calls each of the Sage-owned helpers (#119). One resolver, asked here, so
+        no caller works the scheme out for itself."""
+        return helpers_for(self.path, self.stack.helpers)
 
     @property
     def plan_path(self) -> Path:
@@ -1984,6 +1975,9 @@ class WorkspaceManager:
 
     def __init__(self, workspace_dir: Path, template: Path) -> None:
         self._dir = Path(workspace_dir)
+        # The react-vite template's directory: the one override `SAGE_TEMPLATE` has always been,
+        # and the argument every caller already passes. Every other kind of app comes from where
+        # its `Stack` says (#490) — see `stack_for`.
         self._template = Path(template)
         # The app every caller in this process means by "the app": the one selected, or the id
         # minted for an app that has no directory yet. Chat opens a volume with no app on it, and
@@ -1999,9 +1993,39 @@ class WorkspaceManager:
 
     @property
     def template(self) -> Path:
-        """The warm template this manager seeds from. Read by the orchestrator so it can ask the
-        Built App's own `serve.py` what it will and will not run (#15)."""
-        return self._template
+        """The template the selected app was seeded from. Read by the orchestrator so it can ask the
+        Built App's own query module what it will and will not run (#15)."""
+        return self.stack.template_dir
+
+    @property
+    def stack(self) -> Stack:
+        """What kind of app the selected one is (#490) — and so which template it came from, which
+        files publish refreshes, what its helpers are called and where the preview reads its config."""
+        return self.stack_for(self.selected_app_id())
+
+    def stack_for(self, app_id: str) -> Stack:
+        """The stack recorded for one app. Absent reads as react-vite: every app born before the
+        record existed is one. A record naming a stack this Sage does not carry reads the same way,
+        because the app is still on the disk and something has to answer for it.
+
+        ONE registry, the module's: `Workspace` answers off it too, and a stack this manager knew
+        that the value object did not would seed one template and name another's entry file. The
+        react-vite entry is rebuilt around THIS manager's template directory — `SAGE_TEMPLATE` has
+        always been that one override, and the argument every caller already passes.
+        """
+        kind = STACKS.get(read_stack_name(self.apps_dir / app_id), REACT_VITE)
+        return replace(kind, template_dir=self._template) if kind.name == LEGACY_STACK else kind
+
+    def _default_stack_name(self) -> str:
+        """The stack a new app gets when nobody chose one — the deployment's say, if it names a stack
+        Sage can seed, else react-vite. Said in the log rather than raised: a typo in an environment
+        variable should not decide that no app can be born."""
+        wanted = default_stack_name()
+        if wanted in STACKS:
+            return wanted
+        log.warning("SAGE_DEFAULT_STACK=%r names no stack this Sage carries; seeding %s",
+                    wanted, LEGACY_STACK)
+        return LEGACY_STACK
 
     @property
     def path(self) -> Path:
@@ -2037,15 +2061,25 @@ class WorkspaceManager:
         self._selected = app_id
         return app_id
 
-    def create_app(self, project_id: str) -> Workspace:
+    def create_app(self, project_id: str, stack: str | None = None) -> Workspace:
         """Mint a Built App, seed it from the template, and select it.
 
         The one path that ADDS to `apps/`. `ensure` is get-or-seed and answers for whichever app is
         already selected, which is what every build turn wants; this is what a confirmed handoff
         wants, because that is where a Built App is born (ADR-0008).
+
+        `stack` names the kind of app to seed (#490); None is the deployment's default. Checked
+        BEFORE the id is minted, so a name this Sage cannot seed leaves no selection pointing at a
+        directory that was never made.
         """
+        self._check_stack_name(stack)
         self._selected = new_id("app")
-        return self.ensure(project_id, seed_app=True)
+        return self.ensure(project_id, seed_app=True, stack=stack)
+
+    def _check_stack_name(self, stack: str | None) -> None:
+        if stack is not None and stack not in STACKS:
+            raise ValueError(f"'{stack}' is not a kind of app this Sage can build. "
+                             f"Pick one of: {', '.join(sorted(STACKS))}.")
 
     def delete_app(self, app_id: str) -> None:
         """Take a Built App off the volume. Raises KeyError for one that is not there.
@@ -2074,8 +2108,9 @@ class WorkspaceManager:
 
     @property
     def helpers(self) -> HelperNames:
-        """What the selected app calls each of the Sage-owned `src/` helpers (#119)."""
-        return helpers_for(self.app_path)
+        """What the selected app calls each of the Sage-owned helpers (#119), and where they live,
+        which is its stack's to say (#490)."""
+        return helpers_for(self.app_path, self.stack.helpers)
 
     def app_workspace(self, project_id: str, app_id: str | None = None) -> Workspace:
         """One Built App's record, without seeding or starting anything. For readers that want the
@@ -2132,7 +2167,9 @@ class WorkspaceManager:
                     item.unlink(missing_ok=True)
         for rel in _RESET_CLEAR:
             (app / rel).unlink(missing_ok=True)
-        for item in self._template.iterdir():
+        # The app's own stack, which `.sage/` — kept above — still records: a reset puts the app back
+        # to the starter it was born from, never to a different kind of app.
+        for item in self.stack.template_dir.iterdir():
             if item.name in _SEED_SKIP:
                 continue
             dest = app / item.name
@@ -2143,10 +2180,13 @@ class WorkspaceManager:
                 _seed_file(item, dest)
         self.link_warm_deps()
 
-    def ensure(self, project_id: str, seed_app: bool = True) -> Workspace:
+    def ensure(self, project_id: str, seed_app: bool = True, stack: str | None = None) -> Workspace:
         """Get-or-seed this Project's Built App. Idempotent: seeds the template into
-        `apps/<appId>/` only when that directory has no app yet (no package.json), never
-        clobbering an app already there.
+        `apps/<appId>/` only when that directory has no app yet (none of the stack's sentinel file,
+        `package.json` for react-vite), never clobbering an app already there.
+
+        `stack` is the kind of app to seed if this call is the app's birth (#490); it is ignored for
+        an app that already exists, whose kind is the one its record holds.
 
         `seed_app=False` is Chat: attach the volume, and leave the app directory uncreated. A
         Project with no app on it is the ordinary state — an app is born when a handoff is
@@ -2159,6 +2199,7 @@ class WorkspaceManager:
         `.sage/`, so an app that was never published falls back to `Started` once `clear_built`
         takes the build stamp away.
         """
+        self._check_stack_name(stack)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._ensure_project_ignores()
         self._voice_legacy_root_agents_md()
@@ -2176,11 +2217,19 @@ class WorkspaceManager:
             # date for the rest of its life. `_write_settings_file` makes `.sage/` itself, and the
             # template ships no `.sage/` for the loop below to find already standing.
             if not any(app.iterdir()):
-                Workspace(project_id, app, self.selected_app_id()).mark_created()
-            if not (app / "package.json").exists():
+                born = Workspace(project_id, app, self.selected_app_id())
+                born.mark_created()
+                # The kind of app is recorded at the same moment, for the same reason (#490): only
+                # an empty directory says which template this app is about to come from, and a copy
+                # that dies half way through must not leave an app that re-seeds from a different
+                # one next time. Recorded, never detected — the sentinel below is a file the agent
+                # can delete.
+                born.record_stack(stack or self._default_stack_name())
+            kind = self.stack
+            if not (app / kind.sentinel).exists():
                 # Seed the template INTO the (possibly pre-existing) directory entry by entry, so
                 # anything already there is preserved.
-                for item in self._template.iterdir():
+                for item in kind.template_dir.iterdir():
                     if item.name in _SEED_SKIP:
                         continue
                     dest = app / item.name
@@ -2269,7 +2318,7 @@ class WorkspaceManager:
         agent's successful install. Absent means wreckage, and the warm copy is strictly better than
         what's there. A template without the sentinel isn't one we can lend from, so we do nothing.
         """
-        tmpl = self._template / "node_modules"
+        tmpl = self.stack.template_dir / "node_modules"
         if not tmpl.exists():
             return False
         node_modules = self.app_path / "node_modules"
@@ -2305,14 +2354,15 @@ class WorkspaceManager:
         order, 2026-08-07). Callers refresh at publish time so the fix travels to every app that
         deploys.
 
-        Order is load-bearing (_DEPLOY_FILES): app.sh lands LAST, after everything it calls, so a
-        refresh that fails partway leaves an app that still serves rather than one that can't boot.
+        Order is load-bearing (`Stack.deploy_files`): app.sh lands LAST, after everything it calls, so
+        a refresh that fails partway leaves an app that still serves rather than one that can't boot.
         The rehydrate pair is on that list for the same reason app.sh is — an app born before a
         rehydrate step existed would otherwise deploy an app.sh that calls a script it doesn't have.
         """
         changed = False
-        for name in _DEPLOY_FILES:
-            src = self._template / name
+        kind = self.stack
+        for name in kind.deploy_files:
+            src = kind.template_dir / name
             if not src.is_file():
                 continue
             dst = self.app_path / name
@@ -2335,8 +2385,11 @@ class WorkspaceManager:
         Refreshed at ATTACH rather than at publish, unlike the deploy files: what it configures is the
         preview, so by publish time the damage it prevents has already been done. It has to land
         before ViteSupervisor.start(), because the dev server reads this file once at boot.
+
+        A stack whose preview reads no config file has nothing to refresh (#490).
         """
-        return self._ensure_helper("vite.config.ts", refresh=True)
+        config = self.stack.preview_config
+        return bool(config) and self._ensure_helper(config, refresh=True)
 
     def ensure_llm_helper(self) -> bool:
         """Put the Sage-owned model helper in the workspace, replacing a stale copy. True if written.
@@ -2357,7 +2410,7 @@ class WorkspaceManager:
         is what apps import and does not change. A helper that reads an older config keeps working
         for the same reason it always did — `render_config`'s two shapes are both handled here.
         """
-        return self._ensure_helper(_LLM_HELPER, refresh=True)
+        return self._ensure_helper(self.stack.helpers.llm_path, refresh=True)
 
     def ensure_model_api_helper(self) -> bool:
         """The same, for the Model API helper (#9), and for projects seeded before it shipped.
@@ -2367,11 +2420,11 @@ class WorkspaceManager:
         reading it. Unlike `refresh_owned_sources` this one may CREATE the helper, because the caller
         writes the Model API config in the same breath.
         """
-        return self._ensure_helper(_MODEL_API_HELPER, refresh=True)
+        return self._ensure_helper(self.stack.helpers.model_api_path, refresh=True)
 
     def ensure_query_helper(self) -> bool:
         """The same, for the query helper (#15)."""
-        return self._ensure_helper(_QUERY_HELPER, refresh=True)
+        return self._ensure_helper(self.stack.helpers.query_path, refresh=True)
 
     def refresh_owned_sources(self) -> bool:
         """Bring the app's copies of _OWNED_SOURCES back in line with the template. True if any changed.
@@ -2395,7 +2448,7 @@ class WorkspaceManager:
         """
         changed = False
         names = self.helpers
-        for rel in _OWNED_SOURCES:
+        for rel in self.stack.owned_sources:
             if (self.app_path / names.localize(rel)).is_file() and self._ensure_helper(rel, refresh=True):
                 changed = True
         return changed
@@ -2409,18 +2462,19 @@ class WorkspaceManager:
         and the text are put through `HelperNames.localize` on the way in. An app that already has
         the neutral names gets the bytes unchanged.
         """
-        src = self._template / rel
+        kind = self.stack
+        src = kind.template_dir / rel
         if not src.is_file():
             return False
         names = self.helpers
         payload = src.read_bytes()
-        if names is not TEMPLATE:
+        if names is not kind.helpers:
             payload = names.localize(payload.decode()).encode()
         dst = self.app_path / names.localize(rel)
         # #358 changes the answer contract for NEW apps only. Existing apps can consume partial
         # tokens as final values; replacing their helper would silently change their runtime.
         marker = b"SAGE_MODEL_OUTCOME_V1"
-        if (rel == _LLM_HELPER and marker in payload and dst.is_file()
+        if (rel == kind.helpers.llm_path and marker in payload and dst.is_file()
                 and marker not in dst.read_bytes()):
             return False
         if dst.is_file() and (not refresh or dst.read_bytes() == payload):
