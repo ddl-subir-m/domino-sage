@@ -73,6 +73,7 @@ from ..resources.bindings import (
     KIND_LLM_ALIAS,
     KIND_MODEL_API,
 )
+from ..resources.builtapp import domino_module
 from ..resources.model_api_credentials import CredentialRequired
 from ..resources.provider import (
     DominoResourceProvider,
@@ -4480,6 +4481,13 @@ def _preview_queries():
     return orchestrator._project.queries if orchestrator._project is not None else None
 
 
+# The previewed app's platform reads (#489): the template's own `sage_domino.py`, called by the proxy
+# so a page that reads the platform works before it is published. Loaded once per template; None
+# for a template that ships no relay, which the proxy reads as "let Vite 404 it".
+def _preview_platform():
+    return domino_module(orchestrator._wm.template)
+
+
 # The previewed app's own model calls (#7). A published app calls the gateway straight from the
 # viewer's browser because both sit on `apps.<domino-host>` — same origin. The preview is served from
 # here instead, so that call is cross-origin and the browser blocks it; the proxy makes it instead.
@@ -4542,7 +4550,8 @@ def _preview_approve_model(model: str) -> str | None:
 
 
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
-                                               _preview_llm, _preview_approve_model))
+                                               _preview_llm, _preview_approve_model,
+                                               get_platform=_preview_platform))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no
     Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of

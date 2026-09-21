@@ -63,9 +63,11 @@ REACT_VITE = Stack(
     name="react-vite",
     template_dir=_REPO / "template" / "react-vite",
     sentinel="package.json",
-    # sage_queries.py before serve.py, which imports it; both before app.sh, which execs serve.py.
+    # sage_queries.py and sage_domino.py before serve.py, which imports both; all three before
+    # app.sh, which execs serve.py.
     deploy_files=(
         "sage_queries.py",
+        "sage_domino.py",
         "serve.py",
         "scripts/rehydrate-data.mjs",
         "scripts/rehydrate_data.py",

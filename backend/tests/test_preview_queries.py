@@ -294,6 +294,65 @@ def test_the_proxy_falls_through_when_there_is_no_query_server(tmp_path: Path):
     assert "vite" in r.json()["preview"].lower()
 
 
+# ---- the platform relay rides the same proxy (#489) -------------------------------------------
+
+
+def _no_vite() -> str:
+    raise RuntimeError("vite is not running in this test")
+
+
+def test_the_proxy_hands_a_platform_read_to_the_apps_own_relay(monkeypatch):
+    # What the proxy owes the relay: the path with the prefix off, the query string whole, and its
+    # answer written back with the status and type it chose. Everything else is the relay's, and
+    # `test_builtapp_serve.py` holds it to that against a stub platform.
+    from fastapi.testclient import TestClient
+
+    from sage.resources.builtapp import domino_module
+
+    module = domino_module(TEMPLATE)
+    assert module is not None, "the template ships no sage_domino.py"
+    asked: list[tuple[str, str]] = []
+    monkeypatch.setattr(module, "relay", lambda path, query: (
+        asked.append((path, query)) or (200, {"Content-Type": "application/json"}, b'{"user": {}}')))
+    client = TestClient(make_preview_app(_no_vite, "", lambda: None, get_platform=lambda: module))
+
+    r = client.get("/api/domino/api/users/v1/self?limit=1")
+    posted = client.post("/api/domino/api/users/v1/self")
+
+    assert r.status_code == 200 and r.json() == {"user": {}}
+    assert asked == [("api/users/v1/self", "limit=1")]
+    assert posted.status_code == 405
+
+
+def test_the_relays_own_answer_travels_with_its_status(monkeypatch):
+    # The real module, no network: off the platform it answers 503, and outside the families 403.
+    # Both must reach the previewed page as they would reach the published one.
+    from fastapi.testclient import TestClient
+
+    from sage.resources.builtapp import domino_module
+
+    monkeypatch.delenv("DOMINO_API_HOST", raising=False)
+    client = TestClient(make_preview_app(_no_vite, "", lambda: None,
+                                         get_platform=lambda: domino_module(TEMPLATE)))
+
+    off = client.get("/api/domino/api/users/v1/self")
+    fenced = client.get("/api/domino/api/users/v1/user/u1/roles")
+
+    assert off.status_code == 503 and "platform" in off.json()["error"]
+    assert fenced.status_code == 403
+
+
+def test_a_template_without_the_relay_falls_through_to_vite():
+    # An app born before #489, or a preview with no template to ask: exactly what it did before.
+    from fastapi.testclient import TestClient
+
+    client = TestClient(make_preview_app(_no_vite, "", lambda: None, get_platform=lambda: None))
+    r = client.get("/api/domino/api/users/v1/self")
+
+    assert r.status_code == 502
+    assert "vite" in r.json()["preview"].lower()
+
+
 # ---- why a query failed has to reach somebody -------------------------------------------------
 
 

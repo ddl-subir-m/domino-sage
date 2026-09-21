@@ -47,6 +47,9 @@ _QUERY_PREFIX = "api/queries/"
 # What `appLlm.ts` asks for in the preview only — the published build calls the gateway directly.
 _LLM_PREFIX = "api/llm/"
 
+# The page's read-only road to the platform API (#489): `sage_domino.RELAY_PREFIX`, minus the slash.
+_PLATFORM_PREFIX = "api/domino/"
+
 # Headers the app sets that must survive the hop. The tag headers are how spend is attributed to the
 # app (see `tagHeaders` in appLlm.ts); dropping them would put preview traffic in "unknown".
 _LLM_FORWARD = ("content-type", "accept")
@@ -189,10 +192,30 @@ async def _forward_llm(request: Request, path: str, get_llm, approve_model=None)
     return StreamingResponse(body(), status_code=upstream.status_code, headers=passthrough)
 
 
+async def _relay_platform(request: Request, path: str, module) -> Response | None:
+    """One platform read for the previewed page, made by the app's own `sage_domino.py` (#489). None
+    when the template has no such file.
+
+    Direct, not over the loopback query server: that server answers the query route and nothing
+    else, and a relay has no catalog to refresh. What answers is still the app's own module, so the
+    fence, the statuses and every sentence are the published app's. It reads as the creator, with
+    the workspace's host and sidecar — the identity rule `preview/queries.py` states for queries,
+    one route over. In a thread, because the module blocks on `urlopen` for up to its timeout.
+    """
+    if module is None:
+        return None
+    if request.method != "GET":
+        return JSONResponse(status_code=405, content={"error": "This endpoint takes GET."})
+    status, headers, body = await run_in_threadpool(
+        module.relay, path[len(_PLATFORM_PREFIX):], request.url.query)
+    return Response(content=body, status_code=status, headers=headers)
+
+
 def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                      get_queries: Callable[[], object | None] | None = None,
                      get_llm: Callable[[], tuple[str, str] | None] | None = None,
-                     approve_model: Callable[[str], str | None] | None = None) -> FastAPI:
+                     approve_model: Callable[[str], str | None] | None = None,
+                     get_platform: Callable[[], object | None] | None = None) -> FastAPI:
     """Preview proxy mounted at `/preview` on the control app.
 
     Vite bakes `base = <base_prefix>/preview/` into the HTML/JS it serves, so it only responds at
@@ -209,7 +232,8 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
 
     `get_queries` is optional: without it — and whenever it answers None — `/api/queries/*` goes to
     Vite and 404s exactly as it did before #24, which `appQuery.ts` already reads correctly as
-    "not published yet".
+    "not published yet". `get_platform` is the app's `sage_domino.py` on the same terms (#489):
+    absent, `/api/domino/*` goes to Vite and 404s.
     """
     vite_base = f"{base_prefix}/preview"  # what the browser sees == what Vite serves at
 
@@ -274,6 +298,12 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
             forwarded = await _forward_llm(request, path, get_llm, approve_model)
             if forwarded is not None:
                 return forwarded
+        if path.startswith(_PLATFORM_PREFIX):
+            # The page's platform reads (#489), by the app's own relay. Falls through to Vite's 404
+            # when the template has no relay, which is what an app born before it would answer.
+            relayed = await _relay_platform(request, path, get_platform and get_platform())
+            if relayed is not None:
+                return relayed
         try:
             upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
         except Exception as e:

@@ -9,7 +9,8 @@ installed in the image, so the process holding the socket has to be a Python one
 It serves the build, and it answers named queries against the Data Sources the app is bound to. The
 queries themselves live in `sage_queries.py` beside this file — the half of the server every stack
 Sage seeds shares, and the half Sage loads by path during a build to check a catalog — and this file
-mounts that route beside the static tree.
+mounts that route beside the static tree. `sage_domino.py`, beside it too, is the page's read-only
+road to the Domino platform API (#489); this file mounts that route the same way.
 
 Stdlib for everything, like spikes/domino-probes/viewer_identity_app/probe_server.py — so this file
 imports and serves under any python3 the image ships.
@@ -35,6 +36,7 @@ from urllib.parse import urlsplit
 # directory first on the path already; Sage's tests, which load this file by path, do not.
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sage_domino as sd
 import sage_queries as sq
 
 # Content types we pin rather than ask the OS for. `mimetypes` consults /etc/mime.types, so the type
@@ -135,6 +137,48 @@ class _Handler(sq.QueryRoute, SimpleHTTPRequestHandler):
         ctype = _TYPES.get(ext) or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         return f"{ctype}; charset=utf-8" if ctype.startswith(_TEXTUAL) else ctype
 
+    def do_GET(self):
+        # The platform relay, ahead of the static tree: its paths are extensionless, so the SPA
+        # rewrite below would otherwise answer every one of them with index.html.
+        if self._is_platform_path():
+            return self._relay_platform()
+        super().do_GET()
+
+    def do_POST(self):
+        if self._is_platform_path():
+            # The body is never read, so this connection cannot carry a next request: its unread
+            # bytes would be parsed as one. `Connection: close` tells the client, and the base
+            # class, to end it here.
+            return self._refuse_method(close=True)
+        super().do_POST()
+
+    def _is_platform_path(self) -> bool:
+        return urlsplit(self.path).path.startswith(sd.RELAY_PREFIX)
+
+    def _refuse_method(self, *, close: bool = False, headers_only: bool = False) -> None:
+        """405 for a relay path asked with anything but GET."""
+        body = json.dumps({"error": "This endpoint takes GET."}).encode("utf-8")
+        self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        if close:
+            self.send_header("Connection", "close")
+        self.end_headers()
+        if not headers_only:
+            self.wfile.write(body)
+
+    def _relay_platform(self) -> None:
+        """`GET /api/domino/<path>` → `sage_domino.relay`, whose answer is written as it came: the
+        platform's status and body, or the relay's own sentence with its own status."""
+        parts = urlsplit(self.path)
+        status, headers, body = sd.relay(parts.path[len(sd.RELAY_PREFIX):], parts.query)
+        self.send_response(status)
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_head(self):
         # A query path is POST-only. Answering it from the static tree would send the SPA rewrite
         # below an extensionless path and hand back index.html — a 200 of HTML where the caller
@@ -142,6 +186,12 @@ class _Handler(sq.QueryRoute, SimpleHTTPRequestHandler):
         if self._is_query_path():
             self._send_json(HTTPStatus.METHOD_NOT_ALLOWED,
                             {"error": "This endpoint takes POST."})
+            return None
+        # Only HEAD reaches here on a relay path — do_GET answered the GET — and for the same reason.
+        # Headers only: a HEAD answer with a body leaves those bytes on a kept-alive connection to be
+        # read as the start of the next answer.
+        if self._is_platform_path():
+            self._refuse_method(headers_only=True)
             return None
         # Before the SPA rewrite, so this is the path that ARRIVED — and still percent-encoded,
         # because the shim subtracts it from location.pathname, which is encoded too.
@@ -271,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     # its import, and paying either before serve_forever() would leave the first viewer's request
     # sitting in the backlog for it.
     threading.Thread(target=sq.log_sidecar_status, daemon=True).start()
+    threading.Thread(target=sd.log_platform_status, daemon=True).start()
     if srv.sage_queries:
         print(f"[sage] queries return at most {limit} rows (SAGE_QUERY_MAX_ROWS)", flush=True)
         threading.Thread(target=sq.log_data_library, daemon=True).start()

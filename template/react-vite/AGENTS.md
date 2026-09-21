@@ -307,6 +307,41 @@ import { appBase } from "./appBase";
 Leave it out and the app works in the preview and shows a blank page once published, because the
 router matches the viewer's full path against routes you wrote without the prefix.
 
+### The {platformName} API: read-only, through this app's own server
+A page cannot call the {platformName} API itself — it is another origin, and the browser blocks the
+call before it is sent. This app's server relays it at `GET <app>/api/domino/<platform path>`, with
+this app's own token, so `fetch` it relative to `appBase` like everything else:
+
+```ts
+import { appBase } from "./appBase";
+
+const base = appBase.replace(/\/$/, "");
+const r = await fetch(base + "/api/domino/api/datasetrw/v2/datasets?limit=50");
+const listing = await r.json(); // the platform's own answer: listing.datasets[i].dataset
+```
+
+GET only, and only these families; anything else answers 403 or 405:
+
+| Read | Path after `/api/domino` |
+|---|---|
+| every {dataset} this app can see | `/api/datasetrw/v2/datasets` |
+| every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `version`, `creationTime` (epoch ms), `author` (a user id) |
+| the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` |
+| one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
+| taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — per row, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way |
+| governance bundles | `/api/governance/v1/bundles`, `/api/governance/v1/bundles/<id>/approvals` |
+| a user's name from an id | `/api/users/v1/user/<userId>` — `user.fullName`, `user.userName` |
+| whose access this is | `/api/users/v1/self` |
+
+The answer is the platform's own — status and body unchanged — and nothing is cached. It works in
+the preview (as you) and once published (as whoever published the app), and that second half is a
+rule for what you build: **every viewer reads with the publisher's access, so never present a list
+as "what the current user can access".** Show whose access it is, from `/api/users/v1/self`, or say
+nothing about access at all.
+
+`sage_domino.py` and `serve.py` are {assistantName}'s, refreshed at publish; an edit to either is
+lost.
+
 There is no UI component kit — no Ant Design, no MUI, no Tailwind. Build components yourself from
 the design tokens in `src/index.css`, the way `src/examples/StatCard.tsx` does. If a request seems
 to need a package that isn't on this list, build the nearest thing you can from what is here and
