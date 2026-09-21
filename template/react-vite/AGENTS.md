@@ -320,24 +320,37 @@ const r = await fetch(base + "/api/domino/api/datasetrw/v2/datasets?limit=50");
 const listing = await r.json(); // the platform's own answer: listing.datasets[i].dataset
 ```
 
+A query string is part of the path and passes through unchanged; do not split it off.
+
 GET only, and only these families; anything else answers 403 or 405:
 
 | Read | Path after `/api/domino` |
 |---|---|
-| every {dataset} this app can see | `/api/datasetrw/v2/datasets` |
-| every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `version`, `creationTime` (epoch ms), `author` (a user id) |
-| the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` |
+| every {dataset} this app can see | `/api/datasetrw/v2/datasets?limit=50` — `datasets[].dataset.id` and `.dataset.name`; to find one by name, match `.dataset.name` here; its `tags` field is a different tagging system, and empty |
+| every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus` |
+| the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
 | one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
-| taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — per row, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way |
+| taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way |
 | governance bundles | `/api/governance/v1/bundles`, `/api/governance/v1/bundles/<id>/approvals` |
 | a user's name from an id | `/api/users/v1/user/<userId>` — `user.fullName`, `user.userName` |
-| whose access this is | `/api/users/v1/self` |
+| every user, paged | `/api/users/v1/users` — `users[].id`, `.userName`, `.firstName`, `.lastName` |
+| whose access this is | `/api/users/v1/self` — `user.fullName`, `user.userName`, `user.email` |
 
 The answer is the platform's own — status and body unchanged — and nothing is cached. It works in
 the preview (as you) and once published (as whoever published the app), and that second half is a
 rule for what you build: **every viewer reads with the publisher's access, so never present a list
 as "what the current user can access".** Show whose access it is, from `/api/users/v1/self`, or say
 nothing about access at all.
+
+- **Taxonomy tags come from `datasets-v2` with `includeTaxonomyTags=true`, and nowhere else.**
+  Without the flag the rows have no `taxonomyTags`, and `datasetRwDto.tags` is a different system
+  that reads `{}`. Nothing under `/api/governance/v1/` or `/api/taxonomy/` lists tags from inside
+  the platform. When a request says tags, use tags — do not derive a label from a name instead.
+- **A user comes wrapped.** `self` and `user/<id>` answer `{"user": {...}}`; the name is
+  `user.fullName`.
+- **A 404 has two readings.** On a path the table names, it is a wrong id — check the id against
+  the listing that gave it. On any other path, the platform does not route that path from inside;
+  stop guessing at that family, because the table is the list of what answers.
 
 `sage_domino.py` and `serve.py` are {assistantName}'s, refreshed at publish; an edit to either is
 lost.
