@@ -24,40 +24,50 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class HelperNames:
-    """The stem each Sage-owned helper goes by in one app. Every path derives from a stem."""
+    """The stem each Sage-owned helper goes by in one app. Every path derives from a stem.
+
+    `dir` and `ext` are the stack's (#490): a react-vite app keeps its helpers as TypeScript under
+    `src/`, and a stack with no build step keeps them as plain JavaScript wherever its page loads
+    them from. The stems are the same across stacks, which is what keeps `localize` one substitution.
+    """
 
     base: str
     query: str
     llm: str
     model_api: str
+    dir: str = "src"
+    ext: str = "ts"
 
     @property
     def stems(self) -> tuple[str, ...]:
         return (self.base, self.query, self.llm, self.model_api)
 
+    def _path(self, stem: str, suffix: str = "") -> str:
+        return f"{self.dir}/{stem}{suffix}.{self.ext}"
+
     @property
     def base_path(self) -> str:
-        return f"src/{self.base}.ts"
+        return self._path(self.base)
 
     @property
     def query_path(self) -> str:
-        return f"src/{self.query}.ts"
+        return self._path(self.query)
 
     @property
     def llm_path(self) -> str:
-        return f"src/{self.llm}.ts"
+        return self._path(self.llm)
 
     @property
     def llm_config_path(self) -> str:
-        return f"src/{self.llm}.config.ts"
+        return self._path(self.llm, ".config")
 
     @property
     def model_api_path(self) -> str:
-        return f"src/{self.model_api}.ts"
+        return self._path(self.model_api)
 
     @property
     def model_api_config_path(self) -> str:
-        return f"src/{self.model_api}.config.ts"
+        return self._path(self.model_api, ".config")
 
     @property
     def paths(self) -> tuple[str, ...]:
@@ -96,11 +106,13 @@ TEMPLATE = HelperNames(base="appBase", query="appQuery", llm="appLlm", model_api
 LEGACY = HelperNames(base="sageBase", query="sageQuery", llm="sageLlm", model_api="sageModelApi")
 
 
-def helpers_for(app_path: Path) -> HelperNames:
+def helpers_for(app_path: Path, default: HelperNames = TEMPLATE) -> HelperNames:
     """The names THIS app's helpers go by.
 
     Legacy only when the app actually holds one of those files. An app seeded before any helper
     existed (pre-#7) has none of them, and nothing in it imports the old names, so it gets the
-    neutral ones the first time Sage writes a helper into it.
+    neutral ones the first time Sage writes a helper into it. `default` is what the app's STACK
+    ships (#490); the legacy names only ever belong to a react-vite app, because no other stack
+    existed when they did.
     """
-    return LEGACY if any((app_path / rel).is_file() for rel in LEGACY.paths) else TEMPLATE
+    return LEGACY if any((app_path / rel).is_file() for rel in LEGACY.paths) else default

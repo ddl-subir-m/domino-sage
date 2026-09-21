@@ -515,9 +515,10 @@ _DATABASES_SEARCHED = 4
 # The entry script Domino runs to serve a published app (repo root). The builder has the working
 # tree, so publish pre-checks it exists locally before deploying (a missing one fails opaquely).
 _ENTRY_POINT = "app.sh"
-# The Python server that entry script execs to serve the build (ADR-0002). Pre-checked too, but only
-# when this app's app.sh actually calls it — an app still serving with Node doesn't need it.
-_SERVER_SCRIPT = "serve.py"
+# The Python server that entry script execs to serve the build (ADR-0002) is the STACK's to name
+# (`Stack.server_script`, #490). Pre-checked too, but only when this app's app.sh actually calls it —
+# an app still serving with Node doesn't need it, and a stack whose entry script IS the server names
+# none.
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
 # the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
@@ -6426,6 +6427,9 @@ class Orchestrator:
         return {
             "id": app_id,
             "name": written or _app_placeholder_name(workspace),
+            # What kind of app this is (#490), off its own record. The rail labels a row with it
+            # where a Project holds more than one kind, and nothing here can change it.
+            "stack": workspace.stack_name,
             # What publish's name field pre-fills with (#218). Computed here rather than in the
             # browser for two reasons: the Domino project's name has never crossed to the browser at
             # all, and "is this app wearing a placeholder" is the ladder's question — a field filled
@@ -6489,9 +6493,10 @@ class Orchestrator:
         return self._app_row(app_id, project.workspace.app_id,
                              self._plan_pins(project, [app_id]), self._building_app_id())
 
-    def create_app(self) -> dict:
+    def create_app(self, stack: str | None = None) -> dict:
         """Start a Built App from the Build rail: minted, seeded and selected, with no Thread and
-        no plan behind it (#74).
+        no plan behind it (#74). `stack` is the kind of app to seed (#490), None for the
+        deployment's default; a name Sage cannot seed raises ValueError before anything is minted.
 
         No new gate is needed. `_should_gate` fires on the first BUILD of an app that has not been
         built, so a fresh app lands on the plan gate by itself — the same review a handoff earns on
@@ -6507,7 +6512,7 @@ class Orchestrator:
             raise TurnBusy(self._turn_wedged, "start a new app")
         try:
             with self._app_lock:
-                born = self._wm.create_app(self._project_id)
+                born = self._wm.create_app(self._project_id, stack=stack)
                 self._bind_app(project, born)
         finally:
             self._release_turn()
@@ -18563,10 +18568,12 @@ class Orchestrator:
             # is absent — a deploy that reports success and then crash-loops on "can't open file
             # 'serve.py'". Ask what THIS app.sh needs rather than demanding serve.py of an older app whose
             # entry script still serves the build with Node.
-            if _SERVER_SCRIPT in entry.read_text() and not (project.workspace.path / _SERVER_SCRIPT).exists():
+            server = self._wm.stack.server_script
+            if (server and server in entry.read_text()
+                    and not (project.workspace.path / server).exists()):
                 raise RuntimeError(
-                    f"'{_SERVER_SCRIPT}' is missing from this app, but {_ENTRY_POINT} runs it to serve "
-                    f"the app, so the deploy would start and immediately fail. Restore {_SERVER_SCRIPT} to "
+                    f"'{server}' is missing from this app, but {_ENTRY_POINT} runs it to serve "
+                    f"the app, so the deploy would start and immediately fail. Restore {server} to "
                     f"{project.repo_rel('')} and publish again."
                 )
             # Deploy the newest code: commit + push before publishing. Best-effort — a save failure (no
