@@ -96,9 +96,12 @@ def render_config(aliases: list[Binding], base: str | None, project: str | None,
         "// `models` is every {llmAlias} this app may call — pass one by name to `askModel`. "
         "`alias` is\n"
         "// the first of them, the model a call that names none gets. null means no model has been\n"
-        "// chosen yet. See ./{helper}.ts.\n",
-        helper=names.llm,
+        "// chosen yet. See ./{helper}.{ext}.\n",
+        helper=names.llm, ext=names.ext,
     )
+    if names.ext == "js":
+        # A fastapi-antd page loads this as a plain script (#490): a global, not a module export.
+        return f"{header}window.{names.llm}Config = {{\n{body},{models}}};\n"
     return f"{header}export const {names.llm}Config = {{\n{body},{models}}};\n"
 
 

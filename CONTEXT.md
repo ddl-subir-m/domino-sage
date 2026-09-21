@@ -394,6 +394,16 @@ view of that one rather than a second workspace. See
 _Kind_: name
 _Avoid_: child app, generated app, output, App (unqualified — that is the Domino thing)
 
+**Stack**:
+Which kind of Built App one is: `fastapi-antd` (FastAPI serving a page that loads React, Ant
+Design and Highcharts as plain scripts — no build step, the default) or `react-vite` (React +
+TypeScript + Vite, built by Node and served by Python — what every app was before). Recorded in
+the app's own `.sage/settings.json` at birth and never changed after; absent means `react-vite`.
+The choice is the viewer's, in Account settings, and applies to the next New app only. See
+[ADR-0067](docs/adr/0067-a-built-app-declares-its-stack-at-birth.md).
+_Kind_: word
+_Avoid_: template (that is the directory a stack is seeded from), framework, kind of project
+
 **Domino App**:
 The deployment Domino runs for a Built App: a container serving it at a URL. Publishing a Built
 App creates one, and re-publishing gives that same one a new version, so the URL is stable. A

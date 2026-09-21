@@ -60,7 +60,7 @@ from ..liveread import result as live_result
 from ..liveread import run as live_read
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
-from ..preview.supervisor import ViteSupervisor
+from ..preview.supervisor import UvicornSupervisor, ViteSupervisor
 from ..provision import naming
 
 # The 404 the publish path has to tell from every other failure (#80). A runtime import, unlike the
@@ -181,6 +181,7 @@ from ..workspace.manager import (
     remove_ignore_line,
 )
 from ..workspace.snapshot import TurnSnapshot
+from ..workspace.stack import stack_of
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     FINDINGS_MAX,
@@ -519,6 +520,15 @@ _ENTRY_POINT = "app.sh"
 # (`Stack.server_script`, #490). Pre-checked too, but only when this app's app.sh actually calls it —
 # an app still serving with Node doesn't need it, and a stack whose entry script IS the server names
 # none.
+
+
+def _supervisor_for(workspace: Path, base_prefix: str):
+    """The preview server for the app at `workspace`, by its stack (#490): the template's Vite dev
+    server for a react-vite app, the app's own uvicorn for a fastapi-antd one. Reads the two classes
+    off this module at call time, so a test that stands in for `ViteSupervisor` still does."""
+    if stack_of(Path(workspace)).preview == "uvicorn":
+        return UvicornSupervisor(workspace, base_prefix)
+    return ViteSupervisor(workspace, base_prefix)
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
 # the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
@@ -4258,7 +4268,8 @@ def _phase_note(text: str, limit: int = 400) -> str:
 
 
 def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
-                  notes: list[str] | None = None, retry_errors: str = "") -> str:
+                  notes: list[str] | None = None, retry_errors: str = "",
+                  entry_file: str = "src/App.tsx") -> str:
     """The prompt for ONE phase of a phased build, sent into a brand-new session.
 
     Deliberately NOT the whole plan: carrying it would re-pay the context a fresh session just
@@ -4273,7 +4284,7 @@ def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
     # expected format... let me also look at the types file").
     prior = (
         "The workspace is the untouched starter template — nothing from this plan has been built yet, "
-        "so treat the placeholder App.tsx as yours to replace."
+        f"so treat the placeholder {Path(entry_file).name} as yours to replace."
         if step.n == 1 else
         "The earlier steps are already done and their code is in the workspace — read it if you need "
         "it, but do not redo it."
@@ -4342,11 +4353,12 @@ def _opencode_base_port(opencode_cwd: Path) -> int | None:
 
 # Directories skipped when scanning the app's own source for data references/copies: dependencies,
 # build output, git, sage metadata, and public/ (which holds the attached-data symlinks themselves).
-_SCAN_SKIP_DIRS = frozenset({"node_modules", "dist", ".git", ".sage", "public"})
+_SCAN_SKIP_DIRS = frozenset({"node_modules", "dist", ".git", ".sage", "public", "vendor",
+                             "__pycache__"})
 # Extensions whose text we read to look for a reference/inlined copy. Data files (.csv, …) aren't
 # here — a copied data file is caught by its basename below, not by scanning its contents. AGENTS.md
 # is excluded (Sage writes it and it lists every attachment) so it never reads as a real reference.
-_SCAN_EXTS = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".css", ".html",
+_SCAN_EXTS = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".css", ".html", ".py",
                         ".vue", ".svelte"})
 # Cap the bytes we compare for a verbatim copy — a source file that fully contains the data is the
 # leak; larger attachments are still caught by the basename-copy check below without a big scan.
@@ -6169,7 +6181,7 @@ class Orchestrator:
         shim = EnforcementShim(control, self._effective_catalog(record), self._gateway,
                                project_name=self._cost_project_label)
         shim.resolve_capability = self.route_capability
-        supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
+        supervisor = _supervisor_for(workspace.path, domino_base_prefix())
         queries = PreviewQueries(workspace.path, self._wm.template)
         if start_preview:
             supervisor.start()
@@ -6745,7 +6757,7 @@ class Orchestrator:
         if project.workspace.path != workspace.path:
             project.supervisor.stop()
             project.queries.stop()
-            project.supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
+            project.supervisor = _supervisor_for(workspace.path, domino_base_prefix())
             project.queries = PreviewQueries(workspace.path, self._wm.template)
         project.workspace = workspace
         project.session_id = None
@@ -6855,7 +6867,7 @@ class Orchestrator:
 
     def _restart_preview_for_config_change(self, project: Project) -> None:
         project.supervisor.stop()
-        project.supervisor = ViteSupervisor(project.workspace.path, domino_base_prefix())
+        project.supervisor = _supervisor_for(project.workspace.path, domino_base_prefix())
 
     def _ensure_preview_running(self, project: Project) -> None:
         try:
@@ -15854,11 +15866,15 @@ class Orchestrator:
 
     @staticmethod
     def _build_source_note(root: Path) -> str:
-        """Supply exact source paths without reading source or attached data."""
+        """Supply exact source paths without reading source or attached data. Which paths are the
+        app's source is its stack's to say (#490); a vendored bundle is not one of them."""
+        kind = stack_of(root)
         try:
-            paths = sorted(p.relative_to(root).as_posix() for p in (root / "src").rglob("*")
-                           if p.is_file() and not any(part.startswith(".")
-                                                      for part in p.relative_to(root).parts))
+            paths = sorted({p.relative_to(root).as_posix() for glob in kind.source_globs
+                            for p in root.glob(glob)
+                            if p.is_file() and not any(part.startswith(".")
+                                                       for part in p.relative_to(root).parts)
+                            and not p.relative_to(root).as_posix().startswith(kind.vendored)})
         except OSError:
             return ""
         if not paths:
@@ -18136,7 +18152,8 @@ class Orchestrator:
                 # avoid, and N chances to stall having written nothing.
                 outcome: dict | None = None
                 summary = ""
-                for ev in self._build_stream(_phase_prompt(step, steps, answers, notes, errors),
+                for ev in self._build_stream(_phase_prompt(step, steps, answers, notes, errors,
+                                                           project.workspace.stack.entry_file),
                                              mentions, is_approval=True, mode=Mode.IMPLEMENT,
                                              session_id=sid, brief=step):
                     if ev["type"] == "stopped":
@@ -23590,11 +23607,14 @@ class Orchestrator:
             return True
         owned = project.workspace.helpers.owned
         try:
-            for path in (root / "src").rglob("*.ts*"):
-                # Short-circuits left to right, so a helper Sage owns is never read at all.
-                if (path.is_file() and str(path.relative_to(root)) not in owned
-                        and "runQuery" in path.read_text(errors="ignore")):
-                    return True
+            # Where a call can appear is the stack's to say (#490): `src/*.ts*` for react-vite, the
+            # page's own scripts for fastapi-antd.
+            for glob in project.workspace.stack.query_globs:
+                for path in root.glob(glob):
+                    # Short-circuits left to right, so a helper Sage owns is never read at all.
+                    if (path.is_file() and str(path.relative_to(root)) not in owned
+                            and "runQuery" in path.read_text(errors="ignore")):
+                        return True
         except OSError:
             return False
         return False

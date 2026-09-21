@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>App</title>
+  <!-- Every URL here is relative and stays relative. A published app is served under a prefix
+       its files cannot know (`sage_serve.py` writes the <base> that resolves them), and an
+       absolute `/static/...` would ask the apps host for a file with no app id in the path. -->
+  <!-- Inter is served from this app's own origin, from static/app.css. Do not <link> Google fonts. -->
+  <link rel="stylesheet" href="static/vendor/reset.css" />
+  <link rel="stylesheet" href="static/app.css" />
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- The toolbox, in dependency order. Ant Design needs React and Day.js first; the icon bundle
+       and the Highcharts modules extend the two globals they follow. -->
+  <script src="static/vendor/react.production.min.js"></script>
+  <script src="static/vendor/react-dom.production.min.js"></script>
+  <script src="static/vendor/dayjs.min.js"></script>
+  <script src="static/vendor/antd.min.js"></script>
+  <script src="static/vendor/icons.umd.min.js"></script>
+  <script src="static/vendor/highcharts.js"></script>
+  <script src="static/vendor/highcharts-more.js"></script>
+  <script src="static/vendor/highcharts-funnel.js"></script>
+
+  <!-- Sage's helpers, as `window.sage`. Sage rewrites the two .config.js files whenever this app's
+       Resources change, and refreshes the rest from its template. Do not edit any of them. -->
+  <script src="static/sage/appBase.js"></script>
+  <script src="static/sage/reportRuntimeError.js"></script>
+  <script src="static/sage/errorBoundary.js"></script>
+  <script src="static/sage/appQuery.js"></script>
+  <script src="static/sage/appLlm.config.js"></script>
+  <script src="static/sage/appLlm.js"></script>
+  <script src="static/sage/appModelApi.config.js"></script>
+  <script src="static/sage/appModelApi.js"></script>
+
+  <!-- The Domino theme for Ant Design and Highcharts, then the app. -->
+  <script src="static/theme.js"></script>
+  <script src="static/app.js"></script>
+</body>
+</html>

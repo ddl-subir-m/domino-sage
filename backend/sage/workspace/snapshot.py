@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Never snapshotted: heavy/regenerated dirs, our own internal state, and any real repo
 # the workspace root itself might already have.
-_EXCLUDE = ["node_modules", "dist", ".sage", ".git", ".DS_Store"]
+_EXCLUDE = ["node_modules", "dist", ".sage", ".git", ".DS_Store", "__pycache__"]
 
 
 class TurnSnapshot:

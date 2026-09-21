@@ -352,6 +352,12 @@ window.SW = window.SW || {};
   // ONE stamp, and the newest one. Three dates on a row is a history nobody asked a list for, and
   // the two older ones are the two that have stopped saying whether the app is still alive.
   //
+  // What a row calls an app's kind (#490). The names are the server registry's; the labels are the
+  // Account settings control's, so the rail and the drawer agree on what a person picked.
+  function stackLabel(stack) {
+    return { 'fastapi-antd': 'FastAPI + Ant Design', 'react-vite': 'React + Vite' }[stack] || stack;
+  }
+
   // Nothing here reads the build history: the row draws once per app per render, and
   // `history.jsonl` is append-only and reaches megabytes.
   function appStamp(app) {
@@ -416,6 +422,10 @@ window.SW = window.SW || {};
           h(
             'div',
             { className: 'sw-thread-meta' },
+            // What kind of app this is (#490), only where the Project holds more than one kind —
+            // in a Project of one kind the label would say the same thing on every row.
+            app.stack && SW.store.get().apps.some((other) => other.stack && other.stack !== app.stack)
+              && h('span', { className: 'sw-thread-stack' }, stackLabel(app.stack)),
             // A build the person walked away from goes on running (#77), so the row it is running
             // in says so. It replaces the built/not-built line rather than sitting beside it: what
             // an app is mid-build is the more useful of the two, and the other one comes back the

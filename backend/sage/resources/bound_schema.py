@@ -326,7 +326,7 @@ def _unbound_block(problems: list[str] | None, names: HelperNames) -> str:
         brand.text("This app has no {dataSource} bound, and it is reading one anyway. That cannot "
                    "work, and no edit to `src/` makes it work."), "",
         (f"- **Stop calling `runQuery` and stop writing `.sage/queries.json`.** `{names.query_path}` "
-         "is in `src/` because the template ships it to every app, not because this one can use it. "
+         f"is in `{names.dir}/` because the template ships it to every app, not because this one can use it. "
          "With nothing bound, every query is refused and the screen waiting on it shows the viewer "
          "an error where the data should be."),
         ("- **The name is not the problem, so do not guess another one.** A refused query here is "
@@ -518,10 +518,14 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
         ("- **`.sage/queries.json` is yours to write** — the one file under `.sage/` that is. Keep it "
          "valid JSON; a catalog that will not parse leaves the app with no queries at all."), "",
         "Call it from the app:", "",
-        "```tsx",
-        f'import {{ runQuery }} from "./{names.query}";   // from a subfolder: "../{names.query}"',
-        "",
-        'const { columns, rows } = await runQuery("usage_by_account", { since: "2026-01-01" });',
+        *(["```js",
+           '// `sage.runQuery` is on the page already (static/sage/appQuery.js); nothing to import.',
+           'const { columns, rows } = await sage.runQuery("usage_by_account", { since: "2026-01-01" });']
+          if names.ext == "js" else
+          ["```tsx",
+           f'import {{ runQuery }} from "./{names.query}";   // from a subfolder: "../{names.query}"',
+           "",
+           'const { columns, rows } = await runQuery("usage_by_account", { since: "2026-01-01" });']),
         "```", "",
         # Measured 2026-09-21 (#484): a dashboard wrote `COUNT(*) AS events`, read `columns` for
         # `"events"` with an exact `indexOf`, and drew its own "column is missing" error over a

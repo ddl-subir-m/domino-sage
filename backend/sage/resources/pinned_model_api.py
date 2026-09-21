@@ -92,9 +92,12 @@ def render_config(apis: list[Binding], credentials: dict[str, Credential],
         "//\n"
         "// `name`/`url`/`token` repeat the first entry. null means no {modelApi} has been chosen "
         "yet.\n"
-        "// See ./{helper}.ts.\n",
-        helper=names.model_api,
+        "// See ./{helper}.{ext}.\n",
+        helper=names.model_api, ext=names.ext,
     )
+    if names.ext == "js":
+        # A fastapi-antd page loads this as a plain script (#490): a global, not a module export.
+        return f"{header}window.{names.model_api}Config = {{\n{body},{models}}};\n"
     return f"{header}export const {names.model_api}Config = {{\n{body},{models}}};\n"
 
 

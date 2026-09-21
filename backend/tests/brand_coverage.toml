@@ -58,6 +58,13 @@ why = """The one place a DEFAULT noun is allowed to be literal (brand.md, Nouns)
 the pack's words and understands the defaults, because the user will type "dataset" whatever the
 pack says. Re-branding this line would delete the synonym it exists to teach."""
 
+[exemption.antd-table-identifier]
+text = "`antd.Table`"
+why = """A code identifier, not prose: the Ant Design component a fastapi-antd app draws rows with
+(ADR-0067). `Table` is also the pack's word for a Scope (ADR-0037), and ADR-0014 renames prose, never
+identifiers — an agent told to reach for `antd.Grid` because a partner calls a Scope a Grid would
+write code that does not run. The bare word never appears in that file's prose; only the identifier."""
+
 [exemption.chat-nouns-as-synonyms]
 text = "Recognise **Dataset** and **Data Source** as the same two things when the user types one"
 why = """Chat's half of the same rule. It names the two nouns Chat's own prose uses, so the agent
@@ -128,6 +135,14 @@ kind = "agents-md"
 template = "react-vite"
 shows_pack = true
 exempt = ["builder-nouns-as-synonyms"]
+
+# The no-build stack's instructions (ADR-0067): the same synonyms block, the same exemption, plus
+# the one code identifier that spells a pack noun.
+[[surface]]
+kind = "agents-md"
+template = "fastapi-antd"
+shows_pack = true
+exempt = ["builder-nouns-as-synonyms", "antd-table-identifier"]
 
 [[surface]]
 kind = "agents-md"

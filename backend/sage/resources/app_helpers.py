@@ -102,6 +102,9 @@ class HelperNames:
 
 #: What the template ships, and what every app seeded after #119 has.
 TEMPLATE = HelperNames(base="appBase", query="appQuery", llm="appLlm", model_api="appModelApi")
+#: The same stems in a fastapi-antd app (#490): plain scripts the page loads, no build step.
+FASTAPI = HelperNames(base="appBase", query="appQuery", llm="appLlm", model_api="appModelApi",
+                      dir="static/sage", ext="js")
 #: What an app seeded before #119 has, and keeps.
 LEGACY = HelperNames(base="sageBase", query="sageQuery", llm="sageLlm", model_api="sageModelApi")
 

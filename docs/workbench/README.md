@@ -12,5 +12,6 @@ a parallel branch. Manage is a separate Domino App the platform bar links out to
 | [handoff.md](handoff.md) | Detect once, suggest, file payload, then existing `sage-plan` / `sage-implement` |
 | [brand.md](brand.md) | OEM chrome + voice; Domino default keeps AI Workbench / Sage split |
 | [template/chat/AGENTS.md](../../template/chat/AGENTS.md) | Prompt body for `sage-chat` (source of truth; inline into `opencode.json`) |
+| [ADR-0067](../adr/0067-a-built-app-declares-its-stack-at-birth.md) | A Built App is one of two stacks, recorded at birth; `fastapi-antd` (no build) is the default, `react-vite` stays selectable per viewer |
 
 Language: [CONTEXT.md](../../CONTEXT.md). Mock: `etanlightstone/sage_explorations`.

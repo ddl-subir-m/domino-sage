@@ -579,6 +579,7 @@ window.SW = window.SW || {};
   SW.SettingsDrawer = function SettingsDrawer() {
     const { settingsOpen } = SW.store.get();
     const [conversationView, setConversationView] = useState('split');
+    const [appStack, setAppStack] = useState('fastapi-antd');
     const [dataAccessShown, setDataAccessShown] = useState(false);
     const [crossings, setCrossings] = useState({
       handoffResources: true,
@@ -591,6 +592,7 @@ window.SW = window.SW || {};
     useEffect(() => {
       if (!settingsOpen) return;
       setConversationView(SW.prefs.get('conversationView'));
+      setAppStack(SW.prefs.get('appStack'));
       // Read on open like the rest, and it has a second reason to be: the nudge on an answer
       // writes this preference too, so the drawer opened after that click must not sit on `false`.
       setDataAccessShown(SW.prefs.get('dataAccessShown'));
@@ -613,6 +615,11 @@ window.SW = window.SW || {};
     const choose = (value) => {
       setConversationView(value);
       save('conversationView', value);
+    };
+
+    const chooseStack = (value) => {
+      setAppStack(value);
+      save('appStack', value);
     };
 
     // Through the store rather than `save` above, because this preference changes what the
@@ -638,6 +645,28 @@ window.SW = window.SW || {};
         width: 360,
       },
       h(Appearance, null),
+      h(
+        'div',
+        { className: 'sw-setting' },
+        h('div', { className: 'sw-setting-label' }, SW.brand.text('Stack for new {builtAppPlural}')),
+        h(antd.Radio.Group, {
+          role: 'radiogroup',
+          'aria-label': SW.brand.text('Stack for new {builtAppPlural}'),
+          value: appStack,
+          onChange: (e) => chooseStack(e.target.value),
+          optionType: 'button',
+          options: [
+            { label: 'FastAPI + Ant Design', value: 'fastapi-antd' },
+            { label: 'React + Vite', value: 'react-vite' },
+          ],
+        }),
+        // Said here because the control cannot show it: the choice reaches only the next New app.
+        // An app keeps the stack it was born with, so a switch here changes nothing on screen now.
+        h('div', { className: 'sw-setting-hint' },
+          SW.brand.text('Applies when you click New app. A {builtApp} keeps the stack it was ' +
+                        'started with. FastAPI + Ant Design has no build step, so it starts and ' +
+                        'publishes faster.'))
+      ),
       h(
         'div',
         { className: 'sw-setting' },

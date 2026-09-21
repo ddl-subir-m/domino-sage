@@ -24,7 +24,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..resources.app_helpers import TEMPLATE, HelperNames
+from ..resources.app_helpers import FASTAPI, TEMPLATE, HelperNames
 
 _REPO = Path(__file__).resolve().parents[3]
 
@@ -57,6 +57,22 @@ class Stack:
     server_script: str | None
     # The file the agent is told to replace first; the placeholder check reads it.
     entry_file: str
+    # How the preview serves this kind of app: "vite" runs the template's dev server, "uvicorn" runs
+    # the app's own server with reload.
+    preview: str
+    # What Sage runs over the workspace when a turn ends: "tsc" typechecks, "python" compiles every
+    # .py and syntax-checks every .js.
+    checker: str
+    # The app's own source, as globs off the app root: what the agent is shown as existing paths,
+    # and what the end-of-turn scans read. Sage-owned helpers and vendored bundles are not the
+    # app's source and are skipped by name where it matters.
+    source_globs: tuple[str, ...]
+    # Where a call to the query helper can appear, for the scan that asks whether the app reads a
+    # store at all.
+    query_globs: tuple[str, ...]
+    # Path prefixes under `source_globs` that are not the app's own source: third-party bundles the
+    # template ships, which the agent is neither shown nor expected to read.
+    vendored: tuple[str, ...] = ()
 
 
 REACT_VITE = Stack(
@@ -86,10 +102,55 @@ REACT_VITE = Stack(
     preview_config="vite.config.ts",
     server_script="serve.py",
     entry_file="src/App.tsx",
+    preview="vite",
+    checker="tsc",
+    source_globs=("src/**/*",),
+    query_globs=("src/**/*.ts", "src/**/*.tsx"),
+)
+
+# FastAPI serving a page that loads React, Ant Design, Day.js and Highcharts as plain scripts — the
+# stack the Workbench itself is built on, with no build step and no node_modules (#490). The page is
+# `static/index.html`; the app is `static/app.js`; the creator's own routes go in `app.py`.
+FASTAPI_ANTD = Stack(
+    name="fastapi-antd",
+    template_dir=_REPO / "template" / "fastapi-antd",
+    sentinel="app.py",
+    # sage_serve.py imports sage_queries.py; app.py imports sage_serve.py; app.sh runs app.py.
+    deploy_files=(
+        "sage_queries.py",
+        "sage_serve.py",
+        "scripts/rehydrate_data.py",
+        "app.sh",
+    ),
+    # errorBoundary.js calls reportRuntimeError.js, so the reporter lands first (same rule as the
+    # react-vite pair). The rest are independent scripts.
+    owned_sources=(
+        FASTAPI.base_path,
+        FASTAPI.model_api_path,
+        FASTAPI.query_path,
+        "static/sage/reportRuntimeError.js",
+        "static/sage/errorBoundary.js",
+        "static/theme.js",
+    ),
+    helpers=FASTAPI,
+    preview_config=None,
+    # The entry script IS the server (`uvicorn app:app`); there is no second file it execs.
+    server_script=None,
+    entry_file="static/app.js",
+    preview="uvicorn",
+    checker="python",
+    source_globs=("*.py", "static/**/*"),
+    query_globs=("static/**/*.js",),
+    vendored=("static/vendor/",),
 )
 
 #: Every stack Sage can seed, by the name the record holds.
-STACKS: dict[str, Stack] = {REACT_VITE.name: REACT_VITE}
+STACKS: dict[str, Stack] = {REACT_VITE.name: REACT_VITE, FASTAPI_ANTD.name: FASTAPI_ANTD}
+
+
+def stack_of(app_path: Path) -> Stack:
+    """The stack behind one app directory's record, for a caller that holds only the path."""
+    return STACKS.get(read_stack_name(app_path), REACT_VITE)
 
 
 def read_stack_name(app_path: Path) -> str:
@@ -110,5 +171,7 @@ def read_stack_name(app_path: Path) -> str:
 
 def default_stack_name() -> str:
     """The stack a NEW app gets when nobody chose one. `SAGE_DEFAULT_STACK` is the deployment's
-    say; the fallback is the only stack there is."""
-    return os.environ.get("SAGE_DEFAULT_STACK") or LEGACY_STACK
+    say; the fallback is the no-build stack, which is also what the Workbench's own preference
+    defaults to, so a caller that sends no stack and a viewer who never opened the drawer get the
+    same kind of app."""
+    return os.environ.get("SAGE_DEFAULT_STACK") or FASTAPI_ANTD.name

@@ -215,7 +215,8 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                      get_queries: Callable[[], object | None] | None = None,
                      get_llm: Callable[[], tuple[str, str] | None] | None = None,
                      approve_model: Callable[[str], str | None] | None = None,
-                     get_platform: Callable[[], object | None] | None = None) -> FastAPI:
+                     get_platform: Callable[[], object | None] | None = None,
+                     get_mount_base: Callable[[], str] | None = None) -> FastAPI:
     """Preview proxy mounted at `/preview` on the control app.
 
     Vite bakes `base = <base_prefix>/preview/` into the HTML/JS it serves, so it only responds at
@@ -223,6 +224,10 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
     middleware strips Domino's proxy prefix, and the `/preview` Mount strips its own segment), so we
     re-add `<base_prefix>/preview` when forwarding upstream to land on Vite's base. `base_prefix` is
     "" for local dev, where `base` is just `/preview/`.
+
+    `get_mount_base` says what the CURRENT upstream serves at, because that is the app's stack's to
+    say (#490): a fastapi-antd app's own server serves at the root, so nothing is re-added. Absent,
+    the Vite base above is assumed — which is every caller older than the second stack.
 
     `approve_model` is the sensitivity lock reaching the app Sage is building (ADR-0043). It is
     handed the model this call names and answers None to allow it, or the sentence refusing it. This
@@ -236,6 +241,11 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
     absent, `/api/domino/*` goes to Vite and 404s.
     """
     vite_base = f"{base_prefix}/preview"  # what the browser sees == what Vite serves at
+
+    def mount_base() -> str:
+        # Asked per request, not once: the selected app — and so its stack — can change under a
+        # running proxy. Falls back to Vite's base for a caller that passed nothing.
+        return vite_base if get_mount_base is None else get_mount_base()
 
     app = FastAPI(title="sage preview proxy")
 
@@ -266,7 +276,7 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
             return
         base = upstream.replace("http://", "ws://").replace("https://", "wss://")
         query = client_ws.url.query
-        upstream_url = f"{base}{vite_base}/{path}" + (f"?{query}" if query else "")
+        upstream_url = f"{base}{mount_base()}/{path}" + (f"?{query}" if query else "")
 
         try:
             async with websockets.connect(upstream_url, subprotocols=subprotocols or None) as up:
@@ -308,7 +318,7 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
             upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
         except Exception as e:
             return _starting(f"{type(e).__name__}: {e}")
-        url = f"{upstream}{vite_base}/{path}"
+        url = f"{upstream}{mount_base()}/{path}"
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
         body = await request.body()
         client = httpx.AsyncClient(timeout=30.0)

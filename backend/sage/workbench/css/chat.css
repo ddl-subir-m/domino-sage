@@ -91,6 +91,15 @@
   color: var(--gray-500);
   margin-top: 1px;
 }
+/* What kind of app a rail row is (#490), drawn only when the Project holds more than one kind. A
+   quiet chip in the meta line, the same weight as the stamp beside it: it tells rows apart and
+   asks for nothing. */
+.sw-thread-stack {
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  white-space: nowrap;
+}
 /* The rail row for the app a build is streaming into (#77). Purple like the active row, because
    it is the same fact — something of yours is happening here — and it reads at a glance beside a
    row that only says "Built". */

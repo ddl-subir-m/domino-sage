@@ -4549,9 +4549,17 @@ def _preview_approve_model(model: str) -> str | None:
     return None
 
 
+def _preview_mount_base() -> str:
+    """What the selected app's preview server serves at (#490). Asked of the supervisor the
+    orchestrator holds rather than worked out here, so a switch of app is a switch of answer."""
+    project = orchestrator._ensure_seeded()
+    return project.supervisor.mount_base()
+
+
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
                                                _preview_llm, _preview_approve_model,
-                                               get_platform=_preview_platform))
+                                               get_platform=_preview_platform,
+                                               get_mount_base=_preview_mount_base))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no
     Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of

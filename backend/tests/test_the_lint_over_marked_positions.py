@@ -453,6 +453,9 @@ def test_the_glossary_holds_both_kinds():
         "Pull and build",
         "Remove",
         "Sovereign",
+        # Which kind of Built App one is (ADR-0067). A word, not a name: it is a technical fact
+        # about the app's code, and a pack has nothing to rename it to.
+        "Stack",
         "Stop using here",
         "Try again",
         # The mirror of `Incoming changes` and a word for the same reason: it names a state of the

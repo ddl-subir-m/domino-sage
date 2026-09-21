@@ -51,7 +51,8 @@ It also fails in the fail-open direction, which is worse than the guard it would
 
 **One manifest for Bindings and Attachments.** Rejected, and not for taste. `.sage/bindings.json` is
 read at run time by the app's server to decide what a query may touch; `.sage/attachments.json` is
-read at deploy time by a Node script to rebuild `public/data/` symlinks off the Domino dataset
+read at deploy time by a rehydrate script (Node on react-vite, Python on fastapi-antd — ADR-0067) to
+rebuild `public/data/` off the Domino dataset
 mounts. Merging them puts one file in front of two consumers that want different things at different
 moments. The glossary already keeps them apart: a **Resource** is a Data Source, a Model API or an
 LLM Alias, and a file is an **Attachment**, which is why `binding_from_context` returns `None` for
