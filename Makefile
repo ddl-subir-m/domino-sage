@@ -1,4 +1,4 @@
-.PHONY: setup test lint shim opencode lock clean
+.PHONY: setup test lint shim opencode lock clean reasoning-evidence
 
 # One-command reproducible setup (lockfile-driven).
 #
@@ -47,6 +47,24 @@ orchestrator:
 # Preflight: one real completion through the gateway (confirms provider + key before a build).
 probe:
 	cd backend && uv run python -m sage.tools.probe
+
+# Which models on this deployment accept which reasoning efforts, measured rather than inferred.
+# Prints a table and writes NOTHING. `--write` records it:
+#
+#     make reasoning-evidence                                every alias, printed
+#     make reasoning-evidence ALIASES="--all --write"        every alias, recorded
+#     make reasoning-evidence ALIASES='"haiku" "sonnet" --write'   only the ones you name
+#
+# Naming aliases is how you refresh part of the file: a named alias is rewritten and every other
+# row is kept exactly as it is.
+#
+# Reads GATEWAY_BASE_URL and GATEWAY_API_KEY from backend/.env, so it measures whichever deployment
+# those point at. Evidence is per-deployment (ADR-0066) and a row measured on one gateway says
+# nothing about another, so pointing this at the wrong .env records the wrong deployment's answers
+# under this one's name.
+ALIASES ?= --all
+reasoning-evidence:
+	cd backend && uv run python ../scripts/reasoning-evidence.py $(ALIASES)
 
 # OpenCode coding harness.
 opencode:
