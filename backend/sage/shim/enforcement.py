@@ -293,6 +293,10 @@ class EnforcementShim:
         # read-only: OpenCode's per-agent permission is inert on the headless path, so stripping the
         # tool from the request is the only thing that stops the agent wandering off to fetch URLs.
         chat_id = state.chat_thread_id
+        if chat_id and state.read_only_turn and state.read_only_reason == "greeting":
+            # Exact greetings need no tools. Keep the model, history and output budget; omit only
+            # unused schemas and their choice directive for this turn (#417).
+            request = {k: v for k, v in request.items() if k not in {"tools", "tool_choice"}}
         denied = set(READ_ONLY_DENIED) if (state.mode is Mode.ASK or state.read_only_turn) else set()
         # An answering turn also loses tools that create a visible work loop: it answers and returns
         # without building, so a task list or sub-task on it reads as a build in progress that never

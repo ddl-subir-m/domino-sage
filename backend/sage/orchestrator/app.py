@@ -612,8 +612,8 @@ def _run_permission_preflight() -> None:
     # Recorded beside the verdict because the verdict means nothing without it: which directory was
     # asked about decides which config answered. A project `opencode.json` beats OPENCODE_CONFIG and
     # resolves off the SESSION directory, so "ok" for one directory says nothing about another.
-    # `.sage/chat-work` is made lazily when a Thread first opens, so on a fresh workspace this is
-    # None at boot and the server's own cwd answers — sound, but only if it is written down.
+    # Warm-up creates `.sage/chat-work` first. If it failed before that, this is None and the
+    # server's own cwd answers — that fallback must be recorded beside the verdict.
     asked = _chat_work_dir()
     try:
         agents = _resolved_agent_permissions()
@@ -662,22 +662,28 @@ def _run_permission_preflight() -> None:
 
 
 def _warm_opencode() -> None:
-    """Boot the OpenCode server now rather than on the first turn.
+    """Boot OpenCode and initialize Chat's location services before the first turn.
 
     `_ensure_opencode` starts a Node server the first time anything asks for one, so that cost
     landed on whichever turn came first — which is the person's opening message, the one they have
-    the least patience for and the least reason to expect a wait on. Nothing downstream changes:
-    the same lazy start still runs if this thread lost a race or failed.
+    the least patience for and the least reason to expect a wait on. Server health alone leaves
+    the Chat directory's services cold. A read through v2 warms them without a dummy conversation;
+    the turn's lazy setup still runs if this background step failed or is not finished yet.
 
     Non-fatal by design, like the preflight above. A builder that cannot boot OpenCode has a
     bigger problem than a cold first turn, and it should report that when a turn asks, not by
     refusing to serve the port Domino is waiting on.
     """
     try:
-        orchestrator._ensure_opencode()
-        log.info("warm: OpenCode server is up before the first turn")
+        client = orchestrator._ensure_opencode()
+        work = Path(orchestrator._wm._dir) / ".sage" / "chat-work"
+        work.mkdir(parents=True, exist_ok=True)
+        # Do not call ensure_chat_workdir here: it changes the active Thread's links.
+        # Only the turn owns those links and its instructions; startup owns no Thread.
+        client.warm_directory(str(work))
+        log.info("warm: OpenCode Chat location services are ready before the first turn")
     except Exception as e:
-        log.warning("warm: OpenCode did not start ahead of the first turn — %s", e)
+        log.warning("warm: OpenCode Chat services did not initialize ahead of the first turn — %s", e)
 
 
 @contextlib.asynccontextmanager

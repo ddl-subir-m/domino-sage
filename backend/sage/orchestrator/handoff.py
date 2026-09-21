@@ -24,7 +24,7 @@ from ..resources.bindings import (
     Binding,
     scope_label,
 )
-from ..router.models import ModelCatalog
+from ..router.models import ModelCatalog, reasoning_efforts_for
 from ..timing import model_call
 from ..workspace import plan_doc
 from ..workspace.threads import handoff_unresolved
@@ -272,6 +272,10 @@ def wants_an_app(
         "temperature": 0,
         "stream": True,
     }
+    # Effort belongs to the Ask assignment. A sensitivity move selects by approval,
+    # not by assignment, so it must not carry the original model's effort (#417).
+    if model == catalog.ask and catalog.ask_effort in reasoning_efforts_for(model):
+        request["reasoning_effort"] = catalog.ask_effort
     labels = CostLabels(phase="ask", mode="auto", component="handoff",
                         session=session, version=version)
 

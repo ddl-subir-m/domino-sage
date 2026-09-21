@@ -154,6 +154,11 @@ class Pending:
         return intent if isinstance(intent, Intent) else Intent(fallback="invalid-json")
 
 
+def is_greeting(prompt: str) -> bool:
+    """Recognize only a whole-message greeting, never a greeting prefix."""
+    return (prompt or "").strip().casefold().rstrip(".!?") in {"hi", "hello", "hey"}
+
+
 def start(
     prompt: str,
     *,
@@ -168,6 +173,11 @@ def start(
     text = (prompt or "").strip()
     if not text:
         return Pending(True, {"intent": Intent(fallback="empty")})
+    # Only a whole-message greeting. A prefix such as "hi, count the users" still needs
+    # classification. Keep the normal Chat model/session; save the routing round trip (#417).
+    if is_greeting(text):
+        log.info("chat intent: label=plain_answer source=greeting")
+        return Pending(True, {"intent": Intent(label="plain_answer", confidence=1.0)})
     if len(text) > MAX_PROMPT_CHARS:
         log.info("chat intent: fallback=prompt-too-long - using current Chat behavior")
         return Pending(True, {"intent": Intent(fallback="prompt-too-long")})

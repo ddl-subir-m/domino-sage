@@ -191,15 +191,22 @@ def test_compaction_leaves_a_session_the_next_turn_has_taken(tmp_path: Path):
     orch, oc = _orch(tmp_path, [Turn(text="ok", tokens={"input": over, "output": 1})])
     tid = orch.create_thread()["id"]
 
+    next_turn_started = False
+
     def next_turn_gets_there_first(*_a, **_k):
+        nonlocal next_turn_started
         orch._turn_lock.acquire()
+        next_turn_started = True
 
     orch._maybe_suggest_handoff = next_turn_gets_there_first
     try:
-        events = list(orch.chat_stream(tid, "hi"))
+        # Exact greetings skip this hook; a normal prompt must exercise the lock race.
+        events = list(orch.chat_stream(tid, "continue"))
+        assert next_turn_started
     finally:
         del orch._maybe_suggest_handoff
-        orch._turn_lock.release()
+        if next_turn_started:
+            orch._turn_lock.release()
 
     assert oc.compacts == []
     assert next(e for e in events if e["type"] == "done")["ok"] is True

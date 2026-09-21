@@ -3735,6 +3735,7 @@ window.SW = window.SW || {};
   // The `*Running` flags are project-wide facts polled off the server's lock, and a tab has to keep
   // them honest between polls: with a queue it can have several turns alive at once, and the first
   // one to unwind used to clear a flag the others were still relying on.
+  // Chat ends at done; its still-open suggestion stream no longer counts as a turn (#417).
   let liveBuildTurns = 0;
   let liveChatTurns = 0;
 
@@ -8015,6 +8016,20 @@ window.SW = window.SW || {};
       if (nameableTurn()) claim = claimRunningTurn('chat', turnThread, '');
       notify();
 
+      // The server releases its turn at done. Keep reading the suggestion tail, but stop
+      // counting it as work. EOF/error can take this path too, once, without clearing a newer turn.
+      let turnEnded = false;
+      const finishTurn = () => {
+        if (turnEnded) return;
+        turnEnded = true;
+        liveChatTurns -= 1;
+        dropQueuedTurn(ticket);
+        state.chatRunning = liveChatTurns > 0;
+        if (mine() && (!state.chatRunning || state.runningTurn === claim)) state.typing = null;
+        releaseRunningTurn(claim);
+        notify();
+      };
+
       const assistant = {
         id: `a_${Date.now()}`,
         role: 'assistant',
@@ -8073,6 +8088,10 @@ window.SW = window.SW || {};
         }
         await readSSE(res, async (ev) => {
           if (!ev) return;
+          if (ev.type === 'done') {
+            if (turnEnded) return;
+            finishTurn();
+          }
           if (ev.type === 'user') {
             // The server's first frame, and the one that paints the person's own question. It is
             // skipped for the transcript's sake — the bubble is already on screen, and that is now
@@ -8118,7 +8137,7 @@ window.SW = window.SW || {};
           // walked away is still the turn holding the lock. What is left for it since #377 is the
           // one send that named nothing and then found the lock free — `nameableTurn` refused on a
           // stale name, and an uncontended grant yields no `running` row to correct it.
-          if (!claim) claim = claimRunningTurn('chat', turnThread, '');
+          if (!turnEnded && !claim) claim = claimRunningTurn('chat', turnThread, '');
           // Moved on. The turn is still running and the server is still writing its transcript, so
           // nothing is lost — reopening the conversation replays it. What is not wanted is this
           // answer appearing under a different question.
@@ -8246,10 +8265,8 @@ window.SW = window.SW || {};
                                 { type: 'status', ok: true, value: ev.message }];
             notify();
           } else if (ev.type === 'done') {
-            state.typing = null;
             notify();
           } else if (ev.type === 'handoff-suggest') {
-            state.typing = null;
             pushMessage({
               id: `sug_${Date.now()}`,
               role: 'system',
@@ -8348,7 +8365,6 @@ window.SW = window.SW || {};
         });
       } catch (err) {
         if (mine()) {
-          state.typing = null;
           ensurePushed();
           assistant.blocks = [...assistant.blocks, { type: 'text', value: String(err.message || err) }];
         }
@@ -8357,15 +8373,7 @@ window.SW = window.SW || {};
         // turn that `readSSE` never saw a frame of, and it is refused most often by the slot check.
         store.refreshProblems();
       } finally {
-        liveChatTurns -= 1;
-        dropQueuedTurn(ticket);
-        // The turn is over wherever the reader is now. Not `false` outright: this tab can have
-        // several turns alive at once now, and the flag says "this project is busy", not "this
-        // conversation is busy" — so it stays true while any of them is still here.
-        state.chatRunning = liveChatTurns > 0;
-        if (mine()) state.typing = null;
-        releaseRunningTurn(claim);
-        notify();
+        finishTurn();
       }
       // Back on the conversation this turn ran in, but the stream stopped writing to the view when
       // it was left. Re-read it, so the answer is there rather than in a Thread nobody reloaded.

@@ -23,6 +23,7 @@ held (#424). A hand-rendered prompt would drop that act and pass while productio
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from sage.orchestrator.service import Orchestrator
@@ -216,3 +217,54 @@ def test_a_read_that_fails_costs_the_list_and_not_the_turn(tmp_path: Path):
         "a failed read of the callable set took the whole instruction with it, so the turn lost a "
         "tool rather than losing a list"
     )
+
+
+def test_a_cold_prompt_does_not_fetch_a_cosmetic_model_label(tmp_path, monkeypatch):
+    orch, oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    calls = []
+    original = orch._resources.list_llm_aliases
+
+    def listed():
+        calls.append(True)
+        return original()
+
+    monkeypatch.setattr(orch._resources, "list_llm_aliases", listed)
+    assert orch._alias_listing_at is None
+    text = _turn(orch, oc, tid)
+
+    assert "`a`" in _note(text), "the model's callable name must still reach the prompt"
+    assert calls == [], "a display label put a gateway request before the answer"
+
+
+def test_an_expired_cached_label_can_render_without_refreshing_its_listing(tmp_path, monkeypatch):
+    orch, oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    aliases = {a.id: a for a in orch._resources.list_llm_aliases()}
+    aliases[OPUS_ID] = replace(aliases[OPUS_ID], name="a")
+    orch._alias_listing_at = (0.0, aliases)
+    calls = []
+    monkeypatch.setattr(orch._resources, "list_llm_aliases", lambda: calls.append(True) or [])
+
+    text = _turn(orch, oc, tid)
+
+    assert f"`a` ({OPUS_LABEL})" in _note(text)
+    assert calls == [], "only the label is stale; this is not a permission lookup"
+
+
+def test_a_model_chip_still_requires_a_fresh_resolution_during_prompt_setup(tmp_path, monkeypatch):
+    orch, oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {
+        "kind": "llm_alias", "name": OPUS_LABEL,
+        "resourceId": f"llm_alias:{OPUS_ID}", "bindingKey": ["llm_alias", OPUS_ID],
+    })
+    orch._alias_listing_at = (0.0, {a.id: a for a in orch._resources.list_llm_aliases()})
+    calls = []
+    monkeypatch.setattr(orch._resources, "list_llm_aliases", lambda: calls.append(True) or [])
+
+    note = _note(_turn(orch, oc, tid))
+
+    assert calls == [True], "a chip's call name must be resolved from a current listing"
+    assert f"`{OPUS_NAME}`" not in note
+    assert OPUS_LABEL in note and "not reachable this turn" in note
