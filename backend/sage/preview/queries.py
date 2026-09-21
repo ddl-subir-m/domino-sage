@@ -6,11 +6,11 @@ against a store whose shape they have never seen — was the one thing they coul
 publishing, at a cold start per attempt. It got worse the better #15 and #16 worked, because the
 thing that needed trying was exactly the thing that could not be tried.
 
-What answers here is `serve.py` itself, bound to loopback and run in a thread. Not a second
-implementation of the query path: the SAME module the published app runs, reached over the same HTTP
-route, so the name lookup, the parameter binding, the row cap and every refusal sentence are the
-published app's rather than an approximation that drifts from it. `serve_module` already loads that
-file for `catalog_problems` and `stranded_levels`; this asks it for one more thing.
+What answers here is the app's own `sage_queries.py`, bound to loopback and run in a thread. Not a
+second implementation of the query path: the SAME module the published app's server mounts, reached
+over the same HTTP route, so the name lookup, the parameter binding, the row cap and every refusal
+sentence are the published app's rather than an approximation that drifts from it. `serve_module`
+already loads that file for `catalog_problems` and `stranded_levels`; this asks it for one more thing.
 
 No credential is passed, and that is the point rather than an omission. `DataSourceClient` reads the
 container's own identity, and this container is the creator's build session — so a preview query runs
@@ -182,12 +182,13 @@ class PreviewQueries:
         try:
             module = serve_module(self._template)
             if module is None:
-                log.info("preview queries: this template has no serve.py, so queries stay unavailable")
+                log.info("preview queries: this template has no sage_queries.py, "
+                         "so queries stay unavailable")
                 return
             self._module = module     # `_build_executor` reads it
             executor = self._build_executor()
-            server = module.build_server(self._workspace / "dist", host="127.0.0.1", port=0,
-                                         project_root=self._workspace, executor=executor)
+            server = module.build_server(host="127.0.0.1", port=0, project_root=self._workspace,
+                                         executor=executor)
             # 50ms, not `serve_forever`'s 0.5s default: that interval is how long the loop sleeps
             # between checks for the shutdown flag, so it is also the floor on how long `stop()`
             # blocks. A Binding change restarts this server while the creator waits, and half a

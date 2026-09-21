@@ -22,7 +22,7 @@ issue that opened this decision named the wrong one, and the next reader will to
 
 For a Data Source the declaration is not a record of the pick. It is the app's **permission to reach
 that store at run time**. The published app's own server reads `.sage/bindings.json` at startup
-(`template/react-vite/serve.py:load_sources`) and refuses any named query whose binding is absent
+(`template/react-vite/sage_queries.py:load_sources`) and refuses any named query whose binding is absent
 from it — *"reads the Data Source X, which the app is no longer recorded as using."* A grant that
 the agent's own SQL could widen is not a grant. Making the derived answer authoritative would let
 the code being guarded decide what the guard covers, which is the one shape ADR-0001's publish-time

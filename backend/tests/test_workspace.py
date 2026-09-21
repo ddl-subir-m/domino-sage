@@ -295,6 +295,9 @@ def test_app_sh_is_refreshed_after_everything_it_calls(tmp_path: Path):
 
     assert _DEPLOY_FILES[-1] == "app.sh"
     assert "scripts/rehydrate_data.py" in _DEPLOY_FILES
+    # serve.py imports sage_queries.py at startup, so the same rule holds one level down: a refreshed
+    # serve.py without the module it imports is an app that dies on ImportError.
+    assert _DEPLOY_FILES.index("sage_queries.py") < _DEPLOY_FILES.index("serve.py")
 
 
 def test_the_rendered_history_is_de_branded_and_quotes_the_agent_verbatim(

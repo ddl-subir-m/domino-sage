@@ -54,10 +54,11 @@ def _template(tmp: Path, *, with_serve: bool = True) -> Path:
     (t / "src" / "App.tsx").write_text("placeholder")
     (t / "package.json").write_text("{}")
     # No `serve.py` named in it: which entry script an app needs is #12's business, and this fixture
-    # must be able to drop `serve.py` without the publish failing for a different reason.
+    # must be able to drop the server without the publish failing for a different reason.
     (t / "app.sh").write_text("#!/bin/bash\nexec npx vite preview\n")
     if with_serve:
         shutil.copy2(TEMPLATE / "serve.py", t / "serve.py")
+        shutil.copy2(TEMPLATE / "sage_queries.py", t / "sage_queries.py")
         (t / "src" / "appQuery.ts").write_text("// placeholder")
         (t / "src" / "appBase.ts").write_text("// placeholder")
     return t
@@ -226,8 +227,7 @@ def _running(root: Path):
     nothing here fetches a page."""
     serve = serve_module(TEMPLATE)
     assert serve is not None
-    srv = serve.build_server(root / "dist", host="127.0.0.1", port=0, project_root=root,
-                             executor=None)
+    srv = serve.build_server(host="127.0.0.1", port=0, project_root=root, executor=None)
     t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
     t.start()
     try:
