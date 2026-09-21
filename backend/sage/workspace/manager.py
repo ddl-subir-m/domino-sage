@@ -294,10 +294,11 @@ _DEPS_SENTINEL = Path(".bin") / "vite"
 # What Domino runs to serve a published App: the entry script, the Python server it execs, and the
 # query module that server imports (ADR-0002). All Sage-owned — see refresh_entry_script. The Python
 # files come FIRST: a refreshed app.sh without them is an app that crash-loops, whereas a stale
-# app.sh with a spare serve.py still serves. sage_queries.py before serve.py for the same reason one
-# level down: serve.py imports it at startup.
+# app.sh with a spare serve.py still serves. sage_queries.py and sage_domino.py before serve.py for
+# the same reason one level down: serve.py imports both at startup.
 _DEPLOY_FILES = (
     "sage_queries.py",
+    "sage_domino.py",
     "serve.py",
     "scripts/rehydrate-data.mjs",
     "scripts/rehydrate_data.py",

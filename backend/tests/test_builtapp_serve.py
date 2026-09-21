@@ -301,3 +301,186 @@ def test_sidecar_url_prefers_the_injected_proxy_address(monkeypatch: pytest.Monk
 def test_sidecar_url_falls_back_to_the_documented_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DOMINO_API_PROXY", raising=False)
     assert sq.sidecar_url() == "http://localhost:8899/access-token"
+
+
+# --- the platform relay (#489) ------------------------------------------------------------------
+
+sd = serve.sd  # the platform half (`sage_domino.py`), the same module object serve.py imported
+_DOMINO_PY = _SERVE_PY.with_name("sage_domino.py")
+_SECRET = b"Bearer eyJhbGciOi.SUPERSECRET.sig"   # what the sidecar mints; must reach the platform once
+
+
+@contextmanager
+def _stub_platform(status: int = 200, body: bytes = b'{"ok": true}',
+                   content_type: str = "application/json"):
+    """A stand-in for DOMINO_API_HOST that records every request it hears, headers lower-cased."""
+    seen: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}})
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
+    t.start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}", seen
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+
+@contextmanager
+def _on_platform(monkeypatch, status: int = 200, body: bytes = b'{"ok": true}',
+                 content_type: str = "application/json"):
+    """This app on the platform: a host that records what reached it, and a sidecar minting a token."""
+    with _stub_sidecar(_SECRET) as sidecar, _stub_platform(status, body, content_type) as (host, seen):
+        monkeypatch.setenv("DOMINO_API_PROXY", sidecar.removesuffix("/access-token"))
+        monkeypatch.setenv("DOMINO_API_HOST", host)
+        yield seen
+
+
+def test_a_platform_read_carries_the_apps_token_and_nothing_of_the_browsers(dist, monkeypatch):
+    with _on_platform(monkeypatch, body=b'{"datasets": []}') as seen, running(dist) as base:
+        r = httpx.get(base + "/api/domino/api/datasetrw/v2/datasets?limit=50",
+                      headers={"Cookie": "session=viewer", "Authorization": "Bearer the-viewers-own"})
+
+    assert r.status_code == 200 and r.json() == {"datasets": []}
+    [hit] = seen
+    assert hit["path"] == "/api/datasetrw/v2/datasets?limit=50"
+    # Once, not "Bearer Bearer": the sidecar's own prefix is stripped before the header is built.
+    assert hit["headers"]["authorization"] == _SECRET.decode()
+    assert "cookie" not in hit["headers"]
+
+
+def test_a_path_outside_the_families_is_refused_before_the_platform_hears_of_it(dist, monkeypatch):
+    with _on_platform(monkeypatch) as seen, running(dist) as base:
+        r = httpx.get(base + "/api/domino/api/users/v1/user/u1/tokenCredentials/c1")
+
+    assert r.status_code == 403
+    assert "GET" in r.json()["error"] and "/api/datasetrw/" in r.json()["error"]
+    assert seen == []
+
+
+@pytest.mark.parametrize("path", [
+    "/api/datasetrw/../users/v1/user/u1/roles",
+    "/api/datasetrw/%2e%2e/users/v1/user/u1/roles",   # the same door, encoded
+    "/api/datasetrw//v2/datasets",
+    "/api/users/v1/user/u1/tokenCredentials/c1",
+    "/api/users/v1/user",
+    "/v4/datasetrw/datasets/d1/snapshot/file/test",    # a GET that drives an upload session
+    "/v4/datasetUi/d1/snapshots",
+    "/api/apps/beta/apps",
+])
+def test_a_path_cannot_leave_its_family(path: str):
+    assert sd.allowed(path) is False
+
+
+@pytest.mark.parametrize("path", [
+    "/api/datasetrw/v2/datasets",
+    "/api/datasetrw/v1/datasets/d1/snapshots",
+    "/api/governance/v1/bundles/b1/approvals",
+    "/api/users/v1/self",
+    "/api/users/v1/users",
+    "/api/users/v1/user/671fd3aa49827159bd79ed53",
+    "/v4/datasetrw/datasets-v2",
+    "/v4/datasetrw/snapshots/d1",
+    "/v4/datasetrw/snapshot/s1/file/raw",
+])
+def test_every_family_admits_its_own_reads(path: str):
+    assert sd.allowed(path) is True
+
+
+def test_the_relay_takes_get_and_nothing_else(dist, monkeypatch):
+    with _on_platform(monkeypatch) as seen, running(dist) as base:
+        posted = httpx.post(base + "/api/domino/api/datasetrw/v2/datasets", json={})
+        headed = httpx.head(base + "/api/domino/api/datasetrw/v2/datasets")
+
+    assert posted.status_code == 405 and headed.status_code == 405
+    assert "GET" in posted.json()["error"]
+    assert seen == []
+
+
+def test_off_the_platform_the_relay_says_so(dist, monkeypatch):
+    monkeypatch.delenv("DOMINO_API_HOST", raising=False)
+    with running(dist) as base:
+        r = httpx.get(base + "/api/domino/api/users/v1/self")
+
+    assert r.status_code == 503 and "platform" in r.json()["error"]
+
+
+def test_the_platforms_own_refusal_reaches_the_page_unchanged(dist, monkeypatch):
+    with _on_platform(monkeypatch, status=404, body=b'{"message": "no such dataset"}'), running(dist) as base:
+        r = httpx.get(base + "/api/domino/api/datasetrw/v1/datasets/nope")
+
+    assert r.status_code == 404 and r.json() == {"message": "no such dataset"}
+
+
+def test_a_file_comes_back_as_the_bytes_it_is(dist, monkeypatch):
+    with _on_platform(monkeypatch, body=b"a,b\n1,2\n", content_type="text/plain") as seen, running(dist) as base:
+        r = httpx.get(base + "/api/domino/v4/datasetrw/snapshot/s1/file/raw?path=adae.csv")
+
+    assert r.status_code == 200 and r.text == "a,b\n1,2\n"
+    assert r.headers["content-type"].startswith("text/plain")
+    assert seen[0]["path"] == "/v4/datasetrw/snapshot/s1/file/raw?path=adae.csv"
+
+
+def test_a_dead_sidecar_is_a_502_and_not_a_hang(dist, monkeypatch):
+    with _stub_platform() as (host, seen):
+        monkeypatch.setenv("DOMINO_API_HOST", host)
+        monkeypatch.setenv("DOMINO_API_PROXY", f"http://127.0.0.1:{_DEAD_PORT}")
+        started = time.monotonic()
+        with running(dist) as base:
+            r = httpx.get(base + "/api/domino/api/users/v1/self")
+
+    assert r.status_code == 502 and "token" in r.json()["error"]
+    assert time.monotonic() - started < 5
+    assert seen == []
+
+
+def test_an_answer_past_the_cap_is_refused_rather_than_relayed(dist, monkeypatch):
+    monkeypatch.setattr(sd, "MAX_BYTES", 8)
+    with _on_platform(monkeypatch, body=b"x" * 9, content_type="text/plain"), running(dist) as base:
+        r = httpx.get(base + "/api/domino/v4/datasetrw/snapshot/s1/file/raw?path=big.csv")
+
+    assert r.status_code == 502 and "larger" in r.json()["error"]
+
+
+def test_the_boot_line_names_the_host_and_the_status_and_never_the_token(monkeypatch):
+    with _on_platform(monkeypatch) as seen:
+        line = sd.platform_status()
+
+    assert sd.platform_host() in line and "200" in line
+    assert "SUPERSECRET" not in line      # app logs are readable by anyone who can see the deploy
+    assert seen[0]["path"] == "/api/users/v1/self"
+
+
+def test_the_boot_line_says_when_there_is_no_host(monkeypatch):
+    monkeypatch.delenv("DOMINO_API_HOST", raising=False)
+    assert "DOMINO_API_HOST" in sd.platform_status()
+
+
+def test_the_relay_needs_nothing_the_venv_provides():
+    """Run by path with whatever python3 the image has, so it must import stdlib only — plus the
+    query module beside it, which is held to the same rule."""
+    import ast
+
+    tree = ast.parse(_DOMINO_PY.read_text())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+
+    allowed = set(sys.stdlib_module_names) | {"sage_queries"}
+    assert imported <= allowed, imported - allowed
