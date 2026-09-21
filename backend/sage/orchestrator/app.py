@@ -82,7 +82,7 @@ from ..resources.provider import (
 )
 from ..resources.publish_guard import PublishRefused
 from ..resources.sensitivity import declared_turn_refusal_for_model
-from ..router.models import Mode, ModelCatalog, Phase, reasoning_efforts_with_tools
+from ..router.models import Mode, ModelCatalog, Phase
 from ..shim import keepalive as ka
 from ..shim import refusal_scan
 from ..workspace.threads import (
@@ -2029,16 +2029,19 @@ async def set_model(request: Request) -> JSONResponse:
         # Both halves of one act (ADR-0049) — the menu offers a level only under the model it
         # belongs to, so a `pick_effort` without its `pick` is not a thing the control can send.
         #
-        # Build carries tools. Validate explicit levels with the local resolver; stale stored
-        # selections are still checked and dropped on send (#284, #298).
+        # Build carries tools. Validate with the same route resolver used at dispatch.
         pick, effort = body["pick"], body.get("pick_effort")
         if effort in (None, "", "default"):
             effort = None
-        elif not isinstance(pick, str) or effort not in reasoning_efforts_with_tools(pick):
-            accepted = reasoning_efforts_with_tools(pick) if isinstance(pick, str) else ()
-            return JSONResponse(status_code=400, content={"error":
-                f"{pick!r} does not accept the reasoning effort {effort!r} beside tools; "
-                f"it accepts {', '.join(accepted) or 'no effort'}"})
+        else:
+            try:
+                accepted = orchestrator.route_capability(pick).efforts_with_tools if isinstance(pick, str) else ()
+            except ValueError as error:
+                return JSONResponse(status_code=400, content={"error": str(error)})
+            if effort not in accepted:
+                return JSONResponse(status_code=400, content={"error":
+                    f"{pick!r} does not accept the reasoning effort {effort!r} beside tools; "
+                    f"it accepts {', '.join(accepted) or 'no effort'}"})
         project.control.pick(pick, effort)
     if "chat_model" in body:
         try:
@@ -4434,6 +4437,11 @@ async def chat_completions(request: Request):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+from .native_routes import install as _install_native_routes
+
+_install_native_routes(control_app, lambda: orchestrator)
+
+
 # Preview proxy for the bound project, mounted under /preview on the one control port. Vite bakes
 # base=<prefix>/preview/, so the proxy re-adds that when forwarding upstream (see make_preview_app).
 # Chat may have attached an empty volume; seeding + Vite start happen here, not on Thread open.
@@ -4589,6 +4597,14 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
     base = opts.get("baseURL", "")
     if base:
         opts["baseURL"] = _on_this_port(base)
+    provider = (cfg.get("provider") or {}).get("sage-gateway") or {}
+    models = provider.get("models") or {}
+    if orchestrator.native_codec_enabled and "gpt-5.4" in models:
+        provider["npm"] = (source_dir / "backend/sage/driver/provider.mjs").resolve().as_uri()
+        # One stable handle keeps OpenCode's persisted provider metadata intact.
+        # Actual Alias and route selection come from the server capability resolver.
+        provider["models"] = {"gpt-5.4": {**models["gpt-5.4"], "reasoning": True}}
+        cfg["model"] = cfg["small_model"] = "sage-gateway/gpt-5.4"
     # The Live read tools are served by THIS process too (ADR-0041), so their port moves with it.
     # This is the rewrite above missing its twin: on Domino the shim serves :8888 while the
     # checked-in URL says :8080, and OpenCode drops an unreachable MCP server SILENTLY — the tools

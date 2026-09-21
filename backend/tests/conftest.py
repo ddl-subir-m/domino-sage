@@ -6,6 +6,7 @@ import weakref
 import pytest
 
 from sage import timing
+from sage.orchestrator import service
 from sage.orchestrator.service import Orchestrator
 
 # For `test_a_leaked_turn_lock_fails_the_test_that_took_it`, which runs pytest inside pytest to
@@ -28,6 +29,49 @@ def _isolate_brand_override(monkeypatch, tmp_path):
     ones that would notice, not the only ones affected.
     """
     monkeypatch.setenv("SAGE_BRAND_OVERRIDE", str(tmp_path / "no-brand-override.json"))
+
+
+@pytest.fixture(autouse=True)
+def _no_wait_for_a_preview_that_never_reports(monkeypatch):
+    """A build turn that wrote code polls the preview for a runtime error for 4s before it is
+    done. No test runs a preview, so nothing ever reports, and every build turn that reached the
+    poll paid the whole 4s — 58 files stubbed the method by hand to skip it and the rest paid.
+    One check with no wait keeps the branch live: an error a test recorded before the poll is
+    still found, and none arrives during it."""
+    monkeypatch.setattr(service, "_RUNTIME_ERROR_WAIT_S", 0.0)
+
+
+# Spread through the collection, slowest file first, so a `-n auto` run does not end on one worker
+# alone with a test that was dealt last. Measured 2026-09-20 with `--durations=0`: the suite's
+# worker-seconds over 14 workers is ~190s and the run took 244s, because these files' tests began
+# after the 94% mark. `test_wedged_turn.py` waits out real deadlines on purpose (49s, 30s, 20s,
+# 20s); the real-OpenCode files run strictly in series behind the lock in `opencode_server.py`.
+#
+# Spread, not moved to the front: xdist hands each worker a CONTIGUOUS slice of the collection,
+# so sorting these files first put every one of them on one worker, which then ran alone for the
+# last 230s of a 408s run. Re-derive the list from `--durations=20` on a full run, not from memory.
+_SPREAD_FIRST = (
+    "test_wedged_turn.py",
+    "test_a_repeated_call_stops_the_turn.py",
+    "test_csv_calculation_opencode.py",
+    "test_csv_text_analysis_data_used.py",
+    "test_one_lock_serializes_every_opencode_boot.py",
+)
+
+
+def pytest_collection_modifyitems(items):
+    slow = sorted((i for i in items if i.path.name in _SPREAD_FIRST),
+                  key=lambda i: _SPREAD_FIRST.index(i.path.name))
+    if not slow:
+        return
+    rest = [i for i in items if i.path.name not in _SPREAD_FIRST]
+    step = max(1, len(rest) // len(slow))
+    spread = []
+    for k, item in enumerate(slow):
+        spread.append(item)
+        spread.extend(rest[k * step:(k + 1) * step])
+    spread.extend(rest[len(slow) * step:])
+    items[:] = spread
 
 
 @pytest.fixture

@@ -14,6 +14,7 @@
 // Mounts nothing, same trick as `conversation_view_harness.mjs`.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const spec = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -61,7 +62,7 @@ const backing = new Map();
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, Infinity, encodeURIComponent, decodeURIComponent,
-  setTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: (fn) => fn(),
   fetch: (url) => serve(url),
   localStorage: {

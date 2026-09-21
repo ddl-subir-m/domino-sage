@@ -28,6 +28,7 @@
 // on each, and whatever the click posted.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -108,7 +109,7 @@ function runEffects() {
 // --- the browser -----------------------------------------------------------
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Infinity, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {},
+  Error, Infinity, setTimeout: unrefTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {},
   requestAnimationFrame: (fn) => fn(),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },

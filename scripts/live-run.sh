@@ -69,7 +69,7 @@ fi
 # is rebuilt. A stale image verifies last week's code and reports it as this week's.
 BUST=$(grep -oE 'SAGE_CACHE_BUST=[^ ]+' environment/Dockerfile | head -1 | cut -d= -f2)
 BUST_COMMIT=$(git log -1 --format=%H -G'^ARG SAGE_CACHE_BUST=' -- environment/Dockerfile)
-BAKED=$(git log --oneline "$BUST_COMMIT..HEAD" -- backend template opencode.json ':(exclude)backend/tests' || true)
+BAKED=$(git log --oneline "$BUST_COMMIT..HEAD" -- backend template opencode.json package.json package-lock.json ':(exclude)backend/tests' || true)
 if [ -n "$BAKED" ]; then
   bad "the image bakes code newer than SAGE_CACHE_BUST=$BUST. These commits are NOT on Domino:"
   echo "$BAKED" | sed 's/^/          /'

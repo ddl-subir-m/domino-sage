@@ -20,6 +20,7 @@
 // drawn afterwards, because the filter is only a bug once it takes a row off the screen.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -34,7 +35,7 @@ const APPS = [{ id: 'app-x', name: 'Risk Dashboard' }];
 
 const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
-  RegExp, encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout, setInterval,
+  RegExp, encodeURIComponent, decodeURIComponent, setTimeout: unrefTimeout, clearTimeout, setInterval,
   clearInterval, URLSearchParams, TextEncoder, TextDecoder, URL,
   fetch: () => Promise.reject(new Error('the harness makes no requests')),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },

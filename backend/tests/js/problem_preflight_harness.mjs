@@ -9,6 +9,7 @@
 // Input on stdin: `{ "frames": [ ...SSE events... ] }` — the stream, in order, after the send.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { frames } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -18,7 +19,7 @@ let healthCalls = 0;
 
 const sandbox = {
   console, JSON, Math, Date, process, Set, Map, Promise, Array, Object, String, Number, Boolean,
-  RegExp, Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout, clearTimeout,
+  RegExp, Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout: unrefTimeout, clearTimeout,
   setInterval: () => 1, clearInterval: () => {}, Blob, ArrayBuffer, Uint8Array,
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   requestAnimationFrame: (fn) => fn(),

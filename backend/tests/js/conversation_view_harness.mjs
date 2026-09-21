@@ -16,6 +16,7 @@
 // read of the rail's list, not one per card.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -284,7 +285,7 @@ function serve(url, options) {
 const backing = new Map();
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Blob, ArrayBuffer, Uint8Array, Infinity, setTimeout, clearTimeout, setInterval, clearInterval,
+  Error, Blob, ArrayBuffer, Uint8Array, Infinity, setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: (fn) => fn(),
   localStorage: {
     getItem: (k) => (backing.has(k) ? backing.get(k) : null),

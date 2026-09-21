@@ -14,6 +14,7 @@
 // they would be on screen; mounting would test antd instead.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -32,7 +33,7 @@ const json = (body) => ({
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, encodeURIComponent, decodeURIComponent, URLSearchParams,
-  setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+  setTimeout: unrefTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
   requestAnimationFrame: (fn) => fn(),
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   location: { search: '', pathname: '/', href: 'http://localhost/', hash: '#/chat' },

@@ -20,6 +20,7 @@
 // is set and not drawn fixes nothing.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const acts = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -166,7 +167,7 @@ const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, TextEncoder, TextDecoder, URL, URLSearchParams,
   encodeURIComponent, decodeURIComponent,
-  setTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: (fn) => fn(),
   localStorage: (() => {
     const backing = new Map();

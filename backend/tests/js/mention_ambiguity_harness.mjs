@@ -14,6 +14,7 @@
 // after a keystroke has opened it and a no-op setter would leave every run looking closed.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { prompts } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -93,7 +94,7 @@ function serve(url, init) {
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, TextDecoder,
-  setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+  setTimeout: unrefTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
   requestAnimationFrame: (fn) => fn(),
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },

@@ -36,6 +36,7 @@
 // here: ADR-0027 puts a Problem in the chip, and a missing starter list is not a Problem at all.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { mode } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -80,7 +81,7 @@ const SEEDED_PREFS = JSON.stringify({ me: { railHidden: false, dockTab: 'activit
 
 const sandbox = {
   console, JSON, Math, Date, process, Set, Map, Promise, Array, Object, String, Number, Boolean,
-  RegExp, Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout, clearTimeout,
+  RegExp, Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout: unrefTimeout, clearTimeout,
   setInterval, clearInterval, Blob, ArrayBuffer, Uint8Array,
   localStorage: {
     getItem: (k) => (k === 'sw.prefs' ? SEEDED_PREFS : null),

@@ -8,6 +8,7 @@
 // draws it has its own test (`recall_offer_harness.mjs`).
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { history, dismiss } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -24,7 +25,7 @@ const json = (body) => ({
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, TextEncoder, TextDecoder, URL, URLSearchParams, Blob, ArrayBuffer, Uint8Array,
-  setTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: (fn) => fn(),
   localStorage: (() => {
     const backing = new Map();

@@ -7,6 +7,7 @@
 // the creator to a panel row that is no longer there to remove something that is already gone.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const spec = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -14,7 +15,7 @@ const spec = JSON.parse(fs.readFileSync(0, 'utf8'));
 const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
   RegExp, encodeURIComponent, decodeURIComponent,
-  setTimeout, clearTimeout, setInterval, clearInterval, URLSearchParams,
+  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval, URLSearchParams,
   fetch: () => Promise.reject(new Error('the harness makes no requests')),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   document: {

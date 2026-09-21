@@ -16,6 +16,7 @@
 // then the frames the server sends for it.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { history = [], events = [] } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -61,7 +62,7 @@ function serve(url) {
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, TextEncoder, TextDecoder,
-  setTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   encodeURIComponent, decodeURIComponent, URLSearchParams,
   requestAnimationFrame: (fn) => fn(),
   localStorage: (() => {

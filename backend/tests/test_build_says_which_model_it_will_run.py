@@ -1020,7 +1020,7 @@ def test_a_collapsed_pick_whose_level_is_stranded_claims_no_default():
     assert "doesn't accept High" in row["why"]
     # "Turns run", not "this turn runs" — the same sentence reaches the idle dropdown, where there
     # is no turn for a present-tense claim to be about.
-    assert "Turns run at the model default" in row["why"]
+    assert "Choose Model default or a supported setting" in row["why"]
 
 
 def test_only_an_unpicked_slot_is_allowed_to_call_itself_the_default():

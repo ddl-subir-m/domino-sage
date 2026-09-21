@@ -22,6 +22,7 @@
 // with a door the panel had put back.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -215,7 +216,7 @@ function runEffects() {
 const said = [];
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Blob, ArrayBuffer, Uint8Array, Infinity, setTimeout, clearTimeout, setInterval: () => 0,
+  Error, Blob, ArrayBuffer, Uint8Array, Infinity, setTimeout: unrefTimeout, clearTimeout, setInterval: () => 0,
   clearInterval: () => {}, requestAnimationFrame: (fn) => fn(),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },

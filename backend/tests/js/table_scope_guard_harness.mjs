@@ -13,6 +13,7 @@
 // keystroke has opened it.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 // `unscoped` drops the Scope off the app's Binding, which is the ordinary state of a store bound
@@ -93,7 +94,7 @@ function hookState(init) {
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, TextDecoder,
-  setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+  setTimeout: unrefTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
   requestAnimationFrame: (fn) => fn(),
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },

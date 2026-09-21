@@ -231,9 +231,17 @@ class FakeAssetProvider:
 
     def __post_init__(self) -> None:
         if self.root is None:
+            import shutil
             import tempfile
+            import weakref
 
             self.root = Path(tempfile.mkdtemp(prefix="sage-fake-datasets-"))
+            # Removed when the provider dies or the process exits. Every Orchestrator built without
+            # `assets` makes one of these, so the suite made one per test and never removed any:
+            # measured 2026-09-20, 1.66M of them in the macOS temp dir, and everything that listed
+            # that directory — OpenCode's boot most of all — paid minutes for it. A workspace that
+            # symlinked into a previous run's root is re-linked against the live one on restore.
+            weakref.finalize(self, shutil.rmtree, self.root, ignore_errors=True)
         seeded: list[Asset] = []
         for name, (tags, proj, files) in _FAKE_SPEC.items():
             d = self.root / name

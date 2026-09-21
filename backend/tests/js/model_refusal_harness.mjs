@@ -42,6 +42,7 @@
 //              value, so a per-call capture restores a pair the server never held.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -149,7 +150,7 @@ let midFlight = null;
 const sandbox = {
   console, JSON, Math, Date, process, Set, Map, Promise, Array, Object, String, Number, Boolean,
   RegExp, Error, TextEncoder, TextDecoder, URL, URLSearchParams, Blob, ArrayBuffer, Uint8Array,
-  setTimeout, clearTimeout,
+  setTimeout: unrefTimeout, clearTimeout,
   setInterval: () => 0, clearInterval: () => {},
   encodeURIComponent, decodeURIComponent,
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },

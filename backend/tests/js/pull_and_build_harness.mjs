@@ -2,6 +2,7 @@
 // This drives the real store method and stubs only the API edge that talks to the server.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { syncResult } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -11,7 +12,7 @@ const calls = [];
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array,
-  setTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   encodeURIComponent, decodeURIComponent, URLSearchParams,
   requestAnimationFrame: (fn) => fn(),
   localStorage: (() => {

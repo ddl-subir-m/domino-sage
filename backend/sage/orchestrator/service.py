@@ -169,7 +169,6 @@ from ..router.models import (
     Reason,
     SessionState,
     reasoning_efforts_for,
-    reasoning_efforts_with_tools,
     signing_slot,
 )
 from ..shim.enforcement import EnforcementShim
@@ -248,6 +247,12 @@ _BUILD_TOOL_QUIET_TIMEOUT_S = 600.0
 # How long we wait for a wedged session to confirm it actually stopped, after asking it to. Only
 # a session that confirms lets the turn lock go — see _stop_wedged_session.
 _BUILD_STOP_GRACE_S = 30.0
+
+# How long a build turn waits for the preview to report a runtime error after the agent's last
+# write, before calling the build done — see _await_runtime_error. A module constant so the suite
+# can zero it: no test runs a preview, and every build turn that reached this wait paid the full
+# four seconds for a report that could not come.
+_RUNTIME_ERROR_WAIT_S = 4.0
 
 # What ends a Chat turn that will not end itself. Quiet time, not wall clock: a hung
 # `DataSourceClient.query` (Arrow Flight from a published App) never goes idle, the UI stays on its
@@ -1843,7 +1848,7 @@ _MEMBERSHIP_ONLY_FIELDS = ("description", "alias", "capabilities", "reasoning_ef
                            # has not answered (#295). Without it here the row arrives carrying the
                            # enum and nothing else, and a consumer that reads a missing field as an
                            # empty list refuses every level the alias actually takes.
-                           "reasoning_efforts_with_tools", "inBuild")
+                           "reasoning_efforts_with_tools", "reasoning_note", "inBuild")
 
 # Set once `_backfill_membership_from_bindings` has reconciled this Project's working set with the
 # Bindings that predate membership-on-bind (#140). In the Project's settings rather than derived
@@ -4594,6 +4599,9 @@ class ResolvedModel:
     model: str
     phase: str
     reason: str
+    protocol: str | None = None
+    effort: str | None = None
+    native: bool | None = None
 
 
 @dataclass
@@ -4729,9 +4737,11 @@ class Project:
     # the app's, and resolves inside `apps/<appId>/`.
     _PROJECT_PREFIXES = ("examples/", _SCRATCH_PREFIX, ".sage/threads/", ".sage/plan-docs/")
 
-    def note_resolved(self, model: str, phase: str, reason: str) -> None:
+    def note_resolved(self, model: str, phase: str, reason: str, *, protocol: str | None = None,
+                      effort: str | None = None, native: bool | None = None) -> None:
         """What the shim just resolved. Called once per inference; the last call wins."""
-        self.resolved_model = ResolvedModel(model=model, phase=phase, reason=reason)
+        self.resolved_model = ResolvedModel(model=model, phase=phase, reason=reason,
+                                            protocol=protocol, effort=effort, native=native)
 
     def resolved_row(self) -> dict:
         """The record as a terminal row carries it, or nothing at all when no model was reached.
@@ -4750,8 +4760,12 @@ class Project:
         history, which is a worse trade than one quiet transcript.
         """
         r = self.resolved_model
-        return {} if r is None else {
-            "resolved": {"model": r.model, "reason": r.reason, "phase": r.phase}}
+        if r is None:
+            return {}
+        resolved = {"model": r.model, "reason": r.reason, "phase": r.phase}
+        if r.protocol is not None:
+            resolved.update(protocol=r.protocol, effort=r.effort, native=r.native)
+        return {"resolved": resolved}
 
     def app_for_turn(self) -> Workspace:
         """The Built App a turn writes into: the one it pinned at its start, else the one on screen.
@@ -6076,6 +6090,7 @@ class Orchestrator:
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
         shim = EnforcementShim(control, self._effective_catalog(record), self._gateway,
                                project_name=self._cost_project_label)
+        shim.resolve_capability = self.route_capability
         supervisor = ViteSupervisor(workspace.path, domino_base_prefix())
         queries = PreviewQueries(workspace.path, self._wm.template)
         if start_preview:
@@ -6804,7 +6819,7 @@ class Orchestrator:
         # that has already ended, which no panel read can do.
         if note := tool_capability_note(caps, model):
             log.warning("chat pick: %s — %s", model, note)
-        efforts = reasoning_efforts_with_tools(model)
+        efforts = self.route_capability(model).efforts_with_tools
         if effort in ("", None, "default"):
             effort = None
         elif effort not in efforts:
@@ -10045,6 +10060,8 @@ class Orchestrator:
         if not scope:
             return None
         ev = {"type": recall.SUGGEST, "scope": scope}
+        if any(e.get("reason") == recall.POLICY_CHANGE for e in history[-2:]):
+            ev["reason"] = recall.POLICY_CHANGE
         store.append_history(thread_id, ev)
         return ev
 
@@ -10244,6 +10261,8 @@ class Orchestrator:
         if not scope:
             return None
         ev = {"type": recall.SUGGEST, "scope": scope}
+        if any(e.get("reason") == recall.POLICY_CHANGE for e in history[-2:]):
+            ev["reason"] = recall.POLICY_CHANGE
         app.append_history(ev, project.build_conversation)
         return ev
 
@@ -10365,6 +10384,9 @@ class Orchestrator:
                 store.write_investigation(thread_id, {})
         store.clear_session_id(thread_id)
         ev = {"type": recall.CLEARED, "scope": scope}
+        offers = [e for e in store.read_history(thread_id) if e.get("type") == recall.SUGGEST]
+        if offers and offers[-1].get("reason") == recall.POLICY_CHANGE:
+            ev["reason"] = recall.POLICY_CHANGE
         store.append_history(thread_id, ev)
         return ev
 
@@ -13558,8 +13580,9 @@ class Orchestrator:
                 return
             # `model` weighs the threshold above; this is the id OpenCode is asked to resolve, which
             # is not always the same string — see chat_compact.summarize_model_id.
-            named = chat_compact.summarize_model_id(model)
+            named = "gpt-5.4" if self.native_codec_enabled else chat_compact.summarize_model_id(model)
             log.info("chat compact: session=%s model=%s/%s named=%s", sid, provider, model, named)
+            project.active_session_id = sid
             summarize(sid, provider, named, auto=False)
             if client.is_running(sid):
                 client.wait_for_idle(sid, appear_grace_s=2.0)
@@ -17268,7 +17291,8 @@ class Orchestrator:
                 # blanks the preview. Wait briefly for the open preview to report one; if it does,
                 # feed the error back so the agent fixes it before we call the build done.
                 if report.ok and wrote_code and runtime_fixes < MAX_RUNTIME_FIXES:
-                    rt = self._await_runtime_error(project, since=send_ts)
+                    rt = self._await_runtime_error(project, since=send_ts,
+                                                   timeout=_RUNTIME_ERROR_WAIT_S)
                     if rt is not None:
                         runtime_fixes += 1
                         project.runtime_error = None  # consume so a later turn starts clean
@@ -19159,7 +19183,9 @@ class Orchestrator:
                     # efforts that slot may offer, and the join is here or it is a second copy of
                     # the per-alias table on the panel's side (#280). The drawer is a tool-carrying
                     # assignment surface, so it reads the narrow twin below.
-                    "reasoning_efforts": list(reasoning_efforts_for(a.name)),
+                    "reasoning_efforts": list(a.route_capability.efforts if a.route_capability is not None
+                                              else reasoning_efforts_for(a.name)),
+                    "reasoning_note": a.route_capability.reason if a.route_capability is not None else "",
                     "reasoning_efforts_with_tools": a.reasoning_efforts_with_tools,
                     "serving": (problem := alias_problem(a.name, aliases, endpoints)) is None,
                     "problem": problem,
@@ -19230,10 +19256,9 @@ class Orchestrator:
         # used to hold.
         model = merged["model"] or getattr(self._catalog, slot)
         # The local measured resolver, not the alias record's gateway metadata. Build assignments
-        # are for tool-carrying turns, so the write path uses the same tool-shaped choices the menu
-        # draws and the send path enforces. This stays local: a gateway listing outage must not stop
-        # a person saving a model row that can be validated from Sage's measured table.
-        accepted = reasoning_efforts_with_tools(model)
+        # are for tool-carrying turns, so save and dispatch use the same verified choices.
+        # A gateway metadata outage refuses the change rather than retaining stale native support.
+        accepted = self.route_capability(model).efforts_with_tools
         if merged["effort"] and merged["effort"] not in accepted:
             # "Did this call CHANGE the effort", not "did it mention one". A drawer that PUTs the
             # whole row on a model change echoes the effort it was already showing, and that is the
@@ -19241,7 +19266,8 @@ class Orchestrator:
             # asking for a level. Keying on the key's presence would answer it with a hard 400 and
             # would make the rule depend on the client sending `effort` only when it changed, which
             # is a constraint on #283 rather than a property of this contract.
-            if value.get("effort") and value["effort"] != (stored or {}).get("effort"):
+            if ((value.get("effort") and value["effort"] != (stored or {}).get("effort"))
+                    or (self.native_codec_enabled and model == (stored or {}).get("model"))):
                 takes = f"it accepts {', '.join(accepted)}" if accepted else "it accepts no effort"
                 raise ValueError(f"{model} does not accept the reasoning effort "
                                  f"{merged['effort']!r} — {takes}")
@@ -19400,12 +19426,13 @@ class Orchestrator:
         ever has to be dropped and the 409 left as the only teacher.
         """
         rows = self.project(start_preview=False).record.read_project_resources()
-        # Persisted effort lists can outlive a probe result. Resolve on read without a gateway call
-        # or a write to the working set; model identity and cached capabilities stay intact (#284).
+        # Persisted effort lists can outlive their route. Resolve against current metadata
+        # without changing the saved working set (#284).
         rows = [
             {**row,
-             "reasoning_efforts": list(reasoning_efforts_for(row["alias"])),
-             "reasoning_efforts_with_tools": list(reasoning_efforts_with_tools(row["alias"])),
+             "reasoning_efforts": list(self.route_capability(row["alias"]).efforts),
+             "reasoning_efforts_with_tools": list(self.route_capability(row["alias"]).efforts_with_tools),
+             "reasoning_note": self.route_capability(row["alias"]).reason,
              # Here for the reason the two lists above are here: computed on read, never written to
              # the membership file. The sentence is derived from `capabilities`, which IS persisted
              # and can outlive the provider changing its mind — a maintainer wiring tool calling
@@ -19522,7 +19549,7 @@ class Orchestrator:
         keep = ("id", "kind", "name", "description", "project", "path", "bindingKey",
                 # Both effort lists: an alias row that kept only the enum would leave the Build menu
                 # with no narrow list to read on the membership path (#295).
-                "alias", "capabilities", "reasoning_efforts", "reasoning_efforts_with_tools")
+                "alias", "capabilities", "reasoning_efforts", "reasoning_efforts_with_tools", "reasoning_note")
 
         def change(items: list[dict]) -> list[dict]:
             for row in items:
@@ -20381,6 +20408,20 @@ class Orchestrator:
         tagged = self._control_plane.tag_dataset_sensitive(asset.id, snapshot_id=snapshot)
         return {"tagged": bool(tagged), "dataset": asset.name}
 
+    def route_capability(self, model: str):
+        from ..gateway.capabilities import legacy
+        resolver = getattr(self._resources, "reasoning_capability", None)
+        if resolver is None:
+            return legacy(model)
+        try:
+            return resolver(model)
+        except ResourceUnavailable as error:
+            raise ValueError("The gateway route cannot be checked now. Retry the model listing.") from error
+
+    @property
+    def native_codec_enabled(self) -> bool:
+        return callable(getattr(self._resources, "reasoning_capability", None))
+
     def list_llm_aliases(self) -> list[dict]:
         """LLM Aliases this caller can actually call, shaped for the Resource Browser (#5).
 
@@ -20396,7 +20437,10 @@ class Orchestrator:
                 "capabilities": a.capabilities,
                 "costs": a.costs,
                 # Resolve locally so stale alias rows cannot restore unsupported choices (#284).
-                "reasoning_efforts": list(reasoning_efforts_for(a.name)),
+                "reasoning_efforts": list(a.route_capability.efforts if a.route_capability is not None
+                                              else reasoning_efforts_for(a.name)),
+                **({"reasoning_note": a.route_capability.reason}
+                   if a.route_capability is not None and a.route_capability.reason else {}),
                 # Chat, Build and assignment controls carry tools and read this list (#298).
                 "reasoning_efforts_with_tools": a.reasoning_efforts_with_tools,
             }
@@ -20514,7 +20558,7 @@ class Orchestrator:
             # what the row is built from on the membership path, which is the composer's source
             # whenever the gateway alias leg has not answered (#295).
             {k: alias.get(k) for k in ("description", "capabilities", "reasoning_efforts",
-                                       "reasoning_efforts_with_tools")})
+                                       "reasoning_efforts_with_tools", "reasoning_note")})
 
     def bind_model_api(self, model_api_id: str) -> list[dict]:
         """Record that this app uses one Model API, and return the new Binding list (#9).

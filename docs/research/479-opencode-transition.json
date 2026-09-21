@@ -1,0 +1,843 @@
+{
+  "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway",
+  "protocol": "messages",
+  "alias": "Opus-4.8",
+  "transition": true,
+  "requests": [
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 3
+      },
+      "tool_count": 0,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "ping": 1,
+        "content_block_delta": 4,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 859,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 18,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 4,
+        "type:text_delta": 4,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 2.057
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 4,
+        "ping": 1,
+        "content_block_delta": 40,
+        "content_block_stop": 4,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 1242,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 439,
+        "output_tokens_details": {
+          "thinking_tokens": 139
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 4,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 40,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 4,
+        "type:text": 1,
+        "type:text_delta": 17,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:input_json_delta": 21,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 6.0
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 1,
+        "type:output_text": 1,
+        "type:function_call": 2,
+        "type:function_call_output": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 22,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 1000,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 26,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1026
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 1,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 22,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.output_item.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 1.746
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 5,
+        "type:thinking": 1,
+        "signature": 1,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:tool_result": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 2,
+        "ping": 1,
+        "content_block_delta": 12,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 2002,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 119,
+        "output_tokens_details": {
+          "thinking_tokens": 15
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 2,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 12,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 2,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:input_json_delta": 10,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 2.723
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 2,
+        "type:output_text": 2,
+        "type:function_call": 3,
+        "type:function_call_output": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 14,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 1188,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 18,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1206
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 1,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 14,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.output_item.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 1.591
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 7,
+        "type:thinking": 2,
+        "signature": 2,
+        "type:tool_use": 3,
+        "type:direct": 3,
+        "type:tool_result": 3,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 2,
+        "ping": 1,
+        "content_block_delta": 12,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 2284,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 160,
+        "output_tokens_details": {
+          "thinking_tokens": 56
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 2,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 12,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 2,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:input_json_delta": 10,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 3.787
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 3,
+        "type:output_text": 3,
+        "type:function_call": 4,
+        "type:function_call_output": 4,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 19,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 1373,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 86,
+        "output_tokens_details": {
+          "reasoning_tokens": 61
+        },
+        "total_tokens": 1459
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 2,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 2,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 19,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 2.404
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 5,
+        "type:thinking": 1,
+        "signature": 1,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:tool_result": 2
+      },
+      "tool_count": 0,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "ping": 1,
+        "content_block_delta": 63,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 1469,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 386,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 63,
+        "type:text_delta": 63,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 5.709
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 8,
+        "type:thinking": 2,
+        "signature": 2,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:tool_result": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "ping": 1,
+        "content_block_delta": 10,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 2196,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 103,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 10,
+        "type:input_json_delta": 10,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 2.888
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 4,
+        "type:output_text": 3,
+        "type:function_call": 3,
+        "type:function_call_output": 3,
+        "type:reasoning": 1,
+        "encrypted_content": 1,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 19,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 1387,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 54,
+        "output_tokens_details": {
+          "reasoning_tokens": 29
+        },
+        "total_tokens": 1441
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 2,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 2,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 19,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 2.088
+    }
+  ],
+  "decisions": [
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 1,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 4,
+        "type:reasoning": 1,
+        "signature": 1,
+        "type:tool-call": 2,
+        "type:direct": 4,
+        "type:tool-result": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 6,
+        "type:reasoning": 1,
+        "signature": 1,
+        "type:tool-call": 2,
+        "type:direct": 4,
+        "type:tool-result": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 7,
+        "type:reasoning": 2,
+        "signature": 2,
+        "type:tool-call": 3,
+        "type:direct": 6,
+        "type:tool-result": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 9,
+        "type:reasoning": 2,
+        "signature": 2,
+        "type:tool-call": 3,
+        "type:direct": 6,
+        "type:tool-result": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 10,
+        "type:reasoning": 3,
+        "signature": 3,
+        "type:tool-call": 4,
+        "type:direct": 8,
+        "type:tool-result": 4,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 6,
+        "type:reasoning": 1,
+        "signature": 1,
+        "type:tool-call": 2,
+        "type:direct": 4,
+        "type:tool-result": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 9,
+        "type:reasoning": 3,
+        "signature": 2,
+        "type:tool-call": 2,
+        "type:direct": 4,
+        "type:tool-result": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 10,
+        "type:reasoning": 3,
+        "signature": 2,
+        "type:tool-call": 3,
+        "type:direct": 6,
+        "type:tool-result": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    }
+  ],
+  "turns": [
+    {
+      "restart": 0,
+      "status": 200,
+      "request_count": 3,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    },
+    {
+      "restart": 0,
+      "status": 200,
+      "request_count": 2,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    },
+    {
+      "restart": 1,
+      "status": 200,
+      "request_count": 2,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:reasoning": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    }
+  ],
+  "compaction": {
+    "status": 200,
+    "request_count": 1
+  },
+  "after_compaction": {
+    "status": 200,
+    "request_count": 2,
+    "both_markers": true,
+    "part_shape": {
+      "type:step-start": 1,
+      "type:reasoning": 1,
+      "type:text": 1,
+      "type:step-finish": 1
+    }
+  }
+}

@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from pathlib import Path
 
 import httpx
 
@@ -319,6 +321,34 @@ class OpenCodeClient:
         where it hands that over.
         """
         self._dirs[session_id] = directory
+
+    def session_belongs_to(self, session_id: str, active_id: str) -> bool:
+        """Verify a task's parent chain with the harness, never from caller headers."""
+        directory = self._dirs.get(active_id)
+        if not directory:
+            return False
+        seen = set()
+        current = session_id
+        for _ in range(16):
+            if current == active_id:
+                self.note_session_dir(session_id, directory)
+                return True
+            if (not isinstance(current, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", current)
+                    or current in seen):
+                return False
+            seen.add(current)
+            try:
+                response = httpx.get(f"{self.base_url}/session/{current}",
+                                     params={"directory": directory}, timeout=2)
+                response.raise_for_status()
+                info = response.json()
+            except (httpx.HTTPError, ValueError):
+                return False
+            if (not isinstance(info, dict) or not isinstance(info.get("directory"), str)
+                    or Path(info["directory"]).resolve() != Path(directory).resolve()):
+                return False
+            current = info.get("parentID")
+        return False
 
     def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
         """This session's messages, OLDEST FIRST. Pass `limit` for only the newest few.

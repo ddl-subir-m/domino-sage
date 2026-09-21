@@ -55,9 +55,12 @@ packages = ["sage"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-# -n auto by default, because a bare `pytest` is what gets typed and serial is 6x slower: the full
-# suite is 36s across cores against 218s on one, and even a single file is 3.8s against 9.4s. Use
-# `-n0` to read interleaved output or to run one test under a debugger.
+# -n auto by default, because a bare `pytest` is what gets typed and serial is many times slower:
+# measured 2026-09-20, 7,545 tests, ~2,600 worker-seconds — about 4 minutes across 14 cores. Most
+# of that is waiting (subprocesses, deadlines), not CPU: the run keeps ~2 cores busy. Use `-n0` to
+# read interleaved output or to run one test under a debugger. If the run is far slower than this,
+# look at the machine before the code: the same suite took 13 minutes while 1.66M leaked temp
+# directories sat in the macOS temp dir (see FakeAssetProvider).
 addopts = "-n auto"
 
 [tool.ruff]

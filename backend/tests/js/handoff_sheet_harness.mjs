@@ -5,6 +5,7 @@
 // the saved answers. This harness renders both states the way the browser does.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const cases = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -15,7 +16,7 @@ let prefs = {};
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, setTimeout, clearTimeout,
+  Error, setTimeout: unrefTimeout, clearTimeout,
   React: {
     createElement: (t, p, ...c) => ({ t, p, c }),
     useState: (init) => {
