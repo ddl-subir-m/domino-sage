@@ -355,6 +355,13 @@ _CHAT_TURN_MAX_S = 600.0
 # cut before it ran a step — but it is also silent, so `test_the_reserved_slice_fits_inside_the_
 # ceiling_it_is_taken_from` reds if an edit ever brings the two together.
 _CHAT_FINDINGS_FLUSH_S = 60.0
+
+# How long a turn waits for a table chip's column read before it renders the prompt without it.
+# The read used to sit on the attach request, so the chip took as long as the warehouse took to
+# describe the table; it now runs beside the request and the TURN is what waits, bounded. Past the
+# bound the prompt goes out with no columns — the same outcome `_columns_for_context` already
+# answers for a store that will not describe the table, and the same recovery (#440).
+_CHIP_COLUMNS_WAIT_S = 20.0
 # How long the slice waits for the findings request to REGISTER before it reads a quiet session as
 # a finished one. `send_prompt` posts to `/prompt_async` and returns before the turn starts, and
 # `/session/status` does not go busy with the POST, so "not busy" a moment after dispatching means
@@ -5380,6 +5387,11 @@ class Orchestrator:
         self._slot_listings_lock = threading.Lock()
         self._slot_fetch_lock = threading.Lock()
         self._slot_listings_refreshing = False
+        # Column reads still out for table chips, keyed by the chip's row id. `add_thread_context`
+        # starts one per pinned table and a turn joins them before it renders the prompt — see
+        # `_await_chip_columns`.
+        self._chip_column_jobs: dict[str, tuple[str, threading.Thread, float]] = {}
+        self._chip_column_lock = threading.Lock()
         # Total-size cap across all attached files (default 500 MiB). A file attach is a symlink,
         # not a copy, but the cap bounds what the agent/preview and the published dist/ pull in.
         self._attach_max_bytes = _env_int("SAGE_ATTACH_MAX_BYTES", 500 * 1024 * 1024)
@@ -8267,6 +8279,20 @@ class Orchestrator:
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         row = dict(item or {})
+        # A chip posted twice is one chip. The composer's guard reads its own list, which is empty
+        # while the first POST is still out, so a second pick during that wait is a second POST for
+        # the same Resource. `add_context` is the check that decides, under its lock; this one only
+        # keeps the duplicate from fetching bytes, listing the store, and joining the project again
+        # for a row that is already here. A `dsfile:` row whose first fetch was refused is held
+        # too, path and all (none): the retry is remove-and-add, not a second POST. The composer's
+        # guard already stops a re-pick, so only a server-driven add (`_seed_pins`, `turn.attaches`)
+        # reaches this with such a row.
+        rid = str(row.get("resourceId") or "").strip()
+        if rid:
+            held = next((i for i in store.read_context(thread_id).get("items") or []
+                         if str(i.get("resourceId") or "") == rid), None)
+            if held is not None:
+                return held
         if _dataset_pseudo_path(row):
             row["path"] = None
         dataset_id = row.get("datasetId")
@@ -8303,6 +8329,7 @@ class Orchestrator:
         scope = row.get("scope") if isinstance(row.get("scope"), dict) else None
         # "table" belongs here as much as "data_source": the panel pins a table, and the client
         # flattens that to "data_source" before posting — but a stored row may carry either.
+        source = None
         if str(row.get("kind") or "") in ("data_source", "datasource", "table"):
             source = self._context_source(row)
             if source is not None:
@@ -8312,19 +8339,85 @@ class Orchestrator:
                 # the turn could not name the store, so it told the agent the store was unreachable
                 # — which sent a build off to invent the rows it could not read.
                 row["sourceName"] = source.name
-                # Columns still need a table. A Scope above one has none to read, and asking for
-                # them is what the Scope picker is for.
-                if scope and scope.get("table"):
-                    cols = self._columns_for_context(source, scope)
-                    if cols:
-                        row["columns"] = cols
         joined = self._join_project_on_mention(row)
         stored = store.add_context(
             thread_id, {k: v for k, v in row.items() if k not in _MEMBERSHIP_ONLY_FIELDS})
+        # Columns still need a table. Scope above is the one none read, and asking for them is
+        # what the Scope picker is for. Read AFTER the row is stored and off this request:
+        # describing a wide table takes as long as the warehouse takes, and the chip used to wait
+        # on it. The turn that needs them joins the read, bounded (`_await_chip_columns`).
+        if source is not None and scope and scope.get("table"):
+            self._start_chip_columns(thread_id, stored, source, scope)
         # On the answer, not in the row: the flag says "membership changed just now", which is true
         # once. Persisted, it would say it again on every reload and the panel would re-announce a
         # join the user made days ago.
         return {**stored, "joinedProject": True} if joined else stored
+
+    def _start_chip_columns(self, thread_id: str, row: dict, source, scope: dict) -> None:
+        """Read a table chip's columns beside the request that added it, and land them on the row.
+
+        Landed through `set_context_columns`, which writes only while the row is still here and
+        still on this `scope` — a pin that moved the table meanwhile must not get the old table's
+        columns put under the new name. Registered by row id so a turn can join it.
+        """
+        item_id = str(row.get("id") or "")
+        if not item_id:
+            return
+        store = ThreadStore(self._chat_project().record.path)
+
+        def run() -> None:
+            try:
+                cols = self._columns_for_context(source, scope)
+                if cols:
+                    store.set_context_columns(thread_id, item_id, scope, cols)
+            except Exception:  # a read that dies must not take the process' thread down
+                log.exception("chip columns: read failed for %s", item_id)
+            finally:
+                with self._chip_column_lock:
+                    # Only its own registration: a second add that raced the first past the
+                    # `resourceId` pre-check reaches here with the same row, and popping by id
+                    # alone would drop a read still running under it.
+                    if self._chip_column_jobs.get(item_id, (None, None, 0))[1] is th:
+                        self._chip_column_jobs.pop(item_id, None)
+
+        th = threading.Thread(target=run, name="sage-chip-columns", daemon=True)
+        # Registered and started under one hold of the lock, so a turn reading the map can never
+        # see a thread that is not started yet — `join` on one raises.
+        with self._chip_column_lock:
+            live = self._chip_column_jobs.get(item_id)
+            if live is not None and live[1].is_alive() \
+                    and time.monotonic() - live[2] < _CHIP_COLUMNS_WAIT_S:
+                return  # one read per row; the turn joins the one already out
+            self._chip_column_jobs[item_id] = (thread_id, th, time.monotonic())
+            try:
+                th.start()
+            except Exception:
+                # A thread that never starts must not sit in the map: a turn would wait the full
+                # bound on a read nobody is doing.
+                self._chip_column_jobs.pop(item_id, None)
+                log.exception("chip columns: could not start the read for %s", item_id)
+
+    def _await_chip_columns(self, thread_id: str, timeout: float = _CHIP_COLUMNS_WAIT_S) -> None:
+        """Wait, bounded, for every column read still out on this Thread's chips.
+
+        Called right before a turn re-reads the Thread's context for the prompt (#440), so the
+        columns a chip was pinned with a moment ago are in the sentence the agent reads. Past the
+        bound the prompt goes without them; the row is written whenever the read lands, so the NEXT
+        turn has them either way.
+        """
+        with self._chip_column_lock:
+            pending = [(th, started) for tid, th, started in self._chip_column_jobs.values()
+                       if tid == thread_id]
+        deadline = time.monotonic() + timeout
+        for th, started in pending:
+            # Bounded per read by its AGE as well as by this turn's budget: a describe that never
+            # returns (`list_columns` has no timeout of its own) stays registered for the life of
+            # the process, and without this every later turn on the Thread would pay the whole
+            # bound for it. One turn pays; the ones after find it already past its bound.
+            left = min(deadline, started + timeout) - time.monotonic()
+            if left <= 0:
+                continue
+            th.join(left)
 
     def _join_project_on_mention(self, row: dict) -> bool:
         """Put a catalogue Resource in the project because a Thread named it. True when this
@@ -8416,6 +8509,8 @@ class Orchestrator:
                     if i.get("id") == item_id), None)
         if not store.remove_context(thread_id, item_id):
             return None
+        with self._chip_column_lock:
+            self._chip_column_jobs.pop(item_id, None)  # its columns have nowhere to land now
         path = str((row or {}).get("path") or "")
         if not path or self._release_chat_file(project, path):
             return {"removed": True, "heldBy": ""}
@@ -12350,6 +12445,10 @@ class Orchestrator:
             # `items` is refreshed beside `ctx` rather than only the value the prompt takes,
             # because everything below reads one or the other and two snapshots of one record are
             # free to disagree.
+            # A table pinned a moment ago may still be having its columns read beside the request
+            # that added it (`_start_chip_columns`). This re-read is what carries them into the
+            # prompt, so wait for that read first, bounded.
+            self._await_chip_columns(thread_id)
             ctx = store.read_context(thread_id)
             items = [i for i in (ctx.get("items") or []) if i.get("id")]
 
@@ -20847,23 +20946,35 @@ class Orchestrator:
         # while leaving the row the card was about still unanswered — so the same card came back on
         # the next question, for good.
         row = next((r for r in rows if not (r.get("scope") or {}).get("table")), rows[0])
+        row_id = str(row.get("id") or "")
         source = self._verify_table_choice(source_id, database, schema, table)
         scope = {"database": database, "schema": schema, "table": table}
-        row["scope"] = scope
-        row["sourceName"] = source.name
-        # Dropped before it is re-read, not overwritten only when the read works. `add_thread_context`
-        # can write these conditionally because its row is new; this row may already carry another
-        # table's columns, and a store that refuses the read would leave those sitting beside the
-        # scope that just moved — handing the agent the wrong column names for the right table.
-        row.pop("columns", None)
+        # Read BEFORE the write, off the lock: describing the table takes as long as the warehouse
+        # takes, and a read-modify-write held open across it would clobber whatever landed on this
+        # file meanwhile — a column read for another chip (`set_context_columns`) most of all,
+        # which nothing re-runs.
         columns = self._columns_for_context(source, scope)
-        if columns:
-            row["columns"] = columns
+
+        def apply(body: dict) -> dict | None:
+            live = next((i for i in body.get("items") or [] if str(i.get("id") or "") == row_id),
+                        None)
+            if live is None:
+                return None  # closed while the store was being asked; nothing to record it on
+            live["scope"] = scope
+            live["sourceName"] = source.name
+            # Dropped before they are set again, not overwritten only when the read worked: a
+            # row that carried another table's columns and moved to one the store will not
+            # describe would otherwise keep the old names beside the new scope — handing the agent
+            # the wrong column names for the right table.
+            live.pop("columns", None)
+            if columns:
+                live["columns"] = columns
+            return body
+
         # The whole row back, not `{"items": items}`: this record carries the investigation
         # decision beside the chips now (#386), and rebuilding it from `items` alone would let a
         # table pick close an open investigation without anything saying so.
-        store.write_context(thread_id, {**ctx, "items": items})
-        return {"items": items}
+        return {"items": store.update_context(thread_id, apply).get("items") or []}
 
     def confirm_thread_dataset_file(self, thread_id: str, dataset_id: str, path: str) -> dict:
         """A file clicked on the Dataset card in Chat: pin it to the Thread (#196, ADR-0039).

@@ -1335,6 +1335,28 @@ window.SW = window.SW || {};
   // draws it, and a reader that could see it would have to know not to.
   let crossingRefusedFor = null;
 
+  // Attach POSTs still out, by resourceId: `{ tid, post }`. The chip is drawn before the row is
+  // on disk now (`attach`), so the chip stopped being the cue that a turn may go — `sendMessage`
+  // waits on this instead — and a chip still landing has no server id, so removing one waits on
+  // it too (`landedRow`).
+  const attachInFlight = new Map();
+  // The server's row for a chip that may still be landing; null when its POST was refused, so
+  // there is nothing on the Thread to act on. Answers a settled chip as it is.
+  async function landedRow(attachment) {
+    if (!attachment.pending) return attachment;
+    const flight = attachInFlight.get(attachment.resourceId);
+    if (!flight) return null;
+    // Asked only by the doors that remove: the attach's own continuation runs first when the
+    // POST answers, and must not announce a chip — or release a turn parked on it — that the
+    // person already undid.
+    flight.undone = true;
+    try {
+      return await flight.post;
+    } catch (_err) {
+      return null;
+    }
+  }
+
   async function refreshAttachments() {
     const id = conversationId();
     if (id !== crossingRefusedFor) {
@@ -5292,9 +5314,12 @@ window.SW = window.SW || {};
               return;
             }
             const tid = conversationId();
-            const drop = (state.attachments || []).filter(
-              (a) => a.resourceId === resource.id || a.parentId === resource.id
-            );
+            const matches = (a) => a.resourceId === resource.id || a.parentId === resource.id;
+            // A chip still landing has no server id yet, and deleting `pending:…` would leave
+            // its row to come back once the POST answered. Wait for those rows first.
+            const drop = (await Promise.all(
+              (state.attachments || []).filter(matches).map(landedRow)
+            )).filter(Boolean);
             if (tid) {
               await Promise.all(
                 drop.map((a) => SW.api.removeFromConversation(tid, a.id).catch(() => null))
@@ -5333,9 +5358,12 @@ window.SW = window.SW || {};
               return;
             }
             const tid = conversationId();
-            const drop = (state.attachments || []).filter(
-              (a) => a.resourceId === resource.id || a.parentId === resource.id
-            );
+            const matches = (a) => a.resourceId === resource.id || a.parentId === resource.id;
+            // A chip still landing has no server id yet, and deleting `pending:…` would leave
+            // its row to come back once the POST answered. Wait for those rows first.
+            const drop = (await Promise.all(
+              (state.attachments || []).filter(matches).map(landedRow)
+            )).filter(Boolean);
             if (tid) {
               await Promise.all(
                 drop.map((a) => SW.api.removeFromConversation(tid, a.id).catch(() => null))
@@ -6084,6 +6112,9 @@ window.SW = window.SW || {};
       const peers = SW.util.attachmentPeers(state.appAttachments || []);
       const rows = [];
       (state.attachments || []).forEach((att) => {
+        // Not on the server yet, so nowhere for the app to hold it from. Marking one would put
+        // "not in this app" over a chip for the tick before the row lands.
+        if (att.pending) return;
         const name = att.resourceName || '';
         const path = String(att.path || '');
         const key = att.bindingKey ? att.bindingKey.join(':') : '';
@@ -6452,17 +6483,77 @@ window.SW = window.SW || {};
       // Putting something in context is intent, the same as typing, so it opens
       // a conversation. Only navigation is free.
       if (!conversationId()) await store.newThread();
-      const attachment = await SW.api.addToConversation(
-        conversationId(),
+      // Drawn NOW, before the server answers, and marked so. The row used to appear only when the
+      // POST came back, and for a table chip that is as long as the warehouse takes to describe the
+      // table — long enough to pick the same row again, and the guard in `addToContext` reads this
+      // list, which was empty until then. So the placeholder is both the feedback and the guard:
+      // a second pick during the wait finds the `resourceId` already here.
+      // Only for a Resource the panel knows by name: a row Sage adds on its own (`turn.attaches`)
+      // is not indexed first, and a chip reading a raw id for a moment is worse than the wait.
+      const known = state.resourceIndex[resourceId] || {};
+      const placeholder = known.name ? {
+        id: `pending:${resourceId}`,
         resourceId,
+        resourceName: known.name,
+        resourceKind: known.kind || 'file',
+        parentId: known.parentId,
+        datasetId: known.datasetId,
         addedBy,
-        rationale
-      );
-      if (!state.attachments.some((a) => a.id === attachment.id)) {
-        state.attachments = [...state.attachments, attachment];
+        rationale,
+        pending: true,
+      } : null;
+      if (placeholder) {
+        state.attachments = [...state.attachments, placeholder];
+        notify();
       }
-      state.panelFilter = null;
-      notify();
+      const tid = conversationId();
+      const post = SW.api.addToConversation(tid, resourceId, addedBy, rationale);
+      const flight = { tid, post, undone: false };
+      attachInFlight.set(resourceId, flight);
+      let attachment;
+      try {
+        attachment = await post;
+      } catch (err) {
+        // A refused add must not leave a chip claiming something that never happened.
+        if (placeholder) {
+          state.attachments = state.attachments.filter((a) => a !== placeholder);
+          notify();
+        }
+        throw err;
+      } finally {
+        if ((attachInFlight.get(resourceId) || {}).post === post) attachInFlight.delete(resourceId);
+      }
+      // Undone while it was landing (`landedRow`): the remove that asked deletes the row; this
+      // side only takes the placeholder off and says nothing.
+      if (flight.undone) {
+        if (placeholder) {
+          state.attachments = state.attachments.filter((a) => a !== placeholder);
+          notify();
+        }
+        return attachment;
+      }
+      // The list on screen belongs to whichever conversation is open NOW. A POST that outlived a
+      // switch has its row on the Thread it was posted to; writing it here would put it under
+      // the wrong conversation's chips.
+      // Only the Conversation's own state skips on a switch: the project refreshes further down
+      // are about the project and the app, and those still changed.
+      const sameConversation = conversationId() === tid;
+      if (sameConversation) {
+        // In place, so the chip keeps the spot it was drawn in. The server's row can already be
+        // here when `refreshAttachments` raced this POST, or when the server answered the row an
+        // earlier POST made — then the placeholder just goes.
+        const dup = state.attachments.some((a) => a.id === attachment.id);
+        if (placeholder && state.attachments.includes(placeholder)) {
+          state.attachments = state.attachments.flatMap((a) =>
+            a === placeholder ? (dup ? [] : [attachment]) : [a]);
+        } else if (!dup) {
+          // No placeholder, or `refreshAttachments` replaced the whole list and took it before
+          // the row was on disk to be read back. Appended, as before.
+          state.attachments = [...state.attachments, attachment];
+        }
+        state.panelFilter = null;
+        notify();
+      }
 
       // In Build the same post attached bytes into the selected app (ADR-0048), and nothing here
       // said so: `appAttachments` is written by a scope load and by Build's own path, neither of
@@ -6509,6 +6600,7 @@ window.SW = window.SW || {};
       //
       // Unawaited, like every other caller: the chip is already drawn and a lock arriving a beat
       // later is the same deferral a scope load makes.
+      if (!sameConversation) return attachment;
       if (namesDataset(attachment) && (!state.sensitivity || state.sensitivity.enabled)) {
         refreshSensitivity();
       }
@@ -6528,6 +6620,10 @@ window.SW = window.SW || {};
     // also the backend's word for removing an app Attachment — one word over the two scopes #84
     // and the glossary's **Session context** entry exist to keep apart (ADR-0011).
     async removeFromConversation(attachment) {
+      // A chip still landing has no server id to delete yet. Wait for its row, then delete that;
+      // a refused POST already took the chip with it, so there is nothing left to do.
+      attachment = await landedRow(attachment);
+      if (!attachment) return { removed: false };
       const result = await SW.api.removeFromConversation(conversationId(), attachment.id);
       state.attachments = state.attachments.filter((a) => a.id !== attachment.id);
       notify();
@@ -7967,6 +8063,12 @@ window.SW = window.SW || {};
       // second question was never the thing worth refusing, the dead composer was.
       let thread = state.thread;
       if (!thread) thread = await store.newThread();
+      // A chip drawn a moment ago may not be on the Thread yet (`attach` draws before the POST
+      // answers). The turn reads the Thread's own file, so it goes after those rows land — or
+      // after their refusal, which the chip already reported. `allSettled`: one refused chip is
+      // not a reason to hold the sentence back.
+      const landing = [...attachInFlight.values()].filter((f) => f.tid === thread.id);
+      if (landing.length) await Promise.allSettled(landing.map((f) => f.post));
       // The conversation this turn belongs to. Everything below writes to the view only while it
       // is still the one on screen: a turn keeps running when you open another conversation or
       // start a new one, and its answer used to land in whichever Thread you had moved to.
@@ -8744,9 +8846,12 @@ window.SW = window.SW || {};
       const target = state.resourceIndex[`dataset:${res.dataset_id || datasetId}`];
       if ((target && target.declared) || SW.util.isLocked(state.sensitivity)) refreshSensitivity();
       const tid = conversationId();
-      const old = (state.attachments || []).find(
+      // `landedRow`: a chip still landing has no server id to delete yet, and deleting
+      // `pending:…` would leave its row to come back beside the promoted one.
+      const found = (state.attachments || []).find(
         (a) => a.resourceId === oldId || a.path === resource.path
       );
+      const old = found ? await landedRow(found) : null;
       if (old && tid) {
         await SW.api.removeFromConversation(tid, old.id).catch(() => null);
         state.attachments = state.attachments.filter((a) => a.id !== old.id);

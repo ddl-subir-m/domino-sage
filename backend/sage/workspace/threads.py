@@ -19,6 +19,14 @@ from typing import Any
 
 _META_LOCK = threading.Lock()
 _ID_LOCK = threading.Lock()
+# One writer at a time over a Thread's `context.json` for the add/remove pair, and for the
+# column write that lands after an add (`set_context_columns`). Two POSTs for the same chip used
+# to land two rows: the composer's only guard reads its own list, which is empty while the first
+# POST is still out, so a second pick during the wait was a second append. The lock closes
+# add-vs-add, and `confirm_thread_table_candidate` writes through `update_context` under it too;
+# `write_investigation` still does its own unlocked read-modify-write of this file (ADR-0056), so
+# add-vs-that is as it was.
+_CONTEXT_LOCK = threading.Lock()
 _last_id_ms = 0
 _TITLE_MAX = 60
 
@@ -379,19 +387,80 @@ class ThreadStore:
         self._write_json(self.thread_dir(thread_id) / "context.json", body)
 
     def add_context(self, thread_id: str, item: dict) -> dict:
-        ctx = self.read_context(thread_id)
-        row = {"id": new_id("ctx"), "addedBy": "user", "addedAt": _now(), **item}
-        ctx["items"].append(row)
-        self.write_context(thread_id, ctx)
-        return row
+        """One row per Resource. A second add for a `resourceId` already here answers the row that
+        is here and writes nothing — the caller gets the same `id` back both times, so a chip that
+        was posted twice during one wait is still one chip."""
+        out: dict = {}
+
+        def apply(ctx: dict) -> dict | None:
+            rid = str(item.get("resourceId") or "").strip()
+            if rid:
+                held = next((i for i in ctx["items"] if str(i.get("resourceId") or "") == rid), None)
+                if held is not None:
+                    out.update(held)
+                    return None
+            row = {"id": new_id("ctx"), "addedBy": "user", "addedAt": _now(), **item}
+            ctx["items"].append(row)
+            out.update(row)
+            return ctx
+
+        self.update_context(thread_id, apply)
+        return out
 
     def remove_context(self, thread_id: str, item_id: str) -> bool:
-        ctx = self.read_context(thread_id)
-        kept = [i for i in ctx["items"] if i.get("id") != item_id]
-        if len(kept) == len(ctx["items"]):
-            return False
-        self.write_context(thread_id, {**ctx, "items": kept})
-        return True
+        removed = False
+
+        def apply(ctx: dict) -> dict | None:
+            nonlocal removed
+            kept = [i for i in ctx["items"] if i.get("id") != item_id]
+            if len(kept) == len(ctx["items"]):
+                return None
+            removed = True
+            return {**ctx, "items": kept}
+
+        self.update_context(thread_id, apply)
+        return removed
+
+    def update_context(self, thread_id: str, fn: Callable[[dict], dict | None]) -> dict:
+        """One read-modify-write of the Thread's context row, under `_CONTEXT_LOCK`.
+
+        `fn` gets the body as it stands and answers the body to write, or None to write nothing.
+        Answers the body as it stands afterwards either way. Every writer that lands on this file
+        while another can be landing too goes through here; a writer with slow work to do does that
+        work BEFORE calling, because the lock is held for the whole of `fn`.
+        """
+        with _CONTEXT_LOCK:
+            ctx = self.read_context(thread_id)
+            out = fn(ctx)
+            if out is None:
+                return ctx
+            self.write_context(thread_id, out)
+            return out
+
+    def set_context_columns(self, thread_id: str, item_id: str, scope: dict,
+                            columns: list[dict]) -> bool:
+        """Land a table chip's columns after the add that made it has already answered.
+
+        The read happens off the request (`add_thread_context` starts it on a thread), so by the
+        time it lands the row can have moved on: a pin in the panel drops `columns` and moves
+        `scope` to another table (`confirm_thread_table_candidate`). Written only while the row is
+        still here AND still on the `scope` the columns were read for — otherwise a slow read for
+        table A would put A's columns under table B's name, which is the one arrangement worse than
+        no columns. Answers whether it wrote.
+        """
+        wrote = False
+
+        def apply(ctx: dict) -> dict | None:
+            nonlocal wrote
+            row = next((i for i in ctx["items"] if i.get("id") == item_id), None)
+            if row is None or (row.get("scope") or {}) != (scope or {}):
+                return None
+            row["columns"] = list(columns)
+            wrote = True
+            return ctx
+
+        self.update_context(thread_id, apply)
+        return wrote
 
     # ---- the investigation flag (#386, ADR-0056) -------------------------------------------------
 

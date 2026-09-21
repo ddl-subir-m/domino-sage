@@ -996,7 +996,12 @@ def test_chat_prompt_names_a_scoped_table_and_its_columns(tmp_path: Path):
         "scope": {"database": "DWH", "schema": "MARTS", "table": "DIM_ACCOUNT"},
     })
     assert row["sourceName"] == "Snowflake-Data-Warehouse"
-    assert any(c["name"] == "ACCOUNT_ID" for c in row.get("columns") or [])
+    # The columns are not on the POST's answer any more: the read runs beside the request so the
+    # chip does not wait on the warehouse, and the turn below joins it. Read off the Thread once
+    # the read has landed — the prompt assertion further down is the claim that matters.
+    orch._await_chip_columns(tid)
+    stored = next(i for i in orch.thread_context(tid)["items"] if i["id"] == row["id"])
+    assert any(c["name"] == "ACCOUNT_ID" for c in stored.get("columns") or [])
     list(orch.chat_stream(tid, "what is in DIM_ACCOUNT"))
     prompt = oc.prompts[0]["text"]
     assert "table DWH.MARTS.DIM_ACCOUNT" in prompt

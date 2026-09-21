@@ -865,6 +865,12 @@
 .sw-chip.is-not-in-app .ant-tag-close-icon { color: var(--gray-500) !important; }
 .sw-chip.is-not-in-app .sw-chip-scope { color: var(--gray-500); }
 
+/* Drawn before the server has the row (store.js `attach`): muted, so the wait reads as a wait
+   and not as a chip that will not close. */
+.sw-chip.is-pending {
+  opacity: 0.6;
+}
+
 /* The offer over those chips: what the app is missing, and the click that moves it. Shaped like the
    mention guard below the box, because it is the same kind of thing — a gap named before it costs
    anybody a turn — and separated from the chip row it counts by the row's own gap. */

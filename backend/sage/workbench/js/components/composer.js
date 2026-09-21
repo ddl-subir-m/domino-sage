@@ -1150,15 +1150,18 @@ window.SW = window.SW || {};
                   // The chips are the only place conversation context is shown
                   // now, so the reason Sage reached for something has to live
                   // here rather than in a panel zone.
-                  title: chipNote(att, att.addedBy === 'sage'
-                    ? `${SW.brand.assistant()} added this — ${att.rationale || 'picked for you.'}`
-                    : 'You added this to the conversation.'),
+                  title: att.pending
+                    ? 'Adding to the conversation…'
+                    : chipNote(att, att.addedBy === 'sage'
+                      ? `${SW.brand.assistant()} added this — ${att.rationale || 'picked for you.'}`
+                      : 'You added this to the conversation.'),
                 },
                 h(
                   Tag,
                   {
                     bordered: true,
-                    closable: true,
+                    // No server id to delete yet; the close arrives with the row.
+                    closable: !att.pending,
                     closeIcon: h(CloseOutlined, { style: { fontSize: 10 } }),
                     onClose: (e) => {
                       e.preventDefault();
@@ -1169,7 +1172,9 @@ window.SW = window.SW || {};
                     // Muted where the selected app does not hold it: the chip stays legible and
                     // stays closable, because it is still this Conversation's context and still arms
                     // the sensitivity lock — it is the app that is missing something, not the chip.
-                    className: missingChip(att) ? 'sw-chip is-not-in-app' : 'sw-chip',
+                    className: att.pending
+                      ? 'sw-chip is-pending'
+                      : missingChip(att) ? 'sw-chip is-not-in-app' : 'sw-chip',
                   },
                   h('span', null, SW.util.iconFor(att.resourceKind)),
                   att.resourceName,
