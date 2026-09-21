@@ -248,6 +248,12 @@ _BUILD_TOOL_QUIET_TIMEOUT_S = 600.0
 # a session that confirms lets the turn lock go — see _stop_wedged_session.
 _BUILD_STOP_GRACE_S = 30.0
 
+# How long a build turn waits for the preview to report a runtime error after the agent's last
+# write, before calling the build done — see _await_runtime_error. A module constant so the suite
+# can zero it: no test runs a preview, and every build turn that reached this wait paid the full
+# four seconds for a report that could not come.
+_RUNTIME_ERROR_WAIT_S = 4.0
+
 # What ends a Chat turn that will not end itself. Quiet time, not wall clock: a hung
 # `DataSourceClient.query` (Arrow Flight from a published App) never goes idle, the UI stays on its
 # last label, and the turn lock blocks the next send — and that hang looks exactly like this, a
@@ -17285,7 +17291,8 @@ class Orchestrator:
                 # blanks the preview. Wait briefly for the open preview to report one; if it does,
                 # feed the error back so the agent fixes it before we call the build done.
                 if report.ok and wrote_code and runtime_fixes < MAX_RUNTIME_FIXES:
-                    rt = self._await_runtime_error(project, since=send_ts)
+                    rt = self._await_runtime_error(project, since=send_ts,
+                                                   timeout=_RUNTIME_ERROR_WAIT_S)
                     if rt is not None:
                         runtime_fixes += 1
                         project.runtime_error = None  # consume so a later turn starts clean
