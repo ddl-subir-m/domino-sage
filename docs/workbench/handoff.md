@@ -35,6 +35,10 @@ Do not silently teleport. Detect, suggest, confirm.
 
 After each `sage-chat` turn, if this Conversation's `handoff.json` has no unresolved entry and no `suppressed`, run a classifier. A Conversation that already produced a Built App is eligible again — it may produce another (ADR-0008).
 
+The turn's `done` event releases both the server's turn lock and the browser's busy/Stop state.
+The browser keeps reading the stream for the later suggestion. That stream's finalizer must not
+clear the busy state or Stop target of a newer turn.
+
 Reuse the shape of [backend/sage/orchestrator/scope.py](../../backend/sage/orchestrator/scope.py): one bounded gateway call, no tools, fail open (no suggestion) on timeout or error, fail safe (suggest) on an unreadable answer, breaker after three broken replies. Different question, different bias:
 
 - **Question:** is the user now asking for a lasting UI that other people would open — more than one view, something that should keep working tomorrow — rather than a one-off answer?

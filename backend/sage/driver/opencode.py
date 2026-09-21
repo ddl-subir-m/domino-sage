@@ -76,7 +76,7 @@ def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: 
 #   /event                    global, every session, no resume. Carries the deltas AND the
 #                             authoritative end events. This is the one worth reading.
 #
-# A turn on /event runs:
+# The original next-session flow on /event runs:
 #   step.started -> text.started -> text.delta xN -> text.ended (full text) -> step.ended finish=…
 # and around a tool call:
 #   tool.input.started -> tool.input.delta xN -> tool.input.ended -> tool.called (tool name here,
@@ -85,6 +85,9 @@ def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: 
 # Envelope is {"id","type","properties"} — `properties`, not the durable stream's `data`. Because
 # the stream is global it also carries server.connected, plugin.added, catalog.updated and other
 # sessions' turns, so filtering on properties.sessionID is not optional.
+# The current v1 prompt flow instead emits message.updated / message.part.updated /
+# message.part.delta. SessionEvents also maps that flow, using the message role and part type
+# declarations so a text delta cannot expose reasoning or echo the user prompt (#417).
 _TOOL_STATUS = {
     "session.next.tool.called": "called",
     "session.next.tool.success": "success",
@@ -176,6 +179,58 @@ class SessionEvents:
         self.directory = directory
         self._response: httpx.Response | None = None
         self._closed = False
+        # Current v1 message-part frames need their declarations: a delta alone does not
+        # say whether its text is an answer, reasoning, or the wrapped user prompt (#417).
+        self._roles: dict[str, str] = {}
+        self._parts: dict[tuple[str, str], str] = {}
+        self._emitted: set[tuple[str, str, str]] = set()
+
+    def _message_event(self, raw: dict) -> AgentEvent | None:
+        props = raw.get("properties") or {}
+        if props.get("sessionID") != self.session_id:
+            return None
+        kind = raw.get("type")
+        if kind == "message.updated":
+            info = props.get("info") or {}
+            mid = str(info.get("id") or "")
+            self._roles[mid] = str(info.get("role") or "")
+            if self._roles[mid] == "assistant":
+                if info.get("error"):
+                    return AgentEvent(kind="error", payload={"error": info["error"]})
+                if info.get("finish"):
+                    return AgentEvent(kind="phase", payload={"finish": info["finish"]})
+            return None
+        if kind == "message.part.delta":
+            key = (str(props.get("messageID") or ""), str(props.get("partID") or ""))
+            if (self._roles.get(key[0]) == "assistant" and self._parts.get(key) == "text"
+                    and props.get("field") == "text"):
+                return AgentEvent(kind="message", payload={
+                    "delta": str(props.get("delta") or ""), "final": False})
+            return None
+        if kind != "message.part.updated":
+            return None
+        part = props.get("part") or {}
+        key = (str(part.get("messageID") or ""), str(part.get("id") or ""))
+        self._parts[key] = str(part.get("type") or "")
+        if self._roles.get(key[0]) != "assistant":
+            return None
+        if part.get("type") == "text" and (part.get("time") or {}).get("end") is not None:
+            marker = (*key, "text-ended")
+            if marker not in self._emitted:
+                self._emitted.add(marker)
+                return AgentEvent(kind="message", payload={
+                    "text": str(part.get("text") or ""), "final": True})
+        if part.get("type") == "tool":
+            state = part.get("state") or {}
+            status = {"running": "called", "completed": "success", "error": "failed"}.get(
+                state.get("status"))
+            marker = (*key, str(status))
+            if status and marker not in self._emitted:
+                self._emitted.add(marker)
+                return AgentEvent(kind="tool_run", payload={
+                    "tool": str(part.get("tool") or ""), "input": state.get("input"),
+                    "call_id": str(part.get("callID") or ""), "status": status})
+        return None
 
     def close(self) -> None:
         """Drop the connection so a reader blocked in iter_lines unwinds instead of parking."""
@@ -211,6 +266,8 @@ class SessionEvents:
                 except json.JSONDecodeError:
                     continue
                 ev = map_session_event(raw, self.session_id)
+                if ev is None:
+                    ev = self._message_event(raw)
                 if ev is not None:
                     yield ev
 
@@ -297,6 +354,16 @@ class OpenCodeClient:
     # before this process started is simply absent, and `is_running` degrades to what it already
     # did when it could not tell — see there.
     _dirs: dict[str, str] = dataclass_field(default_factory=dict)
+
+    def warm_directory(self, directory: str) -> None:
+        """Initialize location services without creating a session or making a model call.
+
+        Pinned 1.18.4's v1 /agent and tool-list routes do not initialize these services.
+        The v2 location-aware agent read does, including the first-use watcher cost (#417).
+        """
+        r = httpx.get(f"{self.base_url}/api/agent",
+                      params={"location[directory]": directory}, timeout=self.timeout_s)
+        r.raise_for_status()
 
     def create_session(self, directory: str, model: dict | None = None) -> str:
         body: dict = {"location": {"directory": directory}}

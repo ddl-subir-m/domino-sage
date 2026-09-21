@@ -11243,7 +11243,7 @@ class Orchestrator:
         )
 
     def _delegated_aliases(
-        self, project: Project, thread_id: str
+        self, project: Project, thread_id: str, *, cached_labels_only: bool = False
     ) -> tuple[tuple[tuple[str, str], ...], dict[str, str], tuple[str, ...]]:
         """What this Conversation may call: ((call name, label), …), {name: label}, and the labels
         of anything it names that could not be resolved.
@@ -11346,10 +11346,10 @@ class Orchestrator:
                 log.warning("delegated model call: could not read the model this turn runs on "
                             "(%s) — it cannot be called by name this turn", e)
             else:
-                add(routed, self._alias_label_for(routed))
+                add(routed, self._alias_label_for(routed, cached_only=cached_labels_only))
         return tuple(out), labels, tuple(unresolved)
 
-    def _alias_label_for(self, name: str) -> str:
+    def _alias_label_for(self, name: str, *, cached_only: bool = False) -> str:
         """The wording the model picker shows for one gateway alias name, or the name itself.
 
         Cosmetic, and so this is the one read on this path that may fail open. Nothing about whether
@@ -11357,9 +11357,17 @@ class Orchestrator:
         `_resolve` matches the call name as well as the label — so a listing that is down must not
         cost a Conversation the model it is already running on. A name with no label known travels
         as itself, which is what `delegated.perform` already does for the same reason.
+
+        Prompt setup uses only a cached label, even if old, or the callable name. Fetching a
+        cosmetic label puts two gateway reads ahead of a cold turn's answer (#417). Actual
+        delegated calls still resolve the current label, and chips still require a fresh listing.
         """
         try:
-            for alias in self._alias_listing().values():
+            if cached_only:
+                listed = self._alias_listing_at[1] if self._alias_listing_at else {}
+            else:
+                listed = self._alias_listing()
+            for alias in listed.values():
                 if alias.name == name:
                     return alias.display_name or name
         except ResourceUnavailable as e:
@@ -11586,7 +11594,8 @@ class Orchestrator:
         this conversation" would report the person's own act as absent rather than as unreachable.
         """
         try:
-            aliases, _labels, unresolved = self._delegated_aliases(self._chat_project(), thread_id)
+            aliases, _labels, unresolved = self._delegated_aliases(
+                self._chat_project(), thread_id, cached_labels_only=True)
         except Exception:
             # Loud, and back to the sentence that was here before: the refusal names the set, at the
             # cost of a round trip. A prompt that cannot be rendered is a turn that cannot run, and
@@ -12477,7 +12486,8 @@ class Orchestrator:
             else _plain_chat_answer_only(prompt, [str(i.get("name") or "") for i in items])
         ) and not unbounded
         plain_answer_token = (
-            project.control.arm_read_only("question") if answer_only else None
+            project.control.arm_read_only("greeting" if chat_intent.is_greeting(prompt) else "question")
+            if answer_only else None
         )
         # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
         # Chat and Build cannot drift: `llm_router` applies it outside their fork, and this is the
@@ -13424,7 +13434,10 @@ class Orchestrator:
                 # that one consumes the frame it wakes on and ignores text deltas, and here the
                 # deltas ARE the answer arriving. See `wait_any`.
                 _sleep_t0 = time.monotonic()
-                tap.wait_any(1.0, floor=_POLL_FLOOR_S)
+                # Deliver the first output without an artificial 200 ms hold. Once text or a
+                # tool has arrived, keep batching so an active stream cannot flood the server.
+                floor = _POLL_FLOOR_S if streamed_body or any_tool_ran else 0.0
+                tap.wait_any(1.0, floor=floor)
                 timing.observe("poll.sleep_ms", (time.monotonic() - _sleep_t0) * 1000)
 
             # Both halves under one span: the revert and the scan walk the same tree, and what a
