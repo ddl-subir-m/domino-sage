@@ -284,16 +284,41 @@ let errors print to stdout, which is the App's log.
 
 The page reaches the platform's own API through **`sage.url("api/domino/<path>")`** — a GET-only
 relay `sage_serve.py` mounts, allow-listed to read-only families: `/api/datasetrw/`,
-`/api/governance/v1/`, `/api/users/v1/self`, `/api/users/v1/users`, `/v4/datasetrw/datasets-v2`,
-`/v4/datasetrw/snapshots/` and `/v4/datasetrw/snapshot/`. So a list of {datasetPlural} or of
-governance bundles is one `fetch` from the page. A route of your own reaches anything else with
-`from sage_domino import get` — `get("/v4/jobs?projectId=...")` returns `(status, headers, body)`,
-with a fresh token acquired for every call, because the token expires quickly.
+`/api/governance/v1/`, `/api/users/v1/self`, `/api/users/v1/users`, `/api/users/v1/user/<id>`,
+`/v4/datasetrw/datasets-v2`, `/v4/datasetrw/snapshots/` and `/v4/datasetrw/snapshot/`. So a list of
+{datasetPlural} or of governance bundles is one `fetch` from the page. A route of your own reaches
+anything else with `from sage_domino import get` — `get("/v4/jobs?projectId=...")` returns
+`(status, headers, body)`, with a fresh token acquired for every call, because the token expires
+quickly. A query string is part of `<path>` — `sage.url("api/domino/api/datasetrw/v2/datasets?limit=50")`
+— and passes through unchanged; do not split it off.
+
+GET only, and only these families; anything else answers 403 or 405:
+
+| Read | Path after `/api/domino` |
+|---|---|
+| every {dataset} this app can see | `/api/datasetrw/v2/datasets?limit=50` — `datasets[].dataset.id` and `.dataset.name`; to find one by name, match `.dataset.name` here; its `tags` field is a different tagging system, and empty |
+| every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus` |
+| the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
+| one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
+| taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way |
+| governance bundles | `/api/governance/v1/bundles`, `/api/governance/v1/bundles/<id>/approvals` |
+| a user's name from an id | `/api/users/v1/user/<userId>` — `user.fullName`, `user.userName` |
+| every user, paged | `/api/users/v1/users` — `users[].id`, `.userName`, `.firstName`, `.lastName` |
+| whose access this is | `/api/users/v1/self` — `user.fullName`, `user.userName`, `user.email` |
 
 - **The app reads the platform as whoever published it, not as the viewer.** The token is the App
   container's own. Show whose access the app reflects (`/api/users/v1/self` says who) and never
   build "what the current user can access" on this road — every viewer would see the publisher's
   answer and be told it was theirs.
+- **Taxonomy tags come from `datasets-v2` with `includeTaxonomyTags=true`, and nowhere else.**
+  Without the flag the rows have no `taxonomyTags`, and `datasetRwDto.tags` is a different system
+  that reads `{}`. Nothing under `/api/governance/v1/` or `/api/taxonomy/` lists tags from inside
+  the platform. When a request says tags, use tags — do not derive a label from a name instead.
+- **A user comes wrapped.** `self` and `user/<id>` answer `{"user": {...}}`; the name is
+  `user.fullName`.
+- **A 404 has two readings.** On a path the table names, it is a wrong id — check the id against
+  the listing that gave it. On any other path, the platform does not route that path from inside;
+  stop guessing at that family, because the table is the list of what answers.
 - **Do not add `/api/` in front of `/v4/` paths.** `/v4/...` and `/api/...` are two different
   families with two different roots.
 - **An HTML page where JSON was expected means the call was not authenticated.** Say so; do not
