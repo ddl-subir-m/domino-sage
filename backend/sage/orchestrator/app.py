@@ -4597,12 +4597,13 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
     base = opts.get("baseURL", "")
     if base:
         opts["baseURL"] = _on_this_port(base)
-    if orchestrator.native_codec_enabled:
-        provider = cfg["provider"]["sage-gateway"]
+    provider = (cfg.get("provider") or {}).get("sage-gateway") or {}
+    models = provider.get("models") or {}
+    if orchestrator.native_codec_enabled and "gpt-5.4" in models:
         provider["npm"] = (source_dir / "backend/sage/driver/provider.mjs").resolve().as_uri()
         # One stable handle keeps OpenCode's persisted provider metadata intact.
         # Actual Alias and route selection come from the server capability resolver.
-        provider["models"] = {"gpt-5.4": {**provider["models"]["gpt-5.4"], "reasoning": True}}
+        provider["models"] = {"gpt-5.4": {**models["gpt-5.4"], "reasoning": True}}
         cfg["model"] = cfg["small_model"] = "sage-gateway/gpt-5.4"
     # The Live read tools are served by THIS process too (ADR-0041), so their port moves with it.
     # This is the rewrite above missing its twin: on Domino the shim serves :8888 while the
