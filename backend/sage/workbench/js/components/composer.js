@@ -772,8 +772,8 @@ window.SW = window.SW || {};
     // it would be wrong the other way anyway — a table that narrowed mid-flight leaves the in-flight
     // turn having already sent the level.
     const strandedFact = strandedNow
-      ? `${override || pinnedModel} doesn't accept ${effortLabel(strandedNow)}. Turns run at the `
-        + 'model default instead.'
+      ? `${override || pinnedModel} doesn't accept ${effortLabel(strandedNow)}. `
+        + 'Choose Model default or a supported setting before the next turn.'
       : '';
     // The fact PLUS the way out, for the open menu only. Clearing the pick is a real instruction
     // there and a false one on the running chip, which draws a disabled Button with no menu behind

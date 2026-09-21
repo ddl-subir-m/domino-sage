@@ -689,3 +689,24 @@ def test_the_prompt_goes_to_the_path_that_carries_our_tools(monkeypatch):
     assert "/api/" not in seen["url"]
     assert seen["body"]["agent"] == "sage-chat"
     assert seen["body"]["model"] == {"providerID": "p", "modelID": "m"}
+
+
+def test_child_session_scope_is_verified_from_harness_parentage_and_directory(monkeypatch):
+    client = OpenCodeClient('http://127.0.0.1:1234')
+    client.note_session_dir('ses_root', '/workspace')
+    tree = {'ses_child': {'parentID': 'ses_root', 'directory': '/workspace'},
+            'ses_unrelated': {'directory': '/workspace'},
+            'ses_other_dir': {'parentID': 'ses_root', 'directory': '/elsewhere'},
+            'ses_cycle': {'parentID': 'ses_cycle', 'directory': '/workspace'}}
+    requests = []
+    def get(url, *, params, timeout):
+        requests.append((url, params, timeout))
+        return httpx.Response(200, json=tree[url.rsplit('/', 1)[-1]], request=httpx.Request('GET', url))
+    monkeypatch.setattr(httpx, 'get', get)
+    assert client.session_belongs_to('ses_child', 'ses_root')
+    assert client._dirs['ses_child'] == '/workspace'
+    assert not client.session_belongs_to('ses_unrelated', 'ses_root')
+    assert not client.session_belongs_to('ses_other_dir', 'ses_root')
+    assert not client.session_belongs_to('ses_cycle', 'ses_root')
+    assert not client.session_belongs_to('../ses_root', 'ses_root')
+    assert all(row[1] == {'directory': '/workspace'} and row[2] == 2 for row in requests)

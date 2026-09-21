@@ -330,7 +330,7 @@ def test_a_phased_builds_phases_do_not_re_acquire_the_turn(tmp_path: Path, monke
 def test_no_straight_to_gateway_caller_touches_the_counter():
     """`/api/diag` now says 0 does not rule out a gateway hang. This is why, and it is derived.
 
-    The population is every function in the orchestrator that reaches `gateway.route` ITSELF. Those
+    The population is every non-HTTP function in the orchestrator that reaches `gateway.route` ITSELF. Those
     calls go past the `/v1` shim handler, which is the only place `model_calls` is incremented, so a
     turn can be sitting on the gateway with this counter reading 0. Several of them run inside a live
     Chat turn: `chat_intent.start()` BLOCKS at the top of every one, `_delegated_ask` serves the
@@ -372,6 +372,15 @@ def test_no_straight_to_gateway_caller_touches_the_counter():
             # too small to contain anything.
             holding = [f for f in funcs if f.lineno <= call.lineno <= f.end_lineno]
             if not holding:
+                continue
+            # Inference HTTP handlers ARE the counter boundary, including a handler
+            # registered inside install(). Derive that boundary from its decorator,
+            # not a filename exemption that could also hide an ancillary caller.
+            if any(isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                   and d.func.attr == "post" and d.args
+                   and isinstance(d.args[0], ast.Constant)
+                   and isinstance(d.args[0].value, str) and d.args[0].value.startswith("/v1/")
+                   for f in holding for d in f.decorator_list):
                 continue
             owner = max(holding, key=lambda f: f.end_lineno - f.lineno)
             inside = [ln for ln in touches if owner.lineno <= ln <= owner.end_lineno]

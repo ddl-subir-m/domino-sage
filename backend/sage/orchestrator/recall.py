@@ -30,6 +30,7 @@ SUGGEST = "recall-suggest"
 
 SUMMARY = "summary"   # cleared, but told what was said
 EMPTY = "empty"       # cleared, told nothing
+POLICY_CHANGE = "native-policy-change"
 
 # The rungs BELOW clearing, added once the gateway could be asked what it matched rather than
 # guessed at (see `withhold.py`). Clearing Recall empties it; these take away one named thing and
@@ -74,6 +75,8 @@ def reason_key(raw: str) -> str:
     said, they are one refusal happening twice, which is what they are.
     """
     text = " ".join((raw or "").split())
+    if "Session policy changed. Use Clear recall before continuing." in text:
+        return POLICY_CHANGE
     match = _GUARDRAIL.search(text)
     if match:
         return f"guardrail:{' '.join(match.group(1).split()).strip(' .;:')}"
@@ -94,7 +97,7 @@ def _last_refusal(rows: list[dict]) -> tuple[int, str] | None:
     key = str(rows[last].get("reason") or "")
     # A repeated transport failure says nothing about the content in Recall. Older histories
     # also carry these keys, so filter when reading rather than only when recording new errors.
-    return (last, key) if key.startswith("guardrail:") else None
+    return (last, key) if key.startswith("guardrail:") or key == POLICY_CHANGE else None
 
 
 def offer(history: list[dict]) -> str | None:
@@ -109,6 +112,8 @@ def offer(history: list[dict]) -> str | None:
     if refused is None:
         return None
     last, key = refused
+    if key == POLICY_CHANGE:
+        return SUMMARY
     seen = _errors(rows, key)
     if len(seen) < 2:
         return None
@@ -237,6 +242,12 @@ def reseed(history: list[dict]) -> str:
     # to a restart is the thing this function exists for.
     for i in range(len(rows) - 1, -1, -1):
         if rows[i].get("type") == CLEARED:
+            if rows[i].get("reason") == POLICY_CHANGE and rows[i].get("scope") == SUMMARY:
+                # This explicit checkpoint carries the visible conversation, never opaque
+                # provider state. Withheld text still passes through the shared policy.
+                start = next((j + 1 for j in range(i - 1, -1, -1)
+                              if rows[j].get("type") == CLEARED and rows[j].get("scope") == EMPTY), 0)
+                return chat_summary(rows[start:i] + rows[i + 1:])
             rows = rows[i + 1:]
             break
     return chat_summary(rows)

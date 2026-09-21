@@ -163,6 +163,12 @@ RUN if [ -n "$SAGE_GIT_TOKEN" ]; then \
 # Nothing renders it — there is no Notices surface and no brand-pack key (ADR-0014).
 RUN test -s /opt/sage/NOTICE && echo "[sage] third-party notices OK"
 
+# Native provider codecs are local runtime dependencies. OpenCode loads the module by
+# file URL; install its pinned SDKs here so a restricted workspace needs no npm access.
+RUN cd /opt/sage \
+    && npm ci --omit=dev --ignore-scripts --no-fund --no-audit \
+    && node --input-type=module -e "import('./backend/sage/driver/provider.mjs')"
+
 # Warm template deps baked (agent-added deps install on top, into the app fs, at runtime).
 # Even with a compatible Node, `npm ci` can still skip rolldown's platform-native optional binary
 # (@rolldown/binding-linux-x64-gnu) — then vite dies at startup with "Cannot find module

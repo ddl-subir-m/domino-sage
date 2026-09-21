@@ -1,0 +1,775 @@
+{
+  "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway",
+  "protocol": "messages",
+  "alias": "Opus-4.8",
+  "transition": false,
+  "requests": [
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 3
+      },
+      "tool_count": 0,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 2,
+        "ping": 1,
+        "content_block_delta": 5,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 859,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 37,
+        "output_tokens_details": {
+          "thinking_tokens": 19
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 2,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 5,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 2,
+        "type:text": 1,
+        "type:text_delta": 3,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 2.975
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 4,
+        "ping": 1,
+        "content_block_delta": 38,
+        "content_block_stop": 4,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 1241,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 380,
+        "output_tokens_details": {
+          "thinking_tokens": 92
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 4,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 38,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 4,
+        "type:text": 1,
+        "type:text_delta": 14,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:input_json_delta": 22,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 5.239
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 3,
+        "type:thinking": 1,
+        "signature": 1,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:tool_result": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "ping": 1,
+        "content_block_delta": 10,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 1874,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 61,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 10,
+        "type:text_delta": 10,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 5.496
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 5,
+        "type:thinking": 1,
+        "signature": 1,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:tool_result": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 2,
+        "ping": 1,
+        "content_block_delta": 12,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 1958,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 118,
+        "output_tokens_details": {
+          "thinking_tokens": 15
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 2,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 12,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 2,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:input_json_delta": 10,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 2.481
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 5,
+        "type:thinking": 2,
+        "signature": 2,
+        "type:tool_use": 3,
+        "type:direct": 3,
+        "type:tool_result": 3,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "ping": 1,
+        "content_block_delta": 5,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 2184,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 21,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 5,
+        "type:text_delta": 5,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 1.765
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 7,
+        "type:thinking": 2,
+        "signature": 2,
+        "type:tool_use": 3,
+        "type:direct": 3,
+        "type:tool_result": 3,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "ping": 1,
+        "content_block_delta": 10,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 2229,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 102,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 10,
+        "type:input_json_delta": 10,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 2.477
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 7,
+        "type:thinking": 2,
+        "signature": 2,
+        "type:tool_use": 4,
+        "type:direct": 4,
+        "type:tool_result": 4,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "ping": 1,
+        "content_block_delta": 9,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 2438,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 62,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 9,
+        "type:text_delta": 9,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 2.042
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 5,
+        "type:thinking": 1,
+        "signature": 1,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:tool_result": 2
+      },
+      "tool_count": 0,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "ping": 1,
+        "content_block_delta": 53,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 1426,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 354,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 53,
+        "type:text_delta": 53,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 4.979
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 8,
+        "type:thinking": 1,
+        "signature": 1,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:tool_result": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 2,
+        "ping": 1,
+        "content_block_delta": 12,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 2117,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 159,
+        "output_tokens_details": {
+          "thinking_tokens": 56
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 2,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 12,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 2,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:input_json_delta": 10,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 3.222
+    },
+    {
+      "path": "/anthropic/v1/messages",
+      "model": "Opus-4.8",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "output_config",
+        "stream",
+        "system",
+        "thinking",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:adaptive": 1,
+        "type:text": 8,
+        "type:thinking": 2,
+        "signature": 2,
+        "type:tool_use": 3,
+        "type:direct": 3,
+        "type:tool_result": 3,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2,
+        "type:auto": 1
+      },
+      "tool_count": 1,
+      "events": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "ping": 1,
+        "content_block_delta": 8,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "usage": {
+        "input_tokens": 2384,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 60,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "status": 200,
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 8,
+        "type:text_delta": 8,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "seconds": 2.073
+    }
+  ],
+  "decisions": [
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 1
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 4,
+        "type:reasoning": 1,
+        "signature": 1,
+        "type:tool-call": 2,
+        "type:direct": 4,
+        "type:tool-result": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 6,
+        "type:reasoning": 1,
+        "signature": 1,
+        "type:tool-call": 2,
+        "type:direct": 4,
+        "type:tool-result": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 7,
+        "type:reasoning": 2,
+        "signature": 2,
+        "type:tool-call": 3,
+        "type:direct": 6,
+        "type:tool-result": 3
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 9,
+        "type:reasoning": 2,
+        "signature": 2,
+        "type:tool-call": 3,
+        "type:direct": 6,
+        "type:tool-result": 3
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 10,
+        "type:reasoning": 2,
+        "signature": 2,
+        "type:tool-call": 4,
+        "type:direct": 8,
+        "type:tool-result": 4
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 6,
+        "type:reasoning": 1,
+        "signature": 1,
+        "type:tool-call": 2,
+        "type:direct": 4,
+        "type:tool-result": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 9,
+        "type:reasoning": 1,
+        "signature": 1,
+        "type:tool-call": 2,
+        "type:direct": 4,
+        "type:tool-result": 2
+      }
+    },
+    {
+      "protocol": "messages",
+      "prompt_shape": {
+        "type:text": 10,
+        "type:reasoning": 2,
+        "signature": 2,
+        "type:tool-call": 3,
+        "type:direct": 6,
+        "type:tool-result": 3
+      }
+    }
+  ],
+  "turns": [
+    {
+      "restart": 0,
+      "status": 200,
+      "request_count": 3,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    },
+    {
+      "restart": 0,
+      "status": 200,
+      "request_count": 2,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    },
+    {
+      "restart": 1,
+      "status": 200,
+      "request_count": 2,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    }
+  ],
+  "compaction": {
+    "status": 200,
+    "request_count": 1
+  },
+  "after_compaction": {
+    "status": 200,
+    "request_count": 2,
+    "both_markers": true,
+    "part_shape": {
+      "type:step-start": 1,
+      "type:text": 1,
+      "type:step-finish": 1
+    }
+  }
+}

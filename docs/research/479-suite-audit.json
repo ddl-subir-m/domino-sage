@@ -1,0 +1,217 @@
+{
+  "baseline": {
+    "commit": "548e1b8d38a3321d766e60375944644a09b707a4",
+    "collected": 7423,
+    "independently_green": false
+  },
+  "runs": {
+    "first_full": {
+      "collected": 7522,
+      "real_population": [
+        "tests/test_csv_text_analysis_data_used.py::test_real_opencode_analyzes_complaints_without_sending_email_column",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_calculates_sales_without_sending_the_email_column[chat]",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_calculates_sales_without_sending_the_email_column[build]",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_direct_read_and_python_output_stay_local_on_next_requests",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_task_result_stays_local_on_parent_continuation"
+      ],
+      "exit": 1,
+      "hashes_equal": true,
+      "file_count": 984,
+      "source_manifest_sha256": "266172e134aa603b78640e22d55c6ce08cc4249c111ade69e2487ef805435c73",
+      "junit": [
+        {
+          "name": "pytest",
+          "errors": "0",
+          "failures": "2",
+          "skipped": "4",
+          "tests": "7522",
+          "time": "671.458",
+          "timestamp": "2026-09-20T19:06:57.662087-05:00",
+          "hostname": "Subir-Mansukhani's-MacBook-Pro"
+        }
+      ],
+      "real_results": [
+        {
+          "name": "test_real_opencode_calculates_sales_without_sending_the_email_column[chat]",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_calculates_sales_without_sending_the_email_column[build]",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_direct_read_and_python_output_stay_local_on_next_requests",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_task_result_stays_local_on_parent_continuation",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_analyzes_complaints_without_sending_email_column",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        }
+      ]
+    },
+    "full_without_99_new": {
+      "collected": 7522,
+      "real_population": [
+        "tests/test_csv_text_analysis_data_used.py::test_real_opencode_analyzes_complaints_without_sending_email_column",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_calculates_sales_without_sending_the_email_column[chat]",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_calculates_sales_without_sending_the_email_column[build]",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_direct_read_and_python_output_stay_local_on_next_requests",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_task_result_stays_local_on_parent_continuation"
+      ],
+      "exit": 1,
+      "hashes_equal": true,
+      "file_count": 984,
+      "source_manifest_sha256": "266172e134aa603b78640e22d55c6ce08cc4249c111ade69e2487ef805435c73",
+      "junit": [
+        {
+          "name": "pytest",
+          "errors": "0",
+          "failures": "5",
+          "skipped": "4",
+          "tests": "7423",
+          "time": "701.875",
+          "timestamp": "2026-09-20T19:45:46.353936-05:00",
+          "hostname": "Subir-Mansukhani's-MacBook-Pro"
+        }
+      ],
+      "real_results": [
+        {
+          "name": "test_real_opencode_calculates_sales_without_sending_the_email_column[chat]",
+          "skipped": false,
+          "failed": true,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_calculates_sales_without_sending_the_email_column[build]",
+          "skipped": false,
+          "failed": true,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_direct_read_and_python_output_stay_local_on_next_requests",
+          "skipped": false,
+          "failed": true,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_task_result_stays_local_on_parent_continuation",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_analyzes_complaints_without_sending_email_column",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        }
+      ]
+    },
+    "unchanged_full_repeat": {
+      "collected": 7522,
+      "real_population": [
+        "tests/test_csv_text_analysis_data_used.py::test_real_opencode_analyzes_complaints_without_sending_email_column",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_calculates_sales_without_sending_the_email_column[chat]",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_calculates_sales_without_sending_the_email_column[build]",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_direct_read_and_python_output_stay_local_on_next_requests",
+        "tests/test_csv_calculation_opencode.py::test_real_opencode_task_result_stays_local_on_parent_continuation"
+      ],
+      "exit": 1,
+      "hashes_equal": true,
+      "file_count": 984,
+      "source_manifest_sha256": "266172e134aa603b78640e22d55c6ce08cc4249c111ade69e2487ef805435c73",
+      "junit": [
+        {
+          "name": "pytest",
+          "errors": "0",
+          "failures": "2",
+          "skipped": "4",
+          "tests": "7522",
+          "time": "719.790",
+          "timestamp": "2026-09-20T20:15:30.121830-05:00",
+          "hostname": "Subir-Mansukhani's-MacBook-Pro"
+        }
+      ],
+      "real_results": [
+        {
+          "name": "test_real_opencode_calculates_sales_without_sending_the_email_column[chat]",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_calculates_sales_without_sending_the_email_column[build]",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_direct_read_and_python_output_stay_local_on_next_requests",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_task_result_stays_local_on_parent_continuation",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        },
+        {
+          "name": "test_real_opencode_analyzes_complaints_without_sending_email_column",
+          "skipped": false,
+          "failed": false,
+          "error": false
+        }
+      ]
+    }
+  },
+  "focused_failure_audit": [
+    {
+      "phase": "alone",
+      "file": "test_model_calls_answers_this_turn_on_chat.py",
+      "exit": 1,
+      "summary": "1 failed, 7 passed in 1.59s"
+    },
+    {
+      "phase": "alone",
+      "file": "test_resources.py",
+      "exit": 1,
+      "summary": "1 failed, 87 passed, 3 warnings in 1.26s"
+    },
+    {
+      "phase": "beside",
+      "file": "test_model_calls_answers_this_turn_on_chat.py",
+      "exit": 1,
+      "summary": "1 failed, 105 passed, 1 warning in 3.18s"
+    },
+    {
+      "phase": "beside",
+      "file": "test_resources.py",
+      "exit": 1,
+      "summary": "1 failed, 185 passed, 1 warning in 1.59s"
+    }
+  ],
+  "discarded_attempt": {
+    "collected_result": false,
+    "exit": 2,
+    "passed_before_interrupt": 1021,
+    "seconds": 33.33,
+    "reason": "The scan and launch were incorrectly put in one shell call. An unsequenced root suite was present. Only this worker's repeat was interrupted; this attempt is not full-suite evidence and the overlapped root run is not an undisturbed baseline."
+  },
+  "conclusion": "The counter-contract and empty metadata-field failures repeated in all applicable audit stages. Real OpenCode startup/no-inference failures occurred in three cases during exclusion but did not reproduce in the unchanged full repeat; all five passed in both full runs. No cause for that variation is established. Corrections were made only after this audit."
+}

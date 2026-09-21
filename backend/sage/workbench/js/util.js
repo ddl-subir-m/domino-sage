@@ -73,6 +73,7 @@ window.SW = window.SW || {};
 
     // Use the server's measured choices; model names do not establish support.
     effortNote: (alias) => {
+      if (alias && alias.reasoning_note) return alias.reasoning_note;
       if (!alias || !Array.isArray(alias.reasoning_efforts_with_tools)) return '';
       const levels = alias.reasoning_efforts_with_tools;
       if (!levels.length) return 'Reasoning effort cannot be set for this model through the current gateway.';

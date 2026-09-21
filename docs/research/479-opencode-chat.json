@@ -1,0 +1,568 @@
+{
+  "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway",
+  "protocol": "chat",
+  "alias": "domino/gemini-3.7-flash",
+  "transition": false,
+  "requests": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "top_p"
+      ],
+      "request_shape": {},
+      "tool_count": 0,
+      "events": {
+        "chat": 2
+      },
+      "usage": {
+        "completion_tokens": 490,
+        "completion_tokens_details": {
+          "reasoning_tokens": 477
+        },
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 588,
+        "total_tokens": 1078
+      },
+      "status": 200,
+      "response_shape": {
+        "thought_signature": 1
+      },
+      "seconds": 6.021
+    },
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "tool_choice",
+        "tools",
+        "top_p"
+      ],
+      "request_shape": {
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "chat": 3
+      },
+      "usage": {
+        "completion_tokens": 450,
+        "completion_tokens_details": {
+          "reasoning_tokens": 310
+        },
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 659,
+        "total_tokens": 1109
+      },
+      "status": 200,
+      "response_shape": {
+        "type:function": 2,
+        "thought_signature": 1
+      },
+      "seconds": 4.548
+    },
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "tool_choice",
+        "tools",
+        "top_p"
+      ],
+      "request_shape": {
+        "type:function": 3,
+        "thought_signature": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "chat": 3
+      },
+      "usage": {
+        "completion_tokens": 93,
+        "completion_tokens_details": {
+          "reasoning_tokens": 52
+        },
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 1302,
+        "total_tokens": 1395
+      },
+      "status": 200,
+      "response_shape": {
+        "thought_signature": 1
+      },
+      "seconds": 2.809
+    },
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "tool_choice",
+        "tools",
+        "top_p"
+      ],
+      "request_shape": {
+        "type:function": 3,
+        "thought_signature": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "chat": 2
+      },
+      "usage": {
+        "completion_tokens": 70,
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 1354,
+        "total_tokens": 1424
+      },
+      "status": 200,
+      "response_shape": {
+        "type:function": 1,
+        "thought_signature": 1
+      },
+      "seconds": 2.071
+    },
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "tool_choice",
+        "tools",
+        "top_p"
+      ],
+      "request_shape": {
+        "type:function": 4,
+        "thought_signature": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "chat": 3
+      },
+      "usage": {
+        "completion_tokens": 12,
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 1520,
+        "total_tokens": 1532
+      },
+      "status": 200,
+      "response_shape": {
+        "thought_signature": 1
+      },
+      "seconds": 2.34
+    },
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "tool_choice",
+        "tools",
+        "top_p"
+      ],
+      "request_shape": {
+        "type:function": 4,
+        "thought_signature": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "chat": 2
+      },
+      "usage": {
+        "completion_tokens": 70,
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 1547,
+        "total_tokens": 1617
+      },
+      "status": 200,
+      "response_shape": {
+        "type:function": 1,
+        "thought_signature": 1
+      },
+      "seconds": 2.496
+    },
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "tool_choice",
+        "tools",
+        "top_p"
+      ],
+      "request_shape": {
+        "type:function": 5,
+        "thought_signature": 3,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "chat": 4
+      },
+      "usage": {
+        "completion_tokens": 31,
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 1714,
+        "total_tokens": 1745
+      },
+      "status": 200,
+      "response_shape": {},
+      "seconds": 2.29
+    },
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "top_p"
+      ],
+      "request_shape": {
+        "type:function": 2,
+        "thought_signature": 1
+      },
+      "tool_count": 0,
+      "events": {
+        "chat": 19
+      },
+      "usage": {
+        "completion_tokens": 434,
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 1172,
+        "total_tokens": 1606
+      },
+      "status": 200,
+      "response_shape": {
+        "thought_signature": 1
+      },
+      "seconds": 4.327
+    },
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "tool_choice",
+        "tools",
+        "top_p"
+      ],
+      "request_shape": {
+        "type:function": 3,
+        "thought_signature": 2,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "chat": 2
+      },
+      "usage": {
+        "completion_tokens": 70,
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 1463,
+        "total_tokens": 1533
+      },
+      "status": 200,
+      "response_shape": {
+        "type:function": 1,
+        "thought_signature": 1
+      },
+      "seconds": 2.172
+    },
+    {
+      "path": "/v1/chat/completions",
+      "model": "domino/gemini-3.7-flash",
+      "request_keys": [
+        "max_tokens",
+        "messages",
+        "model",
+        "reasoning_effort",
+        "stream",
+        "tool_choice",
+        "tools",
+        "top_p"
+      ],
+      "request_shape": {
+        "type:function": 4,
+        "thought_signature": 3,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "chat": 4
+      },
+      "usage": {
+        "completion_tokens": 21,
+        "extra_properties": {
+          "google": {
+            "traffic_type": "ON_DEMAND"
+          }
+        },
+        "prompt_tokens": 1629,
+        "total_tokens": 1650
+      },
+      "status": 200,
+      "response_shape": {},
+      "seconds": 2.603
+    }
+  ],
+  "decisions": [
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 2
+      }
+    },
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 1,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 3,
+        "type:tool-call": 2,
+        "type:tool-result": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 5,
+        "type:tool-call": 2,
+        "type:tool-result": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 6,
+        "type:tool-call": 3,
+        "type:tool-result": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 8,
+        "type:tool-call": 3,
+        "type:tool-result": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 9,
+        "type:tool-call": 4,
+        "type:tool-result": 4,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 5,
+        "type:tool-call": 2,
+        "type:tool-result": 2
+      }
+    },
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 9,
+        "type:tool-call": 2,
+        "type:tool-result": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "chat",
+      "prompt_shape": {
+        "type:text": 10,
+        "type:tool-call": 3,
+        "type:tool-result": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    }
+  ],
+  "turns": [
+    {
+      "restart": 0,
+      "status": 200,
+      "request_count": 3,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    },
+    {
+      "restart": 0,
+      "status": 200,
+      "request_count": 2,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    },
+    {
+      "restart": 1,
+      "status": 200,
+      "request_count": 2,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    }
+  ],
+  "compaction": {
+    "status": 200,
+    "request_count": 1
+  },
+  "after_compaction": {
+    "status": 200,
+    "request_count": 2,
+    "both_markers": true,
+    "part_shape": {
+      "type:step-start": 1,
+      "type:text": 1,
+      "type:step-finish": 1
+    }
+  }
+}

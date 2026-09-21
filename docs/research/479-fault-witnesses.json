@@ -1,0 +1,38 @@
+[
+  {
+    "plant": "hidden-low",
+    "test": "tests/test_native_model_controls.py::test_saved_choices_reach_the_gateway_through_each_existing_control",
+    "exit": 1,
+    "summary": "9 failed, 9 passed, 14 warnings in 1.47s"
+  },
+  {
+    "plant": "policy-bypass",
+    "test": "tests/test_native_model_controls.py::test_read_only_approval_and_web_policy_apply_before_all_upstream_routes",
+    "exit": 1,
+    "summary": "3 failed, 14 warnings in 1.39s"
+  },
+  {
+    "plant": "split-event-loss",
+    "test": "tests/test_native_gateway_transport.py::test_all_chunk_boundaries_preserve_tools_usage_and_terminal",
+    "exit": 1,
+    "summary": "3 failed in 0.95s"
+  },
+  {
+    "plant": "counter-omitted",
+    "test": "tests/test_native_model_controls.py::test_saved_choices_reach_the_gateway_through_each_existing_control",
+    "exit": 1,
+    "summary": "18 failed, 14 warnings in 1.56s"
+  },
+  {
+    "plant": "sdk-errors-retain-state",
+    "test": "tests/test_native_gateway_transport.py::test_installed_codecs_keep_private_state_out_of_errors",
+    "exit": 1,
+    "summary": "18 failed in 1.75s"
+  },
+  {
+    "plant": "raw-chunks-enabled",
+    "test": "tests/test_native_gateway_transport.py::test_installed_codecs_keep_private_state_out_of_errors",
+    "exit": 1,
+    "summary": "3 failed, 15 passed in 1.48s"
+  }
+]
