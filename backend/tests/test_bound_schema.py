@@ -208,6 +208,17 @@ def test_when_sage_could_not_ask_the_instruction_is_the_one_that_works_either_wa
     assert "qualified" in block_for(stranded=None)
 
 
+def test_the_agent_is_told_the_store_spells_the_columns():
+    """Measured 2026-09-21 (#484): a dashboard wrote `COUNT(*) AS events`, looked `columns` up for
+    `"events"` with an exact `indexOf`, and drew its own missing-column error over a store that had
+    answered `EVENTS`. Thirty patches of self-review never found it, because nothing had said the
+    names come back in the store's spelling."""
+    block = block_for()
+    assert "spelled the way the store spells it" in block
+    assert "`AS events` comes back as `EVENTS`" in block
+    assert "case-insensitively" in block
+
+
 def test_the_agent_is_told_not_to_read_the_store_itself():
     # Criterion 2. The agent has a shell and could go and look; what stops it is being told, because
     # putting production rows in a model's context is the creator's decision to make (#16).

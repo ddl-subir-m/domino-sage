@@ -523,6 +523,14 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
         "",
         'const { columns, rows } = await runQuery("usage_by_account", { since: "2026-01-01" });',
         "```", "",
+        # Measured 2026-09-21 (#484): a dashboard wrote `COUNT(*) AS events`, read `columns` for
+        # `"events"` with an exact `indexOf`, and drew its own "column is missing" error over a
+        # store that had answered — Snowflake had spelled it `EVENTS`. Thirty patches of self-review
+        # never found it, because nothing here had said the names come back in the store's spelling.
+        ("- **`columns` is spelled the way the store spells it, not the way you typed it.** "
+         "Snowflake and Oracle uppercase an unquoted alias — `AS events` comes back as `EVENTS` — "
+         "and Postgres lowercases one. Find a column by name case-insensitively, or by position; an "
+         "exact match on the alias you wrote is the one comparison that fails on a working query."),
         ("- **`runQuery` throws an `Error` whose `message` is written for the viewer.** Catch it and "
          "show that message as it is; do not replace it with your own wording."),
         brand.text(
