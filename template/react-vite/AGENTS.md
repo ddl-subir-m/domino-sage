@@ -316,8 +316,8 @@ this app's own token, so `fetch` it relative to `appBase` like everything else:
 import { appBase } from "./appBase";
 
 const base = appBase.replace(/\/$/, "");
-const r = await fetch(base + "/api/domino/api/datasetrw/v2/datasets?limit=50");
-const listing = await r.json(); // the platform's own answer: listing.datasets[i].dataset
+const r = await fetch(base + "/api/domino/api/datasetrw/v2/datasets?offset=0&limit=200");
+const listing = await r.json(); // the platform's own answer: listing.datasets[i].dataset — one page
 ```
 
 A query string is part of the path and passes through unchanged; do not split it off.
@@ -326,7 +326,7 @@ GET only, and only these families; anything else answers 403 or 405:
 
 | Read | Path after `/api/domino` |
 |---|---|
-| every {dataset} this app can see | `/api/datasetrw/v2/datasets?limit=50` — `datasets[].dataset.id` and `.dataset.name`; to find one by name, match `.dataset.name` here; its `tags` field is a different tagging system, and empty |
+| every {dataset} this app can see | `/api/datasetrw/v2/datasets?offset=0&limit=200` — paged, and the default page is 10: keep adding `offset` until a page comes back shorter than `limit`; `datasets[].dataset.id` and `.dataset.name`; to find one by name, match `.dataset.name` across every page — the one you want can sit past the first; its `tags` field is a different tagging system, and empty |
 | every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus` |
 | the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
 | one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
