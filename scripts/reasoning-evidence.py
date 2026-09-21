@@ -30,11 +30,13 @@ reproduce.
 
 Two things are asked before any level is:
 
-    the route     `messages`, `responses` and `chat` are each tried once. 200 is the only yes. An
-                  alias answering on a vendor-native route is `native`; `chat` is the compatibility
-                  route and is not. Two native routes answering is not a preference to resolve — it
-                  is a gateway this script does not understand, so the alias is reported unmeasured
-                  rather than guessed at.
+    the route     a status code cannot answer this. Every accessible alias on cloud-dogfood
+                  answers 200 on all three wires and replies in the shape of whichever was asked,
+                  so "the native address answered" is true of a model the gateway is translating
+                  for. ADR-0066's Responses contract is the discriminator instead, and it is about
+                  content: a native route echoes a per-request nonce, `store: false` and the
+                  requested effort, and a translated one drops them. Messages has no such contract
+                  and no native Messages route is claimed here — see `_route`.
     a nonsense value
                   an alias that HONOURS the field and one that THROWS IT AWAY both answer 200 to
                   `low`. Only an illegal value separates them: 400 means the field was validated,
@@ -70,6 +72,7 @@ import json
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -212,30 +215,77 @@ def _ask(alias: str, protocol: Protocol, effort: str | None, tools: bool = False
     return _call(endpoint(_root(), protocol), _body(alias, protocol, effort, tools))
 
 
-def _route(alias: str) -> tuple[Protocol, bool] | None:
-    """Which wire this alias answers on, and whether that wire is vendor-native. None = unmeasured.
+def _passthrough(alias: str) -> tuple[bool, str]:
+    """Does `/v1/responses` carry this alias natively, and the sentence saying how that was told.
 
-    Tried in one order and reported in another: all three are asked, because "messages answered" is
-    only half the question — a gateway where an alias answers on two native wires is one this script
-    does not model, and picking the first would write a row that cannot be trusted.
+    A status code answers nothing here. Measured on cloud-dogfood 2026-09-21: EVERY accessible
+    alias answers 200 on all three wires and replies in the shape of whichever wire was asked, so
+    "the native address answered" is true of a model the gateway is translating for.
+
+    ADR-0066:117-122 gives the discriminator, and it is content and not status: a native Responses
+    route must echo a per-request metadata nonce, `store: false`, and the REQUESTED effort, and
+    "the gateway's translated response does not satisfy that contract". Measured against a negative
+    control the same day — `domino/gemini-3.7-flash`, which ADR-0066:43 records as a compatibility
+    route — the echo is the thing that separates them:
+
+        domino/gemini-3.7-flash   store=None   nonce missing   effort missing   translated
+        bedrock-qwen3-coder       store=None   nonce missing   effort missing   translated
+        qwen-2-5                  store=None   nonce echoed    effort echoed    partial
+        GLM 5.3 OR                store=False  nonce echoed    effort echoed    native
+        gpt-5.4                   store=False  nonce echoed    effort echoed    native
+
+    All three are required, so the partial row is reported as what it is rather than rounded up: an
+    alias that returns the effort but drops `store` has not shown the request reached the vendor
+    unstored, which is the half of the contract that is about where state lives.
     """
-    asked = {p: _ask(alias, p, None) for p in
-             (Protocol.MESSAGES, Protocol.RESPONSES, Protocol.CHAT)}
-    answered = [p for p, (status, _) in asked.items() if status == 200]
-    native = [p for p in answered if p is not Protocol.CHAT]
-    if len(native) > 1:
-        print(f"  NOT MEASURED — answers on {' and '.join(native)}; two native routes is not a "
-              "preference to pick, it is a gateway this script does not understand")
+    nonce = uuid.uuid4().hex
+    body = {"model": alias, "input": "hi", "max_output_tokens": 16, "store": False,
+            "metadata": {"sage_nonce": nonce}, "reasoning": {"effort": "low"}}
+    status, raw = _call(endpoint(_root(), Protocol.RESPONSES), body)
+    if status != 200:
+        return False, f"/v1/responses answered {status}"
+    try:
+        reply = json.loads(raw)
+    except ValueError:
+        return False, "/v1/responses answered 200 but not JSON"
+    echoed = {"nonce": (reply.get("metadata") or {}).get("sage_nonce") == nonce,
+              "store": reply.get("store") is False,
+              "effort": (reply.get("reasoning") or {}).get("effort") == "low"}
+    missing = [name for name, ok in echoed.items() if not ok]
+    return not missing, "the contract holds" if not missing else f"dropped {', '.join(missing)}"
+
+
+def _route(alias: str, previous: dict | None) -> tuple[Protocol, bool] | None:
+    """Which wire to record for this alias, and whether it is vendor-native. None = unmeasured.
+
+    Chat is asked first as the control: it is the compatibility route, every alias has one, and a
+    gateway that refuses it is refusing everything. Then the Responses contract above decides
+    native, because nothing else can.
+
+    Messages has no such contract. ADR-0066:130 says it "relies on the exact recent metadata and
+    measured native route" — a measurement made elsewhere, from gateway audit rows this key cannot
+    read. So a native Messages route is not something this script can tell from a translated one,
+    and an existing `messages` row is LEFT ALONE rather than overwritten with a guess. Recording it
+    as compatibility would silently retire the runtime contract that fails a turn when native state
+    would otherwise be lost, which is a worse error than refusing the row.
+    """
+    control = _ask(alias, Protocol.CHAT, None)
+    if control[0] != 200:
+        # The gateway's own sentence, not a guess at it. A workspace that has spent its API quota
+        # refuses every route with a 400 that names the date access returns, and "unusable or
+        # stopped" would send someone to look at the wrong thing entirely.
+        print(f"  NOT MEASURED — no route answered 200. {_detail(control[1])}")
         return None
+    native, why = _passthrough(alias)
+    print(f"  /v1/responses: {why}")
     if native:
-        return native[0], True
-    if Protocol.CHAT in answered:
-        return Protocol.CHAT, False
-    # The gateway's own sentence, not a guess at it. A workspace that has spent its API quota
-    # refuses every route with a 400 that names the date access returns, and "unusable or stopped"
-    # would send someone to look at the wrong thing entirely.
-    print(f"  NOT MEASURED — no route answered 200. {_detail(asked[Protocol.CHAT][1])}")
-    return None
+        return Protocol.RESPONSES, True
+    if previous and str(previous.get("protocol")) == str(Protocol.MESSAGES):
+        print("  NOT MEASURED — the existing row records a native Messages route, and no contract "
+              "tells that apart from a translated one. Left as it is; re-measure it where the "
+              "gateway's audit rows can be read.")
+        return None
+    return Protocol.CHAT, False
 
 
 def _levels(alias: str, protocol: Protocol, tools: bool) -> list[str] | None:
@@ -254,7 +304,7 @@ def _levels(alias: str, protocol: Protocol, tools: bool) -> list[str] | None:
     return usable
 
 
-def probe(row: dict, carried: dict[tuple[str, str], str]) -> dict | None:
+def probe(row: dict, carried: dict[tuple[str, str], dict]) -> dict | None:
     alias = str(row["name"])
     print(f"\n{alias}")
     if row["fallback_chain"]:
@@ -262,7 +312,8 @@ def probe(row: dict, carried: dict[tuple[str, str], str]) -> dict | None:
         # nothing can ever match.
         print("  skipped — an unverified fallback route; reasoning is refused for it by design")
         return None
-    route = _route(alias)
+    previous = carried.get((alias, str(row["gateway"])))
+    route = _route(alias, previous)
     if route is None:
         return None
     protocol, native = route
@@ -300,7 +351,7 @@ def probe(row: dict, carried: dict[tuple[str, str], str]) -> dict | None:
     # moved is the same model and the sentence still holds.
     return row | {"protocol": str(protocol), "native": native, "efforts": efforts,
                   "efforts_with_tools": with_tools,
-                  "reason": carried.get((alias, str(row["gateway"])), "")}
+                  "reason": (previous or {}).get("reason", "")}
 
 
 def main(argv: list[str]) -> int:
@@ -310,7 +361,7 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     existing = json.loads(EVIDENCE.read_text()) if EVIDENCE.exists() else []
-    carried = {(str(r["name"]), str(r["gateway"])): r.get("reason", "") for r in existing}
+    carried = {(str(r["name"]), str(r["gateway"])): r for r in existing}
     root = _root()
     rows = [r for r in identities() if not names or str(r["name"]) in names]
     if not rows:
