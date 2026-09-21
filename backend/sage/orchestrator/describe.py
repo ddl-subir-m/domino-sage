@@ -39,6 +39,15 @@ _JSON_MAX_KEYS = 60
 _JSON_PARSE_LIMIT = 32 * 1024 * 1024
 # Extracting text is the expensive part of a PDF; per-page counts past this add nothing.
 _PDF_MAX_PAGES_SCANNED = 20
+# Operations listed from an OpenAPI document. The 1200-char detail cap trims well before this on
+# any real API; the bound is so a pathological document cannot make the list itself the cost.
+_OPENAPI_MAX_OPS = 200
+# Word markup. A paragraph is `<w:p>`, a table `<w:tbl>`, a row `<w:tr>`, a cell `<w:tc>`.
+_DOCX_TABLE_RE = re.compile(r"<w:tbl[ >].*?</w:tbl>", re.DOTALL)
+_DOCX_ROW_RE = re.compile(r"<w:tr[ >].*?</w:tr>", re.DOTALL)
+_DOCX_CELL_RE = re.compile(r"<w:tc[ >].*?</w:tc>", re.DOTALL)
+_DOCX_PARA_RE = re.compile(r"<w:p[ >].*?</w:p>", re.DOTALL)
+_XML_TAG_RE = re.compile(r"<[^>]+>")
 _SUMMARY_MAX = 90
 # Distinct values past which a column reads as free text rather than as a vocabulary.
 _VOCABULARY_MAX = 12
@@ -119,7 +128,15 @@ def _sniff(path: str, head: bytes) -> tuple[str, object]:
             head[:4] == b"RIFF" and head[8:12] == b"WEBP"):
         return "image", None
     if head.startswith(b"PK\x03\x04"):
-        return ("excel", None) if ext in (".xlsx", ".xlsm") else ("binary", "zip archive")
+        if ext in (".xlsx", ".xlsm"):
+            return "excel", None
+        # A Word file is a zip too, and read as "binary — zip archive" it sent a Build turn digging
+        # with unzip and zipfile for twenty minutes (2026-09-21, 434 shell calls, 0 writes) to get
+        # at the one thing it needed: the programming notes in the prose. The extension is the
+        # only tell the magic number leaves, the same disambiguation the xlsx branch above makes.
+        if ext == ".docx":
+            return "docx", None
+        return "binary", "zip archive"
 
     text = _decode_head(head)
     if text is None:
@@ -362,6 +379,10 @@ def _describe_json(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
                 f"Newline-delimited JSON, {n:,} records. Schema inferred from the first "
                 f"{len(records)} records:\n" + "\n".join(_dedupe(paths)))
 
+    if isinstance(doc, dict) and isinstance(doc.get("paths"), dict) and (
+            "swagger" in doc or "openapi" in doc):
+        return _describe_openapi(doc)
+
     paths = []
     _walk(doc, "", 1, paths)
     if isinstance(doc, list):
@@ -371,6 +392,45 @@ def _describe_json(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     else:
         summary = f"JSON — single {_json_type(doc)} value"
     return summary, "Inferred schema (key paths and types, values omitted):\n" + "\n".join(_dedupe(paths))
+
+
+def _describe_openapi(doc: dict) -> tuple[str, str]:
+    """An API document lists its endpoints, not the key paths of its own JSON.
+
+    The generic schema walk is the wrong reading of a swagger file: sixty entries of
+    `paths./bundles/{id}.get.responses.200.schema.$ref: string` say nothing an agent can call.
+    What it can call is `GET /bundles/{id} — Get a bundle`, so that is the line emitted, one per
+    operation, under the base path every one of them hangs off. Paths and one-line summaries are
+    the API's shape — this module's rule is "shape, never content", and an endpoint list is the
+    shape of an API the way column names are the shape of a table. Nothing under `definitions`
+    or `components` is walked: a schema's example values are the one place an API document
+    carries somebody's data.
+    """
+    base = doc.get("basePath") or ""
+    servers = doc.get("servers")
+    if not base and isinstance(servers, list) and servers and isinstance(servers[0], dict):
+        base = str(servers[0].get("url") or "")
+    ops: list[str] = []
+    for path in sorted(doc["paths"]):
+        item = doc["paths"][path]
+        if not isinstance(item, dict):
+            continue
+        for method in ("get", "post", "put", "patch", "delete"):
+            op = item.get(method)
+            if not isinstance(op, dict):
+                continue
+            line = f"{method.upper()} {path}"
+            summary = _one_line(str(op.get("summary") or ""))
+            ops.append(f"{line} — {summary}" if summary else line)
+            if len(ops) >= _OPENAPI_MAX_OPS:
+                break
+        if len(ops) >= _OPENAPI_MAX_OPS:
+            break
+    n = len(doc["paths"])
+    return (f"OpenAPI — {n:,} paths, base {base or '/'}",
+            f"API description. Base path: {base or '/'}. Every path below is relative to it.\n"
+            f"Operations ({len(ops)}{'+' if len(ops) >= _OPENAPI_MAX_OPS else ''}):\n"
+            + "\n".join(ops))
 
 
 def _parse_ndjson(text: str, limit: int = 20) -> list:
@@ -673,6 +733,51 @@ def _describe_text(path: str, head: bytes, text: str, size: int) -> tuple[str, s
     return f"Text — {human_bytes(size)}", "First lines:\n" + "\n".join(lines[:40])
 
 
+def _describe_docx(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
+    """The document's text: its paragraphs first, then its tables, one row per line.
+
+    Paragraphs before tables, and that order is the point. In the file this was written against
+    — a clinical TFL shell — the table is layout (`xx (xx.x)` in every cell) and the prose around
+    it is the instruction: the title, the population, six numbered programming notes. `describe()`
+    caps detail at 1200 chars and the part that must survive the cap is the prose, so it goes
+    first and the table takes whatever is left.
+
+    Stdlib only: `zipfile` opens the container and a regex over `word/document.xml` splits it.
+    A Word paragraph is `<w:p>`, a table `<w:tbl>`, its rows `<w:tr>` and cells `<w:tc>`; runs
+    (`<w:r>`/`<w:t>`) are what the tag-strip flattens. Tables are cut out of the XML before the
+    paragraph pass, because every table cell is itself a paragraph and would otherwise be listed
+    twice — once as prose, once as a cell. Entities are unescaped so `&apos;Y&apos;` reads `'Y'`.
+    """
+    import html
+    import zipfile
+
+    with zipfile.ZipFile(path) as z:
+        xml = z.read("word/document.xml").decode("utf-8", errors="strict")
+
+    def text_of(fragment: str) -> str:
+        return " ".join(html.unescape(_XML_TAG_RE.sub("", fragment)).split())
+
+    tables: list[list[str]] = []
+    for tbl in _DOCX_TABLE_RE.findall(xml):
+        rows = []
+        for tr in _DOCX_ROW_RE.findall(tbl):
+            cells = [text_of(tc) for tc in _DOCX_CELL_RE.findall(tr)]
+            if any(cells):
+                rows.append(" | ".join(cells))
+        tables.append(rows)
+    prose = _DOCX_TABLE_RE.sub("", xml)
+    paragraphs = [t for t in (text_of(p) for p in _DOCX_PARA_RE.findall(prose)) if t]
+
+    lines = ["Paragraphs:", *paragraphs] if paragraphs else ["No paragraphs outside tables."]
+    if tables:
+        lines.append(f"Tables ({len(tables)}), one row per line, cells separated by ' | ':")
+        for i, rows in enumerate(tables, 1):
+            lines.append(f"[table {i}, {len(rows)} rows]")
+            lines.extend(rows)
+    return (f"Word document — {len(paragraphs)} paragraphs, {len(tables)} tables",
+            "\n".join(lines))
+
+
 def _describe_binary(path: str, head: bytes, hint: str | None, size: int) -> tuple[str, str]:
     what = hint or "unrecognized binary format"
     return (f"Binary — {human_bytes(size)}, {what}",
@@ -689,6 +794,7 @@ _HANDLERS = {
     "pdf": _describe_pdf,
     "image": _describe_image,
     "text": _describe_text,
+    "docx": _describe_docx,
     "binary": _describe_binary,
 }
 

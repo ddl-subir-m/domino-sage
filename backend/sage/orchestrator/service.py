@@ -382,6 +382,15 @@ _DELEGATED_CALLS_MAX = 25
 # wall-clock ceiling at all. Nothing ends a loop of DIFFERENT fast reads but the person's Stop.
 # The same number as the cap above, so there is one number and one explanation.
 _LIVE_READS_MAX = 25
+# How many shell calls one Build turn may make before it has written anything. The same loop as
+# the one above, on a tool the cap above does not cover. Measured 2026-09-21 on `759e8ae`: an
+# approve turn asked to build a table from an attached Word file made 434 `bash` calls in 23
+# minutes and wrote nothing — 398 of them `echo z1`, `echo s1`, `echo w1` … `echo w252`, each
+# different, each back in a second. `_RepeatBrake` wants three IDENTICAL calls; the same model in
+# a colleague's session repeated one call and was stopped at three. A model that counts slips
+# it. Sized against a healthy build: the 2026-09-21 baseline used ~15 shell calls end to end, so
+# forty is not a number a working turn reaches before its first write.
+_BASH_CALLS_MAX = 40
 # How many sources the "Already read in this Thread" block names (ADR-0061). One line per SOURCE,
 # not per read, so a Thread reaches this only by touching twenty different tables — and newest
 # first, because the ones a stalled investigation keeps re-reading are the recent ones.
@@ -3629,6 +3638,20 @@ def _repeat_message(label: str, answer: str, told: str = "") -> str:
     if told:
         said += brand.text(" Before that, a read was refused: {told}", told=told)
     return said
+
+
+def _loop_message(n: int) -> str:
+    """What to tell somebody whose Build turn was stopped for running its `n`-th shell call.
+
+    A different shape of the sentence above, for a different shape of loop: nothing repeated,
+    so there is no call to name, and the number is the whole finding — the thing the person
+    could not see is how many there were. It says what to do next for the same reason
+    `_repeat_message` does: a stopped turn with no next step is a dead end.
+    """
+    return brand.text(
+        "{assistantName} ran {n} shell commands in this turn without changing the app, so it "
+        "stopped. Ask a different way, or paste the text it was trying to read into the prompt.",
+        n=n)
 
 
 def _chat_live_event(ev) -> dict | None:
@@ -16525,7 +16548,8 @@ class Orchestrator:
             tap.close()
             raise TurnWedged()
 
-        def stalled_offer(quiet_for: float, *, in_tool: bool, looped: str = ""):
+        def stalled_offer(quiet_for: float, *, in_tool: bool, looped: str = "",
+                          decision: str = "repeated"):
             """The transcript's half of giving up on a wedged turn (#39).
 
             `looped` is the other way a turn is given up on (#246): not silence, but the same call
@@ -16606,8 +16630,12 @@ class Orchestrator:
                     # The app really did change, so it owes the same receipt every other turn that
                     # changes it leaves — without one, "you can see how far it got" points at nothing.
                     yield persist(_app_change_event(project.app_for_turn()))
+            # `decision` is the word the status line prints after "Stopped —", so a looped turn
+            # names which loop it was: `repeated` for three of one call, `looped` for the shell
+            # cap. The person is told the count in the card; the status line must not then say
+            # "repeated" over a turn whose calls were all different.
             yield persist({"type": "done", "ok": False,
-                           "decision": "repeated" if looped else "stalled"})
+                           "decision": decision if looped else "stalled"})
 
         # client.messages(sid) returns the ENTIRE session's messages on every poll, and `seen` starts
         # empty for each user turn (this is a fresh _build_stream call). So without a baseline, this
@@ -16848,6 +16876,12 @@ class Orchestrator:
             # of a nudge never reach three; the alternative charges an agent for what it did
             # before it was told something different.
             brake = _RepeatBrake()
+            # Shell calls this turn, for `_BASH_CALLS_MAX`. Beside the brake and reset where it
+            # is, for the reason it is reset there: a nudge is a new instruction and gets its own
+            # count. Counted at the completion, where the brake counts, so the two agree on what
+            # a call is.
+            bash_calls = 0
+            shell_capped = False
             looped = ""
             poll_failures = 0
             while True:
@@ -16980,6 +17014,21 @@ class Orchestrator:
                                 # runs after the walk that would mark the part seen.
                                 looped = _repeat_message(
                                     brake.label, _repeat_answer(msgs, brake.fingerprint))
+                            if tool == "bash":
+                                bash_calls += 1
+                                # Only a turn that has changed nothing. A long turn that IS
+                                # building — writing, then running the build, then fixing — runs
+                                # many shell commands, and every one of them is work. The loop
+                                # this ends is the one that never gets to a write. `agent_wrote`
+                                # rather than `made_edits`: the healthy build measured the same
+                                # day wrote its files through a shell heredoc, which no edit tool
+                                # reports, and the tree hash is the one witness to that. Asked
+                                # exactly once, at the cap — a hash of the working tree is not
+                                # free, and past the cap the turn has either stopped or written.
+                                if (not looped and bash_calls == _BASH_CALLS_MAX
+                                        and not agent_wrote()):
+                                    looped = _loop_message(bash_calls)
+                                    shell_capped = True
                             if tool in ("edit", "write"):
                                 made_edits = True
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
@@ -17045,8 +17094,12 @@ class Orchestrator:
                 # finished, told it was looping. A turn that is still running is the only one
                 # there is anything left to stop. Chat draws the same line for the same reason.
                 if looped:
-                    log.warning("build: the turn repeated %s %d times — stopping",
-                                brake.label, _REPEAT_LIMIT)
+                    if shell_capped:
+                        log.warning("build: the turn ran %d shell calls and changed nothing — "
+                                    "stopping", bash_calls)
+                    else:
+                        log.warning("build: the turn repeated %s %d times — stopping",
+                                    brake.label, _REPEAT_LIMIT)
                     # The same stop the wedged exit uses, and for the same reason it exists: a
                     # looping session is a BUSY session, so it is the one least likely to honour a
                     # posted interrupt promptly, and `interrupt` returning is not the session
@@ -17076,7 +17129,8 @@ class Orchestrator:
                     project.stop_requested = False
                     tap.close()
                     restore_mode()
-                    yield from stalled_offer(0.0, in_tool=False, looped=looped)
+                    yield from stalled_offer(0.0, in_tool=False, looped=looped,
+                                             decision="looped" if shell_capped else "repeated")
                     return
                 if not appeared and time.monotonic() - start > 12:
                     break

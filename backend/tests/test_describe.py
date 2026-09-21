@@ -85,6 +85,67 @@ def test_an_unrecognized_binary_says_so_instead_of_emitting_decoded_bytes(tmp_pa
     assert "NOT previewed" in d["detail"]
 
 
+def _docx(tmp: Path, xml: str) -> Path:
+    p = tmp / "shell.docx"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/document.xml", xml)
+    return p
+
+
+_W = ('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+      "<w:body>{}</w:body></w:document>")
+
+
+def test_a_docx_hands_over_its_paragraphs_before_its_tables(tmp_path: Path):
+    # The measured loop: a Word file read as "binary — zip archive" sent a Build turn digging
+    # with unzip for twenty minutes. The instructions live in the prose, the table is layout,
+    # and the prose must be the part that survives the detail cap.
+    xml = _W.format(
+        "<w:p><w:r><w:t>Table 14.3.1.1</w:t></w:r></w:p>"
+        "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Arm</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>n (%)</w:t></w:r></w:p></w:tc></w:tr>"
+        "<w:tr><w:tc><w:p><w:r><w:t>Placebo</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>xx (xx.x)</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+        "<w:p><w:r><w:t>1. N = subjects where SAFFL = &apos;Y&apos;.</w:t></w:r></w:p>")
+    d = describe(str(_docx(tmp_path, xml)))
+    assert d["kind"] == "docx"
+    assert d["summary"] == "Word document — 2 paragraphs, 1 tables"
+    detail = d["detail"]
+    assert "1. N = subjects where SAFFL = 'Y'." in detail          # unescaped
+    assert "Placebo | xx (xx.x)" in detail                           # a row, cells joined
+    assert detail.index("SAFFL") < detail.index("Placebo | xx")     # prose FIRST
+    # A cell is a paragraph too; it must not be listed twice.
+    assert detail.count("Placebo") == 1
+
+
+def test_a_docx_that_will_not_parse_keeps_its_kind(tmp_path: Path):
+    p = tmp_path / "broken.docx"
+    p.write_bytes(b"PK\x03\x04" + bytes(range(256)) * 4)
+    d = describe(str(p))
+    assert d["kind"] == "docx"
+    assert "could not be parsed" in d["summary"]
+    assert REPLACEMENT not in d["detail"]
+
+
+def test_an_openapi_document_lists_endpoints_not_a_key_schema(tmp_path: Path):
+    p = tmp_path / "api.swagger.json"
+    p.write_text(json.dumps({
+        "swagger": "2.0", "basePath": "/api/governance/v1",
+        "paths": {"/bundles": {"get": {"summary": "List bundles"},
+                               "post": {"summary": "Create a bundle"}},
+                  "/bundles/{id}": {"get": {"summary": "Get bundle by ID"}}},
+        "definitions": {"Bundle": {"example": {"name": "acme-secret"}}}}))
+    d = describe(str(p))
+    assert d["kind"] == "json"
+    assert d["summary"] == "OpenAPI — 2 paths, base /api/governance/v1"
+    assert "GET /bundles — List bundles" in d["detail"]
+    assert "POST /bundles — Create a bundle" in d["detail"]
+    assert "GET /bundles/{id} — Get bundle by ID" in d["detail"]
+    assert "paths./bundles" not in d["detail"]        # not the schema walk
+    assert "acme-secret" not in d["detail"]            # definitions are never walked
+
+
 def test_a_json_document_yields_a_schema_of_key_paths_and_never_its_values(tmp_path: Path):
     p = tmp_path / "cfg.json"
     p.write_text(json.dumps({"name": "acme", "count": 3,
@@ -197,8 +258,10 @@ def test_every_kind_produces_a_single_line_summary_within_budget(tmp_path: Path)
     with zipfile.ZipFile(xlsx, "w") as z:
         z.writestr("xl/workbook.xml", "<workbook/>")
 
+    docx = _docx(tmp_path, _W.format("<w:p><w:r><w:t>hi</w:t></w:r></w:p>"))
+
     paths = [_csv(tmp_path, rows=10), _pdf(tmp_path), _png(tmp_path), blob, jsonf, txt, parquet,
-             xlsx, tmp_path / "missing.csv"]
+             xlsx, docx, tmp_path / "missing.csv"]
     kinds = set()
     for p in paths:
         d = describe(str(p))
@@ -212,7 +275,7 @@ def test_every_kind_produces_a_single_line_summary_within_budget(tmp_path: Path)
         assert bool(d["shape"]) == (d["kind"] == "tabular")
         assert "Sample rows:" not in d["shape"]
     assert kinds == {"tabular", "pdf", "image", "binary", "json", "text", "parquet", "excel",
-                     "unavailable"}
+                     "docx", "unavailable"}
 
 
 # --- real openpyxl / pypdf paths -----------------------------------------------------------------

@@ -592,6 +592,115 @@ def test_a_turn_that_already_finished_is_not_braked_on_its_last_batch(tmp_path: 
     assert next(e for e in events if e.get("type") == "done")["ok"] is True
 
 
+# ---- a loop of DIFFERENT shell calls -------------------------------------------------------
+# Measured 2026-09-21: 434 `bash` calls in one approve turn, 398 of them `echo w1` … `echo w252`,
+# 0 writes, 23 minutes. Every call differed, so the brake above never saw a repeat. The count is
+# the only thing that sees this shape.
+
+_ECHOES_IN_ONE_BATCH = 10
+
+
+class CountingOpenCode(LoopingOpenCode):
+    """A session whose every shell call is different: `echo w1`, `echo w2`, … — the measured loop.
+
+    Ten per poll, for the reason `_REPEATS_IN_ONE_BATCH` batches: the build loop waits a real
+    second between polls, and one call per poll would make the forty-call test forty seconds.
+    `stop_after` ends the turn cleanly at that many calls, so the same session stands in for a
+    long turn that finishes. No part here is ever an edit tool: whether the app changed is the
+    Turn's `writes`, which the fake lands at prompt time the way a `printf > file` would — a
+    write no tool reported, the case the cap must not mistake for a loop.
+    """
+
+    def __init__(self, workspace: Path, turns: list[Turn] | None = None, *,
+                 stop_after: int | None = None) -> None:
+        super().__init__(workspace, turns)
+        self.calls = 0
+        self.stop_after = stop_after
+
+    def _finished(self) -> bool:
+        return self.stop_after is not None and self.calls >= self.stop_after
+
+    def is_running(self, session_id: str) -> bool:
+        self.polls += 1
+        assert self.polls <= 200, "the build loop never capped a counting session"
+        return self.stay_running and not self._finished()
+
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
+        if self._next > 0 and not self._finished():
+            parts = []
+            while len(parts) < _ECHOES_IN_ONE_BATCH and not self._finished():
+                self.calls += 1
+                parts.append({"id": f"echo-{self.calls}", "type": "tool", "tool": "bash",
+                              "state": {"status": "completed",
+                                        "input": {"command": f"echo w{self.calls}"},
+                                        "output": f"w{self.calls}"}})
+            self.emitted += 1
+            self._by_session.setdefault(session_id, []).append(
+                {"id": f"count-m{self.emitted}", "type": "assistant", "content": parts})
+        return FakeOpenCode.messages(self, session_id, limit=limit)
+
+
+def _shell_cap_fired(events: list[dict]) -> list[dict]:
+    return [e for e in events
+            if e.get("type") == "build-stalled" and "shell commands" in e.get("message", "")]
+
+
+def test_a_build_turn_that_runs_forty_different_shell_calls_and_changes_nothing_is_stopped(
+        tmp_path: Path):
+    oc = CountingOpenCode(tmp_path / "mnt" / "code", [Turn(text="looking")])
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart the uploads"))
+
+    card = _shell_cap_fired(events)
+    assert len(card) == 1
+    # The number is the finding — it is the one thing the person could not see.
+    assert str(svc._BASH_CALLS_MAX) in card[0]["message"]
+    # Its own word on the status line: nothing repeated, so "Stopped — repeated" would be false.
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "looped"
+    assert oc.interrupted == 1
+    # Stopped in the poll that reached the cap, not some polls later.
+    assert svc._BASH_CALLS_MAX <= oc.calls < svc._BASH_CALLS_MAX + _ECHOES_IN_ONE_BATCH
+    assert orch._turn_gave_up is True
+
+
+def test_a_build_turn_one_short_of_the_shell_cap_is_not_stopped_for_it(tmp_path: Path,
+                                                                       monkeypatch):
+    """Thirty-nine calls and nothing changed is the same turn as forty, one poll earlier. Only
+    the count separates them, so this is the plant that proves the count is what fires."""
+    # A turn that ends with no edit is nudged to implement, and each nudge against a session
+    # with nothing left to say costs the poll loop's never-appeared deadline. Not what this
+    # plant is about, so no nudges — the same switch test_phased_build.py throws.
+    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
+    oc = CountingOpenCode(tmp_path / "mnt" / "code", [Turn(text="looking")],
+                          stop_after=svc._BASH_CALLS_MAX - 1)
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    assert _shell_cap_fired(events) == []
+    assert next(e for e in events if e.get("type") == "done")["decision"] != "looped"
+    assert oc.calls == svc._BASH_CALLS_MAX - 1
+
+
+def test_a_build_turn_whose_app_has_changed_is_not_stopped_for_its_shell_calls(tmp_path: Path):
+    """A turn that writes, then builds, then fixes runs many shell commands, and all of them are
+    work. The write here is one no edit tool reported — the fake lands it the way a shell
+    heredoc would — because that is how the healthy build measured on 2026-09-21 wrote its files,
+    and a cap keyed on the edit tools alone would have stopped it."""
+    oc = CountingOpenCode(tmp_path / "mnt" / "code",
+                          [Turn(text="done", writes={"src/chart.tsx": "chart\n"})],
+                          stop_after=svc._BASH_CALLS_MAX + 5)
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    assert _shell_cap_fired(events) == []
+    assert [e for e in events if e.get("type") == "build-stalled"] == []
+    assert next(e for e in events if e.get("type") == "done")["ok"] is True
+    assert oc.calls == svc._BASH_CALLS_MAX + 5       # it really did go past the cap
+
+
 def test_a_chat_turn_with_no_stream_is_braked_off_the_transcript(tmp_path: Path, monkeypatch):
     """A tap that opens and then delivers nothing all turn reads as `ok` for ever — it is how a
     wrong session directory shows up at all — so it is the blindest turn Chat has, and the one
