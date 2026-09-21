@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from sage.orchestrator import brand
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import _LIVE_READS_MAX, Orchestrator
 from sage.resources.provider import DataSource, FakeResourceProvider, SampleRows
 from sage.workspace.threads import ThreadStore
 
@@ -126,6 +126,63 @@ def test_a_token_from_no_turn_at_all_reads_nothing(tmp_path: Path):
     said = _call(orch, "live_read_table", {"token": "lrt_invented", "source": "x", "table": "y"})
     assert "not current" in said
     assert resources.asked == []
+
+
+def _granted(tmp_path: Path):
+    """A Conversation with the warehouse in front of it and one turn run, so a token exists."""
+    resources = Warehouse()
+    orch, oc = _orch(tmp_path, resources)
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {"kind": "data_source", "id": "ds1",
+                                  "name": "Snowflake-Data-Warehouse"})
+    list(orch.chat_stream(tid, "show me a row"))
+    return orch, oc, tid, resources
+
+
+def _read(orch, oc):
+    return _call(orch, "live_read_table", {
+        "token": _token(oc), "source": "Snowflake-Data-Warehouse",
+        "database": "DWH", "schema": "MARTS", "table": "GONG__CALLS", "limit": 1,
+    })
+
+
+def test_the_cap_refuses_loudly_rather_than_letting_a_loop_of_reads_spend_the_turn(tmp_path: Path):
+    """Measured 2026-09-21: a Build turn made 62 different 1-row `live_read_query` probes in seven
+    minutes and wrote nothing. Every read came back in a second, so no quiet window fired;
+    every read was different, so `_RepeatBrake` never fired; Build has no wall-clock ceiling. Only
+    the person's Stop could end it. The cap is the same shape as the Delegated model call's, and
+    the refusal names the number, so an agent can tell a cap from a store with nothing to say."""
+    orch, oc, _tid, resources = _granted(tmp_path)
+
+    for _ in range(_LIVE_READS_MAX):
+        assert "Columns: ID, TITLE" in _read(orch, oc)
+    over = _read(orch, oc)
+
+    assert len(resources.asked) == _LIVE_READS_MAX, "the store is not touched past the cap"
+    assert f"already made {_LIVE_READS_MAX} live reads" in over
+    assert "finish with what you have" in over
+    assert "Columns:" not in over, "and it is a refusal, not a read"
+
+
+def test_the_next_turn_starts_the_read_count_over(tmp_path: Path):
+    """The count is per TURN, reset when the next turn's token is minted. A turn that died holding
+    a count would otherwise hand the next question a cap it never spent."""
+    orch, oc, tid, resources = _granted(tmp_path)
+    for _ in range(_LIVE_READS_MAX):
+        _read(orch, oc)
+    assert "already made" in _read(orch, oc)
+
+    list(orch.chat_stream(tid, "and another row"))
+
+    assert "Columns: ID, TITLE" in _read(orch, oc)
+    assert len(resources.asked) == _LIVE_READS_MAX + 1
+
+
+def test_the_turn_is_told_its_read_budget_before_it_spends_it(tmp_path: Path):
+    """The refusal arrives at read 26. The number belongs in the prompt too, beside the token, so
+    the agent plans the few reads it needs rather than learning the limit by hitting it."""
+    _, oc, _, _ = _granted(tmp_path)
+    assert f"Up to {_LIVE_READS_MAX} reads per turn" in oc.prompts[-1]["text"]
 
 
 def test_the_tools_are_offered_over_the_wire(tmp_path: Path):
@@ -273,6 +330,8 @@ def test_a_build_turn_mints_a_token_and_the_card_rides_its_done(tmp_path: Path):
     events = list(orch.build_stream("show me 1 sample conversation", conversation=tid))
 
     assert "Read token: lrt_" in oc.prompts[-1]["text"], "a Build turn mints one too"
+    assert f"Up to {_LIVE_READS_MAX} reads per turn" in oc.prompts[-1]["text"], (
+        "and is told its budget beside it — the loop measured 2026-09-21 was a Build turn")
     done = [e for e in events if e.get("type") == "done"][-1]
     paths = [a["path"] for a in (done.get("artifacts") or [])]
     assert f"examples/{tid}/gong-calls.table.json" in paths, f"done carried: {paths}"

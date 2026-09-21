@@ -368,6 +368,13 @@ _CHAT_FLUSH_APPEAR_S = 10.0
 # waits all of them for nothing. The number is a starting point, not a measured one; what matters is
 # that reaching it is a REFUSAL the assistant reads, not a silent stop.
 _DELEGATED_CALLS_MAX = 25
+# How many Live reads one turn may make, over all three tools, for the reason the cap above exists.
+# Measured 2026-09-21 on `5fa56a0`: a Build turn asked to draw a dashboard made 62 `live_read_query`
+# calls in seven minutes — each a different 1-row probe, each back in 1-2s — and wrote nothing.
+# `_RepeatBrake` wants three IDENTICAL calls in a row; the quiet windows want silence; Build has no
+# wall-clock ceiling at all. Nothing ends a loop of DIFFERENT fast reads but the person's Stop.
+# The same number as the cap above, so there is one number and one explanation.
+_LIVE_READS_MAX = 25
 # How many sources the "Already read in this Thread" block names (ADR-0061). One line per SOURCE,
 # not per read, so a Thread reaches this only by touching twenty different tables — and newest
 # first, because the ones a stalled investigation keeps re-reading are the recent ones.
@@ -5289,6 +5296,9 @@ class Orchestrator:
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
         self._live_read: dict[str, tuple[str, float]] = {}
         self._live_read_lock = threading.Lock()
+        # Live reads this turn has served, per Conversation, under the same lock as the token they
+        # spend. Reset when the token is minted, so a count is always about one turn.
+        self._live_reads: dict[str, int] = {}
         # Delegated model calls this turn has served, per Conversation, counted by the label the
         # person reads (ADR-0057). Two readers and one writer: the cap reads the total, and the
         # receipt written at the end of the turn reads the breakdown. Reset when the turn's token is
@@ -10729,6 +10739,7 @@ class Orchestrator:
                                           lambda ev: workspace.append_history(ev, thread_id))
         with self._live_read_lock:
             self._live_read[thread_id] = (token, time.monotonic())
+            self._live_reads.pop(thread_id, None)
         # The same token names this turn for a Delegated model call, so this is the moment that
         # turn's call count starts over (ADR-0057). Reset here rather than at the end of the last
         # turn: a turn that died — stopped, timed out, or took the process with it — would have left
@@ -10752,6 +10763,7 @@ class Orchestrator:
             for thread_id, (tok, at) in list(self._live_read.items()):
                 if now - at > _LIVE_READ_TTL_S:
                     self._live_read.pop(thread_id, None)
+                    self._live_reads.pop(thread_id, None)
                     expired.append(thread_id)
                 elif tok == token:
                     found = thread_id
@@ -11133,7 +11145,26 @@ class Orchestrator:
                 # assistant plainly so it asks again rather than inventing an answer.
                 log.info("live read: %s — the token is not this turn's, asking again", name)
                 return "That read token is not current. Ask again on this turn."
-            log.info("live read: %s", name)
+            # Counted and decided in one step under the lock, the way `_delegated_reserve` is: a
+            # read-then-count would let two calls both see "24 so far" and the cap hold only on
+            # average. Counted BEFORE the read rather than after, so a read that raises still spends
+            # its slot — a loop of failing reads is the same loop.
+            with self._live_read_lock:
+                n = self._live_reads.get(turn.thread_id, 0) + 1
+                self._live_reads[turn.thread_id] = n
+            if n > _LIVE_READS_MAX:
+                # Loud, and it names the number: an agent told nothing cannot tell a cap from a
+                # store with nothing to say, and the loop this exists to end is one that never
+                # goes quiet — see `_LIVE_READS_MAX`.
+                log.info("live read: %s — refused, this turn has made %d reads, the limit for one "
+                         "turn", name, _LIVE_READS_MAX)
+                return brand.text(
+                    "This {turn} has already made {n} live reads, which is the limit for one "
+                    "{turn}. Nothing was put on the person's screen. Stop reading and finish "
+                    "with what you have: answer, or write the plan or the files, from what you "
+                    "have already measured, and say what is still unmeasured.",
+                    n=str(_LIVE_READS_MAX))
+            log.info("live read: %s (%d of %d)", name, n, _LIVE_READS_MAX)
             try:
                 return live_read.perform(name, args, turn)
             except Exception as e:
@@ -11887,7 +11918,9 @@ class Orchestrator:
              "`live_read_table`, `live_read_files` or `live_read_query` call. Use those tools to look "
              "at a bound table or Dataset, and `live_read_query` to work a number out of one, "
              "rather "
-             "than telling the person you cannot see their data. If they are not in your tool list "
+             "than telling the person you cannot see their data. "
+             f"Up to {_LIVE_READS_MAX} reads per turn: plan the few you need, then answer. "
+             "If they are not in your tool list "
              "this turn, use what you do have; if the answer needs a calculation you have no way to "
              "run, say what you would need in order to answer it and what you would do once it is "
              "there, rather than improvising a way around it."),
@@ -15680,7 +15713,7 @@ class Orchestrator:
             "`token` on every `live_read_table`, `live_read_files` or `live_read_query` call. Use "
             "those tools to look at a bound table or {dataSource}, and `live_read_query` to "
             "work a number out of one, rather than telling the person you cannot see their "
-            "data."
+            f"data. Up to {_LIVE_READS_MAX} reads per turn: plan the few you need, then build."
             if owns_turn and project.build_conversation else ""
         )
         live_read_note = brand.text(live_read_note) if live_read_note else ""
