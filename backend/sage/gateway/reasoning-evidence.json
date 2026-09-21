@@ -1,5 +1,129 @@
 [
   {
+    "id": "c3c453bd9dea4c609aace3b8ac6f5ed6",
+    "name": "GLM 5.3 OR",
+    "provider_id": "80aa432430da47b09ef3965cb372cb0b",
+    "provider_type": "openai",
+    "provider_name": "OpenRouter",
+    "provider_model": "z-ai/glm-5.3-flash",
+    "fallback_chain": [],
+    "updated_at": "2026-09-20T03:41:53.661676",
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "chat",
+    "native": false,
+    "efforts": [
+      "low",
+      "high",
+      "max"
+    ],
+    "efforts_with_tools": [
+      "low",
+      "high",
+      "max"
+    ],
+    "reason": ""
+  },
+  {
+    "id": "ec204801566445f7a35e18c649f9125f",
+    "name": "etan-opus-4.6",
+    "provider_id": "74b32449a27a4d3ca873f5da37791c6b",
+    "provider_type": "anthropic",
+    "provider_model": "claude-opus-4-6",
+    "updated_at": "2026-07-06T17:30:36.785441",
+    "fallback_chain": [],
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "messages",
+    "native": false,
+    "efforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "efforts_with_tools": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "reason": ""
+  },
+  {
+    "id": "1b28666898ed4863962b398482c2d48b",
+    "name": "haiku",
+    "provider_id": "74b32449a27a4d3ca873f5da37791c6b",
+    "provider_type": "anthropic",
+    "provider_model": "claude-haiku-4-5-20251001",
+    "updated_at": "2026-06-12T17:07:15.761305",
+    "fallback_chain": [],
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "messages",
+    "native": false,
+    "efforts": [
+      "none"
+    ],
+    "efforts_with_tools": [
+      "none"
+    ],
+    "reason": ""
+  },
+  {
+    "id": "63f4f2866f6743af8e3bc7a7150a1c03",
+    "name": "opus",
+    "provider_id": "74b32449a27a4d3ca873f5da37791c6b",
+    "provider_type": "anthropic",
+    "provider_model": "claude-opus-4-6",
+    "updated_at": "2026-06-12T17:05:52.359675",
+    "fallback_chain": [],
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "messages",
+    "native": false,
+    "efforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "efforts_with_tools": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "reason": ""
+  },
+  {
+    "id": "49227371d8aa4a4a9f3e8c9c91dd2c66",
+    "name": "sonnet",
+    "provider_id": "74b32449a27a4d3ca873f5da37791c6b",
+    "provider_type": "anthropic",
+    "provider_model": "claude-sonnet-4-6",
+    "updated_at": "2026-09-21T01:45:55.442611",
+    "fallback_chain": [],
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "messages",
+    "native": false,
+    "efforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "efforts_with_tools": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "reason": ""
+  },
+  {
     "id": "462b30c4f65f4c2dbed8e957625c6010",
     "name": "Opus-4.8",
     "provider_id": "efedd07b061d422d978f6973cb02171d",
@@ -120,30 +244,6 @@
       "medium",
       "high",
       "xhigh",
-      "max"
-    ],
-    "reason": ""
-  },
-  {
-    "id": "c3c453bd9dea4c609aace3b8ac6f5ed6",
-    "name": "GLM 5.3 OR",
-    "provider_id": "80aa432430da47b09ef3965cb372cb0b",
-    "provider_type": "openai",
-    "provider_name": "OpenRouter",
-    "provider_model": "z-ai/glm-5.3-flash",
-    "fallback_chain": [],
-    "updated_at": "2026-09-20T03:41:53.661676",
-    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
-    "protocol": "chat",
-    "native": false,
-    "efforts": [
-      "low",
-      "high",
-      "max"
-    ],
-    "efforts_with_tools": [
-      "low",
-      "high",
       "max"
     ],
     "reason": ""

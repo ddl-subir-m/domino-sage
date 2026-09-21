@@ -35,13 +35,19 @@ Two things are asked before any level is:
                   so "the native address answered" is true of a model the gateway is translating
                   for. ADR-0066's Responses contract is the discriminator instead, and it is about
                   content: a native route echoes a per-request nonce, `store: false` and the
-                  requested effort, and a translated one drops them. Messages has no such contract
-                  and no native Messages route is claimed here — see `_route`.
+                  requested effort, and a translated one drops them. Messages has no such contract,
+                  so no Messages row is marked `native` here — but which WIRE to record is a
+                  separate and answerable question, below.
     a nonsense value
                   an alias that HONOURS the field and one that THROWS IT AWAY both answer 200 to
                   `low`. Only an illegal value separates them: 400 means the field was validated,
                   200 means it was discarded and the level you sent bought nothing. Skip this and
                   every level reads as usable on a model that supports none of them.
+
+                  Asked once per WIRE, it also answers which wire to record. The Anthropic aliases
+                  discard the field on `chat` and validate it on `messages`; recording `chat` for
+                  them is not the cautious answer but the wrong one, because the row then lands
+                  with no usable level and the model quietly loses every reasoning setting it has.
 
 Then each level is sent twice, alone and beside a function tool, because the pair is refused where
 neither half is: gpt-5.4 takes an effort and takes tools, and on `/v1/chat/completions` refuses them
@@ -255,6 +261,26 @@ def _passthrough(alias: str) -> tuple[bool, str]:
     return not missing, "the contract holds" if not missing else f"dropped {', '.join(missing)}"
 
 
+def _validates(alias: str, protocol: Protocol) -> bool | None:
+    """Does this wire READ the effort field, or throw it away? None = it answered neither.
+
+    Measured on cloud-dogfood 2026-09-21, status for `banana` on each wire:
+
+        sonnet / opus / haiku / etan-opus-4.6    chat 200    messages 400    responses 200
+        GLM 5.3 OR / gpt-5.4 / qwen-2-5          chat 400    messages 200    responses 400
+        domino/gemini-3.7-flash                  chat 400    messages 200    responses 200
+        bedrock-qwen3-coder                      chat 200    messages 200    responses 200
+
+    The second, third and fourth lines are what give the first one its meaning. Five non-Anthropic
+    aliases answer 200 to `banana` on `messages`, so the Anthropic 400 there is not this gateway
+    validating everything that arrives on that wire — something holding Anthropic's schema is
+    reading it. The same four also refuse `xhigh` while accepting `max`, a distinction Anthropic
+    draws and the gateway draws nowhere else.
+    """
+    status, _ = _ask(alias, protocol, NONSENSE)
+    return status == 400 if status in (200, 400) else None
+
+
 def _route(alias: str, previous: dict | None) -> tuple[Protocol, bool] | None:
     """Which wire to record for this alias, and whether it is vendor-native. None = unmeasured.
 
@@ -264,10 +290,13 @@ def _route(alias: str, previous: dict | None) -> tuple[Protocol, bool] | None:
 
     Messages has no such contract. ADR-0066:130 says it "relies on the exact recent metadata and
     measured native route" — a measurement made elsewhere, from gateway audit rows this key cannot
-    read. So a native Messages route is not something this script can tell from a translated one,
-    and an existing `messages` row is LEFT ALONE rather than overwritten with a guess. Recording it
-    as compatibility would silently retire the runtime contract that fails a turn when native state
-    would otherwise be lost, which is a worse error than refusing the row.
+    read. So `native` is never set from this wire.
+
+    The WIRE is a different question from `native`, and this is the one that matters at runtime:
+    `settings()` shapes the body from `protocol`, and `native_routes` fails a turn whose wire
+    disagrees with it, while `native` is only reported onward. Recording `chat` for an alias whose
+    chat wire discards the field writes a row with no usable level at all — so the wire to record
+    is the one that READS the field, and where only `messages` does, that is `messages`.
     """
     control = _ask(alias, Protocol.CHAT, None)
     if control[0] != 200:
@@ -280,10 +309,19 @@ def _route(alias: str, previous: dict | None) -> tuple[Protocol, bool] | None:
     print(f"  /v1/responses: {why}")
     if native:
         return Protocol.RESPONSES, True
+    on_messages, on_chat = _validates(alias, Protocol.MESSAGES), _validates(alias, Protocol.CHAT)
+    if on_messages is None or on_chat is None:
+        print("  NOT MEASURED — a wire answered neither 200 nor 400 to the nonsense value, so "
+              "which wire reads the effort field cannot be told from which one discards it.")
+        return None
+    if on_messages and not on_chat:
+        print("  /anthropic/v1/messages reads the effort field and /v1/chat/completions discards "
+              "it, so `messages` is the only wire that can carry a reasoning setting here.")
+        return Protocol.MESSAGES, False
     if previous and str(previous.get("protocol")) == str(Protocol.MESSAGES):
-        print("  NOT MEASURED — the existing row records a native Messages route, and no contract "
-              "tells that apart from a translated one. Left as it is; re-measure it where the "
-              "gateway's audit rows can be read.")
+        print("  NOT MEASURED — the existing row records a Messages route, and this deployment's "
+              "Messages wire does not read the effort field. Left as it is rather than downgraded; "
+              "re-measure it where the gateway's audit rows can be read.")
         return None
     return Protocol.CHAT, False
 
