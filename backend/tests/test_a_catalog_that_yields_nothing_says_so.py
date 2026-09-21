@@ -37,7 +37,7 @@ CATALOG = ".sage/queries.json"
 
 def _serve():
     """The app's own `serve.py`, loaded by path — the same trick `test_builtapp_queries.py` uses."""
-    spec = importlib.util.spec_from_file_location("builtapp_serve_fault", TEMPLATE / "serve.py")
+    spec = importlib.util.spec_from_file_location("builtapp_serve_fault", TEMPLATE / "sage_queries.py")
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod

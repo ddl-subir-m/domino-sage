@@ -39,6 +39,7 @@ def _load_serve():
 
 
 serve = _load_serve()
+sq = serve.sq  # the query half (`sage_queries.py`), the same module object serve.py imported
 
 
 # ---- a stand-in for the SDK, recording what reached it -------------------------------------------
@@ -163,7 +164,7 @@ def write(root: Path, bindings: list, queries: list) -> None:
 @contextmanager
 def running(app: Path, store: Store, max_rows: int = 5000):
     """The server on a throwaway port, with the real executor over the fake SDK."""
-    executor = serve.FlightExecutor(serve.load_sources(app), max_rows)
+    executor = sq.FlightExecutor(sq.load_sources(app), max_rows)
     srv = serve.build_server(app / "dist", host="127.0.0.1", port=0, project_root=app,
                              executor=executor)
     thread = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
@@ -229,7 +230,7 @@ def test_the_chosen_database_and_schema_travel_as_configuration(app: Path):
     ("MySQLConfig", {"schema": "sales"}, {"database": "sales"}),
 ])
 def test_each_connector_carries_the_scope_under_the_key_it_accepts(connector, recorded, expected):
-    source = serve.Source("ds", "src", recorded.get("database", ""), recorded.get("schema", ""),
+    source = sq.Source("ds", "src", recorded.get("database", ""), recorded.get("schema", ""),
                           connector)
     config, stranded = source.scope()
     assert config == expected
@@ -239,7 +240,7 @@ def test_each_connector_carries_the_scope_under_the_key_it_accepts(connector, re
 def test_a_connector_that_carries_only_half_the_scope_sends_that_half(app: Path):
     # SQL Server has three cascade levels and a config class that takes only the outer one. The
     # database still travels; the schema is what the statement has to name.
-    source = serve.Source("ds", "mssql", "underwriting", "dbo", "SQLServerConfig")
+    source = sq.Source("ds", "mssql", "underwriting", "dbo", "SQLServerConfig")
     config, stranded = source.scope()
     assert config == {"database": "underwriting"}
     assert stranded == [("schema", "dbo")]
@@ -254,7 +255,7 @@ def test_a_schema_that_cannot_travel_stops_the_query_at_startup(app: Path):
     # here rather than reported by whichever viewer happens to notice the numbers are wrong.
     postgres = dict(SNOWFLAKE, connector_type="PostgreSQLConfig", database="")
     write(app, [postgres], [REVENUE])
-    queries = serve.load_queries(app)
+    queries = sq.load_queries(app)
     assert "MARTS" in queries["revenue"].problem
     assert "cannot carry" in queries["revenue"].problem
     store = Store()
@@ -284,7 +285,7 @@ def test_a_schema_named_inside_a_longer_word_does_not_count(app: Path):
     postgres = dict(SNOWFLAKE, connector_type="PostgreSQLConfig", database="")
     lookalike = dict(REVENUE, sql="SELECT region FROM SMARTS_STAGING WHERE region = :region")
     write(app, [postgres], [lookalike])
-    assert "MARTS" in serve.load_queries(app)["revenue"].problem
+    assert "MARTS" in sq.load_queries(app)["revenue"].problem
 
 
 def test_a_binding_that_does_not_say_what_kind_of_store_it_is_is_refused_the_same_way(app: Path):
@@ -293,7 +294,7 @@ def test_a_binding_that_does_not_say_what_kind_of_store_it_is_is_refused_the_sam
     unknown = dict(SNOWFLAKE)
     unknown.pop("connector_type")
     write(app, [unknown], [REVENUE])
-    problem = serve.load_queries(app)["revenue"].problem
+    problem = sq.load_queries(app)["revenue"].problem
     # The outermost stranded level first — one sentence at a time, as the catalog's other checks do.
     assert "does not record what kind" in problem and "ANALYTICS" in problem
 
@@ -341,25 +342,25 @@ def test_a_backslash_is_refused_rather_than_escaped(app: Path):
     ("SQLServerConfig", False, "0"),
 ])
 def test_a_boolean_is_rendered_the_way_the_store_spells_one(connector, value, expected):
-    assert serve.render("WHERE active = :on", {"on": value}, connector) == f"WHERE active = {expected}"
+    assert sq.render("WHERE active = :on", {"on": value}, connector) == f"WHERE active = {expected}"
 
 
 def test_a_date_is_rendered_quoted(app: Path):
     # Quoted, not ANSI `DATE '...'`: every store here converts the quoted form in a comparison, and
     # SQL Server rejects the keyword one.
-    assert serve.render("WHERE d >= :from", {"from": date(2026, 8, 20)}) == "WHERE d >= '2026-08-20'"
+    assert sq.render("WHERE d >= :from", {"from": date(2026, 8, 20)}) == "WHERE d >= '2026-08-20'"
 
 
 def test_numbers_are_rendered_bare():
-    assert serve.render("LIMIT :n", {"n": 25}) == "LIMIT 25"
-    assert serve.render("> :x", {"x": 1.5}) == "> 1.5"
+    assert sq.render("LIMIT :n", {"n": 25}) == "LIMIT 25"
+    assert sq.render("> :x", {"x": 1.5}) == "> 1.5"
 
 
 def test_a_postgres_cast_is_not_read_as_a_placeholder():
     # `amount::text` is a cast. Read as a placeholder it would be an undeclared parameter called
     # `text`, and #13's agreement check would refuse the query with a sentence about a parameter its
     # author never wrote.
-    assert serve._PLACEHOLDER.findall("SELECT amount::text WHERE r = :region") == ["region"]
+    assert sq._PLACEHOLDER.findall("SELECT amount::text WHERE r = :region") == ["region"]
 
 
 # ---- the cap, so one question cannot take the app down --------------------------------------------
@@ -388,14 +389,14 @@ def test_a_result_exactly_the_size_of_the_cap_is_not_called_truncated(app: Path)
 
 def test_the_cap_is_the_default_unless_the_environment_names_another(monkeypatch):
     monkeypatch.delenv("SAGE_QUERY_MAX_ROWS", raising=False)
-    assert serve.max_rows() == 5000
+    assert sq.max_rows() == 5000
     monkeypatch.setenv("SAGE_QUERY_MAX_ROWS", "250")
-    assert serve.max_rows() == 250
+    assert sq.max_rows() == 250
     # A typo should not decide that this app answers with nothing.
     monkeypatch.setenv("SAGE_QUERY_MAX_ROWS", "lots")
-    assert serve.max_rows() == 5000
+    assert sq.max_rows() == 5000
     monkeypatch.setenv("SAGE_QUERY_MAX_ROWS", "0")
-    assert serve.max_rows() == 5000
+    assert sq.max_rows() == 5000
 
 
 # ---- what a store answers with, as JSON --------------------------------------------------------
@@ -448,7 +449,7 @@ def test_a_source_that_cannot_be_opened_says_what_to_check(app: Path):
 
 def test_an_image_without_the_domino_library_says_so_once_per_ask(app: Path):
     write(app, [SNOWFLAKE], [REVENUE])
-    executor = serve.FlightExecutor(serve.load_sources(app), 100)
+    executor = sq.FlightExecutor(sq.load_sources(app), 100)
     srv = serve.build_server(app / "dist", host="127.0.0.1", port=0, project_root=app,
                              executor=executor)
     thread = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)

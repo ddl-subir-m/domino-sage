@@ -42,6 +42,7 @@ def _load_serve():
 
 
 serve = _load_serve()
+sq = serve.sq  # the query half (`sage_queries.py`), the same module object serve.py imported
 
 REVENUE_SQL = "SELECT region, SUM(amount) AS total FROM orders WHERE region = :region GROUP BY region"
 
@@ -269,7 +270,7 @@ def test_an_oversized_body_is_refused_without_being_read(app: Path):
     _write_queries(app, [REVENUE])
     with running(app, FakeExecutor()) as base:
         r = httpx.post(f"{base}/api/queries/revenue_by_region",
-                       content=b"x" * (serve._MAX_BODY + 1),
+                       content=b"x" * (sq._MAX_BODY + 1),
                        headers={"Content-Type": "application/json"})
     assert r.status_code == 413
 
@@ -328,7 +329,7 @@ def test_a_query_with_no_statement_is_unusable_rather_than_missing(app: Path):
 
 def test_the_startup_log_names_every_unusable_query(app: Path, capsys):
     _write_queries(app, [{**REVENUE, "binding": "ds-gone"}])
-    serve._log_query_catalog(serve.load_queries(app))
+    sq.log_query_catalog(sq.load_queries(app))
     out = capsys.readouterr().out
     assert "0 of 1 usable" in out
     assert "ds-gone" in out

@@ -6,8 +6,9 @@
 # in-session preview (its own cold start): install deps, produce a production build (Vite `base` is
 # relative for the build, so assets resolve under Domino's app mount path), then static-serve it.
 #
-# Node builds; PYTHON serves (serve.py, ADR-0002). Both scripts are Sage-owned infrastructure and
-# travel together — publish refreshes them from the template, serve.py first.
+# Node builds; PYTHON serves (serve.py + the sage_queries.py it imports, ADR-0002). All three are
+# Sage-owned infrastructure and travel together — publish refreshes them from the template, the
+# Python files first.
 set -euo pipefail
 cd "$(dirname "$0")"
 

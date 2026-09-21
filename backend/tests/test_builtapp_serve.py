@@ -34,6 +34,7 @@ def _load_serve():
 
 
 serve = _load_serve()
+sq = serve.sq  # the query half (`sage_queries.py`), the same module object serve.py imported
 
 
 @pytest.fixture
@@ -274,7 +275,7 @@ def _stub_sidecar(body: bytes):
 
 def test_probe_reports_a_reachable_sidecar_without_disclosing_the_token():
     with _stub_sidecar(b"Bearer eyJhbGciOi.SUPERSECRET.sig") as url:
-        status = serve.probe_token_sidecar(url)
+        status = sq.probe_token_sidecar(url)
     assert "reachable" in status
     assert "SUPERSECRET" not in status  # app logs are readable by anyone who can see the deploy
 
@@ -287,16 +288,16 @@ _DEAD_PORT = 1
 
 
 def test_probe_reports_an_unreachable_sidecar_rather_than_raising():
-    status = serve.probe_token_sidecar(f"http://127.0.0.1:{_DEAD_PORT}/access-token", timeout=1.0)
+    status = sq.probe_token_sidecar(f"http://127.0.0.1:{_DEAD_PORT}/access-token", timeout=1.0)
 
     assert "not reachable" in status.lower()
 
 
 def test_sidecar_url_prefers_the_injected_proxy_address(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DOMINO_API_PROXY", "http://localhost:9999/")
-    assert serve.sidecar_url() == "http://localhost:9999/access-token"
+    assert sq.sidecar_url() == "http://localhost:9999/access-token"
 
 
 def test_sidecar_url_falls_back_to_the_documented_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DOMINO_API_PROXY", raising=False)
-    assert serve.sidecar_url() == "http://localhost:8899/access-token"
+    assert sq.sidecar_url() == "http://localhost:8899/access-token"

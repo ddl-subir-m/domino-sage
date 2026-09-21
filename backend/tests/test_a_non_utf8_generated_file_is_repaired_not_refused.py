@@ -147,6 +147,7 @@ def _orch_with_data_source(tmp_path: Path) -> Orchestrator:
     (template / "src" / "App.tsx").write_text("placeholder")
     (template / "package.json").write_text("{}")
     shutil.copy2(react_template / "serve.py", template / "serve.py")
+    shutil.copy2(react_template / "sage_queries.py", template / "sage_queries.py")
     shutil.copy2(react_template / "src" / "appQuery.ts", template / "src" / "appQuery.ts")
     shutil.copy2(react_template / "src" / "appBase.ts", template / "src" / "appBase.ts")
 

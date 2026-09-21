@@ -291,10 +291,13 @@ _RESET_CLEAR = (Path(".sage") / "queries.json",
                 Path(".sage") / "architecture.md")
 # Proof that a node_modules is usable: the binary both `npm run dev` and `npm run build` invoke.
 _DEPS_SENTINEL = Path(".bin") / "vite"
-# What Domino runs to serve a published App: the entry script, and the Python server it execs
-# (ADR-0002). Both Sage-owned — see refresh_entry_script. serve.py comes FIRST: a refreshed app.sh
-# without it is an app that crash-loops, whereas a stale app.sh with a spare serve.py still serves.
+# What Domino runs to serve a published App: the entry script, the Python server it execs, and the
+# query module that server imports (ADR-0002). All Sage-owned — see refresh_entry_script. The Python
+# files come FIRST: a refreshed app.sh without them is an app that crash-loops, whereas a stale
+# app.sh with a spare serve.py still serves. sage_queries.py before serve.py for the same reason one
+# level down: serve.py imports it at startup.
 _DEPLOY_FILES = (
+    "sage_queries.py",
     "serve.py",
     "scripts/rehydrate-data.mjs",
     "scripts/rehydrate_data.py",

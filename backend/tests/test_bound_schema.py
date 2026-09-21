@@ -321,6 +321,7 @@ def orchestrator(tmp_path: Path):
     (template / "src" / "App.tsx").write_text("placeholder")
     (template / "package.json").write_text("{}")
     shutil.copy2(TEMPLATE / "serve.py", template / "serve.py")
+    shutil.copy2(TEMPLATE / "sage_queries.py", template / "sage_queries.py")
     shutil.copy2(TEMPLATE / "src" / "appQuery.ts", template / "src" / "appQuery.ts")
     shutil.copy2(TEMPLATE / "src" / "appBase.ts", template / "src" / "appBase.ts")
 
