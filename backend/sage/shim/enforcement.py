@@ -222,6 +222,7 @@ class EnforcementShim:
 
     def handle(self, request: dict[str, Any], project: str, session: str | None = None,
                on_resolved=None, on_refused=None) -> Iterator[bytes]:
+        """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
         request, labels, used, capability = self.prepare(request, project, session, on_resolved)
         from ..gateway.protocol import Protocol
         if capability.protocol is not Protocol.CHAT:
@@ -234,7 +235,7 @@ class EnforcementShim:
 
     def prepare(self, request: dict[str, Any], project: str, session: str | None = None,
                 on_resolved=None, *, native: bool = False):
-        """OpenAI-compatible request in, streamed response out. OpenCode points at this.
+        """Route the request and resolve its capability, ready for a protocol to stream it.
 
         `project` is kept for the log line only — the gateway captures the caller's Domino project
         as a first-class column, so it's not tagged (a `project` tag would be dropped). `session` is
