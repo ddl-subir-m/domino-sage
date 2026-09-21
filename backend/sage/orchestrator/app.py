@@ -4555,6 +4555,40 @@ _brand_images = _BrandImages(directory=_BRAND_DIR, check_dir=False)
 control_app.mount("/brand", _brand_images, name="brand-img")
 
 
+def _native_codec_unavailable(codec: Path) -> str:
+    """Say why `codec` will not import here, or "" when it will.
+
+    The module's SDKs are npm dependencies, and they reach a workspace only inside the Environment
+    image. The code reaches the same workspace by `app.sh` self-update, which is a `git fetch`. The
+    two move separately, so a tree newer than the image declares imports that were never installed,
+    OpenCode answers `Failed to initialize provider` once, and every turn of that session dies
+    before its first token (#482). Ask node the question the loader is going to ask, at boot, where
+    the answer can still change what gets written. Reading `package.json` would answer a different
+    question — whether the dependency is DECLARED — and by the time this goes wrong it always is."""
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        return "no node on PATH"
+    if not codec.exists():
+        return f"{codec} is not there"
+    probe = (f"import({json.dumps(codec.as_uri())}).then(() => process.exit(0), "
+             "e => { console.log(String((e && e.message) || e)); process.exit(1); });")
+    try:
+        run = subprocess.run([node, "--input-type=module", "-e", probe],
+                             capture_output=True, text=True, timeout=30, check=False)
+    except Exception as e:  # node on PATH and still unusable — same outcome, different words
+        return f"node could not run the probe: {e}"
+    if run.returncode == 0:
+        return ""
+    # The rejection's own message names the package that did not resolve. stderr holds node's
+    # stack, whose last line is the runtime version and says nothing about the cause.
+    said = (run.stdout or run.stderr or "").strip().splitlines()
+    return said[0][:300] if said else f"node exited {run.returncode}"
+
+
 def _install_opencode_config(source_dir: Path, control_port: int) -> None:
     """Make OpenCode load Sage's provider/agents/model, in the pack's own words.
 
@@ -4600,11 +4634,24 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
     provider = (cfg.get("provider") or {}).get("sage-gateway") or {}
     models = provider.get("models") or {}
     if orchestrator.native_codec_enabled and "gpt-5.4" in models:
-        provider["npm"] = (source_dir / "backend/sage/driver/provider.mjs").resolve().as_uri()
-        # One stable handle keeps OpenCode's persisted provider metadata intact.
-        # Actual Alias and route selection come from the server capability resolver.
-        provider["models"] = {"gpt-5.4": {**models["gpt-5.4"], "reasoning": True}}
-        cfg["model"] = cfg["small_model"] = "sage-gateway/gpt-5.4"
+        codec = (source_dir / "backend/sage/driver/provider.mjs").resolve()
+        unavailable = _native_codec_unavailable(codec)
+        if unavailable:
+            # Leaving the config alone restores the checked-in `npm`, which names a PUBLISHED
+            # package and not a path. OpenCode resolves that one for itself, and it is what every
+            # image before this one ran. A file URI it can only import, so the module's own
+            # imports have to be installed beside it already — which is the whole difference.
+            # Reasoning settings then go unapplied, and a turn without them beats a session where
+            # nothing runs at all.
+            log.error("[wiring] the native provider is declared and will not load: %s — keeping "
+                      "the checked-in provider instead, so reasoning settings are not applied. "
+                      "Rebuild the Environment image against this revision.", unavailable)
+        else:
+            provider["npm"] = codec.as_uri()
+            # One stable handle keeps OpenCode's persisted provider metadata intact.
+            # Actual Alias and route selection come from the server capability resolver.
+            provider["models"] = {"gpt-5.4": {**models["gpt-5.4"], "reasoning": True}}
+            cfg["model"] = cfg["small_model"] = "sage-gateway/gpt-5.4"
     # The Live read tools are served by THIS process too (ADR-0041), so their port moves with it.
     # This is the rewrite above missing its twin: on Domino the shim serves :8888 while the
     # checked-in URL says :8080, and OpenCode drops an unreachable MCP server SILENTLY — the tools

@@ -265,6 +265,9 @@ def test_installed_native_config_keeps_one_handle_and_local_codecs(running, tmp_
     config = json.loads((Path(__file__).parents[2] / 'opencode.json').read_text())
     (source / 'opencode.json').write_text(json.dumps(config))
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    # The tmp source carries no codec module. This test is about the config that gets written, so
+    # say the codec loads; the two tests below own the case where it does not.
+    monkeypatch.setattr(appmod, '_native_codec_unavailable', lambda codec: '')
     appmod._install_opencode_config(source, 9876)
     for folder in ('opencode', 'sage-opencode'):
         installed = json.loads((tmp_path / 'home/.config' / folder / 'opencode.json').read_text())
@@ -276,6 +279,84 @@ def test_installed_native_config_keeps_one_handle_and_local_codecs(running, tmp_
         assert provider['options']['baseURL'] == 'http://localhost:9876/v1'
         assert provider['options']['name'] == 'google'
     assert json.loads((source / 'opencode.json').read_text()) == config
+
+
+def test_a_codec_that_will_not_load_leaves_the_config_on_the_shims_protocol(
+        running, tmp_path, monkeypatch, caplog):
+    """A declared provider module OpenCode cannot import kills every turn of the session (#482).
+
+    The image installs the module's SDKs and self-update moves the code, so a tree newer than the
+    image names imports that are not installed. Writing the handle anyway is the one outcome worth
+    avoiding: the shim's protocol needs no npm, and a turn without reasoning settings beats a
+    session where nothing runs at all."""
+    import logging
+    from pathlib import Path
+
+    from sage.orchestrator import app as appmod
+    _, _, _ = running
+    source = tmp_path / 'source'
+    source.mkdir()
+    config = json.loads((Path(__file__).parents[2] / 'opencode.json').read_text())
+    (source / 'opencode.json').write_text(json.dumps(config))
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    monkeypatch.setattr(appmod, '_native_codec_unavailable',
+                        lambda codec: "Cannot find package '@ai-sdk/anthropic'")
+    with caplog.at_level(logging.ERROR):
+        appmod._install_opencode_config(source, 9876)
+    source_provider = config['provider']['sage-gateway']
+    for folder in ('opencode', 'sage-opencode'):
+        installed = json.loads((tmp_path / 'home/.config' / folder / 'opencode.json').read_text())
+        provider = installed['provider']['sage-gateway']
+        # `npm` is not the discriminator — the checked-in config has one already, naming a
+        # published package OpenCode resolves itself. What the native branch does is swap that
+        # name for a file URI, cut ten models to one, add `reasoning`, and pin `small_model`.
+        assert provider['npm'] == source_provider['npm'] == '@ai-sdk/openai-compatible'
+        assert list(provider['models']) == list(source_provider['models'])
+        assert 'reasoning' not in provider['models']['gpt-5.4']
+        assert 'small_model' not in installed and 'small_model' not in config
+        assert installed['model'] == config['model']
+        # The port rewrite is not the native branch's and still has to happen.
+        assert provider['options']['baseURL'] == 'http://localhost:9876/v1'
+    assert "Cannot find package '@ai-sdk/anthropic'" in caplog.text
+    assert 'Rebuild the Environment image' in caplog.text
+
+
+def test_the_codec_probe_answers_from_the_loader_and_not_from_a_declaration(tmp_path):
+    """The probe has to name the package, because the person reading the log has to act on it.
+
+    A missing FILE and an unresolved IMPORT are different repairs — one is a bad path, the other is
+    an image that predates the code — and the log line is the only place that distinction survives."""
+    import shutil
+
+    from sage.orchestrator.app import _native_codec_unavailable
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to ask the module loader anything')
+    codec = tmp_path / 'provider.mjs'
+    codec.write_text("import { nothing } from '@sage-test/not-a-real-package';\nexport { nothing };\n")
+    assert '@sage-test/not-a-real-package' in _native_codec_unavailable(codec)
+    absent = tmp_path / 'absent.mjs'
+    assert _native_codec_unavailable(absent) == f'{absent} is not there'
+    ok = tmp_path / 'ok.mjs'
+    ok.write_text('export const ok = true;\n')
+    assert _native_codec_unavailable(ok) == ''
+
+
+def test_the_shipped_codec_loads_where_its_dependencies_are_installed():
+    """The production question, asked of the real module rather than of a stand-in.
+
+    This skips exactly where the defect lives — a tree whose `node_modules` predates its
+    `package.json` — so the skip is the finding and `-rs` is how you see it."""
+    import shutil
+    from pathlib import Path
+
+    from sage.orchestrator.app import _native_codec_unavailable
+    if shutil.which('node') is None:
+        pytest.skip('Node is required to ask the module loader anything')
+    repo = Path(__file__).resolve().parents[2]
+    if not (repo / 'node_modules/@ai-sdk/anthropic').exists():
+        pytest.skip('the root node_modules does not carry the pinned SDKs — run `npm ci` in the '
+                    'repo root; this is the same state that breaks a workspace (#482)')
+    assert _native_codec_unavailable(repo / 'backend/sage/driver/provider.mjs') == ''
 
 
 def test_harness_verified_child_sessions_keep_the_parent_turn_policy(running):
