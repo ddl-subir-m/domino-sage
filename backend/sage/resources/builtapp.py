@@ -30,9 +30,10 @@ from typing import Any
 
 from .bindings import Binding
 
-# The template directory IS the app template (`template/react-vite`, per SAGE_TEMPLATE), so this is
-# the same `sage_queries.py` that `_DEPLOY_FILES` copies into every app.
+# The template directory IS the app template (`template/react-vite`, per SAGE_TEMPLATE), so these are
+# the same `sage_queries.py` and `sage_domino.py` that `_DEPLOY_FILES` copies into every app.
 _SERVE_REL = Path("sage_queries.py")
+_DOMINO_REL = Path("sage_domino.py")
 _MODULE_NAME = "sage_builtapp_serve"
 _loaded: dict[str, Any] = {}
 _lock = threading.Lock()
@@ -45,11 +46,25 @@ def serve_module(template_dir: Path) -> Any | None:
     `from __future__ import annotations` and its dataclasses resolve their field types by looking
     their own module up there.
     """
-    key = str(template_dir)
+    return _load(template_dir, _SERVE_REL)
+
+
+def domino_module(template_dir: Path) -> Any | None:
+    """`sage_domino.py` as a module, or None when this template has none (#489).
+
+    The preview calls its `relay` directly, so a page that reads the platform works before the app
+    is published; the published app's server imports the same file from beside itself. One fence,
+    one set of sentences.
+    """
+    return _load(template_dir, _DOMINO_REL)
+
+
+def _load(template_dir: Path, rel: Path) -> Any | None:
+    key = f"{rel}@{template_dir}"
     with _lock:
         if key in _loaded:
             return _loaded[key]
-        path = template_dir / _SERVE_REL
+        path = template_dir / rel
         module = None
         if path.is_file():
             try:
