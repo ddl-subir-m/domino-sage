@@ -313,7 +313,7 @@ def test_the_proxy_hands_a_platform_read_to_the_apps_own_relay(monkeypatch):
     assert module is not None, "the template ships no sage_domino.py"
     asked: list[tuple[str, str]] = []
     monkeypatch.setattr(module, "relay", lambda path, query: (
-        asked.append((path, query)) or (200, "application/json", b'{"user": {}}')))
+        asked.append((path, query)) or (200, {"Content-Type": "application/json"}, b'{"user": {}}')))
     client = TestClient(make_preview_app(_no_vite, "", lambda: None, get_platform=lambda: module))
 
     r = client.get("/api/domino/api/users/v1/self?limit=1")

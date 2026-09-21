@@ -206,9 +206,9 @@ async def _relay_platform(request: Request, path: str, module) -> Response | Non
         return None
     if request.method != "GET":
         return JSONResponse(status_code=405, content={"error": "This endpoint takes GET."})
-    status, ctype, body = await run_in_threadpool(
+    status, headers, body = await run_in_threadpool(
         module.relay, path[len(_PLATFORM_PREFIX):], request.url.query)
-    return Response(content=body, status_code=status, media_type=ctype)
+    return Response(content=body, status_code=status, headers=headers)
 
 
 def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
