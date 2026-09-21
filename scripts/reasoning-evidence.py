@@ -219,8 +219,9 @@ def _route(alias: str) -> tuple[Protocol, bool] | None:
     only half the question — a gateway where an alias answers on two native wires is one this script
     does not model, and picking the first would write a row that cannot be trusted.
     """
-    answered = [p for p in (Protocol.MESSAGES, Protocol.RESPONSES, Protocol.CHAT)
-                if _ask(alias, p, None)[0] == 200]
+    asked = {p: _ask(alias, p, None) for p in
+             (Protocol.MESSAGES, Protocol.RESPONSES, Protocol.CHAT)}
+    answered = [p for p, (status, _) in asked.items() if status == 200]
     native = [p for p in answered if p is not Protocol.CHAT]
     if len(native) > 1:
         print(f"  NOT MEASURED — answers on {' and '.join(native)}; two native routes is not a "
@@ -230,8 +231,10 @@ def _route(alias: str) -> tuple[Protocol, bool] | None:
         return native[0], True
     if Protocol.CHAT in answered:
         return Protocol.CHAT, False
-    print("  NOT MEASURED — no route answered 200; the alias is unusable from here, or its "
-          "endpoint is stopped")
+    # The gateway's own sentence, not a guess at it. A workspace that has spent its API quota
+    # refuses every route with a 400 that names the date access returns, and "unusable or stopped"
+    # would send someone to look at the wrong thing entirely.
+    print(f"  NOT MEASURED — no route answered 200. {_detail(asked[Protocol.CHAT][1])}")
     return None
 
 
@@ -278,6 +281,17 @@ def probe(row: dict, carried: dict[tuple[str, str], str]) -> dict | None:
         efforts = _levels(alias, protocol, tools=False)
         with_tools = _levels(alias, protocol, tools=True) if efforts is not None else None
         if efforts is None or with_tools is None:
+            return None
+        # The control, asked AGAIN after the sweep. A 400 means "this level is refused" only while
+        # the route still works at all, and a workspace can spend its API quota partway through
+        # thirty calls — after which every remaining level 400s with a message about a date. That
+        # reads as a model which accepts no effort, and it writes an empty row that looks measured.
+        # A control that no longer answers says the sweep stopped being a measurement; it cannot
+        # say when, so nothing from it is kept.
+        after = _ask(alias, protocol, None)
+        if after[0] != 200:
+            print(f"  NOT MEASURED — the route stopped answering during the sweep, so the levels "
+                  f"above are not evidence: {_detail(after[1])}")
             return None
         print(f"  efforts            {', '.join(efforts) or 'none'}")
         print(f"  efforts_with_tools {', '.join(with_tools) or 'none'}")
