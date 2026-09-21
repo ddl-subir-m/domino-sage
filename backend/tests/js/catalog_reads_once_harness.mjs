@@ -9,6 +9,7 @@
 // modal. Every act reports the URLs that left the browser during it and the list as drawn after.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -105,7 +106,7 @@ const effectSlots = [];
 
 const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
-  RegExp, encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout, setInterval,
+  RegExp, encodeURIComponent, decodeURIComponent, setTimeout: unrefTimeout, clearTimeout, setInterval,
   clearInterval, URLSearchParams, TextEncoder, TextDecoder, URL, Blob, ArrayBuffer, Uint8Array,
   fetch: (url, init) => {
     requests.push(url);

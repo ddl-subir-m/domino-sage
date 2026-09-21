@@ -12,6 +12,7 @@
 // kept its own list, or asked per app, would show up as a row the server never had.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const steps = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -130,7 +131,7 @@ function serve(url, options = {}) {
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Blob, ArrayBuffer, Uint8Array, setTimeout, clearTimeout,
+  Error, Blob, ArrayBuffer, Uint8Array, setTimeout: unrefTimeout, clearTimeout,
   requestAnimationFrame: (fn) => fn(),
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
   React: {

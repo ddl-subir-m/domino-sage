@@ -16,6 +16,7 @@
 // produce; a test that wants the state they cannot produce says so.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const spec = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -41,7 +42,7 @@ function node(type, props, ...children) {
 const sandbox = {
   console, JSON, Object, String, Array, Error, Set, Map, Date, Math, Number, Boolean, Promise,
   RegExp, Infinity, encodeURIComponent, decodeURIComponent, parseInt, parseFloat, isNaN,
-  setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+  setTimeout: unrefTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
   location: { hash: '' },

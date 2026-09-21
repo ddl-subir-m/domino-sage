@@ -18,6 +18,7 @@
 // times and then works — which is the only way to show that the way back leads anywhere.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { block, open = false, rowFails = false, retry = false } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -34,7 +35,7 @@ const ICONS = ['CopyOutlined', 'RightOutlined', 'DownOutlined', 'PushpinOutlined
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout, clearTimeout, isFinite,
+  Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout: unrefTimeout, clearTimeout, isFinite,
   encodeURIComponent, decodeURIComponent,
   document: { addEventListener() {}, querySelector: () => null, body: {} },
   React: {

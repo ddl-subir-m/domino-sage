@@ -17,6 +17,7 @@
 // Input on stdin: `{ "act": "drawn" | "press-filled" | "press-empty" | "press-data" }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -58,7 +59,7 @@ function hookState(init) {
 
 const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
-  RegExp, encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout,
+  RegExp, encodeURIComponent, decodeURIComponent, setTimeout: unrefTimeout, clearTimeout,
   setInterval: () => 1, clearInterval: () => {}, requestAnimationFrame: (fn) => fn(),
   URLSearchParams, TextEncoder, TextDecoder, URL,
   fetch: () => Promise.reject(new Error('the harness makes no requests')),

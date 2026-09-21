@@ -20,6 +20,7 @@
 // Input on stdin: `{ "door": "plan" | "chip", "mode": "build" | "chat", "app": "<id>" | "" }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { door, mode, app = '' } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -60,7 +61,7 @@ let effects = [];
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Blob, ArrayBuffer, Uint8Array, setTimeout, clearTimeout, setInterval, clearInterval,
+  Error, Blob, ArrayBuffer, Uint8Array, setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: (fn) => fn(),
   // `prefs.js` rides along with the store, and the rail collapse this click performs reads it.
   // In-memory: nothing here is a claim about what survives a reload.

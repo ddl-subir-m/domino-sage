@@ -15,6 +15,7 @@
 // suite beside this file owns whether `kept_fetch` and `heldBy` are true.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const APP = { id: 'app_a', name: 'Desk margins', selected: true };
@@ -56,7 +57,7 @@ const sandbox = {
   console,
   JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp, Error,
   Blob,
-  setTimeout, clearTimeout,
+  setTimeout: unrefTimeout, clearTimeout,
   setInterval: () => 1,
   clearInterval: () => {},
   requestAnimationFrame: (fn) => fn(),

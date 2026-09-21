@@ -5,6 +5,7 @@
 // on screen. `failed: true` fires the img `onError` the browser would.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { block, failed } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -14,7 +15,7 @@ let hook = 0;
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, Infinity, encodeURIComponent, decodeURIComponent,
-  setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+  setTimeout: unrefTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
   location: { hash: '' },

@@ -7,6 +7,7 @@
 // assertions are about state.messages, not about the DOM.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const frames = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -20,7 +21,7 @@ let healthCalls = 0;
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout, clearTimeout,
+  Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout: unrefTimeout, clearTimeout,
   // Paint on demand: the batching is an optimisation, and a test that waited for real frames
   // would be testing the event loop rather than the reducer.
   requestAnimationFrame: (fn) => fn(),

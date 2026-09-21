@@ -11,6 +11,7 @@
 // Input on stdin: `{ "frames": [...], "files": { "<path>": <json body> } }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { frames, files = {} } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -18,7 +19,7 @@ const body = frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join('');
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout, clearTimeout,
+  Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout: unrefTimeout, clearTimeout,
   encodeURIComponent, decodeURIComponent,
   requestAnimationFrame: (fn) => fn(),
   document: { addEventListener() {}, querySelector: () => null, body: {} },

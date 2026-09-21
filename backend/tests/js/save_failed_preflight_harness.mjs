@@ -16,6 +16,7 @@
 // Output: `{ "preflights": n, "rejected": [...indexes of steps that threw at the caller] }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { steps } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -34,7 +35,7 @@ const json = (body) => ({
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean,
-  RegExp, Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout, clearTimeout,
+  RegExp, Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout: unrefTimeout, clearTimeout,
   setInterval: () => 1, clearInterval: () => {}, Blob, ArrayBuffer, Uint8Array,
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   requestAnimationFrame: (fn) => fn(),

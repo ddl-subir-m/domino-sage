@@ -9,6 +9,7 @@
 // assertions are about what a SECOND render shows after a handler has run.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { scenario } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -64,7 +65,7 @@ const reported = [];
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Blob, ArrayBuffer, Uint8Array, setTimeout, clearTimeout, setInterval, clearInterval,
+  Error, Blob, ArrayBuffer, Uint8Array, setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: (fn) => fn(),
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },
   React: {

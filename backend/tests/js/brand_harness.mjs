@@ -6,6 +6,7 @@
 // (store.set) — against the same code the browser runs.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const spec = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -13,7 +14,7 @@ const spec = JSON.parse(fs.readFileSync(0, 'utf8'));
 // store.js is the whole Workbench store; it needs just enough of a browser to finish evaluating.
 const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
-  RegExp, encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout, setInterval,
+  RegExp, encodeURIComponent, decodeURIComponent, setTimeout: unrefTimeout, clearTimeout, setInterval,
   clearInterval, URLSearchParams,
   fetch: () => Promise.reject(new Error('the harness makes no requests')),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },

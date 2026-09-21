@@ -10,6 +10,7 @@
 // stdin is the seeded transcript. stdout is one JSON line.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const seed = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -22,7 +23,7 @@ const body = [
 const calls = [];
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout, clearTimeout,
+  Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout: unrefTimeout, clearTimeout,
   // `api.js` type-tests every request body against these before it serialises one. Missing, the
   // first PATCH throws a ReferenceError inside the api layer's own try — which the layer then
   // reports as a failed request, so the harness sees a route that was never called.

@@ -22,6 +22,7 @@
 // answered: the door is under test, not the deletion behind it.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 
@@ -87,7 +88,7 @@ const confirms = [];
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Blob, setTimeout, clearTimeout,
+  Error, Blob, setTimeout: unrefTimeout, clearTimeout,
   setInterval: () => 1,
   clearInterval: () => {},
   requestAnimationFrame: (fn) => fn(),

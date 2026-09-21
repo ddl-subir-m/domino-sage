@@ -24,6 +24,7 @@
 //                          | "attach-then-failed-read" }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -111,7 +112,7 @@ function answer(path, init) {
 const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
   RegExp, encodeURIComponent, decodeURIComponent, URL, URLSearchParams,
-  setTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   TextEncoder, TextDecoder, Blob, ArrayBuffer, Uint8Array, FormData,
   fetch: (url, init) => {
     const path = url.split('?')[0];

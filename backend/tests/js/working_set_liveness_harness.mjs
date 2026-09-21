@@ -26,6 +26,7 @@
 //   deadapp    — the app the stuck row points at is gone, so selecting it fails.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -157,7 +158,7 @@ let confirmed = null;
 
 const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
-  RegExp, encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout,
+  RegExp, encodeURIComponent, decodeURIComponent, setTimeout: unrefTimeout, clearTimeout,
   setInterval: () => 1, clearInterval: () => {}, requestAnimationFrame: (fn) => fn(),
   URLSearchParams, TextEncoder, TextDecoder, URL, Blob, ArrayBuffer, Uint8Array,
   fetch: async (url, init) => {

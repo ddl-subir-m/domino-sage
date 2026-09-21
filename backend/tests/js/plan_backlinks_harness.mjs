@@ -8,6 +8,7 @@
 // until its load effect has run, so a no-op stub would only ever report a skeleton.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 // `variant` and `mode` are not free of each other in the real app — the page is only ever mounted
@@ -41,7 +42,7 @@ let effects = [];
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Blob, ArrayBuffer, Uint8Array, setTimeout, clearTimeout, setInterval, clearInterval,
+  Error, Blob, ArrayBuffer, Uint8Array, setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: (fn) => fn(),
   // `openThread` asks the viewer which conversation view they are in (#56), so the real prefs.js
   // comes along with the store. An in-memory backing map: this harness is not about what persists.

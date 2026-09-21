@@ -16,6 +16,7 @@
 // server reports a wedged turn as NOT running, so the lock is held and `running` is false.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const { app = null, plan = null, running = false, turn = null, wedged = false } =
@@ -24,7 +25,7 @@ const { app = null, plan = null, running = false, turn = null, wedged = false } 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, Infinity,
-  setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+  setTimeout: unrefTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
   requestAnimationFrame: (fn) => fn(),
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   document: { addEventListener() {}, removeEventListener() {}, querySelector: () => null, body: {} },

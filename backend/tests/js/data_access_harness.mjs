@@ -27,6 +27,7 @@
 //   { "table": true }                                   — the dispatcher-against-table check.
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -73,7 +74,7 @@ const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, TextEncoder, TextDecoder, URL, URLSearchParams, Infinity,
   isFinite, encodeURIComponent, decodeURIComponent,
-  setTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
   requestAnimationFrame: (fn) => fn(),
   fetch: (url) => Promise.resolve(String(url).includes('/chat/stream') ? stream() : serve(url)),
   // `storage: "blocked"` is a browser that will not take a write — private mode, blocked site data,
