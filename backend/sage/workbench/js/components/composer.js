@@ -999,6 +999,7 @@ window.SW = window.SW || {};
       && aliasRow(effectiveModel).reasoning_efforts_with_tools
       && !efforts.includes(reasoningEffort) ? reasoningEffort : null;
     const effortMenu = {
+      selectedKeys: [strandedChatEffort ? '__stranded__' : (reasoningEffort || 'default')],
       items: [
         { key: 'default', label: effortLabel(null) },
         ...efforts.map((value) => ({ key: value, label: effortLabel(value) })),
@@ -1008,7 +1009,14 @@ window.SW = window.SW || {};
         }] : []),
       ],
       onClick: ({ key }) => {
-        SW.store.setChatModel(model, key === 'default' ? null : key);
+        // A level rides beside the alias it was chosen under (ADR-0049), which is the alias the
+        // rows above were built from — `effectiveModel`, not `model`. With no explicit Chat pick
+        // `model` is `''`, and the server reads an empty model as "clear the pick" and drops the
+        // level with it, answering 200 (#487). So the pick pins the alias the chip already shows,
+        // the way a Build pick always carries its model. Model default with nothing pinned stays
+        // unpinned: that is the one click that means "follow the slot".
+        if (key === 'default') return SW.store.setChatModel(model, null);
+        SW.store.setChatModel(effectiveModel, key);
       },
     };
 

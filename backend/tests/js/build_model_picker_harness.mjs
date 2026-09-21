@@ -141,6 +141,12 @@ let mode = 'auto';
 let phase = 'plan';
 let picked = null;
 let pickedEffort = null;
+// The Chat pair, stored the way `set_chat_pick` stores it — cleared together when the body sends
+// no alias. Kept, not fixed at null: the effort picker's whole defect (#487) was a level that
+// reached this route beside an EMPTY alias and came back null on the same round trip, and a fake
+// server that always answered null could not tell that failure from a working save.
+let chatPicked = null;
+let chatEffort = null;
 // Server-computed (ADR-0032). Set by a step, never derived here — the point of the field is
 // that the picker cannot work it out, so a harness that derived it would test nothing.
 let signingSlot = null;
@@ -160,7 +166,7 @@ const json = (body) => ({
 const status = () => ({
   model: {
     mode, selected_mode: mode, phase, picked_model: picked, picked_effort: pickedEffort,
-    chat_model: null, reasoning_effort: null, catalog: CATALOG,
+    chat_model: chatPicked, reasoning_effort: chatEffort, catalog: CATALOG,
     signing_slot: signingSlot,
   },
 });
@@ -183,6 +189,17 @@ function serve(url, options = {}) {
     // that kept a level over a cleared pick would let the menu look right while the router read a
     // pairing nobody chose.
     if ('pick' in body) pickedEffort = body.pick ? (body.pick_effort || null) : null;
+    // `set_chat_pick`, as it stands after #487: an empty alias clears both, and an empty alias
+    // WITH a level is refused rather than shrugged at. The refusal matters to the picker's
+    // read-back path — a 200 carrying `reasoning_effort: null` is what put "Model default" back
+    // on the button, and a harness that answered 200 here would keep that path invisible.
+    if ('chat_model' in body) {
+      if (!body.chat_model && body.reasoning_effort) {
+        return json({ error: 'a reasoning_effort rides beside a chat_model' }, 400);
+      }
+      chatPicked = body.chat_model || null;
+      chatEffort = chatPicked ? (body.reasoning_effort || null) : null;
+    }
     return json(status());
   }
   // The REAL listing route, so `SW.api.fetchDominoListing`'s own mapper runs rather than being
@@ -428,8 +445,12 @@ for (const step of steps) {
   chatMount = !!step.chat;
   // What a Chat turn would run. Build reads its pinned slot or the override; Chat reads the picked
   // Alias, and the notice only draws when the lock moved it — so a Chat step has to name one.
-  if (step.chat) SW.store.set({ model: step.chatModel || CATALOG.plan, catalogAsk: CATALOG.ask,
-    reasoningEffort: step.chatEffort || null });
+  // An EXPLICIT `''` is kept, not defaulted: that is the store after a fresh load with no Chat
+  // pick, the state #487 lives in, and `||` would have quietly turned it into a pinned alias.
+  // `catalogAsk` is what the composer draws the chip from when nothing is pinned. Nameable, since
+  // the fixture's `ask` equals its `plan` and a test about WHICH alias went out needs them apart.
+  if (step.chat) SW.store.set({ model: step.chatModel === '' ? '' : (step.chatModel || CATALOG.plan),
+    catalogAsk: step.catalogAsk || CATALOG.ask, reasoningEffort: step.chatEffort || null });
   const locked = (step.sensitivity && step.sensitivity.datasets) || [];
   const held = step.declaredIn === 'chip' ? [] : (step.appDatasets || locked);
   const byName = (n) => ({ kind: 'dataset', id: `ds_${n}`, name: n });
@@ -526,7 +547,29 @@ for (const step of steps) {
     })(),
     chatEffortItems: chatEffortDropdown ? chatEffortDropdown.p.menu.items.map(itemRow) : null,
     chatEffortLabel: chatEffortDropdown ? strings(chatEffortDropdown).join(' ') : null,
+    chatEffortSelected: chatEffortDropdown ? chatEffortDropdown.p.menu.selectedKeys : null,
   };
+
+  // The Chat effort pick, clicked the way the Build pick below is. What it WROTE is the claim
+  // (#487): with no explicit Chat alias the menu is built from the Ask alias, and the level has
+  // to go out beside THAT alias, not beside the empty string the store holds. The read-back
+  // matters as much as the write — the round trip through the fake `set_chat_pick` above is
+  // what the button shows next, and a level that came back null is the whole defect.
+  if (step.chatPickEffort) {
+    if (!chatEffortDropdown) throw new Error('Chat mounts no effort menu to pick from');
+    const target = chatEffortDropdown.p.menu.items.find((i) => i.key === step.chatPickEffort);
+    if (!target) throw new Error(`the effort menu has no row keyed ${step.chatPickEffort}`);
+    chatEffortDropdown.p.menu.onClick({ key: target.key });
+    await settle();
+    row.wrote = calls.slice();
+    row.serverChatModel = chatPicked;
+    row.serverChatEffort = chatEffort;
+    const after = mount();
+    const afterDropdown = find(after, (n) => n.t === 'Dropdown' && n.p.menu
+      && n.p.menu.items.some((i) => i.key === 'default'));
+    row.afterEffortLabel = afterDropdown ? strings(afterDropdown).join(' ') : null;
+    row.afterEffortSelected = afterDropdown ? afterDropdown.p.menu.selectedKeys : null;
+  }
 
   if (step.pick) {
     if (!menu) throw new Error(`${step.mode} offers no model menu to pick from`);

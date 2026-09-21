@@ -6809,6 +6809,13 @@ class Orchestrator:
         """Standing Chat alias + reasoning_effort. `auto`/empty is Sage's default (catalog.ask)."""
         project = self._chat_project()
         if model in (None, "", "auto"):
+            if effort not in ("", None, "default"):
+                # A level with no alias is a caller error, not a clear. This used to drop the
+                # level and answer 200, and the picker's read-back of that 200 is what put
+                # "Model default" back on the button after every pick (#487). Refused, the route
+                # answers 400 and the client restores the pair it showed (#306).
+                raise ValueError("a reasoning_effort rides beside a chat_model; send the alias "
+                                 "the level was chosen under, or Model default to clear both")
             project.control.pick_chat(None, None)
             return
         try:
