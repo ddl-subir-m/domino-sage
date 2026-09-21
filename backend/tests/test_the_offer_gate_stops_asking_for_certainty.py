@@ -130,10 +130,12 @@ def test_a_decision_already_recorded_is_not_asked_for_again(tmp_path: Path, deci
     assert "investigation-offer" not in _kinds(list(orch.chat_stream(tid, ASK)))
 
 
-@pytest.mark.parametrize("label", ["plain_answer", "build_app", "other_chat"])
-def test_a_label_outside_the_two_bounded_ones_draws_no_card(tmp_path: Path, label: str):
+@pytest.mark.parametrize("label", ["plain_answer", "other_chat"])
+def test_a_label_outside_the_offered_ones_draws_no_card(tmp_path: Path, label: str):
     """Plant two: the label. Unsure does not mean unread — a turn the classifier put somewhere
-    else at 0.60 is still somewhere else, and the widening only reaches the two bounded labels."""
+    else at 0.60 is still somewhere else, and the widening only reaches the offered labels.
+    `build_app` left this list with #488: a fusion "report" is an investigation before it is a
+    page, and the funnel's explicit-build guard is what keeps a Build request out, not the label."""
     orch, _ = _orch_at(tmp_path, label=label)
     tid = _thread_with_a_store(orch)
 

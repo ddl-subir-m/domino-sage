@@ -75,7 +75,8 @@ not the same as reordering them:
                 T4 the walk found at least one candidate
 
     INVESTIGATION  I1 investigation state is not open|declined
-                   I2 intent.usable_label AND label in {data_answer, data_artifact}
+                   I2 (intent.usable_label AND label in {data_answer, data_artifact, build_app})
+                      OR intent.fallback in {timeout, error, invalid-json}     — widened by #488
                    I3 a bound data_source|datasource|table context item
                    I4 _looks_investigative(prompt)  (service.py:2330, pure, no model call)
 

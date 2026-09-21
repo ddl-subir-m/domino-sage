@@ -153,6 +153,32 @@ def test_a_source_that_is_not_in_this_conversation_is_refused_by_name(tmp_path):
     turn, _ = turn_for(tmp_path, bound={"datasource": ()})
     said = _run(turn, "SELECT COUNT(*) FROM E")
     assert "isn't in this conversation" in said
+    # The sentence is read by the MODEL first (#488). It says whose act adding is, and that the
+    # right move is to stop — not "ask again", which a model read as "repeat the call".
+    assert "the person can add it" in said
+    assert "Say so and stop" in said
+    assert "Ask again" not in said and "ask again" not in said.split("stop")[0]
+
+
+def test_a_system_named_as_the_source_is_told_which_store_to_pass_instead(tmp_path):
+    """#488's own call: the model passed "gong" — a system that lives INSIDE the bound warehouse —
+    as `source`, and read the refusal as "that table is out of reach". When exactly one store is
+    bound the refusal names it, says `source` wanted the store, and says where the table goes."""
+    turn, _ = turn_for(tmp_path)  # bound: ("DWH",)
+    said = run.perform("live_read_query", {"source": "gong", "sql": "SELECT 1"}, turn)
+    assert "gong isn't a Data Source in this conversation" in said
+    assert "The one here is DWH" in said
+    assert "pass that as `source`" in said
+    assert "name the table you want in the SQL" in said
+    assert "say so and stop" in said
+
+
+def test_two_bound_stores_are_not_guessed_between(tmp_path):
+    """With two stores the refusal cannot say which one was meant, so it does not try."""
+    turn, _ = turn_for(tmp_path, bound={"datasource": ("DWH", "LAKE")})
+    said = run.perform("live_read_query", {"source": "gong", "sql": "SELECT 1"}, turn)
+    assert "gong isn't in this conversation" in said
+    assert "The one here" not in said
 
 
 @pytest.mark.parametrize("missing", ["source_for", "run_statement"])

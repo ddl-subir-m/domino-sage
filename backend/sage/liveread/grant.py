@@ -48,16 +48,33 @@ def reachable(kind: str, name: str, *, bound: Iterable[str] = (), chips: Iterabl
         return Refusal("not-readable", brand.text(
             "{assistantName} has nothing by that name to read here."
         ))
-    named = {str(n).casefold() for n in bound} | {str(n).casefold() for n in chips}
+    reachable_names = [str(n) for n in bound] + [str(n) for n in chips]
+    named = {n.casefold() for n in reachable_names}
     if (name or "").casefold() not in named:
         # Names the thing and the PLACE, never the mechanism. It used to name the act, on the
         # reasoning that the glossary's own label points at something the person can see — but the
         # row draws that act as an unlabelled `+`, and the label lives in a menu behind it, so the
         # sentence sent them looking for words that are not on screen (#410). The panel's heading
         # is on screen, and it is where both acts are reached from (ADR-0015).
+        #
+        # Two readers, and the sentence is handed to the MODEL first (#488). It read "add it, then
+        # ask again" as an instruction to itself: it asked again, through the shell, and the
+        # repeat brake ended the turn. So the sentence now says who the act belongs to — and when
+        # the thing it named is a SYSTEM inside a store this turn can already reach ("gong" on a
+        # Thread bound to the warehouse), it says which noun `source` wanted. The grant is on the
+        # store (ADR-0059): naming it here hands out nothing the turn did not already hold.
+        if kind == "datasource" and len(reachable_names) == 1:
+            return Refusal("not-in-range", brand.text(
+                "{name} isn't a {dataSource} in this conversation. The one here is {store}: pass "
+                "that as `source`, and name the table you want in the SQL. If the table you need "
+                "is not in {store}, say so and stop — the person can add it from {project} "
+                "resources.",
+                name=name or "That", store=reachable_names[0],
+            ))
         return Refusal("not-in-range", brand.text(
-            "{name} isn't in this conversation. Add it from {project} resources, then ask again.",
-            name=name or "that",
+            "{name} isn't in this conversation. Say so and stop — the person can add it from "
+            "{project} resources, then ask again. Do not look for it another way.",
+            name=name or "That",
         ))
     return None
 

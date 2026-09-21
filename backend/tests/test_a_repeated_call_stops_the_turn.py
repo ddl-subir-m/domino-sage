@@ -423,6 +423,68 @@ def test_a_chat_turn_that_repeats_one_call_is_stopped_and_told_what_repeated(tmp
     assert oc.interrupted == 1
 
 
+def test_a_stopped_chat_turn_says_what_a_read_refused_before_it_stuck(tmp_path: Path):
+    """#488. The turn asked `live_read_query` for "gong" — a system, not the bound store — was
+    refused by name, went to the shell for it, and ran `bash` three times. The brake said
+    "stopped: bash (true)", which the person cannot act on. The refusal named the thing to add.
+
+    The refused read is made the real way, through `live_read_call` with the token this turn
+    minted — read out of the prompt the moment `send_prompt` receives it, which is after the mint
+    and before the first repeated call closes. What is asserted is the sentence the person is
+    handed at the end: the refusal rides on it.
+    """
+    import re
+
+    class _RefusedFirst(ChatLoopOpenCode):
+        def send_prompt(self, *args, **kwargs):
+            super().send_prompt(*args, **kwargs)
+            token = re.search(r"Read token: (lrt_[A-Za-z0-9_-]+)", self.prompts[-1]["text"]).group(1)
+            reply = orch.live_read_call({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "live_read_query",
+                           "arguments": {"token": token, "source": "gong", "sql": "SELECT 1"}}})
+            self.refused_with = reply["result"]["content"][0]["text"]
+
+    oc = _RefusedFirst(tmp_path / "mnt" / "code", [Turn(text="looking")])
+    orch = _orch(tmp_path, oc, "CHAT")
+    tid = orch.create_thread()["id"]
+
+    events = list(orch.chat_stream(tid, "report of active DMM users across gong and sfdc"))
+
+    assert "gong isn't in this conversation" in oc.refused_with
+    err = next(e for e in events if e.get("type") == "error")
+    assert "ran the same step" in err["message"]
+    assert "Before that, a read was refused: gong isn't in this conversation" in err["message"]
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeated"
+
+
+def test_a_stopped_chat_turn_with_no_refusal_carries_none(tmp_path: Path):
+    """The other half of the plant: the sentence is added only when a read was refused. A turn
+    that simply looped says what it said before #488, and nothing about reads."""
+    oc = ChatLoopOpenCode(tmp_path / "mnt" / "code", [Turn(text="looking")])
+    orch = _orch(tmp_path, oc, "CHAT")
+    tid = orch.create_thread()["id"]
+
+    events = list(orch.chat_stream(tid, "whats in my uploads"))
+
+    err = next(e for e in events if e.get("type") == "error")
+    assert "a read was refused" not in err["message"]
+
+
+def test_the_refusal_record_is_about_one_turn(tmp_path: Path):
+    """Reset when the next token is minted, the way the read count is — a refusal from an earlier
+    turn must not be pinned on a later one that never asked for that table."""
+    oc = ChatLoopOpenCode(tmp_path / "mnt" / "code", [Turn(text="looking")])
+    orch = _orch(tmp_path, oc, "CHAT")
+    tid = orch.create_thread()["id"]
+    orch._live_read_refused[tid] = "gong isn't in this conversation (stale)"
+
+    events = list(orch.chat_stream(tid, "whats in my uploads"))
+
+    err = next(e for e in events if e.get("type") == "error")
+    assert "stale" not in err["message"]
+
+
 def test_chat_counts_calls_that_answered_not_calls_that_started(tmp_path: Path, monkeypatch):
     """Three opens and two closes is two repeats, not three.
 

@@ -118,6 +118,20 @@ def test_a_scoped_table_passes_the_store_as_source_and_the_table_in_the_sql():
     assert "DWH.MARTS.MIXPANEL__EVENT" in line
 
 
+def test_a_scoped_table_is_the_only_table_the_row_permits():
+    """The row hands out a shell recipe for the store, and the store holds other tables. #488: a
+    fusion question on a Thread scoped to `MIXPANEL__EVENT` read the recipe as a door to the whole
+    warehouse and went looking for Gong and SFDC through it. The row now says, in the same breath
+    as the recipe, that the one table is the one table — and what to do when that is not enough."""
+    line = _chat_context_line(SCOPED_CHIP, thread_id=TID)
+
+    assert "DWH.MARTS.MIXPANEL__EVENT is the one table in this conversation" in line
+    assert "do not query another table in Snowflake-Data-Warehouse" in line
+    assert "say which and stop" in line
+    # After the recipe, not before it: the clause qualifies the recipe, so it reads as part of it.
+    assert line.index("DataSourceClient") < line.index("is the one table in this conversation")
+
+
 def test_a_scoped_table_with_no_source_name_still_says_it_cannot_be_reached():
     """The one shape where nothing here knows what to pass, and the sentence is honest.
 

@@ -130,9 +130,12 @@ nor a deliberate grant is talk.
 
 ## The offer, and what it costs
 
-An offer fires when the turn **would be bounded** (`intent.usable_label` and the label is
-`data_answer` or `data_artifact`), a Data Source or table chip is on the Thread, the sentence looks
-investigative, and no decision has been recorded. It yields its card and
+An offer fires when the classifier put the turn on a data-shaped label (`intent.usable_label` and
+the label is `data_answer`, `data_artifact` or `build_app`) **or did not answer at all** (`timeout`,
+`error`, `invalid-json`), a Data Source or table chip is on the Thread, the sentence looks
+investigative, and no decision has been recorded. Amended by #488 — the first condition used to
+read *"would be bounded"*, `data_answer` or `data_artifact` only; see the residual list below for
+what that cost and why it changed. It yields its card and
 `{"type": "done", "ok": False, "decision": "investigation offer"}`, both appended to history so the
 card survives a reload, and **the turn does not run** — the shape `_chat_table_candidates_events`
 already uses for the table card.
@@ -186,15 +189,26 @@ one without a card — is a surface this record is not the place to design.
   the turn, so the cost is one click and one round trip before the question runs — and the decline
   is remembered. Priced rather than dismissed: the opposite failure, a trigger narrow enough never
   to misfire, is the one that produced a gate nothing could open.
-- **Two bounded paths are offered nothing, and that is the narrowing's price.** The offer requires
-  `intent.usable_label` and a `data_answer` or `data_artifact` label, which buys most of a prose
-  trigger's false positives for free — a classifier saying this is a data question is a second
-  opinion the words alone are not. But `plain_answer` arms `arm_read_only("question")` too, and
-  when the classifier is unavailable or answers `other_chat`, `answer_only` falls back to
-  `_plain_chat_answer_only`. So *"dig into why weekly active users fell"* asked while the gateway is
-  down is bounded and draws no card. Named rather than closed: widening the gate to those paths
-  would put the offer in front of every prose question a classifier could not read, which is the
-  judgement the label check exists to avoid making.
+- **Two labels are offered nothing, and that is the narrowing's price.** The offer requires
+  `intent.usable_label` and a data-shaped label, which buys most of a prose trigger's false
+  positives for free — a classifier saying this is a data question is a second opinion the words
+  alone are not. But `plain_answer` arms `arm_read_only("question")` too, and when the classifier
+  answers `other_chat`, `answer_only` falls back to `_plain_chat_answer_only`. Named rather than
+  closed: widening the gate to those two would put the offer in front of every prose question,
+  which is the judgement the label check exists to avoid making.
+
+  **Amended 2026-09-21 (#488): two cases this paragraph used to name are now admitted, and the
+  reasons are the measured ones.** *`build_app`* — `chat_intent` makes every "report" a
+  `build_app`, *"even if they involve data"*, and the sentence that opened #488 was a report that
+  fused three warehouse systems: this ADR's own example shape, with a chip on the Thread, refused
+  on the label alone. A chip, fusion prose and a data-shaped label are three signals, not prose
+  alone; the funnel's explicit-build guard (ADR-0059) is what keeps a Build request out, and it
+  still does. *A classifier that did not answer* (`timeout`, `error`, `invalid-json`) — the reason
+  for refusing it was "arming a lane off a guess"; but those fallbacks run the turn on the
+  eleven-tool shell lane with NO grant, no findings file and no card, which is the capability
+  without the frame. Measured: a 5 s classify timeout put the #488 question on that lane for 107 s
+  until the repeat brake ended it. A card is the cheaper bet. `low-confidence` and
+  `no-bound-context` mean the classifier WORKED and declined, and are not this case.
 - **Answering one card can now get you another.** The replay carries `investigationAnswered` and
   nothing else, so a question that first drew a table card, then got its table, can meet this card
   next: two clicks and two round trips for one question. Chat's other two gates are state-backed —

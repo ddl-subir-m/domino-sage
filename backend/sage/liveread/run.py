@@ -73,6 +73,11 @@ class Turn:
     upload_for: Callable[[str], Path | None] | None = None
     record_data_use: Callable[..., None] | None = None
     analyze_text_batch: Callable[[dict[str, Any]], Any] | None = None
+    # Told the sentence a `not-in-range` refusal handed the model (#488). The Turn is built fresh
+    # per call, so the record cannot live on it; the caller keeps it per Conversation, and a turn
+    # the repeat brake stops can then say what the model was told and ignored. A refusal names a
+    # source or a Dataset, never a row — the same class `_no_card` already logs.
+    record_refusal: Callable[[str], None] | None = None
 
 
 def _slug(*parts: str) -> str:
@@ -82,6 +87,22 @@ def _slug(*parts: str) -> str:
     while "--" in out:
         out = out.replace("--", "-")
     return out[:60] or "live-read"
+
+
+def _refused(turn: Turn, refusal: grant.Refusal | None) -> grant.Refusal | None:
+    """A grant refusal on its way to the model, told to the Conversation's record first (#488).
+
+    Four sites make one, and each returns it in its own shape — a `Read` for the two the button
+    shares, a sentence for the two only the model reaches — so the record is taken here, where the
+    object is still in hand and its tag can be read, rather than downstream where the text is all
+    that is left and matching it would be matching a quote of the signal.
+
+    Wraps `grant.reachable` itself, so `None` — the grant passing, the common case — goes through
+    untouched: every caller's `if refused:` is what decides, and this line decides nothing.
+    """
+    if refusal is not None and turn.record_refusal and refusal.tag == "not-in-range":
+        turn.record_refusal(refusal.says)
+    return refusal
 
 
 def _no_card(says: str) -> str:
@@ -234,8 +255,8 @@ def _table_rows(turn: Turn, name: str, database: str, schema: str, table: str, l
     passes. A viewer whose access went away is refused on the same line the agent would be, which is
     what makes "the button reads as the viewer" a property rather than a promise (#256).
     """
-    refused = grant.reachable("datasource", name,
-                              bound=turn.bound.get("datasource", ()), chips=turn.chips.get("datasource", ()))
+    refused = _refused(turn, grant.reachable("datasource", name,
+                              bound=turn.bound.get("datasource", ()), chips=turn.chips.get("datasource", ())))
     if refused:
         return Read(refused=refused.says)
 
@@ -331,8 +352,8 @@ def _files(args: dict, turn: Turn) -> str:
     if not rel:
         # The listing arm checks the grant itself. The file arm gets it from `_file_rows`, which is
         # where **Read again** gets it too — one check on that road rather than two written alike.
-        refused = grant.reachable("dataset", name,
-                                  bound=turn.bound.get("dataset", ()), chips=turn.chips.get("dataset", ()))
+        refused = _refused(turn, grant.reachable("dataset", name,
+                                  bound=turn.bound.get("dataset", ()), chips=turn.chips.get("dataset", ())))
         if refused:
             return _no_card(refused.says)
         listing = turn.list_files(name) if turn.list_files else None
@@ -373,8 +394,8 @@ def _file_rows(turn: Turn, name: str, rel: str) -> Read:
     the same road here too, including the grant, so a Dataset that stopped being reachable refuses
     the button the same way it refuses the agent (#256).
     """
-    refused = grant.reachable("dataset", name,
-                              bound=turn.bound.get("dataset", ()), chips=turn.chips.get("dataset", ()))
+    refused = _refused(turn, grant.reachable("dataset", name,
+                              bound=turn.bound.get("dataset", ()), chips=turn.chips.get("dataset", ())))
     if refused:
         return Read(refused=refused.says)
 
@@ -506,9 +527,9 @@ def _statement(args: dict, turn: Turn) -> str:
     if not sql:
         return _no_card("Send the statement to run as `sql`. Nothing was put on the person's screen.")
 
-    refused = grant.reachable("datasource", name,
+    refused = _refused(turn, grant.reachable("datasource", name,
                               bound=turn.bound.get("datasource", ()),
-                              chips=turn.chips.get("datasource", ()))
+                              chips=turn.chips.get("datasource", ())))
     if refused:
         return _no_card(refused.says)
     source = turn.source_for(name) if turn.source_for else None

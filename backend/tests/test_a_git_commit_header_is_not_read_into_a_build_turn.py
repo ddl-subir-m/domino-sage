@@ -274,3 +274,18 @@ def test_chat_is_told_not_to_run_git_at_all_in_both_copies():
                   "carries the committer's email address"):
         assert probe in md, probe
         assert probe in prompt, probe
+
+
+def test_chat_is_told_the_named_table_is_the_only_table_in_both_copies():
+    """#488, same mirror. The pack said "say which one and stop" and, twenty lines on, handed a
+    `DataSourceClient` recipe for the store — and a lane with a shell took the recipe to the
+    tables the context never named. The rule that closes that is pinned in both copies, beside
+    the sentence it qualifies, so that whichever copy a reader opens says the same thing."""
+    md = (ROOT / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
+    prompt = json.loads((ROOT / "opencode.json").read_text(encoding="utf-8"))[
+        "agent"]["sage-chat"]["prompt"]
+    for probe in ("do not query a table the context does not name through the shell",
+                  "is in\n  context FOR that table",
+                  "against\n  the table the context names, and only that one"):
+        assert probe in md, probe
+        assert probe in prompt, probe

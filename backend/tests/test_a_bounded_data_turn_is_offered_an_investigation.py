@@ -112,9 +112,11 @@ def test_an_everyday_question_is_answered_rather_than_offered(tmp_path: Path, pr
      "Investigate which accounts look like adopters and write the script that scores them.", True),
     ("nothing bound to investigate", "data_answer",
      "Investigate which accounts look like adopters and score them.", False),
+    ("a plain answer, not a data question", "plain_answer",
+     "Investigate which accounts look like adopters and score them.", True),
 ])
 def test_no_card_is_drawn(tmp_path: Path, why: str, label: str, prompt: str, bind: bool):
-    """The three ways this declines, each leaving the turn exactly as it was."""
+    """The ways this declines, each leaving the turn exactly as it was."""
     orch, _ = _orch(tmp_path, [Turn(text="Answered.")],
                     gateway=IntentGateway({"label": label, "confidence": 0.93}))
     tid = _thread_with_a_store(orch) if bind else orch.create_thread()["id"]
@@ -122,3 +124,68 @@ def test_no_card_is_drawn(tmp_path: Path, why: str, label: str, prompt: str, bin
     events = list(orch.chat_stream(tid, prompt))
 
     assert not any(e.get("type") == "investigation-offer" for e in events)
+
+
+# --- #488: the report that fused three systems and was offered nothing ------------------------
+
+# The sentence that opened the ticket, verbatim. Every "report" is `build_app` by the classifier's
+# own rule (`chat_intent.py`: "even if they involve data"), and "fuse" matched no limb — so with a
+# chip on the Thread and the ADR's own example shape, this drew no card, ran on the shell lane for
+# 107 s, and was stopped by the repeat brake.
+REPORT = ("give me a report of active DMM users. fuse data from gong mixpanel and sfdc to build "
+          "this report. be sure to include customer status in sfdc and mention accounts where the "
+          "signal is only from gong in separate columns. exclude churned customers and domino "
+          "employees from the analysis")
+
+
+@pytest.mark.parametrize("verb", ["fuse", "fuses", "fused", "fusing",
+                                  "merge", "merges", "merged", "merging",
+                                  "blend", "blends", "blended", "blending"])
+def test_the_fusion_verbs_name_the_limb_they_belong_to(verb: str):
+    """Each verb means fusion on its own, the way "reconcile" does — no trailing list needed.
+    One row per form, so a pattern that kept the stem and lost an ending reds its own row."""
+    from sage.orchestrator.service import _looks_investigative
+    assert _looks_investigative(f"{verb} the gong data with sfdc"), verb
+
+
+def test_a_report_that_fuses_sources_is_offered_the_investigation(tmp_path: Path):
+    """`build_app` is admitted. The label still rides to the end of the turn for the handoff
+    suggest (#453); what changes is that a fusion with a chip on the Thread is asked first."""
+    orch, oc = _orch(tmp_path, [Turn(text="answered anyway")],
+                     gateway=IntentGateway({"label": "build_app", "confidence": 0.75}))
+    tid = _thread_with_a_store(orch)
+
+    events = list(orch.chat_stream(tid, REPORT))
+
+    card = next(e for e in events if e.get("type") == "investigation-offer")
+    assert card["prompt"] == REPORT
+    done = next(e for e in events if e.get("type") == "done")
+    assert done["ok"] is False and done["decision"] == "investigation offer"
+    assert oc.prompts == []
+
+
+def test_a_classifier_that_did_not_answer_offers_rather_than_running_blind(tmp_path: Path):
+    """The classifier's failure fallbacks used to run the turn on the eleven-tool lane with no
+    grant. `IntentGateway("not json")` is what a model whose JSON mode cannot hold sends; the
+    parser stamps `invalid-json`, one of the three fallbacks that mean it never answered."""
+    orch, oc = _orch(tmp_path, [Turn(text="answered anyway")], gateway=IntentGateway("not json"))
+    tid = _thread_with_a_store(orch)
+
+    events = list(orch.chat_stream(tid, REPORT))
+
+    assert any(e.get("type") == "investigation-offer" for e in events)
+    assert oc.prompts == []
+
+
+def test_an_explicit_build_request_that_fuses_sources_still_goes_to_build(tmp_path: Path):
+    """The guard that stays. ADR-0059 sends a build-shaped sentence past this gate before it is
+    asked, so admitting `build_app` does not put a Chat grant in front of a Build request."""
+    orch, _ = _orch(tmp_path, [Turn(text="answered anyway")],
+                    gateway=IntentGateway({"label": "build_app", "confidence": 0.93}))
+    tid = _thread_with_a_store(orch)
+
+    prompt = "build me a dashboard that fuses Gong and Salesforce into one view of adopters"
+    events = list(orch.chat_stream(tid, prompt))
+
+    assert not any(e.get("type") == "investigation-offer" for e in events)
+    assert any(e.get("type") == "handoff-suggest" for e in events), [e.get("type") for e in events]

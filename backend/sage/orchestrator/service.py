@@ -2532,17 +2532,22 @@ _INVESTIGATIVE_ACT = re.compile(
     re.IGNORECASE,
 )
 
-# The fusion limb, in two halves. Four verbs mean fusion on their own — there is no reading of
-# "reconcile" or "cross-reference" that is one table. The other four are ordinary data words that
-# only mean fusion when they reach a LIST, so they need an "and" beside them, inside the same
-# sentence: "How many users joined last month?" and "revenue across regions" are single-source
-# questions that these words would otherwise have claimed, and each false positive costs the person
-# a click. `based on the CSV` is the same case with the same answer.
+# The fusion limb, in two halves. Seven verbs mean fusion on their own — there is no reading of
+# "reconcile" or "cross-reference" that is one table, and "fuse", "merge" and "blend" name the act
+# the limb is about (#488: the ADR's limb is CALLED "fuses sources", and the sentence that opened
+# the ticket said "fuse data from gong mixpanel and sfdc" and matched nothing). The other four are
+# ordinary data words that only mean fusion when they reach a LIST, so they need an "and" beside
+# them, inside the same sentence: "How many users joined last month?" and "revenue across regions"
+# are single-source questions that these words would otherwise have claimed, and each false
+# positive costs the person a click. `based on the CSV` is the same case with the same answer.
 _FUSES_SOURCES = re.compile(
     r"\b(?:cross[- ]referenc(?:e|es|ed|ing)"
     r"|correlat(?:e|es|ed|ing|ion)"
     r"|reconcil(?:e|es|ed|ing)"
-    r"|triangulat(?:e|es|ed|ing))\b"
+    r"|triangulat(?:e|es|ed|ing)"
+    r"|fus(?:e|es|ed|ing)"
+    r"|merg(?:e|es|ed|ing)"
+    r"|blend(?:s|ed|ing)?)\b"
     r"|\b(?:across|combin(?:e|es|ed|ing)|join(?:s|ed|ing)?|based\s+on)\b[^.?!\n]*\band\b",
     re.IGNORECASE,
 )
@@ -2576,6 +2581,15 @@ def _looks_investigative(prompt: str) -> bool:
     text = prompt or ""
     return any(pattern.search(text) is not None
                for pattern in (_INVESTIGATIVE_ACT, _FUSES_SOURCES, _DOUBTS_THE_COLUMN))
+
+
+# The fourth condition of the investigation offer (ADR-0056), in two halves that
+# `_chat_investigation_offer` reads. The labels the offer is made on, and the fallbacks that mean
+# the classifier never answered at all — the ones `chat_intent._WORKING` does NOT list, because a
+# turn that lost its judgement is the one that runs unbounded with no grant (#488). Named here so
+# a reader of the gate sees both sets beside the predicate they extend, not a literal each.
+_OFFERED_LABELS = frozenset({"data_answer", "data_artifact", "build_app"})
+_CLASSIFIER_DID_NOT_ANSWER = frozenset({"timeout", "error", "invalid-json"})
 
 
 # Asking to throw the app away and start over (#36). Two shapes, both requiring the WHOLE app as the
@@ -3587,23 +3601,34 @@ def _repeat_answer(msgs: object, fingerprint: str) -> str:
     return ""
 
 
-def _repeat_message(label: str, answer: str) -> str:
+def _repeat_message(label: str, answer: str, told: str = "") -> str:
     """What to tell somebody whose turn was stopped for repeating itself.
 
     It names the call because the previous sentence for a turn that ended without finishing —
     "stopped making progress" — sent somebody after a question that was never too big. What
     repeated is a fact the person cannot see and Sage can.
+
+    `told` is the last thing a Live read refused this turn with (#488), when there was one. The
+    person sees "it stopped: live_read_query" and cannot act on that; what they can act on is the
+    refusal the model was handed and went past — "gong isn't in this conversation" — which names
+    the thing to add. Carried whether or not the repeated step was the read: a turn refused a table
+    and then stuck on `bash` was stuck for that reason too. Written after the sentence, on its
+    own, so the ask stays where it was.
     """
     step = label or "a step"
     if answer:
-        return brand.text(
+        said = brand.text(
             '{assistantName} ran the same step {n} times, so it stopped. {step} answered: "{answer}". '
             "Ask a different way, or point it at what it should read.",
             n=_REPEAT_LIMIT, step=step, answer=answer)
-    return brand.text(
-        "{assistantName} ran the same step {n} times, so it stopped: {step}. "
-        "Ask a different way, or point it at what it should read.",
-        n=_REPEAT_LIMIT, step=step)
+    else:
+        said = brand.text(
+            "{assistantName} ran the same step {n} times, so it stopped: {step}. "
+            "Ask a different way, or point it at what it should read.",
+            n=_REPEAT_LIMIT, step=step)
+    if told:
+        said += brand.text(" Before that, a read was refused: {told}", told=told)
+    return said
 
 
 def _chat_live_event(ev) -> dict | None:
@@ -3859,6 +3884,8 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "`from domino_data.data_sources import DataSourceClient` then "
                 '`DataSourceClient().get_datasource({quoted}).query('
                 '"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
+                "Either way, {dotted} is the one table in this conversation: do not query another "
+                "table in {name} — if the question needs one, say which and stop. "
                 "Do not search files, env, or /opt/sage for credentials. Do not invent rows. "
                 "If the query errors, tell the person.",
                 name=name, dotted=dotted, extra=extra, quoted=repr(store),
@@ -5306,6 +5333,11 @@ class Orchestrator:
         # Live reads this turn has served, per Conversation, under the same lock as the token they
         # spend. Reset when the token is minted, so a count is always about one turn.
         self._live_reads: dict[str, int] = {}
+        # The last `not-in-range` refusal a Live read handed the model this turn, per Conversation
+        # (#488). Kept beside the count, reset and swept with it, so a turn the repeat brake stops
+        # can say what the model was told and went past. One sentence, not a list: the brake fires
+        # on a REPEAT, and the sentence that repeated is the last one.
+        self._live_read_refused: dict[str, str] = {}
         # Delegated model calls this turn has served, per Conversation, counted by the label the
         # person reads (ADR-0057). Two readers and one writer: the cap reads the total, and the
         # receipt written at the end of the turn reads the breakdown. Reset when the turn's token is
@@ -10842,6 +10874,7 @@ class Orchestrator:
         with self._live_read_lock:
             self._live_read[thread_id] = (token, time.monotonic())
             self._live_reads.pop(thread_id, None)
+            self._live_read_refused.pop(thread_id, None)
         # The same token names this turn for a Delegated model call, so this is the moment that
         # turn's call count starts over (ADR-0057). Reset here rather than at the end of the last
         # turn: a turn that died — stopped, timed out, or took the process with it — would have left
@@ -10866,6 +10899,7 @@ class Orchestrator:
                 if now - at > _LIVE_READ_TTL_S:
                     self._live_read.pop(thread_id, None)
                     self._live_reads.pop(thread_id, None)
+                    self._live_read_refused.pop(thread_id, None)
                     expired.append(thread_id)
                 elif tok == token:
                     found = thread_id
@@ -10883,6 +10917,12 @@ class Orchestrator:
                     self._delegated_calls.pop(thread_id, None)
                     self._delegated_lines.pop(thread_id, None)
         return found
+
+    def _last_live_read_refusal(self, thread_id: str) -> str:
+        """The last `not-in-range` sentence a Live read handed the model this turn, or "" (#488).
+        Read under the lock the writer holds; reset at mint, so it is always about one turn."""
+        with self._live_read_lock:
+            return self._live_read_refused.get(thread_id, "")
 
     def _live_read_turn(self, token: str) -> live_read.Turn | None:
         """What a Live read may see, read from the records as they stand now.
@@ -11031,6 +11071,10 @@ class Orchestrator:
             return project.shim.handle(request, project=project.id,
                                        session=f"{thread_id}:text-analysis")
 
+        def record_refusal(says: str) -> None:
+            with self._live_read_lock:
+                self._live_read_refused[thread_id] = says
+
         return live_read.Turn(
             thread_id=thread_id,
             examples_dir=store.examples_dir(thread_id),
@@ -11051,6 +11095,7 @@ class Orchestrator:
             upload_for=upload_for,
             record_data_use=record_data_use,
             analyze_text_batch=analyze_text_batch,
+            record_refusal=record_refusal,
         )
 
     def live_read_again(self, thread_id: str, source: dict) -> dict:
@@ -11244,9 +11289,15 @@ class Orchestrator:
             turn = self._live_read_turn(str(args.get("token") or ""))
             if turn is None:
                 # Not a refusal the person is owed — it means the turn moved on. Told to the
-                # assistant plainly so it asks again rather than inventing an answer.
+                # assistant plainly so it uses the right token rather than inventing an answer.
+                # It used to say "ask again on this turn", and a model holding a stale token from
+                # an earlier turn did exactly that: the same call, three times, until the repeat
+                # brake stopped it (#488). The sentence now points at WHICH token, and never at
+                # asking again.
                 log.info("live read: %s — the token is not this turn's, asking again", name)
-                return "That read token is not current. Ask again on this turn."
+                return ("That read token is not current — it is from an earlier turn. Use the "
+                        "token written in this turn's prompt, exactly as it appears there. Do "
+                        "not repeat the call with the same token.")
             # Counted and decided in one step under the lock, the way `_delegated_reserve` is: a
             # read-then-count would let two calls both see "24 so far" and the cap hold only on
             # average. Counted BEFORE the read rather than after, so a read that raises still spends
@@ -11311,9 +11362,13 @@ class Orchestrator:
             thread_id = self._live_read_thread(str(args.get("token") or ""))
             if thread_id is None:
                 # Not a refusal the person is owed — it means the turn moved on. Told to the
-                # assistant plainly so it asks again rather than inventing an answer.
+                # assistant plainly so it uses the right token rather than inventing an answer.
+                # Worded as the Live read's twin above is, and for the same reason (#488): "ask
+                # again" reads as "repeat the call", and three repeats is the brake.
                 log.info("delegated model call: the token is not this turn's, asking again")
-                return "That turn token is not current. Ask again on this turn."
+                return ("That turn token is not current — it is from an earlier turn. Use the "
+                        "token written in this turn's prompt, exactly as it appears there. Do "
+                        "not repeat the call with the same token.")
             if thread_id == self._chat_project().build_conversation:
                 # The same property `enforcement.py` holds by taking the tool off a Build turn's
                 # list, held here as well rather than only there. The shim's filter is a gateway-side
@@ -13349,7 +13404,8 @@ class Orchestrator:
                                     log.exception("chat: reading the repeated answer failed")
                                     said = []
                                 looped = _repeat_message(
-                                    brake.label, _repeat_answer(said, brake.fingerprint))
+                                    brake.label, _repeat_answer(said, brake.fingerprint),
+                                    told=self._last_live_read_refusal(thread_id))
                             running_tools.pop(call, None)
                             running_paths.pop(call, None)
                     live = _chat_live_event(ev)
@@ -13495,8 +13551,9 @@ class Orchestrator:
                                 # the moment the stream delivers a tool frame it owns the counting
                                 # and starts a fresh run, and a call counted from both would have
                                 # halved the threshold.
-                                looped = _repeat_message(brake.label,
-                                                         _repeat_answer(msgs, brake.fingerprint))
+                                looped = _repeat_message(
+                                    brake.label, _repeat_answer(msgs, brake.fingerprint),
+                                    told=self._last_live_read_refusal(thread_id))
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
                                   "detail": _tool_detail(tool, part)}
                             if str(tool).lower() in _CHAT_SHOWN_TOOLS:
@@ -14945,18 +15002,35 @@ class Orchestrator:
           card asking again until it got the answer it wanted. `closed` is NOT one of them — closing
           returns the Thread to where it started, and the next investigative question may offer
           again, which is the only way back in.
-        - The label is not `data_answer` or `data_artifact`. This is the ticket's own narrowing and
-          it is a TRADE, not a statement about which turns are bounded — do not read it as one. Two
-          other paths are bounded and are offered nothing here: `plain_answer` arms
-          `arm_read_only("question")` too, and when the classifier is unavailable or answers
-          `other_chat`, `answer_only` falls back to `_plain_chat_answer_only`, which is true of any
-          question carrying none of `_CHAT_ARTIFACT_OR_DATA_ASK`'s nouns — in the ASK, with the bound
-          items' names masked out of the text first, so that a store called
-          `Snowflake-Data-Warehouse` no longer supplies the noun itself (#421). So "dig into why
-          weekly active users fell" with the gateway down is armed read-only and draws no card.
-          What the narrowing buys is most of a prose trigger's false positives for nothing — a
-          classifier saying this is a data question is a second opinion the words alone are not —
-          and what it costs is the offer on those two paths. ADR-0056 records the residual.
+        - The label is `plain_answer` or `other_chat`. This is the ticket's own narrowing and it
+          is a TRADE, not a statement about which turns are bounded — do not read it as one.
+          `plain_answer` arms `arm_read_only("question")` too and is offered nothing here; when the
+          classifier answers `other_chat`, `answer_only` falls back to `_plain_chat_answer_only`,
+          which is true of any question carrying none of `_CHAT_ARTIFACT_OR_DATA_ASK`'s nouns — in
+          the ASK, with the bound items' names masked out of the text first, so that a store called
+          `Snowflake-Data-Warehouse` no longer supplies the noun itself (#421). What the narrowing
+          buys is most of a prose trigger's false positives for nothing — a classifier saying this
+          is a data question is a second opinion the words alone are not — and what it costs is
+          the offer on those two paths. ADR-0056 records the residual.
+
+          Two labels the narrowing used to refuse are admitted, since #488:
+
+          `build_app`. `chat_intent.py` makes every "report" a `build_app` — *"even if they involve
+          data"* — and the sentence that opened #488 was a REPORT that fused three warehouse
+          systems: the ADR's own example shape, with a chip on the Thread, refused on the label
+          alone. Three signals are not prose alone. And the label still does what it did: it is
+          carried to the end of the turn (`build_app_intent`, #453) for the handoff suggest, and
+          the funnel's explicit-build guard (`looks_like_build_request`, ADR-0059) still sends
+          *"build me a dashboard that cross-references…"* to Build before this gate is asked.
+
+          A classifier that DID NOT ANSWER — `timeout`, `error`, `invalid-json`. The reason for
+          refusing it was "arming a lane off a guess"; but the fallback for those three is
+          `bounded_intent` False, which is the eleven-tool lane with a shell and NO grant, no
+          findings file, no card — the capability without the frame. Measured on #488: a 5 s
+          classify timeout put a fusion question on that lane for 107 s until the repeat brake
+          ended it. A card is the cheaper of the two bets. Fallbacks that mean the classifier
+          WORKED and declined (`low-confidence` is admitted by `usable_label`; `no-bound-context`
+          cannot reach here, see below) are not this case.
 
           The label, and NOT how sure the classifier was of it (#401). It reads
           `intent.usable_label` where it used to read `intent.valid`, which also asks for
@@ -14980,7 +15054,9 @@ class Orchestrator:
         """
         if not self._could_offer_an_investigation(prompt, items, investigation):
             return None
-        if not (intent.usable_label and intent.label in {"data_answer", "data_artifact"}):
+        unanswered = intent.fallback in _CLASSIFIER_DID_NOT_ANSWER
+        labelled = intent.usable_label and intent.label in _OFFERED_LABELS
+        if not (labelled or unanswered):
             return None
         return self._chat_investigation_offer_events(store, thread_id, prompt)
 
