@@ -2412,7 +2412,7 @@ window.SW = window.SW || {};
           id: `ro_${messages.length}`,
           role: 'system',
           order: pos,
-          blocks: [{ type: 'recall_offer', scope: ev.scope, offerKey: recallOfferKey('chat', pos) }],
+          blocks: [{ type: 'recall_offer', scope: ev.scope, reason: ev.reason, offerKey: recallOfferKey('chat', pos) }],
         });
       } else if (ev.type === 'handoff-suggest' && !hideSuggest && i === liveSuggest) {
         assistant = null;
@@ -3129,7 +3129,7 @@ window.SW = window.SW || {};
           // one component on both sides because it says the same thing; the session it empties is
           // filed per (Conversation, app) here and per Thread there, and only the caller knows
           // which of those it is standing in.
-          blocks: [{ type: 'recall_offer', scope: ev.scope, surface: 'build',
+          blocks: [{ type: 'recall_offer', scope: ev.scope, reason: ev.reason, surface: 'build',
                      offerKey: recallOfferKey('build', pos) }],
         });
       } else if (ev.type === 'saved') {

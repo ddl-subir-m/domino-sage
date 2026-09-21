@@ -26,6 +26,8 @@ from http.cookiejar import CookieJar, DefaultCookiePolicy
 from typing import Any, Protocol
 
 from .open_models import OpenModel
+from .protocol import Protocol as WireProtocol
+from .protocol import endpoint
 
 # Domino workspace sidecar that mints a short-lived access token.
 DEFAULT_SIDECAR_URL = "http://localhost:8899/access-token"
@@ -159,8 +161,9 @@ class GuardrailEvent:
 
 
 class GatewayClient(Protocol):
-    def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
-        """Forward an OpenAI-compatible request to the gateway; stream the response back."""
+    def route(self, request: dict[str, Any], labels: CostLabels, *,
+              protocol: WireProtocol = WireProtocol.CHAT, cancel=None) -> Iterator[bytes]:
+        """Forward an already serialized protocol payload to the configured gateway."""
         ...
 
     def guardrail_events(self) -> Iterator[GuardrailEvent]:
@@ -174,9 +177,12 @@ class FakeGatewayClient:
 
     scripted_events: list[GuardrailEvent] = field(default_factory=list)
     seen: list[tuple[dict[str, Any], CostLabels]] = field(default_factory=list)
+    seen_protocols: list[WireProtocol] = field(default_factory=list)
 
-    def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
+    def route(self, request: dict[str, Any], labels: CostLabels, *,
+              protocol: WireProtocol = WireProtocol.CHAT, cancel=None) -> Iterator[bytes]:
         self.seen.append((request, labels))
+        self.seen_protocols.append(protocol)
         # Echo the (possibly overridden) model so tests can assert the shim set it.
         yield f'{{"model": "{request.get("model")}", "phase": "{labels.phase}"}}'.encode()
 
@@ -187,6 +193,29 @@ class FakeGatewayClient:
 class _NoCookies(DefaultCookiePolicy):
     def set_ok(self, cookie, request):
         return False
+
+
+class StreamCancellation:
+    """Close only this request's response when its downstream reader disconnects."""
+    def __init__(self):
+        self.event = threading.Event()
+        self._close = None
+        self._lock = threading.Lock()
+
+    def bind(self, close):
+        with self._lock:
+            self._close = close
+            stopped = self.event.is_set()
+        if stopped:
+            close()
+
+    def cancel(self):
+        self.event.set()
+        with self._lock:
+            close = self._close
+            self._close = None
+        if close is not None:
+            close()
 
 
 class _PooledHTTPClient:
@@ -253,8 +282,14 @@ class OpenAICompatibleClient(_PooledHTTPClient):
         self._domino_tags = domino_tags
         super().__init__(timeout_s, read_timeout_s)
 
-    def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
+    def route(self, request: dict[str, Any], labels: CostLabels, *,
+              protocol: WireProtocol = WireProtocol.CHAT, cancel=None) -> Iterator[bytes]:
+        protocol = WireProtocol(protocol)
+        if protocol is not WireProtocol.CHAT and not self._domino_tags:
+            raise ValueError("Native model requests require the configured LLM Gateway")
         headers = {"Authorization": f"Bearer {self._token_provider()}"}
+        if protocol is WireProtocol.MESSAGES:
+            headers["anthropic-version"] = "2023-06-01"
         if self._domino_tags:
             # Stored in the gateway's usage `tags` column, queryable as group_by=tag:sage-*.
             # Namespaced `sage-` to (a) isolate Sage traffic on the shared gateway and (b) dodge
@@ -274,7 +309,8 @@ class OpenAICompatibleClient(_PooledHTTPClient):
                 headers["X-LLM-Tag-sage-project"] = labels.project_name
             if labels.route_reason:
                 headers["X-LLM-Tag-sage-route-reason"] = labels.route_reason
-        url = f"{self._base_url}/chat/completions"  # base already ends in /v1
+        url = (endpoint(self._base_url, protocol) if self._domino_tags
+               else f"{self._base_url}/chat/completions")
         # read_timeout_s (default 300s) is the inter-chunk read timeout: httpx applies the read
         # timeout to the GAP between streamed chunks. The original scalar 60s was too SHORT — LLM
         # turns routinely pause >60s mid-stream (extended thinking) -> ReadTimeout -> the stream to
@@ -283,12 +319,18 @@ class OpenAICompatibleClient(_PooledHTTPClient):
         # thinking gaps yet still surfaces a dead stream as a clean error (the shim wraps it into a
         # readable message). connect/write/pool stay bounded via _timeout_s.
         with self._http_client().stream("POST", url, json=request, headers=headers) as resp:
+            if cancel is not None:
+                cancel.bind(resp.close)
             # Surface upstream errors BEFORE streaming so the caller gets a clean message
             # instead of a mid-stream reset. A 3xx here means auth bounced to a login page.
             if resp.status_code >= 400 or resp.is_redirect:
                 body = resp.read().decode(errors="replace")[:800]
                 raise GatewayUpstreamError(resp.status_code, url, body)
-            yield from resp.iter_bytes()
+            for chunk in resp.iter_bytes():
+                if cancel is not None and cancel.event.is_set():
+                    return
+                for start in range(0, len(chunk), 65536):
+                    yield chunk[start:start + 65536]
 
     def guardrail_events(self) -> Iterator[GuardrailEvent]:
         raise NotImplementedError("Step 2.3: depends on guardrail event exposure (Q4)")
@@ -305,7 +347,10 @@ class MultiProviderOpenAIClient(_PooledHTTPClient):
         self._by_id = {m.id: m for m in models}
         super().__init__(timeout_s, read_timeout_s)
 
-    def route(self, request: dict[str, Any], labels: CostLabels) -> Iterator[bytes]:
+    def route(self, request: dict[str, Any], labels: CostLabels, *,
+              protocol: WireProtocol = WireProtocol.CHAT, cancel=None) -> Iterator[bytes]:
+        if WireProtocol(protocol) is not WireProtocol.CHAT:
+            raise ValueError("Native protocols require the LLM Gateway")
         model_id = request.get("model")
         model = self._by_id.get(model_id)
         if model is None:

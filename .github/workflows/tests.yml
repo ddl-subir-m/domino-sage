@@ -38,8 +38,12 @@ jobs:
         with:
           node-version: "22" # `engines.node = ">=22.13.0"` in the root package.json.
 
-      # Most harnesses import `node:fs` and `node:vm` only, so no `npm ci` is needed here, and the
-      # Vite template's node_modules are for the preview server that no test starts.
+      # The native gateway harness exercises the same pinned SDK codecs as production.
+      - name: Install gateway codecs
+        run: npm ci --omit=dev --ignore-scripts
+
+      # Most other harnesses import `node:fs` and `node:vm` only. The Vite template's
+      # node_modules are for the preview server that no test starts.
       #
       # `app_model_outcome_harness.mjs` is the exception and it is why the pin is 22 and not 20: it
       # imports `stripTypeScriptTypes` from `node:module` to compile the generated .ts helper, and

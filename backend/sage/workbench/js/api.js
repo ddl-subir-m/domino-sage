@@ -170,6 +170,7 @@ async function fetchDominoListing() {
         // field refuse every level on this leg while the other leg reads it as unanswered: the same
         // absence given two opposite answers, decided by which listing happened to reply (#295).
         reasoning_efforts_with_tools: a.reasoning_efforts_with_tools,
+        reasoning_note: a.reasoning_note,
         bindingKey: ['llm_alias', a.id],
       })),
       model_predictive: (res.model_apis || []).map((m) => ({
@@ -274,6 +275,7 @@ function rowFromMember(item) {
     // missing value as "no evidence" while `[]` means "this alias offers no levels" (#295). A
     // default here would turn every such row into a refusal of every level.
     reasoning_efforts_with_tools: item.reasoning_efforts_with_tools,
+    reasoning_note: item.reasoning_note,
     pins: item.pins || [],
     // Every Built App that binds this Resource, with its Scope (#133). Server-computed from the
     // apps' own manifests, so the Resource Browser subtitle and the drawer both read one answer —

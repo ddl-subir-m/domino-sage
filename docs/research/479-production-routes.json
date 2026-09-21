@@ -1,0 +1,652 @@
+{
+  "requests": [
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 3,
+        "type:adaptive": 1
+      },
+      "tools": 0,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 2,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 7,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 2,
+        "type:text": 1,
+        "type:text_delta": 5,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "status": "complete",
+      "input_tokens": 845,
+      "output_tokens": 46
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 2,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 4,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 38,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 4,
+        "type:text": 1,
+        "type:text_delta": 16,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:input_json_delta": 20,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "status": "complete",
+      "input_tokens": 3180,
+      "output_tokens": 393
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 3,
+        "type:thinking": 1,
+        "signature": 1,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:tool_result": 2,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 2,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 8,
+        "type:text_delta": 8,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "status": "complete",
+      "input_tokens": 3828,
+      "output_tokens": 54
+    },
+    {
+      "model": "gpt-5.4",
+      "protocol": "responses",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:input_text": 2
+      },
+      "tools": 0,
+      "settings": {
+        "reasoning": {
+          "effort": "low"
+        }
+      },
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 2,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 2,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 7,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.completed": 1
+      },
+      "status": "complete",
+      "input_tokens": 561,
+      "output_tokens": 55
+    },
+    {
+      "model": "gpt-5.4",
+      "protocol": "responses",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:input_text": 1,
+        "type:function": 2,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3
+      },
+      "tools": 2,
+      "settings": {
+        "reasoning": {
+          "effort": "low"
+        }
+      },
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 6,
+        "type:object": 6,
+        "type:string": 9,
+        "type:integer": 9,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 4,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 4,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 5,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:function_call": 6,
+        "type:response.function_call_arguments.delta": 2,
+        "type:response.function_call_arguments.done": 2,
+        "type:response.completed": 1
+      },
+      "status": "complete",
+      "input_tokens": 1750,
+      "output_tokens": 267
+    },
+    {
+      "model": "gpt-5.4",
+      "protocol": "responses",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:input_text": 1,
+        "type:reasoning": 1,
+        "encrypted_content": 1,
+        "type:output_text": 1,
+        "type:function_call": 2,
+        "type:function_call_output": 2,
+        "type:function": 2,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3
+      },
+      "tools": 2,
+      "settings": {
+        "reasoning": {
+          "effort": "low"
+        }
+      },
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 6,
+        "type:object": 6,
+        "type:string": 9,
+        "type:integer": 9,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 1,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 18,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.output_item.done": 1,
+        "type:response.completed": 1
+      },
+      "status": "complete",
+      "input_tokens": 2188,
+      "output_tokens": 22
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "protocol": "chat",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {},
+      "tools": 0,
+      "settings": {
+        "reasoning_effort": "low"
+      },
+      "response_shape": {
+        "thought_signature": 1
+      },
+      "status": "complete",
+      "input_tokens": 576,
+      "output_tokens": 71
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "protocol": "chat",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:function": 2,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3
+      },
+      "tools": 2,
+      "settings": {
+        "reasoning_effort": "low"
+      },
+      "response_shape": {
+        "type:function": 2,
+        "thought_signature": 1
+      },
+      "status": "complete",
+      "input_tokens": 1907,
+      "output_tokens": 406
+    },
+    {
+      "model": "domino/gemini-3.7-flash",
+      "protocol": "chat",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:function": 4,
+        "thought_signature": 1,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3
+      },
+      "tools": 2,
+      "settings": {
+        "reasoning_effort": "low"
+      },
+      "response_shape": {
+        "thought_signature": 1
+      },
+      "status": "complete",
+      "input_tokens": 2508,
+      "output_tokens": 156
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 3,
+        "type:adaptive": 1
+      },
+      "tools": 0,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 4,
+        "type:text_delta": 4,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "status": "complete",
+      "input_tokens": 918,
+      "output_tokens": 11
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 2,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 2,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 12,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 2,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:input_json_delta": 10,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "status": "complete",
+      "input_tokens": 3253,
+      "output_tokens": 163
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:thinking": 1,
+        "signature": 1,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:tool_result": 1,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 2,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 2,
+        "type:thinking": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 15,
+        "type:thinking_delta": 1,
+        "type:signature_delta": 1,
+        "signature": 1,
+        "type:content_block_stop": 2,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:input_json_delta": 13,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "status": "complete",
+      "input_tokens": 3525,
+      "output_tokens": 199
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:thinking": 2,
+        "signature": 2,
+        "type:tool_use": 2,
+        "type:direct": 2,
+        "type:tool_result": 2,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 2,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 5,
+        "type:input_json_delta": 5,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "status": "complete",
+      "input_tokens": 3733,
+      "output_tokens": 65
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:thinking": 2,
+        "signature": 2,
+        "type:tool_use": 3,
+        "type:direct": 3,
+        "type:tool_result": 3,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 2,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:tool_use": 1,
+        "type:direct": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 10,
+        "type:input_json_delta": 10,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "status": "complete",
+      "input_tokens": 3818,
+      "output_tokens": 103
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:thinking": 2,
+        "signature": 2,
+        "type:tool_use": 4,
+        "type:direct": 4,
+        "type:tool_result": 4,
+        "type:object": 2,
+        "type:string": 3,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 2,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {
+        "type:message_start": 1,
+        "type:message": 1,
+        "type:content_block_start": 1,
+        "type:text": 1,
+        "type:ping": 1,
+        "type:content_block_delta": 26,
+        "type:text_delta": 26,
+        "type:content_block_stop": 1,
+        "type:message_delta": 1,
+        "type:message_stop": 1
+      },
+      "status": "complete",
+      "input_tokens": 4030,
+      "output_tokens": 114
+    }
+  ],
+  "turns": [
+    {
+      "label": "Opus-4.8",
+      "status": 200,
+      "error": null,
+      "finish": "stop",
+      "marker": true,
+      "models": [
+        "Opus-4.8",
+        "Opus-4.8",
+        "Opus-4.8"
+      ],
+      "protocols": [
+        "messages",
+        "messages",
+        "messages"
+      ]
+    },
+    {
+      "label": "gpt-5.4",
+      "status": 200,
+      "error": null,
+      "finish": "stop",
+      "marker": true,
+      "models": [
+        "gpt-5.4",
+        "gpt-5.4",
+        "gpt-5.4"
+      ],
+      "protocols": [
+        "responses",
+        "responses",
+        "responses"
+      ]
+    },
+    {
+      "label": "domino/gemini-3.7-flash",
+      "status": 200,
+      "error": null,
+      "finish": "stop",
+      "marker": true,
+      "models": [
+        "domino/gemini-3.7-flash",
+        "domino/gemini-3.7-flash",
+        "domino/gemini-3.7-flash"
+      ],
+      "protocols": [
+        "chat",
+        "chat",
+        "chat"
+      ]
+    },
+    {
+      "label": "auto-and-rescue",
+      "status": 200,
+      "error": null,
+      "finish": "stop",
+      "marker": true,
+      "models": [
+        "Opus-4.8",
+        "Opus-4.8",
+        "Opus-4.8",
+        "Opus-4.8",
+        "Opus-4.8",
+        "Opus-4.8"
+      ],
+      "protocols": [
+        "messages",
+        "messages",
+        "messages",
+        "messages",
+        "messages",
+        "messages"
+      ]
+    }
+  ],
+  "limitations": [
+    "First Auto fixture did not offer edit permission, so the harness used bash to write; that run does not establish a protocol transition."
+  ]
+}

@@ -466,6 +466,7 @@ window.SW = window.SW || {};
   // answers are in the transcript and the summary is built from them — the second keeps nothing.
   function RecallOffer({ block }) {
     const complete = (block || {}).scope === 'empty';
+    const policyChange = (block || {}).reason === 'native-policy-change';
     // One card, two sessions. Build's Recall lives per (Conversation, app) and Chat's per Thread,
     // so the button has to know which transcript drew it.
     //
@@ -487,13 +488,18 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-suggestion-title' },
         h(ThunderboltOutlined, { style: { color: '#543FDE' } }),
-        complete ? "It's still being refused." : 'This conversation keeps being refused.'
+        policyChange ? 'This conversation needs a fresh model context.'
+          : complete ? "It's still being refused." : 'This conversation keeps being refused.'
       ),
       h(
         'div',
         { className: 'sw-suggestion-detail' },
         // eslint-disable-next-line no-nested-ternary
-        complete
+        policyChange
+          ? (build
+            ? 'The access rules changed. Clear recall to continue. Your app, plan and transcript stay.'
+            : 'The access rules changed. Clear recall to continue with a summary. Your transcript stays.')
+          : complete
           ? (build
             ? 'Starting over was not enough, so what the gateway matched came back into the new '
               + 'session. Clearing Recall again leaves the model nothing it has been told here. '

@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
 
+from ..gateway.capabilities import legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..router import llm_router
 from ..router.model_control import ModelControl
@@ -23,8 +24,6 @@ from ..router.models import (
     ModelCatalog,
     Reason,
     is_bedrock,
-    reasoning_efforts_for,
-    reasoning_efforts_with_tools,
     supports_vision,
 )
 from ..router.phase_classifier import READ_ONLY_DENIED, READ_TOOLS, TODO_TOOLS, WEB_TOOLS, assess
@@ -195,6 +194,7 @@ class EnforcementShim:
         # The last (model, effort, carries-tools) triple whose effort was dropped, so the line below
         # says something when the answer changes and nothing on the requests that repeat it.
         self._effort_dropped: tuple[str, str, bool] | None = None
+        self.resolve_capability = legacy
 
     @property
     def catalog(self) -> ModelCatalog:
@@ -222,6 +222,18 @@ class EnforcementShim:
 
     def handle(self, request: dict[str, Any], project: str, session: str | None = None,
                on_resolved=None, on_refused=None) -> Iterator[bytes]:
+        request, labels, used, capability = self.prepare(request, project, session, on_resolved)
+        from ..gateway.protocol import Protocol
+        if capability.protocol is not Protocol.CHAT:
+            from .native import text_stream
+            stream = text_stream(self._gateway, request, labels, capability)
+        else:
+            stream = self._gateway.route(request, labels)
+        stream = _capture_refusal(stream, request, on_refused)
+        return self.data_use.observe(stream, request, used)
+
+    def prepare(self, request: dict[str, Any], project: str, session: str | None = None,
+                on_resolved=None, *, native: bool = False):
         """OpenAI-compatible request in, streamed response out. OpenCode points at this.
 
         `project` is kept for the log line only — the gateway captures the caller's Domino project
@@ -469,8 +481,8 @@ class EnforcementShim:
         #    every alias, so a Build plan phase — always tool-carrying — could never send one, and
         #    gemini's measured 200 with tools and all was thrown away with it.
         tool_call = bool(request.get("tools"))
-        accepted = (reasoning_efforts_with_tools(request["model"]) if tool_call
-                    else reasoning_efforts_for(request["model"]))
+        capability = self.resolve_capability(request["model"])
+        accepted = capability.efforts_with_tools if tool_call else capability.efforts
         # Whatever the caller sent is not an answer to any of the three. `model` is overwritten
         # above on every request, so an incoming effort was chosen for a model that is no longer on
         # the wire — the exact stale pairing the rest of this block exists to prevent, arriving
@@ -482,6 +494,9 @@ class EnforcementShim:
 
         effort = decision.effort
         if effort is not None and effort not in accepted:
+            if native or capability.identity:
+                raise ValueError(f"{request['model']} cannot use the saved reasoning setting {effort!r}. "
+                                 "Choose Model default or a supported setting. " + capability.reason)
             # Said out loud. A dropped effort is a silent bill — the turn runs at the alias's own
             # default, costs more or thinks less than the person asked for, and looks exactly like a
             # turn nobody configured. This line is what tells a stale stored level from a slot that
@@ -619,5 +634,4 @@ class EnforcementShim:
             project_name=self._project_name,
         )
         request, used = self.data_use.prepare(request, withheld=state.withheld)
-        stream = _capture_refusal(self._gateway.route(request, labels), request, on_refused)
-        return self.data_use.observe(stream, request, used)
+        return request, labels, used, capability

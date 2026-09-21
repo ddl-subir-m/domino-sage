@@ -1,0 +1,852 @@
+{
+  "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway",
+  "protocol": "responses",
+  "alias": "gpt-5.4",
+  "transition": false,
+  "requests": [
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream"
+      ],
+      "request_shape": {
+        "type:input_text": 2
+      },
+      "tool_count": 0,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 12,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 573,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 36,
+        "output_tokens_details": {
+          "reasoning_tokens": 18
+        },
+        "total_tokens": 609
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 2,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 2,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 12,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 3.014
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 1,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.output_item.done": 3,
+        "response.function_call_arguments.delta": 2,
+        "response.function_call_arguments.done": 2,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 610,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 211,
+        "output_tokens_details": {
+          "reasoning_tokens": 63
+        },
+        "total_tokens": 821
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 3,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 3,
+        "type:function_call": 6,
+        "type:response.function_call_arguments.delta": 2,
+        "type:response.function_call_arguments.done": 2,
+        "type:response.completed": 1
+      },
+      "seconds": 3.358
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 1,
+        "type:reasoning": 1,
+        "encrypted_content": 1,
+        "type:function_call": 2,
+        "type:function_call_output": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 18,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 994,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 22,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1016
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 1,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 18,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.output_item.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 1.733
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 2,
+        "type:reasoning": 1,
+        "encrypted_content": 1,
+        "type:function_call": 2,
+        "type:function_call_output": 2,
+        "type:output_text": 1,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.output_item.done": 2,
+        "response.function_call_arguments.delta": 55,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 967,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 79,
+        "output_tokens_details": {
+          "reasoning_tokens": 10
+        },
+        "total_tokens": 1046
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 2,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 2,
+        "type:function_call": 3,
+        "type:response.function_call_arguments.delta": 55,
+        "type:response.function_call_arguments.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 2.226
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 2,
+        "type:reasoning": 2,
+        "encrypted_content": 2,
+        "type:function_call": 3,
+        "type:function_call_output": 3,
+        "type:output_text": 1,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 8,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 1133,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 12,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1145
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 1,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 8,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.output_item.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 1.319
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 3,
+        "type:reasoning": 2,
+        "encrypted_content": 2,
+        "type:function_call": 3,
+        "type:function_call_output": 3,
+        "type:output_text": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.output_item.done": 2,
+        "response.function_call_arguments.delta": 55,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 1153,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 182,
+        "output_tokens_details": {
+          "reasoning_tokens": 113
+        },
+        "total_tokens": 1335
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 2,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 2,
+        "type:function_call": 3,
+        "type:response.function_call_arguments.delta": 55,
+        "type:response.function_call_arguments.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 2.851
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 3,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:function_call": 4,
+        "type:function_call_output": 4,
+        "type:output_text": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 13,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 1423,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 17,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1440
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 1,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 13,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.output_item.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 2.123
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream"
+      ],
+      "request_shape": {
+        "type:input_text": 2,
+        "type:reasoning": 1,
+        "encrypted_content": 1,
+        "type:function_call": 2,
+        "type:function_call_output": 2,
+        "type:output_text": 1
+      },
+      "tool_count": 0,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 383,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 825,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 397,
+        "output_tokens_details": {
+          "reasoning_tokens": 8
+        },
+        "total_tokens": 1222
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 2,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 2,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 383,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 4.21
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 4,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:output_text": 3,
+        "type:function_call": 2,
+        "type:function_call_output": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.output_item.done": 2,
+        "response.function_call_arguments.delta": 55,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 1349,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 163,
+        "output_tokens_details": {
+          "reasoning_tokens": 94
+        },
+        "total_tokens": 1512
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 2,
+        "type:reasoning": 3,
+        "encrypted_content": 3,
+        "type:response.output_item.done": 2,
+        "type:function_call": 3,
+        "type:response.function_call_arguments.delta": 55,
+        "type:response.function_call_arguments.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 2.472
+    },
+    {
+      "path": "/v1/responses",
+      "model": "gpt-5.4",
+      "request_keys": [
+        "include",
+        "input",
+        "max_output_tokens",
+        "model",
+        "reasoning",
+        "store",
+        "stream",
+        "tool_choice",
+        "tools"
+      ],
+      "request_shape": {
+        "type:input_text": 4,
+        "type:reasoning": 4,
+        "encrypted_content": 4,
+        "type:output_text": 3,
+        "type:function_call": 3,
+        "type:function_call_output": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      },
+      "tool_count": 1,
+      "events": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 13,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 1599,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 17,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 1616
+      },
+      "status": 200,
+      "response_shape": {
+        "type:response.created": 1,
+        "type:text": 3,
+        "type:function": 3,
+        "type:object": 3,
+        "type:string": 3,
+        "type:integer": 6,
+        "type:response.in_progress": 1,
+        "type:response.output_item.added": 1,
+        "type:message": 3,
+        "type:response.content_part.added": 1,
+        "type:output_text": 4,
+        "type:response.output_text.delta": 13,
+        "type:response.output_text.done": 1,
+        "type:response.content_part.done": 1,
+        "type:response.output_item.done": 1,
+        "type:response.completed": 1
+      },
+      "seconds": 1.354
+    }
+  ],
+  "decisions": [
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 1,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 3,
+        "type:reasoning": 1,
+        "type:tool-call": 2,
+        "type:tool-result": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 5,
+        "type:reasoning": 1,
+        "type:tool-call": 2,
+        "type:tool-result": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 6,
+        "type:reasoning": 2,
+        "type:tool-call": 3,
+        "type:tool-result": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 8,
+        "type:reasoning": 2,
+        "type:tool-call": 3,
+        "type:tool-result": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 9,
+        "type:reasoning": 3,
+        "type:tool-call": 4,
+        "type:tool-result": 4,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 5,
+        "type:reasoning": 1,
+        "type:tool-call": 2,
+        "type:tool-result": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 9,
+        "type:reasoning": 3,
+        "type:tool-call": 2,
+        "type:tool-result": 2,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    },
+    {
+      "protocol": "responses",
+      "prompt_shape": {
+        "type:text": 10,
+        "type:reasoning": 4,
+        "type:tool-call": 3,
+        "type:tool-result": 3,
+        "type:function": 1,
+        "type:object": 1,
+        "type:string": 1,
+        "type:integer": 2
+      }
+    }
+  ],
+  "turns": [
+    {
+      "restart": 0,
+      "status": 200,
+      "request_count": 3,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    },
+    {
+      "restart": 0,
+      "status": 200,
+      "request_count": 2,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    },
+    {
+      "restart": 1,
+      "status": 200,
+      "request_count": 2,
+      "finish": "stop",
+      "error_type": null,
+      "answer_has_marker": true,
+      "part_shape": {
+        "type:step-start": 1,
+        "type:text": 1,
+        "type:step-finish": 1
+      }
+    }
+  ],
+  "compaction": {
+    "status": 200,
+    "request_count": 1
+  },
+  "after_compaction": {
+    "status": 200,
+    "request_count": 2,
+    "both_markers": true,
+    "part_shape": {
+      "type:step-start": 1,
+      "type:text": 1,
+      "type:step-finish": 1
+    }
+  }
+}

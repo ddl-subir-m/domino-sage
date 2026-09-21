@@ -53,10 +53,12 @@ from __future__ import annotations
 import concurrent.futures
 import re
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
+from ..gateway.capabilities import RouteCapability, evidence, resolve
 from ..orchestrator import brand
 from ..router.models import reasoning_efforts_for as measured_reasoning_efforts
 from ..router.models import reasoning_efforts_with_tools as measured_reasoning_efforts_with_tools
@@ -129,6 +131,10 @@ class LlmAlias:
     # /api/alias-groups (`approved_aliases` takes either), and a redaction resolves to an empty
     # approved set, which refuses. It cannot fail open.
     groups: list[str] = field(default_factory=list)
+    provider_id: str | None = None
+    provider_type: str | None = None
+    provider_model: str | None = None
+    route_capability: RouteCapability | None = None
 
     @property
     def reasoning_efforts_with_tools(self) -> list[str]:
@@ -148,7 +154,8 @@ class LlmAlias:
         the menu as "this alias offers no levels", silently removing a control. It also keeps the
         positional-argument hazard off a dataclass that is constructed positionally in fixtures.
         """
-        return alias_efforts_with_tools(self.name, self.reasoning_efforts)
+        return (list(self.route_capability.efforts_with_tools) if self.route_capability is not None
+                else alias_efforts_with_tools(self.name, self.reasoning_efforts))
 
 
 @dataclass(frozen=True)
@@ -1419,7 +1426,7 @@ def approved_aliases(
     return tuple(ordered)
 
 
-def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:
+def join_aliases(accessible: set[str], records: list[dict], *, gateway_root: str | None = None) -> list[LlmAlias]:
     """Intersect the accessible model ids with the alias metadata records.
 
     Matched on alias `name` OR `id`: `/v1/models` reports the name a call must use, which is the
@@ -1439,6 +1446,7 @@ def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:
         if not key:
             continue
         claimed.add(key)
+        route = resolve(gateway_root, rec, evidence()) if gateway_root is not None else None
         out.append(
             LlmAlias(
                 id=rid or name,
@@ -1448,14 +1456,19 @@ def join_aliases(accessible: set[str], records: list[dict]) -> list[LlmAlias]:
                 capabilities=parse_capabilities(rec.get("capabilities")),
                 costs=parse_costs(rec.get("effective_costs")),
                 endpoint_url=str(rec["endpoint_url"]) if rec.get("endpoint_url") else None,
-                reasoning_efforts=alias_reasoning_efforts(name or rid, rec.get("inference_params")),
+                reasoning_efforts=(list(route.efforts) if route is not None else
+                                   alias_reasoning_efforts(name or rid, rec.get("inference_params"))),
                 groups=parse_groups(rec.get("groups")),
+                provider_id=rec.get("provider_id"), provider_type=rec.get("provider_type"),
+                provider_model=rec.get("provider_model"), route_capability=route,
             )
         )
     for extra in sorted(accessible - claimed):
         out.append(LlmAlias(
             id=extra, name=extra, display_name=extra,
-            reasoning_efforts=alias_reasoning_efforts(extra),
+            reasoning_efforts=alias_reasoning_efforts(extra) if gateway_root is None else [],
+            route_capability=resolve(gateway_root, {"id": extra, "name": extra}, evidence())
+                if gateway_root is not None else None,
         ))
     return out
 
@@ -1666,11 +1679,22 @@ class DominoResourceProvider:
         self._timeout_s = timeout_s
         self._api_host = api_host.rstrip("/")
         self._api_token_provider = api_token_provider or token_provider
+        self._reasoning_cache: tuple[float, dict[str, RouteCapability]] = (0, {})
 
     def list_llm_aliases(self) -> list[LlmAlias]:
         models = self._get("/v1/models")  # accessible set, already filtered for this caller
         aliases = self._get("/api/aliases")  # display name, capabilities, cost
-        return join_aliases(accessible_ids(models), records_of(aliases))
+        rows = join_aliases(accessible_ids(models), records_of(aliases), gateway_root=self._root)
+        self._reasoning_cache = (time.monotonic(), {a.name: a.route_capability for a in rows})
+        return rows
+
+    def reasoning_capability(self, model: str) -> RouteCapability:
+        # Refresh metadata, including updated_at and fallback, at most five seconds after a read.
+        # A destination change never inherits the old identity's verified choices.
+        if time.monotonic() - self._reasoning_cache[0] > 5:
+            self._reasoning_cache = (0, {})
+            self.list_llm_aliases()
+        return self._reasoning_cache[1].get(model, RouteCapability())
 
     def list_alias_groups(self) -> list[dict]:
         """The gateway's alias groups, verbatim (ADR-0043).

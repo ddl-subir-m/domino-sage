@@ -1,0 +1,257 @@
+{
+  "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway",
+  "identities": [
+    {
+      "id": "462b30c4f65f4c2dbed8e957625c6010",
+      "name": "Opus-4.8",
+      "provider_id": "efedd07b061d422d978f6973cb02171d",
+      "provider_type": "anthropic",
+      "provider_model": "claude-opus-4-8",
+      "fallback_chain": [],
+      "updated_at": "2026-09-14T17:30:09.964541"
+    },
+    {
+      "id": "c4a44e2c02d84a1bb56a617e8d904dbe",
+      "name": "domino/gemini-3.7-flash",
+      "provider_id": "65610f91db0146b0b76f682543b8b058",
+      "provider_type": "vertex",
+      "provider_model": "gemini-3.7-flash",
+      "fallback_chain": [],
+      "updated_at": "2026-09-14T17:33:21.334551"
+    },
+    {
+      "id": "8c6a55c9623f4856a93ba6e2597b3eaa",
+      "name": "gpt-5.4",
+      "provider_id": "91c8542a21374549b76e9328b0c1a988",
+      "provider_type": "openai",
+      "provider_model": "gpt-5.4",
+      "fallback_chain": [],
+      "updated_at": "2026-09-14T17:30:54.067559"
+    },
+    {
+      "id": "42d8137ad78d40ca88cd8370e1601a43",
+      "name": "haiku",
+      "provider_id": "efedd07b061d422d978f6973cb02171d",
+      "provider_type": "anthropic",
+      "provider_model": "claude-haiku-4-5",
+      "fallback_chain": [],
+      "updated_at": "2026-09-14T17:31:01.233713"
+    },
+    {
+      "id": "95d304ce164c4b10b01e6a32e8e5fc46",
+      "name": "sonnet",
+      "provider_id": "efedd07b061d422d978f6973cb02171d",
+      "provider_type": "anthropic",
+      "provider_model": "claude-sonnet-5",
+      "fallback_chain": [],
+      "updated_at": "2026-09-14T17:31:13.656586"
+    }
+  ],
+  "rows": [
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "effort": "none",
+      "first_status": 200,
+      "state_count": 0,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "effort": "low",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "effort": "medium",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "effort": "high",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "effort": "xhigh",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "effort": "max",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "sonnet",
+      "protocol": "messages",
+      "effort": "none",
+      "first_status": 200,
+      "state_count": 0,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "sonnet",
+      "protocol": "messages",
+      "effort": "low",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "sonnet",
+      "protocol": "messages",
+      "effort": "medium",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "sonnet",
+      "protocol": "messages",
+      "effort": "high",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "sonnet",
+      "protocol": "messages",
+      "effort": "xhigh",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "sonnet",
+      "protocol": "messages",
+      "effort": "max",
+      "first_status": 200,
+      "state_count": 1,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "haiku",
+      "protocol": "messages",
+      "effort": null,
+      "first_status": 200,
+      "state_count": 0,
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "end_turn"
+    },
+    {
+      "model": "gpt-5.4",
+      "protocol": "responses",
+      "effort": "none",
+      "first_status": 200,
+      "state_count": 0,
+      "native_contract": {
+        "metadata_echo": true,
+        "store": false,
+        "effort": "none"
+      },
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "completed"
+    },
+    {
+      "model": "gpt-5.4",
+      "protocol": "responses",
+      "effort": "low",
+      "first_status": 200,
+      "state_count": 1,
+      "native_contract": {
+        "metadata_echo": true,
+        "store": false,
+        "effort": "low"
+      },
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "completed"
+    },
+    {
+      "model": "gpt-5.4",
+      "protocol": "responses",
+      "effort": "medium",
+      "first_status": 200,
+      "state_count": 1,
+      "native_contract": {
+        "metadata_echo": true,
+        "store": false,
+        "effort": "medium"
+      },
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "completed"
+    },
+    {
+      "model": "gpt-5.4",
+      "protocol": "responses",
+      "effort": "high",
+      "first_status": 200,
+      "state_count": 1,
+      "native_contract": {
+        "metadata_echo": true,
+        "store": false,
+        "effort": "high"
+      },
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "completed"
+    },
+    {
+      "model": "gpt-5.4",
+      "protocol": "responses",
+      "effort": "xhigh",
+      "first_status": 200,
+      "state_count": 1,
+      "native_contract": {
+        "metadata_echo": true,
+        "store": false,
+        "effort": "xhigh"
+      },
+      "tool_count": 1,
+      "continuation_status": 200,
+      "finish": "completed"
+    }
+  ]
+}

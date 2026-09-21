@@ -254,8 +254,11 @@ class DataUse:
                             if reason:
                                 evidence["refusal_reason"] = reason
                         elif any(c.get("finish_reason") in ("stop", "tool_calls")
-                                 for c in body.get("choices", [])):
+                                 for c in body.get("choices", [])) or body.get("type") in ("message_stop", "response.completed"):
                             completed = True
+                        elif body.get("type") in ("response.failed", "response.incomplete"):
+                            evidence["state"] = "failed"
+                            evidence["failure"] = "incomplete"
                         evidence.update(_gateway_evidence(body))
                 yield chunk
         except Exception as exc:

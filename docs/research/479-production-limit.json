@@ -1,0 +1,231 @@
+{
+  "requests": [
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 3,
+        "type:adaptive": 1
+      },
+      "tools": 0,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {},
+      "status": "started"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 3,
+        "type:adaptive": 1
+      },
+      "tools": 0,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {},
+      "status": "started"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:object": 3,
+        "type:string": 4,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 3,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {},
+      "status": "started"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:object": 3,
+        "type:string": 4,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 3,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {},
+      "status": "started"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 3,
+        "type:adaptive": 1
+      },
+      "tools": 0,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {},
+      "status": "started"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:object": 3,
+        "type:string": 4,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 3,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {},
+      "status": "started"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:object": 3,
+        "type:string": 4,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 3,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {},
+      "status": "started"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:object": 3,
+        "type:string": 4,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 3,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {},
+      "status": "started"
+    },
+    {
+      "model": "Opus-4.8",
+      "protocol": "messages",
+      "phase": "plan",
+      "reason": null,
+      "request_shape": {
+        "type:text": 2,
+        "type:object": 3,
+        "type:string": 4,
+        "type:integer": 3,
+        "type:auto": 1,
+        "type:adaptive": 1
+      },
+      "tools": 3,
+      "settings": {
+        "thinking": {
+          "type": "adaptive"
+        },
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      "response_shape": {},
+      "status": "started"
+    }
+  ],
+  "turns": [],
+  "gateway": "https://sage.gcp.cs.domino.tech/apps/llm_gateway",
+  "source_revision": "725fffaaee2c280e059b4c2ddc13b452cfd20679",
+  "exception": "ReadTimeout",
+  "verification_status": "FAILED; excluded from successful live evidence",
+  "diagnosis": {
+    "direct_synthetic_request_status": 200,
+    "sse_error": "invalid_request_error",
+    "provider_limit_reset_utc": "2026-10-01T00:00:00Z",
+    "cause": "Anthropic workspace API usage limit reached",
+    "scope": "Direct no-history native Messages request also refused. No Gateway configuration changed."
+  },
+  "later_owner_constraint": "Only GLM is currently working; no further Claude/GPT/Gemini live calls.",
+  "implementation_followup": "Pre-first-frame invalid_request_error now returns HTTP400 through the enforced endpoint, avoiding retry loops. Local regression passed on all three protocols. The final native live rerun is blocked by the provider limit."
+}
