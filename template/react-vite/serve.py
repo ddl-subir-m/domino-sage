@@ -146,19 +146,35 @@ class _Handler(sq.QueryRoute, SimpleHTTPRequestHandler):
 
     def do_POST(self):
         if self._is_platform_path():
-            return self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "This endpoint takes GET."})
+            # The body is never read, so this connection cannot carry a next request: its unread
+            # bytes would be parsed as one. `Connection: close` tells the client, and the base
+            # class, to end it here.
+            return self._refuse_method(close=True)
         super().do_POST()
 
     def _is_platform_path(self) -> bool:
         return urlsplit(self.path).path.startswith(sd.RELAY_PREFIX)
 
+    def _refuse_method(self, *, close: bool = False, headers_only: bool = False) -> None:
+        """405 for a relay path asked with anything but GET."""
+        body = json.dumps({"error": "This endpoint takes GET."}).encode("utf-8")
+        self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        if close:
+            self.send_header("Connection", "close")
+        self.end_headers()
+        if not headers_only:
+            self.wfile.write(body)
+
     def _relay_platform(self) -> None:
         """`GET /api/domino/<path>` → `sage_domino.relay`, whose answer is written as it came: the
         platform's status and body, or the relay's own sentence with its own status."""
         parts = urlsplit(self.path)
-        status, ctype, body = sd.relay(parts.path[len(sd.RELAY_PREFIX):], parts.query)
+        status, headers, body = sd.relay(parts.path[len(sd.RELAY_PREFIX):], parts.query)
         self.send_response(status)
-        self.send_header("Content-Type", ctype)
+        for name, value in headers.items():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -172,8 +188,10 @@ class _Handler(sq.QueryRoute, SimpleHTTPRequestHandler):
                             {"error": "This endpoint takes POST."})
             return None
         # Only HEAD reaches here on a relay path — do_GET answered the GET — and for the same reason.
+        # Headers only: a HEAD answer with a body leaves those bytes on a kept-alive connection to be
+        # read as the start of the next answer.
         if self._is_platform_path():
-            self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "This endpoint takes GET."})
+            self._refuse_method(headers_only=True)
             return None
         # Before the SPA rewrite, so this is the path that ARRIVED — and still percent-encoded,
         # because the shim subtracts it from location.pathname, which is encoded too.

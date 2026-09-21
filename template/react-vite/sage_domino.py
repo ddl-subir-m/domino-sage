@@ -71,6 +71,22 @@ _ONE_SEGMENT_DEPTH = len(_ONE_SEGMENT.strip("/").split("/")) + 1   # the family,
 _SELF = "/api/users/v1/self"
 _JSON = "application/json; charset=utf-8"
 
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is relayed as the 3xx it is, never followed.
+
+    The default handler follows it and re-sends every request header — the token included — to
+    wherever `Location` points, which the fence never sees and which need not be the platform at
+    all. A deployment that answers a signed-out-looking call with a redirect to its login host would
+    have this app hand its token to that host.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
 _NO_HOST = "This app is not running on the platform, so its API is out of reach."
 _NO_TOKEN = "This app could not get a token for the platform API."
 _UNREACHABLE = "This app could not reach the platform API."
@@ -100,9 +116,14 @@ def allowed(path: str) -> bool:
 
     Checked on the DECODED path, because `%2e%2e` is `..` to the server that receives it. An empty
     segment, `.` or `..` anywhere is refused rather than normalised: nothing a page legitimately
-    reads has one, and normalising is how a fence is walked around.
+    reads has one, and normalising is how a fence is walked around. Decoded ONCE, and anything
+    still encoded after that is refused too — `%252e%252e` is `..` to a receiver that decodes
+    twice — as is a backslash, which some receivers read as a slash. No family carries either in a
+    path segment: ids are hex, and a file name rides in the query string.
     """
     decoded = urllib.parse.unquote(path)
+    if "%" in decoded or "\\" in decoded:
+        return False
     segments = decoded.strip("/").split("/")
     if any(s in ("", ".", "..") for s in segments):
         return False
@@ -113,18 +134,35 @@ def allowed(path: str) -> bool:
                for family in PLATFORM_READS)
 
 
-def _problem(status: int, message: str) -> tuple[int, str, bytes]:
-    return status, _JSON, json.dumps({"error": message}).encode("utf-8")
+def _headers(ctype: str) -> dict[str, str]:
+    """Every relayed answer's headers: its type, and two that keep a relayed body from ever becoming
+    a page on this app's origin.
+
+    `nosniff` stops the browser guessing a type the platform did not send. `attachment` on anything
+    that is not JSON means a viewer who NAVIGATES to a relayed file — an HTML file somebody wrote
+    into a Dataset, say — gets a download, never a page running on this app's origin with this
+    app's cookies. `fetch` ignores that header, so a page reading the file sees no difference.
+    `Content-Length` is the server's to add: it is counted where the body is written.
+    """
+    headers = {"Content-Type": ctype, "X-Content-Type-Options": "nosniff"}
+    if ctype.split(";")[0].strip().lower() != "application/json":
+        headers["Content-Disposition"] = "attachment"
+    return headers
 
 
-def get(path: str, query: str = "") -> tuple[int, str, bytes]:
-    """One GET of `path` on the platform as this app: `(status, content type, body)`.
+def _problem(status: int, message: str) -> tuple[int, dict[str, str], bytes]:
+    return status, _headers(_JSON), json.dumps({"error": message}).encode("utf-8")
+
+
+def get(path: str, query: str = "") -> tuple[int, dict[str, str], bytes]:
+    """One GET of `path` on the platform as this app: `(status, headers, body)`.
 
     The platform's own answer comes back as it was, status included — a 404 for a Dataset that is
     not there is the platform's sentence, and a truer one than anything this file could say instead.
-    What this file answers for itself is the three things the platform cannot: no host to call (503),
-    no token or no route to it (502), and an answer past `MAX_BYTES` (502). None of those sentences
-    carries the token or the host; a viewer's browser is not the place for either.
+    A redirect is relayed as its status and never followed (`_NoRedirect`). What this file answers
+    for itself is the three things the platform cannot: no host to call (503), no token or no route
+    to it (502), and an answer past `MAX_BYTES` (502). None of those sentences carries the token or
+    the host; a viewer's browser is not the place for either.
     """
     host = platform_host()
     if not host:
@@ -141,7 +179,7 @@ def get(path: str, query: str = "") -> tuple[int, str, bytes]:
         "Accept": "application/json, */*;q=0.5",
     })
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        with _opener.open(req, timeout=TIMEOUT_S) as resp:
             status, ctype, body = resp.status, resp.headers.get("Content-Type"), resp.read(MAX_BYTES + 1)
     except urllib.error.HTTPError as e:
         status, ctype = e.code, e.headers.get("Content-Type")
@@ -150,14 +188,15 @@ def get(path: str, query: str = "") -> tuple[int, str, bytes]:
         except Exception:  # noqa: BLE001
             body = b""
     except Exception as e:  # noqa: BLE001
-        print(f"[sage] platform api: GET {path} failed ({type(e).__name__})", flush=True)
+        # `!r`: the path is the page's, and a log line is one line.
+        print(f"[sage] platform api: GET {path!r} failed ({type(e).__name__})", flush=True)
         return _problem(502, _UNREACHABLE)
     if len(body) > MAX_BYTES:
         return _problem(502, _TOO_LARGE)
-    return status, ctype or _JSON, body
+    return status, _headers(ctype or _JSON), body
 
 
-def relay(path: str, query: str = "") -> tuple[int, str, bytes]:
+def relay(path: str, query: str = "") -> tuple[int, dict[str, str], bytes]:
     """`get`, behind the fence: what a page may reach through `GET /api/domino/<path>`.
 
     `path` is what followed the prefix. The fence comes before the host check on purpose, so that a

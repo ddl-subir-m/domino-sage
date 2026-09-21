@@ -312,7 +312,7 @@ _SECRET = b"Bearer eyJhbGciOi.SUPERSECRET.sig"   # what the sidecar mints; must 
 
 @contextmanager
 def _stub_platform(status: int = 200, body: bytes = b'{"ok": true}',
-                   content_type: str = "application/json"):
+                   content_type: str = "application/json", extra: dict | None = None):
     """A stand-in for DOMINO_API_HOST that records every request it hears, headers lower-cased."""
     seen: list[dict] = []
 
@@ -321,6 +321,8 @@ def _stub_platform(status: int = 200, body: bytes = b'{"ok": true}',
             seen.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}})
             self.send_response(status)
             self.send_header("Content-Type", content_type)
+            for name, value in (extra or {}).items():
+                self.send_header(name, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -341,9 +343,9 @@ def _stub_platform(status: int = 200, body: bytes = b'{"ok": true}',
 
 @contextmanager
 def _on_platform(monkeypatch, status: int = 200, body: bytes = b'{"ok": true}',
-                 content_type: str = "application/json"):
+                 content_type: str = "application/json", extra: dict | None = None):
     """This app on the platform: a host that records what reached it, and a sidecar minting a token."""
-    with _stub_sidecar(_SECRET) as sidecar, _stub_platform(status, body, content_type) as (host, seen):
+    with _stub_sidecar(_SECRET) as sidecar, _stub_platform(status, body, content_type, extra) as (host, seen):
         monkeypatch.setenv("DOMINO_API_PROXY", sidecar.removesuffix("/access-token"))
         monkeypatch.setenv("DOMINO_API_HOST", host)
         yield seen
@@ -373,7 +375,9 @@ def test_a_path_outside_the_families_is_refused_before_the_platform_hears_of_it(
 
 @pytest.mark.parametrize("path", [
     "/api/datasetrw/../users/v1/user/u1/roles",
-    "/api/datasetrw/%2e%2e/users/v1/user/u1/roles",   # the same door, encoded
+    "/api/datasetrw/%2e%2e/users/v1/user/u1/roles",       # the same door, encoded
+    "/api/datasetrw/%252e%252e/users/v1/user/u1/roles",   # and encoded twice, for a receiver that decodes twice
+    "/api/datasetrw/..\\users/v1/user/u1/roles",          # a backslash, for a receiver that reads it as a slash
     "/api/datasetrw//v2/datasets",
     "/api/users/v1/user/u1/tokenCredentials/c1",
     "/api/users/v1/user",
@@ -432,6 +436,61 @@ def test_a_file_comes_back_as_the_bytes_it_is(dist, monkeypatch):
     assert r.status_code == 200 and r.text == "a,b\n1,2\n"
     assert r.headers["content-type"].startswith("text/plain")
     assert seen[0]["path"] == "/v4/datasetrw/snapshot/s1/file/raw?path=adae.csv"
+
+
+def test_a_redirect_is_relayed_as_its_status_and_the_token_stays_home(dist, monkeypatch):
+    # The default urllib opener follows a 3xx and re-sends every header — the token included — to
+    # wherever Location points. Here Location points at a second stub that must hear nothing.
+    with _stub_platform(body=b"gotcha") as (elsewhere, heard_elsewhere):
+        with _on_platform(monkeypatch, status=302, body=b"", extra={"Location": elsewhere + "/login"}) as seen, \
+                running(dist) as base:
+            r = httpx.get(base + "/api/domino/api/users/v1/self", follow_redirects=False)
+
+    assert r.status_code == 302 and r.content == b""
+    assert "location" not in r.headers          # the page is not sent there either
+    assert len(seen) == 1 and heard_elsewhere == []
+
+
+def test_a_relayed_answer_can_neither_be_sniffed_nor_rendered(dist, monkeypatch):
+    # A file somebody wrote into a Dataset must never become a page on this app's origin: nosniff on
+    # everything, and a download on anything that is not JSON. `fetch` ignores the latter.
+    with _on_platform(monkeypatch, body=b"<script>1</script>", content_type="text/html"), running(dist) as base:
+        page = httpx.get(base + "/api/domino/v4/datasetrw/snapshot/s1/file/raw?path=evil.html")
+    with _on_platform(monkeypatch, body=b'{"ok": true}'), running(dist) as base:
+        data = httpx.get(base + "/api/domino/api/users/v1/self")
+        refused = httpx.get(base + "/api/domino/api/apps/beta/apps")
+
+    assert page.headers["x-content-type-options"] == "nosniff"
+    assert page.headers["content-disposition"] == "attachment"
+    assert data.headers["x-content-type-options"] == "nosniff"
+    assert "content-disposition" not in data.headers
+    assert refused.status_code == 403 and refused.headers["x-content-type-options"] == "nosniff"
+
+
+def test_head_and_post_leave_a_kept_alive_connection_usable(dist, monkeypatch):
+    # One client, one connection. A HEAD answered with a body, or a POST answered without its body
+    # read, leaves bytes on the wire that the next exchange reads as its own — so the GET after each
+    # is the proof, not the 405 itself.
+    with _on_platform(monkeypatch) as seen, running(dist) as base, httpx.Client(base_url=base) as c:
+        assert c.head("/api/domino/api/users/v1/self").status_code == 405
+        after_head = c.get("/api/domino/api/users/v1/self")
+        assert c.post("/api/domino/api/users/v1/self", json={"unread": "x" * 512}).status_code == 405
+        after_post = c.get("/api/domino/api/users/v1/self")
+
+    assert after_head.status_code == 200 and after_post.status_code == 200
+    assert len(seen) == 2
+
+
+def test_a_failed_read_is_logged_on_one_line(monkeypatch, capsys):
+    # The preview hands the relay a decoded path, so a CRLF the page put there would otherwise
+    # start a second `[sage]` line in the log.
+    with _on_platform(monkeypatch):
+        status, _, _ = sd.get("/api/users/v1/self\r\n[sage] forged: all is well")
+
+    assert status == 502
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1                                   # the forged line never starts one
+    assert lines[0].startswith("[sage] platform api: GET") and "InvalidURL" in lines[0]
 
 
 def test_a_dead_sidecar_is_a_502_and_not_a_hang(dist, monkeypatch):
