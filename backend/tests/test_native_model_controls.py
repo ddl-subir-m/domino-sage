@@ -255,6 +255,89 @@ def test_downstream_disconnect_stops_a_bounded_producer_and_closes_its_upstream(
     assert len(produced) <= 11  # one first frame, eight queued, and one in flight (plus scheduling).
 
 
+def test_a_native_call_puts_its_first_byte_in_the_log_ring(running, caplog):
+    """The legacy `/v1/chat/completions` handler has always logged "model call -> streaming
+    (first byte Xs)"; the scoped route recorded the same moment in the ledger and said nothing in
+    the ring. On 2026-09-21 a Build call went 121s with no OpenCode output and the ring could not
+    say whether the gateway had answered — every call of that turn had gone through this route."""
+    import logging
+    client, orch, _ = running
+    client.post("/api/project/model", json={"mode": "plan", "pick": "GLM 5.3 OR"})
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator"), active(orch) as headers:
+        assert dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR").status_code == 200
+    lines = [r.getMessage() for r in caplog.records if r.name == "sage.orchestrator"]
+    assert any(line.startswith("model call -> streaming (first byte ") for line in lines), lines
+
+
+def _open_then_close(orch, gateway, monkeypatch, caplog, after):
+    """Open one scoped call against `gateway`, let `after()` decide when, then close the response
+    the way OpenCode's aborted fetch does. Returns the warning lines the close left behind."""
+    import asyncio
+    import logging
+    from types import SimpleNamespace
+
+    import sage.shim.keepalive as ka
+    from sage.orchestrator import app as appmod
+
+    monkeypatch.setattr(ka, "FIRST_BYTE_BUDGET_S", 0.05)
+    monkeypatch.setattr(ka, "KEEPALIVE_INTERVAL_S", 0.05)
+    orch._project.shim._gateway = gateway
+    raw = json.dumps(request_body(Protocol.CHAT, "GLM 5.3 OR")).encode()
+
+    async def body():
+        return raw
+    endpoint = next(r.endpoint for r in appmod.control_app.routes if r.path == "/v1/sage/chat/completions")
+
+    async def consume(headers):
+        request = SimpleNamespace(headers={k.lower(): v for k, v in headers.items()}, body=body,
+                                  url=SimpleNamespace(path="/v1/sage/chat/completions"))
+        response = await endpoint(request)
+        await anext(response.body_iterator)
+        after()
+        await response.body_iterator.aclose()
+    with caplog.at_level(logging.INFO, logger="sage.orchestrator"), active(orch) as headers:
+        asyncio.run(consume(headers))
+    return [r.getMessage() for r in caplog.records
+            if r.name == "sage.orchestrator" and r.levelno >= logging.WARNING]
+
+
+def test_a_cancelled_call_the_gateway_never_answered_says_so(running, monkeypatch, caplog):
+    import threading
+    client, orch, _ = running
+    client.post("/api/project/model", json={"mode": "plan", "pick": "GLM 5.3 OR"})
+    closed = threading.Event()
+
+    class SilentGateway(FakeGatewayClient):
+        def route(self, request, labels, *, protocol, cancel):
+            cancel.bind(closed.set)
+            closed.wait(5)      # the model thinks, or the gateway hangs: not one byte either way
+            return
+            yield  # pragma: no cover - generator marker
+    warned = _open_then_close(orch, SilentGateway(), monkeypatch, caplog, after=lambda: None)
+    assert closed.wait(1)
+    assert any(line.startswith("model call cancelled after ") and line.endswith("no bytes from the gateway")
+               for line in warned), warned
+
+
+def test_a_cancelled_call_the_gateway_was_answering_counts_what_arrived(running, monkeypatch, caplog):
+    import threading
+    client, orch, _ = running
+    client.post("/api/project/model", json={"mode": "plan", "pick": "GLM 5.3 OR"})
+    closed, sent = threading.Event(), threading.Event()
+
+    class TwoThenSilent(FakeGatewayClient):
+        def route(self, request, labels, *, protocol, cancel):
+            cancel.bind(closed.set)
+            yield b": thinking\n\n"
+            yield b": thinking\n\n"
+            sent.set()          # resumed past the second yield: the pump has counted both
+            closed.wait(5)
+    warned = _open_then_close(orch, TwoThenSilent(), monkeypatch, caplog, after=lambda: sent.wait(1))
+    assert closed.wait(1)
+    assert any(line.startswith("model call cancelled after ") and line.endswith("2 chunks had arrived")
+               for line in warned), warned
+
+
 def test_installed_native_config_keeps_one_handle_and_local_codecs(running, tmp_path, monkeypatch):
     from pathlib import Path
 

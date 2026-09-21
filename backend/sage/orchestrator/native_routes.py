@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import queue
 import threading
 import time
@@ -24,6 +25,10 @@ from ..shim.native import (
     sdk_view,
     session_policy,
 )
+
+# The same logger the legacy `/v1/chat/completions` handler writes to, so its "model call ->
+# streaming" line and the ones below land in the one ring `/api/diag/log` reads.
+log = logging.getLogger("sage.orchestrator")
 
 
 def _scope(orchestrator, request):
@@ -152,7 +157,16 @@ def install(app, get_orchestrator):
                 except queue.Full:
                     continue
 
+        # How many chunks the gateway sent, for the line a cancelled call leaves behind. The ledger
+        # counts the same thing, but a Builder is read through the log ring and not the ledger, and
+        # the one question a stalled call raises — did the gateway send anything at all — needs a
+        # number in the ring to answer it. Measured 2026-09-21: a Build call went 121s with no
+        # OpenCode output, the quiet window stopped it, and nothing in the ring said whether a
+        # single byte had arrived.
+        received = 0
+
         def pump():
+            nonlocal received
             flagged = False
             try:
                 for chunk in gen:
@@ -160,6 +174,7 @@ def install(app, get_orchestrator):
                         break
                     call.first_byte()
                     call.chunk()
+                    received += 1
                     if events.tool_ids and not flagged:
                         project.tool_call_responses += 1
                         flagged = True
@@ -175,6 +190,7 @@ def install(app, get_orchestrator):
             finally:
                 gen.close()
 
+        started = time.monotonic()
         threading.Thread(target=pump, daemon=True).start()
 
         async def take(seconds):
@@ -207,6 +223,9 @@ def install(app, get_orchestrator):
             # Retrying an invalid request cannot repair it. Some native providers
             # report quota/request refusals inside an HTTP 200 error stream.
             return _error(failure(first[1]), 400 if events.error == "invalid_request_error" else 502)
+        # Word for word the legacy handler's line, so one grep of the ring reads both routes.
+        log.info("model call -> streaming (first byte %.1fs%s)", time.monotonic() - started,
+                 ", pending; keepalive engaged" if first is ka.EMPTY else "")
 
         async def stream():
             item = first
@@ -227,4 +246,11 @@ def install(app, get_orchestrator):
                 cancel.cancel()
                 if not settled:
                     call.done(ok=False, error="Model request cancelled")
+                    # A cancel is the quiet window or the person's Stop ending a call that was
+                    # still open, so it is the failure line for that turn and it goes in the warn
+                    # ring. The count is the whole point: zero says the gateway never answered,
+                    # any other number says it was answering and OpenCode showed none of it.
+                    log.warning("model call cancelled after %.0fs — %s", time.monotonic() - started,
+                                "no bytes from the gateway" if received == 0
+                                else f"{received} chunks had arrived")
         return StreamingResponse(stream(), media_type="text/event-stream")
