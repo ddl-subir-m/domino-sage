@@ -999,3 +999,54 @@ def test_a_malformed_body_survives_the_classifier_in_every_mode():
                          # guard — without it, the plant for that line stays green.
                          123):
             _handled_with(CATALOG, messages, mode=mode)
+
+
+def test_an_approve_turns_first_request_is_implement_before_it_has_written_anything():
+    """The half of #498 that lives at THIS layer, and the plan for it said no test asserted it.
+
+    The approve turn's defining property is that it opens having written nothing: an approval is a
+    fresh user message, `_current_turn` scans back only that far, and `has_write` is therefore False
+    on the very first request. That is precisely the state in which the per-step classifier says
+    PLAN — and the state the live baseline of 2026-09-21 routed to `opus (auto-plan, effort=high)`
+    for minutes at a time.
+
+    So the messages here are the approve prompt and nothing else. No tool call, no write, no history
+    to infer from. `arm_turn_mode` is what `_build_stream` does with `run_as`, and it is the whole
+    fix: the mode is pinned, `_resolve_build` reaches branch 4, and branch 4 does not consult the
+    phase at all.
+
+    Asserted on the FIRST request and not on a later one, because a later one has a write behind it
+    and would resolve `catalog.implement` even with the fix reverted — a test that waits for the
+    second call proves nothing about the first, which is the one that was costing the minutes.
+    """
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    control.arm_turn_mode(Mode.IMPLEMENT)
+    gw = FakeGatewayClient()
+    approval = [{"role": "user", "content": "The user approved the plan. Build the app it "
+                                            "describes now — implement it, don't re-plan."}]
+
+    list(_shim(control, gw).handle({"messages": approval}, project="p", session="ses_a"))
+
+    sent_request, labels = gw.seen[-1]
+    assert labels.phase == "implement"
+    assert labels.mode == "implement"
+    assert sent_request["model"] == "cheap-vendor"      # catalog.implement, not catalog.plan
+
+
+def test_the_same_turn_unpinned_is_what_the_fix_is_worth():
+    """The control case, and the reason the test above is not merely restating Implement mode.
+
+    Byte for byte the same request, with the pin taken off. It resolves the PLAN model — which is
+    the defect, reproduced here at the layer that does the routing, so the assertion above is
+    measured against something rather than asserted into the air.
+    """
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    gw = FakeGatewayClient()
+    approval = [{"role": "user", "content": "The user approved the plan. Build the app it "
+                                            "describes now — implement it, don't re-plan."}]
+
+    list(_shim(control, gw).handle({"messages": approval}, project="p", session="ses_a"))
+
+    sent_request, labels = gw.seen[-1]
+    assert labels.phase == "plan"
+    assert sent_request["model"] == "strong-vendor"     # catalog.plan — the 2026-09-21 baseline
