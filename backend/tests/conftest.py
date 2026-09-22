@@ -32,22 +32,6 @@ def _isolate_brand_override(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _a_fake_template_is_a_react_vite_one(monkeypatch):
-    """Pin the stack a bare `ensure()` seeds to react-vite for the suite (#490).
-
-    Every fake template a test builds — `package.json`, `src/App.tsx`, a `node_modules/.bin/vite`
-    sentinel — is a react-vite one, and ~40 files build one and call `ensure()` without naming a
-    stack. The deployment's default is the no-build stack, so without this pin each of those would
-    seed `template/fastapi-antd` into a workspace whose fixture then looks for `src/App.tsx`.
-
-    The pin is a shared state, so one test removes it on purpose:
-    `test_a_bare_ensure_seeds_the_no_build_stack_by_default` proves the real default on the real
-    templates. A test about the OTHER stack names it (`create_app(stack=...)`) or removes the pin.
-    """
-    monkeypatch.setenv("SAGE_DEFAULT_STACK", "react-vite")
-
-
-@pytest.fixture(autouse=True)
 def _no_wait_for_a_preview_that_never_reports(monkeypatch):
     """A build turn that wrote code polls the preview for a runtime error for 4s before it is
     done. No test runs a preview, so nothing ever reports, and every build turn that reached the

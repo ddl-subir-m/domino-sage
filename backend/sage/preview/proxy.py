@@ -226,8 +226,7 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
     "" for local dev, where `base` is just `/preview/`.
 
     `get_mount_base` says what the CURRENT upstream serves at, because that is the app's stack's to
-    say (#490): a fastapi-antd app's own server serves at the root, so nothing is re-added. Absent,
-    the Vite base above is assumed — which is every caller older than the second stack.
+    say (#490); the supervisor answers it. Absent, the Vite base above is assumed.
 
     `approve_model` is the sensitivity lock reaching the app Sage is building (ADR-0043). It is
     handed the model this call names and answers None to allow it, or the sentence refusing it. This
@@ -243,8 +242,8 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
     vite_base = f"{base_prefix}/preview"  # what the browser sees == what Vite serves at
 
     def mount_base() -> str:
-        # Asked per request, not once: the selected app — and so its stack — can change under a
-        # running proxy. Falls back to Vite's base for a caller that passed nothing.
+        # Asked per request, not once: the selected app can change under a running proxy. Falls
+        # back to Vite's base for a caller that passed nothing.
         return vite_base if get_mount_base is None else get_mount_base()
 
     app = FastAPI(title="sage preview proxy")

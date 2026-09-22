@@ -1,18 +1,22 @@
 ---
-status: accepted
-extends: ADR-0002 (Python serves the Built App — the no-build stack removes the last reason Node was
-  kept), ADR-0008 (a Project holds many Built Apps — which is why the choice is per app and per
-  viewer, never per Project), ADR-0010 (publish reads the declaration — the declaration files are
-  stack-neutral and both stacks read them)
+status: partly-withdrawn
+extends: ADR-0002 (Python serves the Built App), ADR-0008 (a Project holds many Built Apps),
+  ADR-0010 (publish reads the declaration — the declaration files are stack-neutral)
 ---
 
 # A Built App declares its stack at birth, and the record answers, never the disk
 
-Sage seeded one kind of app for a long time: React + TypeScript + Vite, built by Node and served by
-Python (ADR-0002). A second kind is now seeded by default — FastAPI serving a page that loads React,
-Ant Design, Day.js and Highcharts as plain scripts, the stack the Workbench itself is built on, with
-no build step and no `node_modules` (#490). The first kind stays: every Project volume out there
-holds one, and a workspace never re-seeds (#40).
+> **The second stack is withdrawn.** `fastapi-antd` was seeded by default from #490 and is gone: the
+> template, the picker in Account settings, the uvicorn preview and the compile-and-parse check are
+> all removed, and `react-vite` is the one kind of app Sage seeds. What the ADR decided about the
+> RECORD stands and is still the code: a stack is written at birth, the record answers and never the
+> disk, and `backend/sage/workspace/stack.py` is the one place that holds an app's shape. Read the
+> rest for why the seam is built the way it is; read "What a stack is" as a description of one
+> `Stack`, not of a choice anybody makes. The withdrawn half is kept here rather than deleted
+> because the next person to want a second stack will ask these same questions.
+
+Sage seeds one kind of app: React + TypeScript + Vite, built by Node and served by Python
+(ADR-0002). Every Project volume out there holds one, and a workspace never re-seeds (#40).
 
 ## What a stack is
 

@@ -6983,9 +6983,7 @@ window.SW = window.SW || {};
       if (creating) return null;
       creating = true;
       try {
-        // The viewer's saved answer to "what kind of app" (#490), read at the one moment it
-        // applies. Account settings holds the control; nothing else reads the preference.
-        const app = await SW.api.createApp({ stack: SW.prefs.get('appStack') });
+        const app = await SW.api.createApp();
         store.clearConversation();
         // The Rail gets out of the way, for the reason it does when you click one of its rows
         // (#150): a New app puts a new app in the preview, and the preview is the thing 260px of

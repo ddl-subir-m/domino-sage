@@ -27,8 +27,8 @@ class HelperNames:
     """The stem each Sage-owned helper goes by in one app. Every path derives from a stem.
 
     `dir` and `ext` are the stack's (#490): a react-vite app keeps its helpers as TypeScript under
-    `src/`, and a stack with no build step keeps them as plain JavaScript wherever its page loads
-    them from. The stems are the same across stacks, which is what keeps `localize` one substitution.
+    `src/`. They are fields rather than constants because the stack is what answers them, and the
+    stems stay the same whatever the scheme — which is what keeps `localize` one substitution.
     """
 
     base: str
@@ -102,9 +102,6 @@ class HelperNames:
 
 #: What the template ships, and what every app seeded after #119 has.
 TEMPLATE = HelperNames(base="appBase", query="appQuery", llm="appLlm", model_api="appModelApi")
-#: The same stems in a fastapi-antd app (#490): plain scripts the page loads, no build step.
-FASTAPI = HelperNames(base="appBase", query="appQuery", llm="appLlm", model_api="appModelApi",
-                      dir="static/sage", ext="js")
 #: What an app seeded before #119 has, and keeps.
 LEGACY = HelperNames(base="sageBase", query="sageQuery", llm="sageLlm", model_api="sageModelApi")
 
@@ -115,7 +112,6 @@ def helpers_for(app_path: Path, default: HelperNames = TEMPLATE) -> HelperNames:
     Legacy only when the app actually holds one of those files. An app seeded before any helper
     existed (pre-#7) has none of them, and nothing in it imports the old names, so it gets the
     neutral ones the first time Sage writes a helper into it. `default` is what the app's STACK
-    ships (#490); the legacy names only ever belong to a react-vite app, because no other stack
-    existed when they did.
+    ships (#490).
     """
     return LEGACY if any((app_path / rel).is_file() for rel in LEGACY.paths) else default

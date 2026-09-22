@@ -1,15 +1,15 @@
 """Which kind of app a Built App is, and what Sage has to know about that kind (#490).
 
-Sage seeds a Built App from a template, and for a long time there was one: `template/react-vite`, a
-React + TypeScript + Vite app that Node builds and Python serves (ADR-0002). Everything the backend
-knew about that shape was a constant — `package.json` is the file that says "an app is here", the
-deploy files are these four, the Sage-owned helpers live under `src/` and end in `.ts`. A second
-template cannot share those constants, and an existing app cannot change its own, because a
-workspace seeded from a template never re-seeds (#40): every volume out there holds a react-vite
-app and keeps it.
+Sage seeds a Built App from `template/react-vite`: a React + TypeScript + Vite app that Node builds
+and Python serves (ADR-0002). Everything the backend knew about that shape used to be a constant
+spread across a dozen modules — `package.json` is the file that says "an app is here", the deploy
+files are these four, the Sage-owned helpers live under `src/` and end in `.ts`.
 
 So a Stack is a property of the app in hand, fixed at birth, and this is the ONE place that answers
-what each kind needs. Every caller takes a `Stack` and asks it; nobody works the shape out again.
+what a kind of app needs. Every caller takes a `Stack` and asks it; nobody works the shape out
+again. There is one stack today. The seam is kept because it is where the answers live, not because
+a second stack is expected: an app cannot change its own kind after birth, since a workspace seeded
+from a template never re-seeds (#40).
 
 The record is `stack` in the app's own `.sage/settings.json`, beside `createdAt` — the app's record,
 committed to its repo, so a collaborator's clone reads the same answer. Absent means the app was born
@@ -24,7 +24,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..resources.app_helpers import FASTAPI, TEMPLATE, HelperNames
+from ..resources.app_helpers import TEMPLATE, HelperNames
 
 _REPO = Path(__file__).resolve().parents[3]
 
@@ -57,12 +57,6 @@ class Stack:
     server_script: str | None
     # The file the agent is told to replace first; the placeholder check reads it.
     entry_file: str
-    # How the preview serves this kind of app: "vite" runs the template's dev server, "uvicorn" runs
-    # the app's own server with reload.
-    preview: str
-    # What Sage runs over the workspace when a turn ends: "tsc" typechecks, "python" compiles every
-    # .py and syntax-checks every .js.
-    checker: str
     # The app's own source, as globs off the app root: what the agent is shown as existing paths,
     # and what the end-of-turn scans read. Sage-owned helpers and vendored bundles are not the
     # app's source and are skipped by name where it matters.
@@ -102,50 +96,12 @@ REACT_VITE = Stack(
     preview_config="vite.config.ts",
     server_script="serve.py",
     entry_file="src/App.tsx",
-    preview="vite",
-    checker="tsc",
     source_globs=("src/**/*",),
     query_globs=("src/**/*.ts", "src/**/*.tsx"),
 )
 
-# FastAPI serving a page that loads React, Ant Design, Day.js and Highcharts as plain scripts — the
-# stack the Workbench itself is built on, with no build step and no node_modules (#490). The page is
-# `static/index.html`; the app is `static/app.js`; the creator's own routes go in `app.py`.
-FASTAPI_ANTD = Stack(
-    name="fastapi-antd",
-    template_dir=_REPO / "template" / "fastapi-antd",
-    sentinel="app.py",
-    # sage_serve.py imports sage_queries.py; app.py imports sage_serve.py; app.sh runs app.py.
-    deploy_files=(
-        "sage_queries.py",
-        "sage_serve.py",
-        "scripts/rehydrate_data.py",
-        "app.sh",
-    ),
-    # errorBoundary.js calls reportRuntimeError.js, so the reporter lands first (same rule as the
-    # react-vite pair). The rest are independent scripts.
-    owned_sources=(
-        FASTAPI.base_path,
-        FASTAPI.model_api_path,
-        FASTAPI.query_path,
-        "static/sage/reportRuntimeError.js",
-        "static/sage/errorBoundary.js",
-        "static/theme.js",
-    ),
-    helpers=FASTAPI,
-    preview_config=None,
-    # The entry script IS the server (`uvicorn app:app`); there is no second file it execs.
-    server_script=None,
-    entry_file="static/app.js",
-    preview="uvicorn",
-    checker="python",
-    source_globs=("*.py", "static/**/*"),
-    query_globs=("static/**/*.js",),
-    vendored=("static/vendor/",),
-)
-
 #: Every stack Sage can seed, by the name the record holds.
-STACKS: dict[str, Stack] = {REACT_VITE.name: REACT_VITE, FASTAPI_ANTD.name: FASTAPI_ANTD}
+STACKS: dict[str, Stack] = {REACT_VITE.name: REACT_VITE}
 
 
 def stack_of(app_path: Path) -> Stack:
@@ -171,7 +127,5 @@ def read_stack_name(app_path: Path) -> str:
 
 def default_stack_name() -> str:
     """The stack a NEW app gets when nobody chose one. `SAGE_DEFAULT_STACK` is the deployment's
-    say; the fallback is the no-build stack, which is also what the Workbench's own preference
-    defaults to, so a caller that sends no stack and a viewer who never opened the drawer get the
-    same kind of app."""
-    return os.environ.get("SAGE_DEFAULT_STACK") or FASTAPI_ANTD.name
+    say; the fallback is react-vite, the only stack Sage carries."""
+    return os.environ.get("SAGE_DEFAULT_STACK") or REACT_VITE.name

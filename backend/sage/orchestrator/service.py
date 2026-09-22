@@ -60,7 +60,7 @@ from ..liveread import result as live_result
 from ..liveread import run as live_read
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
-from ..preview.supervisor import UvicornSupervisor, ViteSupervisor
+from ..preview.supervisor import ViteSupervisor
 from ..provision import naming
 
 # The 404 the publish path has to tell from every other failure (#80). A runtime import, unlike the
@@ -518,16 +518,12 @@ _DATABASES_SEARCHED = 4
 _ENTRY_POINT = "app.sh"
 # The Python server that entry script execs to serve the build (ADR-0002) is the STACK's to name
 # (`Stack.server_script`, #490). Pre-checked too, but only when this app's app.sh actually calls it —
-# an app still serving with Node doesn't need it, and a stack whose entry script IS the server names
-# none.
+# an app still serving with Node doesn't need it.
 
 
 def _supervisor_for(workspace: Path, base_prefix: str):
-    """The preview server for the app at `workspace`, by its stack (#490): the template's Vite dev
-    server for a react-vite app, the app's own uvicorn for a fastapi-antd one. Reads the two classes
-    off this module at call time, so a test that stands in for `ViteSupervisor` still does."""
-    if stack_of(Path(workspace)).preview == "uvicorn":
-        return UvicornSupervisor(workspace, base_prefix)
+    """The preview server for the app at `workspace`: the template's Vite dev server. Reads the
+    class off this module at call time, so a test that stands in for `ViteSupervisor` still does."""
     return ViteSupervisor(workspace, base_prefix)
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
 # the deploy is still in progress.
@@ -23607,8 +23603,7 @@ class Orchestrator:
             return True
         owned = project.workspace.helpers.owned
         try:
-            # Where a call can appear is the stack's to say (#490): `src/*.ts*` for react-vite, the
-            # page's own scripts for fastapi-antd.
+            # Where a call can appear is the stack's to say (#490): `src/*.ts*` for react-vite.
             for glob in project.workspace.stack.query_globs:
                 for path in root.glob(glob):
                     # Short-circuits left to right, so a helper Sage owns is never read at all.

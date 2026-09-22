@@ -118,7 +118,7 @@ def _other_stack(tmp_path: Path, monkeypatch) -> Stack:
     other = Stack(
         name="other", template_dir=other_tmpl, sentinel="app.py", deploy_files=("app.py", "app.sh"),
         owned_sources=(), helpers=REACT_VITE.helpers, preview_config=None, server_script=None,
-        entry_file="static/index.html", preview="uvicorn", checker="python",
+        entry_file="static/index.html",
         source_globs=("*.py", "static/**/*"), query_globs=("static/**/*.js",),
     )
     monkeypatch.setitem(stackmod.STACKS, other.name, other)

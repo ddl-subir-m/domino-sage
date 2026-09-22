@@ -99,9 +99,6 @@ def render_config(aliases: list[Binding], base: str | None, project: str | None,
         "// chosen yet. See ./{helper}.{ext}.\n",
         helper=names.llm, ext=names.ext,
     )
-    if names.ext == "js":
-        # A fastapi-antd page loads this as a plain script (#490): a global, not a module export.
-        return f"{header}window.{names.llm}Config = {{\n{body},{models}}};\n"
     return f"{header}export const {names.llm}Config = {{\n{body},{models}}};\n"
 
 
