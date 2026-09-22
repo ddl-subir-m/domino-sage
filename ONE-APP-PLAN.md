@@ -9,9 +9,24 @@ reads first: CONTEXT.md, docs/adr/0008, 0010, 0020, 0023, 0040, 0041, 0043, 0067
 
 # Sage as one app container
 
+**Purpose.** Rule out Domino workspace and Environment lifecycle as a source of Sage's instability
+by removing them from the path entirely, and give the coding agent one simple app stack it is
+biased towards, with the least context that still teaches it Domino. Everything else in Sage —
+the engine, sessions, model routing, resources, publish — is kept and made to work from one
+process on either host.
+
+**Ownership model (confirmed 2026-09-22).** Every person runs their own Sage: either they publish
+the Sage App themselves, or they run it on a laptop. Sage acts as that person for every Domino call
+— listing resources, creating the `sage-*` project and its repo, reading Datasets, publishing Built
+Apps into that project — using their sidecar JWT in the App and their PAT on a laptop. There is no
+shared Sage and no impersonation. Sage's own Domino API use stays in the backend (the control plane
+and providers) behind UI actions; the **agent** does not get a Domino API tool for Sage's business.
+What the agent gets is the `domino-platform-api` skill, for the apps it builds.
+
 Line numbers below were read on 2026-09-22 at `83c8103b` and will drift. Treat them as "where to
-start reading", not as coordinates. `origin/main` has since moved to `99598225`; merge it before
-Phase 0 (CLAUDE.md: merge `main` BEFORE the suite, `--no-ff`).
+start reading", not as coordinates. `origin/main` has since moved to `99598225`; merge it at the
+start of Phase 0 (CLAUDE.md: merge `main` BEFORE the suite, `--no-ff`) and adapt this plan if the
+merge moves anything named here.
 
 ## 0. What this pivot is, in one table
 
@@ -22,7 +37,7 @@ Phase 0 (CLAUDE.md: merge `main` BEFORE the suite, `--no-ff`).
 | Project = ? | The one mounted checkout. Project switch = leave the container. | A git clone of a `sage-*` Domino project at `$SAGE_HOME/projects/<slug>/`. Switch = change URL prefix `/p/<slug>/`. Domino APIs still create the GitHub repo + Domino project; they no longer create workspaces. |
 | Engine | One `opencode serve` per container, sessions keyed by `location.directory`. | **Unchanged.** Same server, same `OpenCodeClient`, same thread/session stores, same shim/router/gateway. |
 | Preview | One Vite or uvicorn per process on a fixed port, proxied at `/preview/`, prefix baked from `DOMINO_RUN_ID`. | One **uvicorn** per open project (fastapi-antd only), ephemeral port, proxied at `/p/<slug>/preview/`. Works behind the App proxy because uvicorn serves at root and the page recovers its own base. |
-| Resources | Datasets read through `/mnt/data` mounts when present; symlinks into the app. Uploads written into a mounted Dataset. | **API/SDK only.** Dataset files are listed via the snapshots API and **copied** into the app. Drag-in files land in `.sage/scratch/`, and attach to an app as committed copies. No mounts anywhere in Sage. |
+| Resources | Datasets read through `/mnt/data` mounts when present; symlinks into the app. Uploads written into a mounted Dataset. | **API/SDK only.** Dataset files are listed via the snapshots API and **copied** into the project (`data/<slug>/`) or the app (`public/data/<slug>/`). Drag-in files are plain committed files at `uploaded_files/`. The agent reaches a Dataset only as a local file or through a Sage-backed tool (`dataset_fetch`, `live_read_*`), never with a token of its own (§2.8). No mounts anywhere in Sage. |
 | Stacks | `react-vite` (legacy default) and `fastapi-antd`. | **`fastapi-antd` only.** Node is needed for OpenCode only. |
 | Agent context | 389-line AGENTS.md per app + 5 agent prompts repeating the same voice rules + a Domino API section that duplicates `LESSONS_LEARNED.md` (which is not wired in). | ~140-line AGENTS.md; **`LESSONS_LEARNED.md` becomes an on-demand skill** (`domino-platform-api`) the agent loads when a request names snapshots, tags, governance or "which datasets exist". |
 | Theme | Domino theme + Google Bloom toggle, per person, `SAGE_BRAND_OVERRIDE`. | Unchanged. Default override path moves under `$SAGE_HOME` so it survives on both hosts. |
@@ -84,7 +99,7 @@ Browser ──► Domino App proxy (strips /apps/<id>/, one port 8888)      or  
 | Domino host | `DOMINO_API_HOST` (injected) | `settings.domino.host` |
 | Token | sidecar `http://localhost:8899/access-token`, fetched per call (5-min JWT) | `settings.domino.token` (PAT) or `DOMINO_USER_API_KEY` env |
 | Gateway | `GATEWAY_BASE_URL` (baked ENV) else derived `https://apps.<host>/apps/llm_gateway/v1` | `settings.gateway.baseUrl`, default derived from host; optional `settings.gateway.apiKey` (`dgw_`) if the gateway does not accept the Domino PAT |
-| Git credential for `sage-*` repos | borrowed from the App's own checkout via `git credential fill` (`provision/credentials.py`, already done for self-update) | `settings.git.token` or `gh auth token` / the user's normal credential helper |
+| Git credential for `sage-*` repos | `git credential fill` for `github.com`, which reaches the credential Domino wired into the App's own checkout (`provision/credentials.py`, already done for self-update) | `git credential fill` for `github.com` against the laptop's own helper (gh, keychain, manager); `settings.git.token` as the fallback when the helper answers nothing. **Domino does not hand out the secret of a stored git credential** — `GET /api/users/beta/credentials/{uid}` returns ids and names only — so the laptop cannot borrow the Domino-stored one; the same GitHub account behind both is what makes them "the same" |
 | Publish env + tier | the App's own `DOMINO_ENVIRONMENT_ID` / `DOMINO_HARDWARE_TIER_ID` (the Sage image has fastapi, uvicorn, `domino_data`) | picked once in Settings from `/v4/environments` and `/v4/hardwareTier` listings |
 | Proxy prefix | empty (nginx stripped the mount); page recovers it client-side | empty |
 | Control port | 8888 | 8080 |
@@ -126,12 +141,47 @@ OpenCode merges project config over the global one, so every model call for a se
 - `assets/provider.py`: drop `resolve_mount_roots`, `_mount_path_for`, `walk_files`; `Asset.mount_path` is removed (or always `None` for one release to keep the UI contract, then removed). Listing = snapshots API (already the unmounted branch). Content = `download_file` via the SDK built from the `TokenSource` (`DatasetClient(token=...)`); if the SDK rejects a PAT on a laptop, a REST fallback `GET /v4/datasetrw/snapshot/{sid}/file/raw?path=` (referenced by the relay allow-list family; verify it exists on the target cluster).
 - `attach_file` → always `_download_attachment`: a real copy at `apps/<appId>/public/data/<dataset-slug>/<file>`. `public/data/<dataset-slug>/` stays gitignored; the manifest `.sage/attachments.json` is the source of truth and `scripts/rehydrate_data.py` step 2 (already SDK-only) rebuilds it at publish boot. Step 1 (`link_mounts`) is deleted.
 - `attach_folder` → list under the prefix, download each, capped by count and bytes (the comment at `service.py:22245` already names this as the alternative). Refuse over the cap with the count.
-- Drag-in files: `upload_scratch` unchanged. **Attaching an upload to an app copies it to `apps/<appId>/public/data/uploads/<name>` and commits it** (`public/data/uploads/` is un-ignored; per-file cap, say 25 MB, refused with a message above it). The published app serves it from the repo; no rehydrate needed. ADR-0023's "an Upload crosses by becoming an Attachment written into a Dataset" is revised: the crossing writes into the app, not a Dataset, until a Dataset write API is adopted (`later`).
+- Drag-in files (confirmed: plain files in the project directory, no Dataset for now). `upload_scratch` writes to **`<project>/uploaded_files/<name>`**, committed with the next save, not to the gitignored `.sage/scratch/`. The name matches what `LESSONS_LEARNED.md` §0 already tells the agent to read (`pd.read_csv("uploaded_files/…")`). **Attaching an upload to a Built App copies it to `apps/<appId>/uploaded_files/<name>`**, also committed, so the published app has it with no rehydrate and the agent's cwd-relative path in the lessons holds. Per-file cap (25 MB) refused with a message above it. `public/data/` stays for Dataset copies only. ADR-0023's "an Upload crosses by becoming an Attachment written into a Dataset" is revised: the crossing is a committed copy into the app; a Dataset write API is `later`.
 - `_default_dataset`, `_resolve_upload_target`, `promote_scratch_to_dataset`, `_cross_chat_upload`, `_delete_upload_bytes`, the `writable` flag and the "Add to <dataset>" menu (`resource-panel.js:260-326`) are removed.
 - `fetch_dataset_file_for_chat`: keep only the download branch. Live read `_file_rows` (`liveread/run.py:390`): download the head to `.sage/scratch/` then read, instead of `dataset_root`.
 - `shim/chat_paths.py:46-56` `/mnt/code/` prefix stripping, `threads.py:939-957` symlink skip rules, the OpenCode `/mnt/data` read hang guard (`driver/opencode.py:475-481`): delete with their reason.
 - Sensitivity (ADR-0043), Data Source cascade, aliases, Model APIs, collaborators: unchanged — already API-only.
 - "Datasets from anywhere in the platform": already what `list_datasets` returns; the Browse Domino modal (`resource-catalog.js`) needs no change beyond the `writable` removal.
+
+### 2.8 How a Domino resource reaches the agent (the judgment call)
+
+Today a Dataset reaches OpenCode by three different routes depending on where Sage runs: a symlink
+into a mount (`attach_file`, `service.py:22379`), a downloaded copy (`_download_attachment`), or a
+prompt line telling the model to build `DatasetClient()` itself and download into `.sage/scratch/`
+(`service.py:3855-3891`). Data Sources reach it through Sage-backed custom tools (`live_read_table`,
+`live_read_query`, `live_read_files`, `backend/sage/liveread/tools/`) that call back into
+`/mcp/live-read` where Sage holds the token (ADR-0041). The working set is orientation only
+(ADR-0020); the Session-context chip is the door into a conversation (ADR-0021).
+
+**Rule after the pivot: if the model can use it, it is a file in the project directory or it is
+behind a Sage tool. The agent never holds a Domino token.**
+
+- **Files in the directory.** Drag-in uploads at `uploaded_files/` (§2.5). A Dataset file the person
+  picks in the panel is downloaded by Sage to `data/<dataset-slug>/<path>` at the project root
+  (gitignored, re-fetchable, recorded in a manifest) for Chat, and copied to
+  `apps/<appId>/public/data/<dataset-slug>/<path>` when attached to a Built App, exactly as the
+  copy branch does today. The chip's prompt line becomes one sentence: the local path.
+- **Sage-backed tools, unchanged in shape.** `live_read_*` and `delegated_model_call` stay; the
+  `live_read_files` file-head arm downloads to `data/<dataset-slug>/` instead of reading a mount.
+  One tool is added, `dataset_fetch(dataset, path) → local path`, so the model can pull a whole
+  file it needs from a Dataset the person already put in the working set (the case the
+  "run `DatasetClient()` yourself" prompt covered). It downloads through Sage's `TokenSource`,
+  writes under `data/<dataset-slug>/`, records it in the manifest, and returns the path.
+- **Removed.** The `DatasetClient()` prompt lines; any thought of putting `DOMINO_USER_API_KEY` or
+  the sidecar URL into the OpenCode server's environment (`sage-chat` runs `bash: allow`, and
+  `environment/app.sh` already goes to lengths to keep tokens out of that env).
+- **No general Domino API tool for the agent.** Sage's own platform work — listing resources,
+  creating the project and repo, publishing — stays in the backend behind UI actions. The apps the
+  agent builds read the platform at runtime through `sage_domino.py` and `sage_queries.py`, and the
+  `domino-platform-api` skill teaches that. If a later need for the agent to, say, list Datasets
+  itself appears, it is one more narrow Sage-backed tool in the same pattern, not a token.
+- **Working set semantics stay** (ADR-0018/0020/0021) and `.sage/project-resources.json` keeps its
+  schema — `LESSONS_LEARNED.md` §2 tells built apps to read it for Dataset ids.
 
 ### 2.6 Publish
 
@@ -143,18 +193,19 @@ OpenCode merges project config over the global one, so every model call for a se
 
 ## 3. Decisions and assumptions
 
-Numbered so the build sessions can cite them. **Bold** ones want a yes from the product owner before the phase that depends on them.
+Numbered so the build sessions can cite them. Items 1-4 were **confirmed by the product owner on 2026-09-22**; the rest are the planner's calls, open to change.
 
-1. **One user per Sage process.** No door, no per-viewer token juggling. Extended identity is an admin deployment choice, not Sage code. (Phase 1)
-2. **Projects are always Domino git-based projects** with a GitHub repo, created through the existing provision code; there is no "local-only" project. A laptop therefore needs a GitHub token in settings. (Phase 3)
-3. **`fastapi-antd` is the only stack.** Old `react-vite` apps in re-cloned projects open in Chat; Build on them shows "built with a stack this Sage no longer carries" — no migration. **The sibling branch removing fastapi-antd cites field problems; those need naming before Phase 0.** (Phase 0)
-4. **Uploads attach to the app by committed copy, not by writing into a Dataset.** Revises ADR-0023. Dataset write API is `later`. (Phase 5)
+1. **One user per Sage process** (confirmed). Each person publishes their own Sage App or runs Sage locally; Sage uses their token for every Domino call and publishes into the `sage-*` project it created for them. No door, no per-viewer token juggling; extended identity is not Sage's concern. (Phase 1)
+2. **Projects are always Domino git-based projects** with a GitHub repo, created through the existing provision code; there is no "local-only" project (confirmed). Git credential on both hosts is `git credential fill` for `github.com`; a settings token is the fallback, because Domino never returns a stored credential's secret. (Phase 3)
+3. **`fastapi-antd` is the only stack** (confirmed: one simple stack the agent is biased towards, no picker). Old `react-vite` apps in re-cloned projects open in Chat; Build on them shows "built with a stack this Sage no longer carries" — no migration. The sibling branch `origin/remove-fastapi-antd-stack` goes the other way and is not merged; another developer is untangling field issues on the current shape, so coordinate on that branch's findings rather than re-deriving them. (Phase 0)
+4. **Uploads are plain files in the project directory, no Dataset** (confirmed). `uploaded_files/` at the project root, copied into the app on attach, both committed. Revises ADR-0023. (Phase 5)
 5. `$SAGE_HOME` in the App is a mounted Dataset when one is there, else ephemeral. Everything durable is in git anyway (ADR-0006); scratch uploads not yet attached are the only loss on restart. (Phase 7)
 6. Routing is `/p/<slug>/…` with the Workbench page at `/p/<slug>/`; no project id in the hash. Reload lands on the same project because the project is in the path. (Phase 2)
 7. Per-project gitignored `opencode.json` carries the shim URL. (Phase 2, with the fallback in §2.3)
 8. Keep `boot_page.py` (the App proxy also 502s before uvicorn binds), `SAGE_SELF_UPDATE`, the brand system, the Manage / Cost links (hidden when the URLs cannot be built).
 9. `LESSONS_LEARNED.md` stays at the repo root as the file people edit; the skill is generated from it at boot (frontmatter + body), pinned by a test the way `test_sage_chat_prompt.py` pins the chat prompt. (Phase 0)
 10. Tests: `conftest.py` pins `SAGE_DEFAULT_STACK=react-vite` because every fake template is react-vite shaped; Phase 0 reshapes the fakes to fastapi-antd and drops the pin. ~40 test files name react-vite; they are retired or rewritten with the template, not deselected.
+11. **Resources reach the agent as files in the directory or through Sage-backed tools, never via a token in the agent's shell** (§2.8). One new tool, `dataset_fetch`; no general Domino API tool for the agent. Left to the planner by the product owner on 2026-09-22. (Phase 5)
 
 ## 4. Work plan
 
@@ -196,7 +247,8 @@ Removes Vite, which is what makes multi-preview and the App proxy hard, and shri
 1. `registry.create(name)` = `ProvisionService.create_app` minus `create_workspace`; the seeded dir becomes `projects/<slug>` (`.sage/project.json` written before the first push so a half-finished create is recognisable).
 2. `registry.clone(dominoProjectId)` for a `sage-*` project seen in the listing but not on disk; the git credential from `settings.git.token` or `credentials.extract_token`.
 3. Delete: `provision/door.py`, `door.html`, `/api/door*`, `/api/projects/{id}/open`, `/api/projects/status`, `create_workspace`/`start_workspace_session`/`stop_workspace`/`delete_workspace`/`workspace_status`/`workspace_http_ready`/`save_workspace_work` in `provision/domino.py` and `provision/service.py`, `Orchestrator.stop()` + `/api/stop` + `_resolve_workspace_id` (`service.py:19384-19422`), `environment/pluggable-tools.yaml`, `SAGE_BUILDER_TOOL`.
-4. Git identity: `workspace/git.py` commits as `whoami().fullName <email>`; verify `_save_to_git` push works with the registry credential on both hosts.
+4. Git credential: one resolver, `credentials.extract_token("github.com")` generalised to run `git credential fill` from the project dir, then `$SAGE_HOME`, then the App checkout; `settings.git.token` last. Domino project creation keeps choosing a `gitCredentialId` from the person's Domino credential list as today (ADR-0033: proven by use).
+5. Git identity: `workspace/git.py` commits as `whoami().fullName <email>`; verify `_save_to_git` push works with the resolved credential on both hosts.
    → verify: New project from a laptop creates repo + Domino project and lands in Chat in `/p/<slug>/`; the same project opens in the App container by clone; `git log` on the clone shows Sage's per-turn commits.
 
 ### Phase 4 — Preview per project
@@ -208,8 +260,8 @@ Removes Vite, which is what makes multi-preview and the App proxy hard, and shri
 
 ### Phase 5 — Resources without mounts
 
-Steps as §2.5, in this order: (1) `assets/provider.py` mount removal + SDK-from-token + REST fallback; (2) `attach_file` copy-only, `attach_folder` bounded download; (3) uploads → committed `public/data/uploads/`, remove the Dataset write paths and the `writable` UI; (4) Chat dataset chip and live-read file head via scratch download; (5) delete the path-stripping and symlink rules; (6) `rehydrate_data.py` step 1 removed, `sage_domino.py`/`sage_queries.py` `token()` honours `SAGE_DOMINO_TOKEN` before the sidecar; (7) ADR-0023 revision + CONTEXT.md Dataset entry ("mounted into the project container" → "reached over the platform API").
-→ verify: drag a CSV into Chat, ask about it, hand off to Build, attach it — the app serves it from `public/data/uploads/` and it is in `git status`; attach a file from a Dataset in another project — a copy appears under `public/data/<slug>/`, is gitignored, and `rehydrate_data.py` restores it from an empty dir; sensitivity lock still narrows models for a tagged Dataset.
+Steps as §2.5, in this order: (1) `assets/provider.py` mount removal + SDK-from-token + REST fallback; (2) `attach_file` copy-only, `attach_folder` bounded download; (3) uploads → committed `uploaded_files/` at the project root and in the app on attach, remove the Dataset write paths and the `writable` UI; (4) Chat dataset chip → download to `data/<dataset-slug>/` and a one-line path in the prompt; live-read file head via the same download; the `DatasetClient()` prompt lines (`service.py:3855-3891`) deleted; (4b) new `dataset_fetch` custom tool beside `backend/sage/liveread/tools/`, served from `/mcp/live-read` (or a sibling route) with the same per-conversation token, and its two sentences in `template/chat/AGENTS.md` and the build AGENTS.md; (5) delete the path-stripping and symlink rules; (6) `rehydrate_data.py` step 1 removed, `sage_domino.py`/`sage_queries.py` `token()` honours `SAGE_DOMINO_TOKEN` before the sidecar; (7) ADR-0023 revision + CONTEXT.md Dataset entry ("mounted into the project container" → "reached over the platform API").
+→ verify: drag a CSV into Chat, ask about it, hand off to Build, attach it — it sits at `apps/<appId>/uploaded_files/` and is in `git status`, and the agent reads it by the path `LESSONS_LEARNED.md` §0 names; attach a file from a Dataset in another project — a copy appears under `public/data/<slug>/`, is gitignored, and `rehydrate_data.py` restores it from an empty dir; in Chat, ask about a Dataset in the working set with no file picked and the model calls `dataset_fetch` and reads the returned path; `env | grep -i domino` from a `sage-chat` bash call shows no token; sensitivity lock still narrows models for a tagged Dataset.
 
 ### Phase 6 — Publish from the container
 
@@ -230,7 +282,7 @@ ADRs: a new ADR "Sage is one process holding many project directories" supersedi
 ## 5. Verification and gating
 
 - Per CLAUDE.md §5/§6: targeted tests while iterating, the full suite once per landing on the merged tree, `-rs` in worktrees, reconcile on COLLECTED. One suite slot on the machine; claim on the issue.
-- New tests, one per condition, in the phase that introduces it: dispatcher root_path/path rewriting; ContextVar reaches an SSE generator; registry list merges local and remote; two orchestrators run turns concurrently without sharing a turn lock; preview per project on distinct ports; skill body equals `LESSONS_LEARNED.md`; upload attach commits the file and refuses over the cap; dataset attach is a copy and gitignored; no stack but `fastapi-antd` is seedable; `publish_available` from settings.
+- New tests, one per condition, in the phase that introduces it: `dataset_fetch` writes under `data/<slug>/`, records the manifest and refuses a path outside the Dataset; no Domino token variable reaches the OpenCode server env; dispatcher root_path/path rewriting; ContextVar reaches an SSE generator; registry list merges local and remote; two orchestrators run turns concurrently without sharing a turn lock; preview per project on distinct ports; skill body equals `LESSONS_LEARNED.md`; upload attach commits the file and refuses over the cap; dataset attach is a copy and gitignored; no stack but `fastapi-antd` is seedable; `publish_available` from settings.
 - Live checks that cannot be unit-tested are listed in Phase 1 and Phase 6 and must appear in the landing report as measured, not assumed (CLAUDE.md: a report that can be landed on).
 
 ## 6. Risks and open questions
@@ -241,7 +293,7 @@ ADRs: a new ADR "Sage is one process holding many project directories" supersedi
 | 2 | The LLM Gateway does not accept a Domino PAT | Phase 1 laptop model calls | `settings.gateway.apiKey` (`dgw_`) field; already what `.env.example` describes |
 | 3 | OpenCode does not deep-merge `provider.options` from a project `opencode.json` | Phase 2 shim routing | Native provider always on + `x-session-id` lookup |
 | 4 | `ContextVar` does not reach a streaming generator | Phase 2 | Capture at route entry, pass explicitly |
-| 5 | The field problems that motivated `remove-fastapi-antd-stack` | Phase 0 onward | Ask before Phase 0; if they are about the App interpreter search in `app.sh` or CDN scripts, LESSONS §9 already records fixes |
+| 5 | The field problems that motivated `remove-fastapi-antd-stack` | Phase 0 onward | Another developer is on them; read that branch's commit body and issues before Phase 0 and carry any fix that is about the stack itself (interpreter search in `app.sh`, CDN script order — LESSONS §9) rather than about workspaces |
 | 6 | 24k-line `service.py` and 128 routes: the multi-project change is mechanical but wide | Phase 2 | Proxy object keeps call sites unchanged; land the spike first; one PR for the dispatcher, one for the registry |
 | 7 | App container restarts lose un-attached scratch uploads | Phase 7 | Mounted `sage-home` Dataset when available; say so in the UI ("not saved until attached") |
 | 8 | A user with many `sage-*` projects: cloning on open is slow the first time | Phase 3 | Clone is on-demand, `--depth 50`; show progress on the home page |
