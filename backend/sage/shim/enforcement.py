@@ -272,7 +272,14 @@ class EnforcementShim:
         # interleaved turns route correctly step by step — not from a laggy background poll.
         # Reflect the phase back to the control so the UI's live indicator matches what routed.
         signals = None
-        if state.chat_thread_id is None and state.mode is Mode.AUTO:
+        # SCORED for every non-Chat turn; APPLIED only in Auto. Until #498 the scoring itself was
+        # behind the Auto test, which was harmless only while Auto was the only mode that got here.
+        # Approvals now pin Implement, and a pinned turn was silently losing both things assess()
+        # pays for: the rescue, and #494's `apply_patch` withdrawal. A withdrawal is a fact about
+        # the TOOL and is true in any mode; a phase is a fact about ROUTING and only Auto routes by
+        # it. Ask reaches this too and is a no-op by construction — write and shell tools are
+        # stripped from that request, so there are no results for assess() to examine.
+        if state.chat_thread_id is None:
             # assess() scores BOTH directions: the write-flip down to the cheap model, and a rescue
             # back up to PLAN when the turn starts failing (see phase_classifier). `signals.phase`
             # is the resolved answer; `base_phase` is the write-flip rule alone, kept for the log.
@@ -281,8 +288,14 @@ class EnforcementShim:
             # the signal fires on real failures (a vite build exiting 2) and stays silent across
             # five healthy turns.
             signals = assess(request.get("messages"))
-            state = replace(state, phase=signals.phase)
-            self._control.set_phase(signals.phase)
+            if state.mode is Mode.AUTO:
+                state = replace(state, phase=signals.phase)
+                self._control.set_phase(signals.phase)
+        # A rescue is a change of MODEL, so it only happened where the phase is what routes. In a
+        # pinned mode the classifier can still want PLAN while the slot does not move, and a line or
+        # a note that says otherwise is exactly the lie #494 rewrote this log to stop telling.
+        rescued_phase = (signals is not None and state.mode is Mode.AUTO
+                         and signals.phase is not signals.base_phase)
 
         # Read-only turns (Ask mode, or a plan turn held at the approval gate) get every write AND
         # shell tool stripped from the request, so the model is never offered one. This is the whole
@@ -556,7 +569,7 @@ class EnforcementShim:
         # looking for a difference that is not there. What did change, when patches were refused,
         # is the tool on offer — so the note names `edit` and the one thing a model gets wrong
         # with it (pasting the read tool's line-number prefix into `oldString`).
-        if (signals is not None and (signals.phase is not signals.base_phase or patch_withdrawn)
+        if ((rescued_phase or patch_withdrawn)
                 and isinstance(request.get("messages"), list)):
             same_model = self._catalog.plan == self._catalog.implement
             if patch_withdrawn:
@@ -649,6 +662,11 @@ class EnforcementShim:
             # call for thirteen minutes (#494). `patch=` is the other lever, on the same line.
             if signals.phase is signals.base_phase:
                 rescued = "no"
+            elif not rescued_phase:
+                # The classifier wanted PLAN and the mode is pinned, so no model moved (#498).
+                # Naming which of the two it was matters: "no" alone reads as "no signal", and
+                # anything warmer reads as a rescue that never happened.
+                rescued = f"no (mode pinned to {state.mode.value})"
             elif self._catalog.plan == self._catalog.implement:
                 rescued = f"no-op (both slots are {decision.model})"
             else:
@@ -679,9 +697,7 @@ class EnforcementShim:
         labels = CostLabels(
             phase=state.phase.value,
             mode=state.mode.value,
-            route_reason=(signals.reason
-                          if signals is not None and signals.phase is not signals.base_phase
-                          else None),
+            route_reason=(signals.reason if rescued_phase else None),
             component=self._component,
             session=session,
             version=_SAGE_VERSION,

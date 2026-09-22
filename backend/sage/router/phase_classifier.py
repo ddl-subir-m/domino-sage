@@ -194,13 +194,28 @@ def _sample(text: str) -> str:
 
 
 def _current_turn(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The messages since the last user prompt — the same window classify() has always used."""
+    """The messages since the last user prompt — the same window classify() has always used.
+
+    Takes whatever the client sent. `messages` is a field of an untrusted request body, so it can be
+    a string, an int, or a list holding a `None` — and since #498 this runs on every non-Chat turn
+    rather than on Auto alone, which is how a malformed body first reached it. Raising here would
+    turn a bad request into a crash, which the shim already promises one layer up.
+
+    Non-dict entries are dropped rather than repaired: one carries no `role`, so it cannot be a turn
+    boundary, and no tool call, so it cannot flip the phase. Dropping it changes no verdict. The
+    filter runs over the TAIL only — the window this returns — because the backward scan above it
+    already stops at the boundary, and filtering first would copy the whole transcript on every
+    request to answer a question about its last few messages.
+    """
+    if not isinstance(messages, list):
+        return []
     start = 0
     for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get("role") in _TURN_BOUNDARY_ROLES:
+        message = messages[i]
+        if isinstance(message, dict) and message.get("role") in _TURN_BOUNDARY_ROLES:
             start = i + 1
             break
-    return list(messages[start:])
+    return [m for m in messages[start:] if isinstance(m, dict)]
 
 
 @dataclass(frozen=True)
@@ -252,6 +267,10 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
         if role == "assistant":
             wrote = False
             for call in message.get("tool_calls") or []:
+                # Same untrusted-body rule as _current_turn: a `None` or a bare string in here is
+                # not a tool call, so it names no tool and cannot flip the phase.
+                if not isinstance(call, dict):
+                    continue
                 name = ((call.get("function") or {}).get("name") or call.get("name") or "").lower()
                 if not name:
                     continue

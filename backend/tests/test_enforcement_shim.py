@@ -877,9 +877,10 @@ def _patch_messages(refusals: int) -> list:
     return msgs
 
 
-def _handled_with(catalog: ModelCatalog, messages: list, caplog=None) -> tuple[dict, list[str]]:
+def _handled_with(catalog: ModelCatalog, messages: list, caplog=None,
+                  mode: Mode = Mode.AUTO) -> tuple[dict, list[str]]:
     gw = FakeGatewayClient()
-    shim = EnforcementShim(ModelControl(mode=Mode.AUTO), catalog, gw)
+    shim = EnforcementShim(ModelControl(mode=mode), catalog, gw)
     request = {"model": "cheap-vendor", "messages": messages, "tools": list(_TOOLS)}
     if caplog is None:
         list(shim.handle(request, project="p1"))
@@ -942,3 +943,59 @@ def test_with_one_model_a_shell_failure_rescue_says_no_op_and_claims_no_other_mo
     note = sent["messages"][-1]["content"]
     assert "different model" not in note and "re-read the file" in note
     assert "rescued=no-op (both slots are one-vendor)" in next(m for m in lines if "rescue examined=" in m)
+
+
+# --- A pinned turn keeps what assess() pays for, and is told no fiction about it (#498) ----------
+
+
+def test_a_pinned_implement_turn_still_withdraws_apply_patch():
+    """assess() used to run in Auto alone, so pinning Implement silently dropped #494.
+
+    #498 pins the approve turn to Implement, and the approve turn is the one that writes the whole
+    app — exactly the turn most likely to hit the patch-refusal loop #494 exists to end. Scoring
+    now happens on every non-Chat turn; only the PHASE stays Auto-only.
+    """
+    sent, _ = _handled_with(CATALOG, _patch_messages(2), mode=Mode.IMPLEMENT)
+    assert "apply_patch" not in _tool_names(sent)
+    assert {"edit", "write", "read", "bash"} <= set(_tool_names(sent))
+
+
+def test_a_pinned_turn_is_never_told_it_moved_to_a_different_model(caplog):
+    """A rescue is a change of MODEL, and in Implement the slot does not move.
+
+    The routing note's own words are "running on a different model". Firing it here would be a
+    lie, and the log line would name a rescue that never happened — the failure #494 rewrote this
+    line to stop making.
+    """
+    sent, lines = _handled_with(CATALOG, _RESCUE_MESSAGES, caplog, mode=Mode.IMPLEMENT)
+    assert sent["model"] == "cheap-vendor"          # catalog.implement, unmoved by the signal
+    last = sent["messages"][-1]
+    assert not (last.get("role") == "system" and "[sage]" in (last.get("content") or ""))
+    rescue = next(m for m in lines if "rescue examined=" in m)
+    assert "rescued=no (mode pinned to implement)" in rescue
+
+
+def test_auto_keeps_the_rescue_the_guard_above_must_not_cost_it(caplog):
+    # Same messages; mode is the only difference. Without this, the #498 guard could disable the
+    # rescue everywhere and the two tests above would still pass.
+    sent, lines = _handled_with(CATALOG, _RESCUE_MESSAGES, caplog)
+    assert sent["model"] == "strong-vendor"
+    assert "different model" in sent["messages"][-1]["content"]
+    assert "rescued=strong-vendor" in next(m for m in lines if "rescue examined=" in m)
+
+
+def test_a_malformed_body_survives_the_classifier_in_every_mode():
+    """#498 routed untrusted bodies into assess() for the first time outside Auto.
+
+    `messages` is a field of whatever the client sent. The promise that a bad request is not a
+    crash already existed one layer up; this pins it at the layer that now does the reading.
+    """
+    for mode in (Mode.AUTO, Mode.IMPLEMENT, Mode.PLAN, Mode.ASK):
+        for messages in ([{"role": "assistant", "tool_calls": [None, "x"]}],
+                         [None, {"role": "user", "content": "hi"}],
+                         "not-a-list",
+                         # Not iterable at all. A string is absorbed by the dict filter (its
+                         # characters are not dicts), so only this case reaches the isinstance
+                         # guard — without it, the plant for that line stays green.
+                         123):
+            _handled_with(CATALOG, messages, mode=mode)
