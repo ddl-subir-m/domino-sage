@@ -258,3 +258,74 @@ def test_a_broken_call_retry_is_told_the_disk_as_it_is_now(tmp_path, monkeypatch
     assert "Existing source paths (JSON array" in retry, "the retry got no listing at all"
     assert "src/StudyPicker.tsx" in retry, "the retry was told a listing built before the write"
     assert "StudyPicker" in retry, "and it names what that file defines"
+
+
+def test_a_second_turn_is_told_the_file_the_first_turn_left_behind(tmp_path, monkeypatch):
+    """Freshness end to end, across two turns rather than two calls of the helper.
+
+    The function above proves there is no cache. This proves the call SITE is in the right place:
+    the block rides the first send of EVERY turn, so whatever the last turn wrote — or whatever
+    somebody edited in the workspace by hand between turns — is in the next turn's map. A listing
+    built once per session, or memoised on the project, would pass the test above and fail this one.
+    """
+    from sage.orchestrator.service import Orchestrator
+
+    monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    # Each turn writes, so each spends exactly one send and no implement-nudge — otherwise the last
+    # prompt is the nudge, which deliberately carries none of these blocks.
+    orch, client = _orch(tmp_path, [
+        Turn(text="One.", writes={"src/App.tsx": "export default () => null;\n"}),
+        Turn(text="Two.", writes={"src/App.tsx": "export default () => null; // two\n"}),
+    ])
+    app = orch.project(start_preview=False).app_for_turn().path
+
+    list(orch._build_stream("Add a footer.", mode=Mode.IMPLEMENT, is_approval=True))
+    assert len(client.prompts) == 1, [p["text"][:60] for p in client.prompts]
+
+    # Not through the fake's `writes`: this is the workspace changing under Sage between turns,
+    # which is the case a listing built once per session gets wrong and a per-turn one gets right.
+    (app / "src" / "StudyPicker.tsx").write_text("export function StudyPicker() { return null }\n")
+
+    list(orch._build_stream("Now the header.", mode=Mode.IMPLEMENT, is_approval=True))
+
+    first, second = client.prompts[0]["text"], client.prompts[1]["text"]
+    assert "src/StudyPicker.tsx" not in first, "it did not exist when the first turn was sent"
+    assert "src/StudyPicker.tsx" in second
+    assert "StudyPicker" in second, "and the second turn is told what it defines"
+
+
+def test_a_rename_between_turns_leaves_no_trace_of_the_old_name(tmp_path, monkeypatch):
+    """The other half of freshness, and the half a cache fails differently.
+
+    A map that only ever GAINS entries still passes the test above: appending the new file is
+    enough. What a stale map does here is worse than missing a file — it offers a path and a name
+    that are gone, so the model opens a file that does not exist, or edits by a name nothing
+    exports, and spends the round trips the map was added to save. So assert the absence, not only
+    the presence: after a rename on disk between two turns, the second turn's map carries the new
+    path and the new name and neither of the old ones.
+    """
+    from sage.orchestrator.service import Orchestrator
+
+    monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    orch, client = _orch(tmp_path, [
+        Turn(text="One.", writes={"src/App.tsx": "export default () => null;\n"}),
+        Turn(text="Two.", writes={"src/App.tsx": "export default () => null; // two\n"}),
+    ])
+    app = orch.project(start_preview=False).app_for_turn().path
+    # On disk BEFORE the first send, so the first turn's map really does carry it. That ordering is
+    # the whole test: a map that only ever GAINS entries can only be caught by a name it once held.
+    (app / "src" / "MetricCard.tsx").write_text("export function MetricCard() {}\n")
+
+    list(orch._build_stream("Add a metric card.", mode=Mode.IMPLEMENT, is_approval=True))
+    assert "MetricCard" in client.prompts[0]["text"], "the first turn's map has to hold it first"
+
+    # The rename the person did in the workspace, or a later turn did for them: file and symbol.
+    (app / "src" / "MetricCard.tsx").unlink()
+    (app / "src" / "KpiTile.tsx").write_text("export function KpiTile() {}\n")
+
+    list(orch._build_stream("Now a second one.", mode=Mode.IMPLEMENT, is_approval=True))
+
+    assert len(client.prompts) == 2, [p["text"][:60] for p in client.prompts]
+    second = client.prompts[1]["text"]
+    assert "src/KpiTile.tsx" in second and "KpiTile" in second
+    assert "MetricCard" not in second, "the map still offers a file and a name that are gone"
