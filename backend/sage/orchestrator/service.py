@@ -6327,13 +6327,32 @@ class Orchestrator:
         shim.resolve_capability = self.route_capability
         supervisor = _supervisor_for(workspace.path, domino_base_prefix())
         queries = PreviewQueries(workspace.path, self._wm.template)
-        if start_preview:
-            supervisor.start()
-            queries.start()
+        # Cached BEFORE the preview starts, and the start below is best-effort (#500). A preview that
+        # cannot start used to raise from here with `self._project` still None, so the attach never
+        # cached and every later request re-ran this whole method. Each one holds a thread from
+        # Starlette's 40-thread pool while the supervisor spends its restarts, and the Builder polls
+        # every 1.5-2s: the pool drains, and every SYNCHRONOUS route hangs at once — Build, the
+        # model-assignment drawer, /api/health. The proxy is `async` and goes on answering, so the
+        # session looks alive while nothing works. Measured live 2026-09-22 against a Vite supervisor
+        # started on an app that had no node_modules.
         self._project = Project(self._project_id, workspace, record, supervisor, queries, control, shim,
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None,
                                 manage_url=self._manage_url)
+        if start_preview:
+            # Separately, because the dev server and the data-preview server fail for unrelated
+            # reasons and one failing is no evidence about the other. Neither is fatal: the preview
+            # is a pane, and it has its own way back — `_ensure_preview_running` re-spawns a dead
+            # supervisor on the next request, and `upstream()` goes on raising until one comes up,
+            # which the proxy already renders (#504).
+            try:
+                supervisor.start()
+            except Exception:
+                log.exception("preview: the dev server could not start; the pane will show a 502")
+            try:
+                queries.start()
+            except Exception:
+                log.exception("preview: the queries server could not start")
         if seed_app:
             # A freshly seeded AGENTS.md is the template's, so it is voiced in the pack's words
             # (#114) and then the Project's instructions have to be rendered back into it — they are
