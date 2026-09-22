@@ -211,3 +211,110 @@ def test_policy_checkpoint_does_not_restore_a_completely_cleared_conversation():
                {'type': 'user', 'text': 'Continue'}]
     seed = recall.reseed(history)
     assert 'cobalt' in seed and 'scarlet' not in seed
+
+
+def _markers(value):
+    """Every path at which a `cache_control` key appears, as a sorted list of dotted locations."""
+    found = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if key == "cache_control":
+                    found.append(path)
+                else:
+                    walk(child, f"{path}.{key}" if path else key)
+        elif isinstance(node, list):
+            for index, child in enumerate(node):
+                walk(child, f"{path}[{index}]")
+
+    walk(value, "")
+    return sorted(found)
+
+
+def _stripped(value):
+    """`value` with every `cache_control` key removed, so two renders compare as prefixes."""
+    if isinstance(value, dict):
+        return {k: _stripped(v) for k, v in value.items() if k != "cache_control"}
+    if isinstance(value, list):
+        return [_stripped(v) for v in value]
+    return value
+
+
+def test_a_messages_body_is_marked_for_caching_at_the_system_and_the_last_two_turns():
+    enforcement, _ = shim(Protocol.MESSAGES)
+    original = body(Protocol.MESSAGES, opaque=False)
+    result, *_ = prepare_native(enforcement, original, Protocol.MESSAGES, "p", "ses_test")
+    # Three of Anthropic's four breakpoints and nowhere else: the system block covers the tools and
+    # the prompt, the two message blocks cover the conversation the next call reads back.
+    assert _markers(result) == ["messages[1].content[1]", "messages[2].content[0]", "system[0]"]
+    assert result["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    # The render hands back the caller's own system list and blocks it still holds elsewhere, so
+    # marking has to rebuild them. Writing through would strand a marker in state that outlives the
+    # request and re-render it, stale, at a position the next call no longer ends on.
+    assert original == body(Protocol.MESSAGES, opaque=False)
+
+
+def test_marking_never_writes_through_to_a_block_the_view_still_holds():
+    from sage.shim.native import _cache_breakpoints
+    # `render()` hands back the caller's own system list and, when policy left a turn alone, the
+    # caller's own block dicts — measured, not assumed: `rendered["system"][0] is body["system"][0]`
+    # there. Whether that aliasing happens depends on what the policy pipeline rewrote, so the
+    # helper cannot be allowed to care. A marker written through would outlive this request and
+    # come back on the next one at a position it no longer ends on, and three breakpoints would
+    # become four and then more than Anthropic accepts.
+    shared_system = {"type": "text", "text": "instruction"}
+    shared_block = {"type": "text", "text": "question"}
+    rendered = {"system": [shared_system],
+                "messages": [{"role": "user", "content": [shared_block]}]}
+    _cache_breakpoints(rendered)
+    assert rendered["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert shared_system == {"type": "text", "text": "instruction"}
+    assert shared_block == {"type": "text", "text": "question"}
+
+
+def test_the_marked_block_is_the_tool_result_the_turn_actually_ends_on():
+    enforcement, _ = shim(Protocol.MESSAGES)
+    result, *_ = prepare_native(enforcement, body(Protocol.MESSAGES, opaque=False),
+                                Protocol.MESSAGES, "p", "ses_test")
+    last = result["messages"][-1]["content"]
+    # A tool_result may carry a breakpoint, and it is what a Build's turns end on. The assistant
+    # text block before it must not take the marker instead, or the cache stops short of the turn.
+    assert last[-1]["type"] == "tool_result" and "cache_control" in last[-1]
+    assert all("cache_control" not in block for block in result["messages"][1]["content"][:-1])
+
+
+def test_a_grown_conversation_keeps_the_earlier_prefix_byte_for_byte():
+    enforcement, _ = shim(Protocol.MESSAGES)
+    first = body(Protocol.MESSAGES, opaque=False)
+    grown = copy.deepcopy(first)
+    grown["messages"] += [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "call_2", "name": "read",
+                                           "input": {"filePath": "second.csv"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_2",
+                                      "content": "more rows"}]}]
+    before, *_ = prepare_native(enforcement, first, Protocol.MESSAGES, "p", "ses_test")
+    after, *_ = prepare_native(enforcement, grown, Protocol.MESSAGES, "p", "ses_test")
+    before, after = _stripped(before), _stripped(after)
+    # What Anthropic matches is the prefix ahead of the breakpoint: tools, then system, then the
+    # messages in order. A hit on the second call needs all three unchanged where they overlap.
+    # Compared SERIALIZED, because that is what the provider sees: the gateway client hands the
+    # dict to httpx as `json=`, so insertion order is wire order, and an `==` between two dicts
+    # holds across a reordering that moves every byte after the first changed key.
+    assert json.dumps(after["tools"]) == json.dumps(before["tools"]) and before["tools"]
+    assert json.dumps(after["system"]) == json.dumps(before["system"])
+    assert (json.dumps(after["messages"][:len(before["messages"])])
+            == json.dumps(before["messages"]))
+
+
+def test_only_the_messages_protocol_is_marked():
+    responses, _ = shim(Protocol.RESPONSES)
+    result, *_ = prepare_native(responses, body(Protocol.RESPONSES, opaque=False),
+                                Protocol.RESPONSES, "p", "ses_test")
+    # Responses has no cache_control carrier, and the gateway drops the marker on the Chat
+    # translation, so marking either one would be a key the provider never reads.
+    assert _markers(result) == []
+    chat, _ = shim(Protocol.CHAT)
+    prepared, *_ = chat.prepare({"model": "model", "messages": [
+        {"role": "user", "content": "question"}]}, "p", "ses_test")
+    assert _markers(prepared) == []

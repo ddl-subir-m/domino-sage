@@ -72,6 +72,41 @@ def _call(identifier, name, arguments):
         "name": name, "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments)}}
 
 
+_EPHEMERAL = {"type": "ephemeral"}
+
+
+def _cache_breakpoints(body: dict) -> None:
+    """Mark a rendered Messages body so Anthropic caches the prefix a Build re-sends every call.
+
+    A Build ships its whole prefix — the system prompt, the tool schemas, the conversation so far —
+    on each of its 22-90 inferences, and Anthropic caches NOTHING without an explicit marker. The
+    harness does not supply one: OpenCode writes its own `cache_control` only for a provider whose
+    id or npm names Anthropic, and this one is `sage-gateway` (#495). Measured 2026-09-21 against
+    cloud-dogfood: the gateway forwards the marker unchanged on `/anthropic/v1/messages` (4900 of
+    4913 tokens read from cache on the second call) and drops it in the OpenAI translation on
+    `/v1/chat/completions`, so this is the lane where marking is worth anything.
+
+    Three breakpoints, of Anthropic's four. One on the last `system` block, which caches the tools
+    and the system prompt — the stable bulk, and the one placement measured here. Two more on the
+    last block of each of the last two messages, which carry the conversation: the newest is the
+    one the NEXT call reads back, and the one behind it is the margin. That margin is not
+    decoration — `split_parallel_tool_calls` turns one assistant turn holding N parallel tool calls
+    into N assistant+tool pairs, so a single turn can append a dozen messages and outrun the
+    20-block lookback a lone trailing breakpoint relies on.
+
+    Rebuilds each marked block rather than setting a key on it. `render()` hands back the caller's
+    own `system` list when policy left the text alone, and the message blocks are deep copies whose
+    identity the view still holds; writing through either would leave a marker behind in state that
+    outlives this request and re-render it, stale, on the next one.
+    """
+    system = body.get("system")
+    if system:
+        system[-1] = {**system[-1], "cache_control": _EPHEMERAL}
+    for message in [m for m in body.get("messages") or [] if m.get("content")][-2:]:
+        content = message["content"]
+        content[-1] = {**content[-1], "cache_control": _EPHEMERAL}
+
+
 class NativeView:
     def __init__(self, body: dict, protocol: Protocol):
         self.body = copy.deepcopy(body)
@@ -296,6 +331,8 @@ def prepare_native(shim, body, protocol, project, session, on_resolved=None, *, 
     if body.get("model") != request["model"] or protocol is not capability.protocol:
         raise NativePolicyError("The resolved model route changed. Resolve the route again before sending.")
     result = view.render(request)
+    if protocol is Protocol.MESSAGES:
+        _cache_breakpoints(result)
     for key in ("reasoning", "reasoning_effort", "thinking"):
         result.pop(key, None)
     if "output_config" in result:
