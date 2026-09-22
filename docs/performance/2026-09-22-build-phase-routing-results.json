@@ -1,0 +1,136 @@
+{
+  "study": "build-phase-routing",
+  "issue": 498,
+  "plan_phase": "A",
+  "date": "2026-09-22",
+  "claim": "The four routing criteria are the result. Every duration is confounded by a catalog change and is attributed to nothing.",
+  "source_hashes": {
+    "algorithm": "sha256, first 16 hex",
+    "note": "Pre- and post-suite hashes were compared during the landing run and were identical. The values below are derived from the commits; they were not transcribed at run time.",
+    "baseline_commit": "e1a5222",
+    "measured_commit": "d53aa856",
+    "backend_sage_tree_at_measured": "b2c1b0a97103b03abab192708962424df575d455",
+    "files": {
+      "backend/sage/orchestrator/service.py": {"e1a5222": "02a909e61f6c217d", "d53aa856": "41001ead7e83ad67"},
+      "backend/sage/shim/enforcement.py": {"e1a5222": "90266e26591bb12f", "d53aa856": "aa1cd33709952468"},
+      "backend/sage/router/phase_classifier.py": {"e1a5222": "afb680b7627b8317", "d53aa856": "c7c4bac79b0a2ee6"}
+    }
+  },
+  "conditions": {
+    "baseline": {
+      "date": "2026-09-21",
+      "sage_rev": "e1a5222",
+      "host": "cloud-dogfood workspace sage-pharma-tables",
+      "composer_mode": "auto",
+      "catalog": {"plan": {"model": "opus", "effort": "high"}, "implement": {"model": "sonnet", "effort": "high"}},
+      "prompt": "clinical TFL build script"
+    },
+    "after": {
+      "date": "2026-09-22",
+      "sage_rev": "d53aa85",
+      "sage_rev_checked_against_origin_main": true,
+      "host": "same Project, rebuilt image",
+      "composer_mode": "auto",
+      "catalog": {"plan": {"model": "sonnet", "effort": "low"}, "implement": {"model": "haiku", "effort": "none"}},
+      "prompt": "substantial change prompt: four summary cards plus SOC expand/collapse",
+      "deviation": "The plan said to re-run the TFL build prompt in a fresh Project. A change prompt was run instead. Routing criteria are prompt-independent; the wall clock was already unattributable. Cost: no like-for-like wall-clock comparison exists."
+    }
+  },
+  "criteria": [
+    {
+      "name": "approve turn's first policy line",
+      "baseline": "opus (auto-plan, phase=plan, effort=high)",
+      "after": "haiku (implement-pinned, phase=implement)",
+      "met": true,
+      "confounded": false
+    },
+    {
+      "name": "approve turn's agent",
+      "baseline": "OpenCode default (_MODE_AGENT has no Mode.AUTO entry)",
+      "after": "sage-implement",
+      "met": true,
+      "confounded": false
+    },
+    {
+      "name": "approve turn's mode",
+      "baseline": "auto",
+      "after": "implement",
+      "met": true,
+      "confounded": false
+    },
+    {
+      "name": "plan : implement policy lines within the approve turn",
+      "baseline": "plan/opus present from the first call",
+      "after": {"plan": 0, "implement": 34},
+      "met": true,
+      "confounded": false,
+      "note": "Not merely inverted. The plan phase is absent from the approve turn."
+    },
+    {
+      "name": "gaps over 60s in the approve turn's first three calls",
+      "baseline": 1,
+      "baseline_longest_s": 335,
+      "after": 0,
+      "met": true,
+      "confounded": false
+    }
+  ],
+  "log_excerpts": {
+    "approve_turn_start_utc": "2026-09-22T17:17:52Z",
+    "routing": [
+      "17:17:53 turn: agent=sage-implement gate=False answer_only=False arch=False mode=implement",
+      "17:17:55 model policy: requested=None -> resolved=haiku (implement-pinned, phase=implement, ...)"
+    ],
+    "a2_rescue_path": [
+      "17:18:17 tool done: apply_patch refused: bytes=6988 lines=170 begin=y end=y ...",
+      "17:18:18 model policy: rescue examined=1 errors=1 episodes=0 rescued=no (write-flip) patch_refusals=1 ... apply_patch=withdrawn"
+    ],
+    "a2_withdrawal_lines": 24,
+    "a2_significance": "Unreachable before A2: assess() ran only in Auto, so a pinned Implement turn had no signals and patch_withdrawn could not be computed. A1 moved the approve turn into exactly that state."
+  },
+  "durations_recorded_not_attributed": {
+    "reason": "Both catalog slots changed model and effort between runs. No share of these deltas is claimed for Phase A.",
+    "plan_turn_min": {"baseline": [0.8, 1.5], "after": 0.71},
+    "approve_turn_min": {"baseline": 9, "after": 2.36},
+    "approve_turn_outcome_after": {"typecheck": "clean", "ok": true},
+    "prompt_to_working_app_min": {"baseline": 47, "after": 3.1},
+    "model_calls_in_approve_turn": {"after": 17},
+    "gaps_over_60s_in_approve_turn": {
+      "baseline": [{"seconds": 335, "position": "within the first three calls, plan phase"}],
+      "after": [{"seconds": 74, "position": "later in the turn"}]
+    },
+    "baseline_session_ring": {
+      "span_min": 46.5,
+      "time_in_gaps_over_60s_min": 33.8,
+      "fraction_in_gaps": 0.73,
+      "gap_count": 13,
+      "all_gaps_begin_on": "model call -> streaming",
+      "model_calls": 60,
+      "reads": 20,
+      "patches_landed": 14,
+      "patches_refused": 2,
+      "bash": 7,
+      "policy_lines": {"plan/opus": 68, "implement/sonnet": 18}
+    }
+  },
+  "other_baseline_on_record": {
+    "source": "memory note sage-build-baseline-2026-09-21",
+    "model": "GLM 5.3",
+    "effort": "low",
+    "wall_clock_min": 21.5,
+    "calls": 90,
+    "outcome": "app broken"
+  },
+  "reported_not_acted_on": "Pinning Mode.IMPLEMENT on the Auto approve door reaches _resolve_build branch 4, so an approve turn now honours a standing Build model pick while the UI's honours_pick (reading selected_mode) reports that it does not. Already true of the Plan and Ask doors before Phase A.",
+  "gates": {
+    "suite": {"passed": 7799, "skipped": 5, "failed": 0, "collected": 7804, "exit": 0, "wall": "3:26", "where": "repo root", "flags": "-rs"},
+    "lint": "make lint on main: all checks passed, repo-wide via the target",
+    "plants": {"conditions": 8, "red": 8},
+    "merge_before_suite": "c7d65983 was origin/main at start; nothing to merge"
+  },
+  "phase_b_stop_rule": {
+    "rule": "If A's live measurement does not invert the plan:implement ratio, do not proceed to B.",
+    "outcome": "inverted",
+    "verdict": "Phase B unblocked"
+  }
+}

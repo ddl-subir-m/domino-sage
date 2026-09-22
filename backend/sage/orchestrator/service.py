@@ -16437,6 +16437,37 @@ class Orchestrator:
             log.info("scope: verdict=%s", "PLAN" if verdict else "BUILD")
             if gate:
                 log.info("scope: planning a substantial request on a built project")
+            elif mode_at_start is Mode.AUTO:
+                # BUILD: the classifier was asked, in so many words, whether this turn wants a plan,
+                # and said no. That is the same instruction as picking Implement — inferred rather
+                # than typed — so run the turn as Implement (#498 phase B, after #498 phase A did the
+                # same for an approved plan). No new model call and no new classifier: this is the
+                # verdict that was already bought two hundred lines up, spent a second way.
+                #
+                # Measured 2026-09-21, the half of the session phase A does not reach: a typed
+                # follow-up on a BUILT app restarts in PLAN like every other turn, because the shim's
+                # per-step classifier biases to PLAN until the turn's first write and a user message
+                # resets its window. `continue` cost 4.6 min and `fix this error cardTitle is not
+                # defined` cost 0.9 min, each paying a fresh ramp on the plan model for work that was
+                # not planning.
+                #
+                # Pins the MODE, not the phase, for the reason phase A's site records at length: the
+                # AGENT comes from `_agent_for_mode(control.snapshot().mode)` and never from the
+                # phase, so a phase seed would move the model and still leave the turn on OpenCode's
+                # default agent, never seeing the `sage-implement` prompt.
+                #
+                # `set_turn_mode` re-pins the token `arm_turn_mode` armed above and deliberately does
+                # not touch `selected_mode` — the person's picker does not move, and their next turn
+                # is still Auto. Same call the stalled-build nudge makes further down.
+                #
+                # What this gives up: in Auto the shim can escalate a struggling turn back to the
+                # plan model (`assess()`'s rescue). That escalation is inert once the mode is pinned,
+                # because `_resolve_build` branch 4 pins the slot and ignores the phase entirely. It
+                # is the same trade the approval doors and the nudge path already make, and it is a
+                # trade rather than a hole: since phase A's A2, `assess()` still SCORES a pinned turn,
+                # so the #494 `apply_patch` withdrawal keeps working here.
+                project.control.set_turn_mode(Mode.IMPLEMENT)
+                log.info("scope: BUILD verdict — running this turn as Implement")
         # A gated turn's prompt carries a planning-context preamble scoped to whether the app exists
         # yet. First build (fresh template): tell the planner it needn't read anything and can plan
         # straight from the request — this is what keeps a weak sovereign planner from read-looping
