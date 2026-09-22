@@ -219,6 +219,11 @@ component draws in the right colours and type without a line of CSS from you. Th
 ### Charts
 Highcharts is on the page and already themed. Draw a chart into a `<div>` you own, from a
 `React.useEffect` that runs when the data changes and destroys the chart on cleanup:
+- **Reflow once after creating.** A chart measures its container as it is built, and a container
+  inside a card, a grid or a tab can still be settling at that moment — the chart then keeps the size
+  it first read, which on a bar chart shows as bars a few pixels long beside correct data. Follow
+  `Highcharts.chart(el, opts)` with `requestAnimationFrame(() => chart.reflow())`; it costs nothing
+  when the container was already right.
 - **Series color:** `sage.accents[0]` … `sage.accents[7]`, in order — or leave `colors` unset, the
   theme sets the same list. Never `--ok` / `--warn` / `--danger` for a data series — those mean
   status, so a green bar reads as "this is good" rather than "this is revenue".
@@ -282,6 +287,15 @@ so a route of your own is only for something the browser cannot do itself: a com
 whole of an attached file, a call to the platform API. Keep routes under `/api/`, return JSON, and
 let errors print to stdout, which is the App's log.
 
+> **Most apps never need this section.** A request for a chart, a table, or a page over data already
+> in this project is built from that data. Reaching the {platformName} API adds a call that can fail
+> in front of the user, and answers a question nobody asked.
+>
+> Come here only when the request names something only the platform knows: a snapshot, a version, an
+> approval, a policy, who made something, or which {datasetPlural} exist. If those words are not in
+> the request, do not pin a snapshot, do not show an approval, and do not list {datasetPlural} —
+> build the app that was asked for.
+
 The page reaches the platform's own API through **`sage.url("api/domino/<path>")`** — a GET-only
 relay `sage_serve.py` mounts, allow-listed to read-only families: `/api/datasetrw/`,
 `/api/governance/v1/`, `/api/users/v1/self`, `/api/users/v1/users`, `/api/users/v1/user/<id>`,
@@ -301,7 +315,9 @@ GET only, and only these families; anything else answers 403 or 405:
 | the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
 | one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
 | taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way |
-| governance bundles | `/api/governance/v1/bundles`, `/api/governance/v1/bundles/<id>/approvals` |
+| governance bundles | `/api/governance/v1/bundles` — paged, rows under `data`; per bundle `id`, `name`, `policyName`, `stage`, `stages`, `policies`, `projectName`, `classificationValue`. One bundle on its own: `/api/governance/v1/bundles/<id>` |
+| a bundle's approvals | `/api/governance/v1/bundles/<id>/approvals` — a bare array, not rows under `data`; per approval `name`, `status`, `approvers`, `updatedAt`, `updatedBy` |
+| what governs a {dataset} file | `/api/governance/v1/attachment-overviews?identifier.datasetId=<id>&identifier.snapshotId=<id>` — rows under `data`; each row is one FILE, `type` `DatasetSnapshotFile`, carrying `identifier.datasetId`, `.datasetName`, `.filename`, `.snapshotId`, `.snapshotVersion`, `.snapshotCreationTime`, and a `bundle`. Unfiltered it lists every attachment, `Report` and `ModelVersion` among them |
 | a user's name from an id | `/api/users/v1/user/<userId>` — `user.fullName`, `user.userName` |
 | every user, paged | `/api/users/v1/users` — `users[].id`, `.userName`, `.firstName`, `.lastName` |
 | whose access this is | `/api/users/v1/self` — `user.fullName`, `user.userName`, `user.email` |
@@ -314,6 +330,19 @@ GET only, and only these families; anything else answers 403 or 405:
   Without the flag the rows have no `taxonomyTags`, and `datasetRwDto.tags` is a different system
   that reads `{}`. Nothing under `/api/governance/v1/` or `/api/taxonomy/` lists tags from inside
   the platform. When a request says tags, use tags — do not derive a label from a name instead.
+- **The `bundle` on an attachment-overview is a stub.** Its `policyName` and `stage` read `""` and
+  its `policyVersion` reads `"0.0"` — on 25 rows out of 25. Take `bundle.id` from it and read
+  `/api/governance/v1/bundles/<id>` for anything you will show. A page that prints the embedded
+  `policyName` prints an empty string beside a governed file.
+- **An approval's field is `status`, and there is no `Rejected`.** Across 875 approvals the values
+  were `PendingSubmission`, `PendingReview`, `Approved` and `ConditionallyApproved`;
+  `PendingExpiration` and `Expired` are documented as well. Do not build an
+  approved/pending/rejected tri-state — the third bucket never fills. Treat anything that is not
+  `Approved` as not approved.
+- **Governance can be attached to the open head.** An attachment whose `identifier.snapshotVersion`
+  is missing names the mutable head, not a committed snapshot, so what was approved can change
+  afterwards. Say what an approval is attached to, and when the request wants a fixed record, pin a
+  snapshot whose `isReadWrite` is false and read that one.
 - **A user comes wrapped.** `self` and `user/<id>` answer `{"user": {...}}`; the name is
   `user.fullName`.
 - **A 404 has two readings.** On a path the table names, it is a wrong id — check the id against
