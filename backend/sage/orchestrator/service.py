@@ -16203,11 +16203,14 @@ class Orchestrator:
         # Read here rather than inside the predicate so the predicate stays a pure function of
         # facts, testable on its own, as its four siblings are. `_source_paths` is the same call
         # the prompt's own listing is built from, so the two can never disagree.
-        named_source = any(rel in prompt
-                           for rel in self._source_paths(project.app_for_turn().path))
+        # Not `named_source`: in this file that is the DATA source a prompt named
+        # (`table_search.named_source`, `_named_source_offer`), which is a different question.
+        prompt_names_a_file = any(rel in prompt
+                                  for rel in self._source_paths(project.app_for_turn().path))
         if _scope_gate_applies(mode=mode_at_start, has_built=has_built, gate=gate,
                                answer_only=answer_only, is_approval=is_approval,
-                               skip_planning=skip_planning, names_source_path=named_source):
+                               skip_planning=skip_planning,
+                               names_source_path=prompt_names_a_file):
             # Started, not asked. `result()` below is where the verdict is read, where the breaker is
             # fed, and where the budget runs out — it is counted from HERE, so a classifier that hangs
             # still costs the turn scope.TIMEOUT_S however late the join happens.
