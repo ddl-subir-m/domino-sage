@@ -366,7 +366,14 @@ class OpenCodeClient:
         r.raise_for_status()
 
     def create_session(self, directory: str, model: dict | None = None) -> str:
-        body: dict = {"location": {"directory": directory}}
+        # A title, so OpenCode does not spend a model call inventing one (#496). `SessionPrompt.
+        # ensureTitle` fires once per session — after the first user message, with `system: []` and
+        # `tools: {}` — and returns early when the title is not one of its own defaults. Measured
+        # 2026-09-11: it is the 3 KB call in every Build turn's ledger that emits no tool and moves
+        # nothing. Nothing in Sage ever reads a session title, so any non-default value ends it;
+        # the directory's name is the one that means something to a person reading the OpenCode log.
+        body: dict = {"location": {"directory": directory},
+                      "title": Path(directory).name or "sage"}
         if model:
             body["model"] = model
         r = httpx.post(f"{self.base_url}/api/session", json=body, timeout=30)

@@ -459,3 +459,70 @@ def test_the_classifier_is_kept_off_the_shim_counter():
         "scope.py now reads or writes model_calls — that counter is the shim-bypass detector, and "
         "a call that deliberately skips the shim must not increment it"
     )
+
+
+# --- naming the file is not asking for a plan (#496) --------------------------------------------
+
+def test_a_prompt_that_names_a_source_file_is_never_sent_to_the_classifier():
+    """The gate exists to infer what an Auto turn wants when nothing says. A prompt that spells one
+    of the app's own files has said: naming the edit site is the most specific a request gets, and
+    it is not a request for a plan to approve. Measured 2026-09-11 — the classifier costs a whole
+    round trip on every Auto turn that reaches it."""
+    applies = {"mode": Mode.AUTO, "has_built": True, "gate": False, "answer_only": False,
+               "is_approval": False, "skip_planning": False}
+    assert _scope_gate_applies(**applies) is True
+    assert _scope_gate_applies(**applies, names_source_path=True) is False
+
+
+def test_the_rule_matches_the_paths_the_model_is_handed_and_not_a_guess_at_words(tmp_path):
+    """The rule and the prompt's listing read the SAME function, so they cannot disagree about what
+    this app's source is — which is the one failure that would matter here, a turn skipping the
+    classifier over a file the model was never told about."""
+    from sage.orchestrator.service import Orchestrator
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "App.tsx").write_text("export default function App() { return null }\n")
+    (src / "StudyPicker.tsx").write_text("export function StudyPicker() { return null }\n")
+
+    paths = Orchestrator._source_paths(tmp_path)
+
+    def named(prompt: str) -> bool:
+        # The call site's own expression, verbatim (service.py, beside `_scope_gate_applies`).
+        return any(rel in prompt for rel in paths)
+
+    assert named("in src/App.tsx move the footer under the chart") is True
+    assert named("src/StudyPicker.tsx should remember the last study") is True
+    # No file named: an open-ended request on a built app is exactly what the classifier is for.
+    assert named("make it work for any study") is False
+    assert named("add a page listing every study") is False
+    # A file that is not this app's source is not the edit site.
+    assert named("update package.json to add recharts") is False
+
+
+def test_the_listing_the_classifier_reads_follows_the_apps_stack(tmp_path):
+    """It read `src/` from before the second stack existed, so on every app of the DEFAULT stack
+    (#490) it returned "" — and "" is also what an empty app answers, so the classifier judged
+    those requests with no listing at all and nothing said so."""
+    import json as _json
+
+    from sage.workspace.stack import FASTAPI_ANTD, STACK_KEY
+
+    (tmp_path / ".sage").mkdir()
+    (tmp_path / ".sage" / "settings.json").write_text(_json.dumps({STACK_KEY: FASTAPI_ANTD.name}))
+    (tmp_path / "app.py").write_text("from fastapi import FastAPI\n\napp = FastAPI()\n")
+    (tmp_path / "static").mkdir()
+    (tmp_path / "static" / "app.js").write_text("const App = () => null\n")
+    (tmp_path / "static" / "vendor").mkdir()
+    (tmp_path / "static" / "vendor" / "antd.js").write_text("// a vendored bundle\n")
+
+    listing = scope.app_context(tmp_path)
+
+    assert "app.py" in listing and "static/app.js" in listing
+    assert "vendor" not in listing, "a vendored bundle is not this app's source"
+
+
+def test_an_app_with_no_source_still_answers_nothing(tmp_path):
+    # Unchanged, and the reason the test above cannot be written as "not empty": both answer "".
+    assert scope.app_context(tmp_path) == ""
+    assert scope.app_context(None) == ""
