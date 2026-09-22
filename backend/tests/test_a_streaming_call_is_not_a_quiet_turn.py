@@ -25,6 +25,7 @@ WHAT EACH TEST CAN AND CANNOT TELL, because that is the trap in this ticket:
 from __future__ import annotations
 
 import json
+import logging
 import time
 import types
 from pathlib import Path
@@ -391,3 +392,47 @@ def test_a_build_turn_with_nothing_arriving_anywhere_still_stops(tmp_path: Path)
     assert len(_of(events, "build-stalled")) == 1
     assert _of(events, "done")[0]["decision"] == "stalled"
     assert oc.interrupted == 1
+
+
+def test_a_cut_off_answer_says_so_on_the_path_a_workspace_runs(monkeypatch, caplog):
+    """The live route never read `finish_reason`, so only the standalone shim said this.
+
+    A provider that ends an answer early leaves no other trace: the stream closes cleanly, `[DONE]`
+    arrives, and the symptom shows up a layer away as OpenCode failing the session on a tool call
+    whose arguments stopped mid-token. Measured 2026-09-22 on dogfood: `read` refused for
+    `SchemaError(Missing key at ["filePath"])` and `bash` for the same shape, on a tree without
+    this line, so nothing in the ring could say whether the arguments were cut or malformed.
+    `shim/app.py` has logged it since `cut_off_finish_reason` was written; this is the path a
+    workspace runs.
+    """
+    proj = _shim_project()
+
+    def gen():
+        yield (b'data: {"choices":[{"delta":{"content":"{\\"filePath\\": \\"src/Ap"},'
+               b'"finish_reason":"length"}]}\n\n')
+        yield b"data: [DONE]\n\n"
+
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
+        _post(monkeypatch, proj, gen)
+
+    said = [r.getMessage() for r in caplog.records if "ended the answer early" in r.getMessage()]
+    assert said, [r.getMessage() for r in caplog.records]
+    assert "finish_reason='length'" in said[0]
+    # The chunk carried a fragment of the model's own tool arguments. A log line is not the place
+    # for it — same rule as the repeat brake's, which quotes no shell output.
+    assert "filePath" not in said[0] and "src/Ap" not in said[0]
+
+
+def test_an_ordinary_stream_says_nothing_about_being_cut(monkeypatch, caplog):
+    """`finish_reason: null` on every chunk and a healthy `stop` are not cut-offs. A warning on
+    those would be a line on every turn, which is a line nobody reads."""
+    proj = _shim_project()
+
+    def gen():
+        yield b'data: {"choices":[{"delta":{"content":"one"},"finish_reason":null}]}\n\n'
+        yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
+        _post(monkeypatch, proj, gen)
+
+    assert not [r for r in caplog.records if "ended the answer early" in r.getMessage()]
