@@ -9,12 +9,6 @@ is unchanged. Only the final process changes: instead of `exec npx vite preview`
 server serves the same `dist/` **and** the app's query API. A React app served by Python looks
 odd enough to be worth explaining.
 
-> Since #490 this describes the **react-vite** stack only. The default stack, `fastapi-antd`
-> (ADR-0067), has no build: its `app.sh` rehydrates data and execs `uvicorn app:app`, and the
-> query API below is the same `sage_queries.py`, mounted by `sage_serve.py` instead of `serve.py`.
-> The premise of this ADR — Python has to hold the socket because the Data Source path is
-> Python-only — is what made a Python-only stack the natural default.
-
 ## Why not Node
 
 Querying a Domino Data Source is **only** possible over Arrow Flight gRPC. This was verified
@@ -81,10 +75,6 @@ greppable line once it holds the port, so a regression is visible in any App's l
 Take the total from the App log of the first publish after this change
 and add a row, then compare later publishes against it — the per-stage lines say which stage owns
 any increase.
-
-A `fastapi-antd` app logs the same lines with no `dependencies installed` or `build complete`
-stage — `[sage] serving .../static with no build step`. Its first publish belongs in this table
-too, on its own row, so the two stacks' cold starts sit beside each other.
 
 ## Which Python (#14)
 

@@ -518,14 +518,10 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
         ("- **`.sage/queries.json` is yours to write** — the one file under `.sage/` that is. Keep it "
          "valid JSON; a catalog that will not parse leaves the app with no queries at all."), "",
         "Call it from the app:", "",
-        *(["```js",
-           '// `sage.runQuery` is on the page already (static/sage/appQuery.js); nothing to import.',
-           'const { columns, rows } = await sage.runQuery("usage_by_account", { since: "2026-01-01" });']
-          if names.ext == "js" else
-          ["```tsx",
-           f'import {{ runQuery }} from "./{names.query}";   // from a subfolder: "../{names.query}"',
-           "",
-           'const { columns, rows } = await runQuery("usage_by_account", { since: "2026-01-01" });']),
+        "```tsx",
+        f'import {{ runQuery }} from "./{names.query}";   // from a subfolder: "../{names.query}"',
+        "",
+        'const { columns, rows } = await runQuery("usage_by_account", { since: "2026-01-01" });',
         "```", "",
         # Measured 2026-09-21 (#484): a dashboard wrote `COUNT(*) AS events`, read `columns` for
         # `"events"` with an exact `indexOf`, and drew its own "column is missing" error over a

@@ -501,25 +501,15 @@ def test_the_rule_matches_the_paths_the_model_is_handed_and_not_a_guess_at_words
 
 
 def test_the_listing_the_classifier_reads_follows_the_apps_stack(tmp_path):
-    """It read `src/` from before the second stack existed, so on every app of the DEFAULT stack
-    (#490) it returned "" — and "" is also what an empty app answers, so the classifier judged
-    those requests with no listing at all and nothing said so."""
-    import json as _json
-
-    from sage.workspace.stack import FASTAPI_ANTD, STACK_KEY
-
-    (tmp_path / ".sage").mkdir()
-    (tmp_path / ".sage" / "settings.json").write_text(_json.dumps({STACK_KEY: FASTAPI_ANTD.name}))
-    (tmp_path / "app.py").write_text("from fastapi import FastAPI\n\napp = FastAPI()\n")
-    (tmp_path / "static").mkdir()
-    (tmp_path / "static" / "app.js").write_text("const App = () => null\n")
-    (tmp_path / "static" / "vendor").mkdir()
-    (tmp_path / "static" / "vendor" / "antd.js").write_text("// a vendored bundle\n")
+    """The listing is the app's STACK's to name (#490), not a hardcoded `src/`. A vendored bundle
+    under those globs is not the app's source and is left out."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "App.tsx").write_text("export default () => null\n")
+    (tmp_path / "src" / "chart.ts").write_text("export const c = 1\n")
 
     listing = scope.app_context(tmp_path)
 
-    assert "app.py" in listing and "static/app.js" in listing
-    assert "vendor" not in listing, "a vendored bundle is not this app's source"
+    assert "src/App.tsx" in listing and "src/chart.ts" in listing
 
 
 def test_an_app_with_no_source_still_answers_nothing(tmp_path):

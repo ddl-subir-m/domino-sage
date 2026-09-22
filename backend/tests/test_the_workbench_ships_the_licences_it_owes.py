@@ -85,18 +85,9 @@ def test_the_brand_pack_has_no_attribution_key():
 
 
 def test_a_new_built_app_is_given_no_licence_file():
-    """The user owns and publishes that repo, so the obligation there is theirs. Both stacks."""
-    for template in (ROOT / "template" / "react-vite", ROOT / "template" / "fastapi-antd"):
-        named = [p.name for p in template.rglob("*") if p.name.upper().split(".")[0]
-                 in {"NOTICE", "NOTICES", "LICENSE", "LICENCE", "COPYING"}
-                 and "node_modules" not in p.parts]
-        assert named == [], template
-
-
-def test_the_no_build_template_ships_the_bundles_the_workbench_serves():
-    """`template/fastapi-antd/static/vendor/` is a copy of the Workbench's own vendored bundles
-    (#490): the same files, so one NOTICE describes both, and no page Sage seeds asks a CDN for
-    anything (ADR-0014 refuses remote assets; #19 is the same rule for fonts)."""
-    theirs = ROOT / "template" / "fastapi-antd" / "static" / "vendor"
-    ours = {p.name: p.read_bytes() for p in VENDOR.iterdir() if p.is_file()}
-    assert {p.name: p.read_bytes() for p in theirs.iterdir() if p.is_file()} == ours
+    """The user owns and publishes that repo, so the obligation there is theirs."""
+    template = ROOT / "template" / "react-vite"
+    named = [p.name for p in template.rglob("*") if p.name.upper().split(".")[0]
+             in {"NOTICE", "NOTICES", "LICENSE", "LICENCE", "COPYING"}
+             and "node_modules" not in p.parts]
+    assert named == [], template

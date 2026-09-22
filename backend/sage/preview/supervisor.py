@@ -2,8 +2,7 @@
 
 Spawns the generated app's dev server for a workspace, DISCOVERS its actual port, exposes
 `upstream()` for the preview proxy, restarts on crash (bounded), and cleans up its process group
-on stop. `ViteSupervisor` runs the react-vite template's Vite dev server; `UvicornSupervisor` runs a
-fastapi-antd app's own server with reload (#490). `make_supervisor` picks by the app's stack.
+on stop. `ViteSupervisor` runs the react-vite template's Vite dev server.
 
 Deep module, narrow interface: start() / upstream() / stop(). How the port is discovered
 (parsing the server's own "listening" line) and how the process group is torn down is hidden.
@@ -15,21 +14,14 @@ import logging
 import os
 import re
 import signal
-import socket
 import subprocess
-import sys
 import threading
 from pathlib import Path
-
-from ..workspace.stack import stack_of
 
 log = logging.getLogger("sage.preview.supervisor")
 
 # Vite prints e.g.  "  ➜  Local:   http://localhost:5173/"
 _LOCAL_RE = re.compile(r"Local:\s+(https?://[^\s/]+)")
-# uvicorn prints e.g.  "INFO:     Uvicorn running on http://127.0.0.1:5173 (Press CTRL+C to quit)"
-_UVICORN_RE = re.compile(r"Uvicorn running on (https?://[^\s/]+)")
-
 # Vite's default dev server port (before auto-increment). A leftover process from a prior
 # session that was killed without going through stop() can squat here on one address family
 # (e.g. IPv6-only) while a fresh Vite grabs the other, so "localhost" nondeterministically
@@ -67,19 +59,6 @@ def parse_vite_url(line: str) -> str | None:
     """Pure helper: extract the base URL from a Vite 'Local:' line, else None."""
     m = _LOCAL_RE.search(line)
     return m.group(1) if m else None
-
-
-def parse_uvicorn_url(line: str) -> str | None:
-    """Pure helper: extract the base URL from uvicorn's 'running on' line, else None."""
-    m = _UVICORN_RE.search(line)
-    return m.group(1) if m else None
-
-
-def make_supervisor(workspace: Path, base_prefix: str = "") -> ViteSupervisor:
-    """The supervisor for the app at `workspace`, by the stack its record names (#490)."""
-    if stack_of(Path(workspace)).preview == "uvicorn":
-        return UvicornSupervisor(workspace, base_prefix)
-    return ViteSupervisor(workspace, base_prefix)
 
 
 class ViteSupervisor:
@@ -200,47 +179,3 @@ class ViteSupervisor:
                 continue
             else:
                 log.warning("preview: killed stale process %s squatting on port %d", pid, port)
-
-
-def _free_port() -> int:
-    """A port nothing is listening on right now. uvicorn has no auto-increment, so it is told
-    one rather than left to collide with the neighbour Vite would have stepped past."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
-class UvicornSupervisor(ViteSupervisor):
-    """A fastapi-antd app's own server, run with reload, for the preview (#490).
-
-    Same interface and the same restart loop as the Vite supervisor; what differs is the process.
-    The app is served by the interpreter running Sage — the one interpreter here that is known to
-    carry fastapi and uvicorn — with `SAGE_PREVIEW=1`, which `sage_serve.py` stamps into the page
-    so the helpers know to reach the builder. `--reload` restarts the server when a `.py` file
-    changes; static files are read per request and need no restart at all.
-
-    It serves at the root, so the proxy prepends nothing: `mount_base` is "".
-    """
-
-    _NAME = "uvicorn"
-    _parse_url = staticmethod(parse_uvicorn_url)
-
-    def mount_base(self) -> str:
-        return ""
-
-    def _spawn(self) -> None:
-        self._ready.clear()
-        self._upstream = None
-        port = _free_port() if not os.environ.get("SAGE_PREVIEW_PORT", "").strip() else preview_port()
-        self._clear_stale_port(port)
-        self._proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
-             "--reload", "--reload-dir", ".", "--log-level", "info"],
-            cwd=self._workspace,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-            env={**os.environ, "SAGE_PREVIEW": "1"},
-        )
-        threading.Thread(target=self._read_output, args=(self._proc,), daemon=True).start()
