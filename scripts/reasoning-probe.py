@@ -8,7 +8,7 @@ spent months deciding this by matching the alias NAME. The discriminator is a NO
     400  the alias validates the field, so it honours it — and the refusal usually names the enum
     200  the alias discarded the field in silence; the level you sent bought nothing
 
-Four calls per alias, each bounded and tiny:
+Five calls per alias, each bounded and tiny:
 
     no field      the control. A 502 here means the endpoint is stopped, not that anything failed.
     effort=low    does a legal value pass at all
@@ -16,6 +16,10 @@ Four calls per alias, each bounded and tiny:
                   supported for gpt-5.4 in /v1/chat/completions") while gemini takes it, and every
                   Sage turn except a bare Chat turn carries tools — so this column decides whether
                   an effort is usable during a build at all.
+    tools only    function tools with NO effort field. This is what the send path actually emits
+                  once `EFFORTS_WITH_TOOLS` has narrowed an alias to nothing, so it is the shape
+                  most Sage turns are, and the one the picker cannot route around. Added
+                  2026-09-22; see the note under the table below.
     nonsense      the discriminator above.
 
 Then each level the alias claimed is sent on its own, because the gateway's enum is not the last
@@ -39,6 +43,15 @@ The gpt-5.4 row is the reason this file exists rather than a one-off curl. Sage 
 low/medium/high for it for months, off the alias NAME; the first run of this probe found `none` and
 `xhigh` as well, and found that `none` is the one level gpt-5.4 accepts alongside function tools —
 which is the gateway's own advice in the refusal, and nobody had taken it.
+
+That table has no `tools only` column because the run above never sent that request, and the gap
+survived because every column it DOES have reads 200 for gpt-5.4 except the one about effort. So the
+table answered "which effort may I offer" correctly and said nothing about "may I send tools at
+all" — a question nobody thought to ask of a build agent. On 2026-09-22 a Build plan turn on
+cloud-dogfood 400'd with `invalid_request_error` carrying tools and no effort field, while the same
+alias answered 200 to a tool-free title call four seconds earlier and sonnet ran the same agent.
+Two differences from the run above and neither is visible in the table: a different gateway, and a
+request shape it never sent. A column that is absent is not a column that read 200.
 
 Usage:
 
@@ -138,9 +151,27 @@ def _detail(raw: str) -> str:
 def probe(alias: str) -> int:
     bare, low = ask(alias, None), ask(alias, "low")
     tooled, junk = ask(alias, "low", with_tools=True), ask(alias, NONSENSE)
+    # Tools with no effort field, which is what the send path emits whenever an alias accepts no
+    # level beside tools. Asked separately from `tooled` because the two differ in the field that
+    # the refusal usually blames, so a 400 on both says nothing about which one caused it.
+    tools_only = ask(alias, None, with_tools=True)
     print(f"\n{alias}")
     print(f"  no field {bare[0]}   effort=low {low[0]}   low+tools {tooled[0]}   "
-          f"{NONSENSE} {junk[0]}")
+          f"tools only {tools_only[0]}   {NONSENSE} {junk[0]}")
+
+    # Printed before the effort verdict, and deliberately: whether an alias accepts function tools
+    # is not a question about reasoning_effort, and the IGNORES branch below RETURNS. Putting this
+    # line after it would hide the finding for every alias that discards the field — which is most
+    # of them, and includes every Anthropic alias Sage builds on.
+    #
+    # Guarded on the bare control the same way the effort verdict is guarded on the nonsense call.
+    # A 400 here is a measurement only if the alias answered at all; a 502 or a rate limit on both
+    # calls is a question that was never asked, and reporting it as "refuses tools" would write a
+    # stopped endpoint into the table as a capability.
+    if bare[0] == 200 and tools_only[0] == 400:
+        print(f"  REFUSES function tools with no effort field — {_detail(tools_only[1])}")
+        print("  Sage cannot run a Build or Chat turn on this alias: every turn but a bare "
+              "greeting carries tools, and there is no effort setting to drop.")
 
     # Only two answers are measurements. A 200 to the nonsense value means the alias discarded the
     # field; a 400 means it validated it. Everything else — a stopped endpoint (502), a rate limit,
