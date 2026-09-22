@@ -10,7 +10,11 @@ spent months deciding this by matching the alias NAME. The discriminator is a NO
 
 Five calls per alias, each bounded and tiny:
 
-    no field      the control. A 502 here means the endpoint is stopped, not that anything failed.
+    no field      the control, and it GATES every verdict: anything but 200 here and the alias is
+                  reported as not measured, with no row printed. A 502 means the endpoint is
+                  stopped; a 400 is usually the account rather than the request ("You have reached
+                  your specified workspace API usage limits"), which reads identically to a
+                  validation 400 and used to be published as a finding.
     effort=low    does a legal value pass at all
     low + tools   gpt-5.4 refuses this pair ("Function tools with reasoning_effort are not
                   supported for gpt-5.4 in /v1/chat/completions") while gemini takes it, and every
@@ -159,16 +163,46 @@ def probe(alias: str) -> int:
     print(f"  no field {bare[0]}   effort=low {low[0]}   low+tools {tooled[0]}   "
           f"tools only {tools_only[0]}   {NONSENSE} {junk[0]}")
 
+    # THE CONTROL GATES EVERY VERDICT BELOW. Nothing about an alias was measured unless its
+    # simplest possible call answered, so this returns before a single line that could be copied
+    # into `router.models` is printed.
+    #
+    # The hole this closes: a 400 about the ACCOUNT rather than the request is indistinguishable
+    # from a validation 400 by status alone. Measured 2026-09-22 on cloud-dogfood — sonnet, opus,
+    # haiku and etan-opus-4.6 all answered every call with "You have reached your specified
+    # workspace API usage limits". `junk[0] == 400` read that as "it validated the field", printed
+    # HONOURS, watched all seven levels 400, and ended with `usable: none` under the line telling
+    # the reader to copy it into REASONING_EFFORTS. sonnet IGNORES the field, so that row would have
+    # offered a level sonnet never validated — into the one table this file's header calls the only
+    # thing standing between the picker and a hard 400.
+    #
+    # Gated on the CONTROL, not on the refusal text, on purpose. A text test has to enumerate the
+    # ways a gateway says "not you" — quota, billing, suspended key, wrong region — and a list
+    # written from the one that bit us is short by construction. "The control did not answer" needs
+    # no such list, and it subsumes the stopped-endpoint case that used to be checked separately
+    # below.
+    #
+    # Wider than the check it replaces, which required BOTH the bare and nonsense calls to be 502.
+    # A control that fails while a later call succeeds is a contradiction, not a measurement, and
+    # the safe reading of a contradiction is that nothing was learned.
+    if bare[0] != 200:
+        if bare[0] == 502:
+            # A stopped endpoint is a correctly reported non-measurement, not a broken sweep: most
+            # of this deployment's sovereign endpoints are stopped at any moment, and exiting
+            # non-zero for each of them would make `--all`'s exit code mean nothing.
+            print("  endpoint stopped — nothing here was measured")
+            return 0
+        print(f"  NOT MEASURED — the control call answered {bare[0]}, so no line below would be a "
+              f"verdict: {_detail(bare[1])}")
+        return 1
+
     # Printed before the effort verdict, and deliberately: whether an alias accepts function tools
     # is not a question about reasoning_effort, and the IGNORES branch below RETURNS. Putting this
     # line after it would hide the finding for every alias that discards the field — which is most
     # of them, and includes every Anthropic alias Sage builds on.
     #
-    # Guarded on the bare control the same way the effort verdict is guarded on the nonsense call.
-    # A 400 here is a measurement only if the alias answered at all; a 502 or a rate limit on both
-    # calls is a question that was never asked, and reporting it as "refuses tools" would write a
-    # stopped endpoint into the table as a capability.
-    if bare[0] == 200 and tools_only[0] == 400:
+    # `bare[0] == 200` is guaranteed by the control gate above, so this reads the tools call alone.
+    if tools_only[0] == 400:
         print(f"  REFUSES function tools with no effort field — {_detail(tools_only[1])}")
         print("  Sage cannot run a Build or Chat turn on this alias: every turn but a bare "
               "greeting carries tools, and there is no effort setting to drop.")
@@ -184,14 +218,10 @@ def probe(alias: str) -> int:
     elif junk[0] == 200:
         print("  IGNORES reasoning_effort (a nonsense value passed), so offer no effort for it")
         return 0
-    elif bare[0] == 502 and junk[0] == 502:
-        # A stopped endpoint is a correctly reported non-measurement, not a broken sweep: most of
-        # this deployment's sovereign endpoints are stopped at any moment, and exiting non-zero for
-        # each of them would make `--all`'s exit code mean nothing. The line above already says the
-        # row is empty, which is the part that must not be mistaken for a finding.
-        print("  endpoint stopped — nothing here was measured")
-        return 0
     else:
+        # The stopped-endpoint case that used to sit here is gone: it tested `bare[0] == 502`, and
+        # the control gate above now returns for any bare answer that is not 200. What reaches here
+        # is a control that answered 200 and a nonsense call that did not answer at all.
         print(f"  NOT MEASURED — the gateway answered {junk[0]}, not a verdict: {_detail(junk[1])}")
         return 1
 
