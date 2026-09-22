@@ -522,3 +522,22 @@ def test_policy_checkpoint_card_reuses_the_clear_button_with_accurate_words(surf
     assert 'gateway has refused' not in text
     assert _buttons(rendered)[0]['text'] == 'Clear recall'
     assert ('app, plan and transcript stay' if surface == 'build' else 'continue with a summary') in text
+
+
+def test_the_body_that_reaches_the_gateway_carries_its_cache_breakpoints(running):
+    client, orch, gateway = running
+    # Assign the Claude alias to the plan slot, or Auto resolves the turn to gpt-5.4 and the route
+    # refuses the mismatch before any body is built.
+    assert client.post("/api/project/model",
+                       json={"catalog": {"plan": {"model": "Opus-4.8", "effort": None}}}).status_code == 200
+    with active(orch) as headers:
+        assert dispatch(client, headers, Protocol.MESSAGES, "Opus-4.8").status_code == 200
+    sent, _ = gateway.seen[-1]
+    # The marker only earns anything if it survives the whole route, not just the helper: the
+    # gateway forwards this body to `/anthropic/v1/messages` unchanged (#495).
+    assert sent["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert json.dumps(sent).count('"cache_control"') == 1
+    # One marker, not three, and that is the shape of this request rather than a short count: the
+    # fixture body has no `system` and a single message, so two of the three placements have
+    # nothing to land on. `test_native_policy` holds the three-breakpoint case.
+    assert "system" not in sent and len(sent["messages"]) == 1
