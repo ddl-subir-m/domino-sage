@@ -2885,7 +2885,7 @@ def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_questio
 
 def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only: bool,
                         is_approval: bool, skip_planning: bool,
-                        names_source_path: bool = False) -> bool:
+                        prompt_names_a_file: bool = False) -> bool:
     """Whether to spend a model call asking scope.wants_a_plan about this turn.
 
     Every deterministic signal gets to decide first and for free — this only runs when none of them
@@ -2908,7 +2908,7 @@ def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only:
       * Auto only. Plan gates every turn already; Implement is the user saying "just build it", and
         Ask never builds. Auto is the mode that carries no explicit instruction, which is the whole
         reason it needs one inferred.
-      * `names_source_path` — the prompt spells one of this app's own source files. Somebody who
+      * `prompt_names_a_file` — the prompt spells one of this app's own source files. Somebody who
         writes "in app.py add a route" has named the edit site, and naming the edit site is not a
         request for a plan to approve; it is the most specific a request gets. This is the same
         kind of signal as the ones above and not a heuristic about wording: the paths it matches
@@ -2917,7 +2917,7 @@ def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only:
         own docstring in scope.py says it of the whole gate — making the call cheaper is not the
         lever, not making it is."""
     return (mode is Mode.AUTO and has_built and not gate and not answer_only
-            and not is_approval and not skip_planning and not names_source_path)
+            and not is_approval and not skip_planning and not prompt_names_a_file)
 
 
 def _failure_gate_applies(*, mode: Mode, is_approval: bool, is_question: bool, skip_planning: bool,
@@ -16210,7 +16210,7 @@ class Orchestrator:
         if _scope_gate_applies(mode=mode_at_start, has_built=has_built, gate=gate,
                                answer_only=answer_only, is_approval=is_approval,
                                skip_planning=skip_planning,
-                               names_source_path=prompt_names_a_file):
+                               prompt_names_a_file=prompt_names_a_file):
             # Started, not asked. `result()` below is where the verdict is read, where the breaker is
             # fed, and where the budget runs out — it is counted from HERE, so a classifier that hangs
             # still costs the turn scope.TIMEOUT_S however late the join happens.

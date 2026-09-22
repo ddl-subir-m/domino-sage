@@ -471,7 +471,7 @@ def test_a_prompt_that_names_a_source_file_is_never_sent_to_the_classifier():
     applies = {"mode": Mode.AUTO, "has_built": True, "gate": False, "answer_only": False,
                "is_approval": False, "skip_planning": False}
     assert _scope_gate_applies(**applies) is True
-    assert _scope_gate_applies(**applies, names_source_path=True) is False
+    assert _scope_gate_applies(**applies, prompt_names_a_file=True) is False
 
 
 def test_the_rule_matches_the_paths_the_model_is_handed_and_not_a_guess_at_words(tmp_path):
