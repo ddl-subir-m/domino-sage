@@ -4393,6 +4393,19 @@ async def chat_completions(request: Request):
             # waited for. `request_bytes` above is the signal that is always there.
             if (used := ka.usage_tokens(chunk)) is not None:
                 call.usage(used[0], used[1])
+            # Said, not acted on — a cut answer is still the best answer there is, so it goes to
+            # OpenCode unchanged. The standalone shim has logged this since `cut_off_finish_reason`
+            # was written (shim/app.py); THIS is the path a workspace actually runs, and it did not,
+            # so a Build that died on a tool call whose arguments stopped mid-token had no line
+            # saying the provider ended the answer early. #494's six envelope refusals are exactly
+            # that shape and cannot be told from a malformed patch without it.
+            #
+            # The model is not named here on purpose: `call.model` is the ledger's SETTER, and the
+            # row this line sits beside already carries the model, the phase and the request size.
+            if cut := ka.cut_off_finish_reason(chunk):
+                log.warning(
+                    "gateway ended the answer early: finish_reason=%r. A tool call cut "
+                    "mid-arguments is what this looks like from the build.", cut)
 
         # A provider error relayed as a 200 + one `data: {"error": …}` frame. Nothing raised, so
         # without this it forwards as-is and OpenCode dies on an unparseable event with no payload.
