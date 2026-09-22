@@ -62,3 +62,20 @@ def test_the_read_rule_is_about_round_trips_and_never_about_which_files():
     rule = next(line for line in prompt.split("\n") if "ONE message" in line)
     for forbidden in ("public/data", ".sage/", "dataset", "PII", "sensitive"):
         assert forbidden not in rule, f"the read rule has drifted into governance: {forbidden!r}"
+
+
+def test_the_implement_prompt_steers_an_existing_file_edit_at_edit_and_not_at_apply_patch():
+    """The only place Sage pointed a model AT apply_patch was the last paragraph of this prompt,
+    with a worked envelope. Measured 2026-09-21 (#494): offered `edit`, gemini-3.7-flash took `edit`
+    nine times out of nine; offered apply_patch alone, it patched — and in a real turn 190 of ~214
+    refusals were hunks whose context no longer matched the file, after its own earlier patch
+    moved the lines. So the prompt names `edit` for an existing file, `write` for a new one, the
+    one thing a model gets wrong with `edit` (the read tool's `NNNNN|` prefix), and re-reading a
+    file before editing it twice. apply_patch stays described, not recommended."""
+    prompt = _implement_prompt()
+    assert "use `edit`" in prompt
+    assert "NNNNN|" in prompt
+    assert "use `write`" in prompt
+    assert "read it again before editing it a second time" in prompt
+    assert "For apply_patch updates" not in prompt
+    assert "If you use `apply_patch`" in prompt

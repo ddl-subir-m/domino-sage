@@ -123,6 +123,17 @@ ERROR_CORROBORATION = 2
 # on the strong one for the rest of the turn — Switchyard's escalation router latches for the rest
 # of the session; a turn is the right scope here, because a fresh turn already starts in PLAN.
 RESCUE_LATCH = 2
+# How OpenCode's apply_patch tool opens every refusal (read out of the pinned binary): a parse
+# failure, a hunk whose context lines are not in the file, or an empty envelope. Counted apart from
+# the error window because the answer to it is different: the rescue swaps the MODEL, and with one
+# model on both slots that swap is a no-op — measured 2026-09-21 (#494), 32 patches, 25 refused,
+# thirteen minutes, `rescued=<the same model>` on every line. What can change is the TOOL. The same
+# model, offered `edit`, took `edit` nine times out of nine on the same prompt; `apply_patch` is
+# withdrawn from a turn that keeps failing it.
+PATCH_REFUSAL_MARKERS = ("apply_patch verification failed", "patch rejected")
+# The tool the refusals come from. Its own name, not WRITE_TOOLS: an `edit` that fails is not a
+# reason to take `apply_patch` away, and a refused patch is not a reason to take `edit` away.
+PATCH_TOOL = "apply_patch"
 # What the shim may echo, for as long as this runs observe-only: the first line of EVERY shell/write
 # result the scorer looked at, tagged with whether it matched. Unmatched ones are the point — with
 # matches alone, "the build was clean" and "the markers missed the failure" produce identical
@@ -203,6 +214,9 @@ class StepSignals:
     rescues: int              # rescue episodes so far this turn
     examined: int = 0         # shell/write results the scorer read this turn (matched or not)
     samples: tuple[str, ...] = ()   # capped "<critical|soft|none> <first line>" echo, for tuning
+    # apply_patch results OpenCode refused since the last clean write. The same window as
+    # `errors_since_write`, on one tool, so the shim can withdraw that tool at the corroboration bar.
+    patch_refusals: int = 0
 
 
 def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
@@ -230,6 +244,7 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
     rescue_kind = ""                # non-empty while inside a rescue episode; cleared by a write
     latched = False
     samples: list[str] = []
+    patch_refusals = 0
 
     for message in turn:
         role = message.get("role")
@@ -260,17 +275,21 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
         lowered = raw.lower()
         critical = any(m in lowered for m in CRITICAL_MARKERS)
         soft = any(m in lowered for m in SOFT_ERROR_MARKERS) or _nonzero_exit(lowered)
+        from_patch = origin.get(message.get("tool_call_id") or "", "") == PATCH_TOOL
+        refused = from_patch and any(m in lowered for m in PATCH_REFUSAL_MARKERS)
         examined += 1
         samples.append(f"{'critical' if critical else 'soft' if soft else 'none'} {_sample(raw)}")
-        if not critical and not soft:
+        if not critical and not soft and not refused:
             # A write that came back clean is the progress signal — an edit that actually landed.
             # It opposes the error window and ends the current rescue episode; the latch (two failed
             # episodes) deliberately survives it. A clean shell result is not progress: `ls` working
             # says nothing about whether the app builds.
             if origin.get(message.get("tool_call_id") or "", "") in WRITE_TOOLS:
-                errors, rescue_kind = 0, ""
+                errors, rescue_kind, patch_refusals = 0, "", 0
             continue
 
+        if refused:
+            patch_refusals += 1
         errors += 1
         if critical or errors >= ERROR_CORROBORATION:
             if not rescue_kind:                       # entering a new episode, not deepening one
@@ -287,7 +306,7 @@ def assess(messages: Sequence[dict[str, Any]] | None) -> StepSignals:
         phase, reason = base_phase, ("write-flip" if has_write else "no-write")
     return StepSignals(phase=phase, base_phase=base_phase, reason=reason,
                        errors_since_write=errors, rescues=rescues, examined=examined,
-                       samples=tuple(samples[-_MAX_SAMPLES:]))
+                       samples=tuple(samples[-_MAX_SAMPLES:]), patch_refusals=patch_refusals)
 
 
 def classify(messages: Sequence[dict[str, Any]] | None) -> Phase:
