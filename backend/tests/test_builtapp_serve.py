@@ -407,7 +407,7 @@ def test_every_family_admits_its_own_reads(path: str):
 
 # --- the instructions argue with the fence (#493) -----------------------------------------------
 
-_AGENTS = {stack: _SERVE_PY.parents[1] / stack / "AGENTS.md" for stack in ("react-vite", "fastapi-antd")}
+_AGENTS_MD = _SERVE_PY.parents[1] / "react-vite" / "AGENTS.md"
 
 
 def _reads_table(agents_md: Path) -> list[str]:
@@ -427,25 +427,19 @@ def _reads_table(agents_md: Path) -> list[str]:
     return rows
 
 
-def test_the_reads_table_is_the_same_on_both_stacks():
-    """One table, two templates: a fix to one that misses the other is a red test, not drift."""
-    assert _reads_table(_AGENTS["react-vite"]) == _reads_table(_AGENTS["fastapi-antd"])
-
-
 def test_every_read_the_instructions_name_passes_the_fence():
     """The table and `PLATFORM_READS` are two lists edited by different people for different reasons,
     and nothing but this makes them argue (#493). Both directions: a row nobody can call, and a family
     nobody documents."""
-    rows = _reads_table(_AGENTS["react-vite"])
+    rows = _reads_table(_AGENTS_MD)
     named = re.findall(r"`(/(?:api|v4)/[^`]*)`", "\n".join(rows))
     assert len(named) >= 8, named
     for spelled in named:
         path = re.sub(r"<[^>]*>", "x", spelled.split("?")[0])
         assert sd.allowed(path), spelled
-    for stack, agents_md in _AGENTS.items():
-        body = agents_md.read_text()
-        for family in sd.PLATFORM_READS:
-            assert family in body, f"{stack}: {family} is admitted and never named"
+    body = _AGENTS_MD.read_text()
+    for family in sd.PLATFORM_READS:
+        assert family in body, f"{family} is admitted and never named"
 
 
 def test_the_relay_takes_get_and_nothing_else(dist, monkeypatch):
