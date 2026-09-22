@@ -26,7 +26,15 @@ from ..router.models import (
     is_bedrock,
     supports_vision,
 )
-from ..router.phase_classifier import READ_ONLY_DENIED, READ_TOOLS, TODO_TOOLS, WEB_TOOLS, assess
+from ..router.phase_classifier import (
+    ERROR_CORROBORATION,
+    PATCH_TOOL,
+    READ_ONLY_DENIED,
+    READ_TOOLS,
+    TODO_TOOLS,
+    WEB_TOOLS,
+    assess,
+)
 from . import keepalive as ka
 from .chat_paths import apply_withheld, strip_denied_writes
 
@@ -324,6 +332,18 @@ class EnforcementShim:
             denied |= TODO_TOOLS
         if not state.web_allowed:
             denied |= WEB_TOOLS
+        # A turn that keeps failing `apply_patch` loses `apply_patch`, not its model. The rescue
+        # below swaps the model, and with one model on both slots that swap is a no-op — measured
+        # 2026-09-21 (#494): 32 patches, 25 refused by OpenCode's parser, thirteen minutes, and
+        # `rescued=<the same model>` on every line. What the same model CAN do differently is take
+        # `edit` — nine times out of nine on the same prompt, once `edit` was on offer. The bar is
+        # the rescue's own corroboration, the window is the rescue's own (cleared by a clean write),
+        # and it is read off the transcript per request, so it holds for the rest of the turn and
+        # costs nothing to reset. A stripped tool is a guarantee where a prompt is a request.
+        patch_withdrawn = (signals is not None
+                           and signals.patch_refusals >= ERROR_CORROBORATION)
+        if patch_withdrawn:
+            denied |= {PATCH_TOOL}
         if denied and "tools" in request:
             tools = [
                 t for t in request["tools"]
@@ -529,14 +549,33 @@ class EnforcementShim:
         # straight back to the cheap model. Not persisted anywhere — OpenCode owns the history and
         # we only rewrite the outgoing request, so the note appears while rescued and is gone once
         # a write lands.
-        if (signals is not None and signals.phase is not signals.base_phase
+        #
+        # The note tells the truth about what changed. "Running on a different model" was written
+        # when the plan and implement slots always held two models; with one model in both, the
+        # rescue resolves to the model that just failed, and a note claiming otherwise sends it
+        # looking for a difference that is not there. What did change, when patches were refused,
+        # is the tool on offer — so the note names `edit` and the one thing a model gets wrong
+        # with it (pasting the read tool's line-number prefix into `oldString`).
+        if (signals is not None and (signals.phase is not signals.base_phase or patch_withdrawn)
                 and isinstance(request.get("messages"), list)):
+            same_model = self._catalog.plan == self._catalog.implement
+            if patch_withdrawn:
+                what = ("earlier patches in this turn were refused, so the patch tool is withdrawn "
+                        "for the rest of this turn. Re-read the file you are changing, then make "
+                        "the change with `edit` — `oldString` copied exactly from your last read of "
+                        "the file, without the `NNNNN|` line-number prefix — or with `write` for a "
+                        "new file. Fix the cause rather than repeating the change that just failed.")
+            elif same_model:
+                what = ("earlier tool calls in this turn failed. Work out why before editing again "
+                        "— re-read the file you are changing and fix the cause, rather than "
+                        "repeating the change that just failed.")
+            else:
+                what = ("earlier tool calls in this turn failed, so this step is running on a "
+                        "different model. Work out why before editing again — re-read the file you "
+                        "are changing and fix the cause, rather than repeating the change that just "
+                        "failed.")
             request = {**request, "messages": [*request["messages"], {
-                "role": "system",
-                "content": ("[sage] Routing note: earlier tool calls in this turn failed, so this "
-                            "step is running on a different model. Work out why before editing "
-                            "again — re-read the file you are changing and fix the cause, rather "
-                            "than repeating the change that just failed."),
+                "role": "system", "content": f"[sage] Routing note: {what}",
             }]}
 
         request = self.data_use.apply_restrictions(request, withheld=state.withheld)
@@ -605,11 +644,21 @@ class EnforcementShim:
         # only-on-rescue made them both silent. `rescued=no` is the ordinary case. Samples are
         # head-and-tail only and capped in the classifier.
         if signals is not None and signals.examined:
+            # `rescued=` names what the rescue CHANGED. With one model on both slots it changed
+            # nothing, and a line that printed that model looked like a rescue firing on every
+            # call for thirteen minutes (#494). `patch=` is the other lever, on the same line.
+            if signals.phase is signals.base_phase:
+                rescued = "no"
+            elif self._catalog.plan == self._catalog.implement:
+                rescued = f"no-op (both slots are {decision.model})"
+            else:
+                rescued = decision.model
             log.info(
-                "model policy: rescue examined=%d errors=%d episodes=%d rescued=%s (%s) — %s",
-                signals.examined, signals.errors_since_write, signals.rescues,
-                decision.model if signals.phase is not signals.base_phase else "no",
-                signals.reason, " | ".join(signals.samples),
+                "model policy: rescue examined=%d errors=%d episodes=%d rescued=%s (%s) "
+                "patch_refusals=%d apply_patch=%s — %s",
+                signals.examined, signals.errors_since_write, signals.rescues, rescued,
+                signals.reason, signals.patch_refusals,
+                "withdrawn" if patch_withdrawn else "offered", " | ".join(signals.samples),
             )
 
         # What the tool calls in this request look like on the way OUT, grouped by message. Behind

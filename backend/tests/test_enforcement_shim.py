@@ -856,3 +856,89 @@ def test_the_signature_summary_never_takes_the_turn_down_on_a_malformed_body():
                      [{"role": "assistant", "tool_calls": [{"extra_content": "nope"}]}],
                      "not-a-list"):
         list(shim.handle({"model": "gemini-3.7-flash", "messages": messages}, project="p"))
+
+
+# --- A turn that keeps failing apply_patch loses apply_patch, not its model (#494) ---------------
+
+_REFUSED = ("apply_patch verification failed: Error: Invalid patch format: missing Begin/End "
+            "markers")
+_TOOLS = [{"type": "function", "function": {"name": n}}
+          for n in ("apply_patch", "edit", "write", "read", "bash")]
+_ONE_MODEL = _replace(CATALOG, plan="one-vendor", implement="one-vendor")
+
+
+def _patch_messages(refusals: int) -> list:
+    msgs = [{"role": "user", "content": "build it"},
+            {"role": "assistant", "tool_calls": [{"id": "w1", "function": {"name": "write"}}]},
+            {"role": "tool", "tool_call_id": "w1", "content": "Wrote file successfully: app.py"}]
+    for i in range(refusals):
+        msgs += [{"role": "assistant", "tool_calls": [{"id": f"p{i}", "function": {"name": "apply_patch"}}]},
+                 {"role": "tool", "tool_call_id": f"p{i}", "content": _REFUSED}]
+    return msgs
+
+
+def _handled_with(catalog: ModelCatalog, messages: list, caplog=None) -> tuple[dict, list[str]]:
+    gw = FakeGatewayClient()
+    shim = EnforcementShim(ModelControl(mode=Mode.AUTO), catalog, gw)
+    request = {"model": "cheap-vendor", "messages": messages, "tools": list(_TOOLS)}
+    if caplog is None:
+        list(shim.handle(request, project="p1"))
+        return gw.seen[-1][0], []
+    with caplog.at_level("INFO", logger="sage.shim"):
+        list(shim.handle(request, project="p1"))
+    return gw.seen[-1][0], [r.getMessage() for r in caplog.records]
+
+
+def _tool_names(sent: dict) -> list[str]:
+    return [t["function"]["name"] for t in sent["tools"]]
+
+
+def test_two_refused_patches_withdraw_apply_patch_and_keep_edit_and_write():
+    sent, _ = _handled_with(CATALOG, _patch_messages(2))
+    assert "apply_patch" not in _tool_names(sent)
+    assert {"edit", "write", "read", "bash"} <= set(_tool_names(sent))
+
+
+def test_one_refused_patch_leaves_apply_patch_on_offer():
+    # One refused patch is ordinary; the bar is the rescue's own corroboration, not the first miss.
+    sent, _ = _handled_with(CATALOG, _patch_messages(1))
+    assert "apply_patch" in _tool_names(sent)
+
+
+def test_the_withdrawal_ends_when_a_write_lands():
+    msgs = _patch_messages(2) + [
+        {"role": "assistant", "tool_calls": [{"id": "e1", "function": {"name": "edit"}}]},
+        {"role": "tool", "tool_call_id": "e1", "content": "Edited app.py"}]
+    sent, _ = _handled_with(CATALOG, msgs)
+    assert "apply_patch" in _tool_names(sent)
+
+
+def test_with_one_model_on_both_slots_the_note_names_edit_and_not_a_different_model(caplog):
+    sent, lines = _handled_with(_ONE_MODEL, _patch_messages(2), caplog)
+    note = sent["messages"][-1]
+    assert note["role"] == "system" and "[sage]" in note["content"]
+    assert "different model" not in note["content"]
+    assert "`edit`" in note["content"] and "NNNNN|" in note["content"]
+    # The line says what changed: nothing about the model, and the tool that was withdrawn.
+    rescue = next(m for m in lines if "rescue examined=" in m)
+    assert "rescued=no-op (both slots are one-vendor)" in rescue
+    assert "patch_refusals=2 apply_patch=withdrawn" in rescue
+
+
+def test_with_two_models_a_shell_failure_rescue_still_names_the_other_model(caplog):
+    # No regression on the original rescue: two models, failures from bash, nothing withdrawn.
+    sent, lines = _handled_with(CATALOG, _RESCUE_MESSAGES, caplog)
+    assert sent["model"] == "strong-vendor"
+    assert "different model" in sent["messages"][-1]["content"]
+    assert "apply_patch" in _tool_names(sent)
+    rescue = next(m for m in lines if "rescue examined=" in m)
+    assert "rescued=strong-vendor" in rescue
+    assert "patch_refusals=0 apply_patch=offered" in rescue
+
+
+def test_with_one_model_a_shell_failure_rescue_says_no_op_and_claims_no_other_model(caplog):
+    sent, lines = _handled_with(_ONE_MODEL, _RESCUE_MESSAGES, caplog)
+    assert sent["model"] == "one-vendor"
+    note = sent["messages"][-1]["content"]
+    assert "different model" not in note and "re-read the file" in note
+    assert "rescued=no-op (both slots are one-vendor)" in next(m for m in lines if "rescue examined=" in m)

@@ -119,6 +119,57 @@ def test_a_critical_error_rescues_on_its_own():
     assert s.errors_since_write == 1
 
 
+# --- Refused patches (#494) --------------------------------------------------------------------
+# The rescue's other lever. Counted on ONE tool, so the shim can withdraw that tool rather than
+# swap a model that, with one model on both slots, it cannot swap.
+
+_REFUSED = ("apply_patch verification failed: Error: Invalid patch format: missing Begin/End "
+            "markers")
+_NO_LINES = "apply_patch verification failed: Error: Failed to find expected lines in app.py:\n x"
+
+
+def test_two_refused_patches_are_counted_on_the_patch_tool():
+    msgs = _building() + [_call("apply_patch", "p1"), _result("p1", _REFUSED),
+                          _call("apply_patch", "p2"), _result("p2", _NO_LINES)]
+    s = assess(msgs)
+    assert s.patch_refusals == 2
+    # Still a soft error each — the rescue window is untouched by the new count.
+    assert s.errors_since_write == 2
+    assert s.phase is Phase.PLAN
+
+
+def test_a_refused_shell_or_edit_is_not_a_refused_patch():
+    msgs = _building() + [_call("bash", "c2"), _result("c2", "error: could not resolve ./Foo"),
+                          _call("edit", "c3"), _result("c3", '{"error":{"message":"oldString not found"}}')]
+    s = assess(msgs)
+    assert s.patch_refusals == 0
+    assert s.errors_since_write == 2
+
+
+def test_the_refusal_text_alone_does_not_count_when_the_tool_was_not_apply_patch():
+    # Keyed on the ORIGIN tool, not the words: a shell command that prints the phrase is not a
+    # refused patch, and the count must never take `apply_patch` away for it.
+    msgs = _building() + [_call("bash", "c2"), _result("c2", _REFUSED),
+                          _call("bash", "c3"), _result("c3", _REFUSED)]
+    assert assess(msgs).patch_refusals == 0
+
+
+def test_a_clean_write_clears_the_refusal_count():
+    msgs = _building() + [_call("apply_patch", "p1"), _result("p1", _REFUSED),
+                          _call("apply_patch", "p2"), _result("p2", _REFUSED)]
+    assert assess(msgs).patch_refusals == 2
+    msgs += [_call("edit", "c4"), _result("c4", "ok")]
+    assert assess(msgs).patch_refusals == 0
+
+
+def test_a_patch_that_landed_clears_the_count_too():
+    # A clean apply_patch result IS a write that landed; the count is about what OpenCode refused.
+    msgs = _building() + [_call("apply_patch", "p1"), _result("p1", _REFUSED),
+                          _call("apply_patch", "p2"),
+                          _result("p2", "Success. Updated the following files:\nM app.py")]
+    assert assess(msgs).patch_refusals == 0
+
+
 def test_a_write_after_a_rescue_returns_to_implement():
     # The ratchet case. Without this the rescue is a one-way trip to the expensive tier and the
     # feature is a cost regression: a write is progress, and progress clears the error window.
