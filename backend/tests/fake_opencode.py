@@ -47,6 +47,13 @@ class Turn:
     # AttributeError of 2026-09-05 reproduces from this shape). True appends one still-running
     # `write` after this turn's other parts, which is where the live one sat: last, and open.
     broken_write: bool = False
+    # Tool calls left IN FLIGHT with a WELL-FORMED input, as {tool: subject} — a path for
+    # write/edit/read, a command for bash. `broken_write` above is the other shape, where OpenCode
+    # hands over a raw unparsed string; this one is the ordinary case and it is where the time goes.
+    # Measured on #497: OpenCode reports a part `pending` with `input={}` for the whole of a 7.7 s
+    # streamed argument and never shows a character of it, so "in flight with a subject and no
+    # content" is the state a long call is really in.
+    streaming: dict[str, str] = field(default_factory=dict)
     # The message's OWN failure, which is where a refusal of the REQUEST lands — a content filter,
     # an auth error — as opposed to a step's, which arrives on the event stream. Set it to the
     # OpenCode error shape, `{"name": ..., "data": {"message": ...}}`.
@@ -200,6 +207,10 @@ class FakeOpenCode:
             parts.append({"id": f"m{n}-b", "type": "tool", "tool": "write",
                           "state": {"status": "running",
                                     "input": '{"filePath": "src/Dashboard.tsx", "conte'}})
+        for j, (tool, subject) in enumerate(turn.streaming.items()):
+            key = "command" if tool == "bash" else "pattern" if tool == "grep" else "filePath"
+            parts.append({"id": f"m{n}-s{j}", "type": "tool", "tool": tool,
+                          "state": {"status": "running", "input": {key: subject}}})
         if turn.prelude:
             parts.append({"id": f"m{n}-p", "type": "text", "text": turn.prelude})
         if turn.text:

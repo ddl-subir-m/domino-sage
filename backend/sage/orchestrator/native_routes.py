@@ -182,12 +182,24 @@ def install(app, get_orchestrator):
                         call.tool(sorted(events.tool_names))
                     if events.input_tokens is not None:
                         call.usage(events.input_tokens, events.cached_tokens)
+                    # Carried up for the live "active" label (#497). The argument streams for
+                    # several seconds while OpenCode's transcript shows the part `pending` with an
+                    # input of `{}`, so this is the only place in the process that knows the write
+                    # is progressing. Published per chunk rather than at the end, because the whole
+                    # point is the window BEFORE the call completes.
+                    if events.tool_input_lines:
+                        project.tool_input_lines = dict(events.tool_input_lines)
                     put(chunk)
                 if not cancel.event.is_set():
                     put(ka.DONE)
             except Exception as error:
                 put(("error", error))
             finally:
+                # The count belongs to the call that produced it. Left standing, it would decorate
+                # the NEXT `write` the moment its part appears — a label that looks live and is
+                # describing a file finished a minute ago, which is the defect this fixes wearing
+                # the other face.
+                project.tool_input_lines = {}
                 gen.close()
 
         started = time.monotonic()

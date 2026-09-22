@@ -4598,6 +4598,27 @@ def _patch_detail(inp: dict, status: object) -> str:
             f"numbered={sum(1 for ln in lines if _NUMBERED_LINE.match(ln))}")
 
 
+def _writing_progress(detail: str, lines: int | None) -> str:
+    """Add "· 120 lines" to a write/edit label while its argument is still streaming (#497).
+
+    The symptom: `Writing app.py` appears and then freezes for tens of seconds while the file
+    streams, with nothing to say the call is alive. The path is the first and smallest key in the
+    argument JSON, so it is complete almost immediately; the content is the part that takes the
+    time, and OpenCode never exposes it half-written.
+
+    A COUNT and not a tail of the text. Showing what is being written would be more convincing and
+    would put partial file content on the wire, which ADR-0066 treats as carrier private state.
+    The count carries most of the signal at none of that cost.
+
+    Nothing below 2 lines, because the interesting case is a long write and a label that flickers
+    "1 line" for one poll and then grows is noise on a short one. `None` is the ordinary case —
+    no call streaming, or a tool that is not this one — and yields the label unchanged.
+    """
+    if not detail or not isinstance(lines, int) or lines < 2:
+        return detail
+    return f"{detail} · {lines} lines"
+
+
 def _tool_detail(tool: str, part: dict) -> str:
     """A short, human label for a tool call (the file it touched, the command it ran) so the UI
     can render dyad-style action cards instead of a bare tool name. Best-effort; '' when unknown."""
@@ -4858,6 +4879,16 @@ class Project:
     # tool; tool calls but no disk edits = OpenCode received tool calls but didn't apply them.
     model_calls: int = 0
     tool_call_responses: int = 0
+    # From the same wrapper: how many lines of argument each tool has streamed on the model call
+    # running right now, by tool name (#497). Read only by the live "active" label, and only for a
+    # part OpenCode still reports as in flight — OpenCode never exposes a partly-filled tool input,
+    # so while a `write` streams its file this is the only number in the process that knows.
+    #
+    # Emptied when that call's stream ends, in `native_routes.pump`'s `finally`, so it always
+    # describes the call in progress and never the last one. A plain dict needs no lock, for the
+    # reason `last_stream_chunk_at` records below: one streaming turn at a time, and the write is
+    # a whole-object rebind rather than a mutation, so a reader sees one dict or the other.
+    tool_input_lines: dict = field(default_factory=dict)
     # Also from that wrapper, and the only one of its records a turn reads WHILE it runs: when the
     # last gateway chunk arrived (`time.monotonic()`; 0.0 = none since this turn was granted). Both
     # quiet windows measure silence from what OpenCode sends, and a single long model call sends
@@ -17018,6 +17049,11 @@ class Orchestrator:
             # drives this turn's inferences (see Project.model_calls).
             project.model_calls = 0
             project.tool_call_responses = 0
+            # A count from a previous turn's last call would caption this turn's first write. The
+            # stream wrapper's `finally` already clears it, so this is the belt to that brace: it is
+            # the one field here a turn reads WHILE it runs, and a stale reading is not a wrong
+            # statistic afterwards but a wrong label on screen at the time.
+            project.tool_input_lines = {}
             # Detect edits made by THIS turn, not cumulatively since build start. Reset the tool-based
             # flag and fingerprint the working tree now; compare after the turn. Without this, once any
             # turn writes a file every later (possibly no-op) turn reads as "wrote code".
@@ -17231,6 +17267,15 @@ class Orchestrator:
                                 # useful detail (a file path, a command); this deliberately skips
                                 # todowrite so the "0 steps" artifact never surfaces.
                                 detail = _tool_detail(tool, part) if tool in ("edit", "write", "read", "bash", "grep") else ""
+                                if tool in ("write", "edit"):
+                                    # Only these two: `read`, `bash` and `grep` have short arguments
+                                    # that arrive whole, so their labels were never the ones that
+                                    # froze. Read here and not inside `_tool_detail`, which is also
+                                    # the "tool done" label and must stay a pure function of the
+                                    # part — a finished call would otherwise be captioned with
+                                    # whatever the NEXT one has streamed so far.
+                                    detail = _writing_progress(detail,
+                                                               project.tool_input_lines.get(tool))
                                 if detail:
                                     sig = f"{tool}:{detail}"
                                     if sig != last_active:
