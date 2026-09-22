@@ -171,6 +171,7 @@ from ..router.models import (
     reasoning_efforts_for,
     signing_slot,
 )
+from ..router.phase_classifier import WRITE_TOOLS
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
 from ..workspace.manager import (
@@ -392,6 +393,24 @@ _LIVE_READS_MAX = 25
 # it. Sized against a healthy build: the 2026-09-21 baseline used ~15 shell calls end to end, so
 # forty is not a number a working turn reaches before its first write.
 _BASH_CALLS_MAX = 40
+# How many writes one Build turn may have REFUSED before it stops. The third shape of the same
+# loop, on the tools that were meant to end it. Measured 2026-09-21 on `192926c` (#494): a turn
+# with gemini-3.7-flash on both model slots made 32 `apply_patch` calls in thirteen minutes, 25 of
+# them refused by OpenCode's parser, and nothing ended it but the person's Stop.
+#
+# Not keyed on "the app did not change", which is the key the two caps above use: seven of those
+# patches LANDED, so the tree hash moved and `agent_wrote()` was true the whole time. The turn was
+# still going nowhere. What separates it from a healthy build is the RATIO, and the margin is not
+# decoration — a turn refusing and landing in turns is a build fixing its own mistakes, and at the
+# tenth refusal it has nine landed beside it, so a plain "more refused than landed" stops it. The
+# measured loop lost more than three for every one it landed (25 against 7), so the bar is twice:
+# the cap fires when the writes that landed are fewer than half the writes that were refused.
+#
+# Sized well above the shim's own answer to this (#494's first half withdraws `apply_patch` at two
+# refusals): by the time a turn has had ten writes refused, the tool swap has been tried and has
+# not converged either, and ten is more refusals than any healthy turn in the 2026-09-21 baselines
+# had in total.
+_FAILED_WRITES_MAX = 10
 # How many sources the "Already read in this Thread" block names (ADR-0061). One line per SOURCE,
 # not per read, so a Thread reaches this only by touching twenty different tables — and newest
 # first, because the ones a stalled investigation keeps re-reading are the recent ones.
@@ -3665,6 +3684,29 @@ def _loop_message(n: int) -> str:
         n=n)
 
 
+def _refused_writes_message(n: int, one_model: str) -> str:
+    """What to tell somebody whose Build turn was stopped after its `n`-th refused edit.
+
+    The third of these sentences, and the first whose next step depends on something the person
+    configured. A turn's edits are refused by the editor, not by the model, so "ask a different
+    way" is the wrong advice: the request was fine and the edits were malformed or aimed at text
+    that had already moved. What the person can act on is the model.
+
+    `one_model` is non-empty only when the plan and implement slots hold the SAME model, which is
+    the case measured in #494 — and the case where every fallback inside the turn has nowhere to
+    go, because the model the rescue reaches for is the model that is failing. Saying so is the
+    difference between a dead end and a setting to change. With two models assigned there is
+    nothing specific to say, so it does not invent one.
+    """
+    said = brand.text(
+        "{assistantName} had {n} edits refused in this turn, so it stopped.", n=n)
+    if one_model:
+        return said + brand.text(
+            " Both model slots are set to {model}, so there was no second model to hand the failing"
+            " edits to. Assign a different model to one of the slots and ask again.", model=one_model)
+    return said + " Ask again, or assign a different model to the build slot."
+
+
 def _chat_live_event(ev) -> dict | None:
     """One AgentEvent off the live stream -> a Chat SSE event, or None to drop it.
 
@@ -4448,6 +4490,9 @@ def _workspace_relative(text: str) -> str:
 # A list of keys rather than a list of tools because the tools are OpenCode's to change — a
 # version that adds one still names its subject here instead of rendering a card with nothing in it.
 _SUBJECT_KEYS = ("pattern", "path", "filePath", "url", "name", "query", "description")
+# A context line still carrying the read tool's line-number prefix (`00012| …`), with or without a
+# patch marker in front of it. Its own constant so `_patch_detail` compiles it once per process.
+_NUMBERED_LINE = re.compile(r"^[ +-]?\d{4,6}\|")
 
 
 def _unparsed_tool_input(part: dict) -> bool:
@@ -4487,6 +4532,47 @@ def _unparsed_tool_evidence(part: dict) -> str:
     return f"len={len(raw)} head={raw[:200]!r} tail={raw[-100:]!r}"
 
 
+def _patch_detail(inp: dict, status: object) -> str:
+    """The file a patch touched, or — when OpenCode refused it — the SHAPE of what it refused.
+
+    The missing evidence from #494. That turn had 25 patches refused in thirteen minutes and the
+    ring could not say why any single one failed: the refusal text is the tool's REPLY, and nothing
+    recorded the request. So "the envelope was malformed", "the answer was cut off at the output
+    cap" and "the newlines arrived escaped" all read the same, and the six envelope refusals in the
+    2026-09-21 ring still have no cause.
+
+    Never a line of the patch. A patch body is the person's source, and this goes to a log ring and
+    a UI card — the same reason `_unparsed_tool_evidence` is capped and the brake quotes no tool
+    reply. Counts and yes/no are enough to tell the causes apart:
+
+      * `begin`/`end` — the envelope parser's own requirement, checked as whole lines the way
+        OpenCode checks it (`line.trim() === "*** Begin Patch"`), because a body that merely
+        CONTAINS the words still fails and would otherwise look fine here.
+      * `crlf`, `esc` — a patch whose newlines arrived as `\\r\\n` or as the two characters
+        backslash-n. Both parse as one line and produce "missing Begin/End markers".
+      * `fenced` — wrapped in a markdown fence, the other way a well-formed patch arrives unusable.
+      * `numbered` — context lines still carrying the read tool's `NNNNN| ` prefix, which is the
+        mistake the implement prompt now warns about by name.
+    """
+    text = inp.get("patchText")
+    if not isinstance(text, str):
+        return ""
+    if status != "error":
+        # It landed: the card wants what `edit` and `write` show, the file it changed.
+        for line in text.splitlines():
+            head, sep, path = line.partition(": ")
+            if sep and head.strip() in ("*** Update File", "*** Add File", "*** Delete File"):
+                return _workspace_relative(path.strip())
+        return ""
+    lines = text.splitlines()
+    return (f"refused: bytes={len(text)} lines={len(lines)} "
+            f"begin={'y' if any(ln.strip() == '*** Begin Patch' for ln in lines) else 'n'} "
+            f"end={'y' if any(ln.strip() == '*** End Patch' for ln in lines) else 'n'} "
+            f"crlf={text.count(chr(13))} esc={text.count(chr(92) + 'n')} "
+            f"fenced={'y' if '```' in text else 'n'} "
+            f"numbered={sum(1 for ln in lines if _NUMBERED_LINE.match(ln))}")
+
+
 def _tool_detail(tool: str, part: dict) -> str:
     """A short, human label for a tool call (the file it touched, the command it ran) so the UI
     can render dyad-style action cards instead of a bare tool name. Best-effort; '' when unknown."""
@@ -4505,6 +4591,8 @@ def _tool_detail(tool: str, part: dict) -> str:
         return (inp.get("command") or "").strip()
     if tool == "grep":
         return inp.get("pattern") or ""
+    if tool == "apply_patch":
+        return _patch_detail(inp, (state or {}).get("status"))
     if tool == "todowrite":
         todos = inp.get("todos") or []
         n = len(todos)
@@ -16903,6 +16991,12 @@ class Orchestrator:
             # a call is.
             bash_calls = 0
             shell_capped = False
+            # Writes this turn by outcome, for `_FAILED_WRITES_MAX`. Both counts, because the cap
+            # is a ratio and not a total: a turn whose edits mostly land is building, however many
+            # it also loses. Reset here with the other two, for the same reason.
+            failed_writes = 0
+            landed_writes = 0
+            write_capped = False
             looped = ""
             poll_failures = 0
             while True:
@@ -17050,6 +17144,24 @@ class Orchestrator:
                                         and not agent_wrote()):
                                     looped = _loop_message(bash_calls)
                                     shell_capped = True
+                            if tool in WRITE_TOOLS:
+                                # The third loop shape (#494): a turn whose edits keep coming back
+                                # refused. Counted by OUTCOME, and fired on the ratio rather than on
+                                # `agent_wrote()` like the two caps above — seven of the measured
+                                # turn's patches landed, so the tree moved the whole time and a
+                                # key on "nothing changed" would never have fired. A build that is
+                                # working lands more than it loses.
+                                if status == "error":
+                                    failed_writes += 1
+                                elif status == "completed":
+                                    landed_writes += 1
+                                if (not looped and failed_writes >= _FAILED_WRITES_MAX
+                                        and landed_writes * 2 < failed_writes):
+                                    cat = project.shim.catalog
+                                    looped = _refused_writes_message(
+                                        failed_writes,
+                                        cat.implement if cat.plan == cat.implement else "")
+                                    write_capped = True
                             if tool in ("edit", "write"):
                                 made_edits = True
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
@@ -17151,7 +17263,8 @@ class Orchestrator:
                     tap.close()
                     restore_mode()
                     yield from stalled_offer(0.0, in_tool=False, looped=looped,
-                                             decision="looped" if shell_capped else "repeated")
+                                             decision="looped" if (shell_capped or write_capped)
+                                             else "repeated")
                     return
                 if not appeared and time.monotonic() - start > 12:
                     break

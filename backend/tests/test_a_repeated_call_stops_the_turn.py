@@ -12,6 +12,7 @@ Two identical calls with nothing in between have no such reading.
 from __future__ import annotations
 
 import json
+from dataclasses import replace as _replace
 from pathlib import Path
 
 import pytest
@@ -906,3 +907,227 @@ def test_the_stream_taking_over_does_not_inherit_the_transcripts_count(tmp_path:
     events = list(orch.chat_stream(tid, "whats in my uploads"))
 
     assert [e for e in events if e.get("decision") == "repeated"] == []
+
+
+# --- THE THIRD SHAPE: the writes themselves keep being refused (#494) ---------------------------
+# Measured 2026-09-21, gemini-3.7-flash on BOTH model slots: 32 `apply_patch` calls in 13 minutes,
+# 25 refused by OpenCode's parser, 7 landed. The tree hash moved the whole time, so neither cap
+# above could see it — `agent_wrote()` was true — and the rescue's model swap was a no-op because
+# the model it swaps TO is the model that is failing. Only the ratio separates this from a build.
+
+_REFUSAL = ("apply_patch verification failed: Error: Invalid patch format: missing Begin/End "
+            "markers")
+_WRITES_IN_ONE_BATCH = 5
+
+
+class PatchRefusingOpenCode(LoopingOpenCode):
+    """Emits `apply_patch` parts: `refused` of them error, `landed` of them completed.
+
+    Both counts matter, so both are scripted. The parts carry DIFFERENT patch text every time —
+    `_RepeatBrake` keys on the arguments, and a loop that would trip the brake proves nothing about
+    a cap. Same reason `CountingOpenCode` numbers its echoes.
+    """
+
+    def __init__(self, workspace: Path, turns: list[Turn] | None = None, *,
+                 refused: int = 0, landed: int = 0) -> None:
+        super().__init__(workspace, turns)
+        self.refused_left = refused
+        self.landed_left = landed
+        self.calls = 0
+
+    def _finished(self) -> bool:
+        return not self.refused_left and not self.landed_left
+
+    def is_running(self, session_id: str) -> bool:
+        self.polls += 1
+        assert self.polls <= 200, "the build loop never capped a turn whose writes were refused"
+        return self.stay_running and not self._finished()
+
+    def _part(self) -> dict:
+        self.calls += 1
+        n = self.calls
+        # Alternate, so a cap that fired on a run of refusals rather than on the count would not
+        # fire here — and so `landed > refused` cases really interleave.
+        refuse = self.refused_left and (not self.landed_left or n % 2)
+        if refuse:
+            self.refused_left -= 1
+            return {"id": f"p{n}", "type": "tool", "tool": "apply_patch",
+                    "state": {"status": "error", "input": {"patchText": f"*** Begin Patch {n}"},
+                              "error": _REFUSAL}}
+        self.landed_left -= 1
+        return {"id": f"p{n}", "type": "tool", "tool": "apply_patch",
+                "state": {"status": "completed", "input": {"patchText": f"*** Begin Patch {n}"},
+                          "output": f"Success. Updated the following files:\nM app{n}.py"}}
+
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
+        if self._next > 0 and not self._finished():
+            parts = []
+            while len(parts) < _WRITES_IN_ONE_BATCH and not self._finished():
+                parts.append(self._part())
+            self.emitted += 1
+            self._by_session.setdefault(session_id, []).append(
+                {"id": f"patch-m{self.emitted}", "type": "assistant", "content": parts})
+        return FakeOpenCode.messages(self, session_id, limit=limit)
+
+
+def _write_cap_fired(events: list[dict]) -> list[dict]:
+    return [e for e in events
+            if e.get("type") == "build-stalled" and "edits refused" in e.get("message", "")]
+
+
+def _one_model_orch(tmp: Path, oc: FakeOpenCode) -> Orchestrator:
+    orch = _orch(tmp, oc, "BUILD")
+    cat = orch.project(start_preview=False).shim.catalog
+    orch.project(start_preview=False).shim.set_catalog(
+        _replace(cat, plan="flashy-vendor", implement="flashy-vendor"))
+    return orch
+
+
+def test_a_build_turn_whose_edits_keep_being_refused_is_stopped(tmp_path: Path):
+    oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
+                               refused=svc._FAILED_WRITES_MAX)
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    card = _write_cap_fired(events)
+    assert len(card) == 1
+    assert str(svc._FAILED_WRITES_MAX) in card[0]["message"]
+    # Never the refusal itself: a tool's error text is not this sentence's to quote, same rule as
+    # the brake's — and `apply_patch` is not on `_REPEAT_ANSWER_TOOLS` anyway.
+    assert "Begin/End markers" not in card[0]["message"]
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "looped"
+    assert oc.interrupted == 1
+    assert orch._turn_gave_up is True
+
+
+def test_a_turn_one_refusal_short_of_the_cap_is_not_stopped_for_it(tmp_path: Path, monkeypatch):
+    """Nine refusals is the same turn as ten, one part earlier. Only the count separates them."""
+    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
+    oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
+                               refused=svc._FAILED_WRITES_MAX - 1)
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    assert _write_cap_fired(events) == []
+    assert next(e for e in events if e.get("type") == "done")["decision"] != "looped"
+
+
+def test_a_turn_that_refuses_and_lands_in_turns_is_left_alone(tmp_path: Path, monkeypatch):
+    """The plant for the RATIO, and it is the one that shaped the rule.
+
+    Written first as "ten refused beside twelve landed", it stopped the turn — because the counts
+    are read at the INSTANT the tenth refusal arrives, and a build alternating refuse/land has only
+    nine landed by then. A build fixing its own mistakes looks exactly like that, so `more refused
+    than landed` was the wrong key: the measured loop lost more than three for every one it landed
+    (25 against 7), and the bar is now twice.
+    """
+    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
+    oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
+                               refused=svc._FAILED_WRITES_MAX, landed=svc._FAILED_WRITES_MAX + 2)
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    assert _write_cap_fired(events) == []
+    assert next(e for e in events if e.get("type") == "done")["decision"] != "looped"
+
+
+def test_a_turn_losing_more_than_twice_what_it_lands_is_stopped(tmp_path: Path):
+    """The other side of the same bar: the measured shape, scaled down. Four landed against ten
+    refused is not a build fixing its own mistakes."""
+    oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
+                               refused=svc._FAILED_WRITES_MAX, landed=4)
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    assert len(_write_cap_fired(events)) == 1
+
+
+def test_the_sentence_names_the_model_when_both_slots_hold_it(tmp_path: Path):
+    """#494's own case, and the only one where the person has something specific to change."""
+    oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
+                               refused=svc._FAILED_WRITES_MAX)
+    orch = _one_model_orch(tmp_path, oc)
+
+    events = list(orch.build_stream("chart them"))
+
+    said = _write_cap_fired(events)[0]["message"]
+    assert "flashy-vendor" in said
+    assert "Both model slots" in said
+
+
+def test_the_sentence_invents_nothing_when_the_slots_hold_two_models(tmp_path: Path):
+    oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
+                               refused=svc._FAILED_WRITES_MAX)
+    orch = _orch(tmp_path, oc, "BUILD")   # plan="p", implement="i"
+
+    events = list(orch.build_stream("chart them"))
+
+    said = _write_cap_fired(events)[0]["message"]
+    assert "Both model slots" not in said
+    assert "assign a different model to the build slot" in said
+
+
+# --- What a refused patch looked like (#494) -----------------------------------------------------
+# The evidence that was missing when this issue was filed: the refusal text is the tool's REPLY, and
+# nothing recorded the REQUEST, so a malformed envelope, an answer cut off at the output cap and
+# escaped newlines all read the same from the ring.
+
+def _patch_part(text: str, status: str = "error") -> dict:
+    return {"id": "p1", "type": "tool", "tool": "apply_patch",
+            "state": {"status": status, "input": {"patchText": text}}}
+
+
+def test_a_refused_patch_is_described_by_its_shape_and_never_by_its_lines():
+    body = ("*** Begin Patch\n*** Update File: app.py\n@@\n-    secret = 'hunter2'\n"
+            "+    secret = load()\n*** End Patch\n")
+    said = svc._tool_detail("apply_patch", _patch_part(body))
+
+    assert said.startswith("refused: ")
+    assert "begin=y end=y" in said
+    assert f"lines={len(body.splitlines())}" in said
+    # The patch body is the person's source, and this reaches a log ring and a UI card.
+    assert "hunter2" not in said and "secret" not in said and "app.py" not in said
+
+
+def test_the_shape_tells_the_three_causes_apart():
+    envelope_missing = svc._tool_detail("apply_patch", _patch_part("@@\n-a\n+b\n"))
+    assert "begin=n end=n" in envelope_missing
+
+    # One line to the parser, whichever way the newlines arrived: both produce the same refusal.
+    escaped = svc._tool_detail(
+        "apply_patch", _patch_part("*** Begin Patch\\n*** Update File: a.py\\n*** End Patch"))
+    # Two escapes, not three: the fixture's trailing `*** End Patch` has none after it, and the
+    # count is the evidence the shape line exists to give — so it is asserted exactly.
+    assert "begin=n" in escaped and "lines=1" in escaped and "esc=2" in escaped
+
+    crlf = svc._tool_detail("apply_patch", _patch_part("*** Begin Patch\r\n@@\r\n*** End Patch\r\n"))
+    assert "crlf=3" in crlf
+
+    fenced = svc._tool_detail(
+        "apply_patch", _patch_part("```\n*** Begin Patch\n@@\n*** End Patch\n```\n"))
+    assert "fenced=y" in fenced
+
+    # The mistake the implement prompt now warns about by name.
+    numbered = svc._tool_detail(
+        "apply_patch", _patch_part("*** Begin Patch\n@@\n-00012|    old\n+00012|    new\n*** End Patch\n"))
+    assert "numbered=2" in numbered
+
+
+def test_a_patch_that_landed_is_labelled_with_the_file_it_changed():
+    for header in ("*** Update File: src/App.tsx", "*** Add File: src/App.tsx",
+                   "*** Delete File: src/App.tsx"):
+        said = svc._tool_detail(
+            "apply_patch", _patch_part(f"*** Begin Patch\n{header}\n@@\n-a\n+b\n*** End Patch\n",
+                                       status="completed"))
+        assert said == "src/App.tsx", header
+
+
+def test_a_patch_call_with_no_patch_text_is_not_described():
+    # Same rule as every other tool here: a label is never worth raising over.
+    assert svc._tool_detail("apply_patch", {"state": {"status": "error", "input": {}}}) == ""
+    assert svc._tool_detail("apply_patch", {"state": {"status": "error", "input": "half-sent"}}) == ""
+    assert svc._tool_detail("apply_patch", _patch_part("*** Begin Patch\n", status="completed")) == ""
