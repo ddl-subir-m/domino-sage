@@ -2884,7 +2884,8 @@ def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_questio
 
 
 def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only: bool,
-                        is_approval: bool, skip_planning: bool) -> bool:
+                        is_approval: bool, skip_planning: bool,
+                        names_source_path: bool = False) -> bool:
     """Whether to spend a model call asking scope.wants_a_plan about this turn.
 
     Every deterministic signal gets to decide first and for free — this only runs when none of them
@@ -2906,9 +2907,17 @@ def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only:
         gate, one turn later. Honouring the flag here is the same promise.
       * Auto only. Plan gates every turn already; Implement is the user saying "just build it", and
         Ask never builds. Auto is the mode that carries no explicit instruction, which is the whole
-        reason it needs one inferred."""
+        reason it needs one inferred.
+      * `names_source_path` — the prompt spells one of this app's own source files. Somebody who
+        writes "in app.py add a route" has named the edit site, and naming the edit site is not a
+        request for a plan to approve; it is the most specific a request gets. This is the same
+        kind of signal as the ones above and not a heuristic about wording: the paths it matches
+        against are exactly the paths the model is handed in its prompt (`_source_paths`), so the
+        rule and the listing can never disagree about what this app's source is. `_model_for`'s
+        own docstring in scope.py says it of the whole gate — making the call cheaper is not the
+        lever, not making it is."""
     return (mode is Mode.AUTO and has_built and not gate and not answer_only
-            and not is_approval and not skip_planning)
+            and not is_approval and not skip_planning and not names_source_path)
 
 
 def _failure_gate_applies(*, mode: Mode, is_approval: bool, is_question: bool, skip_planning: bool,
@@ -4493,6 +4502,22 @@ _SUBJECT_KEYS = ("pattern", "path", "filePath", "url", "name", "query", "descrip
 # A context line still carrying the read tool's line-number prefix (`00012| …`), with or without a
 # patch marker in front of it. Its own constant so `_patch_detail` compiles it once per process.
 _NUMBERED_LINE = re.compile(r"^[ +-]?\d{4,6}\|")
+# How many source paths the Build prompt lists, and how many names it gives per listed file. The
+# path cap is long-standing (a listing that can't dominate the request); the name cap is what stops
+# one generated module of 500 exports from crowding out the file the request is actually about.
+_SOURCE_PATHS_MAX = 60
+_NAMES_PER_FILE = 8
+_NAMES_MAX_FILE_BYTES = 200_000
+# What a file DEFINES, matched on line starts only. Deliberately not a parser: this runs on every
+# Build turn over up to 60 files, the answer is a hint for choosing which file to open, and a miss
+# costs the model nothing it did not already have. `name` is the one group every pattern carries.
+_NAME_PATTERNS = {
+    ".py": re.compile(r"^(?:async\s+def|def|class)\s+(?P<name>\w+)"),
+    **{suffix: re.compile(
+        r"^(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:function|class|const|let|var)\s+"
+        r"(?P<name>\w+)")
+       for suffix in (".js", ".jsx", ".ts", ".tsx", ".mjs")},
+}
 
 
 def _unparsed_tool_input(part: dict) -> bool:
@@ -15953,25 +15978,87 @@ class Orchestrator:
         )
 
     @staticmethod
-    def _build_source_note(root: Path) -> str:
-        """Supply exact source paths without reading source or attached data. Which paths are the
-        app's source is its stack's to say (#490); a vendored bundle is not one of them."""
+    def _source_paths(root: Path) -> list[str]:
+        """The app's own source files, relative and sorted. Which paths those are is its stack's to
+        say (#490); a vendored bundle is not one of them.
+
+        Its own function because two callers need the same answer for different reasons — the
+        listing sent to the model, and the rule that decides whether a prompt NAMED one of these
+        files. A rule keyed on a second, slightly different glob would disagree with the listing
+        the model was given, which is the one thing that must not happen here.
+        """
         kind = stack_of(root)
         try:
-            paths = sorted({p.relative_to(root).as_posix() for glob in kind.source_globs
-                            for p in root.glob(glob)
-                            if p.is_file() and not any(part.startswith(".")
-                                                       for part in p.relative_to(root).parts)
-                            and not p.relative_to(root).as_posix().startswith(kind.vendored)})
+            return sorted({p.relative_to(root).as_posix() for glob in kind.source_globs
+                           for p in root.glob(glob)
+                           if p.is_file() and not any(part.startswith(".")
+                                                      for part in p.relative_to(root).parts)
+                           and not p.relative_to(root).as_posix().startswith(kind.vendored)})
         except OSError:
-            return ""
+            return []
+
+    @staticmethod
+    def _top_level_names(root: Path, paths: list[str]) -> dict[str, list[str]]:
+        """What each source file DEFINES, by name, read off the line starts.
+
+        Paths alone did not stop the re-orientation they were added for. Measured 2026-09-11 and
+        again in #496: a one-line change to a built app spent two whole round trips on `read`,
+        `glob`, `read` x5 before its single edit, with this listing already in the prompt — because
+        a list of paths cannot say which file holds the chart. A name can.
+
+        Names only, never a value: the point is to let the model pick the file, and a `const` on
+        the right-hand side is the person's data. Bounded the same way the listing is, and by a
+        per-file cap, so a generated 500-export module cannot crowd out the rest.
+        """
+        out: dict[str, list[str]] = {}
+        for rel in paths:
+            pattern = _NAME_PATTERNS.get(Path(rel).suffix)
+            if pattern is None:
+                continue
+            try:
+                p = root / rel
+                if p.stat().st_size > _NAMES_MAX_FILE_BYTES:
+                    continue
+                text = p.read_text(errors="replace")
+            except OSError:
+                continue
+            names: list[str] = []
+            for line in text.splitlines():
+                m = pattern.match(line)
+                if m and (name := m.group("name")) not in names:
+                    names.append(name)
+                    if len(names) == _NAMES_PER_FILE:
+                        break
+            if names:
+                out[rel] = names
+        return out
+
+    @classmethod
+    def _build_source_note(cls, root: Path) -> str:
+        """Supply exact source paths and what each file defines, without sending any source.
+
+        Built from disk at every call, and the call sites are what keep it true: the first send of a
+        turn (so it carries whatever the last turn wrote, and anything edited in the workspace by
+        hand), and the broken-call retry, which mints a NEW session that heard nothing else — and
+        which used to restore the string built before the failed attempt, so a retry after a
+        partial write was told a map that was already wrong. It deliberately does NOT ride a nudge:
+        a nudge talks to the session that made the edits, and re-sending the map there would put a
+        user-role message in the transcript, which is a turn boundary to the rescue scorer.
+        """
+        paths = cls._source_paths(root)
         if not paths:
             return ""
-        return ("Existing source paths (JSON array, relative to the app directory):\n"
-                + json.dumps(paths[:60])
-                + ("\nListing limited to the first 60 paths." if len(paths) > 60 else "")
-                + "\nOpen the relevant files together before editing. "
-                "Search only if the needed path is not listed.")
+        shown = paths[:_SOURCE_PATHS_MAX]
+        note = ("Existing source paths (JSON array, relative to the app directory):\n"
+                + json.dumps(shown)
+                + (f"\nListing limited to the first {_SOURCE_PATHS_MAX} paths."
+                   if len(paths) > _SOURCE_PATHS_MAX else ""))
+        if names := cls._top_level_names(root, shown):
+            note += ("\nTop-level names in each of those files (JSON object, path -> names):\n"
+                     + json.dumps(names))
+        return note + ("\nOpen the relevant files together before editing — the ones whose names "
+                       "the request touches, in ONE message. "
+                       "Search only if the needed path is not listed.")
 
     def _build_stream(self, prompt: str, mentions: list[str] | None = None,
                       resources: list[dict] | None = None, *, is_approval: bool = False,
@@ -16113,9 +16200,14 @@ class Orchestrator:
         answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
                                       is_approval=is_approval, arch=arch, wants_plan=wants_plan)
         pending_scope = None
+        # Read here rather than inside the predicate so the predicate stays a pure function of
+        # facts, testable on its own, as its four siblings are. `_source_paths` is the same call
+        # the prompt's own listing is built from, so the two can never disagree.
+        named_source = any(rel in prompt
+                           for rel in self._source_paths(project.app_for_turn().path))
         if _scope_gate_applies(mode=mode_at_start, has_built=has_built, gate=gate,
                                answer_only=answer_only, is_approval=is_approval,
-                               skip_planning=skip_planning):
+                               skip_planning=skip_planning, names_source_path=named_source):
             # Started, not asked. `result()` below is where the verdict is read, where the breaker is
             # fed, and where the budget runs out — it is counted from HERE, so a classifier that hangs
             # still costs the turn scope.TIMEOUT_S however late the join happens.
@@ -16333,7 +16425,13 @@ class Orchestrator:
         # it, so this span is what is LEFT of the call rather than the whole of it.
         if pending_scope is not None:
             with timing.span("gate.scope"):
-                gate = gate or pending_scope.result()
+                verdict = pending_scope.result()
+                gate = gate or verdict
+            # Both verdicts, not only the one that gates. The call costs a round trip on every Auto
+            # turn that reaches it, and until now only a PLAN was written down — so nothing said
+            # how often it changed the outcome, which is the only number that can justify keeping
+            # it. A BUILD verdict is the call having cost a turn to agree with the default.
+            log.info("scope: verdict=%s", "PLAN" if verdict else "BUILD")
             if gate:
                 log.info("scope: planning a substantial request on a built project")
         # A gated turn's prompt carries a planning-context preamble scoped to whether the app exists
@@ -17447,7 +17545,13 @@ class Orchestrator:
                     project.session_id = sid
                     project.record.write_session_id(sid, project.build_conversation,
                                                     project.app_for_turn().app_id)
-                mention_files, resource_note, chat_note, unusable_note, ambiguous_note, source_note = first_send_extras
+                mention_files, resource_note, chat_note, unusable_note, ambiguous_note, _ = first_send_extras
+                # Every other extra is what the PERSON said, and is restored as it was said. The
+                # source map is a fact about the disk, and the disk has moved: the call that broke
+                # may have landed files first, and this session heard none of it. Restoring the
+                # string built before the attempt would hand the retry a map that is already wrong,
+                # in the one session that has nothing else to go on.
+                source_note = self._build_source_note(project.app_for_turn().path)
                 broken_retry_note = BROKEN_CALL_RETRY_NOTE.format(tool=broken_call)
                 yield {"type": "iterate",
                        "reason": f"the model's {broken_call} call arrived broken — starting it again"}

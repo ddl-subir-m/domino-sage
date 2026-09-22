@@ -710,3 +710,25 @@ def test_child_session_scope_is_verified_from_harness_parentage_and_directory(mo
     assert not client.session_belongs_to('ses_cycle', 'ses_root')
     assert not client.session_belongs_to('../ses_root', 'ses_root')
     assert all(row[1] == {'directory': '/workspace'} and row[2] == 2 for row in requests)
+
+
+def test_a_new_session_is_named_so_opencode_does_not_spend_a_call_naming_it(monkeypatch):
+    """One key in the body, and a whole model call per session goes away (#496).
+
+    `SessionPrompt.ensureTitle` fires once per session — after the first user message, with
+    `system: []` and `tools: {}`, so it can emit no tool and move nothing — and returns early when
+    the session's title is not one of its OWN defaults. Measured 2026-09-11: it is the 3 KB call in
+    every Build turn's ledger that does nothing. Nothing in Sage reads a session title, so the
+    value only has to be outside OpenCode's default shape.
+    """
+    import re
+
+    seen = {}
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: seen.update(json) or _JsonResp({"id": "s1"}))
+    OpenCodeClient("http://x").create_session("/mnt/code/apps/app_7f3c")
+
+    assert seen["location"] == {"directory": "/mnt/code/apps/app_7f3c"}
+    title = seen["title"]
+    assert title, "no title means OpenCode titles it, which costs the call this avoids"
+    assert not re.match(r"^(New|Child) session - \d{4}-", title), title

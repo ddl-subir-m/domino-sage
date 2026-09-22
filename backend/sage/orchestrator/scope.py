@@ -58,6 +58,7 @@ from typing import Any
 from .. import degraded, timing
 from ..gateway.client import CostLabels, GatewayClient
 from ..router.models import ModelCatalog
+from ..workspace.stack import stack_of
 
 log = logging.getLogger(__name__)
 
@@ -69,10 +70,11 @@ TIMEOUT_S = 12.0
 # and paying for a 5k-token paste to answer one word is the kind of cost nobody would sign off on.
 MAX_PROMPT_CHARS = 2000
 
-# The app's own source. Everything beside it in the workspace — package.json, the tsconfigs, dist/,
-# public/, node_modules — is template scaffolding identical across every project, so listing it would
-# cost tokens to say nothing about this app's size or shape.
-SOURCE_DIR = "src"
+# The app's own source is the STACK's to name (`Stack.source_globs`, #490). Everything beside it in
+# the workspace — package.json, the tsconfigs, dist/, public/, node_modules, Sage's own helpers and
+# any vendored bundle — is scaffolding identical across every project, so listing it would cost
+# tokens to say nothing about this app's size or shape. This was a `src` constant until #496, which
+# is why the listing was empty on every app of the default stack.
 
 # A listing long enough to be worth reading, short enough that it can't dominate the call. Past this
 # the count itself is the signal ("this app is large"), not which files made the cut.
@@ -218,16 +220,24 @@ def app_context(root: Path | None) -> str:
     """A listing of the app's source files with line counts, or "" when there is nothing to say.
 
     Returns "" on every failure path — a missing workspace, an unreadable directory, an app with no
-    src/ — because the classifier is strictly better off with no context than with a wrong or partial
-    one, and the caller has no way to act on the difference anyway."""
+    source — because the classifier is strictly better off with no context than with a wrong or
+    partial one, and the caller has no way to act on the difference anyway.
+
+    Which files are the app's source is its STACK's to say (#490, #496). This read `src/` for as
+    long as `src/` was the only stack there was, and the default stack has been FastAPI + Ant
+    Design since #490 — where `src/` does not exist, so this returned "" and the classifier judged
+    every request on the default stack with no listing at all. Silently: "" is also what an empty
+    app answers, and the one thing the listing exists to tell it is how big the app already is.
+    """
     if root is None:
         return ""
-    src = Path(root) / SOURCE_DIR
+    root = Path(root)
+    kind = stack_of(root)
     try:
-        files = sorted(
-            p for p in src.rglob("*")
-            if p.is_file() and not any(part.startswith(".") for part in p.relative_to(src).parts)
-        )
+        files = sorted({p for glob in kind.source_globs for p in root.glob(glob)
+                        if p.is_file()
+                        and not any(part.startswith(".") for part in p.relative_to(root).parts)
+                        and not p.relative_to(root).as_posix().startswith(kind.vendored)})
     except OSError:
         return ""
     if not files:

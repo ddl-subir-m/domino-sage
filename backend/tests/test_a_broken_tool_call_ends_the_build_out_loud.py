@@ -109,14 +109,25 @@ def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
     # It is the same request, not a nudge. The blocks that ride the first send only — the user's
     # attachments and the Resource/Chat notes — are cleared after it, and a fresh session heard
     # none of them, so the retry has to carry them again.
-    assert oc.prompts[1]["text"].startswith(oc.prompts[0]["text"])
-    # But not byte-identical. A fresh session was told nothing about the one it replaces, so the
-    # retry names what broke and that the app on disk is mid-change. What it must NOT name is a
-    # cause the evidence does not support — see
-    # test_a_cut_stream_is_named_for_what_cut_it.py, which pins that half.
-    note = oc.prompts[1]["text"][len(oc.prompts[0]["text"]):]
-    assert "write call arrived with arguments that did not parse" in note
-    assert "read it before you change it" in note
+    first, retry = oc.prompts[0]["text"], oc.prompts[1]["text"]
+    assert "build me a dashboard" in retry, "the person's own sentence is re-sent"
+    assert "Existing source paths (JSON array" in retry, "so is the source listing"
+    # This used to be `retry.startswith(first)`, and it stopped being true on purpose (#496). One
+    # of those blocks is not something the person said — it is a fact about the disk, and the disk
+    # MOVED: the call that broke landed `src/MetricCard.tsx` first. Restoring the string built
+    # before the attempt handed the retry a listing that did not mention the file the previous
+    # attempt had just written, in the one session with nothing else to go on. So the listing is
+    # rebuilt here, and the retry is no longer a byte-extension of the first send.
+    assert "src/MetricCard.tsx" in retry, "the retry was told a listing built before the write"
+    assert "src/MetricCard.tsx" not in first, "nothing had been written when the first send went"
+    # A fresh session was told nothing about the one it replaces, so the retry also names what
+    # broke and that the app on disk is mid-change. What it must NOT name is a cause the evidence
+    # does not support — see test_a_cut_stream_is_named_for_what_cut_it.py, which pins that half.
+    assert "write call arrived with arguments that did not parse" in retry
+    assert "read it before you change it" in retry
+    # The retry note is last, after the person's sentence, which is the ordering the prompt's own
+    # join promises: whatever Sage adds never gets between the person and the end of the message.
+    assert retry.index("build me a dashboard") < retry.index("read it before you change it")
 
 
 def test_the_retry_note_rides_the_retry_only(tmp_path: Path):

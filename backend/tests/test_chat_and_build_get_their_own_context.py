@@ -108,3 +108,153 @@ def test_source_paths_are_exact_json_strings_and_the_listing_is_bounded(tmp_path
     assert "first 60 paths" in note
     assert "secret" not in note
     assert "Do not include source content" not in note
+
+
+# --- the map says what each file DEFINES, and it is current (#496) -------------------------------
+# Paths alone did not stop the re-orientation they were added for: measured 2026-09-11, a one-line
+# change spent two whole round trips on `read`/`glob`/`read` x5 before its single edit, with the
+# path listing already in the prompt. A list of paths cannot say which file holds the chart.
+
+def _note(root: Path) -> str:
+    from sage.orchestrator.service import Orchestrator
+
+    return Orchestrator._build_source_note(root)
+
+
+def _names(note: str) -> dict:
+    line = next(i for i, ln in enumerate(note.splitlines()) if ln.startswith("Top-level names"))
+    return json.loads(note.splitlines()[line + 1])
+
+
+def test_the_map_names_what_each_file_defines(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "App.tsx").write_text(
+        "import x from 'y'\n"
+        "export default function App() { return null }\n"
+        "const Panel = () => null\n"
+        "export const TOTAL_LABEL = 'Total'\n"
+        "  const indented = 1\n")
+    (src / "calc.py").write_text(
+        "import json\n\ndef count_by_soc(rows):\n    pass\n\n"
+        "async def load():\n    pass\n\nclass Table:\n    pass\n")
+
+    got = _names(_note(tmp_path))
+
+    assert got["src/App.tsx"] == ["App", "Panel", "TOTAL_LABEL"], "an indented name is not top-level"
+    assert got["src/calc.py"] == ["count_by_soc", "load", "Table"]
+
+
+def test_the_map_carries_names_and_never_values(tmp_path):
+    """The point is to let the model pick a file. A right-hand side is the person's data, and this
+    listing goes into every Build turn's prompt whether or not the turn is about that file."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "config.ts").write_text(
+        "export const API_TOKEN = 'dgw_live_do_not_send'\n"
+        "const PATIENTS = [{ usubjid: 'ABC-001', ssn: '123-45-6789' }]\n")
+
+    note = _note(tmp_path)
+
+    assert _names(note)["src/config.ts"] == ["API_TOKEN", "PATIENTS"]
+    for value in ("dgw_live_do_not_send", "ABC-001", "123-45-6789"):
+        assert value not in note
+
+
+def test_one_generated_module_cannot_crowd_out_the_rest(tmp_path):
+    from sage.orchestrator import service as svc
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "generated.ts").write_text(
+        "".join(f"export const icon{i:03} = 1\n" for i in range(200)))
+    (src / "App.tsx").write_text("export default function App() { return null }\n")
+
+    got = _names(_note(tmp_path))
+
+    assert len(got["src/generated.ts"]) == svc._NAMES_PER_FILE
+    assert got["src/App.tsx"] == ["App"], "the file the request is about is still named"
+
+
+def test_a_file_the_patterns_do_not_know_contributes_no_names(tmp_path):
+    """Markup and data files have no top-level names to give, and guessing at them would put
+    arbitrary strings from a data file into the prompt."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "index.html").write_text("<html><body><div id='root'>Total</div></body></html>")
+    (src / "rows.csv").write_text("usubjid,ssn\nABC-001,123-45-6789\n")
+    (src / "App.tsx").write_text("export default function App() { return null }\n")
+
+    note = _note(tmp_path)
+
+    assert set(_names(note)) == {"src/App.tsx"}
+    assert "123-45-6789" not in note
+
+
+def test_a_file_with_no_top_level_names_is_listed_but_named_for_nothing(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "notes.ts").write_text("// a comment\n\n")
+    (src / "App.tsx").write_text("export function App() { return null }\n")
+
+    note = _note(tmp_path)
+
+    assert "src/notes.ts" in json.loads(note.splitlines()[1])
+    assert "src/notes.ts" not in _names(note)
+
+
+def test_an_app_with_no_names_anywhere_still_gets_its_paths(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "index.html").write_text("<html></html>")
+
+    note = _note(tmp_path)
+
+    assert json.loads(note.splitlines()[1]) == ["src/index.html"]
+    assert "Top-level names" not in note
+
+
+def test_the_map_is_read_from_disk_every_time_it_is_built(tmp_path):
+    """Freshness, at the level this function can promise it: no cache, no memo, no snapshot taken
+    at startup. A file added or renamed between two calls shows up in the second."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "App.tsx").write_text("export function App() { return null }\n")
+    first = _note(tmp_path)
+
+    (src / "StudyPicker.tsx").write_text("export function StudyPicker() { return null }\n")
+    (src / "App.tsx").write_text("export function AppShell() { return null }\n")
+    second = _note(tmp_path)
+
+    assert "src/StudyPicker.tsx" not in first
+    assert _names(second)["src/StudyPicker.tsx"] == ["StudyPicker"]
+    assert _names(second)["src/App.tsx"] == ["AppShell"], "the renamed name replaced the old one"
+    assert "App" not in _names(second)["src/App.tsx"]
+
+
+def test_a_broken_call_retry_is_told_the_disk_as_it_is_now(tmp_path, monkeypatch):
+    """The one send where a stale map does real damage, and where it used to be guaranteed stale.
+
+    A broken-call retry mints a NEW OpenCode session — the broken call is in the old session's
+    history and OpenCode replays history into every later request — so the retry has nothing to go
+    on but this prompt. The attempt that broke may have landed files first, and the map was
+    restored from the string built BEFORE it, so the retry was handed a listing that did not
+    mention the file the previous attempt had just written.
+    """
+    from sage.orchestrator.service import Orchestrator
+
+    monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    orch, client = _orch(tmp_path, [
+        # Lands a file, THEN breaks: the shape the retry has to be told about.
+        Turn(text="Starting.", writes={"src/StudyPicker.tsx": "export function StudyPicker() {}\n"},
+             broken_write=True),
+        Turn(text="Updated.", writes={"src/App.tsx": "export default () => null;\n"}),
+    ])
+
+    list(orch._build_stream("Make the panel blue.", mode=Mode.IMPLEMENT, is_approval=True))
+
+    assert len(client.prompts) == 2, client.prompts
+    retry = client.prompts[1]["text"]
+    assert "Existing source paths (JSON array" in retry, "the retry got no listing at all"
+    assert "src/StudyPicker.tsx" in retry, "the retry was told a listing built before the write"
+    assert "StudyPicker" in retry, "and it names what that file defines"
