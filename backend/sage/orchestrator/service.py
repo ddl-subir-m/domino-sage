@@ -18046,16 +18046,26 @@ class Orchestrator:
         if approved_doc and live_plan.strip() != (approved_doc.get("markdown") or "").strip():
             project.record.write_plan_doc_version(approved_doc["id"], live_plan)
         prior_mode = project.control.snapshot().mode
-        # Approval means "build it now", so a turn approved from a read-only mode RUNS as Implement —
-        # pinned to this turn only (see arm_turn_mode), never written to the user's picker. The
-        # earlier set_mode-then-restore did move their picker, which meant a mode they changed while
-        # the build streamed was reverted underneath them when it finished.
-        run_as = Mode.IMPLEMENT if prior_mode in (Mode.PLAN, Mode.ASK) else None
+        # Approval means "build it now", so an approve turn RUNS as Implement whatever mode it was
+        # approved from — pinned to this turn only (see arm_turn_mode), never written to the user's
+        # picker. The earlier set_mode-then-restore did move their picker, which meant a mode they
+        # changed while the build streamed was reverted underneath them when it finished.
+        #
+        # Auto was left alone here until #498, and it was the one door still open. In Auto the
+        # shim's per-step classifier restarts every turn in PLAN until that turn's first write
+        # (phase_classifier, and `fd708c51` which made the window turn-scoped on purpose), so an
+        # APPROVED plan re-planned on the plan model at plan effort. Measured 2026-09-21: ~34 plan
+        # calls to ~9 implement, one of them 5m35s long, on a turn whose own prompt opens "implement
+        # it, don't re-plan" and carries the plan inline. Auto also resolves to NO agent (_MODE_AGENT
+        # has no AUTO entry, deliberately), so the turn never saw the sage-implement prompt either.
+        # Pinning the MODE fixes both halves; seeding the phase would have fixed only the first,
+        # because the agent is chosen by _agent_for_mode(mode) and never by phase.
+        run_as = Mode.IMPLEMENT
         # The same check `build_stream` makes, on the mode this turn will really run as (#125).
         # Before `set_plan_retry_step(0)` and before the `finally` that archives the plan, so an
         # approve refused for its model leaves the card, the plan and a phased build's resume point
         # exactly as it found them — the person changes the model and presses Approve again.
-        refusal = self._slot_refusal_events(project, run_as or prior_mode)
+        refusal = self._slot_refusal_events(project, run_as)
         if refusal:
             if build_again:
                 # This turn is what made a plan live at all: the document had already been built,
