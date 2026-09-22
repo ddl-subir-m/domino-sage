@@ -17358,7 +17358,18 @@ class Orchestrator:
                                         failed_writes,
                                         cat.implement if cat.plan == cat.implement else "")
                                     write_capped = True
-                            if tool in ("edit", "write"):
+                            # The OUTCOME, not the call (#508). A REFUSED edit wrote nothing, and
+                            # counting it made `agent_wrote()` true for the rest of the turn —
+                            # `made_edits` never goes back down — which disarmed the shell cap
+                            # above on exactly the turn it exists for: one whose writes keep coming
+                            # back refused is the definition of going nowhere. All six readers of
+                            # `agent_wrote()` ask whether a write LANDED, so one key serves them.
+                            # `== "completed"` rather than `!= "error"` costs nothing: the tree
+                            # hash in `agent_wrote()` is the ground truth behind this flag, so a
+                            # write that changed the file and then reported some third status is
+                            # still seen — by the half that looked at the disk rather than at the
+                            # tool.
+                            if tool in ("edit", "write") and status == "completed":
                                 made_edits = True
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
                                   "detail": _tool_detail(tool, part)}
@@ -17841,7 +17852,7 @@ class Orchestrator:
                 # A clean typecheck with no edits means the agent only planned — don't call that a
                 # finished build. Nudge it to implement (once); if it still writes nothing, stop
                 # with an honest, actionable message rather than a false "done — clean".
-                # `made_edits` only trips on tools literally named edit/write this turn; the agent may write
+                # `made_edits` only trips on a COMPLETED tool literally named edit/write this turn; the agent may write
                 # via another (patch/str_replace/create). Confirm against the snapshot's ground truth
                 # so a real edit is never misread as "planned but wrote no code". Compare the tree hash
                 # to this turn's start (not the build-start baseline) so only edits made THIS turn count.
