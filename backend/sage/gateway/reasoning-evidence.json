@@ -51,6 +51,35 @@
     "reason": ""
   },
   {
+    "id": "eea66f5bf3f943ab8e3a25c8cc39b2e5",
+    "name": "gpt-5.4",
+    "provider_id": "c0214e7e0969485fa2f074d52334debe",
+    "provider_type": "openai",
+    "provider_model": "gpt-5.6-sol",
+    "updated_at": "2026-09-21T02:24:32.362993",
+    "fallback_chain": [],
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "responses",
+    "native": true,
+    "efforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "efforts_with_tools": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reason": ""
+  },
+  {
     "id": "1b28666898ed4863962b398482c2d48b",
     "name": "haiku",
     "provider_id": "74b32449a27a4d3ca873f5da37791c6b",

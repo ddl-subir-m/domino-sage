@@ -576,6 +576,32 @@ def test_chat_model_default_leaves_effort_unset_with_or_without_tools():
     control.disarm_chat(token)
 
 
+def test_the_policy_line_says_a_missing_effort_is_absent_not_the_level_none(caplog):
+    """#505: `effort=none sent` described an ABSENT field and read as "none was sent".
+
+    It means the opposite, and it is the exact distinction #505 turns on: with tools, gpt-5.4
+    answers 200 to `reasoning_effort: "none"` sent explicitly and 400 to the field omitted. The
+    wording cost an hour of that investigation — the reasoning-effort theory looked confirmed and
+    was about to be written up as the cause, until the default argument showed it was reporting an
+    absence. Asserted on the rendered field rather than the format string, because the format
+    string is not what anyone reads in the log ring.
+    """
+    control = ModelControl()
+    token = control.arm_chat("thr_1")
+    gw = FakeGatewayClient()
+    handler = EnforcementShim(control, _replace(CATALOG, ask="gpt-5.4"), gw)
+    with caplog.at_level("INFO", logger="sage.shim"):
+        list(handler.handle({"model": "opencode-default", "messages": [],
+                             "tools": [{"function": {"name": "read"}}]}, project="p"))
+    control.disarm_chat(token)
+    assert "reasoning_effort" not in gw.seen[-1][0]   # the condition the line is describing
+    line = next(r.getMessage() for r in caplog.records
+                if "model policy: requested=" in r.getMessage())
+    field = line.split("effort=", 1)[1].rstrip(")")
+    assert "none" not in field, field
+    assert field == "<absent>", field
+
+
 def test_chat_default_uses_the_ask_model_not_the_build_mode():
     control = ModelControl(mode=Mode.PLAN, phase=Phase.PLAN)
     token = control.arm_chat("thr_1")
