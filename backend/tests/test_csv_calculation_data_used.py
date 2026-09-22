@@ -574,7 +574,7 @@ def test_failed_python_output_and_metadata_are_receipts_too():
     part = prepared["messages"][1]["content"][0]
     text = json.dumps(part)
     assert "person0@example.invalid" not in text
-    assert part["state"]["input"]["kind"] == "local_execution_request"
+    assert part["state"]["input"]["command"], "the call keeps the key its tool requires (#507)"
     assert json.loads(part["state"]["error"])["kind"] == "local_execution_receipt"
     assert json.loads(part["state"]["metadata"]["output"])["kind"] == "local_execution_receipt"
 
@@ -617,8 +617,9 @@ def test_a_shell_call_for_a_withheld_file_gets_a_refusal_receipt():
     assert "person0@example.invalid" not in text
     receipt = json.loads(prepared["messages"][-1]["content"])
     assert receipt["status"] == "error"
-    assert prepared["messages"][1]["tool_calls"][0]["function"]["arguments"].startswith(
-        '{"kind": "local_execution_request"')
+    arguments = json.loads(prepared["messages"][1]["tool_calls"][0]["function"]["arguments"])
+    assert list(arguments) == ["command"] and arguments["command"], (
+        "a withheld source redacts the command's text, not the key bash requires (#507)")
 
 
 def test_selected_operation_values_reused_in_tool_arguments_are_tracked(tmp_path):
@@ -759,9 +760,9 @@ def test_background_completion_repeating_child_output_stays_local():
 
     text = json.dumps(prepared["messages"])
     assert "person0@example.invalid" not in text
-    receipt = json.loads(prepared["messages"][-1]["content"])
-    assert receipt["tool"] == "background"
-    assert receipt["sources"][0]["path"] == "public/data/upload/uploads/sales.csv"
+    # The rows go; the message stays a message. A receipt object here was answered in kind by the
+    # model, and the person was shown the receipt as their answer (#507).
+    assert prepared["messages"][-1]["content"] == "[local data withheld: 1 source]"
 
 
 def test_supported_mcp_and_image_carriers_are_inventoried():
@@ -933,6 +934,6 @@ def test_opencode_tool_state_image_output_is_not_replayed_to_the_model():
     prepared, _used = data.prepare(request)
 
     state = prepared["messages"][1]["content"][0]["state"]
-    assert state["input"]["kind"] == "local_execution_request"
+    assert state["input"]["command"], "the call keeps the key its tool requires (#507)"
     assert "SECRETIMAGEBYTES" not in json.dumps(prepared["messages"])
     assert json.loads(state["output"][0]["text"])["kind"] == "external_image_receipt"
