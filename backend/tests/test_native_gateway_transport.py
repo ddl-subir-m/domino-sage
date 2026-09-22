@@ -45,6 +45,36 @@ def test_installed_codecs_keep_private_state_out_of_errors(protocol, kind):
         assert error["retryable"] is (kind == "http-retry")
 
 
+def test_the_codec_asks_anthropic_to_stream_tool_arguments_eagerly():
+    """A Build writes a whole file into one tool argument, and Anthropic buffers each argument
+    value unless `eager_input_streaming` is set on the tool. It IS set on every call Sage makes —
+    but by accident. Nothing in Sage asks for it: the pinned `@ai-sdk/anthropic` defaults
+    `toolStreaming` on for a streaming request, and `provider.mjs` imports that copy.
+
+    Measured 2026-09-22 against the pinned binary, driving the real codec at a fake endpoint: all
+    16 tools arrived carrying `eager_input_streaming: true`, with no `anthropic-beta` header. The
+    same probe run with OpenCode resolving the SDK itself — its compiled binary carries an older
+    copy — sent `undefined` on every tool. So the behaviour rides on the `package.json` pin plus
+    the `file://` codec, and a bump could take it away with nothing to notice (#497).
+
+    This asserts the flag, not the benefit. What it buys is earlier fragments, and Sage cannot show
+    them yet: OpenCode exposes a tool's input as `{}` until the call completes, so the fragments
+    die before any Sage surface sees them. That gap is the open half of #497."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the installed native codecs")
+    backend = Path(__file__).resolve().parents[1]
+    run = subprocess.run([node, str(backend / "tests/js/native_codec_tool_streaming_harness.mjs"),
+                          str(backend / "sage/driver/provider.mjs")],
+                         capture_output=True, text=True, timeout=20, check=False)
+    assert run.returncode == 0, run.stderr
+    report = json.loads(run.stdout)
+    # A non-streaming request gets no eager flag at all, so the stream flag is part of the claim.
+    assert report["stream"] is True, report
+    assert [tool["name"] for tool in report["tools"]] == ["write", "bash"], report
+    assert [tool["eager"] for tool in report["tools"]] == [True, True], report
+
+
 @pytest.mark.parametrize("suffix", ["", "/", "/v1", "/v1/"])
 @pytest.mark.parametrize("protocol,path", [(Protocol.CHAT, "/v1/chat/completions"),
                                           (Protocol.MESSAGES, "/anthropic/v1/messages"),
