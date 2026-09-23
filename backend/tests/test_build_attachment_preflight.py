@@ -147,7 +147,7 @@ def test_download_failure_is_not_retried_during_cleanup(build, monkeypatch):
     (project.workspace.path / paths[0]).unlink()
     attempted = []
 
-    def failed(entry, *args):
+    def failed(entry, *args, **kwargs):
         attempted.append(entry["path"])
         raise ResourceUnavailable("download timed out")
 
@@ -205,7 +205,7 @@ def test_retry_after_repair_failure_rechecks_the_source(build, monkeypatch):
     (project.workspace.path / paths[0]).unlink()
     repair = attachment_repair.repair
 
-    def failed(*args):
+    def failed(*args, **kwargs):
         raise ResourceUnavailable("temporarily unavailable")
 
     monkeypatch.setattr(attachment_repair, "repair", failed)
@@ -230,3 +230,67 @@ def test_approval_with_missing_inputs_keeps_plan_and_stops(build, phased):
     assert not oc.prompts
     assert project.workspace.read_plan()
     assert not [e for e in events if e.get("type") == "phase" and e.get("n", 0) > 1]
+
+
+@pytest.mark.parametrize("mode", ["ask", "auto"])
+def test_unrelated_missing_input_does_not_block_answer_only_build(build, mode):
+    from sage.router.models import Mode
+
+    orch, oc, project, paths = build
+    project.control.set_mode(Mode(mode))
+    (project.workspace.path / paths[0]).resolve().unlink()
+    events = list(orch.build_stream("What chart library does this use?"))
+    assert oc.prompts and oc.prompts[0]["attachments"] is None
+    assert not any(e.get("decision") == "attachments unavailable" for e in events)
+
+
+@pytest.mark.parametrize("reattach", [False, True])
+def test_detach_during_successful_download_prevents_publication(build, monkeypatch, reattach):
+    import threading
+    from types import SimpleNamespace
+
+    orch, _, project, paths = build
+    path = paths[0]
+    entry = project.attached[0]
+    find_asset = orch._find_asset
+    dest = project.workspace.path / path
+    dest.unlink()
+    started = threading.Event()
+    release = threading.Event()
+    errors = []
+
+    def download(asset, rel, stage):
+        started.set()
+        assert release.wait(3)
+        stage.write_bytes(b"subject,arm\nprivate,active\n")
+
+    monkeypatch.setattr(orch, "_find_asset", lambda _: SimpleNamespace(mount_path=None))
+    monkeypatch.setattr(orch._assets, "download_file", download)
+    orch._pin_turn_app(project)
+
+    def recover():
+        try:
+            orch._restore_attachments([project.attached[0]])
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=recover)
+    worker.start()
+    try:
+        assert started.wait(3)
+        orch.detach_file(path)
+        if reattach:
+            monkeypatch.setattr(orch, "_find_asset", find_asset)
+            orch.attach_file(entry["dataset_id"], entry["file"])
+    finally:
+        release.set()
+        worker.join(3)
+        orch._clear_turn_baseline()
+    assert not worker.is_alive() and not errors
+    if reattach:
+        assert dest.is_symlink()
+        assert dest.read_bytes() == b"SUBJID,ARM\nprivate-subject,active\n"
+    else:
+        assert not dest.exists()
+        assert path not in {e["path"] for e in project.attached}
+        assert path not in {e["path"] for e in project.workspace.read_attachments()}

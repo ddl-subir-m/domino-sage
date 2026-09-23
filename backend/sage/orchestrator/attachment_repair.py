@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 
 from ..resources.provider import ResourceUnavailable
@@ -13,7 +14,8 @@ from ..resources.provider import ResourceUnavailable
 TIMEOUT_S = 20.0
 
 
-def repair(entry: dict, dest: Path, find_asset, assets, timeout_s: float) -> None:
+def repair(entry: dict, dest: Path, find_asset, assets, timeout_s: float,
+           *, publish_guard=None) -> bool:
     # The SDK has no deadline argument. Its worker may outlive this wait, so it owns only a
     # private staging directory. Only the waiting caller can publish into the app. Cleanup on
     # late completion is safe even if the person has removed the attachment meanwhile.
@@ -49,19 +51,23 @@ def repair(entry: dict, dest: Path, find_asset, assets, timeout_s: float) -> Non
         shutil.rmtree(stage, ignore_errors=True)
         raise
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        # Stage beside the destination for an atomic replace even when /tmp and the app differ.
-        fd, name = tempfile.mkstemp(prefix=".sage-restore-", dir=dest.parent)
-        os.close(fd)
-        staged = Path(name)
-        try:
-            if is_link:
-                staged.unlink()
-                staged.symlink_to(source)
-            else:
-                shutil.copyfile(source, staged)
-            os.replace(staged, dest)
-        finally:
-            staged.unlink(missing_ok=True)
+        with (publish_guard() if publish_guard else nullcontext(True)) as current:
+            if not current:
+                return False
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            # Stage beside the destination for an atomic replace even when /tmp and the app differ.
+            fd, name = tempfile.mkstemp(prefix=".sage-restore-", dir=dest.parent)
+            os.close(fd)
+            staged = Path(name)
+            try:
+                if is_link:
+                    staged.unlink()
+                    staged.symlink_to(source)
+                else:
+                    shutil.copyfile(source, staged)
+                os.replace(staged, dest)
+            finally:
+                staged.unlink(missing_ok=True)
+            return True
     finally:
         shutil.rmtree(stage, ignore_errors=True)

@@ -5650,6 +5650,7 @@ class Orchestrator:
         # detach) and write_instructions both splice managed regions into the same file, and a
         # concurrent write could drop the other's region. Held around each full read-modify-write.
         self._agents_lock = threading.Lock()
+        self._attachment_lock = threading.RLock()
         # Serializes build/approve turns: only one turn may stream at a time. A turn arms shared,
         # per-project state (read_only_turn, mode) and mutates one working tree; a second overlapping
         # turn would clear the first turn's read-only gate mid-flight (making the gated planner write
@@ -14188,6 +14189,13 @@ class Orchestrator:
                  *counts.values(), elapsed)
         return selected or None, unavailable
 
+    @contextlib.contextmanager
+    def _attachment_repair_guard(self, project: Project, app: Workspace, entry: dict):
+        """Removal can run during a fetch. Publish only while the same app still owns this entry."""
+        with self._attachment_lock:
+            yield (project.app_for_turn() is app
+                   and any(current is entry for current in project.attachments_for_turn()))
+
     def _restore_attachments(self, entries: list[dict] | None = None) -> None:
         """Repair absent attachment paths; absence alone does not identify who removed them (#513).
 
@@ -14231,8 +14239,11 @@ class Orchestrator:
                 if time.monotonic() >= deadline:
                     break
                 reason = "dangling" if dest.is_symlink() else "absent"
-                attachment_repair.repair(entry, dest, self._find_asset, self._assets,
-                                         deadline - time.monotonic())
+                if not attachment_repair.repair(
+                    entry, dest, self._find_asset, self._assets, deadline - time.monotonic(),
+                    publish_guard=lambda entry=entry: self._attachment_repair_guard(project, app, entry),
+                ):
+                    continue
                 timing.count("attachments.restored." + reason)
                 restored.append(entry["path"])
             except (ValueError, OSError, LookupError, ResourceUnavailable) as exc:
@@ -14246,7 +14257,8 @@ class Orchestrator:
             # Unconditional, not only when `restored` is non-empty: the entry can survive on disk
             # while the manifest that carries it into the next session does not, and rewriting a
             # file that already says this is free.
-            app.write_attachments(attached)
+            with self._attachment_lock:
+                app.write_attachments(attached)
         except OSError:
             log.exception("attachments: could not rewrite the manifest")
         if restored:
@@ -16169,10 +16181,18 @@ class Orchestrator:
 
         with timing.span("setup.seed"):
             project = self._ensure_seeded()
+        mode_at_start = mode or project.control.snapshot().mode
+        is_question = _looks_like_question(prompt)
+        arch = not is_approval and _wants_architecture(prompt)
+        wants_plan = not is_approval and not arch and _wants_plan(prompt)
+        answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
+                                      is_approval=is_approval, arch=arch, wants_plan=wants_plan)
         # Approval already carries these app-selected paths. The first request must use the
         # same resolver before opening a session or paying for a scope/model call (#513).
-        with timing.span("setup.attachments"):
-            mentions, missing_inputs = self._prepare_build_attachments(project, mentions)
+        missing_inputs = []
+        if not answer_only:
+            with timing.span("setup.attachments"):
+                mentions, missing_inputs = self._prepare_build_attachments(project, mentions)
         if missing_inputs:
             # An approved plan still needs to be built after its inputs return.
             self._turn_gave_up = True
@@ -16236,8 +16256,6 @@ class Orchestrator:
         # ordering.
         # Plan gate (SPEC P6): in Plan mode (or on the first turn of a fresh project), run the
         # read-only planner and stop for the user to approve — this turn deliberately writes no code.
-        mode_at_start = mode or project.control.snapshot().mode
-        is_question = _looks_like_question(prompt)
         has_built = project.app_for_turn().has_built()
         # An approval is the user saying "build this plan now" — never gate it (that would re-propose a
         # plan for an already-approved build and loop forever) and never treat it as a question.
@@ -16247,11 +16265,9 @@ class Orchestrator:
         # answered in prose, which is right for a question and wrong for a request for a document.
         # Ask is where a design question is most naturally typed, so it gets the artifact too — the
         # turn is read-only either way, so nothing about Ask's contract changes.
-        arch = not is_approval and _wants_architecture(prompt)
         # An explicit ask for a plan (see _wants_plan) is the same instruction as picking Plan mode,
         # typed instead of clicked, so it gates in every mode too. Ranked below arch: a prompt naming
         # both artifacts wants the heavier one, and that keeps the existing precedence untouched.
-        wants_plan = not is_approval and not arch and _wants_plan(prompt)
         settings = project.record.read_settings()
         skip_planning = bool(settings.get("skip_planning"))
         # Only affects the SHAPE of a plan this turn writes; the phased execution itself happens on
@@ -16300,8 +16316,6 @@ class Orchestrator:
         # Auto only. Implement is the user saying "just build it" and Plan already gates every turn;
         # overriding either would be second-guessing an explicit choice, and this exists precisely
         # because Auto is the mode with no explicit choice in it.
-        answer_only = _is_answer_only(mode=mode_at_start, is_question=is_question,
-                                      is_approval=is_approval, arch=arch, wants_plan=wants_plan)
         pending_scope = None
         # Read here rather than inside the predicate so the predicate stays a pure function of
         # facts, testable on its own, as its four siblings are. `_source_paths` is the same call
@@ -22622,6 +22636,11 @@ class Orchestrator:
         return {"path": rel, "dataset": asset.name, "size": size}
 
     def detach_file(self, path: str) -> dict:
+        """Remove attachments without racing a recovery publication."""
+        with self._attachment_lock:
+            return self._detach_file_locked(path)
+
+    def _detach_file_locked(self, path: str) -> dict:
         """Remove an attached file's symlink (keyed by its workspace path, so rehydrated entries
         with no dataset_id detach too) and forget it. Also deletes any standalone COPY of the file the
         agent leaked into the app tree (same basename under src/ etc.): once the entry leaves
@@ -22677,6 +22696,11 @@ class Orchestrator:
                 "kept_fetch": kept_fetch, "status": project.status()}
 
     def detach_folder(self, dataset_id: str, folder: str) -> dict:
+        """Remove attachments without racing a recovery publication."""
+        with self._attachment_lock:
+            return self._detach_folder_locked(dataset_id, folder)
+
+    def _detach_folder_locked(self, dataset_id: str, folder: str) -> dict:
         """Remove every file the app carries below one Dataset folder, at any depth including the
         root — the removal half of the folder act (ADR-0029), and the mirror of `attach_folder`.
 
@@ -23039,6 +23063,11 @@ class Orchestrator:
         return writable[0] if writable else None
 
     def delete_file(self, path: str) -> dict:
+        """Remove attachments without racing a recovery publication."""
+        with self._attachment_lock:
+            return self._delete_file_locked(path)
+
+    def _delete_file_locked(self, path: str) -> dict:
         """Delete an UPLOADED file: remove its workspace symlink AND its bytes from the dataset mount,
         then forget it. Bytes are deleted only for bytes Sage itself wrote, which `_is_sage_upload`
         answers off the record rather than off the folder the file sits in (#274). Any other
