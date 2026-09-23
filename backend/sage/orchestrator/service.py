@@ -39,7 +39,7 @@ import httpx
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
 
-from .. import degraded, timing
+from .. import build_diagnostics, degraded, timing
 from ..assets.provider import (
     Asset,
     AssetProvider,
@@ -7955,6 +7955,9 @@ class Orchestrator:
             self._pin_turn_app(project)
             timing.bind_context(ticket.id, app_id=project.app_for_turn().app_id,
                                 conversation_id=project.build_conversation)
+            build_diagnostics.begin(project.record.path, turn_id=ticket.id,
+                                    app_id=project.app_for_turn().app_id,
+                                    conversation_id=project.build_conversation, kind="build")
             # The model gate's listing, kicked off here so the gate below reads a local answer
             # instead of paying 2.5-2.9s for one (#125). A no-op when it is already warm, which the
             # rail's own poll usually keeps it.
@@ -8165,7 +8168,7 @@ class Orchestrator:
                     self._record_resource_usage()
                 self._clear_turn_baseline()
                 self._release_turn()
-            timing.finish_turn()
+            build_diagnostics.finish(timing.finish_turn())
 
     def create_thread(self) -> dict:
         """A new Chat Thread in this project, holding the Project's pinned leaves. No Domino project.
@@ -18168,6 +18171,9 @@ class Orchestrator:
             self._pin_turn_app(project)
             timing.bind_context(ticket.id, app_id=project.app_for_turn().app_id,
                                 conversation_id=project.build_conversation)
+            build_diagnostics.begin(project.record.path, turn_id=ticket.id,
+                                    app_id=project.app_for_turn().app_id,
+                                    conversation_id=project.build_conversation, kind="approve")
             yield from self._approve_locked(
                 answers, plan_edits, plan_id=plan_id, build_again=build_again,
                 # The transcript replays what the person did, and this is a different act from
@@ -18197,7 +18203,7 @@ class Orchestrator:
                     self._record_resource_usage()
                 self._clear_turn_baseline()
                 self._release_turn()
-            timing.finish_turn()
+            build_diagnostics.finish(timing.finish_turn())
 
     def _approve_locked(self, answers: str = "", plan_edits: str | None = None,
                         user_text: str | None = None, plan_id: str = "",

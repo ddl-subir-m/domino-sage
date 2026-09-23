@@ -138,6 +138,15 @@ window.SW = window.SW || {};
   // for. A run whose turns all folded away has nothing to open, so it offers nothing.
   function BuildRunRow({ block }) {
     const [open, setOpen] = useState(false);
+    const [downloading, setDownloading] = useState(false);
+    const [downloadError, setDownloadError] = useState('');
+    const download = async () => {
+      setDownloading(true);
+      setDownloadError('');
+      try { await SW.api.downloadBuildDiagnostics(block.diagnostics); }
+      catch (error) { setDownloadError(error.message || "Couldn't download diagnostics."); }
+      finally { setDownloading(false); }
+    };
     const turns = block.messages || [];
 
     return h(
@@ -160,6 +169,10 @@ window.SW = window.SW || {};
         // Deriving one from its neighbours would be a number nobody wrote down.
         block.at && h('div', { className: 'sw-bh-run-at' }, SW.util.relativeTime(block.at))
       ),
+      h(Button, { size: 'small', disabled: !block.diagnostics, loading: downloading,
+        onClick: download, title: block.diagnostics ? undefined : 'Diagnostics were not captured for this older turn.' },
+        'Download diagnostics'),
+      downloadError && h('div', { role: 'alert' }, downloadError),
       // The run's `app_change` cards are deliberately NOT drawn. Every row in this log is this
       // app's — the file is the app's (ADR-0008) — so a card per row would name the app the title
       // already names, on every row, and say nothing.

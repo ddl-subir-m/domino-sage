@@ -734,6 +734,16 @@ SW.api = {
   //
   // `history()` above is deliberately NOT changed. It answers a named conversation, it is the
   // transcript rather than the list, and it draws those cards where they are read.
+  downloadBuildDiagnostics: async ({ turnId, appId, conversationId }) => {
+    const record = await request(`/project/build-diagnostics/${encodeURIComponent(turnId)}`
+      + `?app_id=${encodeURIComponent(appId)}&conversation_id=${encodeURIComponent(conversationId || '')}`);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(record, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `build-${String(turnId).replace(/[^A-Za-z0-9_-]/g, '_')}.json`;
+    document.body.appendChild(link);
+    try { link.click(); } finally { link.remove(); URL.revokeObjectURL(url); }
+  },
   appHistory: () => request('/project/history?detail=off').then((r) => r.history || []),
   // What one tool call was called with, by its position in the app's log — the half `detail=off`
   // left behind. 404 when the stop button truncated the log after the list was read, which the

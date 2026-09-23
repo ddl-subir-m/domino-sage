@@ -36,6 +36,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from .. import build_diagnostics
 from ..orchestrator.brand import apply_voice
 from ..resources.app_helpers import HelperNames, helpers_for
 from ..router.models import ASSIGNABLE_SLOTS
@@ -255,7 +256,8 @@ _APPS = "apps"
 # nothing seeds a file at the root to carry their rules. Chat's scratch and its OpenCode workdir
 # are builder-local, and a half-written Thread record is a file `git add -A` would otherwise
 # commit (ThreadStore._write_json renames the real one into place, so a .tmp is never read).
-_PROJECT_IGNORE = (".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/*/.*.tmp",
+_PROJECT_IGNORE = (".sage/build-diagnostics.json", ".sage/.build-diagnostics-*",
+                   ".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/*/.*.tmp",
                    # The upload ledger's half-written twin, for the same reason (#274). Its name
                    # carries a pid and a random suffix so two Workspaces on one volume cannot write
                    # into each other's, which also means a killed writer leaves a NEW file each
@@ -1591,7 +1593,8 @@ class Workspace:
         per app on purpose), and the stop-button baseline below stays positional and therefore
         stays correct."""
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
-        row = {**entry, "app": self.app_id, "at": _now()}
+        row = {**entry, **build_diagnostics.history_metadata(self.app_id, conversation, entry),
+               "app": self.app_id, "at": _now()}
         if conversation:
             row["conversation"] = conversation
         with self.history_path.open("a") as f:
