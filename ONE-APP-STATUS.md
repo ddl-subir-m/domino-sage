@@ -1507,3 +1507,63 @@ running the real thing on a real laptop. Budget for that as part of "done", not 
 — this plan's own Phase 7 verify line already says as much ("fresh laptop clone → `make setup &&
 make dev` → ... no Domino workspace involved"), and this session is the first time anyone actually
 tried it.
+
+## UPDATE 2026-09-23 (continued): Build mode's "stack not carried" refusal on the very first click —
+## investigated, most likely explained, and (this is the part that matters) given real test coverage
+## it never had, rather than left as a one-off explanation nobody could check again.
+
+**What happened**: the product owner's first-ever Build click on their laptop hit "This app was
+built with a stack this Sage no longer carries. Open it in Chat instead." — the Phase 0 refusal for
+an app whose record names `react-vite` (or has no record at all, which reads the same way). Deleting
+that app through the UI and retrying worked. **The product owner was not sure whether an app already
+existed there or not** ("very possible I did it") — asked to track this as a default/empty-state
+correctness question rather than let a plausible-sounding explanation stand in for a checked one.
+
+**Traced, not just asserted:**
+1. `backend/workspaces/` is gitignored (confirmed: no commit ever touches it), so a leftover
+   `apps/<id>/` directory from any EARLIER run of Sage on that same laptop — including from before
+   this pivot removed `react-vite`, or from an earlier attempt earlier in this same debugging
+   session — survives every `git pull`/branch switch completely untouched. Nothing in this pivot's
+   code path can see or clean up an app it was never asked to open.
+2. Read every code path that could record a NEW app's stack (`WorkspaceManager.ensure()` →
+   `record_stack(stack or self._default_stack_name())` → `default_stack_name()`): all of them are
+   safe today. `SAGE_DEFAULT_STACK`, even set to a garbage value, falls back to `fastapi-antd` with
+   just a log warning (`_default_stack_name()`) — there is no live code path in this codebase that
+   can record anything OTHER than `fastapi-antd` for a genuinely brand-new app.
+3. **Live-reproduced the exact ordering a real Workbench session hits** (Chat runs before Build,
+   `Orchestrator.project()`'s memoization caches an UNSEEDED attach from Chat's own
+   `seed_app=False` call) against the real `Orchestrator`/`build_stream`, using the same
+   `FakeOpenCode`/`ScriptedGateway` fixtures ~49 other test files already share. It does NOT
+   reproduce the refusal: `_build_stream` (the inner loop, called only after every gate in the outer
+   `build_stream` passes) calls `_ensure_seeded()`, not the cached `project()`, specifically to
+   re-seed regardless of what Chat left cached — and that seam holds. This is the strongest evidence
+   for "leftover app from before", since the alternative (something in the empty-state path is
+   actually broken) does not reproduce against real code.
+4. **This surfaced a real, separate gap while investigating**: the stack-refusal gate itself
+   (`Orchestrator.build_stream`'s `_stack_unsupported_refusal`, added in Phase 0 per decision 4) had
+   **zero direct test coverage**. `test_a_built_app_declares_its_stack_at_birth.py`'s own docstring
+   claimed "see `test_orchestrator.py`'s stack-refusal tests" — no such tests exist there, or
+   anywhere. A stale pointer, not a real one; nobody had actually written the coverage it promised.
+
+**Fixed, not just diagnosed** — new file `tests/test_a_build_turn_refuses_a_stack_it_no_longer_carries.py`,
+3 tests:
+- `test_a_brand_new_project_never_hits_the_stack_refusal_build_first` — an empty project, Build
+  first, asserts no refusal and the new app records `fastapi-antd`.
+- `test_a_brand_new_project_never_hits_the_stack_refusal_chat_first` — the exact real-world
+  ordering (Chat, then Build) — same assertion. **This is the one that would have caught it** if the
+  memoization/`_ensure_seeded()` seam had actually been broken, rather than merely reasoned about.
+- `test_an_app_from_before_the_pivot_is_refused_not_silently_reseeded` — plants a legacy app (no
+  `stack` key, a `package.json` the way an old react-vite app actually left one) and asserts the
+  refusal DOES fire and nothing gets silently re-seeded over it — pinning the gate's actual, intended
+  job now that the two brand-new-project tests prove it doesn't fire where it shouldn't.
+
+All 3 pass. `test_a_built_app_declares_its_stack_at_birth.py`'s stale cross-reference fixed to point
+at the new file. `make lint` clean.
+
+**Not fully closed — recorded as a real, open uncertainty rather than a solved one**: nothing here
+proves what was ACTUALLY on that laptop before the delete — the explanation is the most likely one
+that survives every check that could rule it out, not an observed fact. If this refusal is ever hit
+again on a machine that can be confirmed to have had zero prior Sage runs (a truly fresh laptop
+clone, `backend/workspaces/` never populated), that would be the live counter-example this
+investigation couldn't produce, and it should reopen this exact question rather than be treated as a
+new, unrelated bug.

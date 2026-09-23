@@ -10,8 +10,10 @@ answers with. Three things have to hold for that to be safe over a fleet of apps
   - an app with NO record is `react-vite` — every app born before the record existed, or before
     this pivot, is one — and its `Stack` object answers as `fastapi-antd` rather than `None`
     (`workspace/stack.py`'s module docstring says why that's safe for a best-effort reader and not
-    for a Build turn about to act, which is refused separately — see `test_orchestrator.py`'s
-    stack-refusal tests, not this file);
+    for a Build turn about to act, which is refused separately — see
+    `test_a_build_turn_refuses_a_stack_it_no_longer_carries.py`'s stack-refusal tests, not this
+    file; that pointer used to name `test_orchestrator.py`, where no such tests actually existed —
+    found stale 2026-09-23);
   - the record is what answers, not the disk: an agent can delete the seed sentinel (`ensure` says
     so), and a stack guessed from what is left would re-seed the wrong template over a real app.
 
