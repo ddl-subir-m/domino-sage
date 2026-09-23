@@ -10,18 +10,12 @@ reads it back over HTTP. Run it against a Builder right after a slow build.
     scripts/turn-timing.py --watch                      # follow the turn that is running now
     scripts/turn-timing.py --raw                        # the server's own waterfall, unsummarised
 
-The verdict block is the point. It splits a turn into the four things it can be spending time on
-and prints them largest first, so the ranking comes off the numbers rather than off a code read:
-
-    gates    everything serial before the first inference — the pre-turn commit, and whatever is
-             LEFT of the three gates that now start at the top of the turn and are joined further
-             down (the `git fetch`, the Alias listing, the scope classifier's own model call). What
-             those three cost end to end is listed separately, under "beside the turn".
-    model    time inside inferences, including gateway wait and generation. This can change with
-             the model, provider, request size, output length, caching, and number of calls.
-    polling  what the sampling loop costs — the second it sleeps between looks, plus the lag
-             between a tool finishing inside OpenCode and Sage noticing (emit.lag)
-    other    the remainder: typecheck, git, and whatever is not yet instrumented
+The verdict partitions measured intervals into gates, model, tools, finalization, polling,
+explicit active-work overlap and other (unmeasured/unplaced). Nested and parallel intervals are
+unioned. Polling while a model or tool works is waiting, not extra elapsed time. Work totals and
+poll durations are shown separately and may overlap. Missing tool clocks remain unknown; an open
+tool observation does not prove that OpenCode was still responding. Harness poll outcomes provide
+that separate evidence.
 
 Exits 1 when the MEDIAN turn's pre-model overhead is over budget, so it can be run as a check
 rather than read. The default of 2.5s follows a median turn measured at 1.9s on 2026-09-07
@@ -35,6 +29,7 @@ import json
 import sys
 import time
 import urllib.request
+from itertools import pairwise
 
 
 def fetch(url: str, n: int, cookie: str = "") -> list[dict]:
@@ -54,60 +49,69 @@ def fetch_text(url: str, n: int, cookie: str = "") -> str:
 
 
 def split(rec: dict) -> dict:
-    """One turn's wall clock, divided into the four buckets the verdict ranks.
+    """Partition elapsed intervals. Summed work and elapsed time are separate quantities.
 
-    `gates` is measured as the time before the FIRST inference rather than as the sum of the gate
-    spans, deliberately: an unmeasured gate is exactly the kind of cost this is looking for, and a
-    sum of named spans would hide it. Everything named is listed underneath so the unnamed remainder
-    is visible as the difference.
+    Polling inside model/tool activity is waiting, not extra elapsed work. Concurrent active
+    categories enter `overlap`; same-category nested/parallel spans are unioned. Unplaced legacy
+    polling sums and uncertain tool observation intervals never fill an invented duration.
     """
-    total = rec["ms"]
-    calls = rec["calls"]
-    spans = rec["spans"]
-    obs = rec["observations"]
-
-    # Summed by name, not last-wins: a build typechecks once per agent turn, and the number that
-    # matters is what the turn spent on tsc altogether.
-    named: dict[str, list[float]] = {}
-    # A span the recorder marked `beside` ran on another thread, alongside the turn rather than in
-    # front of it: the gate prefetches (the `git fetch` and the Alias listing, both started at the
-    # top of the turn and joined later, or not joined at all). They are real work and they are timed,
-    # but adding them to the pre-inference total would charge the turn wall clock it never waited on
-    # — and the number this script exists to defend is what the turn WAITED for.
-    beside: dict[str, list[float]] = {}
-    for sp in spans:
-        if sp["name"].startswith("agent-turn."):
+    total = max(0, rec["ms"])
+    calls, spans = rec["calls"], rec["spans"]
+    intervals = []
+    named, beside = {}, {}
+    def add(category, start, duration):
+        if start is not None and duration is not None and duration >= 0:
+            end = min(total, start + duration)
+            start = max(0, start)
+            if end > start:
+                intervals.append((start, end, category))
+    for call in calls:
+        add("model", call["atMs"], call["ms"] if call["ms"] is not None else total - call["atMs"])
+    for span in spans:
+        name = span["name"]
+        if name.startswith("agent-turn."):
             continue
-        (beside if sp.get("beside") else named).setdefault(sp["name"], []).append(sp["ms"])
+        target = beside if span.get("beside") else named
+        target.setdefault(name, []).append(span["ms"])
+        if not span.get("beside"):
+            category = ("gates" if name.startswith(("turn.", "setup.", "gate.")) else
+                        "finalization" if name == "typecheck" or name.startswith(("after.", "chat.table")) else None)
+            if category:
+                add(category, span["atMs"], span["ms"])
+    for tool in rec.get("tools", []):
+        if tool.get("executionMs") is not None and tool.get("clockPlacement") == "wall_clock":
+            add("tools", tool.get("startAtMs"), tool["executionMs"])
+        elif tool.get("firstObservedMs") is not None:
+            end = tool.get("completedObservedMs")
+            add("unconfirmed_tools", tool["firstObservedMs"],
+                (total if end is None else end) - tool["firstObservedMs"])
+    for item in rec.get("intervals", []):
+        if item["name"].startswith("poll."):
+            add("polling", item["atMs"], item["ms"])
+    edges = sorted({0, total, *(x for start, end, _ in intervals for x in (start, end))})
+    buckets = dict.fromkeys(("gates", "model", "tools", "unconfirmed_tools", "polling", "finalization", "overlap", "other"), 0.0)
+    overlap = {}
+    for left, right in pairwise(edges):
+        active = {category for start, end, category in intervals if start < right and end > left}
+        if len(active) > 1:
+            active.discard("polling")
+        if len(active) > 1:
+            bucket = "overlap"
+            label = "+".join(sorted(active))
+            overlap[label] = overlap.get(label, 0) + right - left
+        else:
+            bucket = next(iter(active), "other")
+        buckets[bucket] += right - left
     named = {k: (sum(v), len(v)) for k, v in named.items()}
     beside = {k: (sum(v), len(v)) for k, v in beside.items()}
-    pre_names = [n for n in named if n.startswith(("turn.", "setup.", "gate."))]
-    # With no inference, "before the first one" is the whole turn, which would charge the gates
-    # bucket with the entire build. A turn whose model calls never reached the shim is a real and
-    # separate fault (see Project.model_calls), so fall back to the named gates and say so.
-    first_call_at = (min(c["atMs"] for c in calls) if calls
-                     else sum(named[n][0] for n in pre_names))
-    model = sum(c["ms"] or 0 for c in calls)
-    polling = obs.get("poll.sleep_ms", {}).get("sum", 0) + obs.get("poll.read_ms", {}).get("sum", 0)
-    # Sleep and reads overlap nothing (the poll thread does one or the other), but a model call runs
-    # on another thread THROUGH them — so polling time inside a call is not additional wall clock.
-    # Charge polling only with what it costs beyond the inferences it was waiting on.
-    polling = max(0, min(polling, total - model - first_call_at))
-    return {
-        "total": total,
-        "gates": first_call_at,
-        "model": model,
-        "polling": polling,
-        "other": max(0, total - first_call_at - model - polling),
-        "calls": len(calls),
-        "agent_turns": sum(1 for s in spans if s["name"].startswith("agent-turn.")),
-        "named": named,
-        "beside": beside,
-        "pre_names": pre_names,
-        "no_inference": not calls,
-        "obs": obs,
-        "counters": rec["counters"],
-    }
+    return {"total": total, **buckets, "overlaps": overlap,
+            "calls": len(calls), "agent_turns": sum(s["name"].startswith("agent-turn.") for s in spans),
+            "named": named, "beside": beside,
+            "pre_names": [n for n in named if n.startswith(("turn.", "setup.", "gate."))],
+            "pre_inference": min((c["atMs"] for c in calls), default=None),
+            "no_inference": not calls, "obs": rec["observations"], "counters": rec["counters"],
+            "polling_placed": "intervals" in rec,
+            "tools_detail": rec.get("tools", []), "polls_detail": rec.get("intervals", [])}
 
 
 def report(rec: dict) -> dict:
@@ -119,13 +123,17 @@ def report(rec: dict) -> dict:
           f"{'RUNNING' if rec['running'] else (rec['decision'] or '-')}   {rec['prompt'][:52]!r}")
     print(f"{'=' * 78}")
 
-    buckets = sorted((("gates", b["gates"]), ("model", b["model"]),
-                      ("polling", b["polling"]), ("other", b["other"])),
+    buckets = sorted(((name, b[name]) for name in
+                      ("gates", "model", "tools", "unconfirmed_tools", "polling", "finalization", "overlap", "other")),
                      key=lambda kv: -kv[1])
     for name, ms in buckets:
         bar = "█" * round(40 * ms / t)
         print(f"  {name:<8} {ms / 1000:7.1f}s  {100 * ms / t:4.0f}%  {bar}")
 
+    print("  unconfirmed_tools = observed tool activity with unknown execution time")
+    print("  other = unmeasured or unplaced time; polling during active work is not added again")
+    for label, ms in b["overlaps"].items():
+        print(f"    overlap {label}: {ms / 1000:.1f}s")
     print(f"\n  {b['agent_turns']} agent turn(s), {b['calls']} inference(s)")
     if b["calls"]:
         by_model: dict[str, list[float]] = {}
@@ -135,19 +143,15 @@ def report(rec: dict) -> dict:
             ttfbs = [c["ttfbMs"] for c in rec["calls"]
                      if f"{c['model'] or '?'}/{c['phase'] or '?'}" == k and c["ttfbMs"] is not None]
             ttfb = f"  ttfb p50 {sorted(ttfbs)[len(ttfbs) // 2] / 1000:.1f}s" if ttfbs else ""
-            print(f"    {k:<28} n={len(xs):<3} {sum(xs) / 1000:6.1f}s total{ttfb}")
+            print(f"    {k:<28} n={len(xs):<3} {sum(xs) / 1000:6.1f}s summed work (may overlap){ttfb}")
 
     if b["no_inference"]:
-        print("\n  NOTE: no inference reached the shim this turn — the gates bucket is the sum of\n"
-              "        the named pre-turn spans, not everything before the first token.")
+        print("\n  NOTE: no inference reached the shim; unmeasured time remains in other.")
 
-    print("\n  before the first inference:")
+    print("\n  setup/gate work (nested totals may overlap):")
     pre = [(n, *b["named"][n]) for n in b["pre_names"]]
     for name, ms, k in sorted(pre, key=lambda r: -r[1]):
         print(f"    {name:<28} {ms / 1000:6.1f}s{f'  (x{k})' if k > 1 else ''}")
-    unnamed = b["gates"] - sum(r[1] for r in pre)
-    if abs(unnamed) > 200:
-        print(f"    {'(not instrumented)':<28} {unnamed / 1000:6.1f}s")
 
     if b["beside"]:
         print("\n  beside the turn (started early, not waited on here):")
@@ -156,14 +160,33 @@ def report(rec: dict) -> dict:
 
     during = [(n, *v) for n, v in b["named"].items() if n not in b["pre_names"]]
     if during:
-        print("\n  during the turn:")
+        print("\n  during the turn (summed work, not additional elapsed time):")
         for name, ms, k in sorted(during, key=lambda r: -r[1]):
             print(f"    {name:<28} {ms / 1000:6.1f}s{f'  (x{k})' if k > 1 else ''}")
 
-    lag = b["obs"].get("emit.lag_ms")
-    if lag:
-        print(f"\n  sampling lag (tool finished -> Sage saw it): p50 {lag['p50']}ms  "
-              f"p90 {lag['p90']}ms  max {lag['max']}ms  over {lag['n']} tool calls")
+    tools = b["tools_detail"]
+    for name in sorted({tool["tool"] for tool in tools}):
+        rows = [tool for tool in tools if tool["tool"] == name]
+        measured = [row["executionMs"] for row in rows if row.get("executionMs") is not None]
+        open_count = sum(row.get("completedObservedMs") is None for row in rows)
+        print(f"  tool {name}: n={len(rows)} exact-duration={len(measured)} "
+              f"summed-work={sum(measured) / 1000:.1f}s open={open_count} "
+              f"unknown-execution={len(rows) - len(measured)} "
+              f"observed-sum={sum(row.get('observedMs', 0) for row in rows) / 1000:.1f}s "
+              "(sampled, may overlap; not exact execution)")
+    lags = [row["completionLagMs"] for row in tools if row.get("completionLagMs") is not None]
+    if lags:
+        print(f"  completion observation lag: n={len(lags)} max={max(lags):.0f}ms")
+    polls = [row for row in b["polls_detail"] if row["name"] == "poll.read"]
+    if polls:
+        print(f"  harness polls: n={len(polls)} failed={sum(not row['ok'] for row in polls)} "
+              f"last={'answered' if polls[-1]['ok'] else 'failed'}")
+    for name in ("poll.read_ms", "poll.sleep_ms"):
+        sample = b["obs"].get(name)
+        if sample:
+            print(f"  {name}: n={sample['n']} summed={sample['sum'] / 1000:.1f}s (overlaps active work)")
+    if not b["polling_placed"]:
+        print("  legacy polling has no intervals; its elapsed placement is unknown")
     if b["counters"]:
         print("  " + "  ".join(f"{k}={v}" for k, v in sorted(b["counters"].items())))
     return b
@@ -191,7 +214,9 @@ def main() -> int:
                 if not recs:
                     print("(no turns recorded yet — run a build, then read this again)")
                     return 0
-                pres = sorted(report(r)["gates"] for r in recs)
+                pres = sorted(value for r in recs if (value := report(r)["pre_inference"]) is not None)
+                if not pres:
+                    return 0
                 # Gate on the MEDIAN, report the worst. The budget used to be the worst turn, and
                 # that made this a coin toss rather than a check: `gate.slots` is a 60s cache whose
                 # background refresh does not always win the race, so one turn in a run legitimately

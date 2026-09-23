@@ -25,6 +25,7 @@ from ..feedback.runner import FeedbackReport
 # out, so a reword here cannot leave the counter that reads them (#290) looking for words nothing
 # writes. Both must appear for a message to count as data; the reasoning is with the constants.
 from ..shim.chat_paths import MENTION_MARK, MENTION_PATH_LINE
+from ..tool_timing import harness_times
 from .agent_driver import AgentEvent
 
 log = logging.getLogger("sage.driver")  # "sage.*" -> surfaced by /api/diag's log tail
@@ -138,7 +139,7 @@ def map_session_event(raw: dict, session_id: str) -> AgentEvent | None:
             "tool": str(props.get("tool") or ""),
             "input": props.get("input"),
             "call_id": str(props.get("callID") or ""),
-            "status": _TOOL_STATUS[t],
+            "status": _TOOL_STATUS[t], **harness_times(props, event_type=t),
         })
     if t == "session.next.shell.started":
         # The command itself, at the moment it starts — what drives Chat's "Running Python…" line.
@@ -229,7 +230,8 @@ class SessionEvents:
                 self._emitted.add(marker)
                 return AgentEvent(kind="tool_run", payload={
                     "tool": str(part.get("tool") or ""), "input": state.get("input"),
-                    "call_id": str(part.get("callID") or ""), "status": status})
+                    "call_id": str(part.get("callID") or ""), "status": status,
+                    **harness_times(part)})
         return None
 
     def close(self) -> None:

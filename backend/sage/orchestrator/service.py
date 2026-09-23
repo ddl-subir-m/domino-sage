@@ -3573,10 +3573,12 @@ class _RepeatBrake:
 
     def __init__(self) -> None:
         self.fingerprint = ""
+        self._timing = timing.tool_observer()
         self.n = 0
         self.label = ""
 
-    def saw(self, fingerprint: str, label: str) -> bool:
+    def saw(self, fingerprint: str, label: str, *, session_id: str = "",
+            call_id: str = "", tool: str = "") -> bool:
         """True when this call is the `_REPEAT_LIMIT`-th identical one in a row."""
         if not fingerprint:
             return False
@@ -3585,7 +3587,11 @@ class _RepeatBrake:
         else:
             self.fingerprint, self.n = fingerprint, 1
         self.label = label or self.label
-        return self.n >= _REPEAT_LIMIT
+        stopped = self.n >= _REPEAT_LIMIT
+        self._timing.brake(session_id=session_id, call_id=call_id, tool=tool,
+                            fingerprint=fingerprint, consecutive=self.n,
+                            limit=_REPEAT_LIMIT, stopped=stopped)
+        return stopped
 
 
 def _repeat_answer(msgs: object, fingerprint: str) -> str:
@@ -8151,9 +8157,12 @@ class Orchestrator:
             # unwinds — a caller that walks away mid-stream raises GeneratorExit here, not
             # TurnWedged, and that must not hand the lock back either.
             if not self._turn_wedged:
-                self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
-                self._recheck_app_data()
-                self._record_resource_usage()
+                with timing.span("after.restore_attachments"):
+                    self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
+                with timing.span("after.data_scan"):
+                    self._recheck_app_data()
+                with timing.span("after.resource_usage"):
+                    self._record_resource_usage()
                 self._clear_turn_baseline()
                 self._release_turn()
             timing.finish_turn()
@@ -13231,6 +13240,7 @@ class Orchestrator:
             # Identical calls in a row (#246). None of the three windows above can reach a turn
             # that repeats itself, because every repeat is activity: the loop that prompted this
             # ran the same `ls` five times and was still counted alive each time.
+            tool_observer = timing.tool_observer()
             brake = _RepeatBrake()
             # The fingerprint of each open call, by call id, waiting for the close that counts it.
             # Beside `running_tools` rather than in it: that one holds a label written to be read
@@ -13557,6 +13567,7 @@ class Orchestrator:
                         appeared = True
                         continue
                     if ev.kind == "tool_run":
+                        tool_observer.event(sid, ev.payload, directory=work)
                         # Before the `stream_owned` handover, not after: the flag is about whether
                         # this turn ran anything at all, which is true of an event the transcript
                         # already counted the first half of, and the end-of-turn revert scan is
@@ -13600,7 +13611,8 @@ class Orchestrator:
                             # before its third answer has no third answer to read back — which lost
                             # the half of the sentence that says what the step kept replying.
                             if not looped and brake.saw(pending_calls.pop(call, ""),
-                                                        running_tools.get(call, "")):
+                                                        running_tools.get(call, ""),
+                                                        session_id=sid, call_id=call):
                                 # Read BEFORE the stop below interrupts the session. An interrupt
                                 # lands on any call still open as an aborted tool part, and a
                                 # fourth repeat aborted that way reads back as what the step
@@ -13657,7 +13669,9 @@ class Orchestrator:
                     poll_failures = 0
                     timing.count("poll.iterations")
                     timing.observe("poll.read_ms", (time.monotonic() - _poll_t0) * 1000)
+                    tool_observer.interval("poll.read", _poll_t0, running=running)
                 except httpx.HTTPError as e:
+                    tool_observer.interval("poll.read", _poll_t0, ok=False)
                     poll_failures += 1
                     log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
                     if poll_failures >= _MAX_POLL_FAILURES:
@@ -13721,6 +13735,7 @@ class Orchestrator:
                         if key in seen:
                             continue
                         if "tool" in pt:
+                            tool_observer.part(sid, part, directory=work)
                             # The second witness, and the one that must be here rather than only on
                             # the event stream (#418). `_EventTap` is best-effort by design — a
                             # driver with no `session_events`, a stream that never connects, or one
@@ -13746,7 +13761,8 @@ class Orchestrator:
                                     _call_fingerprint(str(tool),
                                                       (part.get("state") or {}).get("input")),
                                     _tool_label({"tool": tool,
-                                                 "input": (part.get("state") or {}).get("input")})):
+                                                 "input": (part.get("state") or {}).get("input")}),
+                                    session_id=sid, call_id=str(part.get("callID") or ""), tool=str(tool)):
                                 # The same brake as the stream's, on the turns the stream never
                                 # reached — which are exactly the turns Chat can already see least
                                 # of, and so the ones most able to ride to the ceiling unreported.
@@ -13842,6 +13858,7 @@ class Orchestrator:
                 floor = _POLL_FLOOR_S if streamed_body or any_tool_ran else 0.0
                 tap.wait_any(1.0, floor=floor)
                 timing.observe("poll.sleep_ms", (time.monotonic() - _sleep_t0) * 1000)
+                tool_observer.interval("poll.sleep", _sleep_t0)
 
             # Both halves under one span: the revert and the scan walk the same tree, and what a
             # reader wants to know is what the end of a turn costs, not which of the two walks it.
@@ -16181,6 +16198,7 @@ class Orchestrator:
         Bindings they @-referenced, which ride the prompt text instead (see _resource_mention_note)."""
         import time
 
+        tool_observer = timing.tool_observer()
         with timing.span("setup.seed"):
             project = self._ensure_seeded()
         mode_at_start = mode or project.control.snapshot().mode
@@ -17123,7 +17141,9 @@ class Orchestrator:
         while True:
             agent_turn += 1
             timing.close_span(turn_span)
-            turn_span = timing.open_span(f"agent-turn.{agent_turn}", why=iterate_reason)
+            diagnostic_reason = ("runtime repair" if iterate_reason.startswith("app crashed at runtime")
+                                 else iterate_reason[:160])
+            turn_span = timing.open_span(f"agent-turn.{agent_turn}", why=diagnostic_reason)
             if project.stop_requested:
                 yield handle_stop()
                 return
@@ -17277,7 +17297,9 @@ class Orchestrator:
                     # much of a build's perceived slowness is the absence of a stream.
                     timing.count("poll.iterations")
                     timing.observe("poll.read_ms", (time.monotonic() - _poll_t0) * 1000)
+                    tool_observer.interval("poll.read", _poll_t0, running=running)
                 except httpx.HTTPError as e:
+                    tool_observer.interval("poll.read", _poll_t0, ok=False)
                     poll_failures += 1
                     log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
                     if poll_failures >= _MAX_POLL_FAILURES:
@@ -17334,6 +17356,7 @@ class Orchestrator:
                             continue
                         pt = part.get("type", "")
                         if "tool" in pt:
+                            tool_observer.part(sid, part, directory=str(project.app_for_turn().path))
                             # Wait until the call finishes before emitting the card: a tool's args
                             # stream in, so at first sight a large input (e.g. todowrite's `todos`) is
                             # still empty -> "0 steps". Don't mark it seen while in-progress; re-check
@@ -17389,7 +17412,8 @@ class Orchestrator:
                             args = (part.get("state") or {}).get("input") \
                                 if isinstance(part.get("state"), dict) else None
                             if not looped and brake.saw(_call_fingerprint(tool, args),
-                                                        _tool_label({"tool": tool, "input": args})):
+                                                        _tool_label({"tool": tool, "input": args}),
+                                                        session_id=sid, call_id=str(part.get("callID") or ""), tool=str(tool)):
                                 # The answer is already in `msgs`, so unlike Chat this costs no
                                 # read. Taken now rather than at the exit below because the exit
                                 # runs after the walk that would mark the part seen.
@@ -17610,6 +17634,7 @@ class Orchestrator:
                 _sleep_t0 = time.monotonic()
                 tap.wait(1.0, floor=_POLL_FLOOR_S)
                 timing.observe("poll.sleep_ms", (time.monotonic() - _sleep_t0) * 1000)
+                tool_observer.interval("poll.sleep", _sleep_t0)
 
             # The tap is closed on every exit from the poll loop above: the three `return`s close it
             # where they stand, the wedged `raise` closes it below, and the three `break`s land
@@ -17998,8 +18023,9 @@ class Orchestrator:
                 # blanks the preview. Wait briefly for the open preview to report one; if it does,
                 # feed the error back so the agent fixes it before we call the build done.
                 if report.ok and wrote_code and runtime_fixes < MAX_RUNTIME_FIXES:
-                    rt = self._await_runtime_error(project, since=send_ts,
-                                                   timeout=_RUNTIME_ERROR_WAIT_S)
+                    with timing.span("after.runtime_wait"):
+                        rt = self._await_runtime_error(project, since=send_ts,
+                                                       timeout=_RUNTIME_ERROR_WAIT_S)
                     if rt is not None:
                         runtime_fixes += 1
                         project.runtime_error = None  # consume so a later turn starts clean
@@ -18014,7 +18040,8 @@ class Orchestrator:
                 # copy and fetch from data/ instead, bounded. If it won't, _save_to_git strips the copy
                 # from the commit anyway (the bytes never reach git), so this loop is UX, not the guard.
                 if report.ok and wrote_code and leak_fixes < MAX_LEAK_FIXES:
-                    leaks = self._detect_leaks(project)
+                    with timing.span("after.leak_scan"):
+                        leaks = self._detect_leaks(project)
                     if leaks:
                         leak_fixes += 1
                         for name, where in leaks:
@@ -18032,7 +18059,8 @@ class Orchestrator:
                 # the next pass. Nothing gates — the nudge is bounded and the turn completes either
                 # way, exactly as the leak fix does.
                 if report.ok and wrote_code and gateway_fixes < MAX_GATEWAY_FIXES:
-                    raw_calls = self._detect_raw_gateway_calls(project)
+                    with timing.span("after.gateway_scan"):
+                        raw_calls = self._detect_raw_gateway_calls(project)
                     if raw_calls:
                         gateway_fixes += 1
                         for name, _ in raw_calls:
@@ -18094,7 +18122,8 @@ class Orchestrator:
                     # A phase does neither: one approved plan is one commit, not six, and a build that
                     # dies at phase 4 must not have been marked "built" by phase 1.
                     project.app_for_turn().mark_built()
-                    saved = self._save_to_git(project, prompt)
+                    with timing.span("after.git_save"):
+                        saved = self._save_to_git(project, prompt)
                     if saved is not None:
                         yield persist(saved)
                 return
@@ -18160,9 +18189,12 @@ class Orchestrator:
             # unwinds — a caller that walks away mid-stream raises GeneratorExit here, not
             # TurnWedged, and that must not hand the lock back either.
             if not self._turn_wedged:
-                self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
-                self._recheck_app_data()
-                self._record_resource_usage()
+                with timing.span("after.restore_attachments"):
+                    self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
+                with timing.span("after.data_scan"):
+                    self._recheck_app_data()
+                with timing.span("after.resource_usage"):
+                    self._record_resource_usage()
                 self._clear_turn_baseline()
                 self._release_turn()
             timing.finish_turn()
@@ -18526,7 +18558,8 @@ class Orchestrator:
         # own terminal events for the same reason (#56).
         yield persist(_app_change_event(project.app_for_turn()))
         yield persist({"type": "done", "ok": True, "decision": "typecheck clean"})
-        saved = self._save_to_git(project, f"build plan ({len(steps)} phases)")
+        with timing.span("after.git_save"):
+            saved = self._save_to_git(project, f"build plan ({len(steps)} phases)")
         if saved is not None:
             yield persist(saved)
 
