@@ -22,6 +22,15 @@ _DELEGATION_TOOLS = frozenset({"task"})
 _PATH_KEYS = ("path", "filePath", "file_path")
 _COMMAND_KEYS = ("command", "cmd", "code")
 _EXIT = "Command exited with code "
+# The one string every redaction placeholder carries, so that a placeholder the model has written
+# back into its own work can be recognised however it was reshaped (#510).
+_MARK_BODY = "local data withheld"
+_MARK_ECHO_CORRECTION = (
+    "This call reproduced the placeholder that stands in the place of withheld local data in this "
+    "conversation. The placeholder is a marker: it is not a command, and not content to write to a "
+    "file. This call therefore did nothing. Write what you actually mean to run, or ask the person "
+    "for what you need."
+)
 
 OPEN_CODE_DATA_CARRIERS = (
     {
@@ -169,17 +178,27 @@ class DataUse:
                                 message = {**message, "content": json.dumps(shape)}
                                 break
                     cid = str(message.get("tool_call_id") or "")
-                    if cid in direct:
+                    call = calls.get(message.get("tool_call_id"), {})
+                    if _echoes_the_withheld_mark(call):
+                        # Answered BEFORE the receipt branch, and keyed on the call rather than on
+                        # this result. The call carries no local data to withhold — it carries this
+                        # module's own placeholder — so a receipt here would report a successful
+                        # local execution and tell the model its imitation had worked (#510). What
+                        # goes back instead is the only thing that ends the loop: the shim cannot
+                        # refuse an execution (the tools run inside OpenCode, and its permission
+                        # block gates by tool NAME), so the model has already run this. Saying so
+                        # plainly is repair-after, which is the seam this architecture has.
+                        message = {**message, "content": _MARK_ECHO_CORRECTION}
+                    elif cid in direct:
                         raw = _tool_content_text(message.get("content"))
                         if raw:
                             local_texts.append(raw)
-                        call = calls.get(message.get("tool_call_id"), {})
                         receipt = _local_receipt(call, direct[cid], raw,
                                                  status=_status_hint(raw, call))
                         message = {**message, "content": _replace_content(message.get("content"),
                                                                           receipt)}
                     else:
-                        message = _rewrite_image_result(message, calls.get(message.get("tool_call_id"), {}))
+                        message = _rewrite_image_result(message, call)
                 else:
                     text = _tool_content_text(message.get("content"))
                     for oid, _event, _reply in self._selected_operation_args(text):
@@ -505,10 +524,57 @@ def _withheld_mark(source, comment=False):
 
     `comment=True` for a slot that holds a command: a `#` line is a command a shell accepts, so a
     sanitised `bash` call is still a call that would run.
+
+    The command form says what it is. A `#` line is a valid command and a NO-OP, and the model
+    reads it back as its own prior work with nothing to tell a placeholder from content — measured
+    in #510, where it was reproduced as a whole command five times until the repeated-call guard
+    stopped the turn, and written as the body of four heredocs. The sentence does not make that
+    impossible, and nothing written in this slot could: anything runnable is imitable. It lowers
+    the odds; `_echoes_the_withheld_mark` is what answers the case where it happens anyway.
+
+    A zero count is dropped rather than printed. The caller at `_rewrite_request` that withholds a
+    call quoting local text without a named source passes an empty source list, and "0 sources"
+    reads as a defect to whoever meets it — including the model.
+
+    The command form NAMES its sources where the value form counts them, so that two commands over
+    two different files do not read back to the model as one command it ran twice. The model keys
+    its own history on what it can see, and a placeholder that collapses distinct steps takes away
+    its only record of which ones it has taken. This does not disclose anything: `_sanitize_call`
+    already keeps a `read`'s path verbatim, for the reason written there. Two commands over the
+    SAME file still collapse, and nothing short of showing the command can separate them — the
+    command text is the thing being withheld.
     """
+    paths = [str(s.get("path") or "") for s in source.get("sources") or []]
+    paths = [path for path in paths if path]
+    if comment:
+        named = f"{_MARK_BODY}: {', '.join(paths)}" if paths else _MARK_BODY
+        return f"# <{named} — a placeholder, not a command>"
     count = len(source.get("sources") or [])
-    body = f"local data withheld: {count} source" + ("" if count == 1 else "s")
-    return f"# <{body}>" if comment else f"[{body}]"
+    body = _MARK_BODY
+    if count:
+        body += f": {count} source" + ("" if count == 1 else "s")
+    return f"[{body}]"
+
+
+def _echoes_the_withheld_mark(call):
+    """The model wrote a redaction placeholder back as its own content (#510).
+
+    Not bounded to `bash`, although `bash` is where it was measured. The placeholder goes into
+    every string argument of a sanitised call, so every slot the model can write is a slot it can
+    imitate, and a guard drawn around the tool that happened to bite is short by construction.
+
+    Keyed on `_MARK_BODY` rather than on the whole marker: the reproductions were not copies. The
+    count varied, and one heredoc carried the literal `N` from no marker this code ever emitted.
+
+    The accepted cost of keying on a bare phrase: a call that legitimately carries "local data
+    withheld" in an argument — a person working on a governance CSV that uses those words — is
+    answered with the correction instead of its own result. Retire this by giving the marker a
+    token no prose would collide with, but only once something needs it; a rarer string is also a
+    string the model is likelier to reproduce EXACTLY, and exact reproduction is the case that
+    matters. Nothing measured has hit this.
+    """
+    _name, args = tool_call_name_and_args(call or {})
+    return any(_MARK_BODY in value for value in args.values() if isinstance(value, str))
 
 
 def _redacted_like(value, source, comment=False):
