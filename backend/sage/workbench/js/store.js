@@ -3881,8 +3881,24 @@ window.SW = window.SW || {};
   // Before the response headers arrive the claim is provisional and cannot be stopped safely.
   // The route admits the exact ticket before it returns those headers; the browser then replaces
   // the provisional claim with that server-owned identity before it reads the first stream event.
-  function claimRunningTurn(kind, conversationId, appId, turnId = '') {
-    const claim = { kind, conversation: conversationId || '', app: appId || '', turnId };
+  function claimRunningTurn(kind, conversationId, appId, turnId = '', sequence = 0) {
+    const exact = responseTurnId(turnId);
+    const revision = responseTurnSequence(sequence);
+    const current = state.runningTurn;
+    if (current) {
+      const currentRevision = responseTurnSequence(current.sequence);
+      if (revision && currentRevision && revision < currentRevision) return null;
+      if (revision && currentRevision && revision === currentRevision
+          && current.turnId && exact && current.turnId !== exact) return null;
+      if (revision && currentRevision && revision === currentRevision
+          && current.turnId === exact) return current;
+      // An older backend supplies no order. It can keep the same exact claim, or fill an empty
+      // slot, but cannot replace a different or provisional live claim by guessing that it is newer.
+      if (!revision && (!exact || !current.turnId || current.turnId !== exact)) return null;
+      if (!revision) return current;
+    }
+    const claim = { kind, conversation: conversationId || '', app: appId || '',
+                    turnId: exact, sequence: revision };
     state.runningTurn = claim;
     return claim;
   }
@@ -3899,10 +3915,16 @@ window.SW = window.SW || {};
     return ['running', 'pending', 'refused'].includes(turnState) ? turnState : '';
   }
 
-  function bindRunningTurn(claim, turnId) {
+  function responseTurnSequence(sequence) {
+    const revision = Number(sequence);
+    return Number.isSafeInteger(revision) && revision > 0 ? revision : 0;
+  }
+
+  function bindRunningTurn(claim, turnId, sequence = 0) {
     const exact = responseTurnId(turnId);
     if (!claim || state.runningTurn !== claim || claim.turnId || !exact) return false;
     claim.turnId = exact;
+    claim.sequence = responseTurnSequence(sequence);
     return true;
   }
 
@@ -3960,7 +3982,10 @@ window.SW = window.SW || {};
     const turn = payload || {};
     state.turnWedged = !!turn.wedged;
     state.turnPending = turn.pending || 0;
-    const stopping = !!(stoppingTurnId && turn.running_turn
+    const incomingSequence = responseTurnSequence(turn.running_turn && turn.running_turn.sequence);
+    const currentSequence = responseTurnSequence(state.runningTurn && state.runningTurn.sequence);
+    const stale = !!(incomingSequence && currentSequence && incomingSequence < currentSequence);
+    const stopping = !!(stoppingTurnId && turn.running_turn && !stale
       && turn.running_turn.turnId === stoppingTurnId);
     if (stopping) {
       state.runningTurn = null;
@@ -3974,7 +3999,11 @@ window.SW = window.SW || {};
     // would drop the Stop bar — or swap it to the other mode and back — as the queue drains. So a
     // named turn is always believed, and only a NAMELESS answer is held back while this tab still
     // has a turn of its own alive to hand the lock straight on to.
-    if (turn.running_turn) state.runningTurn = turn.running_turn;
+    if (turn.running_turn) {
+      claimRunningTurn(turn.running_turn.kind, turn.running_turn.conversation,
+                       turn.running_turn.app, turn.running_turn.turnId,
+                       turn.running_turn.sequence);
+    }
     else if (liveBuildTurns === 0 && liveChatTurns === 0) state.runningTurn = null;
     return !!turn.running || liveBuildTurns > 0 || liveChatTurns > 0;
   }
@@ -7286,6 +7315,7 @@ window.SW = window.SW || {};
       // there and nothing else.
       let claim = null;
       let exactTurnId = '';
+      let exactTurnSequence = 0;
       // Whatever card this turn is the answer to has now been answered (#209). Every button on
       // every one of them ends here, so this is where they stop being clickable — the reload each
       // of those callers does just above is what used to retire them, and it cannot any more.
@@ -7320,19 +7350,23 @@ window.SW = window.SW || {};
         }
         exactTurnId = responseTurnId(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-Id'));
+        exactTurnSequence = responseTurnSequence(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Sequence'));
         const turnState = responseTurnState(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-State'));
-        if (exactTurnId && turnState === 'running') {
-          claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
+        if (exactTurnId && turnState === 'running' && exactTurnSequence) {
+          claim = claimRunningTurn(
+            'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
           notify();
         } else if (turnState === 'pending' || turnState === 'refused') {
           releaseRunningTurn(claim);
           claim = null;
           notify();
-        } else if (bindRunningTurn(claim, exactTurnId)) {
+        } else if (bindRunningTurn(claim, exactTurnId, exactTurnSequence)) {
           notify();
-        } else if (!claim && exactTurnId && !state.runningTurn) {
-          claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
+        } else if (exactTurnId && !state.runningTurn) {
+          claim = claimRunningTurn(
+            'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
           notify();
         }
         streamAccepted = true;
@@ -7369,7 +7403,8 @@ window.SW = window.SW || {};
           // Cancel is worse than the sentence — the ticket has been popped off the deque by now, so
           // `cancel_pending_turn` finds nothing and the click does nothing at all.
           if (ev.type === 'running') {
-            claim = claimRunningTurn('build', turnThread, turnApp, ev.ticket);
+            claim = claimRunningTurn(
+              'build', turnThread, turnApp, ev.ticket, ev.sequence);
             dropQueuedTurn(ev.ticket);
             notify();
             return;
@@ -7380,7 +7415,8 @@ window.SW = window.SW || {};
           // lock. Current backends sent the exact response header; this fallback keeps an older
           // stream readable while it drains during an upgrade.
           if (!unran && !claim) {
-            claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
+            claim = claimRunningTurn(
+              'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
           }
           // Once the rail has moved on, these events describe an app that is no longer on screen.
           if (movedOn()) return;
@@ -7766,6 +7802,7 @@ window.SW = window.SW || {};
       // the `finally` takes back exactly what it put there. See claimRunningTurn.
       let claim = null;
       let exactTurnId = '';
+      let exactTurnSequence = 0;
       // The same sentence the server writes for this turn, so the optimistic row does not change
       // wording the moment the transcript reloads underneath it.
       appendBuildRow({ type: 'user', text: buildAgain ? BUILD_AGAIN_TEXT : 'Approved the plan.' });
@@ -7795,19 +7832,23 @@ window.SW = window.SW || {};
         }
         exactTurnId = responseTurnId(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-Id'));
+        exactTurnSequence = responseTurnSequence(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Sequence'));
         const turnState = responseTurnState(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-State'));
-        if (exactTurnId && turnState === 'running') {
-          claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
+        if (exactTurnId && turnState === 'running' && exactTurnSequence) {
+          claim = claimRunningTurn(
+            'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
           notify();
         } else if (turnState === 'pending' || turnState === 'refused') {
           releaseRunningTurn(claim);
           claim = null;
           notify();
-        } else if (bindRunningTurn(claim, exactTurnId)) {
+        } else if (bindRunningTurn(claim, exactTurnId, exactTurnSequence)) {
           notify();
-        } else if (!claim && exactTurnId && !state.runningTurn) {
-          claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
+        } else if (exactTurnId && !state.runningTurn) {
+          claim = claimRunningTurn(
+            'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
           notify();
         }
         streamAccepted = true;
@@ -7832,7 +7873,8 @@ window.SW = window.SW || {};
           // frame either, so without this row the plan-approval from #126's screenshot came out of
           // the queue into a build with nothing to press for the whole gate and first-token wait.
           if (ev.type === 'running') {
-            claim = claimRunningTurn('build', turnThread, turnApp, ev.ticket);
+            claim = claimRunningTurn(
+              'build', turnThread, turnApp, ev.ticket, ev.sequence);
             dropQueuedTurn(ev.ticket);
             notify();
             return;
@@ -7848,7 +7890,8 @@ window.SW = window.SW || {};
           // Current backends sent the exact response header; keep the fallback for an older stream
           // draining during an upgrade.
           if (!unran && !claim) {
-            claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
+            claim = claimRunningTurn(
+              'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
           }
           if (movedOn()) return;
           applyBuildEvent(ev);
@@ -8281,6 +8324,7 @@ window.SW = window.SW || {};
       // send holds the only stream there is. See claimRunningTurn.
       let claim = null;
       let exactTurnId = '';
+      let exactTurnSequence = 0;
       liveChatTurns += 1;
       state.typing = 'Thinking…';
       state.chatRunning = true;
@@ -8363,19 +8407,23 @@ window.SW = window.SW || {};
         }
         exactTurnId = responseTurnId(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-Id'));
+        exactTurnSequence = responseTurnSequence(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Sequence'));
         const turnState = responseTurnState(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-State'));
-        if (exactTurnId && turnState === 'running') {
-          claim = claimRunningTurn('chat', turnThread, '', exactTurnId);
+        if (exactTurnId && turnState === 'running' && exactTurnSequence) {
+          claim = claimRunningTurn(
+            'chat', turnThread, '', exactTurnId, exactTurnSequence);
           notify();
         } else if (turnState === 'pending' || turnState === 'refused') {
           releaseRunningTurn(claim);
           claim = null;
           notify();
-        } else if (bindRunningTurn(claim, exactTurnId)) {
+        } else if (bindRunningTurn(claim, exactTurnId, exactTurnSequence)) {
           notify();
-        } else if (!claim && exactTurnId && !state.runningTurn) {
-          claim = claimRunningTurn('chat', turnThread, '', exactTurnId);
+        } else if (exactTurnId && !state.runningTurn) {
+          claim = claimRunningTurn(
+            'chat', turnThread, '', exactTurnId, exactTurnSequence);
           notify();
         }
         await readSSE(res, async (ev) => {
@@ -8412,7 +8460,8 @@ window.SW = window.SW || {};
           // same effect: from here the lock is this turn's, and the bar has a turn to name for the
           // gate and first-token wait that follows.
           if (ev.type === 'running') {
-            claim = claimRunningTurn('chat', turnThread, '', ev.ticket);
+            claim = claimRunningTurn(
+              'chat', turnThread, '', ev.ticket, ev.sequence);
             dropQueuedTurn(ev.ticket);
             notify();
             return;
@@ -8429,7 +8478,8 @@ window.SW = window.SW || {};
           // still the turn holding the lock. The fallback keeps an older stream readable during an
           // upgrade; current backends sent the exact response header.
           if (!turnEnded && !claim) {
-            claim = claimRunningTurn('chat', turnThread, '', exactTurnId);
+            claim = claimRunningTurn(
+              'chat', turnThread, '', exactTurnId, exactTurnSequence);
           }
           // Moved on. The turn is still running and the server is still writing its transcript, so
           // nothing is lost — reopening the conversation replays it. What is not wanted is this

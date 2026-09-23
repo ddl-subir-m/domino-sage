@@ -3381,7 +3381,8 @@ def build_stream(body: dict) -> StreamingResponse:
     return StreamingResponse(
         _turn_sse(events, "build_stream"),
         media_type="text/event-stream",
-        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state},
+        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence)},
         background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 
@@ -3829,7 +3830,8 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
             skip_investigation_gate=invq,
             other_lane_grant=grant, turn_ticket=turn_ticket), "chat_stream"),
         media_type="text/event-stream",
-        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state},
+        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence)},
         background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 
@@ -3911,7 +3913,8 @@ def decline_handoff(thread_id: str) -> StreamingResponse:
         _turn_sse(orchestrator.decline_handoff_stream(thread_id, turn_ticket=turn_ticket),
                   "decline_handoff"),
         media_type="text/event-stream",
-        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state},
+        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence)},
         background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 
@@ -4020,7 +4023,8 @@ def build_approve(body: dict) -> StreamingResponse:
                                               turn_ticket=turn_ticket),
                   "approve_stream"),
         media_type="text/event-stream",
-        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state},
+        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence)},
         background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 

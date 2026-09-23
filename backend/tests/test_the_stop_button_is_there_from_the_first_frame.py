@@ -142,8 +142,22 @@ def test_out_of_order_response_headers_obey_server_admission_state():
     """C, B, then A headers arrive. Only A says running, so response order cannot make B or C the
     visible Stop target while their pending frames are held."""
     assert _run("authoritativeHeaders") == {
-        "turnId": "turn_a", "queued": 2,
+        "turnId": "turn_a", "sequence": 1, "queued": 2,
         "stopPosts": 1, "requestedTurnId": "turn_a"}
+
+
+def test_a_delayed_older_running_header_cannot_replace_the_newer_turn():
+    """B's sequence wins before A's delayed response callback. A cannot replace or clear B."""
+    assert _run("lateRunningHeader") == {
+        "turnId": "turn_b", "sequence": 2,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+def test_an_idless_legacy_header_cannot_replace_a_newer_exact_turn():
+    """Missing sequence and ID keep compatibility without letting a stale callback replace B."""
+    assert _run("legacyIdlessLateHeader") == {
+        "turnId": "turn_b", "sequence": 2,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
 
 
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])

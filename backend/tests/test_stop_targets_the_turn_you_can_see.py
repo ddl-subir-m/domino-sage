@@ -153,7 +153,7 @@ def test_each_stream_header_is_the_exact_ticket_passed_to_the_service(
             self.released: list[str] = []
 
         def prepare_stream_turn(self, turn_id: str, **_kwargs):
-            return type("Ticket", (), {"id": turn_id})(), "running"
+            return type("Ticket", (), {"id": turn_id, "sequence": 41})(), "running"
 
         def release_stream_turn(self, ticket) -> None:
             self.released.append(ticket.id)
@@ -184,6 +184,7 @@ def test_each_stream_header_is_the_exact_ticket_passed_to_the_service(
     assert streams.turn_ids[method] == turn_id
     assert streams.released == [turn_id]
     assert response.headers["X-Sage-Turn-State"] == "running"
+    assert response.headers["X-Sage-Turn-Sequence"] == "41"
     assert '"type": "running"' not in response.text
 
 
@@ -233,6 +234,79 @@ def test_stop_between_response_headers_and_body_cancels_before_model_work(monkey
             ]
     assert oc.prompts == []
     assert orch.stop_build(turn_id=turn_id) is False
+
+
+@pytest.mark.parametrize("known_thread", [False, True])
+def test_stop_before_a_decline_body_prevents_every_branch(
+        monkeypatch, tmp_path: Path, known_thread: bool):
+    """Unknown-thread output and no-pending suppression both sit behind the admitted ticket."""
+    from sage.orchestrator import app as appmod
+    from sage.workspace.threads import ThreadStore
+
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"] if known_thread else "th_nope"
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    before = store.read_handoffs(tid) if known_thread else None
+
+    response = appmod.decline_handoff(tid)
+    turn_id = response.headers["X-Sage-Turn-Id"]
+    assert orch.stop_build(kind="chat", conversation=tid, turn_id=turn_id) is True
+
+    async def consume() -> list[dict]:
+        events = []
+        async for chunk in response.body_iterator:
+            text = chunk.decode() if isinstance(chunk, bytes) else chunk
+            events.extend(json.loads(line.removeprefix("data: "))
+                          for line in text.splitlines() if line.startswith("data: "))
+        return events
+
+    assert asyncio.run(consume()) == [
+        {"type": "done", "ok": False, "decision": "cancelled"}]
+    if known_thread:
+        assert store.read_handoffs(tid) == before
+
+
+def test_a_queued_no_pending_decline_waits_before_it_suppresses(
+        monkeypatch, tmp_path: Path):
+    """The route may publish pending, but it cannot mutate the Thread while A owns the turn."""
+    from sage.orchestrator import app as appmod
+    from sage.workspace.threads import ThreadStore
+
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="A ran")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    build_a = orch.build_stream("A", conversation=tid, turn_id="turn_a")
+    next(build_a)
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    response = appmod.decline_handoff(tid)
+    assert response.headers["X-Sage-Turn-State"] == "pending"
+
+    events: list[dict] = []
+    finished = threading.Event()
+
+    def consume() -> None:
+        async def read() -> None:
+            async for chunk in response.body_iterator:
+                text = chunk.decode() if isinstance(chunk, bytes) else chunk
+                events.extend(json.loads(line.removeprefix("data: "))
+                              for line in text.splitlines() if line.startswith("data: "))
+        try:
+            asyncio.run(read())
+        finally:
+            finished.set()
+
+    threading.Thread(target=consume, daemon=True).start()
+    _wait_for(lambda: any(event.get("type") == "pending" for event in events))
+    assert store.read_handoffs(tid) == []
+
+    list(build_a)
+    assert finished.wait(10)
+    assert [event["type"] for event in events] == ["pending", "running", "done"]
+    assert events[-1] == {"type": "done", "ok": True, "decision": "suppressed"}
+    assert [entry["status"] for entry in store.read_handoffs(tid)] == ["suppressed"]
 
 
 def test_exact_stop_cancels_a_route_ticket_after_admission_but_before_pending_is_delivered(
@@ -326,6 +400,8 @@ def test_three_pre_body_route_tickets_follow_server_admission_order(monkeypatch,
     ids = [response.headers["X-Sage-Turn-Id"] for response in responses]
     assert [response.headers["X-Sage-Turn-State"] for response in responses] == [
         "running", "pending", "pending"]
+    assert [response.headers["X-Sage-Turn-Sequence"] for response in responses] == [
+        "1", "2", "3"]
 
     # Read the static headers in the opposite order. The queue order remains A, B, C.
     assert [responses[index].headers["X-Sage-Turn-Id"] for index in (2, 1, 0)] == ids[::-1]
@@ -335,6 +411,7 @@ def test_three_pre_body_route_tickets_follow_server_admission_order(monkeypatch,
     assert orch.stop_build(**target, turn_id=ids[1]) is True
     assert orch.stop_build(**target, turn_id=ids[0]) is True
     assert orch.turn_state()["running_turn"]["turnId"] == ids[2]
+    assert orch.turn_state()["running_turn"]["sequence"] == 3
     assert orch.stop_build(**target, turn_id=ids[1]) is False
     assert orch.stop_build(**target, turn_id=ids[2]) is True
     assert orch.turn_state()["running_turn"] is None

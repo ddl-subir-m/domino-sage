@@ -125,7 +125,8 @@ def test_declining_an_offer_that_owes_nothing_only_suppresses(tmp_path: Path):
     events = list(orch.decline_handoff_stream(tid))
 
     assert len(oc.prompts) == ran
-    assert _types(events) == ["done"]
+    assert _types(events)[-1] == "done"
+    assert set(_types(events)[:-1]) <= {"pending", "running"}
 
 
 # ---- what the declined turn is told ---------------------------------------------------------------

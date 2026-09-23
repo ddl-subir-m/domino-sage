@@ -26,10 +26,11 @@ const { mode } = JSON.parse(fs.readFileSync(0, 'utf8'));
 const PENDING = {
   type: 'pending',
   ticket: 'turn_abc',
+  sequence: 1,
   prompt: 'build me a dashboard',
   message: 'Waiting on the turn that is running.',
 };
-const PENDING_2 = { ...PENDING, ticket: 'turn_def' };
+const PENDING_2 = { ...PENDING, ticket: 'turn_def', sequence: 2 };
 // The frame the server really sends first on the CHAT path, and only there: it paints the person's
 // own question, and it is yielded as soon as the turn has the lock, long before the model has said
 // anything (`service.py` `_chat_stream`, `yield user_ev`). The store's handler skips it, so it
@@ -43,8 +44,8 @@ const USER = { chat: { type: 'user', text: 'how many rows?' } };
 // The queue's other end (#377). `_acquire_turn` yields it only after a `pending` frame. An
 // uncontended turn keeps its established event sequence and receives its exact identity in the
 // response header instead. For a queued turn this has the same ticket as the `pending` row.
-const RUNNING = { type: 'running', ticket: PENDING.ticket };
-const RUNNING_2 = { type: 'running', ticket: PENDING_2.ticket };
+const RUNNING = { type: 'running', ticket: PENDING.ticket, sequence: PENDING.sequence };
+const RUNNING_2 = { type: 'running', ticket: PENDING_2.ticket, sequence: PENDING_2.sequence };
 const TOOL = { type: 'agent', kind: 'tool', tool: 'write', detail: 'src/App.tsx' };
 const BUILT = [{ type: 'done', ok: true, decision: 'built' }];
 const ANSWERED = [{ type: 'delta', text: 'Six million rows.', final: true },
@@ -78,6 +79,8 @@ const OPENING = {
   preframeStopRace: [],
   successorHeaderRace: [TOOL],
   authoritativeHeaders: [USER.chat, { type: 'delta', text: 'Looking…' }],
+  lateRunningHeader: [{ type: 'done', ok: true, decision: 'answered' }],
+  legacyIdlessLateHeader: [{ type: 'done', ok: true, decision: 'answered' }],
   // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
   // behind it is the queue letting go. The wait for a first token starts again here, which is why
   // the pause is taken ON that frame — the `user` one Chat sends next, and the first tool call
@@ -107,6 +110,8 @@ const REST = {
   preframeStopRace: BUILT,
   successorHeaderRace: BUILT,
   authoritativeHeaders: ANSWERED,
+  lateRunningHeader: [],
+  legacyIdlessLateHeader: [],
   requeued: [USER.chat, ...ANSWERED],
   requeuedBuild: [TOOL, ...BUILT],
   requeuedApprove: [TOOL, ...BUILT],
@@ -121,13 +126,23 @@ const REST = {
 const SECOND = {
   secondInLine: { opening: [PENDING_2], rest: [RUNNING_2, USER.chat, ...ANSWERED] },
   authoritativeHeaders: {
-    opening: [{ ...PENDING, ticket: 'turn_b' }],
-    rest: [{ type: 'running', ticket: 'turn_b' }, USER.chat, ...ANSWERED],
+    opening: [{ ...PENDING, ticket: 'turn_b', sequence: 2 }],
+    rest: [{ type: 'running', ticket: 'turn_b', sequence: 2 }, USER.chat, ...ANSWERED],
+  },
+  lateRunningHeader: {
+    opening: [{ ...PENDING, ticket: 'turn_b', sequence: 2 },
+      { type: 'running', ticket: 'turn_b', sequence: 2 }],
+    rest: [USER.chat, ...ANSWERED],
+  },
+  legacyIdlessLateHeader: {
+    opening: [{ ...PENDING, ticket: 'turn_b', sequence: 2 },
+      { type: 'running', ticket: 'turn_b', sequence: 2 }],
+    rest: [USER.chat, ...ANSWERED],
   },
 }[mode];
 const THIRD = mode === 'authoritativeHeaders' ? {
-  opening: [{ ...PENDING, ticket: 'turn_c' }],
-  rest: [{ type: 'running', ticket: 'turn_c' }, USER.chat, ...ANSWERED],
+  opening: [{ ...PENDING, ticket: 'turn_c', sequence: 3 }],
+  rest: [{ type: 'running', ticket: 'turn_c', sequence: 3 }, USER.chat, ...ANSWERED],
 } : null;
 
 const frame = (ev) => new TextEncoder().encode(`data: ${JSON.stringify(ev)}\n\n`);
@@ -173,6 +188,10 @@ const headerAnswers = [];
 const headerGates = Array.from({ length: 3 }, (_, index) => new Promise((resolve) => {
   headerAnswers[index] = resolve;
 }));
+const pauseAnswers = [];
+const pauseGates = Array.from({ length: 3 }, (_, index) => new Promise((resolve) => {
+  pauseAnswers[index] = resolve;
+}));
 
 // Which send each opened stream is answering. Only the two-send modes ever pass 1.
 let posts = 0;
@@ -206,22 +225,32 @@ const sandbox = {
       const later = index === 1 ? SECOND : THIRD;
       const opening = first ? OPENING : later.opening;
       const rest = first ? REST : later.rest;
-      const responseTurnId = mode === 'successorHeaderRace' ? 'turn_b'
+      const responseTurnId = mode === 'legacyIdlessLateHeader' && first ? ''
+        : mode === 'successorHeaderRace' ? 'turn_b'
         : mode === 'authoritativeHeaders' ? ['turn_a', 'turn_b', 'turn_c'][index]
           : (first ? 'turn_abc' : 'turn_def');
       const pendingResponse = ['queued', 'queuedChat', 'queuedApprove', 'requeued',
         'requeuedBuild', 'requeuedApprove'].includes(mode)
-        || (!first && ['secondInLine', 'authoritativeHeaders'].includes(mode));
+        || (!first && ['secondInLine', 'authoritativeHeaders', 'lateRunningHeader',
+          'legacyIdlessLateHeader'].includes(mode));
       if (mode === 'successorHeaderRace') {
         markRequestStarted();
         await responseGate;
       }
       if (mode === 'authoritativeHeaders') await headerGates[index];
+      if (['lateRunningHeader', 'legacyIdlessLateHeader'].includes(mode) && first) {
+        await headerGates[index];
+      }
       let sent = 0;
       return { ok: true, headers: { get: (name) => {
         const header = String(name).toLowerCase();
         if (header === 'x-sage-turn-id') return responseTurnId;
         if (header === 'x-sage-turn-state') return pendingResponse ? 'pending' : 'running';
+        if (header === 'x-sage-turn-sequence') {
+          if (mode === 'successorHeaderRace'
+              || (mode === 'legacyIdlessLateHeader' && first)) return null;
+          return String(index + 1);
+        }
         return 'text/event-stream';
       } }, body: { getReader: () => ({
         read: async () => {
@@ -229,6 +258,7 @@ const sandbox = {
           if (sent === 1) {
             sent = 2;
             reachedPause();
+            pauseAnswers[index]();
             await gate;
             if (dropped) {
               throw new TypeError('network error');
@@ -288,6 +318,8 @@ const SEND = {
   preframeStopRace: 'build',
   successorHeaderRace: 'build',
   authoritativeHeaders: 'chat',
+  lateRunningHeader: 'chat',
+  legacyIdlessLateHeader: 'chat',
   secondInLine: 'chat', queuedChat: 'chat', queuedApprove: 'approve',
 }[mode];
 const kind = SEND === 'chat' ? 'chat' : 'build';
@@ -307,6 +339,13 @@ if (mode === 'authoritativeHeaders') {
   await Promise.resolve();
   headerAnswers[1]();
   await Promise.resolve();
+  headerAnswers[0]();
+}
+
+if (['lateRunningHeader', 'legacyIdlessLateHeader'].includes(mode)) {
+  // B reaches its server-ordered running event while A's older response callback is delayed.
+  // The late A header must not replace B, and A's unwind must not clear B.
+  await pauseGates[1];
   headerAnswers[0]();
 }
 
@@ -357,6 +396,7 @@ const midTurn = {
     : SW.store.runningTurnHere('chat', 't1'),
   running: kind === 'chat' ? SW.store.get().chatRunning : SW.store.get().buildRunning,
   turnId: SW.store.get().runningTurn && SW.store.get().runningTurn.turnId,
+  sequence: SW.store.get().runningTurn && SW.store.get().runningTurn.sequence,
 };
 
 if (mode === 'preframeStopRace') {
@@ -388,7 +428,22 @@ if (mode === 'authoritativeHeaders') {
   await Promise.all([turn, second, third]);
   console.log(JSON.stringify({
     turnId: midTurn.turnId,
+    sequence: midTurn.sequence,
     queued: midTurn.queued,
+    stopPosts: stopBodies.length,
+    requestedTurnId: stopBodies[0] && stopBodies[0].turnId,
+  }));
+  process.exit(0);
+}
+
+if (['lateRunningHeader', 'legacyIdlessLateHeader'].includes(mode)) {
+  const stop = SW.store.stopChat();
+  await stop;
+  letGo();
+  await Promise.all([turn, second]);
+  console.log(JSON.stringify({
+    turnId: midTurn.turnId,
+    sequence: midTurn.sequence,
     stopPosts: stopBodies.length,
     requestedTurnId: stopBodies[0] && stopBodies[0].turnId,
   }));
