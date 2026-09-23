@@ -616,7 +616,12 @@ class EnforcementShim:
             # was dropped or the Chat floor answered. Named here and not only on the drop path,
             # because a turn running at an effort nobody expected is the same question asked from
             # the other side, and the drop line is deduped — after the first one it says nothing.
-            request.get("reasoning_effort", "none sent"),
+            #
+            # The default must not contain the word `none`, which is a LEVEL here. This read
+            # "none sent" and was taken as "none was sent" for an hour of #505 — the exact
+            # distinction that issue turns on, since `none` explicitly sent and the field omitted
+            # are the two requests gpt-5.4 answers differently.
+            request.get("reasoning_effort", "<absent>"),
         )
         if on_resolved is not None:
             try:
