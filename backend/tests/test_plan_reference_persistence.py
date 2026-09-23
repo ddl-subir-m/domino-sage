@@ -58,20 +58,24 @@ def _orchestrator(tmp_path: Path, assets: FakeAssetProvider, turns: list[Turn]):
     return orchestrator, client
 
 
-def _planned(tmp_path: Path):
+def _planned(tmp_path: Path, *, document: str | None = None, oversized: bool = False,
+             prompt: str = "Build the table. Follow the Programming Notes in the attached document."):
     assets = FakeAssetProvider()
-    (assets.root / "sales_2026" / "README.md").write_text(
-        "# TFL Layout\nWide table\n\n## Programming Notes\n" + RULE + "\n"
-    )
+    source = assets.root / "sales_2026" / "README.md"
+    if oversized:
+        with source.open("wb") as handle:
+            handle.truncate(reference.MAX_SOURCE_BYTES + 1)
+    else:
+        source.write_text(document or (
+            "# TFL Layout\nWide table\n\n## Programming Notes\n" + RULE + "\n"
+        ))
     (assets.root / "sales_2026" / "train.csv").write_text(
         "USUBJID,ARM\n" + NEIGHBOR + ",Active\n"
     )
     orchestrator, client = _orchestrator(tmp_path, assets, [Turn(text=PLAN)])
     shell = orchestrator.attach_file("ds_sales_2026", "README.md")["path"]
     neighbor = orchestrator.attach_file("ds_sales_2026", "train.csv")["path"]
-    events = list(orchestrator.build_stream(
-        "Build the table. Follow the Programming Notes in the attached document.", [shell]
-    ))
+    events = list(orchestrator.build_stream(prompt, [shell]))
     plan_id = next(event["planId"] for event in events if event["type"] == "plan-proposed")
     return orchestrator, client, assets, shell, neighbor, plan_id
 
@@ -93,6 +97,7 @@ def test_plan_restart_approve_reprepares_only_the_saved_reference(tmp_path: Path
         "sha256": hashlib.sha256(
             (assets.root / "sales_2026" / "README.md").read_bytes()
         ).hexdigest(),
+        "status": "prepared",
     }]
 
     persisted = json.dumps(doc["explicitReferences"])
@@ -133,6 +138,65 @@ def test_changed_reference_hash_fails_closed_without_sending_new_text(tmp_path: 
 
     assert "changed after the plan was prepared" in outgoing
     assert changed not in outgoing and RULE not in outgoing
+
+
+@pytest.mark.parametrize("digest", [None, "", "not-a-sha256"])
+def test_incomplete_success_digest_cannot_transfer_current_bytes_after_restart(
+    tmp_path: Path, digest: str | None,
+):
+    first, _planner, assets, _shell, _neighbor, plan_id = _planned(tmp_path)
+    record = first.project(start_preview=False).record
+    meta_path = record.plan_docs_dir / plan_id / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    if digest is None:
+        meta["explicitReferences"][0].pop("sha256")
+    else:
+        meta["explicitReferences"][0]["sha256"] = digest
+    meta_path.write_text(json.dumps(meta))
+    restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+
+    list(restarted.approve_stream(plan_id=plan_id))
+    outgoing = _outgoing(builder)
+
+    assert "saved reference record is incomplete or invalid" in outgoing
+    assert RULE not in outgoing
+
+
+def test_duplicate_heading_failure_keeps_its_attempted_selector_after_restart(tmp_path: Path):
+    first, _planner, assets, _shell, _neighbor, plan_id = _planned(
+        tmp_path,
+        document=("# TFL Layout\n\n## Programming Notes\nFIRST DUPLICATE SECRET\n\n"
+                  "## Programming Notes\nSECOND DUPLICATE SECRET\n"),
+    )
+    doc = first.project(start_preview=False).record.read_plan_doc(plan_id)
+    assert doc is not None
+    assert doc["explicitReferences"][0]["selector"] == "Programming Notes"
+    assert doc["explicitReferences"][0]["status"] == "heading_not_unique"
+    restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+
+    list(restarted.approve_stream(plan_id=plan_id))
+    outgoing = _outgoing(builder)
+
+    assert "heading is missing or is not unique" in outgoing
+    assert "FIRST DUPLICATE SECRET" not in outgoing
+    assert "SECOND DUPLICATE SECRET" not in outgoing
+
+
+def test_over_limit_planning_failure_cannot_become_a_transfer_after_replacement(tmp_path: Path):
+    first, _planner, assets, _shell, _neighbor, plan_id = _planned(tmp_path, oversized=True)
+    doc = first.project(start_preview=False).record.read_plan_doc(plan_id)
+    assert doc is not None
+    assert doc["explicitReferences"][0]["status"] == "source_too_large"
+    assert doc["explicitReferences"][0]["sha256"] == ""
+    replacement = "SMALL REPLACEMENT THAT PLANNING NEVER SAW"
+    (assets.root / "sales_2026" / "README.md").write_text(replacement)
+    restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+
+    list(restarted.approve_stream(plan_id=plan_id))
+    outgoing = _outgoing(builder)
+
+    assert "exceeds the 8 MiB source limit" in outgoing
+    assert replacement not in outgoing
 
 
 def test_deleted_reference_stops_before_the_implementation_request(tmp_path: Path):

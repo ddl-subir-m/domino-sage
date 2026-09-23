@@ -23,6 +23,10 @@ _TEXT_SUFFIXES = frozenset({".txt", ".text"})
 _MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_PLANNING_FAILURES = frozenset({
+    "unavailable", "source_too_large", "not_text", "heading_not_unique",
+    "heading_not_supported", "selector_too_long", "empty_document", "withheld",
+})
 
 
 @dataclass(frozen=True)
@@ -176,8 +180,11 @@ def plan_record(prepared: Prepared) -> dict:
     return {
         "source": prepared.source,
         "handler": prepared.source_type,
-        "selector": prepared.selected_selector,
+        # A failed selection has no selected selector. The attempted selector is what makes approval
+        # repeat the same bounded failure instead of silently widening to the whole document.
+        "selector": prepared.requested_selector or prepared.selected_selector,
         "sha256": prepared.source_sha256,
+        "status": prepared.status,
     }
 
 
@@ -197,12 +204,23 @@ def plan_records(value: object) -> list[dict]:
         handler = str(raw.get("handler") or "")
         selector = " ".join(str(raw.get("selector") or "").split())
         digest = str(raw.get("sha256") or "").casefold()
-        if (not source or source in seen or source_type(source) != handler
-                or len(selector) > MAX_SELECTOR_CHARS
-                or (digest and _SHA256.fullmatch(digest) is None)):
+        kind = source_type(source)
+        if not source or source in seen or not kind:
             continue
-        out.append({"source": source, "handler": handler, "selector": selector,
-                    "sha256": digest})
+        valid_digest = _SHA256.fullmatch(digest) is not None
+        raw_status = str(raw.get("status") or "")
+        # Records written by the first #517 revision have no status. They remain transferable only
+        # when they have the complete digest that revision promised. Missing or malformed evidence
+        # becomes a visible bounded failure, never permission to use today's bytes.
+        status = raw_status or ("prepared" if valid_digest else "saved_record_invalid")
+        if (handler != kind or len(selector) > MAX_SELECTOR_CHARS
+                or (digest and not valid_digest)
+                or (status == "prepared" and not valid_digest)
+                or status not in _PLANNING_FAILURES | {"prepared"}):
+            status = "saved_record_invalid"
+        out.append({"source": source, "handler": kind,
+                    "selector": selector if len(selector) <= MAX_SELECTOR_CHARS else "",
+                    "sha256": digest if valid_digest else "", "status": status})
         seen.add(source)
     return out
 
@@ -224,12 +242,15 @@ def prepare_plan_records(root: Path, manifest: Iterable[dict], records: object, 
         if _is_withheld(root, authorized, source, withheld):
             out.append(_failure(source, kind, "withheld", selector))
             continue
+        if record["status"] != "prepared":
+            out.append(_failure(source, kind, record["status"], selector))
+            continue
         prepared = prepare(authorized, selector=selector)
         if prepared is None:
             out.append(_failure(source, kind, "handler_changed", selector))
             continue
         expected = record["sha256"]
-        if expected and prepared.source_sha256 != expected:
+        if prepared.source_sha256 != expected:
             out.append(_failure(source, kind, "source_changed", selector,
                                 source_bytes=prepared.source_bytes,
                                 source_sha256=prepared.source_sha256))
@@ -354,6 +375,9 @@ def _failure(source: str, kind: str, status: str, selector: str, *, source_bytes
         "not_authorized": "The saved reference is unavailable or is no longer authorized.",
         "handler_changed": "The saved reference no longer has its approved content type.",
         "source_changed": "The referenced document changed after the plan was prepared.",
+        "saved_record_invalid": (
+            "The saved reference record is incomplete or invalid, so no document content was sent."
+        ),
     }
     text = messages[status]
     return Prepared(source, kind, text, selector, "", source_bytes, 0, 0, False, status,
