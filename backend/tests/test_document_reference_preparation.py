@@ -125,6 +125,34 @@ def test_invalid_utf8_is_a_bounded_capability_result(tmp_path: Path):
     assert "not valid UTF-8" in prepared.text
 
 
+def test_early_failures_persist_only_the_bounded_normalized_selector(tmp_path: Path):
+    padded = " " * 200_000 + "SECRET"
+    missing = reference.Authorized("missing.md", tmp_path / "missing.md")
+    too_big = tmp_path / "too-big.md"
+    with too_big.open("wb") as handle:
+        handle.truncate(reference.MAX_SOURCE_BYTES + 1)
+    invalid = tmp_path / "invalid.md"
+    invalid.write_bytes(b"\xff")
+    nul = tmp_path / "nul.md"
+    nul.write_bytes(b"text\x00not-text")
+
+    prepared = [
+        reference.prepare(missing, selector=padded),
+        reference.prepare(reference.Authorized(too_big.name, too_big), selector=padded),
+        reference.prepare(reference.Authorized(invalid.name, invalid), selector=padded),
+        reference.prepare(reference.Authorized(nul.name, nul), selector=padded),
+    ]
+
+    assert [item.status for item in prepared if item is not None] == [
+        "unavailable", "source_too_large", "not_text", "not_text",
+    ]
+    for item in prepared:
+        assert item is not None
+        assert item.requested_selector == "SECRET"
+        event, _reply = reference.data_use(item, purpose="fixed")
+        assert len(json.dumps(event)) < 2_000
+
+
 def test_empty_document_is_a_correlated_bounded_failure(tmp_path: Path):
     authorized = _authorized(tmp_path, body="")
     assert authorized is not None

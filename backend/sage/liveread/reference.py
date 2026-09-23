@@ -220,21 +220,21 @@ def _prepare_text(authorized: Authorized, *, kind: str, selector: str, prompt: s
     try:
         size = authorized.path.stat().st_size
     except OSError:
-        return _failure(authorized.source, kind, "unavailable", selector)
+        return _failure(authorized.source, kind, "unavailable", requested)
     if size > MAX_SOURCE_BYTES:
-        return _failure(authorized.source, kind, "source_too_large", selector, source_bytes=size)
+        return _failure(authorized.source, kind, "source_too_large", requested, source_bytes=size)
     try:
         raw = authorized.path.read_bytes()
     except OSError:
-        return _failure(authorized.source, kind, "unavailable", selector, source_bytes=size)
+        return _failure(authorized.source, kind, "unavailable", requested, source_bytes=size)
     source_hash = hashlib.sha256(raw).hexdigest()
     if b"\x00" in raw:
-        return _failure(authorized.source, kind, "not_text", selector,
+        return _failure(authorized.source, kind, "not_text", requested,
                         source_bytes=size, source_sha256=source_hash)
     try:
         whole = raw.decode("utf-8-sig", errors="strict")
     except UnicodeDecodeError:
-        return _failure(authorized.source, kind, "not_text", selector,
+        return _failure(authorized.source, kind, "not_text", requested,
                         source_bytes=size, source_sha256=source_hash)
 
     if kind == "text" and requested:
