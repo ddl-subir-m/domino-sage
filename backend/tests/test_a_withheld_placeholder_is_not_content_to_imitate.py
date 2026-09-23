@@ -143,9 +143,13 @@ def test_a_call_with_no_named_source_does_not_claim_zero_sources():
         {"role": "tool", "tool_call_id": "call2", "content": "\nCommand exited with code 0."},
     ]})
 
-    sent = json.loads(prepared["messages"][3]["tool_calls"][0]["function"]["arguments"])["command"]
-    assert "0 source" not in sent, "nothing was withheld from zero sources"
-    assert "local data withheld" in sent, "it is still marked as withheld"
+    sent = json.loads(prepared["messages"][3]["tool_calls"][0]["function"]["arguments"])
+    # `description` rather than `command`: the count lives in the VALUE form, and the command slot
+    # takes the branch that names sources and never prints a count. Asserting on the command here
+    # passed against a plant that restored "0 sources", which is how this line was found.
+    assert sent["description"] == "[local data withheld]", "nothing was withheld from zero sources"
+    assert "local data withheld" in sent["command"], "the command is still marked as withheld"
+    assert "0 source" not in json.dumps(sent), "no slot claims a count it does not have"
     assert row not in json.dumps(prepared["messages"]), "still withheld"
 
 
