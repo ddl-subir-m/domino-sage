@@ -22,6 +22,7 @@ MAX_SELECTOR_CHARS = 200
 _TEXT_SUFFIXES = frozenset({".txt", ".text"})
 _MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,73 @@ def prepare_explicit(root: Path, manifest: Iterable[dict], sources: Iterable[str
     return out
 
 
+def plan_record(prepared: Prepared) -> dict:
+    """The content-free identity needed to prepare this exact reference again."""
+    return {
+        "source": prepared.source,
+        "handler": prepared.source_type,
+        "selector": prepared.selected_selector,
+        "sha256": prepared.source_sha256,
+    }
+
+
+def plan_records(value: object) -> list[dict]:
+    """Read durable plan records without trusting extra or malformed metadata.
+
+    Plans written before reference persistence have no records and therefore return an empty list.
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        source = str(raw.get("source") or "")
+        handler = str(raw.get("handler") or "")
+        selector = " ".join(str(raw.get("selector") or "").split())
+        digest = str(raw.get("sha256") or "").casefold()
+        if (not source or source in seen or source_type(source) != handler
+                or len(selector) > MAX_SELECTOR_CHARS
+                or (digest and _SHA256.fullmatch(digest) is None)):
+            continue
+        out.append({"source": source, "handler": handler, "selector": selector,
+                    "sha256": digest})
+        seen.add(source)
+    return out
+
+
+def prepare_plan_records(root: Path, manifest: Iterable[dict], records: object, *,
+                         withheld: Iterable[str] = (),
+                         target_for: Callable[[dict], Path | None] | None = None) -> list[Prepared]:
+    """Re-authorize and re-prepare only the references saved with an approved plan."""
+    rows = list(manifest)
+    out: list[Prepared] = []
+    for record in plan_records(records):
+        source = record["source"]
+        kind = record["handler"]
+        selector = record["selector"]
+        authorized = _resolve(root, rows, source, target_for=target_for)
+        if authorized is None:
+            out.append(_failure(source, kind, "not_authorized", selector))
+            continue
+        if _is_withheld(root, authorized, source, withheld):
+            out.append(_failure(source, kind, "withheld", selector))
+            continue
+        prepared = prepare(authorized, selector=selector)
+        if prepared is None:
+            out.append(_failure(source, kind, "handler_changed", selector))
+            continue
+        expected = record["sha256"]
+        if expected and prepared.source_sha256 != expected:
+            out.append(_failure(source, kind, "source_changed", selector,
+                                source_bytes=prepared.source_bytes,
+                                source_sha256=prepared.source_sha256))
+            continue
+        out.append(prepared)
+    return out
+
+
 def data_use(prepared: Prepared, *, purpose: str) -> tuple[dict, dict]:
     """Build the common content-free event and the in-memory model reply."""
     operation_id = "du_" + uuid4().hex
@@ -283,6 +351,9 @@ def _failure(source: str, kind: str, status: str, selector: str, *, source_bytes
         "selector_too_long": "The requested heading exceeds the 200-character selector limit.",
         "empty_document": "The referenced document contains no text to transfer.",
         "withheld": "The person or administrator withheld this document from model requests.",
+        "not_authorized": "The saved reference is unavailable or is no longer authorized.",
+        "handler_changed": "The saved reference no longer has its approved content type.",
+        "source_changed": "The referenced document changed after the plan was prepared.",
     }
     text = messages[status]
     return Prepared(source, kind, text, selector, "", source_bytes, 0, 0, False, status,
