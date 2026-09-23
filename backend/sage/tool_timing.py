@@ -97,8 +97,12 @@ class ToolObserver:
                     run[name + "UnixMs"] = observed
                     run[name + "Source"] = ((payload.get("harness_time") or {}).get(name + "Source")
                                              or run[name + "Source"] or "opencode")
+            status = {"called": "running", "success": "completed", "failed": "error"}.get(
+                payload.get("status"), payload.get("status"))
             args = payload.get("input")
-            if isinstance(args, dict):
+            # Ignore stale running input after completion; a completed transcript
+            # can still fill metadata absent from the stream completion.
+            if isinstance(args, dict) and (run["completedObservedMs"] is None or status in {"completed", "error"}):
                 path = args.get("filePath", args.get("path"))
                 if isinstance(path, str) and path and run["tool"] in _READS | _EDITS:
                     target = self._fingerprint(posixpath.normpath(posixpath.join(directory, path))
@@ -112,16 +116,15 @@ class ToolObserver:
                 pattern = args.get("pattern")
                 if isinstance(pattern, str) and run["tool"] in {"grep", "glob"}:
                     run["queryFingerprint"] = self._fingerprint(pattern)
-            status = {"called": "running", "success": "completed", "failed": "error"}.get(
-                payload.get("status"), payload.get("status"))
             # A repeated old running snapshot cannot reopen a completed call.
             if status in {"pending", "running", "in_progress", "completed", "error"} and run["completedObservedMs"] is None:
                 run["status"] = status
+            if status in {"completed", "error"}:
+                run["targetMetadataFinal"] = run["targetFingerprint"] is not None
             if status in {"completed", "error"} and run["completedObservedMs"] is None:
                 run["completedObservedMs"] = now
                 self._sequence += 1
                 target = run["targetFingerprint"]
-                run["targetMetadataFinal"] = target is not None
                 if target and run["tool"] in _READS:
                     previous = self._last_read.get(target)
                     if previous is not None:

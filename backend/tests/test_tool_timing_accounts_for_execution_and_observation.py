@@ -275,3 +275,15 @@ def test_partial_input_is_replaced_by_final_target_and_range_without_duplicate_b
     assert rows[0]["targetFingerprint"] == rows[1]["targetFingerprint"] == rows[2]["targetFingerprint"]
     assert rows[0]["targetMetadataFinal"] is True and rows[0]["targetState"] == "unknown"
     assert rows[2]["editSincePreviousRead"] is True
+
+
+def test_stale_running_input_cannot_replace_completed_target_metadata(clock):
+    timing.start_turn("build")
+    observer = timing.tool_observer()
+    observer.event("s", event("r1", status="success", input={"filePath": "src/whole.py", "offset": 20, "limit": 10}))
+    observer.event("s", event("r1", input={"filePath": "src/part", "offset": 1}))
+    observer.event("s", event("r2", status="success", input={"filePath": "src/whole.py"}))
+    rows = readout()["tools"]
+    assert rows[0]["targetFingerprint"] == rows[1]["targetFingerprint"]
+    assert rows[0]["range"] == {"offset": 20, "limit": 10}
+    assert rows[0]["status"] == "completed" and rows[0]["targetMetadataFinal"] is True
