@@ -36,6 +36,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +71,23 @@ class ModelCall:
     # pin, or dropped by the signing veto — which is the question a waterfall gets read for when a
     # step ran somewhere nobody expected.
     reason: str = ""
+    call_id: str = field(default_factory=lambda: uuid4().hex)
+    turn_id: str = ""
+    protocol: str | None = None
+    requested_effort: str | None = None
+    effort_status: str = "unknown"
+    session_id: str | None = None
+    root_session_id: str | None = None
+    first_text: float | None = None
+    first_tool_argument: float | None = None
+    last_chunk: float | None = None
+    max_chunk_gap: float = 0.0
+    outcome: str = "running"
+    forwarded_request_bytes: int | None = None
+    tool_invocations: list[dict] = field(default_factory=list)
+    tools_truncated: bool = False
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
     first_byte: float | None = None   # monotonic, not a duration — the waterfall needs the moment
     # The moment the shim finished rewriting this request and handed back the generator that will
     # make the call. `first_byte` is measured from `t0`, which starts BEFORE the shim runs, so a slow
@@ -94,9 +112,8 @@ class ModelCall:
     # that got slower from a conversation that got bigger, and every step re-sends the whole
     # conversation, so this is what says which one happened.
     #
-    # The request as OpenCode sent it, not as the shim forwards it. The two differ by the tool
-    # definitions the read-only filter strips — kilobytes against a payload measured in hundreds of
-    # them — and the incoming side is the one a caller can record without reaching into the rewrite.
+    # Legacy reqBytes is the incoming OpenCode body. forwarded_request_bytes separately measures
+    # the final rewritten native request; neither body is retained here.
     request_bytes: int = 0
     # What the provider said it read, when it says anything at all. Optional rather than
     # always-present on purpose: the gateway emits a `usage` frame for gpt-5.4 and NOT for sonnet,
@@ -113,6 +130,9 @@ class TurnRecord:
     started_at: float                 # wall clock, for reading a record back hours later
     t0: float                         # monotonic, what every offset is measured from
     prompt: str = ""
+    turn_id: str = field(default_factory=lambda: uuid4().hex)
+    app_id: str | None = None
+    conversation_id: str | None = None
     spans: list[Span] = field(default_factory=list)
     calls: list[ModelCall] = field(default_factory=list)
     counters: dict[str, float] = field(default_factory=dict)
@@ -141,7 +161,8 @@ def enabled() -> bool:
     return os.environ.get("SAGE_TIMING", "1").strip().lower() not in ("0", "false", "no")
 
 
-def start_turn(kind: str, prompt: str = "") -> None:
+def start_turn(kind: str, prompt: str = "", *, turn_id: str | None = None,
+               app_id: str | None = None, conversation_id: str | None = None) -> None:
     """Open a record. Any turn still open is closed first — a turn that died without finishing is
     still the most interesting one in the ring, so it is kept rather than dropped."""
     global _current
@@ -162,12 +183,25 @@ def start_turn(kind: str, prompt: str = "") -> None:
                 for c in _current.calls:
                     if c.t1 is None:
                         c.t1 = _current.t1
+                        c.outcome = "incomplete"
+                        c.ok = False
                 _history.append(_current)
             _current = TurnRecord(kind=kind, started_at=time.time(), t0=time.monotonic(),
-                                  prompt=(prompt or "")[:200])
+                                  prompt=(prompt or "")[:200], turn_id=turn_id or uuid4().hex,
+                                  app_id=app_id, conversation_id=conversation_id)
         _stack.depth = 0
     except Exception:
         log.debug("timing: start_turn failed", exc_info=True)
+
+
+def bind_context(turn_id: str, *, app_id: str | None = None,
+                 conversation_id: str | None = None) -> None:
+    """Bind identity after the existing context setup; never initialize an app for diagnostics."""
+    with _lock:
+        rec = _current
+        if rec is not None and rec.t1 is None and rec.turn_id == turn_id:
+            rec.app_id = app_id
+            rec.conversation_id = conversation_id
 
 
 def finish_turn(ok: bool | None = None, decision: str = "") -> TurnRecord | None:
@@ -195,6 +229,8 @@ def finish_turn(ok: bool | None = None, decision: str = "") -> TurnRecord | None
             for c in rec.calls:
                 if c.t1 is None:
                     c.t1 = rec.t1
+                    c.outcome = "incomplete"
+                    c.ok = False
             rec.ok = ok if ok is not None else rec.ok
             rec.decision = decision or rec.decision
             _history.append(rec)
@@ -294,68 +330,113 @@ class _CallHandle:
     def __init__(self, call: ModelCall | None) -> None:
         self._call = call
 
+    @contextmanager
+    def _active(self):
+        # The handle owns one call, never the process's next turn. Finish and updates use the
+        # same lock so a late pump cannot change even the closed record's snapshot.
+        with _lock:
+            yield self._call if self._call is not None and self._call.t1 is None else None
+
     def first_byte(self) -> None:
-        if self._call is not None and self._call.first_byte is None:
-            self._call.first_byte = time.monotonic()
+        with self._active() as c:
+            if c is not None and c.first_byte is None:
+                c.first_byte = time.monotonic()
 
-    def prepared(self) -> None:
-        """The shim is done with the request; everything after this belongs to the gateway.
-
-        Called once, from the one place that knows the boundary. Silent outside a turn, and silent
-        on a second call, so a caller may mark it without checking whether it already did.
-        """
-        if self._call is not None and self._call.prepared is None:
-            self._call.prepared = time.monotonic()
+    def prepared(self, forwarded_bytes: int | None = None) -> None:
+        with self._active() as c:
+            if c is not None and c.prepared is None:
+                c.prepared = time.monotonic()
+                c.forwarded_request_bytes = forwarded_bytes
 
     def tool(self, names: list[str]) -> None:
-        """Record the tools this step announced. Capped, because a runaway step must not become a
-        memory leak — the same reason `observe` caps its samples."""
-        if self._call is None or not names:
-            return
-        room = 40 - len(self._call.tools)
-        if room > 0:
-            self._call.tools.extend(str(n)[:40] for n in names[:room])
+        """Legacy non-native readers supply newly announced names, not cumulative sets."""
+        with self._active() as c:
+            if c is not None:
+                room = 40 - len(c.tools)
+                c.tools.extend(str(n)[:40] for n in names[:room])
+                c.tools_truncated |= len(names) > room
+
+    def stream_metadata(self, events) -> None:
+        """Snapshot bounded metadata; retain no response bodies or argument fragments."""
+        with self._active() as c:
+            if c is None:
+                return
+            now = c.last_chunk if c.last_chunk is not None else time.monotonic()
+            if events.saw_text and c.first_text is None:
+                c.first_text = now
+            if events.saw_tool_argument and c.first_tool_argument is None:
+                c.first_tool_argument = now
+            c.tool_invocations = [dict(t) for t in events.tool_invocations]
+            c.tools = [t["name"] or "?" for t in c.tool_invocations]
+            c.tools_truncated = events.tools_truncated
+            for attr in ("input_tokens", "cached_tokens", "output_tokens", "reasoning_tokens"):
+                value = getattr(events, attr)
+                if value is not None:
+                    setattr(c, attr, value)
 
     def chunk(self) -> None:
-        if self._call is not None:
-            self._call.chunks += 1
+        with self._active() as c:
+            if c is not None:
+                now = time.monotonic()
+                if c.last_chunk is not None:
+                    c.max_chunk_gap = max(c.max_chunk_gap, now - c.last_chunk)
+                c.last_chunk = now
+                c.chunks += 1
 
     def model(self, name: str, phase: str = "", reason: str = "") -> None:
-        """What the shim resolved, as `on_resolved` hands it over. Each field keeps what it had when
-        the caller supplies nothing, so a caller that knows only the model does not blank the rest."""
-        if self._call is not None:
-            self._call.model = name or self._call.model
-            self._call.phase = phase or self._call.phase
-            self._call.reason = reason or self._call.reason
+        with self._active() as c:
+            if c is not None:
+                c.model = name or c.model
+                c.phase = phase or c.phase
+                c.reason = reason or c.reason
+
+    def route(self, protocol: str, effort: str | None) -> None:
+        with self._active() as c:
+            if c is not None:
+                c.protocol = protocol
+                c.requested_effort = effort
+                c.effort_status = "provider_default" if effort is None else "explicit"
 
     def request(self, n_bytes: int) -> None:
-        """How many bytes of request this inference carried."""
-        if self._call is not None:
-            self._call.request_bytes = int(n_bytes)
+        with self._active() as c:
+            if c is not None:
+                c.request_bytes = int(n_bytes)
 
-    def usage(self, input_tokens: int | None, cached_tokens: int | None = None) -> None:
-        """What the provider reported reading. Silent when it reported nothing."""
-        if self._call is None:
-            return
-        if input_tokens is not None:
-            self._call.input_tokens = int(input_tokens)
-        if cached_tokens is not None:
-            self._call.cached_tokens = int(cached_tokens)
+    def usage(self, input_tokens: int | None, cached_tokens: int | None = None,
+              output_tokens: int | None = None, reasoning_tokens: int | None = None) -> None:
+        with self._active() as c:
+            if c is not None:
+                for attr, value in (("input_tokens", input_tokens), ("cached_tokens", cached_tokens),
+                                    ("output_tokens", output_tokens), ("reasoning_tokens", reasoning_tokens)):
+                    if value is not None:
+                        setattr(c, attr, int(value))
 
-    def done(self, ok: bool = True, error: str = "") -> None:
-        if self._call is not None and self._call.t1 is None:
-            self._call.t1 = time.monotonic()
-            self._call.ok = ok
-            self._call.error = error[:200]
+    def done(self, ok: bool = True, error: str = "", *, outcome: str | None = None) -> None:
+        with self._active() as c:
+            if c is not None:
+                c.t1 = time.monotonic()
+                c.ok = ok
+                c.error = error[:200]
+                c.outcome = outcome or ("success" if ok else "error")
 
 
-def model_call(model: str = "", phase: str = "") -> _CallHandle:
-    rec = _current
+_CURRENT_RECORD = object()
+
+
+def model_call(model: str = "", phase: str = "", *, record=_CURRENT_RECORD,
+               session_id: str | None = None, root_session_id: str | None = None,
+               app_id: str | None = None, conversation_id: str | None = None) -> _CallHandle:
+    rec = _current if record is _CURRENT_RECORD else record
     if rec is None or not enabled():
         return _CallHandle(None)
     try:
         with _lock:
-            call = ModelCall(n=len(rec.calls) + 1, t0=time.monotonic(), model=model, phase=phase)
+            if rec.t1 is not None:
+                return _CallHandle(None)
+            rec.app_id = rec.app_id or app_id
+            rec.conversation_id = rec.conversation_id or conversation_id
+            call = ModelCall(n=len(rec.calls) + 1, t0=time.monotonic(), model=model, phase=phase,
+                             turn_id=rec.turn_id, session_id=session_id, root_session_id=root_session_id)
             rec.calls.append(call)
         return _CallHandle(call)
     except Exception:
@@ -428,9 +509,15 @@ def _pct(xs: list[float], p: float) -> float:
     return s[min(len(s) - 1, int(p * len(s)))]
 
 
+def _offset(value: float | None, origin: float) -> int | None:
+    return None if value is None else round((value - origin) * 1000)
+
+
 def as_dict(rec: TurnRecord) -> dict:
     return {
         "kind": rec.kind,
+        "turnId": rec.turn_id, "appId": rec.app_id, "conversationId": rec.conversation_id,
+        "boundary": "Sage gateway observations; not provider compute or reasoning time",
         "startedAt": rec.started_at,
         "prompt": rec.prompt,
         "ms": round(rec.ms),
@@ -440,6 +527,17 @@ def as_dict(rec: TurnRecord) -> dict:
         "spans": [{"name": s.name, "depth": s.depth, "atMs": round((s.t0 - rec.t0) * 1000),
                    "ms": round(s.ms), "open": s.t1 is None, **s.fields} for s in rec.spans],
         "calls": [{"n": c.n, "model": c.model, "phase": c.phase, "reason": c.reason,
+                   "callId": c.call_id, "turnId": c.turn_id, "protocol": c.protocol,
+                   "requestedEffort": c.requested_effort, "effortStatus": c.effort_status,
+                   "sessionId": c.session_id, "rootSessionId": c.root_session_id,
+                   "firstTextMs": _offset(c.first_text, c.t0),
+                   "firstToolArgumentMs": _offset(c.first_tool_argument, c.t0),
+                   "lastChunkMs": _offset(c.last_chunk, c.t0),
+                   "maxChunkGapMs": round(c.max_chunk_gap * 1000),
+                   "outcome": c.outcome, "forwardedReqBytes": c.forwarded_request_bytes,
+                   "toolInvocations": [dict(t) for t in c.tool_invocations],
+                   "toolsTruncated": c.tools_truncated,
+                   "outTokens": c.output_tokens, "reasoningTokens": c.reasoning_tokens,
                    "atMs": round((c.t0 - rec.t0) * 1000),
                    "ttfbMs": None if c.first_byte is None else round((c.first_byte - c.t0) * 1000),
                    "prepMs": None if c.prepared is None else round((c.prepared - c.t0) * 1000),

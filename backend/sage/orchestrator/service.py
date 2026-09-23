@@ -7900,7 +7900,7 @@ class Orchestrator:
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
         ticket = _TurnTicket(new_id("turn"))
-        timing.start_turn("build", prompt)
+        timing.start_turn("build", prompt, turn_id=ticket.id, conversation_id=conversation)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
                                           prompt=prompt, app=True)
@@ -7945,6 +7945,8 @@ class Orchestrator:
             if named:
                 yield {"type": "conversation_named", "conversation": conversation, "title": named}
             self._pin_turn_app(project)
+            timing.bind_context(ticket.id, app_id=project.app_for_turn().app_id,
+                                conversation_id=project.build_conversation)
             # The model gate's listing, kicked off here so the gate below reads a local answer
             # instead of paying 2.5-2.9s for one (#125). A no-op when it is already warm, which the
             # rail's own poll usually keeps it.
@@ -8914,7 +8916,7 @@ class Orchestrator:
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
         # was written against.
         ticket = _TurnTicket(new_id("turn"))
-        timing.start_turn("chat", prompt)
+        timing.start_turn("chat", prompt, turn_id=ticket.id, conversation_id=thread_id)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="chat", conversation=thread_id, prompt=prompt,
                                           app=False)
@@ -18047,7 +18049,7 @@ class Orchestrator:
         # approve IS a build turn and a Workbench that queued one and refused the other is a rule
         # people would have to learn instead of guess.
         ticket = _TurnTicket(new_id("turn"))
-        timing.start_turn("approve")
+        timing.start_turn("approve", turn_id=ticket.id, conversation_id=conversation)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="build", conversation=conversation, prompt="",
                                           app=True)
@@ -18057,7 +18059,10 @@ class Orchestrator:
         try:
             self._turn_gave_up = False
             self._begin_conversation(conversation)
-            self._pin_turn_app(self.project())
+            project = self.project()
+            self._pin_turn_app(project)
+            timing.bind_context(ticket.id, app_id=project.app_for_turn().app_id,
+                                conversation_id=project.build_conversation)
             yield from self._approve_locked(
                 answers, plan_edits, plan_id=plan_id, build_again=build_again,
                 # The transcript replays what the person did, and this is a different act from
