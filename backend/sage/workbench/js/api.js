@@ -344,6 +344,15 @@ SW.api = {
   // acknowledgement, so the caller installs what the server settled on and not what it asked for —
   // the two differ whenever a baked pack has a say.
   saveBrand: (patch) => request('/brand', { method: 'PUT', body: patch }),
+  // Connection settings (ONE-APP-PLAN.md §2.7): secrets come back redacted to a boolean, never
+  // the value — `saveSettings` answers the same shape plus `restartRequired`, since a save is not
+  // hot-applied to the process already running.
+  settings: () => request('/settings'),
+  saveSettings: (patch) => request('/settings', { method: 'PUT', body: patch }),
+  // Tests the host/token the FORM holds (falling back to whatever is already saved for a field
+  // left blank), not what this process booted with — the check a person wants before they commit
+  // to saving and restarting.
+  testSettings: (patch) => request('/settings/test', { method: 'POST', body: patch }),
   project: () => request('/project'),
 
   // The project this builder is bound to, first, followed by the viewer's other Sage Projects (#47).

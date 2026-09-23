@@ -77,7 +77,7 @@ def _no_waiting(monkeypatch):
 
 
 def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None, project_id: str = "Sage",
-          client=None):
+          client=None, token_source=None):
     template = tmp / "template"
     (template / "static").mkdir(parents=True)
     (template / "static" / "app.js").write_text("// placeholder\n")
@@ -86,9 +86,21 @@ def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None, project_id: 
     oc = client(ws) if client is not None else FakeOpenCode(ws, turns or [])
     orch = Orchestrator(workspace_dir=ws, template=template, gateway=gateway or ScriptedGateway(),
                         catalog=_catalog(), project_id=project_id, feedback=OkFeedback(),
-                        opencode_client=oc)
+                        opencode_client=oc, token_source=token_source)
     orch.project(start_preview=False)
     return orch, oc
+
+
+class _FakeTokenSource:
+    """Just enough of `TokenSource` for `_hydrate_untitled`/`_viewer_id`: a fixed `whoami()`
+    answer, no network."""
+
+    def __init__(self, user_id: str, name: str):
+        from sage.provision.domino import UserRef
+        self._who = UserRef(id=user_id, name=name)
+
+    def whoami(self):
+        return self._who
 
 
 def test_chat_opencode_session_is_not_the_react_app(tmp_path: Path):
@@ -2178,17 +2190,41 @@ def test_a_reused_thread_session_tells_the_client_where_it_stands(tmp_path: Path
     assert oc2.noted == {sid: work}
 
 
-def test_default_slug_hydrates_the_default_chip(tmp_path: Path, monkeypatch):
+def test_default_slug_hydrates_the_default_chip(tmp_path: Path):
     from sage.provision import naming
 
-    monkeypatch.setenv("DOMINO_USER_NAME", "alice")
-    monkeypatch.setenv("DOMINO_USER_ID", "507f1f77bcf86cd799439011")
     slug = naming.default_project_name("alice", "507f1f77bcf86cd799439011")
-    orch, _ = _orch(tmp_path, project_id=slug)
+    orch, _ = _orch(tmp_path, project_id=slug,
+                    token_source=_FakeTokenSource("507f1f77bcf86cd799439011", "alice"))
     project = orch.project(start_preview=False)
     assert project.record.is_untitled() is True
     assert project.status()["untitled"] is True
     assert project.status()["name"] == "Default"  # the chip's word for the overlay (ADR-0004)
+
+
+def test_a_plan_doc_is_authored_by_the_token_sources_identity(tmp_path: Path):
+    """`_viewer_id()` (Phase 1): with a TokenSource configured, a plan document's author is the
+    identity `whoami()` answers, not an env var — decision #1 removed the DOMINO_USER_ID
+    fallback."""
+    orch, _ = _orch(tmp_path, token_source=_FakeTokenSource("u-1", "alice"))
+    doc = orch.create_plan_doc({"title": "A plan"})
+    assert doc["author"] == "u-1"
+
+
+def test_a_plan_docs_author_is_me_with_no_token_source(tmp_path: Path):
+    orch, _ = _orch(tmp_path)
+    doc = orch.create_plan_doc({"title": "A plan"})
+    assert doc["author"] == "me"
+
+
+def test_a_plan_docs_author_falls_back_to_me_when_whoami_fails(tmp_path: Path):
+    class _BrokenTokenSource:
+        def whoami(self):
+            raise RuntimeError("network hiccup")
+
+    orch, _ = _orch(tmp_path, token_source=_BrokenTokenSource())
+    doc = orch.create_plan_doc({"title": "A plan"})
+    assert doc["author"] == "me"
 
 
 def test_named_project_does_not_hydrate_untitled(tmp_path: Path):

@@ -202,7 +202,7 @@ def test_a_language_model_row_hands_the_turn_a_way_to_call_it(acme):
     assert line.startswith("- LLM Alias opus. You can call it: `delegated_model_call`")
     assert "`alias` set to 'opus'" in line
     assert "turn token from this prompt" in line
-    assert "Do not read src/appLlm.ts" in line
+    assert "Do not read static/sage/appLlm.js" in line
 
 
 def test_a_language_model_pinned_by_the_catalogue_kind_reaches_the_same_row(acme):

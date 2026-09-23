@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
+    from ..platform.auth import TokenSource
     from ..provision.domino import ControlPlane
 
 from .. import degraded, timing
@@ -4027,9 +4028,9 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
         return brand.text(
             "- {llmAlias} {name}. You can call it: `{tool}` with `alias` set to {quoted} and the "
             "turn token from this prompt. Use it when the work needs a model to read text. Do not "
-            "read src/appLlm.ts for a recipe — that one is the published app's own call from the "
-            "viewer's browser, and this {turn} has no browser. A model that is not in this "
-            "conversation is refused rather than swapped for another one.",
+            "read static/sage/appLlm.js for a recipe — that one is the published app's own call "
+            "from the viewer's browser, and this {turn} has no browser. A model that is not in "
+            "this conversation is refused rather than swapped for another one.",
             name=name, tool=delegated.TOOL_NAME, quoted=repr(name),
         )
     extra = f" at {path}" if path else ""
@@ -4250,13 +4251,6 @@ def _count_plan_steps(plan_md: str) -> int:
         if inside and _PLAN_STEP.match(line):
             steps += 1
     return steps
-
-
-def _viewer_id() -> str:
-    """Who a plan document is authored by. A turn runs outside any request, so there is no viewer
-    JWT to read here — this is the same container-identity fallback `/api/me` uses when extended
-    identity forwards nothing, which is the Sage Builder case and so the usual one."""
-    return os.environ.get("DOMINO_USER_ID") or "me"
 
 
 def _chat_save_landed(result: dict | None) -> bool:
@@ -5494,10 +5488,15 @@ class Orchestrator:
         browser_gateway_base: str | None = None,
         opencode_client: OpenCodeClient | None = None,
         gateway_mode: str = "fake",
+        token_source: TokenSource | None = None,
     ) -> None:
         self._wm = WorkspaceManager(workspace_dir, template)
         self._project_id = project_id
         self._gateway = gateway
+        # Who this process acts as for every Domino call (§0 of ONE-APP-PLAN.md) — None off Domino
+        # (a from-scratch local/fake run). `_viewer_id`/`_hydrate_untitled` fall back to "me"/the
+        # env-derived name when this is None, exactly as they did before Phase 1.
+        self._token_source = token_source
         self._catalog = catalog
         self._assets = assets or FakeAssetProvider()
         # Built on first use, then held: its caches are per-Project and per-turn (ADR-0043).
@@ -6210,7 +6209,7 @@ class Orchestrator:
         return self._plan_docs_record().create_plan_doc(
             "",
             title=str(body.get("title") or "Untitled plan"),
-            author=_viewer_id(),
+            author=self._viewer_id(),
             origin_thread_id=str(body.get("threadId") or ""),
         )
 
@@ -6279,7 +6278,7 @@ class Orchestrator:
             comments.append({
                 "id": f"c{len(comments) + 1}",
                 "section": str(body.get("section") or ""),
-                "user": _viewer_id(),
+                "user": self._viewer_id(),
                 "text": str(body.get("text") or ""),
                 "at": plan_doc.now(),
                 "resolved": False,
@@ -6292,7 +6291,7 @@ class Orchestrator:
                     comment["resolved"] = True
             return record.patch_plan_doc_meta(plan_id, comments=comments)
         if action == "approve":
-            user = str(body.get("user") or _viewer_id())
+            user = str(body.get("user") or self._viewer_id())
             if not any(a.get("user") == user for a in approvals):
                 approvals.append({"user": user, "at": plan_doc.now()})
             reviewers = [str(r) for r in (doc.get("reviewers") or [])]
@@ -7079,6 +7078,17 @@ class Orchestrator:
                              f"it accepts {', '.join(efforts) or 'no effort'}")
         project.control.pick_chat(model, effort)
 
+    def _viewer_id(self) -> str:
+        """Who a plan document is authored by. A turn runs outside any request, so there is no
+        viewer JWT to read here — this is the same identity `/api/me` answers with when extended
+        identity forwards nothing, which is the Sage Builder case and so the usual one."""
+        if self._token_source is not None:
+            try:
+                return self._token_source.whoami().id or "me"
+            except Exception:  # identity API hiccup must not break authoring a plan doc
+                log.warning("_viewer_id: whoami() failed, falling back to 'me'", exc_info=True)
+        return "me"
+
     def _hydrate_untitled(self, record: ProjectRecord) -> None:
         """First boot of a scratch project: set untitled so the chip can lie. Once settings
         already has the key (true or false), never flip it from the Domino slug."""
@@ -7092,12 +7102,14 @@ class Orchestrator:
         if name == naming.UNTITLED_DISPLAY:
             record.mark_untitled(True)
             return
-        username = (
-            os.environ.get("DOMINO_USER_NAME")
-            or os.environ.get("DOMINO_STARTING_USERNAME")
-            or ""
-        )
-        user_id = os.environ.get("DOMINO_USER_ID") or ""
+        username, user_id = "", ""
+        if self._token_source is not None:
+            try:
+                who = self._token_source.whoami()
+                username, user_id = who.name, who.id
+            except Exception:  # identity API hiccup must not break opening a project
+                log.warning("_hydrate_untitled: whoami() failed, treating identity as unknown",
+                            exc_info=True)
         expected = naming.default_project_name(username, user_id)
         if naming.is_default_name(name, expected):
             record.mark_untitled(True)
@@ -9656,7 +9668,7 @@ class Orchestrator:
             # then takes a copy of. Seeded from the first line, both of those turn the sentence
             # somebody typed into the name of a deployment — the long way round to what #216 shut.
             title=chat_handoff.plan_heading(plan_md),
-            author=_viewer_id(),
+            author=self._viewer_id(),
             origin_thread_id=thread_id,
         )["id"]
         handoff = store.mark_handoff_planned(thread_id, plan_id)
@@ -12278,9 +12290,9 @@ class Orchestrator:
             # The same token, said again where the second tool is taught, because a sentence about
             # Live read is not one an agent reading about language models will apply to itself
             # (ADR-0057). What it must not do is go looking: the one auth recipe discoverable in the
-            # workspace is `src/appLlm.ts`, which is correct for a published app's own call from a
-            # browser and unusable from here — and an agent that found it told the person it could
-            # not reach the model at all (#370).
+            # workspace is `static/sage/appLlm.js`, which is correct for a published app's own call
+            # from a browser and unusable from here — and an agent that found it told the person it
+            # could not reach the model at all (#370).
             self._delegated_models_note(thread_id),
             self._data_use_note(),
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
@@ -17774,7 +17786,7 @@ class Orchestrator:
                         plan_md,
                         # Written or empty, never scraped — see the Chat handoff's own call.
                         title=chat_handoff.plan_heading(plan_md),
-                        author=_viewer_id(),
+                        author=self._viewer_id(),
                         # This gate ran inside an app, so the document knows which one from the
                         # start — unlike a Chat handoff, which is planned before any app exists
                         # and gains its app reference only when the handoff is confirmed.

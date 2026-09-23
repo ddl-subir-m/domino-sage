@@ -1665,6 +1665,11 @@ class DominoResourceProvider:
     # projects at ~100 ms each land in two waves, ~0.2 s against 1.6 s serial — and the wave that
     # 26-at-once would have saved is a tenth of a second the creator cannot perceive.
     _FANOUT_AT_ONCE = 8
+    # Class-level default, not just set in `__init__`: this file's own tests build a narrow
+    # instance via `DominoResourceProvider.__new__(...)` to exercise `_query`'s exception
+    # classification without a real constructor call, and `_sdk_credential` still has to resolve
+    # to something on an object built that way.
+    _sdk_credential: Callable[[], dict[str, str]] | None = None
 
     def __init__(
         self,
@@ -1673,12 +1678,17 @@ class DominoResourceProvider:
         timeout_s: float = 20.0,
         api_host: str = "",
         api_token_provider: Callable[[], str] | None = None,
+        sdk_credential: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self._root = gateway_base_url.rstrip("/").removesuffix("/v1").rstrip("/")
         self._token_provider = token_provider
         self._timeout_s = timeout_s
         self._api_host = api_host.rstrip("/")
         self._api_token_provider = api_token_provider or token_provider
+        # None (the default) keeps `DataSourceClient()`'s no-argument, sidecar-implicit form in
+        # `_query`/`run_statement` below. Set only for an off-sidecar TokenSource (a laptop PAT):
+        # `TokenSource.sdk_kwarg`, on `DominoAssetProvider._sdk_dataset`'s precedent.
+        self._sdk_credential = sdk_credential
         self._reasoning_cache: tuple[float, dict[str, RouteCapability]] = (0, {})
 
     def list_llm_aliases(self) -> list[LlmAlias]:
@@ -2312,7 +2322,8 @@ class DominoResourceProvider:
                 "list {dataSourcePlural} but not look inside them."
             )) from e
         try:
-            client = DataSourceClient()
+            kwargs = self._sdk_credential() if self._sdk_credential is not None else {}
+            client = DataSourceClient(**kwargs)
             return client.get_datasource(source.name).query(sql).to_pandas()
         except Exception as e:
             raise self._store_failure(source, e) from e
@@ -2398,7 +2409,8 @@ class DominoResourceProvider:
 
         def work() -> None:
             try:
-                client = DataSourceClient()
+                kwargs = self._sdk_credential() if self._sdk_credential is not None else {}
+                client = DataSourceClient(**kwargs)
                 result = client.get_datasource(source.name).query(sql)
                 answer["rows"] = _drain_within(result, max(1, int(limit)))
             # `BaseException`, not `Exception`. Nothing here is swallowed — it is carried across to

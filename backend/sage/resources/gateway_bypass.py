@@ -1,9 +1,10 @@
 """App source that calls Domino's LLM Gateway itself instead of through `askModel` (#94).
 
-`src/appLlm.ts` already refuses an Alias the app never declared — `pick` returns null and the call
-throws a sentence written for the viewer — so the declaration does gate a model call made THROUGH
-the helper. What survives is the call that goes around it: an app that declares at least one Alias
-has a live gateway URL in `src/appLlm.config.ts`, and nothing stops a `fetch` at it.
+`static/sage/appLlm.js` already refuses an Alias the app never declared — `pick` returns null and
+the call throws a sentence written for the viewer — so the declaration does gate a model call made
+THROUGH the helper. What survives is the call that goes around it: an app that declares at least
+one Alias has a live gateway URL in `static/sage/appLlm.config.js`, and nothing stops a `fetch` at
+it.
 
 The record is the least of what that loses. A raw call also drops the `X-LLM-Tag-sage-*` cost tags,
 which are the only thing saying this app's spend came from Sage at all; the viewer-readable error
@@ -24,9 +25,9 @@ import re
 
 from ..orchestrator import brand
 
-# The dev-server path `src/appLlm.ts` routes to while the app is previewed. It is Sage's proxy and
-# it is not there once the app ships, so this one in app source is the variant that passes every
-# check the creator can run and fails only for the people they published it for.
+# The dev-server path `static/sage/appLlm.js` routes to while the app is previewed. It is Sage's
+# proxy and it is not there once the app ships, so this one in app source is the variant that
+# passes every check the creator can run and fails only for the people they published it for.
 DEV_PROXY_PATH = "/api/llm"
 # The gateway's own path, for a call written against a host the app worked out for itself rather
 # than against the base Sage pinned.
@@ -56,8 +57,8 @@ def raw_gateway_calls(
     `sources` is `_scan_app_sources`'s answer — files with no text are non-code files and cannot
     hold a call. `declared` is the Alias names from `.sage/bindings.json`, which the caller has
     already read; nothing here asks a gateway what exists. `base` is the URL pinned into
-    `src/appLlm.config.ts`, and is None for an app with no model — which has no gateway URL in its
-    source to fetch, so there is nothing of that shape to find.
+    `static/sage/appLlm.config.js`, and is None for an app with no model — which has no gateway URL
+    in its source to fetch, so there is nothing of that shape to find.
 
     `owned` is `HelperNames.owned` for the app in hand. Its LLM helper is the legitimate caller and
     holds all three shapes by definition; flagging it would be the scan reporting what it protects.

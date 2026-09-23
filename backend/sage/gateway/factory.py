@@ -18,25 +18,25 @@ guarantee. /healthz surfaces the mode so a local green run is never mistaken for
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
-from .client import (
-    DEFAULT_SIDECAR_URL,
-    FakeGatewayClient,
-    GatewayClient,
-    MultiProviderOpenAIClient,
-    OpenAICompatibleClient,
-    sidecar_token,
-    static_token,
-)
+from .client import FakeGatewayClient, GatewayClient, MultiProviderOpenAIClient, OpenAICompatibleClient
 from .open_models import OPEN_WEIGHT_MODELS
 
+if TYPE_CHECKING:
+    from ..platform.auth import TokenSource
 
-def resolve_mode() -> str:
+
+def resolve_mode(base_url: str | None = None) -> str:
+    """`base_url` overrides the raw `GATEWAY_BASE_URL` env read — `orchestrator/app.py` passes
+    `Settings.gateway_url()` there so a gateway configured only through Settings (no env vars at
+    all, the laptop/Settings-UI story Phase 1 adds) still resolves to `domino` rather than always
+    reading as `fake` because the env var it derived from was never set."""
     mode = os.environ.get("SAGE_GATEWAY_MODE", "auto").lower()
     if mode in {"domino", "openai", "fake"}:
         return mode
     # auto: openai has no base URL of its own to auto-detect, so auto only ever yields domino/fake.
-    base = os.environ.get("GATEWAY_BASE_URL", "")
+    base = base_url if base_url is not None else os.environ.get("GATEWAY_BASE_URL", "")
     if not base:
         return "fake"
     key = os.environ.get("GATEWAY_API_KEY", "")
@@ -45,9 +45,18 @@ def resolve_mode() -> str:
     return "fake"
 
 
-def build_gateway() -> tuple[GatewayClient, str]:
-    """Return (client, mode). Mode is also what /healthz reports."""
-    mode = resolve_mode()
+def build_gateway(token_source: TokenSource | None = None,
+                   gateway_api_key: str | None = None,
+                   base_url: str | None = None) -> tuple[GatewayClient, str]:
+    """Return (client, mode). Mode is also what /healthz reports.
+
+    Every argument is optional so every existing bare `build_gateway()` call (shim/app.py,
+    tools/probe.py, this module's own tests) keeps reading `GATEWAY_BASE_URL`/`GATEWAY_API_KEY`/
+    the sidecar directly from the environment, unchanged — only `orchestrator/app.py` passes the
+    process's shared `Settings`/`TokenSource` (§0: "one TokenSource ... feeds ... the LLM Gateway
+    listing"), via `platform.auth.gateway_bearer`.
+    """
+    mode = resolve_mode(base_url)
     if mode == "fake":
         return FakeGatewayClient(), "fake"
 
@@ -55,7 +64,9 @@ def build_gateway() -> tuple[GatewayClient, str]:
         return MultiProviderOpenAIClient(OPEN_WEIGHT_MODELS), "openai"
 
     # domino
-    base_url = os.environ["GATEWAY_BASE_URL"]
-    key = os.environ.get("GATEWAY_API_KEY", "")
-    token = static_token(key) if key else sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
-    return OpenAICompatibleClient(base_url, token, domino_tags=True), "domino"
+    from ..platform.auth import gateway_bearer
+
+    base = base_url if base_url is not None else os.environ["GATEWAY_BASE_URL"]
+    key = gateway_api_key if gateway_api_key is not None else os.environ.get("GATEWAY_API_KEY", "")
+    token = gateway_bearer(key, token_source)
+    return OpenAICompatibleClient(base, token, domino_tags=True), "domino"

@@ -576,6 +576,133 @@ window.SW = window.SW || {};
     );
   }
 
+  // Connection (ONE-APP-PLAN.md §2.7, Phase 1): the Domino host/token/gateway this process calls
+  // out with. Unlike Appearance above, a save here does NOT hot-apply — `_gateway`/`_control_plane`
+  // and the asset/resource providers are all built once at boot, so the response carries
+  // `restartRequired` and the UI says so rather than pretending the change took effect live.
+  function ConnectionSettings() {
+    const empty = {
+      domino_host: '', domino_token: '', gateway_base_url: '', gateway_api_key: '',
+      publish_environment_id: '', publish_hardware_tier_id: '',
+    };
+    const [fields, setFields] = useState(empty);
+    // Which secret fields the server already has a value for — typing in that box replaces it,
+    // leaving it blank keeps the saved one (PUT only sends non-empty strings).
+    const [savedSecret, setSavedSecret] = useState({ domino_token: false, gateway_api_key: false });
+    const [saving, setSaving] = useState(false);
+    const [testing, setTesting] = useState(false);
+    const [testResult, setTestResult] = useState(null);
+    const { settingsOpen } = SW.store.get();
+
+    useEffect(() => {
+      if (!settingsOpen) return;
+      setTestResult(null);
+      SW.api.settings().then((s) => {
+        setFields({
+          domino_host: s.domino_host || '',
+          domino_token: '',
+          gateway_base_url: s.gateway_base_url || '',
+          gateway_api_key: '',
+          publish_environment_id: s.publish_environment_id || '',
+          publish_hardware_tier_id: s.publish_hardware_tier_id || '',
+        });
+        setSavedSecret({ domino_token: Boolean(s.domino_token), gateway_api_key: Boolean(s.gateway_api_key) });
+      }).catch((err) => antd.message.error(err.message));
+    }, [settingsOpen]);
+
+    const edit = (key) => (e) => setFields({ ...fields, [key]: e.target.value });
+
+    const save = async () => {
+      setSaving(true);
+      try {
+        // Blank secret fields are omitted rather than sent as "", so a save that only changes the
+        // host does not overwrite an already-saved token with nothing.
+        const patch = { ...fields };
+        if (!patch.domino_token) delete patch.domino_token;
+        if (!patch.gateway_api_key) delete patch.gateway_api_key;
+        const saved = await SW.api.saveSettings(patch);
+        antd.message.success(
+          saved.restartRequired
+            ? SW.brand.text('Saved. Restart {assistantName} for the new connection to take effect.')
+            : 'Saved.'
+        );
+        setSavedSecret({ domino_token: Boolean(saved.domino_token), gateway_api_key: Boolean(saved.gateway_api_key) });
+        setFields({ ...fields, domino_token: '', gateway_api_key: '' });
+      } catch (err) {
+        antd.message.error(err.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    const test = async () => {
+      setTesting(true);
+      setTestResult(null);
+      try {
+        const patch = {};
+        if (fields.domino_host) patch.domino_host = fields.domino_host;
+        if (fields.domino_token) patch.domino_token = fields.domino_token;
+        const result = await SW.api.testSettings(patch);
+        setTestResult(result);
+      } catch (err) {
+        setTestResult({ ok: false, error: err.message });
+      } finally {
+        setTesting(false);
+      }
+    };
+
+    return h(
+      'div',
+      { className: 'sw-setting' },
+      h('div', { className: 'sw-setting-label' }, 'Connection'),
+      h(
+        Space,
+        { direction: 'vertical', size: 12, style: { display: 'flex' } },
+        h(antd.Input, {
+          'aria-label': SW.brand.text('{platformName} host'), addonBefore: 'Host',
+          value: fields.domino_host, disabled: saving,
+          placeholder: SW.brand.text('https://your-{platformName}-host'),
+          onChange: edit('domino_host'),
+        }),
+        h(antd.Input.Password, {
+          'aria-label': SW.brand.text('{platformName} API key'), addonBefore: 'Token',
+          value: fields.domino_token, disabled: saving,
+          placeholder: savedSecret.domino_token
+            ? 'Already set — leave blank to keep it'
+            : SW.brand.text('{platformName} account API key'),
+          onChange: edit('domino_token'),
+        }),
+        h(antd.Input, {
+          'aria-label': 'Gateway URL', addonBefore: 'Gateway', value: fields.gateway_base_url,
+          disabled: saving, placeholder: 'Derived from Host if left blank',
+          onChange: edit('gateway_base_url'),
+        }),
+        h(antd.Input.Password, {
+          'aria-label': 'Gateway API key', addonBefore: 'Gateway key', value: fields.gateway_api_key,
+          disabled: saving,
+          placeholder: savedSecret.gateway_api_key
+            ? 'Already set — leave blank to keep it'
+            : SW.brand.text('Only if the gateway does not accept the {platformName} token'),
+          onChange: edit('gateway_api_key'),
+        }),
+        h(
+          Space,
+          null,
+          h(antd.Button, { onClick: save, loading: saving }, 'Save'),
+          // Never disabled (ADR-0027: nothing here gates on missing state) — a click with no host
+          // configured reaches the same request `test()` always makes, and the server's refusal
+          // becomes the testResult sentence below, exactly like any other failed test.
+          h(antd.Button, { onClick: test, loading: testing }, 'Test connection')
+        ),
+        testResult && h(
+          'div',
+          { className: 'sw-setting-hint' },
+          testResult.ok ? `Connected as ${testResult.name || testResult.id}.` : `Could not connect: ${testResult.error}`
+        )
+      )
+    );
+  }
+
   SW.SettingsDrawer = function SettingsDrawer() {
     const { settingsOpen } = SW.store.get();
     const [conversationView, setConversationView] = useState('split');
@@ -638,6 +765,7 @@ window.SW = window.SW || {};
         width: 360,
       },
       h(Appearance, null),
+      h(ConnectionSettings, null),
       h(
         'div',
         { className: 'sw-setting' },

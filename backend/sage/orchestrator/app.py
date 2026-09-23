@@ -14,6 +14,7 @@ import asyncio
 import collections
 import concurrent.futures
 import contextlib
+import dataclasses
 import functools
 import logging
 import os
@@ -49,6 +50,7 @@ _UI = _WB / "index.html"
 _DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
+from .. import config as sage_config
 from .. import degraded, timing
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
@@ -59,11 +61,11 @@ from ..gateway.client import (
     bind_viewer_token,
     jwt_identity,
     sidecar_token,
-    static_token,
     viewer_token,
 )
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
+from ..platform.auth import TokenSource, build_token_source, gateway_bearer
 from ..preview.prefix import domino_base_prefix, domino_project_label, proxy_is_app, publish_available
 from ..preview.proxy import make_preview_app
 from ..resources import health
@@ -208,35 +210,39 @@ def _build_catalog() -> ModelCatalog:
     )
 
 
-def _domino_api_token():
-    """Bearer for the Domino API (datasets, Data Sources, Model APIs).
-
-    Account API key if set, otherwise the workspace sidecar at :8899.
-    """
-    key = os.environ.get("DOMINO_API_KEY")
-    return static_token(key) if key else sidecar_token(
-        os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL)
-    )
-
-
 def _build_assets():
-    """Domino datasets when DOMINO_API_HOST is set, else unlistable — never the in-memory fake."""
-    api_host = os.environ.get("DOMINO_API_HOST", "").strip()
+    """Domino datasets when a Domino host is configured, else unlistable — never the in-memory
+    fake."""
+    api_host = _SETTINGS.domino_host
     if not api_host:
-        log.info("no DOMINO_API_HOST — Datasets unlistable (set the public Domino API host to list them)")
+        log.info("no Domino host configured — Datasets unlistable (set one in Settings)")
         return UnconfiguredAssetProvider()
-    return DominoAssetProvider(api_host, _domino_api_token())
+    ts = _TOKEN_SOURCE  # non-None: build_token_source only returns None with no domino_host
+    # sdk_credential is None for a sidecar TokenSource, deliberately: DominoAssetProvider's own
+    # no-argument DatasetClient() form already handles that case (see its docstring for why a bare
+    # sidecar bearer must NOT be passed as token= either).
+    sdk_credential = ts.sdk_kwarg if ts.kind == "static" else None
+    return DominoAssetProvider(api_host, ts.bearer, sdk_credential=sdk_credential)
 
 
 def _build_control_plane():
-    """A Domino control plane for Publish / Stop when this builder runs on Domino (DOMINO_API_HOST +
+    """A Domino control plane for Publish / Stop when this builder runs on Domino (a host +
     the Environment/hardware ids Domino injects), else None so those endpoints report a clear
-    "only on Domino" error instead of crashing local/fake runs."""
-    api_host = os.environ.get("DOMINO_API_HOST")
-    env_id = os.environ.get("DOMINO_ENVIRONMENT_ID")
-    tier_id = os.environ.get("DOMINO_HARDWARE_TIER_ID")
+    "only on Domino" error instead of crashing local/fake runs.
+
+    Sidecar only, even when Settings has a static account key configured: `DominoControlPlane`
+    sends every request as `Authorization: Bearer`, and that header is REFUSED for a static Domino
+    account key by /api/projects/beta/projects (403 "No current user in request" — live-verified
+    2026-09-23, see `platform/auth.py`'s module docstring). Wiring a static key in here needs
+    `DominoControlPlane._headers()` fixed to send `X-Domino-Api-Key` for that case first — that is
+    Phase 3 (project lifecycle over Domino APIs, the first phase that actually calls this control
+    plane from a laptop), not this one.
+    """
+    api_host = _SETTINGS.domino_host
+    env_id = _SETTINGS.publish_environment_id
+    tier_id = _SETTINGS.publish_hardware_tier_id
     if not (api_host and env_id and tier_id):
-        log.info("no DOMINO_API_HOST/ENVIRONMENT_ID/HARDWARE_TIER_ID — Publish/Stop disabled (local run)")
+        log.info("no Domino host/environment/hardware tier configured — Publish/Stop disabled (local run)")
         return None
     from ..provision.domino import DominoControlPlane
 
@@ -319,7 +325,15 @@ def _build_door(service, control_plane):
     return Door(service, control_plane.whoami)
 
 
-_gateway, GATEWAY_MODE = build_gateway()
+# One Settings object per process (ONE-APP-PLAN.md Phase 1, §2.7): $SAGE_HOME/settings.json, with
+# the platform's own injected env vars (DOMINO_API_HOST, DOMINO_USER_API_KEY, ...) overriding
+# whatever a stale file says. `_TOKEN_SOURCE` is the one bearer every Domino call in this process
+# shares (§0) — None only when no Domino host is configured at all (a from-scratch laptop run).
+_SAGE_HOME = sage_config.resolve_sage_home()
+_SETTINGS = sage_config.load(_SAGE_HOME)
+_TOKEN_SOURCE: TokenSource | None = build_token_source(_SETTINGS.domino_host, _SETTINGS.domino_token)
+
+_gateway, GATEWAY_MODE = build_gateway(_TOKEN_SOURCE, _SETTINGS.gateway_api_key, _SETTINGS.gateway_url())
 # One builder is bound to one project volume. On Domino (git-based) that's the mounted repo at
 # /mnt/code; locally it defaults to a scratch dir. The display id is the Domino project name.
 _WORKSPACE_DIR = Path(os.environ.get("SAGE_WORKSPACE_DIR", _REPO / "backend" / "workspaces" / "app"))
@@ -419,19 +433,22 @@ def _build_resources():
     Keyed on the gateway MODE, not on the URL alone: `openai` mode has no Domino gateway at all
     (each model routes to its own vendor), so asking a control plane there would 404.
     """
-    base = os.environ.get("GATEWAY_BASE_URL", "").strip()
+    base = _SETTINGS.gateway_url()  # same derivation build_gateway() was given — must agree
     if GATEWAY_MODE != "domino" or not base:
         return FakeResourceProvider()
-    key = os.environ.get("GATEWAY_API_KEY", "")
-    token = static_token(key) if key else sidecar_token(
-        os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL)
-    )
+    token = gateway_bearer(_SETTINGS.gateway_api_key, _TOKEN_SOURCE)
     # Model APIs come off the Domino API instead, on its own bearer — the same recipe _build_assets
     # uses, because it is the same host and the same token. Absent (Sage pointed at a Domino gateway
     # from outside Domino), the provider reports Model APIs as unlistable rather than as none.
-    api_host = os.environ.get("DOMINO_API_HOST", "").strip()
-    api_token = _domino_api_token()
-    return DominoResourceProvider(base, token, api_host=api_host, api_token_provider=api_token)
+    api_host = _SETTINGS.domino_host
+    ts = _TOKEN_SOURCE
+    if ts is not None:
+        api_token, sdk_credential = ts.bearer, (ts.sdk_kwarg if ts.kind == "static" else None)
+    else:
+        api_token = sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+        sdk_credential = None
+    return DominoResourceProvider(base, token, api_host=api_host, api_token_provider=api_token,
+                                   sdk_credential=sdk_credential)
 
 
 _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
@@ -461,6 +478,7 @@ orchestrator = Orchestrator(
     # Which authority a slot resolves against, so the turn-time slot check (#125) runs only where a
     # gateway actually holds the Alias list — the same gate `_run_slot_preflight` applies below.
     gateway_mode=GATEWAY_MODE,
+    token_source=_TOKEN_SOURCE,
 )
 
 # Preflight of Sage's own model slots (#17). Loud but not fatal: a slot resolves against the LLM
@@ -1132,18 +1150,80 @@ async def save_brand(request: Request) -> JSONResponse:
     return JSONResponse(content=pack)
 
 
+@control_app.get("/api/settings")
+def get_connection_settings() -> dict:
+    """The Connection section of the settings drawer (ONE-APP-PLAN.md §2.7): this process's own
+    Domino host/token/gateway/publish config, secrets redacted to a boolean (write-only, "set" or
+    "unset" — the drawer's own contract)."""
+    return _SETTINGS.redacted()
+
+
+@control_app.put("/api/settings")
+async def save_connection_settings(request: Request) -> JSONResponse:
+    """Save a Connection change to `$SAGE_HOME/settings.json`.
+
+    Persists immediately and updates what `GET /api/settings` answers, but does NOT hot-swap the
+    Domino host/token/gateway this process is already running with: `_gateway`, `_control_plane`
+    and the asset/resource providers were all built once at import time and handed to the one
+    `orchestrator`, and re-pointing them live, mid-session, is a bigger feature than Phase 1 needs
+    (Phase 2's per-project registry is where "reconfigure without restarting" would actually live).
+    A restart picks the new values up — the response says so.
+    """
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"error": "expected an object"})
+    valid = {f.name for f in dataclasses.fields(sage_config.Settings)}
+    unknown = sorted(set(body) - valid)
+    if unknown:
+        return JSONResponse(status_code=400, content={"error": f"unknown settings field(s): {unknown}"})
+    patch = {k: v for k, v in body.items() if isinstance(v, str)}
+    global _SETTINGS
+    _SETTINGS = dataclasses.replace(_SETTINGS, **patch)
+    sage_config.save(_SAGE_HOME, _SETTINGS)
+    return JSONResponse(content={**_SETTINGS.redacted(), "restartRequired": True})
+
+
+@control_app.post("/api/settings/test")
+async def test_connection_settings(request: Request) -> JSONResponse:
+    """"Test connection": whoami() against the proposed (not yet saved) host/token, so a mistyped
+    host or a bad key is caught before the person saves and restarts to find out. Falls back to
+    the currently saved value for whichever of the two fields is omitted, so testing after typing
+    only the host (leaving an already-saved token in place) still works.
+
+    Builds its own throwaway TokenSource rather than reusing `_TOKEN_SOURCE` — this must test what
+    the FORM holds, not what the process already booted with.
+    """
+    body = await request.json()
+    if not isinstance(body, dict):
+        body = {}
+    host = str(body.get("domino_host") or _SETTINGS.domino_host or "").strip()
+    token = str(body.get("domino_token") or _SETTINGS.domino_token or "").strip()
+    if not host:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": brand_text("no {platformName} host given")})
+    source = build_token_source(host, token)
+    try:
+        who = await run_in_threadpool(source.whoami)
+    except Exception as e:
+        return JSONResponse(content={"ok": False, "error": str(e)[:300]})
+    return JSONResponse(content={"ok": True, "id": who.id, "name": who.name})
+
+
 @control_app.get("/api/me")
 def me() -> dict:
-    """Who the Workbench greets. Viewer JWT when extended identity forwarded one; else the
-    container's injected username (publisher on an App, the workspace user in Sage Builder)."""
+    """Who the Workbench greets. Viewer JWT when extended identity forwarded one; else this
+    process's own TokenSource identity (decision #1: one person per Sage process) — the publisher
+    on an App, the person's own PAT on a laptop. "me"/"You" is the last resort, for a fully local/
+    fake run with no Domino host configured at all."""
     ident = jwt_identity(viewer_token())
-    return {
-        "id": ident.get("id") or os.environ.get("DOMINO_USER_ID") or "me",
-        "name": ident.get("name")
-            or os.environ.get("DOMINO_USER_NAME")
-            or os.environ.get("DOMINO_STARTING_USERNAME")
-            or "You",
-    }
+    who_id, who_name = ident.get("id"), ident.get("name")
+    if not (who_id and who_name) and _TOKEN_SOURCE is not None:
+        try:
+            who = _TOKEN_SOURCE.whoami()
+            who_id, who_name = who_id or who.id, who_name or who.name
+        except Exception:
+            log.warning("GET /api/me: whoami() failed, falling back to 'me'/'You'", exc_info=True)
+    return {"id": who_id or "me", "name": who_name or "You"}
 
 
 def _git_credential_diag() -> dict:
@@ -4513,12 +4593,10 @@ def _preview_llm() -> tuple[str, str] | None:
     mode each model routes to its own vendor behind a key, and in `fake` mode there is no gateway at
     all. In both, the app was never given a gateway to call, so there is nothing to forward.
     """
-    base = os.environ.get("GATEWAY_BASE_URL", "").strip()
+    base = _SETTINGS.gateway_url()
     if GATEWAY_MODE != "domino" or not base:
         return None
-    key = os.environ.get("GATEWAY_API_KEY", "")
-    provider = static_token(key) if key else sidecar_token(
-        os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
+    provider = gateway_bearer(_SETTINGS.gateway_api_key, _TOKEN_SOURCE)
     return base.rstrip("/").removesuffix("/v1").rstrip("/") + "/v1", provider()
 
 

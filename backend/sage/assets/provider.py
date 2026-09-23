@@ -324,22 +324,30 @@ class DominoAssetProvider:
         timeout_s: float = 20.0,
         mount_roots: list[str] | None = None,
         dataset_client: Any | None = None,
+        sdk_credential: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self._api_host = api_host.rstrip("/")
         self._token_provider = token_provider
         self._timeout_s = timeout_s
         self._mount_roots = mount_roots if mount_roots is not None else resolve_mount_roots()
         self._dataset_client = dataset_client  # injected in tests; built per call otherwise
+        # None (the default) keeps today's no-argument `DatasetClient()` — the sidecar-implicit
+        # form below already relies on. Set only for an off-sidecar TokenSource (a laptop PAT):
+        # `TokenSource.sdk_kwarg` (ONE-APP-PLAN.md Phase 1), never a bare token string — see why.
+        self._sdk_credential = sdk_credential
 
     def _sdk_dataset(self, asset: Asset) -> Any:
         """A `domino_data` handle for one Dataset, whether or not it is mounted here.
 
-        `DatasetClient()` is built with no arguments on purpose. It reads DOMINO_API_PROXY — the
-        same localhost:8899 sidecar Sage already mints its own tokens from — and exchanges it for
-        the JWT the datasource-proxy wants. Passing an account API key as `token=` instead is
-        rejected with "Your role does not authorize you to perform this action", so the no-argument
-        form is not a shortcut, it is the working one. `DataSourceClient()` is constructed the same
-        way in `resources/provider.py`, and per call for the same reason: these tokens expire.
+        With no `sdk_credential` (the Domino App/workspace default), `DatasetClient()` is built
+        with no arguments on purpose: it reads DOMINO_API_PROXY — the same localhost:8899 sidecar
+        Sage already mints its own tokens from — and exchanges it for the JWT the datasource-proxy
+        wants. Passing an account API key as `token=` instead is rejected ("Your role does not
+        authorize you to perform this action" / live-verified 2026-09-23: "Anonymous principals are
+        not supported") — the SAME key passed as `api_key=` works (live-verified against a real
+        Dataset), which is exactly what `sdk_credential` (a laptop TokenSource's `sdk_kwarg`) hands
+        this. `DataSourceClient()` is constructed the same way in `resources/provider.py`, and per
+        call for the same reason: these tokens expire.
         """
         if self._dataset_client is not None:
             return self._dataset_client.get_dataset(dataset_unique_name(asset))
@@ -350,7 +358,8 @@ class DominoAssetProvider:
                 "The {platformName} data library isn't installed here, so {assistantName} can "
                 "list {datasetPlural} but not look inside them."
             )) from e
-        return DatasetClient().get_dataset(dataset_unique_name(asset))
+        kwargs = self._sdk_credential() if self._sdk_credential is not None else {}
+        return DatasetClient(**kwargs).get_dataset(dataset_unique_name(asset))
 
     def _mount_path_for(self, name: str) -> str | None:
         for root in self._mount_roots:
