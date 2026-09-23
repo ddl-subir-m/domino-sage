@@ -134,10 +134,11 @@ def test_repeat_brake_keeps_ids_name_and_counts_but_no_command_and_no_late_turn(
 def test_marker_cycle_reports_turn_local_executable_and_metadata_variants(clock):
     timing.start_turn("build")
     brake = _RepeatBrake()
+    private_key = "/private/uploads/person.csv"
     calls = [
-        {"command": "true", "description": "local data withheld A"},
-        {"command": "true", "description": "local data withheld B"},
-        {"command": "true", "description": "local data withheld A"},
+        {"command": "true", "description": "local data withheld A", private_key: "one"},
+        {"command": "true", "description": "local data withheld B", private_key: "two"},
+        {"command": "true", "description": "local data withheld A", private_key: "three"},
     ]
     for n, args in enumerate(calls):
         assert brake.saw(_repeat_fingerprint("bash", args), "bash (true)",
@@ -148,6 +149,9 @@ def test_marker_cycle_reports_turn_local_executable_and_metadata_variants(clock)
     assert [row["metadataVariant"] for row in rows] == [1, 2, 1]
     assert rows[-1]["detectedCycleLength"] == 2
     assert rows[-1]["argumentKeys"] == ["command", "description"]
+    assert [row["unknownArgumentKeyCount"] for row in rows] == [1, 1, 1]
+    assert [row["unknownArgumentKeysTruncated"] for row in rows] == [False, False, False]
+    assert private_key not in json.dumps(rows)
     assert "local data withheld" not in json.dumps(rows)
 
 

@@ -205,6 +205,33 @@ def test_marker_warnings_report_each_new_echo_once_without_private_content(caplo
     assert request == original, "stored history and its real results remain intact"
 
 
+def test_marker_warning_dedupe_stays_bounded_without_silencing_new_echoes(caplog, monkeypatch):
+    monkeypatch.setattr(data_use_module, "_MARKER_ECHO_DEDUPE_IDS", 2)
+    monkeypatch.setattr(data_use_module, "_MARKER_ECHO_COUNT_CAP", 2)
+    data = DataUse()
+
+    def history(ids):
+        messages = []
+        for cid in ids:
+            messages.extend([
+                bash(cid, "true local data withheld"),
+                {"role": "tool", "tool_call_id": cid, "content": "private result"},
+            ])
+        return {"messages": messages}
+
+    with caplog.at_level(logging.WARNING, logger="sage.liveread"):
+        for end in range(1, 5):
+            data.prepare(history([f"call-{n}" for n in range(end)]))
+        data.prepare(history(["call-2", "call-3"]))
+
+    records = [record for record in caplog.records if record.name == "sage.liveread"]
+    assert len(records) == 4, "new echoes still log after the cumulative count saturates"
+    assert ["observed_marker_echoes=1" in records[0].message,
+            *["observed_marker_echoes=2" in record.message for record in records[1:]]] == [
+                True, True, True, True]
+    assert len(data._logged_marker_echoes) == len(data._logged_marker_echo_order) == 2
+
+
 def test_legitimate_marker_phrase_is_observable_without_claiming_a_noop(caplog):
     data = DataUse()
     prepared, _ = data.prepare({"messages": [

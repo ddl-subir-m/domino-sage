@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import threading
+from collections import deque
 from uuid import uuid4
 
 from .. import timing
@@ -30,7 +31,8 @@ _EXIT = "Command exited with code "
 # The one string every redaction placeholder carries, so that a placeholder the model has written
 # back into its own work can be recognised however it was reshaped (#510).
 _MARK_BODY = "local data withheld"
-_MAX_LOGGED_MARKER_ECHOES = 10_000
+_MARKER_ECHO_DEDUPE_IDS = 10_000
+_MARKER_ECHO_COUNT_CAP = 10_000
 _MARK_ECHO_REPLACEMENT = "[copied withheld placeholder removed after prior execution]"
 _MARK_ECHO_COMMAND_REPLACEMENT = ": # copied withheld placeholder removed after prior execution"
 _MARK_ECHO_PYTHON_REPLACEMENT = "# copied withheld placeholder removed after prior execution"
@@ -81,9 +83,12 @@ class DataUse:
         self.operations = {}
         self.sources = []
         self.lock = threading.RLock()
-        # Call ids are process-local OpenCode identities. They are held only in memory and are
-        # never logged or exported. A process restart deliberately resets this dedupe.
+        # Recent call ids dedupe cumulative history rewrites without growing for the life of the
+        # process. They are held only in memory and are never logged or exported. A process restart
+        # deliberately resets both the window and the saturated observation count.
         self._logged_marker_echoes: set[str] = set()
+        self._logged_marker_echo_order: deque[str] = deque()
+        self._observed_marker_echoes = 0
 
     def record(self, event, reply, persist, turn_id):
         with self.lock:
@@ -149,7 +154,8 @@ class DataUse:
         local_texts: list[str] = []
         messages = []
         call_messages: dict[str, dict] = {}
-        newly_observed_echoes: list[str] = []
+        completed_echo_ids: list[str] = []
+        newly_observed_counts: list[int] = []
         with self.lock:
             for message in request.get("messages", []):
                 if not isinstance(message, dict):
@@ -211,10 +217,8 @@ class DataUse:
                                             if isinstance(item, dict)
                                             and str(item.get("id") or "") == cid), call)
                             _replace_call(call_messages[cid], cid, _repair_marker_echo_call(visible))
-                        if (cid and cid not in self._logged_marker_echoes
-                                and len(self._logged_marker_echoes) < _MAX_LOGGED_MARKER_ECHOES):
-                            self._logged_marker_echoes.add(cid)
-                            newly_observed_echoes.append(cid)
+                        if cid:
+                            completed_echo_ids.append(cid)
                     elif cid in direct:
                         raw = _tool_content_text(message.get("content"))
                         if raw:
@@ -234,13 +238,31 @@ class DataUse:
                         message = {**message,
                                    "content": _redact_message_text(message.get("content"), source)}
                 messages.append(message)
-        if newly_observed_echoes:
+            # Only the bounded tail can be new in a cumulative request. Looking at the whole
+            # history after an eviction would make old ids look new and recreate the warning spam.
+            recent, selected = [], set()
+            for cid in reversed(completed_echo_ids):
+                if cid not in selected:
+                    recent.append(cid)
+                    selected.add(cid)
+                    if len(recent) >= _MARKER_ECHO_DEDUPE_IDS:
+                        break
+            for cid in reversed(recent):
+                if cid in self._logged_marker_echoes:
+                    continue
+                while len(self._logged_marker_echo_order) >= _MARKER_ECHO_DEDUPE_IDS:
+                    expired = self._logged_marker_echo_order.popleft()
+                    self._logged_marker_echoes.discard(expired)
+                self._logged_marker_echo_order.append(cid)
+                self._logged_marker_echoes.add(cid)
+                self._observed_marker_echoes = min(
+                    self._observed_marker_echoes + 1, _MARKER_ECHO_COUNT_CAP)
+                newly_observed_counts.append(self._observed_marker_echoes)
+        if newly_observed_counts:
             rec = timing.current()
             turn_id = rec.turn_id if rec is not None else "unknown"
             ordinal = rec.calls[-1].n if rec is not None and rec.calls else 0
-            observed = len(self._logged_marker_echoes) - len(newly_observed_echoes)
-            for _cid in newly_observed_echoes:
-                observed = min(observed + 1, _MAX_LOGGED_MARKER_ECHOES)
+            for observed in newly_observed_counts:
                 # One event per new completed echo. The call id is used only for in-memory dedupe;
                 # commands, arguments, results, paths and call ids never enter this event.
                 log.warning("data use: newly completed withheld-marker echo corrected; "

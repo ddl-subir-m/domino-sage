@@ -12,11 +12,32 @@ import time
 MAX_TOOLS = 500
 MAX_INTERVALS = 2000
 MAX_ARGUMENT_KEYS = 16
+MAX_UNKNOWN_ARGUMENT_KEYS = 16
 _READS = {"read", "glob", "grep", "list", "live_read_files", "live_read_table"}
 _EDITS = {"edit", "write"}
 _READ_ONLY = _READS | {"todoread", "todowrite"}
 _SHELLS = {"bash", "shell", "sh", "run", "run_command", "execute", "exec", "terminal"}
 _COMMAND_KEYS = ("command", "cmd", "code")
+_SHELL_ARGUMENT_KEYS = frozenset({
+    "command", "cmd", "code", "description", "timeout", "workdir", "cwd",
+})
+_KNOWN_ARGUMENT_KEYS = {
+    **{name: _SHELL_ARGUMENT_KEYS for name in _SHELLS},
+    **{name: frozenset({"filePath", "path", "file_path", "offset", "limit",
+                        "startLine", "endLine"})
+       for name in ("read", "read_file", "readfile", "view", "cat", "open", "get_file")},
+    "glob": frozenset({"pattern", "path"}),
+    "grep": frozenset({"pattern", "path", "include"}),
+    "list": frozenset({"path"}),
+    "write": frozenset({"filePath", "path", "file_path", "content"}),
+    "edit": frozenset({"filePath", "path", "file_path", "oldString", "newString", "replaceAll"}),
+}
+
+
+def argument_keys_for_tool(tool: str, keys) -> list[str]:
+    """Known schema keys safe to name in a diagnostic, in stable order."""
+    allowed = _KNOWN_ARGUMENT_KEYS.get(str(tool or "").lower(), frozenset())
+    return sorted(key for key in keys if key in allowed)
 
 
 def harness_times(part: dict, *, event_type: str = "") -> dict:
@@ -178,15 +199,18 @@ class ToolObserver:
                        "consecutive": consecutive, "limit": limit, "stopped": stopped,
                        "atMs": (time.monotonic() - rec.t0) * 1000}
                 if isinstance(arguments, dict):
-                    keys = sorted(str(key) for key in arguments
-                                  if isinstance(key, str) and key)
+                    allowed = _KNOWN_ARGUMENT_KEYS.get(name.lower(), frozenset())
+                    keys = argument_keys_for_tool(name, arguments)
+                    unknown_keys = sum(1 for key in arguments if key not in allowed)
                     row["argumentKeys"] = keys[:MAX_ARGUMENT_KEYS]
                     row["argumentKeysTruncated"] = len(keys) > MAX_ARGUMENT_KEYS
+                    row["unknownArgumentKeyCount"] = min(unknown_keys, MAX_UNKNOWN_ARGUMENT_KEYS)
+                    row["unknownArgumentKeysTruncated"] = unknown_keys > MAX_UNKNOWN_ARGUMENT_KEYS
                     if name.lower() in _SHELLS:
                         command = next((arguments.get(key) for key in _COMMAND_KEYS
                                         if isinstance(arguments.get(key), str)), None)
                         metadata = {key: value for key, value in arguments.items()
-                                    if key not in _COMMAND_KEYS}
+                                    if key in allowed and key not in _COMMAND_KEYS}
                         row["executableVariant"] = self._variant(
                             "executable", {"tool": name.lower(), "command": command})
                         row["metadataVariant"] = self._variant("metadata", metadata)

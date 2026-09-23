@@ -101,7 +101,7 @@ def test_private_payloads_and_unknown_fields_never_reach_the_export(tmp_path):
     rec.intervals = [{"name": "poll.read", "atMs": 1, "ms": 20, "ok": True, "error": private}]
     rec.repeat_brake = [{"sessionId": "session_a", "tool": "bash", "stopped": True,
                          "inputFingerprint": "abc123", "command": private,
-                         "argumentKeys": ["command", "description"],
+                         "argumentKeys": ["command", "description", private],
                          "argumentKeysTruncated": False, "executableVariant": 1,
                          "metadataVariant": 2, "detectedCycleLength": 2}]
     rec.counters[private] = 9
@@ -121,6 +121,28 @@ def test_private_payloads_and_unknown_fields_never_reach_the_export(tmp_path):
         "metadataVariant": 2, "detectedCycleLength": 2,
         "argumentKeys": ["command", "description"],
     }
+
+
+def test_model_supplied_argument_key_is_counted_not_persisted(tmp_path):
+    private_key = "/private/uploads/person.csv"
+    rec = record()
+    rec.t1 = None
+    observer = timing.ToolObserver(rec, diagnostics._lock)
+    observer.brake(session_id="session_a", call_id="call_a", tool="bash",
+                   fingerprint="family", consecutive=1, limit=3, stopped=False,
+                   arguments={"command": "true", "description": "step", private_key: "value"})
+    rec.t1 = rec.t0 + 1
+
+    row = diagnostics.snapshot(rec, identity(), terminal=True)
+    assert diagnostics.Store(tmp_path).put(row)
+    serialized = json.dumps(diagnostics.Store(tmp_path).get("turn_a", "app_a", "thr_a"))
+
+    assert private_key not in json.dumps(timing.as_dict(rec))
+    assert private_key not in serialized and private_key not in diagnostics.Store(tmp_path).path.read_text()
+    brake = row["timing"]["repeatBrake"][0]
+    assert brake["argumentKeys"] == ["command", "description"]
+    assert brake["unknownArgumentKeyCount"] == 1
+    assert brake["unknownArgumentKeysTruncated"] is False
 
 
 def test_nested_events_and_bytes_are_capped_and_reported(monkeypatch):
