@@ -926,10 +926,14 @@ async def _lifespan(app: FastAPI):
                        (_warm_then_check_permissions, "sage-warm-opencode")):
         threading.Thread(target=_boot, args=(step,), name=name, daemon=True).start()
     yield
-    _DEFAULT_ORCHESTRATOR.shutdown()
-    # Every project the registry ever opened, not just the default one — `shutdown()` is what saves
-    # in-progress work to git and stops that project's own preview/OpenCode processes, and a project
-    # a request dispatched to earlier in this process's life must get the same treatment on exit.
+    # `orchestrator` (the proxy/module name), not `_DEFAULT_ORCHESTRATOR` directly: a test may
+    # replace the module attribute wholesale (`monkeypatch.setattr(appmod, "orchestrator", fake)`)
+    # to observe this exact call, same as before Phase 2 — reading the name fresh at call time is
+    # what makes that still work.
+    orchestrator.shutdown()
+    # Every project the registry ever opened, ALSO — `shutdown()` is what saves in-progress work to
+    # git and stops that project's own preview/OpenCode processes, and a project a request
+    # dispatched to earlier in this process's life must get the same treatment on exit.
     for orch in _REGISTRY.all_open():
         orch.shutdown()
 
@@ -5370,7 +5374,7 @@ def run() -> None:
         try:
             await server.serve()
         finally:
-            _DEFAULT_ORCHESTRATOR.shutdown()
+            orchestrator.shutdown()
             for orch in _REGISTRY.all_open():
                 orch.shutdown()
 

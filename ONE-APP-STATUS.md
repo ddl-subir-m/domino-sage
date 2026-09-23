@@ -1102,18 +1102,175 @@ go-ahead before executing it repo-wide (CLAUDE.md §1: surface a judgment call r
 silently for a change this wide — the plan's own §2.3 text explicitly calls the proxy-vs-dependency
 choice "the reviewer's call at Phase 2").
 
+## UPDATE 2026-09-23 (same session, continued): the dispatcher landed. Phase 2 is functionally done
+## except the Projects home page / scope-picker UI (step 5) and the loopback `/mcp` token resolution
+## named in step 4.
+
+User confirmed "proceed now" on the design from the section above. Built it exactly as designed,
+found and fixed one real regression along the way (below), then verified against the full suite
+twice (once before the fix, once after) rather than trusting a single green run.
+
+**What got built, in `backend/sage/orchestrator/app.py` unless noted:**
+
+1. Hoisted `_CATALOG`/`_ASSETS`/`_RESOURCES` to module-level singletons, built once, shared by the
+   legacy default Orchestrator AND every per-project one (previously each was constructed inline,
+   once, only for the one Orchestrator that existed — a second Orchestrator would have silently
+   re-logged the boot-time "no Domino host configured" notice and built its own independent copy).
+2. `_DEFAULT_ORCHESTRATOR` — the renamed former `orchestrator = Orchestrator(...)`, unchanged in
+   every argument.
+3. `_CURRENT_ORCHESTRATOR: ContextVar[Orchestrator | None]` (default `None`) and
+   `current_orchestrator() -> Orchestrator` (`_CURRENT_ORCHESTRATOR.get() or _DEFAULT_ORCHESTRATOR`)
+   — the explicit-fallback shape from the spike, not a `.set()` at import time.
+4. `_OrchestratorProxy` — `__getattr__`/`__setattr__`/`__delattr__` all forward to
+   `current_orchestrator()`. `orchestrator = _OrchestratorProxy()` replaces the bare instance at the
+   module name. Every one of the ~163 `orchestrator.<attr>` call sites in `app.py` needed no edit.
+5. `_write_project_opencode_config(source_dir, control_port, slug, dest_path)` — the per-project
+   opencode.json writer from the spike's finding 2: writes the FULL voiced config (reusing
+   `apply_agent_voice`, matching `_install_opencode_config`'s own established pattern), with every
+   port-bearing URL (`provider.sage-gateway.options.baseURL`, every `mcp.*.url`) rewritten to this
+   process's control port AND that project's `/p/<slug>` path prefix. Deliberately simpler than
+   `_install_opencode_config`: no native-codec/reasoning-settings branch (a real, named gap — not yet
+   extended to per-project configs) and no tools/skills install (those are global slots, already
+   installed once at boot, already reached from any session directory). Left `_install_opencode_config`
+   itself completely untouched rather than refactoring it to share code — that function is heavily
+   commented, hard-won (#199/#202), and pinned by several existing tests
+   (`test_brand.py::test_install_opencode_config_voices_the_global_copy_only`,
+   `test_a_dropped_mcp_server_is_visible_in_diag.py`, `test_native_model_controls.py`); a small amount
+   of duplication was the safer trade against regressing it. 8 new tests,
+   `tests/test_project_opencode_config.py`.
+6. `_build_project_orchestrator(entry, workspace_dir)` — the registry's factory closure. Calls
+   `_write_project_opencode_config` (using the same `SAGE_OPENCODE_CWD`-or-`_REPO` source
+   `_install_opencode_config` reads), then builds an `Orchestrator` from the shared services plus the
+   per-project fields (`project_id=entry.slug`, `domino_project_id`, `domino_project_name`,
+   `cost_project_label` via `domino_project_label(fallback=entry.domino_project_name)`,
+   `gateway_ui_url` recomputed from that label). **Named, deliberate gap**: each project gets its OWN
+   `opencode serve` process (`opencode_cwd=~/.config/sage-opencode/<slug>/`), lazily started on first
+   turn exactly as `_ensure_opencode` already does for the legacy default — NOT the shared
+   `OpenCodeServer` the target architecture calls for (§2.2: "Shared `OpenCodeServer` hoisted out of
+   `Orchestrator._ensure_opencode`"). Correct and isolated, just heavier (N processes instead of 1);
+   hoisting to a shared server is real, deferred efficiency work, not attempted this session because
+   `_ensure_opencode`'s internals were judged too risky to restructure in the same pass as the
+   dispatcher.
+7. `_CONTROL_PORT` moved to module scope (was a local inside `run()`) so the factory above can read
+   it — `run()` now reads the same constant instead of recomputing it. One value, one place.
+8. `_ProjectDispatchMiddleware` — routes `/p/<slug>/<rest>` to that project's Orchestrator. Registered
+   via `control_app.add_middleware(_ProjectDispatchMiddleware, registry=_REGISTRY)` **before** (in
+   source order) `control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)` — Starlette's
+   `add_middleware` inserts at position 0, so the middleware added FIRST ends up innermost and runs
+   LAST; **verified empirically**, not assumed, with a throwaway two-middleware Starlette app before
+   trusting this ordering in production code (see the spike addendum's caution about scanners/ordering
+   assumptions elsewhere in this repo's CLAUDE.md — same discipline applied here). This means
+   `_ProjectDispatchMiddleware` sees `root_path` AFTER `_PrefixMiddleware` has already set it, so it
+   only ever EXTENDS `root_path` (via `starlette.routing.get_route_path`), matching
+   `_PrefixMiddleware`'s own established rule of never rewriting `path`. `/p/` added to
+   `_PrefixMiddleware._UNPROXIED` for the identical reason `/mcp/` is already there: a loopback
+   `/p/<slug>/v1/...` call (OpenCode dialling the shim) carries no Domino prefix, and would otherwise
+   spend the one-time prefix-mismatch warning on a correct request. 7 new tests,
+   `tests/test_project_dispatch.py`, against the middleware directly (not the full route stack) —
+   including one that simulates an upstream Domino mount prefix to prove extension-not-replacement.
+9. Shutdown (`_lifespan`'s `yield; ...` and `run()`'s `_serve()` `finally`) now ALSO sweeps
+   `_REGISTRY.all_open()`, calling `.shutdown()` on every project a request ever dispatched to during
+   this process's life (saves in-progress work to git, stops that project's preview/OpenCode) — not
+   just the one default project. New `ProjectRegistry.all_open()` method + 2 more registry tests.
+10. Module docstring updated to describe the dispatch mechanism (left the pre-existing Vite-flavored
+    staleness in the same docstring alone — that's Phase 4's `preview/proxy.py` rework, already
+    deferred there by an earlier session in this file).
+11. `GET /api/projects` was **deliberately NOT added** this session, despite being named in the plan's
+    own Phase 2 step 5 and drafted once: a route by that exact name ALREADY EXISTS
+    (`list_projects`/`create_project`, the door-era "Sage Projects this viewer can open" chip listing,
+    `{"items":[...],"provisioning":bool}` shape, still backing the CURRENT frontend's scope picker).
+    Replacing its shape now — before the home page that would consume the new shape exists — would
+    have shipped a half-finished, silently-broken frontend contract. `ProjectRegistry.list()` itself
+    is built and tested (`tests/test_project_registry.py`); wiring an HTTP route to it is Phase 2 step
+    5's job, done together with the home page and scope-picker that read it.
+
+**One real regression found and fixed, verified against the suite twice:**
+`_lifespan`'s shutdown originally called `_DEFAULT_ORCHESTRATOR.shutdown()` directly (bypassing the
+proxy) so it would definitely reach the real default object even under test monkeypatching. This
+broke `tests/test_stopping_the_orchestrator_stops_opencode.py::test_serving_control_app_under_any_asgi_server_tears_down_on_exit`,
+which does `monkeypatch.setattr(appmod, "orchestrator", _Recorder())` — REPLACING the module
+attribute wholesale (not mutating the existing object's attributes) — and asserts THAT gets called on
+shutdown. Reading `_DEFAULT_ORCHESTRATOR` by name bypasses a whole-name replacement like this one,
+same as it would have before Phase 2 if `orchestrator` had been swapped for something else read by a
+different name. **Fixed** by calling `orchestrator.shutdown()` (the bare, dynamically-resolved module
+name — proxy or not, whatever `appmod.orchestrator` currently names) for the default part, and adding
+the `_REGISTRY.all_open()` sweep as an ADDITIONAL step alongside it, not a replacement. This is the
+same class of lesson §2.3's addendum already generalized (a monkeypatch relies on being able to swap
+what a NAME resolves to, not just what an OBJECT's attributes are) — just found by the suite instead
+of by reasoning it out in advance, which is exactly why the plan calls for running the suite
+specifically after this substitution rather than trusting the design alone.
+
+**Full-suite verification (CLAUDE.md §5/§6 — reconciled on COLLECTED, not passed+failed):**
+
+- Collected: **7848**, exactly 38 more than the Phase-1-close baseline (7810) — 17 registry tests + 7
+  dispatch + 6 proxy + 8 opencode-config = 38, reconciled by counting, not assumed.
+- First full run (before the shutdown fix): **102 failed** / 7736 passed / 10 skipped. Two of the 102
+  were real: the shutdown regression above, and 2 in `test_builtapp_flight.py`
+  (`test_a_connector_with_no_scope_recorded_runs_with_no_configuration`,
+  `test_a_statement_that_names_the_schema_itself_needs_nothing_from_configuration`) that turned out
+  to be `-n auto` cross-worker flakiness, not a regression — **verified by running them alone**
+  (`-n0`, isolating them from the distribution): both passed immediately. CLAUDE.md's own "did not
+  reproduce" outcome for a file this diff never opened.
+- After the fix: **100 failed** / 7738 passed / 10 skipped. `diff`ed the two failure-name lists: the
+  shutdown test and the two flight tests are gone; nothing new appeared **except**
+  `test_builtapp_queries.py::test_without_an_executor_the_app_says_it_cannot_reach_its_data`, which
+  reproduces alone too (unlike the flight pair) but is confirmed NOT caused by this session —
+  `resources/builtapp.py` and `test_builtapp_queries.py` are both byte-identical to session start (not
+  in this session's diff at all), and the test's own captured output shows it hit a REAL sidecar and a
+  REAL `domino_data` install ("token sidecar: reachable", "platform api ... answered 200", "data
+  library: ready") expecting a "cannot reach" message and getting a more specific
+  "could not open the Data Source" one instead — the same "this sandbox has genuine live Domino
+  credentials, unlike whatever environment tuned this assertion" class as the other 99, just not
+  previously caught under this exact node id.
+- **All 100 remaining failures are the same publish/provision/control-plane/`native_gateway_transport`
+  dogfood-safety class characterized repeatedly across this whole plan's history**
+  (`test_publish_*`, `test_orchestrator.py`, `test_a_rename_reaches_the_deployed_app.py`,
+  `test_delete_app.py`, `test_gallery.py`, `test_attach.py`, `test_create_project.py`,
+  `test_chat_shows_the_whole_conversation.py`, `test_the_control_plane_routes_speak_the_packs_words.py`,
+  `test_the_service_speaks_the_packs_words.py`, `test_prefix.py`, `test_provision_credentials.py`,
+  `test_native_gateway_transport.py`, `test_builtapp_queries.py`'s one) — confirmed by inspecting
+  full tracebacks for a representative sample of each file, every one either
+  `publish_available()`'s dogfood-safety check tripping because `/mnt/code` really is the mounted
+  repo in this sandbox, or a live call to a real Domino control plane hitting a genuine quota/ID-
+  validation error. **None of these files are touched by this session's diff** (`git diff --stat`
+  against the commit before this session's work shows only `orchestrator/app.py`, plus the wholly new
+  `sage/projects/` package and four new test files — confirmed by reading the diff stat directly, not
+  assumed).
+- `make lint` (repo-wide): clean, before and after the fix.
+- Targeted regression spot-checks beyond the full run: `test_a_dropped_mcp_server_is_visible_in_diag.py`,
+  `test_brand.py`, `test_native_model_controls.py`, `test_a_permission_that_cannot_be_asked.py`,
+  `test_the_plan_draft_door_resets_its_counter.py`, `test_preview_llm.py` (186 tests, the files that
+  monkeypatch `app_module.orchestrator` most heavily) and `test_chat_turn.py` + importers (151 tests)
+  — all green, run before the full suite as a faster first signal.
+
+**An automated commit landed mid-session, again — same unresolved mechanism as `fc7ff826` earlier in
+this file, not something this session ran.** `git log` shows `c2162aa8 "commit on phase work just in
+case while we wait for test suite"`, containing this session's `registry.py`, the dispatcher, all four
+new test files, and the two plan-doc edits — content is correct (`git show --stat` matches exactly
+what this session built), but **no `git commit` was run by this session** (the small shutdown fix
+after it is the only uncommitted change, per `git status`). Flagging again rather than silently
+treating it as this session's own action, or deciding whether to keep/amend/reset it — per this
+repo's CLAUDE.md, that decision is the user's.
+
 ## Next session should
 
-1. If the user confirmed the `_CURRENT`/`_DEFAULT` ContextVar-with-fallback + `__setattr__`-forwarding
-   proxy design above: implement the dispatcher (plan §2.3 steps 3-4), refactor
-   `_install_opencode_config` to the reusable shape (step 2's remaining half), wire `registry`'s
-   factory closure to the real shared services already built in Phase 1's bootstrap, then the Projects
-   home page and scope-picker (step 5). Run the FULL suite after the proxy substitution specifically
-   — that is the one change with a real chance of a wide, silent regression across the 267
-   monkeypatching files, and it deserves its own isolated full run before anything else lands on top
-   of it.
-2. Do not re-derive the spike findings above — they're also duplicated into `ONE-APP-PLAN.md` §2.3
-   and its risk table (rows 3-4 marked RESOLVED with the same reasoning), so either doc alone is
-   enough to resume from.
-3. Not committed. Confirm with the user before committing this session's changes (registry.py, its
-   tests, and the two plan-doc edits), same as every prior session on this branch.
+1. **Phase 2 steps 1-4 are functionally done and verified**: the spike, the registry, the dispatcher,
+   the proxy, the per-project opencode config, the shutdown sweep. Step 4's second half (loopback
+   `/mcp/live-read` and `/mcp/delegated-model` resolving by TOKEN across open orchestrators, for calls
+   that don't arrive under a `/p/<slug>/` path) is not done — those routes still resolve against the
+   bare `orchestrator` proxy (i.e., whatever `current_orchestrator()` gives, which is
+   `_DEFAULT_ORCHESTRATOR` outside a dispatched request). Read ADR-0041 and the existing
+   `/mcp/live-read` route before starting that piece.
+2. **Step 5 (Projects home page, scope-picker, `GET /api/projects`) is the remaining Phase 2 work.**
+   The existing `/api/projects` GET/POST (door-era, `{"items":[...],"provisioning":bool}`) needs to be
+   replaced together with `api.js`'s `projects()` call and `scope-picker.js` in the SAME change — not
+   before, per the reasoning in point 11 above. `ProjectRegistry.list()` is ready to back it.
+3. Confirm with the user whether to commit this session's changes (registry.py, the dispatcher, the
+   four new test files, the shutdown fix, and the two plan-doc/status-doc edits) — and separately,
+   whether they want the auto-commit mechanism investigated (this is now the second time it has fired
+   on this branch).
+4. `_ensure_opencode`'s per-project-vs-shared-server question (point 6 above) is worth a real decision
+   before Phase 4 (preview) or Phase 7 (packaging) — N processes is correct today but was not the
+   target shape, and nobody has yet weighed whether the simplicity is worth keeping permanently.
+5. Do not re-derive the spike findings — they're in `ONE-APP-PLAN.md` §2.3's addendum and this file's
+   prior update, both dated 2026-09-23.
