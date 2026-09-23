@@ -27,6 +27,12 @@ class StreamEvents:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    saw_text: bool = False
+    saw_tool_argument: bool = False
+    tool_invocations: list[dict] = field(default_factory=list)
+    tools_truncated: bool = False
+    _invocation_lanes: dict[object, dict] = field(default_factory=dict)
     tool_names: set[str] = field(default_factory=set)
     tool_ids: set[str] = field(default_factory=set)
     events: int = 0
@@ -94,6 +100,11 @@ class StreamEvents:
             if isinstance(value, int):
                 setattr(self, attr, value)
 
+        details = usage.get("output_tokens_details") or usage.get("completion_tokens_details") or {}
+        reasoning = details.get("reasoning_tokens", usage.get("reasoning_tokens"))
+        if isinstance(reasoning, int):
+            # A subset of output usage on providers that report it, never an extra total.
+            self.reasoning_tokens = reasoning
         cached = (usage.get("cache_read_input_tokens") if self.protocol is Protocol.MESSAGES else
                   (usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}).get("cached_tokens"))
         if isinstance(cached, int):
@@ -101,6 +112,46 @@ class StreamEvents:
         if self.protocol is Protocol.MESSAGES and isinstance(usage.get("input_tokens"), int):
             self.input_tokens = sum(usage.get(key, 0) or 0 for key in
                                     ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+
+    def _announce(self, lane: object, item: dict, *, identity: str = "id") -> None:
+        """Bounded invocation metadata, distinct from the name-based live progress label.
+
+        A protocol index identifies a lane when its provider ID has not arrived yet. Only an
+        actual announcement (name or ID) enters here; argument fragments cannot inflate counts.
+        A missing lane AND ID is explicitly unidentifiable, never a fabricated provider identity.
+        """
+        name = item.get("name") or (item.get("function") or {}).get("name")
+        provider = item.get(identity)
+        if not isinstance(name, str) and not isinstance(provider, str):
+            return
+        provider = provider if isinstance(provider, str) and provider else None
+        key = lane if lane is not None else (("id", provider) if provider else None)
+        previous = next((entry for entry in self.tool_invocations
+                         if provider and len(provider) <= 200 and entry["providerId"] == provider), None)
+        if previous is None and key is not None:
+            previous = self._invocation_lanes.get(key)
+        if previous is not None and (not provider or previous["providerId"] in (None, provider)):
+            if provider:
+                previous["providerId"] = provider[:200]
+                previous["identityStatus"] = "provider_id"
+            if name:
+                previous["name"] = name[:80]
+            previous["metadataTruncated"] |= bool(isinstance(name, str) and len(name) > 80)
+            return
+        if len(self.tool_invocations) >= 40:
+            self.tools_truncated = True
+            return
+        entry = {"providerId": provider[:200] if provider else None,
+                 "name": name[:80] if isinstance(name, str) else None,
+                 "identityStatus": "provider_id" if provider else
+                    ("protocol_index" if lane is not None else "unidentifiable"),
+                 "protocolIndex": str(lane)[:200] if lane is not None else None,
+                 "metadataTruncated": bool(provider and len(provider) > 200 or
+                                           isinstance(name, str) and len(name) > 80 or
+                                           lane is not None and len(str(lane)) > 200)}
+        self.tool_invocations.append(entry)
+        if key is not None:
+            self._invocation_lanes[key] = entry
 
     def _tool(self, item: dict, *, identity: str = "id") -> None:
         if item.get(identity) is not None:
@@ -134,6 +185,8 @@ class StreamEvents:
         Nothing here is retained: the fragment is counted and dropped, and the only state that
         survives is an integer and at most one character of carry.
         """
+        if isinstance(fragment, str) and fragment:
+            self.saw_tool_argument = True
         name = self._streaming.get(key)
         if name is None or not isinstance(fragment, str) or not fragment:
             return
@@ -176,6 +229,7 @@ class StreamEvents:
                         self.error = self.terminal
                 delta = choice.get("delta") or {}
                 self.refused |= bool(delta.get("refusal"))
+                self.saw_text |= bool(delta.get("content"))
                 for tool in delta.get("tool_calls") or []:
                     if not isinstance(tool, dict):
                         continue
@@ -185,6 +239,8 @@ class StreamEvents:
                     # arguments, in that order, and a first fragment carrying both is handled by
                     # the one pass.
                     key = tool.get("index")
+                    lane = (choice.get("index", 0), key) if key is not None else None
+                    self._announce(lane, tool)
                     self._open_stream(key, tool, identity="index")
                     self._count_lines(key, (tool.get("function") or {}).get("arguments"))
                 if choice.get("finish_reason"):
@@ -196,13 +252,18 @@ class StreamEvents:
             self._usage((event.get("message") or {}).get("usage") or event.get("usage") or {})
             block = event.get("content_block") or {}
             if kind == "content_block_start" and block.get("type") == "tool_use":
+                self._announce(event.get("index"), block)
                 self._open_stream(event.get("index"), block)
+            elif kind == "content_block_start" and block.get("type") == "text":
+                self.saw_text |= bool(block.get("text"))
             elif kind == "content_block_delta":
                 # The eager fragments themselves. #497 measured these already arriving on this lane
                 # and dying inside OpenCode, which never exposes a partly-filled tool input — the
                 # transcript goes from `{}` straight to complete. This is the same bytes, counted
                 # where they actually are.
                 inner = event.get("delta") or {}
+                if inner.get("type") == "text_delta":
+                    self.saw_text |= bool(inner.get("text"))
                 if inner.get("type") == "input_json_delta":
                     self._count_lines(event.get("index"), inner.get("partial_json"))
             elif kind == "content_block_stop":
@@ -230,11 +291,15 @@ class StreamEvents:
                 # Keyed on `item_id`, which is what the argument deltas below carry — NOT on
                 # `call_id`, which is what the ledger identifies the call by. The two are different
                 # ids on this lane and joining on the wrong one silently counts nothing.
+                self._announce(event.get("item_id") or item.get("id") or event.get("output_index"),
+                               item, identity="call_id")
                 self._open_stream(event.get("item_id") or item.get("id"), item, identity="call_id")
             elif kind == "response.function_call_arguments.delta":
                 self._count_lines(event.get("item_id"), event.get("delta"))
             elif kind == "response.function_call_arguments.done":
                 self._close_stream(event.get("item_id"))
+            if kind == "response.output_text.delta":
+                self.saw_text |= bool(event.get("delta"))
             if kind in ("response.refusal.delta", "response.refusal.done"):
                 self.refused = True
             if kind in ("response.completed", "response.incomplete", "response.failed"):

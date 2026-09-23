@@ -78,13 +78,19 @@ def install(app, get_orchestrator):
     async def inference(request: Request):
         protocol = (Protocol.MESSAGES if request.url.path.endswith("/messages") else
                     Protocol.RESPONSES if request.url.path.endswith("/responses") else Protocol.CHAT)
+        call = timing.model_call(record=None)
         try:
             project, session = _scope(get_orchestrator(), request)
+            record = timing.current()
+            root_session = project.active_session_id
             raw = await request.body()
             body = json.loads(raw)
             if body.get("stream") is not True:
                 return _error("This scoped harness endpoint requires streaming. Other calls keep their existing gateway path.")
-            call = timing.model_call()
+            call = timing.model_call(
+                record=record, session_id=session, root_session_id=root_session,
+                app_id=project.app_for_turn().app_id if record is not None and record.kind != "chat" else None,
+                conversation_id=project.build_conversation)
             call.request(len(raw))
 
             resolution = None
@@ -109,13 +115,14 @@ def install(app, get_orchestrator):
                 project.note_resolved(*resolution, protocol=protocol.value,
                                       effort=view.get("reasoning_effort"), native=capability.native)
                 call.model(*resolution)
+            call.route(protocol.value, view.get("reasoning_effort"))
             project.model_calls += 1
-            call.prepared()
         except NativeCheckpointRequired as error:
             project.last_gateway_error = {"message": str(error)}
             call.done(ok=False, error=str(error))
             return _error(str(error))
         except (ValueError, KeyError, TypeError) as error:
+            call.done(ok=False, error="Request preparation failed", outcome="error")
             return _error(str(error))
 
         def refused(model, messages):
@@ -128,14 +135,33 @@ def install(app, get_orchestrator):
             nonce = uuid4().hex
             outbound["metadata"] = {**outbound.get("metadata", {}), "sage_route_check": nonce}
             contract = {"nonce": nonce, "effort": (outbound.get("reasoning") or {}).get("effort")}
+        # Match httpx's JSON body encoder, after the final native contract rewrite. Only the
+        # length survives; neither payload nor private native state enters the timing record.
+        try:
+            forwarded_bytes = len(json.dumps(outbound, ensure_ascii=False, separators=(",", ":"),
+                                             allow_nan=False).encode("utf-8"))
+        except (TypeError, ValueError):
+            # Let the transport retain its existing invalid-payload error path. Diagnostics
+            # must not replace that response with an uncaught serializer exception.
+            forwarded_bytes = None
+        call.prepared(forwarded_bytes)
         events = StreamEvents(protocol, response_contract=contract)
         cancel = StreamCancellation()
         upstream = project.shim.gateway.route(outbound, labels, protocol=protocol, cancel=cancel)
 
         def validated():
+            nonlocal received
             try:
                 for chunk in upstream:
-                    frames = events.feed(chunk)
+                    if cancel.event.is_set():
+                        break
+                    call.first_byte()
+                    call.chunk()
+                    received += 1
+                    try:
+                        frames = events.feed(chunk)
+                    finally:
+                        call.stream_metadata(events)
                     project.last_stream_chunk_at = time.monotonic()
                     if events.error:
                         raise ValueError("The model stream failed: " + events.error)
@@ -166,22 +192,14 @@ def install(app, get_orchestrator):
         received = 0
 
         def pump():
-            nonlocal received
             flagged = False
             try:
                 for chunk in gen:
                     if cancel.event.is_set():
                         break
-                    call.first_byte()
-                    call.chunk()
-                    received += 1
                     if events.tool_ids and not flagged:
                         project.tool_call_responses += 1
                         flagged = True
-                    if events.tool_names:
-                        call.tool(sorted(events.tool_names))
-                    if events.input_tokens is not None:
-                        call.usage(events.input_tokens, events.cached_tokens)
                     # Carried up for the live "active" label (#497). The argument streams for
                     # several seconds while OpenCode's transcript shows the part `pending` with an
                     # input of `{}`, so this is the only place in the process that knows the write
@@ -221,14 +239,21 @@ def install(app, get_orchestrator):
             project.last_gateway_error = {"message": message}
             if isinstance(error, GatewayUpstreamError):
                 project.last_gateway_error["upstream_status"] = error.status
-            call.done(ok=False, error=message)
+            outcome = "error"
+            if (events.refused or events.error == "content_filter" or
+                    isinstance(error, GatewayUpstreamError) and "guardrail_blocked" in error.body):
+                outcome = "refusal"
+            elif isinstance(error, ValueError) and (events.terminal is None or events.error in
+                    ("length", "max_tokens", "pause_turn", "max_output_tokens", "response.incomplete")):
+                outcome = "incomplete"
+            call.done(ok=False, error=message, outcome=outcome)
             return message
 
         try:
             first = await take(ka.FIRST_BYTE_BUDGET_S)
         except BaseException:
             cancel.cancel()
-            call.done(ok=False, error="Model request cancelled")
+            call.done(ok=False, error="Model request cancelled", outcome="cancelled")
             raise
         if ka.is_error(first):
             cancel.cancel()
@@ -246,7 +271,7 @@ def install(app, get_orchestrator):
                 while True:
                     if item is ka.DONE:
                         settled = True
-                        call.done(ok=not events.refused)
+                        call.done(ok=not events.refused, outcome="refusal" if events.refused else "success")
                         return
                     if ka.is_error(item):
                         settled = True
@@ -257,7 +282,7 @@ def install(app, get_orchestrator):
             finally:
                 cancel.cancel()
                 if not settled:
-                    call.done(ok=False, error="Model request cancelled")
+                    call.done(ok=False, error="Model request cancelled", outcome="cancelled")
                     # A cancel is the quiet window or the person's Stop ending a call that was
                     # still open, so it is the failure line for that turn and it goes in the warn
                     # ring. The count is the whole point: zero says the gateway never answered,
