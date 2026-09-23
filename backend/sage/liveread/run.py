@@ -409,7 +409,7 @@ def _document(args: dict, turn: Turn) -> str:
             "instead of a generic file read."
         )
     event, reply = reference.data_use(
-        prepared, purpose=str(args.get("purpose") or "Use an attached document as requirements")
+        prepared, purpose="Use an explicitly referenced attachment"
     )
     if turn.record_data_use:
         turn.record_data_use(event, reply)

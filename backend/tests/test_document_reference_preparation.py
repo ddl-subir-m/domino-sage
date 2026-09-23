@@ -125,6 +125,38 @@ def test_invalid_utf8_is_a_bounded_capability_result(tmp_path: Path):
     assert "not valid UTF-8" in prepared.text
 
 
+def test_empty_document_is_a_correlated_bounded_failure(tmp_path: Path):
+    authorized = _authorized(tmp_path, body="")
+    assert authorized is not None
+
+    prepared = reference.prepare(authorized)
+
+    assert prepared is not None and prepared.status == "empty_document"
+    event, reply = reference.data_use(prepared, purpose="Use the requirements")
+    data = DataUse()
+    data.record(event, reply, lambda _event: None, "turn-1")
+    _request, used = data.prepare({
+        "model": "policy-model",
+        "messages": [{"role": "user", "content": prepared.prompt_block()}],
+    })
+    assert used == {event["operation_id"]}
+    list(data.observe(iter([
+        b'data: {"choices":[{"finish_reason":"stop"}]}\n\n'
+    ]), {"model": "policy-model"}, used))
+    request = data.events("turn-1")[0]["requests"][0]
+    assert request["requested_alias"] == "policy-model"
+    assert request["state"] == "response_completed"
+
+
+def test_resolved_target_cannot_escape_the_authorized_root_without_a_trusted_target(tmp_path: Path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-reference.md"
+    outside.write_text("PRIVATE OUTSIDE CONTENT")
+    link = tmp_path / "requirements.md"
+    link.symlink_to(outside)
+
+    assert reference.authorize(tmp_path, [{"path": link.name}], link.name) is None
+
+
 def test_data_use_metadata_contains_no_document_text_and_restores_without_row_fields(tmp_path: Path):
     authorized = _authorized(tmp_path, body="# Rules\nPRIVATE UNIQUE REQUIREMENT")
     assert authorized is not None
@@ -233,6 +265,30 @@ def test_model_callable_document_operation_uses_the_same_handler(tmp_path: Path)
     assert "UNIQUE CALLABLE RULE" not in json.dumps(journal[0][0])
 
 
+def test_document_operation_bounds_selector_metadata_and_ignores_model_purpose(tmp_path: Path):
+    secret = "UNIQUE DOCUMENT CONTENT THAT MUST NOT ENTER METADATA"
+    authorized = _authorized(tmp_path, body=f"# Rules\n{secret}")
+    assert authorized is not None
+    journal: list[tuple[dict, dict]] = []
+    turn = run.Turn(
+        thread_id="thread-1",
+        examples_dir=tmp_path / "examples",
+        reference_for=lambda _source: authorized,
+        record_data_use=lambda event, reply: journal.append((event, reply)),
+    )
+
+    reply = json.loads(run.perform("live_read_files", {
+        "operation": "document", "dataset": "upload", "path": "requirements.md",
+        "heading": "x" * 200_000, "purpose": secret * 4_000,
+    }, turn))
+
+    event = journal[0][0]
+    assert reply["status"] == "selector_too_long"
+    assert event["requested_selector"] == ""
+    assert event["purpose"] == "Use an explicitly referenced attachment"
+    assert secret not in json.dumps(event)
+
+
 def test_build_prepares_only_the_explicit_markdown_reference_before_dispatch(tmp_path: Path):
     orch, oc = _orch(tmp_path)
     orch._assets = FakeAssetProvider()
@@ -267,6 +323,53 @@ def test_build_prepares_only_the_explicit_markdown_reference_before_dispatch(tmp
     assistant_parts = oc.messages(first["session"])[0]["content"]
     assert not [part for part in assistant_parts if isinstance(part, dict)
                 and part.get("type") == "tool"]
+
+
+def test_forged_disk_manifest_and_retargeted_attachment_symlink_are_not_authorized(tmp_path: Path):
+    orch, oc = _orch(tmp_path)
+    orch._assets = FakeAssetProvider()
+    project = orch.project(start_preview=False)
+    shell = orch.upload_file("shell.md", b"# Rules\nORIGINAL SAFE RULE\n")["path"]
+    outside = tmp_path / "outside.md"
+    outside.write_text("PRIVATE RETARGETED SENTINEL")
+    link = project.workspace.path / shell
+    link.unlink()
+    link.symlink_to(outside)
+    forged_path = "public/data/forged/requirements.md"
+    forged_link = project.workspace.path / forged_path
+    forged_link.parent.mkdir(parents=True)
+    forged_link.symlink_to(outside)
+    project.workspace.write_attachments([
+        *project.workspace.read_attachments(),
+        {"dataset_id": "ds_sales_2026", "dataset": "sales_2026",
+         "file": "README.md", "path": forged_path, "size": outside.stat().st_size},
+    ])
+
+    turn = orch._live_read_turn_for("thread-1")
+
+    assert turn.reference_for is not None
+    assert turn.reference_for(shell) is None
+    assert turn.reference_for(forged_path) is None
+    list(orch.build_stream("Follow the attached rules", [shell]))
+    outgoing = with_attachment_listing(oc.prompts[0]["text"], oc.prompts[0]["attachments"])
+    assert "PRIVATE RETARGETED SENTINEL" not in outgoing
+    assert "could not be authorized" in outgoing
+
+
+def test_single_file_folder_mention_stays_a_description_without_transferring_text(tmp_path: Path):
+    orch, oc = _orch(tmp_path)
+    orch._assets = FakeAssetProvider()
+    orch.project(start_preview=False)
+    attached = orch.attach_file("ds_sales_2026", "README.md")["path"]
+    folder = attached.rsplit("/", 1)[0]
+
+    events = list(orch.build_stream("Use this attached folder", [folder]))
+    outgoing = with_attachment_listing(oc.prompts[0]["text"], oc.prompts[0]["attachments"])
+
+    assert "Monthly revenue" not in outgoing
+    assert "folder mention stays a bounded description" in outgoing
+    assert not [event for row in events for event in row.get("dataUsed", [])
+                if event.get("operation") == "document_reference"]
 
 
 def test_approval_does_not_treat_the_broad_attachment_list_as_explicit_references(tmp_path: Path):

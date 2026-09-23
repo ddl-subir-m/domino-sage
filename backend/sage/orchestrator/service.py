@@ -7614,11 +7614,13 @@ class Orchestrator:
         for m in mentions:
             entry = known.get(m)
             asked = m
+            collapsed_folder = ""
             key, members = ("", []) if entry is not None else _folder_members(groups, m)
             # A folder of one is described exactly as well by naming the file, and better — the
             # branch the `AGENTS.md` block already takes. It is also the only one that hands the
             # agent a path its read tool can use.
             if len(members) == 1:
+                collapsed_folder = asked
                 entry, m, members = members[0], members[0]["path"], []
             if entry is None and not members:
                 continue
@@ -7649,6 +7651,8 @@ class Orchestrator:
             d = self._descriptor(project, entry, want_detail=True)
             item = {"path": m, "name": PurePosix(m).name,
                     "summary": d["summary"], "detail": _mention_block(d)}
+            if collapsed_folder:
+                item["asked"] = collapsed_folder
             if d["kind"] == "image":
                 item["image_uri"] = self._image_data_uri(real)
             out.append(item)
@@ -7670,6 +7674,37 @@ class Orchestrator:
         except (ValueError, OSError):
             return None
         return real if real.is_file() else None
+
+    def _reference_attachment_target(self, project: Project, entry: dict,
+                                     assets_by_id: dict[str, Asset] | None = None) -> Path | None:
+        """Verify one server-held attachment record against the bytes it is allowed to name."""
+        dataset_id = _bare_kind_id(str(entry.get("dataset_id") or ""), KIND_DATASET)
+        dataset_file = str(entry.get("file") or "")
+        rel = str(entry.get("path") or "")
+        if not dataset_id or not dataset_file or not rel:
+            return None
+        try:
+            asset = ((assets_by_id or {}).get(dataset_id)
+                     if assets_by_id is not None else self._find_asset(dataset_id))
+            if asset is None or asset.id != dataset_id:
+                return None
+            logical = _safe_join(project.app_for_turn().path, rel)
+            if asset.mount_path:
+                mount = Path(asset.mount_path).resolve(strict=True)
+                expected = _safe_join(mount, dataset_file).resolve(strict=True)
+                if not expected.is_relative_to(mount):
+                    return None
+            else:
+                # A remote Dataset file is a server-downloaded regular copy. A symlink has no
+                # trusted mount target to prove and is therefore not a reference-material grant.
+                if logical.is_symlink():
+                    return None
+                expected = logical.resolve(strict=True)
+                if not expected.is_relative_to(project.app_for_turn().path.resolve(strict=True)):
+                    return None
+            return expected if expected.is_file() else None
+        except (LookupError, OSError, RuntimeError, ValueError):
+            return None
 
     def _folder_mention(self, project: Project, folder: str, members: list[dict]) -> dict:
         """One `@folder` mention, said once (ADR-0030).
@@ -11396,8 +11431,11 @@ class Orchestrator:
             pass
 
         datasets: dict[str, Asset] = {}
+        datasets_by_id: dict[str, Asset] = {}
         try:
-            datasets = {a.name: a for a in self._assets.list_datasets(self._domino_project_id)}
+            listed_datasets = self._assets.list_datasets(self._domino_project_id)
+            datasets = {a.name: a for a in listed_datasets}
+            datasets_by_id = {a.id: a for a in listed_datasets}
         except Exception:
             pass
 
@@ -11446,11 +11484,14 @@ class Orchestrator:
             chat = bool(project.control.snapshot().chat_thread_id)
             root = project.record.path if chat else project.app_for_turn().path
             candidates = (store.read_context(thread_id).get("items", []) if chat
-                          else project.app_for_turn().read_attachments())
+                          else project.attachments_for_turn())
             if chat:
                 candidates = [item for item in candidates if item.get("kind") == "file"]
             return live_reference.authorize(
-                root, candidates, source, project.control.snapshot().withheld
+                root, candidates, source, project.control.snapshot().withheld,
+                target_for=(None if chat else lambda row: self._reference_attachment_target(
+                    project, row, datasets_by_id
+                )),
             )
 
         def record_data_use(event, reply):
@@ -17358,17 +17399,40 @@ class Orchestrator:
                         "an explicit structured reference."
                     )
         elif mention_files:
+            attachment_manifest = project.attachments_for_turn()
+            root = project.app_for_turn().path
+            direct_sources = [str(source) for source in (mentions or [])]
+            direct_mentions = set(direct_sources)
+            explicit_paths = {
+                str(entry.get("path") or "") for entry in attachment_manifest
+                if str(entry.get("path") or "") in direct_mentions
+                or str(root / str(entry.get("path") or "")) in direct_mentions
+            }
             prepared_references = live_reference.prepare_explicit(
-                project.app_for_turn().path,
-                project.attachments_for_turn(),
-                [str(item.get("path") or "") for item in mention_files],
+                root,
+                attachment_manifest,
+                direct_sources,
                 prompt=prompt,
                 withheld=project.control.snapshot().withheld,
+                target_for=lambda row: self._reference_attachment_target(project, row),
             )
             prepared_by_source = {item.source: item for item in prepared_references}
             for attachment in mention_files:
-                prepared = prepared_by_source.get(str(attachment.get("path") or ""))
+                source = str(attachment.get("path") or "")
+                if source not in explicit_paths:
+                    if attachment.get("asked") and live_reference.source_type(source):
+                        attachment["detail"] = (
+                            "This folder mention stays a bounded description. It does not transfer "
+                            "the text of files inside the folder."
+                        )
+                    continue
+                prepared = prepared_by_source.get(source)
                 if prepared is None:
+                    if live_reference.source_type(source):
+                        attachment["detail"] = (
+                            "This text attachment was not prepared because its exact attachment "
+                            "identity or storage target could not be authorized."
+                        )
                     continue
                 attachment["detail"] = prepared.prompt_block()
                 event, reply = live_reference.data_use(
