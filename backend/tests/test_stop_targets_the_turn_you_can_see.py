@@ -309,6 +309,76 @@ def test_a_queued_no_pending_decline_waits_before_it_suppresses(
     assert [entry["status"] for entry in store.read_handoffs(tid)] == ["suppressed"]
 
 
+def test_stop_after_a_decline_running_event_prevents_suppression_and_clears_the_flag(tmp_path: Path):
+    """Stop can land on the running yield. Decline must consume it before touching the Thread."""
+    from sage.workspace.threads import ThreadStore
+
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="A ran"), Turn(text="B ran")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    build_a = orch.build_stream("A", conversation=tid, turn_id="turn_a")
+    next(build_a)
+
+    decline_ticket, state = orch.prepare_stream_turn(
+        "turn_decline", kind="chat", conversation=tid)
+    assert state == "pending"
+    decline = orch.decline_handoff_stream(tid, turn_ticket=decline_ticket)
+    assert next(decline)["type"] == "pending"
+    list(build_a)
+    running = next(decline)
+    assert running == {"type": "running", "ticket": "turn_decline",
+                       "sequence": decline_ticket.sequence}
+
+    next_ticket, state = orch.prepare_stream_turn(
+        "turn_b", kind="build", conversation=tid, app=True)
+    assert state == "pending"
+    assert orch.stop_build(kind="chat", conversation=tid, turn_id="turn_decline") is True
+    assert store.read_handoffs(tid) == []
+    assert [event["type"] for event in decline] == ["stopped", "done"]
+    assert store.read_handoffs(tid) == []
+    assert orch.project().stop_requested is False
+
+    events_b = list(orch.build_stream("B", conversation=tid, turn_ticket=next_ticket))
+    assert events_b[-1].get("decision") not in {"stopped", "cancelled"}
+    assert not any(event.get("type") == "stopped" for event in events_b)
+
+
+def test_decline_setup_failure_releases_only_its_ticket_and_promotes_once(
+        monkeypatch, tmp_path: Path):
+    """Failure before Chat's inner cleanup exists must release decline, not its successor."""
+    from sage.orchestrator import service as service_mod
+    from sage.workspace.threads import ThreadStore
+
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    store.append_history(tid, {"type": "user", "text": "build a dashboard"})
+    store.append_history(tid, {"type": "handoff-suggest", "reason": "explicit"})
+    store.append_history(tid, {"type": "done", "ok": True, "decision": "handoff"})
+
+    decline_ticket, _ = orch.prepare_stream_turn(
+        "turn_decline", kind="chat", conversation=tid)
+    ticket_b, _ = orch.prepare_stream_turn("turn_b", kind="chat", conversation=tid)
+    ticket_c, _ = orch.prepare_stream_turn("turn_c", kind="chat", conversation=tid)
+
+    def fail_start(*_args, **_kwargs):
+        raise RuntimeError("timing setup failed")
+
+    monkeypatch.setattr(service_mod.timing, "start_turn", fail_start)
+    with pytest.raises(RuntimeError, match="timing setup failed"):
+        list(orch.decline_handoff_stream(tid, turn_ticket=decline_ticket))
+
+    state = orch.turn_state()
+    assert state["running_turn"]["turnId"] == "turn_b"
+    assert state["pending"] == 1
+    assert orch.stop_build(turn_id=ticket_b.id) is True
+    assert orch.turn_state()["running_turn"]["turnId"] == "turn_c"
+    assert orch.stop_build(turn_id=ticket_c.id) is True
+    assert orch.turn_state()["running_turn"] is None
+
+
 def test_exact_stop_cancels_a_route_ticket_after_admission_but_before_pending_is_delivered(
         monkeypatch, tmp_path: Path):
     """A route reservation becomes a waiting queue ticket before its pending byte reaches the

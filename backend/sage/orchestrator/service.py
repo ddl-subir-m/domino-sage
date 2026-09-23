@@ -9407,12 +9407,21 @@ class Orchestrator:
         if not ticket.granted:
             return
 
-        holding = True
         try:
+            project = self.project()
+            if project.stop_requested:
+                # Stop can land while a queued decline is paused on its `running` event. Consume it
+                # before this turn reads or changes the Thread, and before the flag can reach the
+                # next turn.
+                project.stop_requested = False
+                self._release_turn()
+                yield {"type": "stopped", "message": brand.text(
+                    "Stopped. Anything {assistantName} had already written is kept.")}
+                yield {"type": "done", "ok": False, "decision": "stopped"}
+                return
             store = ThreadStore(self._chat_project().record.path)
             if store.get(thread_id) is None:
                 self._release_turn()
-                holding = False
                 yield {"type": "error", "message": "Unknown thread"}
                 # Never written to history, for the same structural reason as its twin in
                 # `_chat_stream` (#335): persisting it would create a Thread directory for an id
@@ -9427,17 +9436,18 @@ class Orchestrator:
                 # An offer the classifier raised, and the turn that raised it already answered.
                 # There is nothing to run, and running the last question again would answer twice.
                 self._release_turn()
-                holding = False
                 yield {"type": "done", "ok": True, "decision": "suppressed"}
                 return
             # Chat now owns the already granted ticket and its release. Admitting here again would
             # queue this request behind itself forever.
-            holding = False
             yield from self.chat_stream(
                 thread_id, pending, already_asked=True, declined=True,
                 turn_ticket=ticket, _already_granted=True)
         finally:
-            if holding:
+            # Delegated Chat normally releases this ticket at its terminal event. If its setup
+            # fails before that try/finally exists, this outer boundary still owns the same ticket.
+            # Identity prevents a second release after Chat promoted a successor.
+            if self._turns.running() is ticket:
                 self._release_turn()
 
     def _explicit_handoff(self, store: ThreadStore, thread_id: str, prompt: str) -> dict | None:

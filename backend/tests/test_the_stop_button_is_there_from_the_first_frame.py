@@ -160,6 +160,12 @@ def test_an_idless_legacy_header_cannot_replace_a_newer_exact_turn():
         "stopPosts": 1, "requestedTurnId": "turn_b"}
 
 
+def test_legacy_backend_state_reconstructs_a_new_running_turn_after_refresh():
+    """With no local request, authoritative state may replace completed A with B without a sequence."""
+    assert _run("legacyStateReconstruction") == {
+        "turnId": "turn_b", "sequence": 0, "stopOffered": True}
+
+
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])
 def test_stop_is_there_before_the_turn_has_anything_to_show_for_itself(mode: str):
     """The window #126 left behind, and the whole of #371.

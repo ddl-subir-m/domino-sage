@@ -3980,6 +3980,7 @@ window.SW = window.SW || {};
   // for a poll to land on it and blank a header that is about to fill straight back up.
   function applyTurnState(payload) {
     const turn = payload || {};
+    const reconstructing = liveBuildTurns === 0 && liveChatTurns === 0;
     state.turnWedged = !!turn.wedged;
     state.turnPending = turn.pending || 0;
     const incomingSequence = responseTurnSequence(turn.running_turn && turn.running_turn.sequence);
@@ -4000,9 +4001,22 @@ window.SW = window.SW || {};
     // named turn is always believed, and only a NAMELESS answer is held back while this tab still
     // has a turn of its own alive to hand the lock straight on to.
     if (turn.running_turn) {
-      claimRunningTurn(turn.running_turn.kind, turn.running_turn.conversation,
-                       turn.running_turn.app, turn.running_turn.turnId,
-                       turn.running_turn.sequence);
+      if (reconstructing && !incomingSequence) {
+        // A refresh or watcher with no local request owns no earlier claim. `/build/state` is the
+        // authority here, including on an older backend with no sequence header: completed A must
+        // be replaceable by current B. Response headers never take this path.
+        state.runningTurn = {
+          kind: turn.running_turn.kind,
+          conversation: turn.running_turn.conversation || '',
+          app: turn.running_turn.app || '',
+          turnId: responseTurnId(turn.running_turn.turnId),
+          sequence: responseTurnSequence(turn.running_turn.sequence),
+        };
+      } else {
+        claimRunningTurn(turn.running_turn.kind, turn.running_turn.conversation,
+                         turn.running_turn.app, turn.running_turn.turnId,
+                         turn.running_turn.sequence);
+      }
     }
     else if (liveBuildTurns === 0 && liveChatTurns === 0) state.runningTurn = null;
     return !!turn.running || liveBuildTurns > 0 || liveChatTurns > 0;

@@ -171,8 +171,8 @@ const atPause = new Promise((resolve) => {
 // Answered by every `/build/state` read. Deliberately empty of a running turn: this harness is
 // about what the tab can say for itself, and a poll that supplied the answer would hide the bug.
 const dropped = ['droppedBuild', 'droppedApprove', 'droppedReadFailure'].includes(mode);
-let backendRunning = dropped;
-let backendTurnId = 'turn_abc';
+let backendRunning = dropped || mode === 'legacyStateReconstruction';
+let backendTurnId = mode === 'legacyStateReconstruction' ? 'turn_b' : 'turn_abc';
 const buildState = () => ({ running: backendRunning, wedged: false, pending: 0,
   running_turn: backendRunning
     ? { kind: 'build', conversation: 't1', app: 'app_1', turnId: backendTurnId } : null });
@@ -303,9 +303,20 @@ SW.store.set({
   scope: { id: 'p', name: 'P' },
   activeApp: { id: 'app_1', name: 'Usage Pulse' },
   apps: [{ id: 'app_1', name: 'Usage Pulse' }],
-  runningTurn: mode === 'successorHeaderRace'
+  runningTurn: ['successorHeaderRace', 'legacyStateReconstruction'].includes(mode)
     ? { kind: 'build', conversation: 't1', app: 'app_1', turnId: 'turn_a' } : null,
 });
+
+if (mode === 'legacyStateReconstruction') {
+  // No request is live in this tab. A legacy backend supplies no sequence, but its state endpoint
+  // is authoritative: completed A must be replaced by current B.
+  await SW.store.loadBuild({ keepPreview: true });
+  const current = SW.store.get().runningTurn;
+  console.log(JSON.stringify({ turnId: current && current.turnId,
+    sequence: current && current.sequence,
+    stopOffered: SW.store.runningTurnHere('build', 't1', 'app_1') }));
+  process.exit(0);
+}
 
 // Which of the three sends each mode drives. Two of them are a build turn and one is a chat turn,
 // and that is the only axis the readout below cares about.
