@@ -263,10 +263,13 @@ const HISTORY = {
       app: 'app_a', conversation: 'thr_many' },
     { type: 'done', ok: true, decision: 'built', app: 'app_a', conversation: 'thr_many' },
     { type: 'user', text: 'Sort the desks by P&L', app: 'app_a', conversation: 'thr_two',
+      turnId: 'turn_identity',
       at: AGO(2 * 3600e3) },
     { type: 'agent', kind: 'text', text: 'Sorted them.', app: 'app_a', conversation: 'thr_two',
       at: AGO(2 * 3600e3 - 4000) },
     { type: 'done', ok: true, decision: 'built', app: 'app_a', conversation: 'thr_two',
+      diagnostics: { turnId: 'turn_identity', appId: 'app_a', conversationId: 'thr_two',
+        phase: 'implementation' },
       at: AGO(2 * 3600e3 - 5000) },
     { type: 'plan-proposed', plan: '# Desk dashboard', planId: 'pl_1', steps: 3, app: 'app_a' },
   ],
@@ -298,6 +301,7 @@ let selected = 'app_a';
 let expanded = false;
 // A 500 on the app's build log, which is not the same answer as an app nobody has built in.
 let historyFails = false;
+let diagnosticsFails = false;
 // A 500 on ONE tool card's input, which is not the same answer as a tool that recorded none. Its
 // own switch because it is its own read: the list can arrive and the row behind a card still not.
 let rowDetailFails = false;
@@ -453,6 +457,10 @@ function route(path, init) {
       });
     }
     return json({ history: picked });
+  }
+  if (path.startsWith('/project/build-diagnostics')) {
+    if (diagnosticsFails) return json({ error: 'unavailable' }, 500);
+    return json({ records: [] });
   }
   // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
   // being a fixture the whole run shares.
@@ -1712,6 +1720,7 @@ for (const step of steps) {
 
     expanded = !!step.expand;
     historyFails = !!step.readFails;
+    diagnosticsFails = !!step.diagnosticsFails;
     rowDetailFails = !!step.rowReadFails;
     calls.length = 0;
     // Build history is an item in the header's own `…` menu now (`624ff9b`), where it used to be a
@@ -1822,6 +1831,7 @@ for (const step of steps) {
     // so a switch turned off here would be off for the render the report is built from.
     expanded = false;
     historyFails = false;
+    diagnosticsFails = false;
     rowDetailFails = false;
     continue;
   }

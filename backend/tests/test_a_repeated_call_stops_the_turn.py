@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from sage import build_diagnostics as diagnostics
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator import service as svc
 from sage.orchestrator.service import (
@@ -341,6 +342,11 @@ def test_a_build_turn_that_repeats_one_call_is_stopped_and_told_what_repeated(tm
     assert oc.interrupted == 1
     # It braked on the third, not after twenty.
     assert oc.emitted <= svc._REPEAT_LIMIT + 1
+    project = orch.project(start_preview=False)
+    user = next(row for row in project.workspace.read_history() if row["type"] == "user")
+    diagnostic = diagnostics.Store(project.record.path).get(
+        user["turnId"], user["app"], user.get("conversation", ""))
+    assert diagnostic["buildOutcome"]["status"] == "repeat_brake"
     # Nothing was built, and this turn owns the build's outcome, so the plan it came from is kept
     # rather than archived under the person's Try again. A PHASE owns no such thing — hence the
     # `owns_turn` gate this pins the other side of.

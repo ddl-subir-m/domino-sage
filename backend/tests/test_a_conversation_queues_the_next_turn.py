@@ -265,13 +265,14 @@ def test_a_queued_build_says_when_the_queue_lets_it_go(tmp_path: Path):
     # Named by its ticket, the way `pending` is: a reader with two queued turns on one connection
     # has to be able to tell which of them was let go.
     assert events[1]["ticket"] == pending["ticket"]
+    assert pending["epoch"] == orch._turn_epoch
+    assert events[1]["epoch"] == orch._turn_epoch
     assert _of(events, "done")[0]["ok"] is True
 
 
 def test_a_turn_that_never_waited_says_nothing_about_being_granted(tmp_path: Path):
-    """The uncontended grant stays silent, and that is not an oversight. It sends no `pending`, so
-    the send-time claim (#371) was never handed back and there is nothing to take again — a row
-    here would be a second answer to a question already answered, on every turn in the Project."""
+    """The uncontended grant stays silent. Its exact identity travels in the HTTP response header,
+    outside the established event sequence; direct service callers still see the original rows."""
     oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="Six million rows.")])
     orch = _orch(tmp_path, oc, verdict="CHAT")
     tid = orch.create_thread()["id"]
@@ -475,19 +476,22 @@ def test_the_turn_state_route_reports_a_wedge_and_the_queue_depth(tmp_path: Path
     client = TestClient(appmod.control_app)
 
     assert client.get("/api/project/build/state").json() == {
-        "running": False, "wedged": False, "pending": 0, "running_turn": None}
+        "running": False, "wedged": False, "turn_epoch": orch._turn_epoch,
+        "pending": 0, "running_turn": None}
 
     assert orch._turn_lock.acquire(blocking=False)
     events, finished = _stream(orch.chat_stream(tid, "anything at all"))
     _pending(events)
     assert client.get("/api/project/build/state").json() == {
-        "running": True, "wedged": False, "pending": 1, "running_turn": None}
+        "running": True, "wedged": False, "turn_epoch": orch._turn_epoch,
+        "pending": 1, "running_turn": None}
 
     orch._turn_wedged = True
     orch._turns.fail_pending()
     assert finished.wait(20) is True
     assert client.get("/api/project/build/state").json() == {
-        "running": False, "wedged": True, "pending": 0, "running_turn": None}
+        "running": False, "wedged": True, "turn_epoch": orch._turn_epoch,
+        "pending": 0, "running_turn": None}
 
 
 # ---- Stop, and Cancel, which are not the same control -------------------------------------------

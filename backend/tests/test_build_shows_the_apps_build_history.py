@@ -341,6 +341,19 @@ def test_a_failed_read_leaves_a_way_back():
 
 
 @needs_node
+def test_a_failed_diagnostic_list_does_not_invent_an_interrupted_status():
+    """Transcript identity can still download one record, but it cannot state its outcome."""
+    step = _run([{
+        "history": "thr_many", "select": "app_a", "diagnosticsFails": True,
+    }])[-1]
+    said = " ".join(step["drawer"]["words"])
+    assert "Status unavailable" in said
+    assert "Implementation · Interrupted" not in said
+    assert "Download diagnostics" in step["drawer"]["buttons"]
+    assert "Download implementation diagnostics" not in step["drawer"]["buttons"]
+
+
+@needs_node
 def test_opening_it_again_reads_again_rather_than_showing_the_last_look():
     """Read on demand buys nothing if the demand is only honoured once. Nothing drops the list when
     the drawer merely closes — the selection never moved, so the app-scope gate has no reason to —

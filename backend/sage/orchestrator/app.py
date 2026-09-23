@@ -41,6 +41,7 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.staticfiles import StaticFiles
 
@@ -90,6 +91,7 @@ from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     ThreadStore,
     artifact_bytes,
+    new_id,
     oversized_artifacts,
     safe_id,
 )
@@ -1897,6 +1899,21 @@ def diag_opencode(q: str = "", n: int = 400) -> PlainTextResponse:
     return PlainTextResponse("\n".join(lines))
 
 
+@control_app.get("/api/project/build-diagnostics")
+def build_diagnostic_list(app_id: str) -> JSONResponse:
+    """Metadata-only captures for one app, including turns removed from its transcript."""
+    from fastapi import HTTPException
+
+    from ..build_diagnostics import Store
+
+    project = orchestrator.project(start_preview=False, seed_app=False)
+    try:
+        records = Store(project.record.path).list(app_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=503, detail="Diagnostics could not be read.") from None
+    return JSONResponse({"records": records}, headers={"Cache-Control": "no-store"})
+
+
 @control_app.get("/api/project/build-diagnostics/{turn_id}")
 def build_diagnostic_download(turn_id: str, app_id: str, conversation_id: str = "") -> JSONResponse:
     """Exact scoped capture. Uses the same Domino workspace authentication as Build history."""
@@ -3354,13 +3371,20 @@ def build_stream(body: dict) -> StreamingResponse:
         except ValueError:
             return refuse_with("unknown conversation")
 
+    turn_id = new_id("turn")
+    turn_ticket, turn_state = orchestrator.prepare_stream_turn(
+        turn_id, kind="build", conversation=str(conversation or ""), app=True)
+    events = orchestrator.build_stream(
+        prompt, mentions, resources, conversation, skip_reset_gate, skip_incoming_gate,
+        skip_table_gate, skip_source_gate, chosen_source, skip_dataset_gate, dismissed_dataset,
+        dataset_pick, turn_ticket=turn_ticket)
     return StreamingResponse(
-        _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,
-                                            skip_reset_gate, skip_incoming_gate, skip_table_gate,
-                                            skip_source_gate, chosen_source, skip_dataset_gate,
-                                            dismissed_dataset, dataset_pick),
-                  "build_stream"),
-        media_type="text/event-stream")
+        _turn_sse(events, "build_stream"),
+        media_type="text/event-stream",
+        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence),
+                 "X-Sage-Turn-Epoch": turn_ticket.epoch},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 
 # The Build rail's list, as the Chat rail's is /api/threads. Two lists, one per mode: a Project
@@ -3797,13 +3821,20 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     dset = bool((body or {}).get("skipDatasetGate"))
     dropped = str((body or {}).get("datasetDismissed") or "")
     invq = bool((body or {}).get("investigationAnswered"))
+    turn_id = new_id("turn")
+    turn_ticket, turn_state = orchestrator.prepare_stream_turn(
+        turn_id, kind="chat", conversation=thread_id)
     return StreamingResponse(
         _turn_sse(orchestrator.chat_stream(
             thread_id, prompt, already_asked=asked, skip_table_gate=tbl,
             skip_dataset_gate=dset, dismissed_dataset=dropped,
             skip_investigation_gate=invq,
-            other_lane_grant=grant), "chat_stream"),
-        media_type="text/event-stream")
+            other_lane_grant=grant, turn_ticket=turn_ticket), "chat_stream"),
+        media_type="text/event-stream",
+        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence),
+                 "X-Sage-Turn-Epoch": turn_ticket.epoch},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 
 # The Chat half of the candidate click (#188). Its own route rather than the Binding one above,
@@ -3877,9 +3908,17 @@ async def pin_thread_dataset_file(thread_id: str, dataset_id: str,
 def decline_handoff(thread_id: str) -> StreamingResponse:
     """`Not now` on a Build offer. Streams, because declining an offer that was made INSTEAD of an
     answer has to produce the answer — see `Orchestrator.decline_handoff_stream`."""
+    turn_id = new_id("turn")
+    turn_ticket, turn_state = orchestrator.prepare_stream_turn(
+        turn_id, kind="chat", conversation=thread_id)
     return StreamingResponse(
-        _turn_sse(orchestrator.decline_handoff_stream(thread_id), "decline_handoff"),
-        media_type="text/event-stream")
+        _turn_sse(orchestrator.decline_handoff_stream(thread_id, turn_ticket=turn_ticket),
+                  "decline_handoff"),
+        media_type="text/event-stream",
+        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence),
+                 "X-Sage-Turn-Epoch": turn_ticket.epoch},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 
 @control_app.post("/api/threads/{thread_id}/recall/clear")
@@ -3978,11 +4017,19 @@ def build_approve(body: dict) -> StreamingResponse:
     plan_id = (body or {}).get("plan_id") or ""   # "" = no card sent one; fall back to the newest
     build_again = bool((body or {}).get("build_again"))
 
+    turn_id = new_id("turn")
+    turn_ticket, turn_state = orchestrator.prepare_stream_turn(
+        turn_id, kind="build", conversation=str(conversation or ""), app=True)
     return StreamingResponse(
         _turn_sse(orchestrator.approve_stream(answers, plan_edits, conversation, plan_id,
-                                              build_again=build_again),
+                                              build_again=build_again,
+                                              turn_ticket=turn_ticket),
                   "approve_stream"),
-        media_type="text/event-stream")
+        media_type="text/event-stream",
+        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence),
+                 "X-Sage-Turn-Epoch": turn_ticket.epoch},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 
 @control_app.get("/api/project/settings")
@@ -4218,7 +4265,7 @@ async def stop_build(request: Request) -> JSONResponse:
     Stop ends ONE turn and the queue behind it advances (#79): you stopped that answer, not your
     other questions. Dropping a question you have changed your mind about is Cancel's job, below.
 
-    An optional `{kind, conversation}` body names the turn the Stop was aimed at, and it is declined
+    An optional `{kind, conversation, app, turnId}` body names the turn the Stop was aimed at, and it is declined
     when that turn is no longer the one running (#126) — the queue can hand the lock on between the
     press and the POST. No body means "stop whatever is running", which is what this always did and
     what a caller with one turn to mean still sends."""
@@ -4228,10 +4275,14 @@ async def stop_build(request: Request) -> JSONResponse:
         body = {}
     if not isinstance(body, dict):
         body = {}
+    running = orchestrator.turn_state().get("running_turn") or {}
     stopped = orchestrator.stop_build(kind=str(body.get("kind") or ""),
                                       conversation=str(body.get("conversation") or ""),
-                                      app=str(body.get("app") or ""))
-    return JSONResponse(content={"stopped": stopped})
+                                      app=str(body.get("app") or ""),
+                                      turn_id=str(body.get("turnId") or ""))
+    return JSONResponse(content={"stopped": stopped,
+                                 "turnId": str(body.get("turnId") or running.get("turnId") or "")
+                                           if stopped else ""})
 
 
 @control_app.get("/api/project/build/state")

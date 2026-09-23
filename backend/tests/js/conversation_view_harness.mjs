@@ -241,12 +241,35 @@ const json = (body, status = 200) => ({
   text: async () => JSON.stringify(body),
 });
 
+// A successful Build request always ends with a terminal SSE frame. An empty EOF now means the
+// viewer lost its connection and deliberately starts recovery, which is a different scenario from
+// this transcript harness.
+const completedBuild = () => {
+  const bytes = new TextEncoder().encode(
+    `data: ${JSON.stringify({ type: 'done', ok: true, decision: 'built' })}\n\n`
+  );
+  let sent = false;
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'text/event-stream' },
+    body: { getReader: () => ({
+      read: async () => {
+        if (sent) return { done: true, value: undefined };
+        sent = true;
+        return { done: false, value: bytes };
+      },
+    }) },
+  };
+};
+
 function serve(url, options) {
   const path = String(url).replace(/^\.\/api/, '');
   const method = (options && options.method) || 'GET';
   calls.push(path);
   if (method !== 'GET') writes.push(`${method} ${path}`);
   let m;
+  if (path === '/project/build/stream' && method === 'POST') return completedBuild();
   if ((m = path.match(/^\/threads\/([^/]+)\/conversation$/))) {
     if (BROKEN.has(m[1])) return json({ error: 'the merge fell over' }, 500);
     return json({ history: CONVERSATIONS[m[1]] || [] });
@@ -518,7 +541,7 @@ for (const step of steps) {
     // — there is no SSE behind this fetch — but the echo is appended before the request, which is
     // the write this step is about: every writer of the log has to leave the transcript in step
     // with it, or Build draws the list as it was one row ago.
-    await SW.store.sendBuildPrompt(step.echo).catch(() => {});
+    const sending = SW.store.sendBuildPrompt(step.echo).catch(() => {});
     const now = SW.store.get();
     report.push({
       step: `echo ${step.echo}`,
@@ -526,6 +549,7 @@ for (const step of steps) {
       appTurns: (now.buildMessages || []).length,
       behindFrames,
     });
+    await sending;
   } else if (step.select) {
     await SW.store.selectApp(step.select);
     report.push({ step: `select ${step.select}`, app: (SW.store.get().activeApp || {}).id || null });

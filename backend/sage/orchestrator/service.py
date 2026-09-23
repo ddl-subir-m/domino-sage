@@ -654,13 +654,19 @@ class _TurnTicket:
     before the ticket is admitted, because a queue with nothing in front of it makes a turn running
     in the same call."""
 
-    __slots__ = ("app", "conversation", "granted", "id", "kind", "outcome", "snapshot")
+    __slots__ = ("admitted", "app", "claimed", "conversation", "epoch", "granted", "id",
+                 "kind", "outcome", "queued", "sequence", "snapshot")
 
     def __init__(self, ticket_id: str) -> None:
         self.id = ticket_id
         self.snapshot: dict = {}
         self.outcome = ""       # "" while waiting, then "ready" | "cancelled" | "wedged"
         self.granted = False    # the verdict the entry point reads: did this turn get to run?
+        self.admitted = False   # the queue already owns this route ticket before headers are sent
+        self.queued = False     # it entered behind another turn and therefore owes pending/running
+        self.claimed = False    # the lazy service generator has taken lifecycle ownership
+        self.sequence = 0       # process-local server admission order; zero means not admitted
+        self.epoch = ""         # process boot that owns the process-local sequence
         self.kind = ""          # "build" | "chat" — the screen this turn can be stopped from
         self.conversation = ""
         # Which Built App a build turn writes into. The Conversation is not enough on its own: the
@@ -697,22 +703,93 @@ class _TurnQueue:
     anybody, so the head ticket re-tests it on a short timer. Every release that goes through
     `release()` wakes it at once, so the timer is the backstop and not the mechanism."""
 
-    def __init__(self, lock: threading.Lock, poll_s: float = 0.05) -> None:
+    def __init__(self, lock: threading.Lock, epoch: str, poll_s: float = 0.05) -> None:
         self._lock = lock
+        self._epoch = epoch
         self._poll_s = poll_s
         self._cond = threading.Condition()
         self._waiting: deque[_TurnTicket] = deque()
+        self._last_sequence = 0
         # The ticket holding the lock, or None. Not on the deque — `_take` pops it — so without
         # this the running turn is the one turn nobody can name (#126). None is a real answer and
         # not a gap: publish, reset and the other raw-lock callers never queue, so a busy Project
         # with no running turn is exactly what "busy, and not a turn you can Stop" looks like.
         self._running: _TurnTicket | None = None
 
+    @staticmethod
+    def _matches_target(target, *, kind: str, conversation: str, app: str) -> bool:
+        return not ((kind and target.kind != kind)
+                    or (conversation and target.conversation != conversation)
+                    or (app and target.app and target.app != app))
+
+    def stop_exact(self, ticket_id: str, *, kind: str, conversation: str, app: str) -> str:
+        """Return `cancelled`, `running`, or `missing` for one exact scoped ticket."""
+        with self._cond:
+            for ticket in self._waiting:
+                if ticket.id != ticket_id:
+                    continue
+                if not self._matches_target(
+                        ticket, kind=kind, conversation=conversation, app=app):
+                    return "missing"
+                ticket.outcome = "cancelled"
+                self._waiting.remove(ticket)
+                self._promote_head()
+                self._cond.notify_all()
+                return "cancelled"
+            ticket = self._running
+            if (ticket is None or ticket.id != ticket_id
+                    or not self._matches_target(
+                        ticket, kind=kind, conversation=conversation, app=app)):
+                return "missing"
+            if ticket.claimed:
+                return "running"
+            self._cancel_unclaimed_running(ticket)
+            return "cancelled"
+
+    def _cancel_unclaimed_running(self, ticket: _TurnTicket) -> None:
+        """Caller holds `_cond`; release a pre-start ticket and advance server queue order."""
+        ticket.outcome = "cancelled"
+        self._running = None
+        self._lock.release()
+        self._promote_head()
+        self._cond.notify_all()
+
+    def abandon_unclaimed(self, ticket: _TurnTicket) -> None:
+        """Clean up a response whose body never let its service generator take ownership."""
+        with self._cond:
+            if ticket.claimed:
+                return
+            if self._running is ticket:
+                self._cancel_unclaimed_running(ticket)
+                return
+            if ticket in self._waiting:
+                ticket.outcome = "cancelled"
+                self._waiting.remove(ticket)
+                self._promote_head()
+                self._cond.notify_all()
+
+    def claim(self, ticket: _TurnTicket) -> None:
+        with self._cond:
+            ticket.claimed = True
+
     def admit(self, ticket: _TurnTicket) -> bool:
         """Join the queue, taking the lock straight away if nothing else is asking for it."""
         with self._cond:
+            if not ticket.sequence:
+                self._last_sequence += 1
+                ticket.sequence = self._last_sequence
+                ticket.epoch = self._epoch
             self._waiting.append(ticket)
-            return self._take(ticket)
+            ticket.admitted = True
+            admitted = self._take(ticket)
+            ticket.queued = not admitted
+            return admitted
+
+    def _promote_head(self) -> bool:
+        """Caller holds `_cond`; give a free lock to the next server-ordered ticket."""
+        if not self._waiting:
+            return False
+        return self._take(self._waiting[0])
 
     def _take(self, ticket: _TurnTicket) -> bool:
         """Caller holds `_cond`. True once this ticket owns the turn lock."""
@@ -763,6 +840,7 @@ class _TurnQueue:
         with self._cond:
             self._running = None
             self._lock.release()
+            self._promote_head()
             self._cond.notify_all()
 
     def ahead_of(self, ticket: _TurnTicket) -> int:
@@ -5681,13 +5759,18 @@ class Orchestrator:
         # Turns still run ONE AT A TIME under the queue below (#79): what changed is what happens to
         # the second one, not how many run. A streaming turn waits its turn; everything else is
         # refused on the spot, because a control with no composer behind it that sat silently until
-        # a long build finished would look like a control that did nothing (#89). Stop stays
-        # lock-free (it only sets stop_requested, which the running turn polls) so it can always
-        # interrupt the held turn.
+        # a long build finished would look like a control that did nothing (#89). Stop never takes
+        # this turn lock (it only sets stop_requested, which the running turn polls), so it can
+        # always interrupt the held turn.
         self._turn_lock = threading.Lock()
+        # Makes Stop and the decline-handoff control commit one atomic choice. Stop must either
+        # publish its flag before decline changes the Thread, or find that decline already released
+        # its exact ticket. The OpenCode network interrupt happens after this lock is released.
+        self._stop_control_lock = threading.Lock()
         # The order the streaming turns take that lock in. Only build_stream, chat_stream and
         # approve_stream go through it — see _TurnQueue for why the lock stays a plain Lock.
-        self._turns = _TurnQueue(self._turn_lock)
+        self._turn_epoch = new_id("boot")
+        self._turns = _TurnQueue(self._turn_lock, self._turn_epoch)
         # Set when a turn was given up on and its OpenCode session would not confirm it stopped
         # (#39). The lock above is then deliberately never released, so every later turn is refused
         # rather than run over a session that may still be writing. Nothing clears this: restarting
@@ -5807,7 +5890,8 @@ class Orchestrator:
         `pending` is how many turns are waiting in line. Without it the composer's own queued rows
         are the only account of the queue, and a second tab's are invisible.
 
-        `running_turn` is WHICH turn, as `{kind, conversation}` (#126). `running` alone was enough
+        `running_turn` is WHICH turn, as `{kind, conversation, app, turnId, sequence, epoch}`
+        (#126). `running` alone was enough
         while there was one control for one turn; under a queue a Stop bar has to know whether the
         turn holding the lock is the one on screen, and a Chat turn, a Build turn and another tab's
         turn all set `running` alike. It is None for the two holders that cannot be Stopped: a wedge,
@@ -5815,10 +5899,12 @@ class Orchestrator:
         which never queued and has no ticket."""
         running = self._turns.running()
         return {"running": self.turn_busy(), "wedged": self._turn_wedged,
+                "turn_epoch": self._turn_epoch,
                 "pending": self._turns.depth(),
                 "running_turn": None if (self._turn_wedged or running is None) else
                                 {"kind": running.kind, "conversation": running.conversation,
-                                 "app": running.app}}
+                                 "app": running.app, "turnId": running.id,
+                                 "sequence": running.sequence, "epoch": running.epoch}}
 
     def cancel_pending_turn(self, ticket_id: str) -> bool:
         """Drop a turn that is still waiting in line. False when there is no such turn (#79).
@@ -5829,6 +5915,24 @@ class Orchestrator:
         queue would throw away questions somebody still wants answered, and a Cancel that
         interrupted the running turn would throw away work in progress."""
         return self._turns.cancel(ticket_id)
+
+    def prepare_stream_turn(self, turn_id: str, *, kind: str, conversation: str = "",
+                            app: bool = False) -> tuple[_TurnTicket, str]:
+        """Admit a route ticket before headers; return it and `running|pending|refused`."""
+        ticket = _TurnTicket(turn_id)
+        ticket.kind = kind
+        ticket.conversation = conversation
+        ticket.app = self._turn_app_id() if app else ""
+        if self._turn_wedged:
+            return ticket, "refused"
+        running = self._turns.admit(ticket)
+        if ticket.queued:
+            ticket.snapshot = self._turn_snapshot(conversation or None, app=app)
+        return ticket, "running" if running else "pending"
+
+    def release_stream_turn(self, ticket: _TurnTicket) -> None:
+        """Release a pre-admitted ticket whose response ended before its generator claimed it."""
+        self._turns.abandon_unclaimed(ticket)
 
     def _release_turn(self) -> None:
         """Hand the turn lock back, waking whatever queued behind it (#79).
@@ -7880,7 +7984,8 @@ class Orchestrator:
                      skip_reset_gate: bool = False, skip_incoming_gate: bool = False,
                      skip_table_gate: bool = False, skip_source_gate: bool = False,
                      chosen_source: str = "", skip_dataset_gate: bool = False,
-                     dismissed_dataset: str = "", dataset_pick: str = ""):
+                     dismissed_dataset: str = "", dataset_pick: str = "",
+                     *, turn_id: str | None = None, turn_ticket: _TurnTicket | None = None):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time still. If a turn is already streaming, this one WAITS in line rather than
@@ -7924,7 +8029,7 @@ class Orchestrator:
         is the thing that was picked. It names the record; the record still has to confirm it."""
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
-        ticket = _TurnTicket(new_id("turn"))
+        ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         timing.start_turn("build", prompt, turn_id=ticket.id, conversation_id=conversation)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
@@ -8910,7 +9015,9 @@ class Orchestrator:
                     already_asked: bool = False, skip_table_gate: bool = False,
                     skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                     skip_investigation_gate: bool = False, declined: bool = False,
-                    other_lane_grant: str = ""):
+                    other_lane_grant: str = "", turn_id: str | None = None,
+                    turn_ticket: _TurnTicket | None = None,
+                    _already_granted: bool = False):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
         `already_asked` means this question is on the Thread and was offered Build rather than an
@@ -8946,11 +9053,14 @@ class Orchestrator:
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
         # was written against.
-        ticket = _TurnTicket(new_id("turn"))
+        ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         timing.start_turn("chat", prompt, turn_id=ticket.id, conversation_id=thread_id)
-        with timing.span("turn.acquire"):
-            yield from self._acquire_turn(ticket, kind="chat", conversation=thread_id, prompt=prompt,
-                                          app=False)
+        if _already_granted:
+            self._begin_model_record()
+        else:
+            with timing.span("turn.acquire"):
+                yield from self._acquire_turn(
+                    ticket, kind="chat", conversation=thread_id, prompt=prompt, app=False)
         if not ticket.granted:
             timing.finish_turn(decision="not granted")
             return
@@ -9278,7 +9388,8 @@ class Orchestrator:
         self._arm_chat_idle_save(immediate or "idle",
                                  delay=self._chat_save_turn_s if immediate else None)
 
-    def decline_handoff_stream(self, thread_id: str):
+    def decline_handoff_stream(self, thread_id: str, *, turn_id: str | None = None,
+                               turn_ticket: _TurnTicket | None = None):
         """`Not now` on a Build offer: stop offering, and answer the question if one is waiting.
 
         Suppression stays permanent, and deliberately so — it is the person saying stop, and the spec
@@ -9294,29 +9405,75 @@ class Orchestrator:
         browser has the text on screen and could send it, but then a stale tab could put a turn under
         a question it does not match, and the transcript is the only place this can be settled.
         """
-        store = ThreadStore(self._chat_project().record.path)
-        if store.get(thread_id) is None:
-            yield {"type": "error", "message": "Unknown thread"}
-            # Never written to history, for the same structural reason as its twin in `_chat_stream`
-            # (#335): `ThreadStore.append_history` opens with `p.parent.mkdir(parents=True,
-            # exist_ok=True)` (workspace/threads.py:272), so persisting this row would CREATE a thread
-            # directory for an id the line above just established does not exist — manufacturing the
-            # stray folder #332 had to grow a guard against at the read end.
-            #
-            # The sibling ending below is raw too, but for a different reason: this method records
-            # nothing itself. It delegates to `chat_stream`, which is where a turn's rows are kept.
-            yield {"type": "done", "ok": False, "decision": "unknown thread"}
+        # The preview is read-only and gives a queued decline the question shown in its pending row.
+        # The authoritative read happens after admission, because the turn ahead can still answer it.
+        preview_store = ThreadStore(self._chat_project().record.path)
+        preview = (chat_handoff.unanswered_ask(preview_store.read_history(thread_id))
+                   if preview_store.get(thread_id) is not None else "")
+        ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
+        yield from self._acquire_turn(
+            ticket, kind="chat", conversation=thread_id, prompt=preview or "", app=False,
+            begin_model_record=False)
+        if not ticket.granted:
             return
-        store.suppress_handoff(thread_id)
-        history = store.read_history(thread_id)
-        _warn_if_history_lossy(history, "decline_handoff_stream")
-        pending = chat_handoff.unanswered_ask(history)
-        if not pending:
-            # An offer the classifier raised, and the turn that raised it already answered. There is
-            # nothing to run, and running the last question again would answer it twice.
-            yield {"type": "done", "ok": True, "decision": "suppressed"}
-            return
-        yield from self.chat_stream(thread_id, pending, already_asked=True, declined=True)
+
+        try:
+            project = self.project()
+            store = ThreadStore(self._chat_project().record.path)
+            with self._stop_control_lock:
+                if project.stop_requested:
+                    # Stop won the local decision before this control commit. Consume its flag and
+                    # release the exact ticket while Stop is excluded, so it cannot reach the next
+                    # turn.
+                    project.stop_requested = False
+                    self._release_turn()
+                    decision = "stopped"
+                    pending = ""
+                elif store.get(thread_id) is None:
+                    self._release_turn()
+                    decision = "unknown"
+                    pending = ""
+                else:
+                    history = store.read_history(thread_id)
+                    _warn_if_history_lossy(history, "decline_handoff_stream")
+                    pending = chat_handoff.unanswered_ask(history)
+                    store.suppress_handoff(thread_id)
+                    if pending:
+                        decision = "answer"
+                    else:
+                        # Stop arriving after this release sees that its exact target is gone. It
+                        # cannot leave a flag for the next turn.
+                        self._release_turn()
+                        decision = "suppressed"
+
+            if decision == "stopped":
+                yield {"type": "stopped", "message": brand.text(
+                    "Stopped. Anything {assistantName} had already written is kept.")}
+                yield {"type": "done", "ok": False, "decision": "stopped"}
+                return
+            if decision == "unknown":
+                yield {"type": "error", "message": "Unknown thread"}
+                # Never written to history, for the same structural reason as its twin in
+                # `_chat_stream` (#335): persisting it would create a Thread directory for an id
+                # the line above established does not exist.
+                yield {"type": "done", "ok": False, "decision": "unknown thread"}
+                return
+            if decision == "suppressed":
+                # An offer the classifier raised, and the turn that raised it already answered.
+                # There is nothing to run, and running the last question again would answer twice.
+                yield {"type": "done", "ok": True, "decision": "suppressed"}
+                return
+            # Chat now owns the already granted ticket and its release. Admitting here again would
+            # queue this request behind itself forever.
+            yield from self.chat_stream(
+                thread_id, pending, already_asked=True, declined=True,
+                turn_ticket=ticket, _already_granted=True)
+        finally:
+            # Delegated Chat normally releases this ticket at its terminal event. If its setup
+            # fails before that try/finally exists, this outer boundary still owns the same ticket.
+            # Identity prevents a second release after Chat promoted a successor.
+            if self._turns.running() is ticket:
+                self._release_turn()
 
     def _explicit_handoff(self, store: ThreadStore, thread_id: str, prompt: str) -> dict | None:
         """The regex half of handoff detection. No model call, so it is safe to run BEFORE a turn.
@@ -15926,34 +16083,46 @@ class Orchestrator:
         return snapshot
 
     def _acquire_turn(self, ticket: _TurnTicket, *, kind: str, conversation: str | None,
-                      prompt: str, app: bool):
+                      prompt: str, app: bool, begin_model_record: bool = True):
         """Take the turn lock for a streaming turn, waiting in line rather than refusing (#79).
 
-        Yields what the wait owes the client — a `pending` row the moment the turn joins the queue,
-        a `running` row the moment the queue lets it go (#377), and the refusal if it never gets to
-        run — and sets `ticket.granted`, which is the verdict the entry point reads. The wait is held
+        Yields what the wait owes the client: a `pending` row while a queued turn waits, a `running`
+        row when that queued turn gets the lock (#377), and the refusal if it never gets to run.
+        An uncontended turn adds no event to the established public stream. It then sets
+        `ticket.granted`, which is the verdict the entry point reads. The wait is held
         on the client's own connection: a turn IS its HTTP request here, so a queued turn that
         nobody was connected to would have nowhere to stream.
 
         A wedged workspace is refused at the door instead of queued. The lock is held for good
         there (#39), so a queue behind it is a spinner that never resolves."""
-        if self._turn_wedged:
+        if self._turn_wedged and not ticket.admitted:
+            ticket.claimed = True
             yield from self._wedged_refusal()
             return
         # Before admit, not after: a queue with nothing in front of it hands over the lock inside
         # `admit()`, so a ticket named afterwards would be running and anonymous in between (#126).
-        ticket.kind = kind
-        ticket.conversation = conversation or ""
-        ticket.app = self._turn_app_id() if app else ""
-        if self._turns.admit(ticket):
-            ticket.granted = True
-            self._begin_model_record()
+        if not ticket.admitted:
+            ticket.kind = kind
+            ticket.conversation = conversation or ""
+            ticket.app = self._turn_app_id() if app else ""
+            self._turns.admit(ticket)
+            if ticket.queued:
+                ticket.snapshot = self._turn_snapshot(conversation, app=app)
+        self._turns.claim(ticket)
+        if ticket.outcome == "cancelled":
+            yield {"type": "done", "ok": False, "decision": "cancelled"}
             return
-        ticket.snapshot = self._turn_snapshot(conversation, app=app)
+        if not ticket.queued:
+            ticket.granted = True
+            if begin_model_record:
+                self._begin_model_record()
+            return
         try:
-            yield {"type": "pending", "ticket": ticket.id, "prompt": prompt,
+            yield {"type": "pending", "ticket": ticket.id, "sequence": ticket.sequence,
+                   "epoch": ticket.epoch,
+                   "prompt": prompt,
                    "message": turn_pending_message(self._turns.ahead_of(ticket))}
-            outcome = self._turns.wait(ticket)
+            outcome = ticket.outcome or self._turns.wait(ticket)
             if outcome == "cancelled":
                 yield {"type": "done", "ok": False, "decision": "cancelled"}
                 return
@@ -15978,15 +16147,13 @@ class Orchestrator:
             # Build has none — every build path writes its user row with `append_history` and does
             # not stream it. So from the queue letting go until the first frame of real work the
             # person owned a running turn the bar described as somebody else's, for the whole gate
-            # and first-token wait. The uncontended grant above needs no such row: it sent no
-            # `pending`, so the send-time claim (#371) never came off.
-            #
-            # It carries the ticket and nothing else. What a turn IS — its kind, its Conversation,
-            # its app — the client knew before it opened the stream; the one thing it could not know
-            # is when the lock became its own, and that is the whole of what this says.
-            yield {"type": "running", "ticket": ticket.id}
+            # and first-token wait. It carries the ticket and nothing else. The client already knew
+            # the kind, Conversation and app; only the backend can supply this exact identity.
+            yield {"type": "running", "ticket": ticket.id, "sequence": ticket.sequence,
+                   "epoch": ticket.epoch}
             ticket.granted = True
-            self._begin_model_record()
+            if begin_model_record:
+                self._begin_model_record()
         finally:
             # A generator abandoned at one of those yields — a client that hung up, a caller that
             # stopped reading — is a place in the queue nobody is standing in. Left on the deque it
@@ -16871,6 +17038,9 @@ class Orchestrator:
 
         def handle_stop() -> dict:
             project.stop_requested = False
+            # The transcript is rolled back below, but the bounded diagnostic record must retain
+            # the terminal reason. It is a separate lifecycle record, not private transcript data.
+            build_diagnostics.observe({"type": "stopped"})
             # Stop is not a way past ADR-0045 (#259). The revert below is rooted in the Built App
             # and `examples/` is a symlink out of it, so a table this turn wrote survives the Stop —
             # rightly, it is an answer someone can still use. Its ROWS are a separate question, and
@@ -18156,7 +18326,8 @@ class Orchestrator:
 
     def approve_stream(self, answers: str = "", plan_edits: str | None = None,
                        conversation: str | None = None, plan_id: str = "",
-                       build_again: bool = False):
+                       build_again: bool = False, *, turn_id: str | None = None,
+                       turn_ticket: _TurnTicket | None = None):
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
         turn to misread. Approval means "build it now", so if the user is in Plan or Ask mode we run
@@ -18176,7 +18347,7 @@ class Orchestrator:
         # an approve asked for mid-turn queues behind it (#79) rather than being refused, because an
         # approve IS a build turn and a Workbench that queued one and refused the other is a rule
         # people would have to learn instead of guess.
-        ticket = _TurnTicket(new_id("turn"))
+        ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         timing.start_turn("approve", turn_id=ticket.id, conversation_id=conversation)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="build", conversation=conversation, prompt="",
@@ -18542,6 +18713,7 @@ class Orchestrator:
                 # Stop retires the plan, exactly as it does on an unphased build: the person said
                 # they don't want this, so nothing is owed a retry and _approve_locked archives it.
                 project.app_for_turn().set_plan_retry_step(0)
+                build_diagnostics.observe({"type": "stopped"})
                 yield {"type": "stopped"}
                 return
             if outcome is not True:
@@ -19571,7 +19743,8 @@ class Orchestrator:
                 return self._workspace_id
         return None
 
-    def stop_build(self, kind: str = "", conversation: str = "", app: str = "") -> bool:
+    def stop_build(self, kind: str = "", conversation: str = "", app: str = "",
+                   turn_id: str = "") -> bool:
         """Interrupt the turn in flight — Build or Chat. Both poll `stop_requested` and
         both clear it as they unwind; Build also reverts the files and history the turn wrote,
         Chat keeps what it wrote (see _chat_stream, _build_stream's handle_stop).
@@ -19581,7 +19754,7 @@ class Orchestrator:
         Stop pressed twice, or pressed in the second a turn was already ending, silently killed the
         NEXT question before it ran a step.
 
-        `kind` and `conversation` name the turn the Stop was AIMED at, and it is a no-op when that
+        `kind`, `conversation`, `app`, and optional `turn_id` name the turn the Stop was AIMED at, and it is a no-op when that
         is no longer the turn running (#126). The queue made this necessary: Stop ends one turn and
         the queue advances (ADR-0013), so between the press and the POST the lock can change hands
         and the Stop lands on a question the person never aimed at. Naming nothing keeps the old
@@ -19589,33 +19762,53 @@ class Orchestrator:
         always sent. A raw-lock holder has no ticket, so an aimed Stop never matches one: you cannot
         Stop a publish, and that is the answer rather than an omission.
 
-        Returns whether it actually interrupted anything, so the route stops answering
+        A route admits its exact `turn_id` before its lazy StreamingResponse body starts. An exact
+        Stop can cancel that pre-start running ticket or its waiting ticket. Both paths return a
+        cancelled terminal event without starting model work.
+
+        Returns whether it actually interrupted or cancelled anything, so the route stops answering
         `{"stopped": true}` to a Stop it declined to fire — the same class of lie as the button
         this fixes.
         """
-        if not self.turn_busy():
-            return False
-        if kind or conversation:
+        with self._stop_control_lock:
             running = self._turns.running()
+            if turn_id:
+                exact = self._turns.stop_exact(
+                    turn_id, kind=kind, conversation=conversation, app=app)
+                if exact == "cancelled":
+                    return True
+                if exact != "running":
+                    return False
+                running = self._turns.running()
+            # Publish, reset, and the other raw lock users carry no ticket. Even the legacy
+            # unscoped Stop must refuse them, or its flag survives into the next real turn.
             if running is None:
                 return False
-            if kind and running.kind != kind:
+            if not self.turn_busy():
                 return False
-            if conversation and running.conversation != conversation:
-                return False
-            # An empty `running.app` matches anything: a Chat turn has no app, and a build whose app
-            # could not be read must not become unstoppable over a field nobody could fill.
-            if app and running.app and running.app != app:
-                return False
-        project = self.project()
-        project.stop_requested = True
-        # The LIVE session, not the project's: during a phased build the project session is idle and
-        # interrupting it would leave the running phase generating for another poll cycle or more,
-        # which reads as a Stop button that doesn't work.
-        sid = project.active_session_id or project.session_id
-        if sid and self._oc_client is not None:
+            if kind or conversation or app or turn_id:
+                running = self._turns.running()
+                if running is None:
+                    return False
+                if kind and running.kind != kind:
+                    return False
+                if conversation and running.conversation != conversation:
+                    return False
+                # An empty `running.app` matches anything: a Chat turn has no app, and a build whose
+                # app could not be read must not become unstoppable over a field nobody could fill.
+                if app and running.app and running.app != app:
+                    return False
+                if turn_id and running.id != turn_id:
+                    return False
+            project = self.project()
+            project.stop_requested = True
+            # Capture the LIVE session under the decision lock. The interrupt is a network call and
+            # must not hold up an unrelated decline commit.
+            sid = project.active_session_id or project.session_id
+            client = self._oc_client
+        if sid and client is not None:
             try:
-                self._oc_client.interrupt(sid)
+                client.interrupt(sid)
             except httpx.HTTPError:
                 pass
         return True

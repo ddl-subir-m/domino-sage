@@ -98,6 +98,154 @@ def test_the_bar_comes_down_when_the_turn_ends(mode: str):
     assert out["runningAfter"] is False
 
 
+@pytest.mark.parametrize("mode", ["droppedBuild", "droppedApprove", "droppedReadFailure"])
+def test_a_dropped_stream_keeps_stop_refreshes_and_then_leaves_building_after_cancel(mode: str):
+    """The live failure from #512: the browser lost SSE while the backend kept running."""
+    out = _run(mode)
+
+    assert out["afterDrop"] == {
+        "running": True,
+        "stopOffered": True,
+        "typing": "Connection lost — build is still running.",
+        "watcher": True,
+    }
+    assert out["afterRefresh"] == {"running": True, "stopOffered": True}
+    assert out["afterCancel"] == {
+        "running": False, "stopOffered": False, "requestedTurnId": "turn_abc"}
+    assert out["afterRelease"] == {"running": False, "stopOffered": False}
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["build", "approve", "chat", "opening", "openingBuild", "openingApprove",
+     "requeued", "requeuedBuild", "requeuedApprove"],
+)
+def test_a_live_turn_claim_keeps_the_exact_backend_ticket(mode: str):
+    assert _run(mode)["midTurn"]["turnId"] == "turn_abc"
+
+
+def test_a_preframe_stop_does_not_adopt_a_same_scope_successor_from_state():
+    """The response header binds A before any frame; a later state answer may belong to B."""
+    assert _run("preframeStopRace") == {
+        "buildStateReads": 1, "buildStateReadsAtStop": 0,
+        "stopPosts": 1, "requestedTurnId": "turn_abc"}
+
+
+def test_a_successor_keeps_its_header_identity_until_it_can_own_the_claim():
+    """B is sent while A owns the claim. A ends before B's response arrives, and B receives no
+    queue frames. Its saved response ticket must still be the exact ticket Stop sends."""
+    assert _run("successorHeaderRace") == {
+        "turnId": "turn_b", "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+def test_out_of_order_response_headers_obey_server_admission_state():
+    """C, B, then A headers arrive. Only A says running, so response order cannot make B or C the
+    visible Stop target while their pending frames are held."""
+    assert _run("authoritativeHeaders") == {
+        "turnId": "turn_a", "sequence": 1, "queued": 2,
+        "stopPosts": 1, "requestedTurnId": "turn_a"}
+
+
+def test_a_delayed_older_running_header_cannot_replace_the_newer_turn():
+    """B's sequence wins before A's delayed response callback. A cannot replace or clear B."""
+    assert _run("lateRunningHeader") == {
+        "turnId": "turn_b", "sequence": 2,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+def test_an_idless_legacy_header_cannot_replace_a_newer_exact_turn():
+    """Missing sequence and ID keep compatibility without letting a stale callback replace B."""
+    assert _run("legacyIdlessLateHeader") == {
+        "turnId": "turn_b", "sequence": 2,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+def test_legacy_backend_state_reconstructs_a_new_running_turn_after_refresh():
+    """With no local request, authoritative state may replace completed A with B without a sequence."""
+    assert _run("legacyStateReconstruction") == {
+        "turnId": "turn_b", "sequence": 0, "stopOffered": True}
+
+
+def test_a_backend_restart_replaces_old_sequence_and_rejects_the_delayed_old_header():
+    """Local B establishes the new process without a state poll, then rejects late local A."""
+    assert _run("restartEpochRace") == {
+        "turnId": "turn_b", "epoch": "boot_new", "sequence": 1,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+def test_a_local_header_that_settles_after_a_state_read_started_wins():
+    """A delayed old state answer cannot replace B after B's local header has settled."""
+    assert _run("localBeatsState") == {
+        "turnId": "turn_b", "epoch": "boot_new", "sequence": 1,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+def test_a_delayed_state_answer_cannot_restore_a_turn_after_stop_was_accepted():
+    """The same ownership order preserves the accepted-Stop unwind latch."""
+    assert _run("stoppedLocalBeatsState") == {
+        "running": False, "turnId": None,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("restartEpochRace", {
+            "turnId": "turn_b", "epoch": "boot_new", "sequence": 1,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+        ("authoritativeHeaders", {
+            "turnId": "turn_a", "sequence": 1, "queued": 2,
+            "stopPosts": 1, "requestedTurnId": "turn_a"}),
+        ("lateRunningHeader", {
+            "turnId": "turn_b", "sequence": 2,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+        ("chatStateReverse", {
+            "turnId": "turn_b", "epoch": "boot_new", "sequence": 1}),
+        ("localBeatsState", {
+            "turnId": "turn_b", "epoch": "boot_new", "sequence": 1,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+        ("stoppedLocalBeatsState", {
+            "running": False, "turnId": None,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+        ("legacyIdlessLateHeader", {
+            "turnId": "turn_b", "sequence": 2,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+    ],
+)
+def test_cross_source_ownership_ordering_matrix(mode: str, expected: dict):
+    """New valid ownership wins across headers, events, state, restart, and Stop unwind."""
+    assert _run(mode) == expected
+
+
+def test_an_old_backend_without_any_exact_identity_offers_only_a_safe_message():
+    """No header and no queue event means no correlated Stop can be sent safely."""
+    assert _run("legacyNoIdentity") == {
+        "stopOffered": False,
+        "message": "Stop is unavailable for this turn. Refresh Sage to update it.",
+        "stopPosts": 0, "buildStateReads": 0}
+
+
+def test_overlapping_chat_state_reads_settle_in_request_order():
+    """Slow A cannot overwrite B after B's newer state response has settled."""
+    assert _run("chatStateReverse") == {
+        "turnId": "turn_b", "epoch": "boot_new", "sequence": 1}
+
+
+def test_a_failed_state_read_after_stream_loss_keeps_the_exact_stop_claim():
+    assert _run("droppedStateFailure") == {
+        "running": True, "stopOffered": True,
+        "typing": "Connection lost — build is still running.", "watcher": True,
+        "turnId": "turn_abc"}
+
+
+def test_a_failed_state_read_during_stop_unwind_keeps_the_accepted_stop_latch():
+    out = _run("stopStateFailure")
+    assert out["afterCancel"] == {
+        "running": False, "stopOffered": False, "requestedTurnId": "turn_abc"}
+    assert out["afterUnwind"] == {"running": False, "stopOffered": False}
+    assert out["afterRelease"] == {"running": False, "stopOffered": False}
+
+
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])
 def test_stop_is_there_before_the_turn_has_anything_to_show_for_itself(mode: str):
     """The window #126 left behind, and the whole of #371.
@@ -188,6 +336,7 @@ def test_a_second_question_does_not_take_the_name_off_the_one_that_is_running():
 
     assert out["midTurn"]["stopOffered"] is True
     assert out["midTurn"]["elsewhere"] is None
+    assert out["midTurn"]["turnId"] == "turn_abc", "the queued turn's header renamed the live turn"
     assert out["runningTurnAfter"] is None
 
 
