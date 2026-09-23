@@ -244,13 +244,13 @@ def test_unreadable_json_reads_as_empty_rather_than_raising(tmp_path: Path):
 # ---- What gets written into the app --------------------------------------------------------
 
 
-def test_the_generated_config_carries_the_url_and_token_and_warns_about_the_bundle():
+def test_the_generated_config_carries_the_url_and_token_and_warns_about_the_exposure():
     api = Binding(KIND_MODEL_API, MODEL_ID, "churn-risk", "churn-risk")
     text = render_config([api], {MODEL_ID: Credential(URL, TOKEN)})
     assert f'"{URL}"' in text and f'"{TOKEN}"' in text
-    # The exposure is the whole reason this file is different from appLlm.config.ts. Whoever opens
+    # The exposure is the whole reason this file is different from appLlm.config.js. Whoever opens
     # it later must not have to reconstruct why a secret is sitting in a committed file.
-    assert "CAN READ THEM" in text
+    assert "CAN READ\n// THEM" in text
 
 
 def test_a_binding_whose_credential_has_gone_renders_as_no_model_api():

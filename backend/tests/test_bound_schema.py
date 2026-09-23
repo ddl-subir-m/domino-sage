@@ -42,7 +42,7 @@ from sage.resources.provider import (
 
 # The app template itself, which is what SAGE_TEMPLATE points at and what WorkspaceManager seeds
 # from — so this is the same `serve.py` that ends up in every published app.
-TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 
 SNOWFLAKE = Binding(KIND_DATA_SOURCE, "ds-dwh", "warehouse", "warehouse",
                     "DWH", "MARTS", None, "SnowflakeConfig")
@@ -307,7 +307,7 @@ def test_an_app_with_no_catalog_has_no_problems(tmp_path: Path):
 
 
 def orchestrator(tmp_path: Path):
-    """A real workspace, seeded from a template that carries the REAL `serve.py`.
+    """A real workspace, seeded from a template that carries the REAL `sage_serve.py`.
 
     Copied rather than stubbed because the whole point of `builtapp` is that Sage asks that file
     instead of restating it: a stub here would test a second implementation into existence.
@@ -317,13 +317,13 @@ def orchestrator(tmp_path: Path):
     from sage.router.models import ModelCatalog
 
     template = tmp_path / "template"
-    (template / "src").mkdir(parents=True, exist_ok=True)
-    (template / "src" / "App.tsx").write_text("placeholder")
-    (template / "package.json").write_text("{}")
-    shutil.copy2(TEMPLATE / "serve.py", template / "serve.py")
+    (template / "static" / "sage").mkdir(parents=True, exist_ok=True)
+    (template / "static" / "app.js").write_text("placeholder")
+    (template / "app.py").write_text("# app\n")
+    shutil.copy2(TEMPLATE / "sage_serve.py", template / "sage_serve.py")
     shutil.copy2(TEMPLATE / "sage_queries.py", template / "sage_queries.py")
-    shutil.copy2(TEMPLATE / "src" / "appQuery.ts", template / "src" / "appQuery.ts")
-    shutil.copy2(TEMPLATE / "src" / "appBase.ts", template / "src" / "appBase.ts")
+    shutil.copy2(TEMPLATE / "static" / "sage" / "appQuery.js", template / "static" / "sage" / "appQuery.js")
+    shutil.copy2(TEMPLATE / "static" / "sage" / "appBase.js", template / "static" / "sage" / "appBase.js")
 
     orch = Orchestrator(
         workspace_dir=tmp_path / "mnt" / "code",
@@ -375,11 +375,12 @@ def test_the_agent_is_told_the_columns_and_how_to_query_them(tmp_path: Path):
 
 
 def test_an_app_seeded_before_the_helper_existed_gets_one_when_it_binds(tmp_path: Path):
-    # The template ships `src/appQuery.ts`, so every project seeded after #15 already has it. This is
-    # for the ones seeded before: their repo has none, and the block above tells the agent to import
-    # from a module that is not there — the same gap `ensure_llm_helper` exists to close.
+    # The template ships `static/sage/appQuery.js`, so every project seeded after #15 already has
+    # it. This is for the ones seeded before: their repo has none, and the block above tells the
+    # agent to import from a module that is not there — the same gap `ensure_llm_helper` exists to
+    # close.
     orch = orchestrator(tmp_path)
-    helper = workspace_of(orch) / "src" / "appQuery.ts"
+    helper = workspace_of(orch) / "static" / "sage" / "appQuery.js"
     helper.unlink()
     orch.bind_data_source("ds-dwh", "DWH", "MARTS")
     assert helper.is_file()

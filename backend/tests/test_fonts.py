@@ -23,7 +23,6 @@ REPO = Path(__file__).resolve().parents[2]
 # every published app. The second is the one a customer's viewer loads, and the reason this matters.
 PAGES = [
     REPO / "backend" / "sage" / "workbench" / "index.html",
-    REPO / "template" / "react-vite" / "index.html",
     # The no-build stack's page, and the stylesheet it loads the font from (#490).
     REPO / "template" / "fastapi-antd" / "static" / "index.html",
     REPO / "template" / "fastapi-antd" / "static" / "app.css",
@@ -60,15 +59,13 @@ def test_the_builder_serves_the_font_its_page_asks_for():
 
 
 def test_the_published_app_ships_the_font_its_css_asks_for():
-    # No build step here — `vite build` is what turns this url into a hashed dist/assets entry, and
-    # what would fail loudly if the file were missing. This only pins that the file it reaches for
-    # is in the repo, which is the part a tidy-up of src/assets/ could quietly take away.
-    for css in (REPO / "template" / "react-vite" / "src" / "index.css",
-                REPO / "template" / "fastapi-antd" / "static" / "app.css"):
-        font = (css.parent / _asked_for(css.read_text())).resolve()
+    # No build step here — there is no bundler to fail loudly if the file were missing, so this is
+    # what pins that the file the stylesheet reaches for is actually in the repo.
+    css = REPO / "template" / "fastapi-antd" / "static" / "app.css"
+    font = (css.parent / _asked_for(css.read_text())).resolve()
 
-        assert font.is_file(), css
-        assert font.read_bytes()[:4] == b"wOF2", css
+    assert font.is_file(), css
+    assert font.read_bytes()[:4] == b"wOF2", css
 
 
 def test_the_two_copies_are_the_same_font_under_its_license():
@@ -77,7 +74,6 @@ def test_the_two_copies_are_the_same_font_under_its_license():
     # apart in a way only a careful eye would catch. OFL 1.1 asks that the licence travel with the
     # font, and each copy is its own distribution.
     copies = [REPO / "backend" / "sage" / "ui" / "fonts",
-              REPO / "template" / "react-vite" / "src" / "assets" / "fonts",
               REPO / "template" / "fastapi-antd" / "static" / "fonts"]
     digests = set()
     for d in copies:

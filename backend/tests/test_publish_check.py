@@ -32,7 +32,7 @@ from sage.resources.provider import FakeResourceProvider
 from sage.router.models import ModelCatalog
 
 # The real app template, so the checker under test is the file that ships in every published app.
-TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 
 # `ds-dwh` in the fake is Shared, so #12's guards have nothing to say and a publish here fails or
 # succeeds on this issue's terms alone.
@@ -50,17 +50,15 @@ SOUND = {"name": "usage", "binding": SOURCE_ID,
 
 def _template(tmp: Path, *, with_serve: bool = True) -> Path:
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
-    (t / "package.json").write_text("{}")
-    # No `serve.py` named in it: which entry script an app needs is #12's business, and this fixture
-    # must be able to drop the server without the publish failing for a different reason.
-    (t / "app.sh").write_text("#!/bin/bash\nexec npx vite preview\n")
+    (t / "static" / "sage").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
+    # No `sage_queries.py` named in it: which entry script an app needs is #12's business, and this
+    # fixture must be able to drop the server without the publish failing for a different reason.
     if with_serve:
-        shutil.copy2(TEMPLATE / "serve.py", t / "serve.py")
         shutil.copy2(TEMPLATE / "sage_queries.py", t / "sage_queries.py")
-        (t / "src" / "appQuery.ts").write_text("// placeholder")
-        (t / "src" / "appBase.ts").write_text("// placeholder")
+        (t / "static" / "sage" / "appQuery.js").write_text("// placeholder")
+        (t / "static" / "sage" / "appBase.js").write_text("// placeholder")
     return t
 
 

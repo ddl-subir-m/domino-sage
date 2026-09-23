@@ -77,14 +77,14 @@ def _no_waiting(monkeypatch):
 
 def _template(tmp: Path) -> Path:
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("export default function App() { return null }\n")
-    (t / "package.json").write_text('{"name": "template"}')
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("// app placeholder\n")
+    (t / "app.py").write_text("# app\n")
     (t / "AGENTS.md").write_text("# Building this app\n\nSage's rules go here.\n")
     # No `/examples`, matching the real template: it seeds the Project root as well as each app,
     # and at the root that rule ignores the Chat Artifacts themselves (#222). Every test here that
     # wants the rule is therefore testing `_ensure_examples_link`, which is the only writer.
-    (t / ".gitignore").write_text("node_modules\ndist\n")
+    (t / ".gitignore").write_text("__pycache__\n")
     return t
 
 
@@ -138,7 +138,7 @@ def test_a_confirmed_handoff_leaves_the_artifacts_readable_from_the_build_agents
     that names it, and the turn runs in `apps/<appId>/` — so the assertion is the read the agent
     would do: same path, from that directory, same bytes."""
     orch, root = _orch(tmp_path, [Turn(text=_PLAN),
-                                  Turn(text="Built it.", writes={"src/App.tsx": "// built\n"})])
+                                  Turn(text="Built it.", writes={"static/app.js": "// built\n"})])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a desk dashboard"))
     original = _artifact(root, tid)
@@ -158,7 +158,7 @@ def test_a_confirmed_handoff_does_not_link_other_threads_artifacts(tmp_path: Pat
     """The digest names `examples/<this Thread>/...`; the link must not make another Thread's
     `examples/<other Thread>/...` readable from the same app."""
     orch, root = _orch(tmp_path, [Turn(text=_PLAN),
-                                  Turn(text="Built it.", writes={"src/App.tsx": "// built\n"})])
+                                  Turn(text="Built it.", writes={"static/app.js": "// built\n"})])
     tid = orch.create_thread()["id"]
     other = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "build me a desk dashboard"))
@@ -181,9 +181,9 @@ def test_a_second_handoff_into_the_same_app_removes_the_first_threads_link(tmp_p
     the build agent can open `examples/<first Thread>/...` by exact path.
     """
     orch, root = _orch(tmp_path, [Turn(text=_PLAN),
-                                  Turn(text="Built first.", writes={"src/App.tsx": "// first\n"}),
+                                  Turn(text="Built first.", writes={"static/app.js": "// first\n"}),
                                   Turn(text=_PLAN),
-                                  Turn(text="Built second.", writes={"src/App.tsx": "// second\n"})])
+                                  Turn(text="Built second.", writes={"static/app.js": "// second\n"})])
     first = orch.create_thread()["id"]
     second = orch.create_thread()["id"]
 
@@ -226,7 +226,7 @@ def test_the_non_streaming_build_turn_gets_the_link_too(tmp_path: Path):
     """The fourth entrypoint. `build()` is the non-streaming turn behind the API's build button —
     it reuses the session and runs the feedback loop without yielding events, so nothing in the
     streaming tests covers it. It is a turn, so it gets the link on the same terms."""
-    orch, root = _orch(tmp_path, [Turn(text="Built it.", writes={"src/App.tsx": "// built\n"})])
+    orch, root = _orch(tmp_path, [Turn(text="Built it.", writes={"static/app.js": "// built\n"})])
     app = orch.project(start_preview=False).workspace.path
     _unlinked(app)
     _artifact(root)
@@ -274,7 +274,7 @@ def test_a_question_turn_that_creates_the_link_discards_nothing(tmp_path: Path):
     """The other read-only turn. Answer-only reverts the tree when it thinks the agent wrote, which
     would take the user's built app with it."""
     orch, root = _orch(tmp_path, [Turn(text=_PLAN),
-                                  Turn(text="Built it.", writes={"src/App.tsx": "// built\n"}),
+                                  Turn(text="Built it.", writes={"static/app.js": "// built\n"}),
                                   Turn(text="It uses Highcharts.")])
     orch.project(start_preview=False)   # attach and seed, without starting Vite
     list(orch.build_stream("build me a desk dashboard"))
@@ -286,7 +286,7 @@ def test_a_question_turn_that_creates_the_link_discards_nothing(tmp_path: Path):
     events = list(orch.build_stream("what charting library does this use?", conversation="thr_a"))
 
     assert [e for e in events if e["type"] == "done"][-1]["decision"] == "answered"
-    assert (app / "src" / "App.tsx").read_text() == "// built\n"   # not discarded
+    assert (app / "static" / "app.js").read_text() == "// built\n"   # not discarded
     assert (app / "examples" / "thr_a" / "revenue.png").exists()
 
 
@@ -297,7 +297,7 @@ def test_reset_leaves_the_link_working_when_the_next_turn_runs(tmp_path: Path):
     `_RESET_KEEP`. The seam at the tail of `reset_app` is what puts it back, which is the same way
     `.sage/history.md` is handled, so the invariant stays in one place."""
     orch, root = _orch(tmp_path, [Turn(text=_PLAN),
-                                  Turn(text="Built it.", writes={"src/App.tsx": "// built\n"}),
+                                  Turn(text="Built it.", writes={"static/app.js": "// built\n"}),
                                   Turn(text=_PLAN)])
     orch.project(start_preview=False)   # attach and seed, without starting Vite
     list(orch.build_stream("build me a desk dashboard", conversation="thr_a"))
@@ -377,7 +377,7 @@ def test_the_template_does_not_ship_the_rule(tmp_path: Path):
     ignored the Chat Artifacts themselves and committed none of them. `_ensure_examples_link` is
     the only writer now, into the app's own .gitignore, which cannot reach the tree above it.
     See `test_a_restarted_builder_still_has_the_charts_its_conversations_made.py` for the loss."""
-    template = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+    template = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
     rules = {ln.strip() for ln in (template / ".gitignore").read_text().splitlines()
              if ln.strip() and not ln.startswith("#")}
     assert not {"/examples", "/examples/", "examples", "examples/"} & rules
@@ -407,14 +407,14 @@ def test_the_stop_buttons_revert_does_not_see_the_link(tmp_path: Path):
     assert snap.changed_since_pre_turn() is False
 
     # A build turn: the agent edits a file and adds one.
-    (app / "src" / "App.tsx").write_text("edited by the agent")
-    (app / "src" / "Desk.tsx").write_text("brand new")
+    (app / "static" / "app.js").write_text("edited by the agent")
+    (app / "static" / "desk.js").write_text("brand new")
     assert snap.changed_since_pre_turn() is True
 
     snap.discard_changes()
 
-    assert (app / "src" / "App.tsx").read_text() == "export default function App() { return null }\n"
-    assert not (app / "src" / "Desk.tsx").exists()
+    assert (app / "static" / "app.js").read_text() == "// app placeholder\n"
+    assert not (app / "static" / "desk.js").exists()
     # The revert left the link alone, and left the Project's Artifacts alone through it.
     assert (app / "examples" / "thr_a").is_symlink()
     assert original.read_bytes() == ARTIFACT

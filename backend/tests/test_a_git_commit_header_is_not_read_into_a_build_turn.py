@@ -12,7 +12,7 @@ HEADER rather than about `git show`: an agent told "never `git show`" still need
 list and reaches for something else that prints one. Redacting author lines in the shim is the
 thing this is NOT — ADR-0022's one hard promise is that Sage never redacts to get past policy.
 
-`template/react-vite/AGENTS.md` is the only surface that carries this. The build agent reads it out
+`template/fastapi-antd/AGENTS.md` is the only surface that carries this. The build agent reads it out
 of the workspace (`sage-implement`'s own prompt says "Follow AGENTS.md in the workspace"), and the
 two ways it gets there are a new Project and Reset app — an existing workspace never re-seeds (#40),
 so both paths are asserted here rather than the file alone. The other AGENTS.md, `template/chat`,
@@ -29,7 +29,7 @@ import pytest
 from sage.workspace.manager import WorkspaceManager
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENTS = ROOT / "template" / "react-vite" / "AGENTS.md"
+AGENTS = ROOT / "template" / "fastapi-antd" / "AGENTS.md"
 
 
 def agents() -> str:
@@ -198,12 +198,10 @@ def _template_carrying_the_real_agents_file(tmp: Path) -> Path:
     `test_the_agents_file_reaches_the_model_in_the_packs_words`, over these same two routes.
     """
     t = tmp / "template"
-    (t / "src").mkdir(parents=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
-    (t / "package.json").write_text("{}")
+    (t / "static").mkdir(parents=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
     (t / "AGENTS.md").write_text(agents(), encoding="utf-8")
-    (t / "node_modules" / ".bin").mkdir(parents=True)
-    (t / "node_modules" / ".bin" / "vite").write_text("#!/bin/sh")
     return t
 
 

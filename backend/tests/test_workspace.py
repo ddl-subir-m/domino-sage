@@ -12,13 +12,9 @@ from sage.workspace.manager import WorkspaceManager
 
 def _fake_template(tmp: Path) -> Path:
     t = tmp / "template"
-    (t / "src").mkdir(parents=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
-    (t / "package.json").write_text("{}")
-    (t / "node_modules").mkdir()
-    (t / "node_modules" / "dep").write_text("x")
-    (t / "node_modules" / ".bin").mkdir()
-    (t / "node_modules" / ".bin" / "vite").write_text("#!/bin/sh")  # the usable-deps sentinel
+    (t / "static").mkdir(parents=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
     return t
 
 
@@ -34,24 +30,22 @@ def test_project_resources_start_empty_and_round_trip(tmp_path: Path):
     assert record2.read_project_resources() == [row]
 
 
-def test_ensure_seeds_from_template_and_symlinks_node_modules(tmp_path: Path):
+def test_ensure_seeds_from_template(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
 
     ws = mgr.ensure("proj1")
 
     assert ws.app_entry.read_text() == "placeholder"
-    assert (ws.path / "package.json").exists()
-    nm = ws.path / "node_modules"
-    assert nm.is_symlink() and (nm / "dep").read_text() == "x"  # warm deps, not copied
+    assert (ws.path / "app.py").exists()
 
 
-def test_ensure_without_seed_app_does_not_copy_the_react_template(tmp_path: Path):
+def test_ensure_without_seed_app_does_not_copy_the_app_template(tmp_path: Path):
     tmpl = _fake_template(tmp_path)
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
     ws = mgr.ensure("proj1", seed_app=False)
-    assert not (ws.path / "package.json").exists()
-    assert not (ws.path / "src").exists()
+    assert not (ws.path / "app.py").exists()
+    assert not (ws.path / "static").exists()
 
 
 def test_ensure_is_idempotent_and_never_clobbers_existing_app(tmp_path: Path):
@@ -63,18 +57,18 @@ def test_ensure_is_idempotent_and_never_clobbers_existing_app(tmp_path: Path):
     app = ws_dir / "apps" / "app_already"
     app.mkdir(parents=True)
     (ws_dir / ".git").mkdir()
-    (app / "package.json").write_text('{"name": "mine"}')
-    (app / "src").mkdir()
-    (app / "src" / "App.tsx").write_text("my code")
+    (app / "app.py").write_text('# mine')
+    (app / "static").mkdir()
+    (app / "static" / "app.js").write_text("my code")
     mgr = WorkspaceManager(workspace_dir=ws_dir, template=tmpl)
 
     ws = mgr.ensure("proj1")
     mgr.ensure("proj1")  # second call is a no-op
 
     assert ws.app_id == "app_already" and ws.path == app
-    assert (app / "package.json").read_text() == '{"name": "mine"}'
+    assert (app / "app.py").read_text() == '# mine'
     assert ws_dir / ".git" in list(ws_dir.iterdir())
-    assert (app / "src" / "App.tsx").read_text() == "my code"
+    assert (app / "static" / "app.js").read_text() == "my code"
     assert mgr.app_ids() == ["app_already"]  # no second app beside it
 
 
@@ -87,53 +81,6 @@ def test_ensure_seeds_into_preexisting_empty_dir(tmp_path: Path):
     ws = mgr.ensure("proj1")
 
     assert ws.app_entry.read_text() == "placeholder"
-
-
-def test_link_warm_deps_repairs_what_a_failed_npm_install_leaves(tmp_path: Path):
-    # The live failure (2026-08-13): `npm install <404 package>` deletes the symlink during reify,
-    # then aborts, leaving a real directory with no vite in it. Every later build and the preview
-    # fail until this is put back.
-    tmpl = _fake_template(tmp_path)
-    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
-    ws = mgr.ensure("p")
-    nm = ws.path / "node_modules"
-    nm.unlink()
-    nm.mkdir()
-    (nm / ".package-lock.json").write_text("{}")   # npm's leftovers, no .bin/vite
-
-    assert mgr.link_warm_deps() is True
-    assert nm.is_symlink() and (nm / "dep").read_text() == "x"
-    assert mgr.link_warm_deps() is False           # healthy now — repeat calls are no-ops
-
-
-def test_link_warm_deps_leaves_a_successful_agent_install_alone(tmp_path: Path):
-    # npm CAN rebuild the whole tree from package.json when the install resolves. That directory is
-    # real, complete, and may hold a package the agent legitimately added — never clobber it.
-    tmpl = _fake_template(tmp_path)
-    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
-    ws = mgr.ensure("p")
-    nm = ws.path / "node_modules"
-    nm.unlink()
-    (nm / ".bin").mkdir(parents=True)
-    (nm / ".bin" / "vite").write_text("#!/bin/sh")
-    (nm / "date-fns").mkdir()
-
-    assert mgr.link_warm_deps() is False
-    assert not nm.is_symlink() and (nm / "date-fns").is_dir()
-
-
-def test_link_warm_deps_relinks_a_dangling_symlink(tmp_path: Path):
-    # os.symlink onto an existing-but-dangling link raises FileExistsError: exists() follows the
-    # link and reports False while the link itself is still there.
-    tmpl = _fake_template(tmp_path)
-    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
-    ws = mgr.ensure("p")
-    nm = ws.path / "node_modules"
-    nm.unlink()
-    nm.symlink_to(tmp_path / "gone")
-
-    assert mgr.link_warm_deps() is True
-    assert (nm / "dep").read_text() == "x"
 
 
 def test_has_built_latches_on_and_persists(tmp_path: Path):
@@ -225,35 +172,35 @@ def test_refresh_entry_script_restores_a_missing_one(tmp_path: Path):
 
 
 def test_refresh_ships_the_python_server_app_sh_execs(tmp_path: Path):
-    # app.sh now execs serve.py (ADR-0002), so refreshing one without the other publishes an app
-    # whose entry script calls a file that isn't in the repo.
+    # app.sh now execs sage_serve.py (ADR-0002), so refreshing one without the other publishes an
+    # app whose entry script calls a file that isn't in the repo.
     tmpl = _fake_template(tmp_path)
-    (tmpl / "app.sh").write_text("exec python3 serve.py\n")
-    (tmpl / "serve.py").write_text("# v2\n")
+    (tmpl / "app.sh").write_text("exec python3 sage_serve.py\n")
+    (tmpl / "sage_serve.py").write_text("# v2\n")
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
     ws = mgr.ensure("proj1")
-    (ws.path / "app.sh").write_text("exec npx vite preview\n")  # an app born before the swap
-    (ws.path / "serve.py").unlink()
+    (ws.path / "app.sh").write_text("exec python3 sage_serve.py --old-flag\n")  # stale
+    (ws.path / "sage_serve.py").unlink()
 
     assert mgr.refresh_entry_script() is True
-    assert (ws.path / "app.sh").read_text() == "exec python3 serve.py\n"
-    assert (ws.path / "serve.py").read_text() == "# v2\n"
+    assert (ws.path / "app.sh").read_text() == "exec python3 sage_serve.py\n"
+    assert (ws.path / "sage_serve.py").read_text() == "# v2\n"
     assert mgr.refresh_entry_script() is False  # both current — nothing to commit
 
 
 def test_refresh_never_leaves_a_new_app_sh_without_its_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # The failure this ordering prevents: a refreshed app.sh execs serve.py, so if only app.sh
-    # landed the published app would crash-loop. serve.py goes first, so a partial refresh keeps
-    # the old (working) app.sh instead.
+    # The failure this ordering prevents: a refreshed app.sh execs sage_serve.py, so if only app.sh
+    # landed the published app would crash-loop. sage_serve.py goes first, so a partial refresh
+    # keeps the old (working) app.sh instead.
     tmpl = _fake_template(tmp_path)
-    (tmpl / "app.sh").write_text("exec python3 serve.py\n")
-    (tmpl / "serve.py").write_text("# v2\n")
+    (tmpl / "app.sh").write_text("exec python3 sage_serve.py\n")
+    (tmpl / "sage_serve.py").write_text("# v2\n")
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
     ws = mgr.ensure("proj1")
-    (ws.path / "app.sh").write_text("exec npx vite preview\n")  # stale, so the refresh tries it
-    (ws.path / "serve.py").unlink()
+    (ws.path / "app.sh").write_text("exec python3 sage_serve.py --old-flag\n")  # stale, so the
+    (ws.path / "sage_serve.py").unlink()                                       # refresh tries it
     real_copy2 = manager.shutil.copy2
 
     def copy2_failing_on_the_script(src, dst, **kw):
@@ -265,10 +212,10 @@ def test_refresh_never_leaves_a_new_app_sh_without_its_server(
 
     with pytest.raises(OSError):
         mgr.refresh_entry_script()
-    assert (ws.path / "serve.py").read_text() == "# v2\n"
+    assert (ws.path / "sage_serve.py").read_text() == "# v2\n"
 
 
-def test_refresh_entry_script_delivers_the_rehydrate_scripts_app_sh_calls(tmp_path: Path):
+def test_refresh_entry_script_delivers_the_rehydrate_script_app_sh_calls(tmp_path: Path):
     # app.sh calls scripts/rehydrate_data.py. An app seeded before that script existed has no
     # scripts/ directory at all, so refreshing app.sh alone would deploy an entry script that calls
     # a file the repo does not have.
@@ -276,15 +223,13 @@ def test_refresh_entry_script_delivers_the_rehydrate_scripts_app_sh_calls(tmp_pa
     (tmpl / "app.sh").write_text('"$SAGE_PYTHON" scripts/rehydrate_data.py\n')
     (tmpl / "scripts").mkdir()
     (tmpl / "scripts" / "rehydrate_data.py").write_text("# fetches unmounted data\n")
-    (tmpl / "scripts" / "rehydrate-data.mjs").write_text("// links mounted data\n")
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
     ws = mgr.ensure("proj1")
     if (ws.path / "scripts").exists():
-        shutil.rmtree(ws.path / "scripts")          # an app born before either script
+        shutil.rmtree(ws.path / "scripts")          # an app born before the script
 
     assert mgr.refresh_entry_script() is True
     assert (ws.path / "scripts" / "rehydrate_data.py").read_text() == "# fetches unmounted data\n"
-    assert (ws.path / "scripts" / "rehydrate-data.mjs").read_text() == "// links mounted data\n"
     assert mgr.refresh_entry_script() is False
 
 
@@ -295,10 +240,9 @@ def test_app_sh_is_refreshed_after_everything_it_calls(tmp_path: Path):
 
     assert _DEPLOY_FILES[-1] == "app.sh"
     assert "scripts/rehydrate_data.py" in _DEPLOY_FILES
-    # serve.py imports sage_queries.py at startup, so the same rule holds one level down: a refreshed
-    # serve.py without the module it imports is an app that dies on ImportError.
-    assert _DEPLOY_FILES.index("sage_queries.py") < _DEPLOY_FILES.index("serve.py")
-    assert _DEPLOY_FILES.index("sage_domino.py") < _DEPLOY_FILES.index("serve.py")
+    # sage_serve.py imports sage_queries.py at startup, so the same rule holds one level down: a
+    # refreshed sage_serve.py without the module it imports is an app that dies on ImportError.
+    assert _DEPLOY_FILES.index("sage_queries.py") < _DEPLOY_FILES.index("sage_serve.py")
 
 
 def test_the_rendered_history_is_de_branded_and_quotes_the_agent_verbatim(

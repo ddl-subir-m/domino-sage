@@ -17,16 +17,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite" / "src"
-BOUNDARY = (TEMPLATE / "ErrorBoundary.tsx").read_text()
+TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd" / "static" / "sage"
+BOUNDARY = (TEMPLATE / "errorBoundary.js").read_text()
 
 
 def _method(src: str, sig: str) -> str:
     """One method's body, ending at its own closing brace rather than at whatever comes next —
     so a test reads the same thing whether or not the methods around it exist."""
     start = src.index(sig)
-    return src[start:src.index("\n  }\n", start)]
-REPORTER = (TEMPLATE / "reportRuntimeError.ts").read_text()
+    return src[start:src.index("\n    }\n", start)]
+REPORTER = (TEMPLATE / "reportRuntimeError.js").read_text()
 
 
 def test_the_crash_is_still_reported_whether_or_not_a_build_is_running():
@@ -67,10 +67,10 @@ def test_both_messages_survive():
 def test_a_published_app_never_claims_sage_is_fixing_it():
     """A published Domino App has no builder to ask, and the fetch would fail — but "fails" must mean
     "no", not "unknown". Every exit in this function has to be false except the confirmed one."""
-    fn = REPORTER[REPORTER.index("export async function buildIsRunning"):]
-    fn = fn[:fn.index("\n}")]
-    assert "if (!import.meta.env.DEV) return false;" in fn
-    assert "catch {\n    return false;\n  }" in fn
+    fn = REPORTER[REPORTER.index("sage.buildIsRunning = async function buildIsRunning"):]
+    fn = fn[:fn.index("\n  };")]
+    assert "if (!sage.preview) return false;" in fn
+    assert "} catch {\n      return false;\n    }" in fn
     assert "if (!res.ok) return false;" in fn
 
 

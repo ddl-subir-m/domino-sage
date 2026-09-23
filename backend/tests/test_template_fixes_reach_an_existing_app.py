@@ -1,9 +1,9 @@
 """A fix to a Sage-owned template file reaches the apps that already exist (#40).
 
-`WorkspaceManager.ensure()` seeds the template only when `package.json` is absent, so an app keeps
+`WorkspaceManager.ensure()` seeds the template only when `app.py` is absent, so an app keeps
 whatever copies of Sage's own files it was born with. Every later fix to them ships in the image,
 rebuilds cleanly, passes its tests — and is invisible in every project that already exists.
-`vite.config.ts` and `src/appLlm.ts` were each pulled out of that trap one at a time, after each had
+`theme.js` and `appLlm.js` were each pulled out of that trap one at a time, after each had
 already cost a debugging session. These are the four that were still in it.
 
 The trap is silent by construction, so a test that only reads the template proves nothing: it passes
@@ -22,17 +22,17 @@ from pathlib import Path
 
 from sage.workspace.manager import _OWNED_SOURCES, WorkspaceManager
 
-TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 
 
 def _template(tmp: Path) -> Path:
     """A stub template carrying a copy of every Sage-owned source, as the real one does."""
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
-    (t / "package.json").write_text("{}")
-    (t / "vite.config.ts").write_text("// template v2\n")
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
     for rel in _OWNED_SOURCES:
+        (t / rel).parent.mkdir(parents=True, exist_ok=True)
         (t / rel).write_text(f"// template {Path(rel).name} v2\n")
     return t
 
@@ -109,13 +109,15 @@ def test_the_binding_writers_replace_a_stale_helper_rather_than_keep_it(tmp_path
     """
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_template(tmp_path))
     ws = mgr.ensure("proj1")
-    (ws.path / "src" / "appModelApi.ts").write_text("// an older Sage wrote this\n")
-    (ws.path / "src" / "appQuery.ts").write_text("// an older Sage wrote this\n")
+    (ws.path / "static" / "sage" / "appModelApi.js").write_text("// an older Sage wrote this\n")
+    (ws.path / "static" / "sage" / "appQuery.js").write_text("// an older Sage wrote this\n")
 
     assert mgr.ensure_model_api_helper() is True
     assert mgr.ensure_query_helper() is True
-    assert (ws.path / "src" / "appModelApi.ts").read_text() == "// template appModelApi.ts v2\n"
-    assert (ws.path / "src" / "appQuery.ts").read_text() == "// template appQuery.ts v2\n"
+    assert (ws.path / "static" / "sage" / "appModelApi.js").read_text() == \
+        "// template appModelApi.js v2\n"
+    assert (ws.path / "static" / "sage" / "appQuery.js").read_text() == \
+        "// template appQuery.js v2\n"
     assert mgr.ensure_model_api_helper() is False   # already current — nothing to commit
     assert mgr.ensure_query_helper() is False
 
@@ -131,14 +133,19 @@ def test_agents_md_forbids_editing_every_file_that_gets_refreshed():
     only copy every project is guaranteed to have.
     """
     agents = (TEMPLATE / "AGENTS.md").read_text()
+    # `static/sage/` is forbidden as a whole directory rather than file by file (#490, one-app
+    # pivot), so a file under it is covered by that blanket rule rather than its own backtick path.
+    assert "static/sage/" in agents, "static/sage/ is refreshed but never forbidden"
     for rel in _OWNED_SOURCES:
+        if rel.startswith("static/sage/"):
+            continue
         assert f"`{Path(rel).as_posix()}`" in agents, f"{rel} is refreshed but never forbidden"
 
 
 def test_the_reporter_is_refreshed_before_the_boundary_that_imports_it():
-    # Ordered for the reason _DEPLOY_FILES is: ErrorBoundary.tsx imports reportRuntimeError.ts, so
+    # Ordered for the reason _DEPLOY_FILES is: errorBoundary.js calls sage.reportRuntimeError, so
     # a refresh that dies partway must leave the older boundary against the newer reporter, never a
-    # newer boundary importing exports the older reporter does not have.
+    # newer boundary calling a global the older reporter never attached.
     order = [Path(rel).name for rel in _OWNED_SOURCES]
-    assert order.index("reportRuntimeError.ts") < order.index("ErrorBoundary.tsx")
-    assert 'from "./reportRuntimeError"' in (TEMPLATE / "src" / "ErrorBoundary.tsx").read_text()
+    assert order.index("reportRuntimeError.js") < order.index("errorBoundary.js")
+    assert "sage.reportRuntimeError(" in (TEMPLATE / "static" / "sage" / "errorBoundary.js").read_text()

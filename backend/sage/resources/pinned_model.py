@@ -93,10 +93,11 @@ def render_config(aliases: list[Binding], base: str | None, project: str | None,
         "// Written by {assistantName} — do not edit. {assistantName} rewrites this file whenever "
         "the app's {resourcePlural} change.\n"
         "//\n"
-        "// `models` is every {llmAlias} this app may call — pass one by name to `askModel`. "
+        "// `models` is every {llmAlias} this app may call — pass one by name to `sage.askModel`. "
         "`alias` is\n"
-        "// the first of them, the model a call that names none gets. null means no model has been\n"
-        "// chosen yet. See ./{helper}.{ext}.\n",
+        "// the first of them, the model a call that names none gets. null means no model has been "
+        "chosen\n"
+        "// yet. See ./{helper}.{ext}.\n",
         helper=names.llm, ext=names.ext,
     )
     # A fastapi-antd page loads this as a plain script (#490): a global, not a module export.
@@ -155,22 +156,22 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
             "",
         ]
     code = [
-        "```tsx",
-        (f'import {{ askModel, checkModel }} from "./{names.llm}";'
-        f'  // from a subfolder: "../{names.llm}"'),
-        "",
-        'const answer = await askModel([{ role: "user", content: question }]);',
+        "```js",
+        brand.text('// `sage.askModel` is on the page already ({helper}); nothing to import.',
+                   helper=names.llm_path),
+        'const answer = await sage.askModel([{ role: "user", content: question }]);',
     ]
     if several:
         code += [
             "",
             "// Another of this app's models, for a call that is that model's job:",
-            f'const clustered = await askModel(messages, {{ alias: {json.dumps(aliases[1].name)} }});',
+            (f'const clustered = await sage.askModel(messages, '
+            f'{{ alias: {json.dumps(aliases[1].name)} }});'),
         ]
     code += [
         "",
         "// Stream provisional text. Mark it incomplete until this promise resolves:",
-        "await askModel(messages, { onToken: (t) => setAnswer((a) => a + t) });",
+        "await sage.askModel(messages, { onToken: (t) => setAnswer((a) => a + t) });",
         "```", "",
     ]
     rules = []
@@ -183,8 +184,8 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
             "model is a wrong answer nobody can see.")
     rules += [
         ("- **Check on load and show the result.** "
-         + (f'`const status = await checkModel({json.dumps(default.name)});`' if several
-            else "`const status = await checkModel();`")
+         + (f'`const status = await sage.checkModel({json.dumps(default.name)});`' if several
+            else "`const status = await sage.checkModel();`")
          + " — when `status.ok` is false, render `status.message` instead of the model UI. Whether "
            "this model is available depends on who opens the app, not on the app, so it works for the "
            "person who built it and can still fail for the person they share it with. Telling them on "

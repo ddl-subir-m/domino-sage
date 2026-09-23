@@ -442,7 +442,7 @@ def test_clearing_builds_recall_keeps_the_app_and_the_transcript(tmp_path: Path)
 
     orch.clear_build_recall(recall.SUMMARY)
 
-    assert (app / "src" / "App.tsx").exists()
+    assert (app / "static" / "app.js").exists()
     after = _build_history(orch)
     assert len(after) == before + 1
     # `app` and `at` are stamped by `append_history` on every row it writes.

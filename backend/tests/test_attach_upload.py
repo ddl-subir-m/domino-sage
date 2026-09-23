@@ -79,19 +79,19 @@ def test_upload_writes_to_default_dataset_mount_and_attaches(tmp_path: Path):
 
 def test_agents_block_gives_exact_served_path_and_guardrails(tmp_path: Path):
     # The agent must be told the EXACT nested served URL (not a flat /data/<name> it would guess,
-    # which 404s to the SPA fallback and reads as null data) and be steered off the git-leaking
-    # workaround of copying data into src/.
+    # which 404s and reads as null data) and be steered off the git-leaking workaround of copying
+    # data into the app's own source.
     orch = _orch(tmp_path)
     ws = orch.project(start_preview=False).workspace.path
     orch.upload_file("my data.csv", b"a,b\n1,2\n")
 
     agents = (ws / "AGENTS.md").read_text()
-    assert "fetch `data/sales_2026/uploads/my_data.csv`" in agents   # nested, base-relative
-    # Base-aware fetch by string concatenation, NOT new URL(path, BASE_URL) — BASE_URL is a path,
-    # so new URL() throws "Invalid base URL" and crashes the built app on load.
-    assert 'import.meta.env.BASE_URL + "data/' in agents
-    assert "Invalid base URL" in agents                              # warns off the crashing pattern
-    assert "src/" in agents and "gitignored" in agents               # don't-copy-into-git guardrail
+    assert "data/sales_2026/uploads/my_data.csv" in agents            # nested, base-relative
+    # Loaded through `sage.url`, NOT a leading-slash fetch — that works in the preview only to break
+    # once published, because a published app is served under a path its own code cannot know.
+    assert 'sage.url("data/<slug>/<name>")' in agents
+    assert "Do NOT fetch a leading-slash path" in agents               # warns off the breaking pattern
+    assert "static/" in agents and "gitignored" in agents              # don't-copy-into-git guardrail
 
 
 def test_manifest_rehydrates_attachments(tmp_path: Path):

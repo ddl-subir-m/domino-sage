@@ -63,14 +63,14 @@ def test_build_gets_current_source_paths_without_file_contents(tmp_path, monkeyp
     from sage.orchestrator.service import Orchestrator
 
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
-    orch, client = _orch(tmp_path, [Turn(text="Updated.", writes={"src/App.tsx": "export default () => null;"})])
+    orch, client = _orch(tmp_path, [Turn(text="Updated.", writes={"static/app.js": "export default () => null;"})])
     app = orch.project(start_preview=False).app_for_turn().path
-    (app / "src" / "StatusPanel.tsx").write_text("PRIVATE_SOURCE_CONTENT\n")
+    (app / "static" / "StatusPanel.js").write_text("PRIVATE_SOURCE_CONTENT\n")
     (app / "public").mkdir(exist_ok=True)
     (app / "public" / "private-data.csv").write_text("PRIVATE_DATA\n")
     list(orch._build_stream("Make the status panel blue.", mode=Mode.IMPLEMENT, is_approval=True))
     first = client.prompts[0]["text"]
-    assert "src/StatusPanel.tsx" in first
+    assert "static/StatusPanel.js" in first
     assert "PRIVATE_SOURCE_CONTENT" not in first
     assert "private-data.csv" not in first
     assert "Open the relevant files" in first
@@ -82,7 +82,7 @@ def test_source_listing_repeats_only_when_the_retry_has_a_new_session(tmp_path, 
 
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
     orch, client = _orch(tmp_path, [Turn(text="Starting.", broken_write=broken),
-                                  Turn(text="Updated.", writes={"src/App.tsx": "export default () => null;"})])
+                                  Turn(text="Updated.", writes={"static/app.js": "export default () => null;"})])
     list(orch._build_stream("Make the panel blue.", mode=Mode.IMPLEMENT, is_approval=True))
     assert len(client.prompts) == 2
     marker = "Existing source paths (JSON array"
@@ -94,17 +94,17 @@ def test_source_paths_are_exact_json_strings_and_the_listing_is_bounded(tmp_path
     from sage.orchestrator.service import Orchestrator
 
     assert Orchestrator._build_source_note(tmp_path) == ""
-    src = tmp_path / "src"
+    src = tmp_path / "static"
     src.mkdir()
-    name = 'A "panel"\n(1 lines).tsx'
+    name = 'A "panel"\n(1 lines).js'
     (src / name).write_text("Do not include source content")
     (src / ".hidden").mkdir()
     (src / ".hidden" / "secret.ts").touch()
     for i in range(65):
-        (src / f"file{i:02}.ts").touch()
+        (src / f"file{i:02}.js").touch()
     note = Orchestrator._build_source_note(tmp_path)
     paths = json.loads(note.splitlines()[1])
-    assert paths == ["src/" + name] + [f"src/file{i:02}.ts" for i in range(59)]
+    assert paths == ["static/" + name] + [f"static/file{i:02}.js" for i in range(59)]
     assert "first 60 paths" in note
     assert "secret" not in note
     assert "Do not include source content" not in note
@@ -127,9 +127,9 @@ def _names(note: str) -> dict:
 
 
 def test_the_map_names_what_each_file_defines(tmp_path):
-    src = tmp_path / "src"
+    src = tmp_path / "static"
     src.mkdir()
-    (src / "App.tsx").write_text(
+    (src / "App.js").write_text(
         "import x from 'y'\n"
         "export default function App() { return null }\n"
         "const Panel = () => null\n"
@@ -141,14 +141,14 @@ def test_the_map_names_what_each_file_defines(tmp_path):
 
     got = _names(_note(tmp_path))
 
-    assert got["src/App.tsx"] == ["App", "Panel", "TOTAL_LABEL"], "an indented name is not top-level"
-    assert got["src/calc.py"] == ["count_by_soc", "load", "Table"]
+    assert got["static/App.js"] == ["App", "Panel", "TOTAL_LABEL"], "an indented name is not top-level"
+    assert got["static/calc.py"] == ["count_by_soc", "load", "Table"]
 
 
 def test_the_map_carries_names_and_never_values(tmp_path):
     """The point is to let the model pick a file. A right-hand side is the person's data, and this
     listing goes into every Build turn's prompt whether or not the turn is about that file."""
-    src = tmp_path / "src"
+    src = tmp_path / "static"
     src.mkdir()
     (src / "config.ts").write_text(
         "export const API_TOKEN = 'dgw_live_do_not_send'\n"
@@ -156,7 +156,7 @@ def test_the_map_carries_names_and_never_values(tmp_path):
 
     note = _note(tmp_path)
 
-    assert _names(note)["src/config.ts"] == ["API_TOKEN", "PATIENTS"]
+    assert _names(note)["static/config.ts"] == ["API_TOKEN", "PATIENTS"]
     for value in ("dgw_live_do_not_send", "ABC-001", "123-45-6789"):
         assert value not in note
 
@@ -164,72 +164,72 @@ def test_the_map_carries_names_and_never_values(tmp_path):
 def test_one_generated_module_cannot_crowd_out_the_rest(tmp_path):
     from sage.orchestrator import service as svc
 
-    src = tmp_path / "src"
+    src = tmp_path / "static"
     src.mkdir()
     (src / "generated.ts").write_text(
         "".join(f"export const icon{i:03} = 1\n" for i in range(200)))
-    (src / "App.tsx").write_text("export default function App() { return null }\n")
+    (src / "App.js").write_text("export default function App() { return null }\n")
 
     got = _names(_note(tmp_path))
 
-    assert len(got["src/generated.ts"]) == svc._NAMES_PER_FILE
-    assert got["src/App.tsx"] == ["App"], "the file the request is about is still named"
+    assert len(got["static/generated.ts"]) == svc._NAMES_PER_FILE
+    assert got["static/App.js"] == ["App"], "the file the request is about is still named"
 
 
 def test_a_file_the_patterns_do_not_know_contributes_no_names(tmp_path):
     """Markup and data files have no top-level names to give, and guessing at them would put
     arbitrary strings from a data file into the prompt."""
-    src = tmp_path / "src"
+    src = tmp_path / "static"
     src.mkdir()
     (src / "index.html").write_text("<html><body><div id='root'>Total</div></body></html>")
     (src / "rows.csv").write_text("usubjid,ssn\nABC-001,123-45-6789\n")
-    (src / "App.tsx").write_text("export default function App() { return null }\n")
+    (src / "App.js").write_text("export default function App() { return null }\n")
 
     note = _note(tmp_path)
 
-    assert set(_names(note)) == {"src/App.tsx"}
+    assert set(_names(note)) == {"static/App.js"}
     assert "123-45-6789" not in note
 
 
 def test_a_file_with_no_top_level_names_is_listed_but_named_for_nothing(tmp_path):
-    src = tmp_path / "src"
+    src = tmp_path / "static"
     src.mkdir()
     (src / "notes.ts").write_text("// a comment\n\n")
-    (src / "App.tsx").write_text("export function App() { return null }\n")
+    (src / "App.js").write_text("export function App() { return null }\n")
 
     note = _note(tmp_path)
 
-    assert "src/notes.ts" in json.loads(note.splitlines()[1])
-    assert "src/notes.ts" not in _names(note)
+    assert "static/notes.ts" in json.loads(note.splitlines()[1])
+    assert "static/notes.ts" not in _names(note)
 
 
 def test_an_app_with_no_names_anywhere_still_gets_its_paths(tmp_path):
-    src = tmp_path / "src"
+    src = tmp_path / "static"
     src.mkdir()
     (src / "index.html").write_text("<html></html>")
 
     note = _note(tmp_path)
 
-    assert json.loads(note.splitlines()[1]) == ["src/index.html"]
+    assert json.loads(note.splitlines()[1]) == ["static/index.html"]
     assert "Top-level names" not in note
 
 
 def test_the_map_is_read_from_disk_every_time_it_is_built(tmp_path):
     """Freshness, at the level this function can promise it: no cache, no memo, no snapshot taken
     at startup. A file added or renamed between two calls shows up in the second."""
-    src = tmp_path / "src"
+    src = tmp_path / "static"
     src.mkdir()
-    (src / "App.tsx").write_text("export function App() { return null }\n")
+    (src / "App.js").write_text("export function App() { return null }\n")
     first = _note(tmp_path)
 
-    (src / "StudyPicker.tsx").write_text("export function StudyPicker() { return null }\n")
-    (src / "App.tsx").write_text("export function AppShell() { return null }\n")
+    (src / "StudyPicker.js").write_text("export function StudyPicker() { return null }\n")
+    (src / "App.js").write_text("export function AppShell() { return null }\n")
     second = _note(tmp_path)
 
-    assert "src/StudyPicker.tsx" not in first
-    assert _names(second)["src/StudyPicker.tsx"] == ["StudyPicker"]
-    assert _names(second)["src/App.tsx"] == ["AppShell"], "the renamed name replaced the old one"
-    assert "App" not in _names(second)["src/App.tsx"]
+    assert "static/StudyPicker.js" not in first
+    assert _names(second)["static/StudyPicker.js"] == ["StudyPicker"]
+    assert _names(second)["static/App.js"] == ["AppShell"], "the renamed name replaced the old one"
+    assert "App" not in _names(second)["static/App.js"]
 
 
 def test_a_broken_call_retry_is_told_the_disk_as_it_is_now(tmp_path, monkeypatch):
@@ -246,9 +246,9 @@ def test_a_broken_call_retry_is_told_the_disk_as_it_is_now(tmp_path, monkeypatch
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
     orch, client = _orch(tmp_path, [
         # Lands a file, THEN breaks: the shape the retry has to be told about.
-        Turn(text="Starting.", writes={"src/StudyPicker.tsx": "export function StudyPicker() {}\n"},
+        Turn(text="Starting.", writes={"static/StudyPicker.js": "export function StudyPicker() {}\n"},
              broken_write=True),
-        Turn(text="Updated.", writes={"src/App.tsx": "export default () => null;\n"}),
+        Turn(text="Updated.", writes={"static/App.js": "export default () => null;\n"}),
     ])
 
     list(orch._build_stream("Make the panel blue.", mode=Mode.IMPLEMENT, is_approval=True))
@@ -256,7 +256,7 @@ def test_a_broken_call_retry_is_told_the_disk_as_it_is_now(tmp_path, monkeypatch
     assert len(client.prompts) == 2, client.prompts
     retry = client.prompts[1]["text"]
     assert "Existing source paths (JSON array" in retry, "the retry got no listing at all"
-    assert "src/StudyPicker.tsx" in retry, "the retry was told a listing built before the write"
+    assert "static/StudyPicker.js" in retry, "the retry was told a listing built before the write"
     assert "StudyPicker" in retry, "and it names what that file defines"
 
 
@@ -274,8 +274,8 @@ def test_a_second_turn_is_told_the_file_the_first_turn_left_behind(tmp_path, mon
     # Each turn writes, so each spends exactly one send and no implement-nudge — otherwise the last
     # prompt is the nudge, which deliberately carries none of these blocks.
     orch, client = _orch(tmp_path, [
-        Turn(text="One.", writes={"src/App.tsx": "export default () => null;\n"}),
-        Turn(text="Two.", writes={"src/App.tsx": "export default () => null; // two\n"}),
+        Turn(text="One.", writes={"static/App.js": "export default () => null;\n"}),
+        Turn(text="Two.", writes={"static/App.js": "export default () => null; // two\n"}),
     ])
     app = orch.project(start_preview=False).app_for_turn().path
 
@@ -284,13 +284,13 @@ def test_a_second_turn_is_told_the_file_the_first_turn_left_behind(tmp_path, mon
 
     # Not through the fake's `writes`: this is the workspace changing under Sage between turns,
     # which is the case a listing built once per session gets wrong and a per-turn one gets right.
-    (app / "src" / "StudyPicker.tsx").write_text("export function StudyPicker() { return null }\n")
+    (app / "static" / "StudyPicker.js").write_text("export function StudyPicker() { return null }\n")
 
     list(orch._build_stream("Now the header.", mode=Mode.IMPLEMENT, is_approval=True))
 
     first, second = client.prompts[0]["text"], client.prompts[1]["text"]
-    assert "src/StudyPicker.tsx" not in first, "it did not exist when the first turn was sent"
-    assert "src/StudyPicker.tsx" in second
+    assert "static/StudyPicker.js" not in first, "it did not exist when the first turn was sent"
+    assert "static/StudyPicker.js" in second
     assert "StudyPicker" in second, "and the second turn is told what it defines"
 
 
@@ -308,24 +308,24 @@ def test_a_rename_between_turns_leaves_no_trace_of_the_old_name(tmp_path, monkey
 
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
     orch, client = _orch(tmp_path, [
-        Turn(text="One.", writes={"src/App.tsx": "export default () => null;\n"}),
-        Turn(text="Two.", writes={"src/App.tsx": "export default () => null; // two\n"}),
+        Turn(text="One.", writes={"static/App.js": "export default () => null;\n"}),
+        Turn(text="Two.", writes={"static/App.js": "export default () => null; // two\n"}),
     ])
     app = orch.project(start_preview=False).app_for_turn().path
     # On disk BEFORE the first send, so the first turn's map really does carry it. That ordering is
     # the whole test: a map that only ever GAINS entries can only be caught by a name it once held.
-    (app / "src" / "MetricCard.tsx").write_text("export function MetricCard() {}\n")
+    (app / "static" / "MetricCard.js").write_text("export function MetricCard() {}\n")
 
     list(orch._build_stream("Add a metric card.", mode=Mode.IMPLEMENT, is_approval=True))
     assert "MetricCard" in client.prompts[0]["text"], "the first turn's map has to hold it first"
 
     # The rename the person did in the workspace, or a later turn did for them: file and symbol.
-    (app / "src" / "MetricCard.tsx").unlink()
-    (app / "src" / "KpiTile.tsx").write_text("export function KpiTile() {}\n")
+    (app / "static" / "MetricCard.js").unlink()
+    (app / "static" / "KpiTile.js").write_text("export function KpiTile() {}\n")
 
     list(orch._build_stream("Now a second one.", mode=Mode.IMPLEMENT, is_approval=True))
 
     assert len(client.prompts) == 2, [p["text"][:60] for p in client.prompts]
     second = client.prompts[1]["text"]
-    assert "src/KpiTile.tsx" in second and "KpiTile" in second
+    assert "static/KpiTile.js" in second and "KpiTile" in second
     assert "MetricCard" not in second, "the map still offers a file and a name that are gone"

@@ -8,38 +8,48 @@ laptop running these tests has no Domino cluster to reach anyway, so a real `Dat
 only fail — but because what is worth asserting is what CROSSES to it: which configuration override
 was attached, what statement was built, and that a store's own failure never reaches a viewer.
 
-The server under test ships IN the app's repo (`template/react-vite/serve.py`), so it is loaded by
-path, exactly as `test_builtapp_serve.py` and `test_builtapp_queries.py` load it.
+The server under test ships IN the app's repo (`template/fastapi-antd/sage_serve.py`), so it is
+loaded by path, exactly as `test_builtapp_queries.py` loads it.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
-import threading
 import types
 from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-import httpx
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-_SERVE_PY = Path(__file__).resolve().parents[2] / "template" / "react-vite" / "serve.py"
+REPO = Path(__file__).resolve().parents[2]
+_TEMPLATE = REPO / "template" / "fastapi-antd"
 
 
-def _load_serve():
-    spec = importlib.util.spec_from_file_location("builtapp_serve_flight", _SERVE_PY)
+def _load(app_dir: Path, name: str):
+    """A module out of the SEEDED app, by path — so `ROOT` is the app, the way a published app
+    runs it. Registered in sys.modules before exec, as every by-path load here is."""
+    spec = importlib.util.spec_from_file_location(name, app_dir / "sage_serve.py")
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod   # see test_builtapp_serve.py: dataclasses resolve through sys.modules
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
-serve = _load_serve()
-sq = serve.sq  # the query half (`sage_queries.py`), the same module object serve.py imported
+# `sage_queries.py`'s functions used directly below all take an explicit root path, so one load
+# (straight off the template, never copied) answers for every test; only `mount()`'s own use of it
+# (inside `running()`, below) needs a fresh, app-specific one.
+_sq_spec = importlib.util.spec_from_file_location(
+    "builtapp_flight_sq_module", _TEMPLATE / "sage_queries.py")
+sq = importlib.util.module_from_spec(_sq_spec)
+sys.modules[_sq_spec.name] = sq  # dataclasses resolve field types through sys.modules
+_sq_spec.loader.exec_module(sq)
 
 
 # ---- a stand-in for the SDK, recording what reached it -------------------------------------------
@@ -150,8 +160,10 @@ REVENUE = {"name": "revenue", "binding": "ds-dwh", "sql": REVENUE_SQL,
 
 @pytest.fixture
 def app(tmp_path: Path) -> Path:
-    (tmp_path / "dist").mkdir()
-    (tmp_path / "dist" / "index.html").write_text("<!doctype html><div id=root>APP</div>")
+    for name in ("sage_serve.py", "sage_queries.py", "sage_domino.py"):
+        shutil.copy2(_TEMPLATE / name, tmp_path / name)
+    (tmp_path / "static").mkdir()
+    (tmp_path / "static" / "index.html").write_text("<!doctype html><div id=root>APP</div>")
     (tmp_path / ".sage").mkdir()
     return tmp_path
 
@@ -163,24 +175,26 @@ def write(root: Path, bindings: list, queries: list) -> None:
 
 @contextmanager
 def running(app: Path, store: Store, max_rows: int = 5000):
-    """The server on a throwaway port, with the real executor over the fake SDK."""
-    executor = sq.FlightExecutor(sq.load_sources(app), max_rows)
-    srv = serve.build_server(app / "dist", host="127.0.0.1", port=0, project_root=app,
-                             executor=executor)
-    thread = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
-    thread.start()
-    try:
-        with sdk(store):
-            yield f"http://127.0.0.1:{srv.server_address[1]}"
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        thread.join(timeout=5)
+    """The app's own server, mounted onto a bare FastAPI app and driven in-process, with the real
+    executor over the fake SDK — no real socket, no real port."""
+    for stale in [k for k in sys.modules if k in ("sage_queries", "sage_domino")]:
+        del sys.modules[stale]
+    serve = _load(app, f"builtapp_flight_serve_{id(app)}")
+    # Built off `serve.sq`, not the top-level `sq` module above: `sage_serve.py`'s route handler
+    # catches `sq.QueryProblem` by its OWN import of `sage_queries`, a different module object with
+    # a different `QueryProblem` class — an executor built from the wrong one raises an exception
+    # the route's `except` never matches, and the answer degrades from a specific status to a bare
+    # 502.
+    executor = serve.sq.FlightExecutor(serve.sq.load_sources(app), max_rows)
+    fastapi_app = FastAPI()
+    serve.mount(fastapi_app, executor=executor)
+    with sdk(store):
+        yield TestClient(fastapi_app)
 
 
-def ask(base: str, name: str, params=None) -> httpx.Response:
-    return httpx.post(f"{base}/api/queries/{name}",
-                      json={} if params is None else {"params": params}, timeout=10)
+def ask(base: TestClient, name: str, params=None):
+    return base.post(f"/api/queries/{name}",
+                      json={} if params is None else {"params": params})
 
 
 # ---- the Scope travels as configuration, so the statement stays unqualified -----------------------
@@ -449,18 +463,14 @@ def test_a_source_that_cannot_be_opened_says_what_to_check(app: Path):
 
 def test_an_image_without_the_domino_library_says_so_once_per_ask(app: Path):
     write(app, [SNOWFLAKE], [REVENUE])
-    executor = sq.FlightExecutor(sq.load_sources(app), 100)
-    srv = serve.build_server(app / "dist", host="127.0.0.1", port=0, project_root=app,
-                             executor=executor)
-    thread = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
-    thread.start()
-    try:
-        with sdk(None):
-            r = ask(f"http://127.0.0.1:{srv.server_address[1]}", "revenue", {"region": "EMEA"})
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        thread.join(timeout=5)
+    for stale in [k for k in sys.modules if k in ("sage_queries", "sage_domino")]:
+        del sys.modules[stale]
+    serve = _load(app, f"builtapp_flight_serve_{id(app)}")
+    executor = serve.sq.FlightExecutor(serve.sq.load_sources(app), 100)
+    fastapi_app = FastAPI()
+    serve.mount(fastapi_app, executor=executor)
+    with sdk(None):
+        r = ask(TestClient(fastapi_app), "revenue", {"region": "EMEA"})
     assert r.status_code == 503
     assert "cannot reach its Data Source" in r.json()["error"]
 
@@ -495,7 +505,7 @@ def test_there_is_still_no_route_that_takes_a_statement(app: Path):
     write(app, [SNOWFLAKE], [REVENUE])
     store = Store()
     with running(app, store) as base:
-        assert httpx.post(f"{base}/api/queries", json={"sql": "SELECT 1"}).status_code == 404
+        assert base.post("/api/queries", json={"sql": "SELECT 1"}).status_code == 404
         assert ask(base, "revenue", {"region": "EMEA", "sql": "DROP TABLE orders"}).status_code == 400
     assert store.sql == ""
 

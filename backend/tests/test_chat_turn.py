@@ -79,9 +79,9 @@ def _no_waiting(monkeypatch):
 def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None, project_id: str = "Sage",
           client=None):
     template = tmp / "template"
-    (template / "src").mkdir(parents=True)
-    (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
-    (template / "package.json").write_text("{}")
+    (template / "static").mkdir(parents=True)
+    (template / "static" / "app.js").write_text("// placeholder\n")
+    (template / "app.py").write_text("# app\n")
     ws = tmp / "mnt" / "code"
     oc = client(ws) if client is not None else FakeOpenCode(ws, turns or [])
     orch = Orchestrator(workspace_dir=ws, template=template, gateway=gateway or ScriptedGateway(),
@@ -104,11 +104,11 @@ def test_chat_opencode_session_is_not_the_react_app(tmp_path: Path):
     assert (work / "examples").is_symlink()
 
 
-def test_chat_does_not_seed_the_react_template(tmp_path: Path):
+def test_chat_does_not_seed_the_app_template(tmp_path: Path):
     template = tmp_path / "template"
-    (template / "src").mkdir(parents=True)
-    (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
-    (template / "package.json").write_text("{}")
+    (template / "static").mkdir(parents=True)
+    (template / "static" / "app.js").write_text("// placeholder\n")
+    (template / "app.py").write_text("# app\n")
     ws = tmp_path / "mnt" / "code"
     oc = FakeOpenCode(ws, [Turn(text="hello")])
     orch = Orchestrator(workspace_dir=ws, template=template, gateway=ScriptedGateway(),
@@ -116,8 +116,8 @@ def test_chat_does_not_seed_the_react_template(tmp_path: Path):
                         opencode_client=oc)
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "hi"))
-    assert not (ws / "package.json").exists()
-    assert not (ws / "src").exists()
+    assert not (ws / "app.py").exists()
+    assert not (ws / "static").exists()
     assert oc.sessions[0]["directory"] == str(ws / ".sage" / "chat-work")
 
 
@@ -669,7 +669,7 @@ def test_chat_turn_records_artifact_and_reverts_a_write_outside_its_thread(tmp_p
         },
     )]
     project = orch.project(start_preview=False)
-    src = project.workspace.path / "src" / "App.tsx"
+    src = project.workspace.path / "static" / "app.js"
     original = src.read_text()
     events = list(orch.chat_stream(tid, "what's in this CSV?"))
 
@@ -2030,7 +2030,7 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     })
     list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
     orch.draft_handoff_plan(tid)
-    src = orch.project(start_preview=False).workspace.path / "src" / "App.tsx"
+    src = orch.project(start_preview=False).workspace.path / "static" / "app.js"
     before = src.read_text()
     orch.project(start_preview=False).record.mark_untitled(True)
 

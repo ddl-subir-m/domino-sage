@@ -36,9 +36,9 @@ from sage.workspace.manager import _VOICED_SEED, WorkspaceManager
 
 _REPO = Path(__file__).resolve().parents[2]
 _TEMPLATE = _REPO / "template"
-# A `{token}` as brand.text sees one. `{appBase}` in the template is JSX (`basename={appBase}`) and
-# is deliberately NOT a pack token — an unknown token is left as written, which is what keeps that
-# line compiling. So the assertions below are about the pack's own names, never about braces.
+# A `{token}` as brand.text sees one. Not every brace in the template names a pack noun — an
+# unknown token is left as written, which is what keeps a source line compiling. So the assertions
+# below are about the pack's own names, never about braces in general.
 _TOKEN = re.compile(r"\{([a-zA-Z][a-zA-Z0-9_]*)\}")
 
 
@@ -49,12 +49,10 @@ def _pack_tokens() -> set[str]:
 def _template_with_agents(tmp: Path, body: str) -> Path:
     """The smallest template the seed path will take, carrying one AGENTS.md."""
     t = tmp / "template"
-    (t / "src").mkdir(parents=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
-    (t / "package.json").write_text("{}")
+    (t / "static").mkdir(parents=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
     (t / "AGENTS.md").write_text(body)
-    (t / "node_modules" / ".bin").mkdir(parents=True)
-    (t / "node_modules" / ".bin" / "vite").write_text("#!/bin/sh")
     return t
 
 
@@ -121,7 +119,7 @@ def test_the_rest_of_the_template_is_still_copied_byte_for_byte(tmp_path: Path):
 
     ws = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl).ensure("proj1")
 
-    assert (ws.path / "src" / "App.tsx").read_bytes() == (tmpl / "src" / "App.tsx").read_bytes()
+    assert (ws.path / "static" / "app.js").read_bytes() == (tmpl / "static" / "app.js").read_bytes()
     assert (ws.path / "app.sh").stat().st_mode & 0o111  # still executable
 
 
@@ -134,10 +132,9 @@ def test_nothing_in_the_template_carries_a_pack_token_into_the_model_unresolved(
     two somewheres. A third document growing a `{dataSource}` fails here rather than in a plan.
 
     Markdown only, and the boundary is the point rather than a convenience. Prose is where a brand
-    token means "say the pack's word"; in source, braces are syntax. `serve.py` documents a
-    Domino URL as `/u/{owner}/{project}/app/` and `App.tsx` writes `basename={appBase}`, and both
-    would be WRONG to resolve — which is also why `_VOICED_SEED` is a small named set and not a
-    suffix rule.
+    token means "say the pack's word"; in source, braces are syntax. `sage_serve.py` documents a
+    Domino URL as `/u/{owner}/{project}/app/`, and resolving that would be WRONG — which is also
+    why `_VOICED_SEED` is a small named set and not a suffix rule.
     """
     tokens = _pack_tokens()
     # The Chat template is not seeded: it is inlined into `opencode.json` as the sage-chat prompt
@@ -166,7 +163,7 @@ def test_nothing_in_the_template_carries_a_pack_token_into_the_model_unresolved(
 def test_the_real_template_agents_file_still_needs_voicing():
     """The other half of the guard. The one above passes trivially if the template stops using
     tokens at all — which would be a silent un-branding, not a fix."""
-    body = (_TEMPLATE / "react-vite" / "AGENTS.md").read_text()
+    body = (_TEMPLATE / "fastapi-antd" / "AGENTS.md").read_text()
     named = {m.group(1) for m in _TOKEN.finditer(body)} & _pack_tokens()
 
     assert "dataSource" in named, "the build agent's instructions no longer name the nouns as pack "

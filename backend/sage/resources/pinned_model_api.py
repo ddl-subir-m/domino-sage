@@ -9,8 +9,8 @@ in a diff. An LLM Alias needs no credential — the viewer's own Domino session 
 call, so nothing secret is written. A Model API has no such path: probed exhaustively, the only
 credential a Model API accepts is its own access token as `Basic base64(token:token)`, no cookie or
 session will do, and the token cannot be minted (see DOMINO-PRIMITIVES.md). So the token is written
-into the app's source, committed to the app's repo, and compiled into the bundle every viewer
-downloads. That is Domino's own documented pattern for calling a Model API from a page, and it is a
+into the app's source, committed to the app's repo, and served on the page every viewer downloads.
+That is Domino's own documented pattern for calling a Model API from a page, and it is a
 decision with a cost: **anyone who can open the published app can read the token and reuse it**.
 Whoever pastes it is told so, in the form and again in the config file's own header.
 
@@ -54,7 +54,7 @@ def render_config(apis: list[Binding], credentials: dict[str, Credential],
     an app whose config names a URL with no token would fail at the call with nothing to say, whereas
     one that does not list the model at all sends the creator back to Sage where the fix is.
 
-    Every entry carries its own token and every one ships in the bundle. That is the same trade #9
+    Every entry carries its own token and every one ships on the page. That is the same trade #9
     made for one model, taken once per model — the creator was told as much before each paste.
 
     `name`/`url`/`token` repeat the FIRST entry beside `models`, so an app seeded before #34 keeps a
@@ -80,16 +80,12 @@ def render_config(apis: list[Binding], credentials: dict[str, Credential],
         "// Written by {assistantName} — do not edit. {assistantName} rewrites this file whenever "
         "the app's {resourcePlural} change.\n"
         "//\n"
-        "// `models` is every {modelApi} this app may call — pass one by name to `callModelApi`. "
-        "Each carries\n"
-        "// its own `token`, and every one of them is compiled into the app's bundle, so ANYONE "
-        "WHO OPENS THE\n"
-        "// PUBLISHED APP CAN READ THEM and call those models until each is regenerated from its "
-        "{modelApi}'s\n"
-        "// Settings page in {platformName}. That is how {platformName}'s own sample calls a "
-        "{modelApi} from a page: the model\n"
-        "// has no other credential, and a {platformName} session will not open one.\n"
-        "//\n"
+        "// `models` is every {modelApi} this app may call — pass one by name to "
+        "`sage.callModelApi`. Each\n"
+        "// entry's `token` is that model's access token, and ANYONE WHO OPENS THE PUBLISHED APP "
+        "CAN READ\n"
+        "// THEM: this is a page's only way to call a {modelApi}, and whoever added the model was "
+        "told so.\n"
         "// `name`/`url`/`token` repeat the first entry. null means no {modelApi} has been chosen "
         "yet.\n"
         "// See ./{helper}.{ext}.\n",
@@ -138,17 +134,18 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential],
                        name=usable[0].display_name, helper=names.model_api_path), "",
         ]
     code = [
-        "```tsx",
-        (f'import {{ callModelApi, ModelApiError }} from "./{names.model_api}";'
-        f'  // from a subfolder: "../{names.model_api}"'),
-        "",
-        "const result = await callModelApi({ score: 0.9 });  // whatever this model's function takes",
+        "```js",
+        brand.text('// `sage.callModelApi` is on the page already ({helper}); nothing to import.',
+                   helper=names.model_api_path),
+        ("const result = await sage.callModelApi({ score: 0.9 });  "
+        "// whatever this model's function takes"),
     ]
     if several:
         code += [
             "",
             "// Another of this app's models, for the rows that are that model's job:",
-            f'const other = await callModelApi(row, {{ model: {json.dumps(usable[1].display_name)} }});',
+            (f'const other = await sage.callModelApi(row, '
+            f'{{ model: {json.dumps(usable[1].display_name)} }});'),
         ]
     code += ["```", ""]
     rules = []

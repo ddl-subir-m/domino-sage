@@ -26,7 +26,7 @@ import pytest
 from sage.preview.proxy import make_preview_app
 from sage.preview.queries import CachingExecutor, PreviewQueries
 
-TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 
 SOURCE_ID = "ds-dwh"
 SOUND = {"name": "usage", "binding": SOURCE_ID,

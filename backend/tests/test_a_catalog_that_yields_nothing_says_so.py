@@ -31,7 +31,7 @@ from sage.resources.builtapp import catalog_problems
 
 from .test_bound_schema import data_block, orchestrator, workspace_of
 
-TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 CATALOG = ".sage/queries.json"
 
 
@@ -136,7 +136,7 @@ def test_an_app_querying_with_nothing_bound_is_told_to_stop():
     block = agents_block([], None, 5000, reaching=True)
     assert "no Data Source bound" in block
     assert "Stop calling `runQuery`" in block
-    assert "src/appQuery.ts" in block
+    assert "static/sage/appQuery.js" in block
 
 
 def test_it_is_told_the_name_is_not_the_problem():
@@ -179,9 +179,8 @@ def test_a_call_in_src_is_enough_on_its_own(tmp_path: Path):
     """An agent that wrote the call and not the catalog has still decided this app reads a store."""
     orch = orchestrator(tmp_path)
     workspace = workspace_of(orch)
-    (workspace / "src" / "App.tsx").write_text(
-        'import { runQuery } from "./appQuery";\n'
-        'export default function App() { runQuery("usage", {}); return null; }\n')
+    (workspace / "static" / "app.js").write_text(
+        'const { rows } = await sage.runQuery("usage", {});\n')
     orch._recheck_app_data()
 
     assert "no Data Source bound" in data_block(workspace)
@@ -192,7 +191,7 @@ def test_the_helper_defining_runquery_does_not_count_as_reaching(tmp_path: Path)
     every app look like it were querying, which would put this block in front of all of them."""
     orch = orchestrator(tmp_path)
     workspace = workspace_of(orch)
-    assert "runQuery" in (workspace / "src" / "appQuery.ts").read_text()
+    assert "runQuery" in (workspace / "static" / "sage" / "appQuery.js").read_text()
 
     orch._recheck_app_data()
 

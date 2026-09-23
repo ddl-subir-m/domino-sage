@@ -1,16 +1,31 @@
 // Actual generated helper, real HTTP, and the same consumer in Node and Chromium.
+//
+// fastapi-antd's helpers are plain scripts, not ES modules (#490, one-app pivot): `appLlm.js`
+// attaches `askModel` onto a shared `window.sage` global rather than exporting it, and reads
+// `window.appLlmConfig` and `sage.url`/`sage.preview` (from `appBase.js`, loaded first) instead of
+// `import.meta.env.BASE_URL`/`import.meta.env.DEV`. So this harness sets up those globals and
+// evaluates both files as plain scripts, then reads `sage.askModel` back off the same global.
 import fs from 'node:fs';
-import { stripTypeScriptTypes } from 'node:module';
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const config = { alias: 'synthetic-model', displayName: 'Synthetic Model',
   base: input.gateway, project: 'sage-358-synthetic' };
-const source = fs.readFileSync(input.helper, 'utf8')
-  .replace('import { appLlmConfig } from "./appLlm.config";', `const appLlmConfig = ${JSON.stringify(config)};`)
-  .replaceAll('import.meta.env.DEV', String(input.preview))
-  .replaceAll('import.meta.env.BASE_URL', JSON.stringify(input.previewBase));
-const compiled = stripTypeScriptTypes(source);
-const moduleUrl = 'data:text/javascript;base64,' + Buffer.from(compiled).toString('base64');
+const helperDir = input.helper.slice(0, input.helper.lastIndexOf('/'));
+const appBaseSource = fs.readFileSync(`${helperDir}/appBase.js`, 'utf8');
+const helperSource = fs.readFileSync(input.helper, 'utf8');
+
+function setup(target) {
+  target.window = target.window || target;
+  target.__SAGE_BASE__ = input.previewBase;
+  target.__SAGE_PREVIEW__ = input.preview;
+  target.appLlmConfig = config;
+  // Plain scripts, evaluated in order — exactly how index.html loads them, and exactly why the
+  // config global has to exist before `appLlm.js` runs: it reads `window.appLlmConfig` once, at
+  // the top, not lazily per call.
+  (0, target.eval)(appBaseSource);
+  (0, target.eval)(helperSource);
+  return target.sage.askModel;
+}
 
 async function exercise(askModel, cases) {
   const results = {};
@@ -57,16 +72,21 @@ if (input.browserModule) {
     const page = await browser.newPage();
     await page.goto(input.pageBase);
     await page.evaluate(() => { document.cookie = 'viewer=synthetic-viewer; path=/'; });
-    await page.evaluate(({ moduleUrl, exerciseSource, cases }) => {
+    await page.evaluate(({ appBaseSource, helperSource, config, previewBase, preview, exerciseSource, cases }) => {
+      window.__SAGE_BASE__ = previewBase;
+      window.__SAGE_PREVIEW__ = preview;
+      window.appLlmConfig = config;
+      (0, eval)(appBaseSource);
+      (0, eval)(helperSource);
       const button = document.createElement('button');
       button.textContent = 'Run model requests';
       button.onclick = async () => {
-        const { askModel } = await import(moduleUrl);
         const run = (0, eval)(`(${exerciseSource})`);
-        window.result = await run(askModel, cases);
+        window.result = await run(window.sage.askModel, cases);
       };
       document.body.append(button);
-    }, { moduleUrl, exerciseSource: exercise.toString(), cases: input.cases });
+    }, { appBaseSource, helperSource, config, previewBase: input.previewBase, preview: input.preview,
+        exerciseSource: exercise.toString(), cases: input.cases });
     await page.getByRole('button', { name: 'Run model requests' }).click();
     await page.waitForFunction(() => window.result, { timeout: 30000 });
     const result = await page.evaluate(() => window.result);
@@ -78,6 +98,6 @@ if (input.browserModule) {
     console.log(JSON.stringify(result));
   } finally { await browser.close(); }
 } else {
-  const { askModel } = await import(moduleUrl);
+  const askModel = setup(globalThis);
   console.log(JSON.stringify(await exercise(askModel, input.cases)));
 }

@@ -24,7 +24,7 @@ import pytest
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
-TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 DEFAULT_NOUNS = ["Dataset", "Data Source", "Model API", "LLM Alias", "Built App", "Gallery"]
 
 
@@ -79,9 +79,9 @@ def test_the_template_names_the_default_nouns_only_as_synonyms():
 def _template(tmp: Path) -> Path:
     """The real template body, so what is asserted is the file that actually ships."""
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
-    (t / "package.json").write_text("{}")
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
     (t / "AGENTS.md").write_text((TEMPLATE / "AGENTS.md").read_text())
     return t
 
@@ -99,9 +99,9 @@ def _agents(project) -> str:
 
 def test_a_seeded_app_speaks_the_packs_words(acme, tmp_path):
     text = _agents(_orch(tmp_path).project(start_preview=False))
-    assert "Ada typechecks this workspace" in text
+    assert "Ada compiles every `.py` file" in text
     assert "Say **Cube**, **Warehouse**" in text
-    assert "the Acme Cloud accent `#543FDE`" in text
+    assert "the\nAcme Cloud theme into `antd.ConfigProvider`" in text
     assert "{assistantName}" not in text and "{dataset}" not in text
 
 
@@ -111,29 +111,29 @@ def test_a_seeded_app_still_recognises_the_default_nouns(acme, tmp_path):
     text = _agents(_orch(tmp_path).project(start_preview=False))
     for noun in DEFAULT_NOUNS:
         assert noun in text, f"{noun} stopped being offered as a synonym"
-    assert "answer in the words above rather than repeating theirs" in text
+    assert "answer in the words above rather than repeating\ntheirs" in text
 
 
 def test_a_seeded_app_keeps_every_identifier_it_names(acme, tmp_path):
-    """Prose and code in one file. `.sage/` is a stored path, `DatasetClient` is a class the agent
-    imports, and `{appBase}` is the template's own brace — the helper leaves an unknown token as
-    written, which is what makes a tokenised prompt safe to run over code samples."""
+    """Prose and code in one file. `.sage/queries.json` is a stored path and `DatasetClient` is a
+    class the agent imports — the pack renames the word, never the identifier next to it. (The
+    invariant that an unrecognised `{token}` also survives untouched is `test_brand.py`'s, over
+    synthetic content; nothing in this template's own body is such a token.)"""
     text = _agents(_orch(tmp_path).project(start_preview=False))
-    assert "`.sage/` is Ada metadata" in text          # the word moved, the path did not
+    assert "Ada's: how the page is served" in text     # the word moved, the path did not
     assert "`.sage/queries.json`" in text
-    assert "`src/appQuery.ts`" in text
+    assert "`static/sage/appQuery.js`" in text
     assert "DatasetClient" in text
-    assert "basename={appBase}" in text
 
 
 def test_the_default_pack_leaves_the_instructions_reading_as_they_did(tmp_path):
     """No pack set is the Domino default, and the default must be the words the file used to carry
     — otherwise every existing Project reads a changed prompt for no reason."""
     text = _agents(_orch(tmp_path).project(start_preview=False))
-    assert "Sage typechecks this workspace" in text
-    assert "`.sage/` is Sage metadata" in text
-    assert "the Domino accent `#543FDE`" in text
-    assert "{" in text and "{assistantName}" not in text     # tokens resolved, code braces kept
+    assert "Sage compiles every `.py` file" in text
+    assert "Sage's: how the page is served" in text
+    assert "the\nDomino theme into `antd.ConfigProvider`" in text
+    assert "{assistantName}" not in text and "{dataset}" not in text
 
 
 def test_reset_puts_the_packs_words_back(acme, tmp_path):
@@ -146,7 +146,7 @@ def test_reset_puts_the_packs_words_back(acme, tmp_path):
     orch.reset_app()
 
     text = _agents(project)
-    assert "Ada typechecks this workspace" in text
+    assert "Ada compiles every `.py` file" in text
     assert "{assistantName}" not in text
 
 

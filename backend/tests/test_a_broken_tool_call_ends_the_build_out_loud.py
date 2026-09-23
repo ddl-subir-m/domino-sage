@@ -40,9 +40,9 @@ class ScriptedGateway:
 
 def _template(tmp: Path) -> Path:
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("export default function App() { return null }\n")
-    (t / "package.json").write_text('{"name": "template"}')
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("// app\n")
+    (t / "app.py").write_text("# app\n")
     (t / "AGENTS.md").write_text("# Building an app\n")
     return t
 
@@ -64,11 +64,11 @@ def _of(events: list[dict], kind: str) -> list[dict]:
 
 def test_a_tool_call_whose_arguments_never_parsed_is_recognised():
     # The shape the traceback proves: a part whose state.input is the raw arguments text.
-    running = {"status": "running", "input": '{"filePath": "src/Dashboard.tsx", "conte'}
+    running = {"status": "running", "input": '{"filePath": "static/Dashboard.js", "conte'}
     assert _unparsed_tool_input({"state": running})
     # And the shapes that are not it: a real input, an empty one, no state, a state that is a
     # string itself. None of these may raise a false alarm on an ordinary turn.
-    assert not _unparsed_tool_input({"state": {"input": {"filePath": "src/App.tsx"}}})
+    assert not _unparsed_tool_input({"state": {"input": {"filePath": "static/app.js"}}})
     assert not _unparsed_tool_input({"state": {"input": ""}})
     assert not _unparsed_tool_input({"state": {"status": "completed"}})
     assert not _unparsed_tool_input({})
@@ -78,13 +78,13 @@ def test_a_tool_call_whose_arguments_never_parsed_is_recognised():
 def test_a_tool_call_with_unparsed_arguments_yields_no_label():
     # The crash itself: reading that string for a label raised AttributeError and took down the
     # whole stream. A label is not worth a build.
-    part = {"state": {"status": "running", "input": '{"filePath": "src/Dashboard.tsx", "conte'}}
+    part = {"state": {"status": "running", "input": '{"filePath": "static/Dashboard.js", "conte'}}
     assert _tool_detail("write", part) == ""
     assert _tool_detail("bash", part) == ""
     assert _tool_detail("todowrite", part) == ""
     assert _tool_detail("write", {}) == ""
     assert _tool_detail("write", {"state": "completed"}) == ""
-    assert _tool_detail("write", {"state": {"input": {"filePath": "src/App.tsx"}}}) == "src/App.tsx"
+    assert _tool_detail("write", {"state": {"input": {"filePath": "static/app.js"}}}) == "static/app.js"
 
 
 def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
@@ -93,8 +93,8 @@ def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
     This is the retry the give-up message used to ask the person to type. It is worth doing for
     them: the second attempt is what actually built the app in the live run of 2026-09-05.
     """
-    orch, oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"}, broken_write=True),
-                                Turn(text="Added the dashboard.", writes={"src/App.tsx": "app\n"})])
+    orch, oc = _orch(tmp_path, [Turn(writes={"static/MetricCard.js": "card\n"}, broken_write=True),
+                                Turn(text="Added the dashboard.", writes={"static/app.js": "app\n"})])
 
     events = list(orch.build_stream("build me a dashboard"))
 
@@ -114,12 +114,12 @@ def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
     assert "Existing source paths (JSON array" in retry, "so is the source listing"
     # This used to be `retry.startswith(first)`, and it stopped being true on purpose (#496). One
     # of those blocks is not something the person said — it is a fact about the disk, and the disk
-    # MOVED: the call that broke landed `src/MetricCard.tsx` first. Restoring the string built
+    # MOVED: the call that broke landed `static/MetricCard.js` first. Restoring the string built
     # before the attempt handed the retry a listing that did not mention the file the previous
     # attempt had just written, in the one session with nothing else to go on. So the listing is
     # rebuilt here, and the retry is no longer a byte-extension of the first send.
-    assert "src/MetricCard.tsx" in retry, "the retry was told a listing built before the write"
-    assert "src/MetricCard.tsx" not in first, "nothing had been written when the first send went"
+    assert "static/MetricCard.js" in retry, "the retry was told a listing built before the write"
+    assert "static/MetricCard.js" not in first, "nothing had been written when the first send went"
     # A fresh session was told nothing about the one it replaces, so the retry also names what
     # broke and that the app on disk is mid-change. What it must NOT name is a cause the evidence
     # does not support — see test_a_cut_stream_is_named_for_what_cut_it.py, which pins that half.
@@ -132,7 +132,7 @@ def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
 
 def test_the_retry_note_rides_the_retry_only(tmp_path: Path):
     """It answers the break, so a turn with no break must never carry it."""
-    orch, oc = _orch(tmp_path, [Turn(text="Added the chart.", writes={"src/chart.tsx": "c\n"})])
+    orch, oc = _orch(tmp_path, [Turn(text="Added the chart.", writes={"static/chart.js": "c\n"})])
 
     list(orch.build_stream("add a chart"))
 
@@ -141,22 +141,22 @@ def test_the_retry_note_rides_the_retry_only(tmp_path: Path):
 
 def test_the_broken_arguments_are_described_for_the_log():
     """The tool name alone cannot separate an output cap from a bad escape. Head and tail can."""
-    cut = {"state": {"status": "running", "input": '{"filePath": "src/App.tsx", "content": "cons'}}
+    cut = {"state": {"status": "running", "input": '{"filePath": "static/app.js", "content": "cons'}}
     ev = _unparsed_tool_evidence(cut)
-    assert "len=" in ev and "src/App.tsx" in ev and "cons" in ev
+    assert "len=" in ev and "static/app.js" in ev and "cons" in ev
     # Head and tail only — the whole string is the file the model was writing.
     long_input = {"state": {"status": "running", "input": "x" * 90_000}}
     assert len(_unparsed_tool_evidence(long_input)) < 500
     assert "len=90000" in _unparsed_tool_evidence(long_input)
     # And nothing to say about the shapes that are not a break.
-    assert _unparsed_tool_evidence({"state": {"input": {"filePath": "src/App.tsx"}}}) == ""
+    assert _unparsed_tool_evidence({"state": {"input": {"filePath": "static/app.js"}}}) == ""
     assert _unparsed_tool_evidence({}) == ""
     assert _unparsed_tool_evidence({"state": "completed"}) == ""
 
 
 def test_a_build_cut_off_twice_does_not_report_success(tmp_path: Path):
     """Seven files in, the eighth call arrives unparsed — and so does the retry's. Say it."""
-    orch, oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"}, broken_write=True),
+    orch, oc = _orch(tmp_path, [Turn(writes={"static/MetricCard.js": "card\n"}, broken_write=True),
                                 Turn(broken_write=True)])
 
     events = list(orch.build_stream("build me a dashboard"))
@@ -189,21 +189,21 @@ def test_a_build_cut_off_twice_does_not_report_success(tmp_path: Path):
 
 def test_the_file_written_before_the_break_is_still_there(tmp_path: Path):
     """The turn failed; the work it finished did not. The message promises this, so pin it."""
-    orch, oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"}, broken_write=True),
+    orch, oc = _orch(tmp_path, [Turn(writes={"static/MetricCard.js": "card\n"}, broken_write=True),
                                 Turn(broken_write=True)])
 
     events = list(orch.build_stream("build me a dashboard"))
 
     assert _of(events, "done")[0]["ok"] is False
     # Where the Build session stood, which is the Built App rather than the workspace root.
-    written = Path(oc.sessions[0]["directory"]) / "src" / "MetricCard.tsx"
+    written = Path(oc.sessions[0]["directory"]) / "static" / "MetricCard.js"
     assert written.exists() and written.read_text() == "card\n"
 
 
 def test_an_ordinary_build_is_not_accused_of_a_broken_call(tmp_path: Path):
     """The flag must be unreachable on a turn where every call parsed."""
     orch, _oc = _orch(tmp_path, [Turn(text="Added the chart.",
-                                      writes={"src/chart.tsx": "chart\n"})])
+                                      writes={"static/chart.js": "chart\n"})])
 
     events = list(orch.build_stream("add a chart"))
 

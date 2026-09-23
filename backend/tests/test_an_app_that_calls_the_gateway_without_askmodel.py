@@ -55,7 +55,7 @@ ALIASES = [
     LlmAlias("id-qwen", "qwen-2-5", "Qwen 2.5 (Domino-hosted)", None, ["chat"], {}),
 ]
 
-REPO_TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+REPO_TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 
 # What an agent writes when it goes around the helper: the pinned base, an OpenAI-shaped body naming
 # a model, and no import of `askModel`.
@@ -239,12 +239,12 @@ def _template(tmp: Path) -> Path:
     """The shipped helper, verbatim. A stub would let the `_SAGE_OWNED_SOURCES` skip pass on a file
     that holds none of the three shapes, which is the opposite of the test."""
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("export default function App() { return null }\n")
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("// app placeholder\n")
+    (t / "app.py").write_text("# app\n")
+    (t / HELPER_PATH).parent.mkdir(parents=True, exist_ok=True)
     (t / HELPER_PATH).write_text((REPO_TEMPLATE / HELPER_PATH).read_text())
     (t / CONFIG_PATH).write_text(render_config([], None, None))
-    (t / "package.json").write_text("{}")
-    (t / "app.sh").write_text("#!/bin/bash\nexec npx vite preview\n")
     (t / "AGENTS.md").write_text("# Template rules\n")
     return t
 
@@ -312,7 +312,7 @@ def test_a_raw_gateway_call_nudges_the_agent_to_rewrite_it(tmp_path: Path):
     # writes no model section for an app with no Alias, and titles it in the plural for an app with
     # several, so a quoted heading is wrong in two of the three cases.
     assert "AGENTS.md" not in nudge
-    assert "src/appLlm.ts" in nudge
+    assert "static/sage/appLlm.js" in nudge
 
 
 def test_an_app_that_uses_the_helper_is_flagged_nowhere(tmp_path: Path):

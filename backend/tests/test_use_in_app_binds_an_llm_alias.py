@@ -189,7 +189,7 @@ def test_the_template_never_quotes_a_label_the_panel_cannot_draw():
     into a Built App cannot quote the label it means — and the one label it CAN spell exactly,
     "Use in this conversation", is the wrong scope sitting directly above the right one in the same menu.
     The old text promised "Use on", which named no control at all."""
-    said = (Path(__file__).resolve().parents[2] / "template" / "react-vite" / "src"
-            / "appLlm.ts").read_text()
+    said = (Path(__file__).resolve().parents[2] / "template" / "fastapi-antd" / "static" / "sage"
+            / "appLlm.js").read_text()
     assert "choose Use on" not in said      # named no control at all
     assert "Use in this app" not in said    # a label the panel never draws

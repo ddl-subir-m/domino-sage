@@ -21,7 +21,7 @@ from sage.workspace.manager import WorkspaceManager
 from tests.test_preview_llm import _no_vite, _served
 
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE = ROOT / "template/react-vite"
+TEMPLATE = ROOT / "template/fastapi-antd"
 HARNESS = Path(__file__).parent / "js/app_model_outcome_harness.mjs"
 TEXT = '{"total":780}'
 REFUSAL = {"detail": {"error": {"type": "guardrail_blocked",
@@ -169,7 +169,7 @@ def _run(gateway, generated, preview_base, preview, browser_module=None, page_ba
         pytest.skip("node is required to execute the generated TypeScript helper")
     data = {"gateway": gateway.base + "/v1", "previewBase": preview_base, "preview": preview,
             "pageBase": page_base or gateway.base, "browserModule": browser_module,
-            "helper": str(generated.app_path / "src/appLlm.ts"),
+            "helper": str(generated.app_path / "static/sage/appLlm.js"),
             "cases": [{"name": name, "stream": stream} for name, (stream, _) in cases.items()]}
     result = subprocess.run(["node", str(HARNESS)], input=json.dumps(data), capture_output=True,
                             text=True, timeout=60, check=False)
@@ -249,20 +249,39 @@ def test_browser_marks_partial_answers_incomplete(gateway, generated, preview):
         _assert_results(results, gateway, preview, browser=True)
 
 
-def test_existing_helpers_keep_their_contract(generated):
-    helper = generated.app_path / "src/appLlm.ts"
-    old = "// old deployed helper\nexport async function askModel() { return 'legacy'; }\n"
+def test_existing_helpers_keep_their_contract(tmp_path):
+    """#358's outcome contract is new-app-only: `_ensure_helper` preserves a copy that predates it
+    rather than silently changing what an already-deployed app's runtime does.
+
+    fastapi-antd's own shipped `appLlm.js` has never carried the `SAGE_MODEL_OUTCOME_V1` marker —
+    the stack didn't exist before #358, so there is no pre-contract fastapi-antd app to protect —
+    so this proves the MECHANISM on a synthetic template that does carry it, the way a stack that
+    predates #358 would.
+    """
+    tmpl = tmp_path / "template"
+    (tmpl / "static" / "sage").mkdir(parents=True)
+    (tmpl / "static" / "app.js").write_text("placeholder")
+    (tmpl / "app.py").write_text("# app\n")
+    (tmpl / "static" / "sage" / "appLlm.js").write_text(
+        "// SAGE_MODEL_OUTCOME_V1\nsage.askModel = async function () { return 'new contract'; };\n")
+    ws = WorkspaceManager(tmp_path / "app", tmpl)
+    generated = ws
+    generated.ensure("synthetic-project")
+    helper = generated.app_path / "static/sage/appLlm.js"
+    old = "// old deployed helper\nsage.askModel = async function () { return 'legacy'; };\n"
     helper.write_text(old)
+
     generated.ensure_llm_helper()
     generated.refresh_owned_sources()
+
     assert helper.read_text() == old
 
 
 def test_new_helpers_still_receive_compatible_fixes(generated):
-    helper = generated.app_path / "src/appLlm.ts"
+    helper = generated.app_path / "static/sage/appLlm.js"
     helper.write_text(helper.read_text() + "\n// stale edit\n")
     assert generated.ensure_llm_helper()
-    assert helper.read_text() == (TEMPLATE / "src/appLlm.ts").read_text()
+    assert helper.read_text() == (TEMPLATE / "static/sage/appLlm.js").read_text()
 
 
 def test_preview_connect_failure_is_transport_not_provider(gateway, generated):

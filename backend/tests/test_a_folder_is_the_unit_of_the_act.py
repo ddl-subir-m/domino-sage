@@ -249,16 +249,16 @@ def test_above_the_threshold_the_block_names_the_folder_once(tmp_path: Path):
 
 def test_the_collapsed_block_keeps_the_guardrails_it_exists_for(tmp_path: Path):
     """The collapse is safe because the block's whole reason for existing survives it: agents
-    otherwise guess a flat `/data/<name>`, hit the SPA fallback, and "fix" it by copying the file
-    into `src/` — which leaks the data into the app's git repo."""
+    otherwise guess a flat `/data/<name>`, hit a 404, and "fix" it by copying the file into the
+    app's own source — which leaks the data into the app's git repo."""
     orch, ds, ws = _ready(tmp_path, per_year=8)
 
     orch.attach_folder(ds, "raw")
 
     agents = (ws / "AGENTS.md").read_text()
-    assert 'import.meta.env.BASE_URL + "data/' in agents
-    assert "Invalid base URL" in agents
-    assert "src/" in agents and "gitignored" in agents
+    assert 'sage.url("data/<slug>/<name>")' in agents
+    assert "Do NOT fetch a leading-slash path" in agents
+    assert "static/" in agents and "gitignored" in agents
 
 
 def test_the_shared_shape_is_named_once_and_a_mixed_folder_says_so(tmp_path: Path):

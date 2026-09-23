@@ -192,31 +192,31 @@ def _app(tmp_path, files: dict[str, str]):
 
 
 def test_the_listing_names_source_files_with_their_size(tmp_path):
-    root = _app(tmp_path, {"src/App.tsx": "a\nb\nc\n", "src/components/Table.tsx": "x\n"})
+    root = _app(tmp_path, {"static/app.js": "a\nb\nc\n", "static/components/Table.js": "x\n"})
     ctx = scope.app_context(root)
-    assert "src/App.tsx (3 lines)" in ctx
-    assert "src/components/Table.tsx (1 lines)" in ctx
+    assert "static/app.js (3 lines)" in ctx
+    assert "static/components/Table.js (1 lines)" in ctx
 
 
 def test_scaffolding_is_left_out_of_the_listing(tmp_path):
-    # Every project carries an identical template — package.json, the tsconfigs, dist/, public/. It
-    # costs tokens and says nothing about THIS app's size, which is the only thing being judged.
+    # A vendored bundle costs tokens and says nothing about THIS app's size, which is the only
+    # thing being judged — same for anything under a dotfile/dotdir.
     root = _app(tmp_path, {
-        "src/App.tsx": "x\n", "package.json": "{}", "dist/index.html": "<html>",
-        "public/favicon.svg": "<svg/>", "tsconfig.json": "{}",
+        "static/app.js": "x\n", "static/vendor/react.production.min.js": "/* react */",
+        ".sage/settings.json": "{}", ".gitignore": "static/vendor/\n",
     })
     ctx = scope.app_context(root)
-    assert "src/App.tsx" in ctx
-    for noise in ("package.json", "dist/", "public/", "tsconfig"):
+    assert "static/app.js" in ctx
+    for noise in ("vendor", ".sage", ".gitignore"):
         assert noise not in ctx
 
 
 def test_a_long_listing_says_how_much_it_left_out(tmp_path):
     # A silently truncated listing would make a large app read as a medium one — the exact
     # misjudgement the context exists to correct.
-    root = _app(tmp_path, {f"src/c{i}.tsx": "x\n" for i in range(scope.MAX_FILES + 5)})
+    root = _app(tmp_path, {f"static/c{i}.js": "x\n" for i in range(scope.MAX_FILES + 5)})
     ctx = scope.app_context(root)
-    assert ctx.count("\n  src/") == scope.MAX_FILES
+    assert ctx.count("\n  static/") == scope.MAX_FILES
     assert "and 5 more files" in ctx
 
 
@@ -229,19 +229,19 @@ def test_a_missing_or_empty_app_yields_no_context(tmp_path):
 
 def test_an_unreadable_file_is_still_listed_without_a_count(tmp_path):
     # Its existence is scope signal even when its size isn't; dropping the row would undercount the app.
-    root = _app(tmp_path, {"src/big.bin": "x" * (scope.MAX_FILE_BYTES + 1)})
+    root = _app(tmp_path, {"static/big.bin": "x" * (scope.MAX_FILE_BYTES + 1)})
     ctx = scope.app_context(root)
-    assert "src/big.bin" in ctx and "lines" not in ctx.split("src/big.bin")[1]
+    assert "static/big.bin" in ctx and "lines" not in ctx.split("static/big.bin")[1]
 
 
 def test_the_listing_rides_the_system_prompt_not_the_users_message(tmp_path):
     # Background the model judges against. Pasted in front of the request it would read as part of
     # what the user typed — and it would break the truncation contract on the user message.
     gw = StubGateway("BUILD")
-    root = _app(tmp_path, {"src/App.tsx": "x\n"})
+    root = _app(tmp_path, {"static/app.js": "x\n"})
     _ask(gw, prompt="add a settings page", root=root)
     system, user = gw.seen[0][0]["messages"]
-    assert "src/App.tsx" in system["content"]
+    assert "static/app.js" in system["content"]
     assert user["content"] == "add a settings page"
 
 
@@ -480,10 +480,10 @@ def test_the_rule_matches_the_paths_the_model_is_handed_and_not_a_guess_at_words
     classifier over a file the model was never told about."""
     from sage.orchestrator.service import Orchestrator
 
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "App.tsx").write_text("export default function App() { return null }\n")
-    (src / "StudyPicker.tsx").write_text("export function StudyPicker() { return null }\n")
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "app.js").write_text("// app\n")
+    (static / "StudyPicker.js").write_text("// study picker\n")
 
     paths = Orchestrator._source_paths(tmp_path)
 
@@ -491,13 +491,13 @@ def test_the_rule_matches_the_paths_the_model_is_handed_and_not_a_guess_at_words
         # The call site's own expression, verbatim (service.py, beside `_scope_gate_applies`).
         return any(rel in prompt for rel in paths)
 
-    assert named("in src/App.tsx move the footer under the chart") is True
-    assert named("src/StudyPicker.tsx should remember the last study") is True
+    assert named("in static/app.js move the footer under the chart") is True
+    assert named("static/StudyPicker.js should remember the last study") is True
     # No file named: an open-ended request on a built app is exactly what the classifier is for.
     assert named("make it work for any study") is False
     assert named("add a page listing every study") is False
     # A file that is not this app's source is not the edit site.
-    assert named("update package.json to add recharts") is False
+    assert named("update static/vendor/react.js to add recharts") is False
 
 
 def test_the_listing_the_classifier_reads_follows_the_apps_stack(tmp_path):

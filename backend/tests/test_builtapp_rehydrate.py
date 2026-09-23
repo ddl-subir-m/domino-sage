@@ -1,9 +1,9 @@
 """Published-app data rehydrate — the half a dataset mount cannot answer for.
 
-`scripts/rehydrate-data.mjs` links what this App's hardware already has on disk. Everything else —
-a Dataset shared from another project, or one added after the execution started — is downloaded by
-`scripts/rehydrate_data.py`, which ships IN the app's repo and so is loaded by path here, the same
-way test_builtapp_serve.py loads serve.py.
+`link_mounts` (step one, in the same script) links what this App's hardware already has on disk.
+Everything else — a Dataset shared from another project, or one added after the execution started
+— is downloaded by `rehydrate`, which is what these tests drive. Ships IN the app's repo and so is
+loaded by path here, the same way test_builtapp_queries.py loads sage_serve.py.
 """
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ import json
 import sys
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parents[2] / "template" / "react-vite" / "scripts" / "rehydrate_data.py"
+_SCRIPT = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd" / "scripts" / "rehydrate_data.py"
 
 
 def _load():
     spec = importlib.util.spec_from_file_location("builtapp_rehydrate", _SCRIPT)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod          # `from __future__ import annotations`, as in serve.py
+    sys.modules[spec.name] = mod          # `from __future__ import annotations`, as in sage_serve.py
     spec.loader.exec_module(mod)
     return mod
 
@@ -123,7 +123,7 @@ def test_an_entry_without_a_dataset_id_is_reported_not_guessed(tmp_path: Path):
 def test_a_manifest_path_outside_public_data_is_refused(tmp_path: Path):
     _manifest(tmp_path, [
         _entry(path="public/data/../../escaped.csv"),
-        _entry(path="src/App.tsx"),
+        _entry(path="static/app.js"),
     ])
     assert rehydrate_data.rehydrate(tmp_path, get_dataset=lambda _n: _FakeDataset()) == (0, 0)
     assert not (tmp_path / "escaped.csv").exists()

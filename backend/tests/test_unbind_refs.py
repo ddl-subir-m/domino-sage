@@ -38,11 +38,12 @@ CATALOG = ModelCatalog(
 
 def _orch(tmp_path: Path) -> Orchestrator:
     t = tmp_path / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
+    (t / HELPER_PATH).parent.mkdir(parents=True, exist_ok=True)
     (t / HELPER_PATH).write_text("// stub helper\n")
     (t / CONFIG_PATH).write_text(render_config([], None, None))
-    (t / "package.json").write_text("{}")
     (t / "AGENTS.md").write_text("# Template rules\n")
     orch = Orchestrator(
         workspace_dir=tmp_path / "mnt" / "code",
@@ -68,13 +69,12 @@ def _write(orch: Orchestrator, rel: str, text: str) -> None:
 def test_unbinding_an_alias_names_the_app_code_that_still_calls_it(tmp_path):
     orch = _orch(tmp_path)
     orch.bind_llm_alias("id-mimo")
-    _write(orch, "src/Cluster.tsx",
-           'import { askModel } from "./appLlm";\n'
-           'await askModel(msgs, { alias: "mimo-v2.5" });\n')
+    _write(orch, "static/Cluster.js",
+           'sage.askModel(msgs, { alias: "mimo-v2.5" });\n')
 
     result = orch.unbind("llm_alias", "id-mimo")
 
-    assert "src/Cluster.tsx" in result["refs"]
+    assert "static/Cluster.js" in result["refs"]
     assert result["name"] == "mimo-v2.5"
     assert result["kind"] == "llm_alias"
 
@@ -82,7 +82,7 @@ def test_unbinding_an_alias_names_the_app_code_that_still_calls_it(tmp_path):
 def test_sages_own_files_are_never_reported_as_references(tmp_path):
     """The whole reason this can't be a plain grep for the Alias name.
 
-    `src/appLlm.config.ts` lists every bound Alias — that is its job — and this unbind is what
+    `static/sage/appLlm.config.js` lists every bound Alias — that is its job — and this unbind is what
     rewrites it. If it counted, EVERY unbind would warn, and the one file it named would be one the
     creator must not edit.
     """
@@ -98,7 +98,7 @@ def test_an_alias_the_app_never_called_leaves_nothing_behind(tmp_path):
     # would train the creator to dismiss the one that matters.
     orch = _orch(tmp_path)
     orch.bind_llm_alias("id-sonnet")
-    _write(orch, "src/App.tsx", "export default function App() { return <div>hi</div>; }\n")
+    _write(orch, "static/app.js", "// app\n")
 
     assert orch.unbind("llm_alias", "id-sonnet")["refs"] == []
 
@@ -143,13 +143,13 @@ def test_a_data_source_is_found_through_its_queries_not_its_name(tmp_path):
         {"name": "clicks_by_day", "binding": "ds-1", "sql": "SELECT 1", "params": []},
         {"name": "other_source_query", "binding": "ds-2", "sql": "SELECT 2", "params": []},
     ]))
-    _write(orch, "src/Ads.tsx", 'const r = await runQuery("clicks_by_day");\n')
-    _write(orch, "src/Other.tsx", 'const r = await runQuery("other_source_query");\n')
+    _write(orch, "static/Ads.js", 'const r = await runQuery("clicks_by_day");\n')
+    _write(orch, "static/Other.js", 'const r = await runQuery("other_source_query");\n')
 
     refs = orch.unbind(KIND_DATA_SOURCE, "ds-1")["refs"]
 
-    assert "src/Ads.tsx" in refs
-    assert "src/Other.tsx" not in refs      # belongs to a Data Source that is still bound
+    assert "static/Ads.js" in refs
+    assert "static/Other.js" not in refs      # belongs to a Data Source that is still bound
     # The catalog holds statements that now run against a store this app no longer records, and the
     # agent owns that file — so it is named too, or the cleanup leaves the dead SQL in place.
     assert ".sage/queries.json" in refs
@@ -158,7 +158,7 @@ def test_a_data_source_is_found_through_its_queries_not_its_name(tmp_path):
 def test_a_data_source_with_no_queries_reports_nothing(tmp_path):
     orch = _orch(tmp_path)
     _bind_data_source(orch, "ds-1", "BigQuery_Demo")
-    _write(orch, "src/App.tsx", "export default function App() { return <div>hi</div>; }\n")
+    _write(orch, "static/app.js", "// app\n")
 
     assert orch.unbind(KIND_DATA_SOURCE, "ds-1")["refs"] == []
 
@@ -186,14 +186,13 @@ def test_refusing_a_membership_removal_names_the_same_files(tmp_path):
     orch = _orch(tmp_path)
     orch.add_project_resource({"id": "llm_alias:id-mimo", "kind": "model_llm", "name": "MiMo 2.5"})
     orch.bind_llm_alias("id-mimo")
-    _write(orch, "src/Cluster.tsx",
-           'import { askModel } from "./appLlm";\n'
-           'await askModel(msgs, { alias: "mimo-v2.5" });\n')
+    _write(orch, "static/Cluster.js",
+           'sage.askModel(msgs, { alias: "mimo-v2.5" });\n')
 
     try:
         orch.remove_project_resource("llm_alias:id-mimo")
     except ResourceStillBound as e:
-        assert "src/Cluster.tsx" in e.refs
+        assert "static/Cluster.js" in e.refs
     else:
         raise AssertionError("expected the removal to be refused while the app still binds it")
 

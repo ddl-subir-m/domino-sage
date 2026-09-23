@@ -10,39 +10,46 @@ Nothing here executes anything. The executor is the injected seam #14 will fill;
 that records what crossed the boundary, which is the only way to assert that `sql` and `params`
 arrived separately.
 
-The server under test ships IN the app's repo (`template/react-vite/serve.py`), so it is loaded by
-path, exactly as `test_builtapp_serve.py` loads it.
+The server under test ships IN the app's repo (`template/fastapi-antd/sage_serve.py`), so it is
+loaded by path, exactly as `test_a_no_build_app_serves_from_static_files.py` loads it.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
-import threading
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
-import httpx
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-_SERVE_PY = Path(__file__).resolve().parents[2] / "template" / "react-vite" / "serve.py"
+REPO = Path(__file__).resolve().parents[2]
+_TEMPLATE = REPO / "template" / "fastapi-antd"
 
 
-def _load_serve():
-    spec = importlib.util.spec_from_file_location("builtapp_serve_queries", _SERVE_PY)
+def _load(app_dir: Path, name: str):
+    """A module out of the SEEDED app, by path — so `ROOT` is the app, the way a published app
+    runs it. Registered in sys.modules before exec, as every by-path load here is."""
+    spec = importlib.util.spec_from_file_location(name, app_dir / "sage_serve.py")
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
-    # Registered BEFORE exec: `serve.py` uses `from __future__ import annotations`, so a dataclass
-    # resolves its field types by looking its own module up in sys.modules. Running the app for real
-    # (`python3 serve.py`) puts it there as __main__; loading it by path here does not unless we do.
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
-serve = _load_serve()
-sq = serve.sq  # the query half (`sage_queries.py`), the same module object serve.py imported
+# `sage_queries.py`'s functions used directly below all take an explicit root path, so one load
+# (straight off the template, never copied) answers for every test; only `mount()`'s own use of it
+# (inside `running()`, below) needs a fresh, app-specific one.
+_sq_spec = importlib.util.spec_from_file_location(
+    "builtapp_queries_sq_module", _TEMPLATE / "sage_queries.py")
+sq = importlib.util.module_from_spec(_sq_spec)
+sys.modules[_sq_spec.name] = sq  # dataclasses resolve field types through sys.modules
+_sq_spec.loader.exec_module(sq)
 
 REVENUE_SQL = "SELECT region, SUM(amount) AS total FROM orders WHERE region = :region GROUP BY region"
 
@@ -65,9 +72,12 @@ class FakeExecutor:
 
 @pytest.fixture
 def app(tmp_path: Path) -> Path:
-    """An app repo: a built `dist/` beside the `.sage/` manifests the server reads at startup."""
-    (tmp_path / "dist").mkdir()
-    (tmp_path / "dist" / "index.html").write_text("<!doctype html><div id=root>APP</div>")
+    """An app repo: `sage_serve.py` + `sage_queries.py` beside the `.sage/` manifests the server
+    reads at startup, and a minimal `static/index.html` so the page route answers too."""
+    for name in ("sage_serve.py", "sage_queries.py", "sage_domino.py"):
+        shutil.copy2(_TEMPLATE / name, tmp_path / name)
+    (tmp_path / "static").mkdir()
+    (tmp_path / "static" / "index.html").write_text("<!doctype html><div id=root>APP</div>")
     (tmp_path / ".sage").mkdir()
     _write_bindings(tmp_path, [{"kind": "data_source", "id": "ds-dwh", "name": "warehouse",
                                 "display_name": "warehouse", "database": "ANALYTICS",
@@ -85,22 +95,21 @@ def _write_queries(root: Path, entries: list) -> None:
 
 @contextmanager
 def running(app: Path, executor=None):
-    """The server on a throwaway port, serving app/dist with app/ as the project root."""
-    srv = serve.build_server(app / "dist", host="127.0.0.1", port=0,
-                             project_root=app, executor=executor)
-    t = threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True)
-    t.start()
-    try:
-        yield f"http://127.0.0.1:{srv.server_address[1]}"
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        t.join(timeout=5)
+    """The app's own server, mounted onto a bare FastAPI app and driven in-process — no real
+    socket, no real port. `TestClient` is httpx underneath, so the calling tests read the same."""
+    # Each test gets its own module object: `sage_queries` and `sage_domino` are cached by name in
+    # sys.modules, and a second app dir would otherwise read the first one's ROOT.
+    for stale in [k for k in sys.modules if k in ("sage_queries", "sage_domino")]:
+        del sys.modules[stale]
+    serve = _load(app, f"builtapp_queries_serve_{id(app)}")
+    fastapi_app = FastAPI()
+    serve.mount(fastapi_app, executor=executor)
+    yield TestClient(fastapi_app)
 
 
-def _ask(base: str, name: str, params=None, **kw) -> httpx.Response:
+def _ask(base: TestClient, name: str, params=None, **kw):
     body = {} if params is None else {"params": params}
-    return httpx.post(f"{base}/api/queries/{name}", json=body, **kw)
+    return base.post(f"/api/queries/{name}", json=body, **kw)
 
 
 REVENUE = {
@@ -171,7 +180,7 @@ def test_a_query_path_will_not_answer_a_GET(app: Path):
     # where JSON was asked for, which reads as a broken app rather than as the wrong method.
     _write_queries(app, [REVENUE])
     with running(app, FakeExecutor()) as base:
-        r = httpx.get(f"{base}/api/queries/revenue_by_region")
+        r = base.get("/api/queries/revenue_by_region")
     assert r.status_code == 405
     assert r.headers["content-type"].startswith("application/json")
 
@@ -261,17 +270,17 @@ def test_a_missing_parameter_is_named(app: Path):
 def test_a_body_that_is_not_json_is_rejected(app: Path):
     _write_queries(app, [REVENUE])
     with running(app, FakeExecutor()) as base:
-        r = httpx.post(f"{base}/api/queries/revenue_by_region", content=b"{not json",
-                       headers={"Content-Type": "application/json"})
+        r = base.post("/api/queries/revenue_by_region", content=b"{not json",
+                     headers={"Content-Type": "application/json"})
     assert r.status_code == 400
 
 
 def test_an_oversized_body_is_refused_without_being_read(app: Path):
     _write_queries(app, [REVENUE])
     with running(app, FakeExecutor()) as base:
-        r = httpx.post(f"{base}/api/queries/revenue_by_region",
-                       content=b"x" * (sq._MAX_BODY + 1),
-                       headers={"Content-Type": "application/json"})
+        r = base.post("/api/queries/revenue_by_region",
+                     content=b"x" * (sq._MAX_BODY + 1),
+                     headers={"Content-Type": "application/json"})
     assert r.status_code == 413
 
 
@@ -340,7 +349,7 @@ def test_the_startup_log_names_every_unusable_query(app: Path, capsys):
 
 def test_an_app_with_no_catalog_serves_exactly_as_before(app: Path):
     with running(app) as base:
-        assert httpx.get(base + "/").status_code == 200
+        assert base.get("/").status_code == 200
         assert _ask(base, "anything", {}).status_code == 404
 
 
@@ -349,7 +358,7 @@ def test_a_catalog_that_is_not_valid_json_does_not_stop_the_app_serving(app: Pat
     # says it has no queries.
     (app / ".sage" / "queries.json").write_text("{not json")
     with running(app) as base:
-        assert httpx.get(base + "/").status_code == 200
+        assert base.get("/").status_code == 200
         assert _ask(base, "revenue_by_region", {}).status_code == 404
 
 

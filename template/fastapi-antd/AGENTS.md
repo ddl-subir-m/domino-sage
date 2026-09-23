@@ -91,10 +91,16 @@ regenerated each turn, so don't edit it.
 - **Style with Ant Design and the tokens** in `static/app.css` `:root`. Reach for a component
   (`antd.Table`, `antd.Form`, `antd.Card`, `antd.Select`) before hand-rolling one. Never invent
   colors, fonts, shadows or radii outside the tokens.
-- **Read git history without printing an email address.** `git log --oneline`, `git show --stat
-  --format=`, `git status --short`, `git diff` are safe; plain `git log`/`git show` and most `git
-  blame` forms (`-e`, `--show-email`, `--porcelain`) print one. Run `git blame <file>` bare or not
-  at all — a step that prints an address is refused and the turn stops.
+- **Read git history without printing an email address.** Plain `git log` and `git show` print the
+  commit header, and the author line carries one. `git blame` prints no header, but most of its
+  forms carry the address on every line they emit — `-e`, `--show-email`, `--porcelain`,
+  `--line-porcelain`, `--incremental` and `git annotate` all ask for it. What you are avoiding is
+  the ADDRESS — not one command and not one flag — so work out what it will actually print rather
+  than reaching for a form not named here. Do not work out which form is safe: run
+  `git blame <file>` bare, or not at all. These print no commit header and no author line:
+  `git log --oneline`, `git log --format="%h %s"`, `git show --stat --format=`, `git status
+  --short`, `git diff`. Two routes put an address there, and neither is fixed after it printed —
+  stop before it does.
 
 ## Design system checklist
 Every app must look intentional, not "vibe-coded." `static/theme.js` already wires the

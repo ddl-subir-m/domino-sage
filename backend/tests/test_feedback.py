@@ -3,25 +3,14 @@ import json
 from pathlib import Path
 
 from sage.feedback.circuit_breaker import CircuitBreaker
-from sage.feedback.runner import FeedbackError, FeedbackReport, FeedbackRunner, parse_tsc
-
-
-def test_parse_tsc_extracts_errors():
-    out = (
-        "src/App.tsx(12,5): error TS2304: Cannot find name 'foo'.\n"
-        "src/x.ts(1,1): error TS1005: ';' expected.\n"
-        "Found 2 errors.\n"
-    )
-    errs = parse_tsc(out)
-    assert len(errs) == 2
-    assert errs[0] == FeedbackError("src/App.tsx", 12, 5, "TS2304", "Cannot find name 'foo'.")
+from sage.feedback.runner import FeedbackError, FeedbackReport, FeedbackRunner
 
 
 def test_report_message_and_signature():
     r = FeedbackReport(ok=False, errors=[FeedbackError("a.tsx", 3, 1, "TS2304", "x")])
     assert "Fix these" in r.as_agent_message()
     assert "a.tsx:3:TS2304" == r.signature()
-    assert FeedbackReport(ok=True).as_agent_message() == "Typecheck passed. No errors."
+    assert FeedbackReport(ok=True).as_agent_message() == "Syntax check passed. No errors."
 
 
 def test_parse_py_compile_extracts_errors():
@@ -115,17 +104,16 @@ def test_breaker_time_budget():
     assert b.record("b", resolved=False).action == "stop"
 
 
-def test_implement_prompt_names_the_config_the_gate_checks():
-    """The agent's own typecheck has to check what Sage checks (#41).
+def test_implement_prompt_names_the_same_check_the_gate_runs():
+    """The agent's own check has to check what Sage checks (#41), restated for the no-build stack.
 
-    The template's root `tsconfig.json` is a references-only stub with no inputs of its own, so
-    `tsc -p tsconfig.json` compiles zero files and exits 0 however broken the app is. The implement
-    prompt tells the agent to verify its edits; left without a config name the agent reaches for
-    that root file, believes a vacuous pass, and ends the turn on code the gate then rejects —
-    costing the extra turn `run_feedback_loop` spends feeding the errors back.
-
-    Pinned to `FeedbackRunner`'s own default so the two cannot drift apart again.
+    There is no config file left to drift out of step (that was `tsconfig.json`'s failure mode,
+    fixed for react-vite by pinning the prompt to `FeedbackRunner`'s own default) — `check_python_
+    stack` runs two fixed commands, so the only remaining risk is the prompt's PROSE describing them
+    going stale by hand-editing. Pinned on the literal commands rather than on an attribute, because
+    `FeedbackRunner` no longer holds one to pin to.
     """
     config = json.loads((Path(__file__).resolve().parents[2] / "opencode.json").read_text())
     prompt = config["agent"]["sage-implement"]["prompt"]
-    assert FeedbackRunner()._tsconfig in prompt
+    assert "py_compile" in prompt
+    assert "node --check" in prompt

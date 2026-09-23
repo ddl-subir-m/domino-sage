@@ -54,10 +54,9 @@ SOURCES = [
 
 def _template(tmp: Path) -> Path:
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
-    (t / "package.json").write_text("{}")
-    (t / "app.sh").write_text("#!/bin/bash\nexec npx vite preview\n")   # Domino's entry script
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
     return t
 
 
@@ -78,7 +77,7 @@ def _orch(tmp_path: Path, cp: FakeControlPlane | None = None) -> Orchestrator:
     return orch
 
 
-def _write_source(orch: Orchestrator, text: str, rel: str = "src/App.tsx") -> None:
+def _write_source(orch: Orchestrator, text: str, rel: str = "static/app.js") -> None:
     path = orch.project().workspace.path / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -300,7 +299,7 @@ def test_unbind_reports_the_same_refs_whatever_the_label_says(tmp_path: Path):
     _write_source(orch, 'askModel(msgs, { alias: "sonnet" });')   # ...and then something did
 
     assert _label(orch, "id-sonnet") is False     # stale, by design
-    assert orch.unbind("llm_alias", "id-sonnet")["refs"] == ["src/App.tsx"]
+    assert orch.unbind("llm_alias", "id-sonnet")["refs"] == ["static/app.js"]
 
 
 def test_the_label_never_reaches_the_committed_manifest(tmp_path: Path):
@@ -342,7 +341,7 @@ def test_the_written_answer_stays_out_of_the_apps_git_history(tmp_path: Path):
     ignored = (orch.project().workspace.path / ".gitignore").read_text()
     assert ".sage/usage.json" in ignored
     template_ignore = (Path(__file__).resolve().parents[2]
-                       / "template" / "react-vite" / ".gitignore").read_text()
+                       / "template" / "fastapi-antd" / ".gitignore").read_text()
     assert ".sage/usage.json" in template_ignore
 
 

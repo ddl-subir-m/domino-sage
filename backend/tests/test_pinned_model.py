@@ -33,7 +33,7 @@ CATALOG = ModelCatalog(
     plan="sonnet", implement="sonnet", ask="sonnet",
 )
 
-REPO_TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+REPO_TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 # The names a freshly seeded app has (#119). An app seeded before it has its own — see
 # test_an_app_seeded_before_the_rename_keeps_its_helper_names.py.
 CONFIG_PATH = TEMPLATE.llm_config_path
@@ -48,11 +48,12 @@ def _template(tmp: Path) -> Path:
     """A template carrying the helper, like the shipped one. Stub contents, so a test can tell a
     copy from a coincidence."""
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
+    (t / HELPER_PATH).parent.mkdir(parents=True, exist_ok=True)
     (t / HELPER_PATH).write_text("// stub helper\n")
     (t / CONFIG_PATH).write_text(render_config([], None, None))
-    (t / "package.json").write_text("{}")
     (t / "AGENTS.md").write_text("# Template rules\n")
     return t
 
@@ -147,10 +148,10 @@ def test_the_agent_is_told_nothing_when_no_model_is_pinned():
 def test_the_agent_is_given_the_import_the_display_name_and_the_load_check():
     block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], [])
     assert "Claude Sonnet 4.6" in block
-    assert 'from "./appLlm"' in block
+    assert "sage.askModel" in block
     assert "checkModel" in block          # the check whose absence only breaks for OTHER people
-    assert "src/appLlm.config.ts" in block  # ... and the two files it must not rewrite
-    assert "src/appLlm.ts" in block
+    assert "static/sage/appLlm.config.js" in block  # ... and the two files it must not rewrite
+    assert "static/sage/appLlm.js" in block
 
 
 def test_the_agent_is_told_what_a_raw_gateway_call_costs_not_just_that_it_is_forbidden():

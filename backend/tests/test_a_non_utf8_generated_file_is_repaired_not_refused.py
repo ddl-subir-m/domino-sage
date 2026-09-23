@@ -82,11 +82,12 @@ def _needs_utf8_locale(tmp_path: Path) -> None:
 
 def _orch(tmp_path: Path) -> Orchestrator:
     t = tmp_path / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("placeholder")
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("placeholder")
+    (t / "app.py").write_text("# app\n")
+    (t / HELPER_PATH).parent.mkdir(parents=True, exist_ok=True)
     (t / HELPER_PATH).write_text("// stub helper\n")
     (t / CONFIG_PATH).write_text(render_config([], None, None))
-    (t / "package.json").write_text("{}")
     (t / "AGENTS.md").write_text("# Template rules\n")
     orch = Orchestrator(
         workspace_dir=tmp_path / "mnt" / "code",
@@ -141,15 +142,17 @@ def _orch_with_data_source(tmp_path: Path) -> Orchestrator:
     """A real workspace, seeded with the real `serve.py` — the same reason `test_bound_schema.py`'s
     `orchestrator()` fixture copies it: `bind_data_source` and the samples writers it feeds are
     exercised end to end, not through a stub."""
-    react_template = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+    real_template = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
     template = tmp_path / "template"
-    (template / "src").mkdir(parents=True, exist_ok=True)
-    (template / "src" / "App.tsx").write_text("placeholder")
-    (template / "package.json").write_text("{}")
-    shutil.copy2(react_template / "serve.py", template / "serve.py")
-    shutil.copy2(react_template / "sage_queries.py", template / "sage_queries.py")
-    shutil.copy2(react_template / "src" / "appQuery.ts", template / "src" / "appQuery.ts")
-    shutil.copy2(react_template / "src" / "appBase.ts", template / "src" / "appBase.ts")
+    (template / "static" / "sage").mkdir(parents=True, exist_ok=True)
+    (template / "static" / "app.js").write_text("placeholder")
+    (template / "app.py").write_text("# app\n")
+    shutil.copy2(real_template / "sage_serve.py", template / "sage_serve.py")
+    shutil.copy2(real_template / "sage_queries.py", template / "sage_queries.py")
+    shutil.copy2(real_template / "static" / "sage" / "appQuery.js",
+                 template / "static" / "sage" / "appQuery.js")
+    shutil.copy2(real_template / "static" / "sage" / "appBase.js",
+                 template / "static" / "sage" / "appBase.js")
 
     orch = Orchestrator(
         workspace_dir=tmp_path / "mnt" / "code",

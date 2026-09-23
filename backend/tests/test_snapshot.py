@@ -80,6 +80,7 @@ def test_discard_changes_does_not_touch_excluded_dirs(tmp_path: Path):
     snap = TurnSnapshot(ws.path)
 
     snap.commit_before_turn()
+    (ws.path / "node_modules").mkdir()
     (ws.path / "node_modules" / "extra.txt").write_text("should survive")
 
     snap.discard_changes()
@@ -131,6 +132,7 @@ def test_changed_since_pre_turn_ignores_excluded_dirs(tmp_path: Path):
     snap = TurnSnapshot(ws.path)
 
     snap.commit_before_turn()
+    (ws.path / "node_modules").mkdir()
     (ws.path / "node_modules" / "extra.txt").write_text("install artifact, not agent code")
 
     assert snap.changed_since_pre_turn() is False

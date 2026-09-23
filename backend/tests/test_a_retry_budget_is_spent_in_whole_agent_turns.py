@@ -38,7 +38,7 @@ from sage.router.models import Mode, ModelCatalog
 from .fake_opencode import FakeOpenCode, Turn
 from .ledger import last_turn, own_ledger
 
-REPO_TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+REPO_TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 BASE = "https://apps.example.com/apps/llm_gateway/v1"
 ALIASES = [LlmAlias("id-sonnet", "sonnet", "Claude Sonnet 4.6", None, ["chat"], {"input": 3.0})]
 
@@ -103,12 +103,12 @@ def _template(tmp: Path) -> Path:
     """The shipped LLM helper verbatim: the gateway scan skips Sage's own sources by path, and a
     stub at that path would make the skip pass for the wrong reason."""
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("export default function App() { return null }\n")
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("// app placeholder\n")
+    (t / "app.py").write_text("# app\n")
+    (t / TEMPLATE.llm_path).parent.mkdir(parents=True, exist_ok=True)
     (t / TEMPLATE.llm_path).write_text((REPO_TEMPLATE / TEMPLATE.llm_path).read_text())
     (t / TEMPLATE.llm_config_path).write_text(render_config([], None, None))
-    (t / "package.json").write_text("{}")
-    (t / "app.sh").write_text("#!/bin/bash\nexec npx vite preview\n")
     (t / "AGENTS.md").write_text("# Template rules\n")
     return t
 

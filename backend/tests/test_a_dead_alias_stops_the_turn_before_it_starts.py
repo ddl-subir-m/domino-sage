@@ -128,9 +128,9 @@ def _no_waiting(monkeypatch):
 
 def _template(tmp: Path) -> Path:
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("export default function App() { return null }\n")
-    (t / "package.json").write_text("{}")
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("// placeholder\n")
+    (t / "app.py").write_text("# app\n")
     return t
 
 
@@ -164,7 +164,7 @@ def _error(events: list[dict]) -> str:
 
 
 PLAN = Turn(text="# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data")
-BUILD = Turn(writes={"src/App.tsx": "// the table\n"})
+BUILD = Turn(writes={"static/app.js": "// the table\n"})
 
 
 # ---- which slots a turn routes to ----------------------------------------------------------------

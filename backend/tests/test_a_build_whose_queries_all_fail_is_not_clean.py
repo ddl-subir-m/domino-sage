@@ -39,7 +39,7 @@ from sage.router.models import ModelCatalog
 from .fake_opencode import FakeOpenCode, Turn
 from .test_a_shape_only_table_artifact_renders_as_a_receipt import _node, needs_node
 
-TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 
 # What the store actually said in the run this ticket came from, redacted the way `_readable` would
 # leave it. Carried as one constant because three tests assert the creator, the agent and the
@@ -79,9 +79,9 @@ def _no_waiting(monkeypatch):
 
 def _template(tmp: Path) -> Path:
     t = tmp / "template"
-    (t / "src").mkdir(parents=True, exist_ok=True)
-    (t / "src" / "App.tsx").write_text("export default function App() { return null }\n")
-    (t / "package.json").write_text('{"name": "template"}')
+    (t / "static").mkdir(parents=True, exist_ok=True)
+    (t / "static" / "app.js").write_text("// app placeholder\n")
+    (t / "app.py").write_text("# app\n")
     (t / "AGENTS.md").write_text("# Building an app\n")
     return t
 

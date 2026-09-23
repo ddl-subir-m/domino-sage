@@ -6,7 +6,7 @@ explicit that verification is a fixed prompt set scored against the three-clause
 is `docs/live-runs/2026-08-31-controls.md`, which is recorded as unrun.
 
 Two of the three surfaces are here — the `sage-plan` prompt, which carries the judgement, and
-`template/react-vite/AGENTS.md`, which carries the no-store mechanics. The third, the store-backed
+`template/fastapi-antd/AGENTS.md`, which carries the no-store mechanics. The third, the store-backed
 mechanics in `bound_schema.py`, is asserted in `test_bound_schema.py` beside the rest of that block.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENTS = ROOT / "template" / "react-vite" / "AGENTS.md"
+AGENTS = ROOT / "template" / "fastapi-antd" / "AGENTS.md"
 
 
 def plan_prompt() -> str:
@@ -74,52 +74,42 @@ def test_the_plan_prompt_still_writes_no_code():
 # ---- the template's AGENTS.md: the mechanics, for an app with no store ---------------------------
 
 
-def test_the_controls_section_sits_next_to_charts():
+def test_the_controls_bullet_sits_next_to_charts():
     # ADR-0016 puts it there on purpose: an agent reading the chart rules is the one about to
-    # decide whether the chart is clickable.
+    # decide whether the chart is clickable. One design-system checklist here (#490, one-app
+    # pivot), not per-topic headings, so the order is asserted on the bullets themselves.
     body = AGENTS.read_text()
-    assert "### Controls" in body
-    assert body.index("### Charts") < body.index("### Controls") < body.index("### States")
+    assert "**Controls**" in body
+    assert body.index("**Charts:**") < body.index("**Controls**") < body.index("**States,")
 
 
 def test_the_template_defines_the_control_and_the_shape_that_gets_one():
     body = AGENTS.read_text()
-    assert ("A **Control** is an element that changes what the app shows without a rebuild: a "
-            "select, a date") in body
-    assert "a collection over two or more rows, where one column" in body
-    assert "a category, a status, a date" in body
+    assert ("**Controls** (a select/date-range/search that changes what's shown, over 2+ views "
+            "of the same") in body
+    assert "rows)" in body
 
 
-def test_the_template_says_the_filter_library_is_already_installed():
-    # ADR-0016 adds no dependency. `<select>` is the filter library, and saying so is what stops a
-    # build reaching for one it cannot have.
+def test_the_template_names_the_toolkit_already_on_the_page():
+    # No install here — the toolkit is Ant Design, already on the page, and saying so is what
+    # stops a build reaching for a package it cannot have.
     body = AGENTS.read_text()
-    assert "**No package is needed for this.**" in body
-    assert '`<select>`, `<input type="date">` and `<input type="search">`' in body
-    assert "Hold the selection in `useState`, derive the filtered rows with `useMemo`" in body
+    assert "hold selection in `React.useState`, derive views with `React.useMemo`" in body
 
 
-def test_the_template_carries_clauses_two_and_three_of_the_bar():
+def test_the_template_carries_the_selection_in_words_rule():
     body = AGENTS.read_text()
-    assert "**At least two views respond to it.**" in body
-    assert "A Control that moves one chart is a chart option" in body
-    assert "**State the current selection in words**" in body
-    assert "March 2026 · EMEA · 412 rows" in body
+    assert "state the current\n  selection in words near the charts" in body
 
 
 def test_the_template_says_a_chart_click_writes_the_control():
-    # The whole cross-filtering decision in one rule, plus its other half: a chart over a column
-    # with no Control is not clickable, because a selection nobody can see or undo is worse.
     body = AGENTS.read_text()
-    assert "**A chart click writes the Control; it never filters beside it.**" in body
-    assert "the select visibly moves" in body
-    assert "A chart over a column that has no Control is **not clickable**" in body
+    assert "A chart click writes the Control rather than filtering beside\n  it." in body
 
 
 def test_the_template_hands_a_store_backed_app_over_to_the_managed_region():
     # The no-store path and the store path are not additive: one replaces the other. Said here
     # because this file is seeded once and cannot be revised.
     body = AGENTS.read_text()
-    assert ('If this app reads a store, "The app\'s data" says how a Control filters there instead'
-            in body)
-    assert "replaces the `useMemo` above rather than adding to it" in body
+    assert "If this app reads a store, the store's own filter" in body
+    assert "replaces the\n  `useMemo` instead" in body

@@ -1,7 +1,7 @@
 ---
 doc: Implementation status for ONE-APP-PLAN.md
 branch: one-app-pivot-Etan
-last updated: 2026-09-22
+last updated: 2026-09-23
 ---
 
 # Status
@@ -281,12 +281,53 @@ file your diff never opened" protocol) rather than assuming every red test was t
    not the 200-file list a naive broader grep (`node_modules`, `package.json`, `vite.config`, etc.)
    would suggest — that grep is dominated by false positives from unrelated fixtures using those as
    generic filenames. Trust this diffed list over any single-signal grep.
-6. **Process note for whoever continues this**: the `git stash`/`stash pop` round-trips above were
-   verified restored correctly each time (`git status --short` count and a content spot-check on
-   `stack.py`/`AGENTS.md`/`test_switch_app.py` before proceeding) — no work was lost. But this is a
-   risky pattern in a session with this much uncommitted state; a next session doing the same kind of
-   baseline check should consider a worktree instead if the repo's multi-session conventions
-   (CLAUDE.md's "Working alongside a landing session") make a bare stash riskier than it was here.
+**UPDATE: all 7 of these regression files are now fixed** (same session, continued after a context
+handoff check-in). Root causes and fixes, per file:
+- `test_scope.py` (6 tests): rebuilt fake fixtures from `src/*.tsx` to `static/*.js`/root `*.py`,
+  matching `FASTAPI_ANTD.source_globs`. The "scaffolding" test's noise list changed from
+  `package.json`/`dist/`/`tsconfig` to `static/vendor/*` (vendored) and dotfiles/dotdirs (the actual
+  exclusions `scope.app_context` applies now).
+- `test_unbind_refs.py` (8 tests) and `test_a_broken_tool_call_ends_the_build_out_loud.py` (1 test):
+  same `src/App.tsx`→`static/app.js`/`package.json`→`app.py` fixture rename; `import { askModel }
+  from "./appLlm"` → `sage.askModel(...)` (matching the real, no-module API). Needed one more fix
+  beyond the rename in `test_unbind_refs.py`: `HELPER_PATH`/`CONFIG_PATH` now resolve under
+  `static/sage/`, which doesn't exist yet at template-build time — added a `.parent.mkdir()`.
+- `test_snapshot.py` (2 tests): the fake `node_modules/` dir the tests wrote into no longer gets
+  created at all (that was `link_warm_deps`'s job, now deleted) — added an explicit `.mkdir()`
+  before writing into it. `TurnSnapshot._EXCLUDE` still lists `"node_modules"` as a literal string
+  (harmless dead entry now that no stack creates one; left alone per "don't delete unrelated dead
+  code" — it still works fine as a test vehicle for "an excluded dir is protected").
+- `test_the_chat_prompt_lets_the_thread_keep_findings_under_sage_threads.py` (1 test): pinned the
+  exact `src/`-era sentence this session's own `template/chat/AGENTS.md` edit changed to `static/`
+  — a one-line string update in the test.
+- `test_chat_and_build_get_their_own_context.py` (14 tests, the big one) AND its shared root cause:
+  **`test_chat_turn.py`'s `_orch()` helper** (imported by `test_chat_and_build_get_their_own_context.py`
+  directly, and used as the base fixture by **~48 other test files** — checked, not assumed: grepped
+  every importer and ran all of them together). `_orch()` built a react-vite-shaped fake template;
+  fixed to fastapi-antd shape (`static/app.js` + `app.py`, dropping `package.json`/`src/`). Also fixed
+  two more `src/App.tsx`-reading tests inside `test_chat_turn.py` itself that read the seeded
+  placeholder directly, and one standalone template-builder in the same file
+  (`test_chat_does_not_seed_the_react_template`, renamed `..._the_app_template`). **Verified the
+  full blast radius**: ran `test_chat_turn.py` + all 48 importers together — 812 passed, 0 failed.
+- `test_workspace.py` (9 tests): `_fake_template` rebuilt fastapi-antd-shaped (no more
+  `node_modules`/`.bin/vite` sentinel construction). The 3 `test_link_warm_deps_*` tests were
+  **deleted outright** (the method no longer exists — Vite/node_modules-only, nothing to port).
+  `test_ensure_seeds_from_template_and_symlinks_node_modules` renamed to
+  `test_ensure_seeds_from_template` and its symlink assertion dropped (no such concept for a
+  no-build stack). Four `refresh_entry_script`/`app.sh` tests renamed `serve.py`→`sage_serve.py`
+  throughout (matching `FASTAPI_ANTD.deploy_files`, which has no Node-script (`.mjs`) companion and
+  no `sage_domino.py` entry — react-vite's `_DEPLOY_FILES` had both; fastapi-antd's doesn't).
+
+**Verified together**: all 7 files, 107 tests, 0 failures.
+
+## Process note for whoever continues this
+
+The `git stash`/`stash pop` round-trips used to diff failures against baseline were verified
+restored correctly each time (`git status --short` count and a content spot-check on
+`stack.py`/`AGENTS.md`/`test_switch_app.py` before proceeding) — no work was lost. But this is a
+risky pattern in a session with this much uncommitted state; a next session doing the same kind of
+baseline check should consider a worktree instead if the repo's multi-session conventions
+(CLAUDE.md's "Working alongside a landing session") make a bare stash riskier than it was here.
 
 **An unrequested commit exists on this branch and needs the user's attention.** `git log` shows
 `fc7ff826 "phs0"` sitting on `one-app-pivot-Etan`, containing exactly this session's `git rm -r
@@ -321,7 +362,8 @@ of this session's end — one `F541` (stray `f`-prefix with no placeholder, intr
 session's `LEAK_FIX_NUDGE` edit) was caught and fixed. Re-run after the test-suite pass too, since
 test-file edits can introduce their own lint findings.
 
-## The ~40 test files still naming react-vite (unstarted, this is the next session's main body of work)
+## The ~40 test files still naming react-vite (list below is HISTORICAL — see the 2026-09-23 update
+## above for what's actually still outstanding; most of this list is now done)
 
 `grep -rl "react-vite\|REACT_VITE" backend/tests/*.py` (2026-09-22, after all edits above) returns
 these 39 files. Not yet triaged individually beyond what collection errors above already show.
@@ -372,81 +414,336 @@ tests/test_the_workbench_ships_the_licences_it_owes.py
 tests/test_use_in_app_binds_an_llm_alias.py
 ```
 
-Also found by grepping for the OLD attach/leak-guard fixture shape specifically (`src/` fake-app
-paths, `import.meta.env.BASE_URL`), which may not all show up in the react-vite grep above but were
-touched by this session's `_write_agents_data_block` rewrite:
-- `tests/test_attach_upload.py` — the single biggest one. Dozens of hardcoded `src/App.tsx`,
-  `src/data/d.csv` etc. fake-copy paths across `_detect_leaks`/`_leaked_copy_paths` tests, plus at
-  least 2 assertions on the literal `import.meta.env.BASE_URL + "data/` string this session just
-  changed to `sage.url("data/`. Production code underneath (`_scan_app_sources`, `_copies_in_app`)
-  is confirmed stack-agnostic (plain `os.walk`, matches by basename, no `src/` hardcoding) — so this
-  is purely a fixture-and-assertion rewrite, not a production bug hunt. Budget real time for this
-  one specifically.
-- `tests/test_a_folder_is_the_unit_of_the_act.py` — same `import.meta.env.BASE_URL` /
-  `src/` assertions, smaller scope.
+## UPDATE: continued past this point in the same session (context budget was fine; user said to
+## keep going rather than hand off) — the four `test_builtapp_*.py` files, `test_a_no_build_app_
+## serves_from_static_files.py`, `test_build_agent_numeric_stdout_guard.py`,
+## `test_a_built_app_declares_its_stack_at_birth.py` and `test_a_viewer_picks_the_stack_for_the_
+## next_app.py` are now DONE, not just planned. What actually happened, since it differs in places
+## from what this section originally predicted:
 
-`test_a_built_app_declares_its_stack_at_birth.py` needs a structural rewrite, not just renames: it
-currently imports and asserts against `REACT_VITE` (deleted) and `LEGACY_STACK` fallback-to-a-real-
-stack semantics that no longer hold (`stack_of` now falls back to `FASTAPI_ANTD`, not `None`, per
-the revised decision 4 above — so re-read that section before rewriting this file, the naive
-"s/REACT_VITE/FASTAPI_ANTD/" edit will assert the wrong thing for the legacy-stack tests
-specifically). Its `_other_stack()` helper (registers a synthetic second stack via monkeypatch) still
-works mechanically and is a useful pattern to keep for testing the seam generically.
+- **`test_builtapp_flight.py` / `test_builtapp_queries.py`** (62 tests total): not a one-line path
+  repoint as guessed — `serve.build_server(...)` (a real socket server) doesn't exist on
+  `sage_serve.py` at all (it's `mount(app, executor=...)` onto an existing FastAPI app). Rewrote
+  both to mount onto a bare `FastAPI()` and drive it in-process with `TestClient`, matching the
+  pattern already in `test_a_no_build_app_serves_from_static_files.py`. **One subtle bug found
+  along the way**: the executor must be built from `serve.sq` (the specific `sage_queries` module
+  instance the freshly-loaded `sage_serve.py` itself imported), never from a separately-loaded
+  top-level `sq` — two module objects for byte-identical source means two different `QueryProblem`
+  classes, so `sage_serve.py`'s own `except sq.QueryProblem` silently misses an instance raised by
+  the other one's `FlightExecutor`, and a specific 503 degrades to a generic 502. Both files: 100%
+  passing (33 + 29).
+- **`test_builtapp_serve.py` — deleted, not rewritten**, confirming the original guess: its subject
+  (react-vite's own `serve.py` — `build_server`, SPA-fallback routing, hashed-asset caching,
+  dist-directory serving) has no fastapi-antd equivalent. **Named gap, not silently dropped**:
+  roughly 15 of its ~44 tests covered `sage_domino.py`'s relay/fence directly (path-traversal
+  refusal, allow-list enforcement, redirects, token non-disclosure, error sanitization) and aren't
+  covered anywhere else except one thin test in `test_a_no_build_app_serves_from_static_files.py`.
+  `sage_domino.py` itself is unchanged production code this session, so this is a coverage gap, not
+  a proven regression — a future session should consider a dedicated `test_sage_domino_relay.py`
+  testing those functions directly (no server needed for most of them).
+- **`test_builtapp_rehydrate.py`**: turned out to be near a pure path repoint after all —
+  `rehydrate_data.rehydrate(root, get_dataset=None)` has the identical signature and
+  `(fetched, unavailable)` contract in both stacks' scripts; the tests only ever call `rehydrate()`,
+  never `link_mounts()` or `main()`, so fastapi-antd's extra mount-linking step (folded into the
+  same file) never entered the picture. All 7 tests pass unchanged in substance.
+- **`test_a_no_build_app_serves_from_static_files.py`**: this file's own premise was "prove
+  fastapi-antd and react-vite coexist" (`from sage.workspace.stack import FASTAPI_ANTD, REACT_VITE`
+  — collection error once `REACT_VITE` was deleted). Rewrote to test fastapi-antd standalone:
+  dropped the two-stack-comparison tests (folding the still-useful FASTAPI_ANTD-only assertions into
+  a new `test_the_stacks_shape_is_internally_consistent`), simplified `_seed()` to seed fastapi-antd
+  directly, fixed `from sage.resources.app_helpers import FASTAPI, TEMPLATE` (`FASTAPI` no longer
+  exists — `TEMPLATE` **is** the fastapi-antd shape now), and changed one `mgr.stack is FASTAPI_ANTD`
+  identity check to `==` — `stack_for()` returns a **new** `dataclasses.replace()`'d instance every
+  call now, so `is` can never hold even for a matching case. 11/11 pass.
+- **`test_build_agent_numeric_stdout_guard.py`**: pinned exact substrings from the OLD, longer
+  AGENTS.md wording that this session's rewrite paraphrased while keeping the same substance.
+  Updated `PROBES` to match the current (shorter) wording instead of restoring the old one —
+  shrinking AGENTS.md was an explicit Phase 0 goal — and repointed `AGENTS` from
+  `template/react-vite/` to `template/fastapi-antd/`. 3/3 pass.
+- **`test_a_built_app_declares_its_stack_at_birth.py`**: rewritten as anticipated (re-keyed on
+  `stack_of` falling back to `FASTAPI_ANTD`, not `None`) — and this surfaced a **real production
+  bug**, not just a test-side issue: `WorkspaceManager.stack_for()`, as this session had simplified
+  it earlier, unconditionally overrode `template_dir` to the manager's own configured directory for
+  EVERY stack, not just the fastapi-antd/fallback one. That silently breaks the moment a second real
+  stack is registered — its `template_dir` gets clobbered with fastapi-antd's, seeding the wrong
+  template — and this file's own `_other_stack()` helper caught it immediately. **Fixed in
+  `manager.py`**: the override now applies only when `kind.name == FASTAPI_ANTD.name` (covering both
+  a real `fastapi-antd` record and the legacy/absent-record fallback, which answers as that same
+  Stack), leaving any other real registered stack's own `template_dir` alone — restoring the
+  original pre-pivot code's actual conditional shape, just re-keyed on the new stack name. Re-ran
+  everything already fixed this session against this change to be sure: 290 tests across 17 files
+  and the 49-file `test_chat_turn.py`-plus-importers batch (812 tests) — 0 failures in either.
+  `_other_stack()`'s fake second-stack shape also needed reshaping: it used to distinguish itself
+  from react-vite via `app.py`/`static/`, which is now fastapi-antd's OWN shape and collided;
+  changed to `manifest.json`/`widget.js`, sharing nothing with fastapi-antd's files.
+- **`test_a_viewer_picks_the_stack_for_the_next_app.py` — deleted**, confirming the guess: its
+  entire premise (a settings-drawer picker between two stacks) is gone per decision #3, and
+  `create_app(stack=...)`'s 400-on-unknown-name behavior it also touched on is already covered in
+  `test_a_built_app_declares_its_stack_at_birth.py`. `prefs_harness.mjs` (its JS test harness) is
+  kept — 4 other test files still use it for unrelated preferences.
 
-**The four `test_builtapp_*.py` files are NOT one uniform fix — checked each one's actual subject
-this session, worth recording precisely so the next session doesn't re-derive it:**
+**Remaining, not yet started**: everything in the file list below except what's named done above.
+`test_attach_upload.py` (dozens of `src/`-shaped fake-copy paths, `_detect_leaks`/`_leaked_copy_
+paths` tests, at least 2 `import.meta.env.BASE_URL` assertions this session's `_write_agents_data_
+block` rewrite already invalidated) and `test_a_folder_is_the_unit_of_the_act.py` (same pattern,
+smaller) are still the two biggest known remaining items — budget real time for `test_attach_
+upload.py` specifically. Production code underneath both (`_scan_app_sources`, `_copies_in_app`) is
+confirmed stack-agnostic (plain `os.walk`, matches by basename, no `src/` hardcoding), so this is a
+fixture-and-assertion rewrite, not a production bug hunt.
 
-- `test_builtapp_serve.py` (~440 lines) dynamically loads and tests **`template/react-vite/serve.py`
-  specifically** — react-vite's OWN server (serves a `vite build` output directory, hashed assets,
-  no relation to fastapi-antd's `sage_serve.py`, which mounts onto FastAPI and serves `static/`
-  directly). This file's actual subject no longer exists and has no equivalent — **it's a deletion
-  candidate, not a rewrite**, EXCEPT for two things worth salvaging first: the reads-table-parity
-  check (`_AGENTS = {stack: ... for stack in ("react-vite", "fastapi-antd")}`, lines ~410-432) and
-  `test_every_read_the_instructions_name_passes_the_fence` (asserts every `sage_domino.PLATFORM_READS`
-  family is named in AGENTS.md — this now fails on its own terms too, separately from collection,
-  because Phase 0 step 2 deliberately MOVED that endpoint table out of AGENTS.md into the
-  `domino-platform-api` skill; the assertion needs to check `LESSONS_LEARNED.md`, not AGENTS.md, or
-  be retired in favor of a skill-side equivalent). `sage_serve.py` (fastapi-antd's actual server) is
-  already covered by `test_a_no_build_app_serves_from_static_files.py` (below).
-- `test_builtapp_flight.py` and `test_builtapp_queries.py` load `template/react-vite/serve.py` too,
-  but what they actually EXERCISE through it is `sage_queries.py`'s Flight executor and named-query
-  logic — and `sage_queries.py` was, pre-pivot, an near-identical file duplicated into BOTH
-  `template/react-vite/` and `template/fastapi-antd/` (`Stack.deploy_files` listed it for both).
-  **Likely a one-line path repoint** (`_SERVE_PY` → `template/fastapi-antd/sage_serve.py`, then
-  confirm `serve.sq` still resolves to `sage_queries.py` beside it), not a rewrite — but verify
-  `sage_queries.py`'s behavior wasn't itself stack-differentiated anywhere before assuming this is
-  free.
-- `test_builtapp_rehydrate.py` loads `template/react-vite/scripts/rehydrate_data.py`. **This one is
-  genuinely different, not a path repoint**: this session's edit to
-  `template/fastapi-antd/scripts/rehydrate_data.py` (removing the stale react-vite comparison
-  prose) confirmed react-vite split rehydration across a Node script (mounts) and a Python script
-  (SDK download), while fastapi-antd's is ONE Python script doing both steps — so react-vite's
-  `rehydrate_data.py` and fastapi-antd's file of the same name are NOT the same logic despite the
-  shared filename. Repoint the path, then actually re-read the fastapi-antd file's current behavior
-  (already read once this session, see the `AGENTS.md`-adjacent edits) and rewrite the test bodies
-  against it, not just the import path.
+## UPDATE 2026-09-23: continued the test-suite sweep (post context-handoff)
 
-`test_a_viewer_picks_the_stack_for_the_next_app.py`'s entire premise (a UI picker between two
-stacks) is gone — decision #3 says no picker, one stack. This file is a candidate for deletion
-rather than rewrite; confirm its actual test bodies before deciding (it may also cover
-`create_app(stack=...)`'s 400-on-unknown-name behavior, which is still real and worth keeping under
-a different, less picker-flavored file name).
+Worked straight through the file list below in the order it was written, plus the extra 7-file
+regression batch (already marked done above). All of these are now green, verified individually:
+
+- `test_crash_card.py` (6/6), `test_a_dead_alias_stops_the_turn_before_it_starts.py` + 5 importers
+  sharing its `_template()` fixture (102/102), `test_a_placeholder_is_not_a_finished_build.py` (2/2),
+  `test_preview_deps.py` (4/4, 5 Vite-`optimizeDeps`/`refresh_preview_config` tests dropped as having
+  no fastapi-antd equivalent), `test_new_apps_report_incomplete_model_answers.py` +
+  `tests/js/app_model_outcome_harness.mjs` (5 passed, 2 skipped — harness rewritten to `eval()` the
+  helper as a plain script against preset globals instead of `import()`-ing an ES module),
+  `test_fonts.py` (4/4), `test_history_untracked.py` (6/6), `test_bound_schema.py` (79/79),
+  `test_a_dashboard_ships_with_a_control.py` (11/11).
+- `test_preview_overlay_gate.py` and `test_an_app_seeded_before_the_rename_keeps_its_helper_names.py`
+  — deleted (`git rm`), confirmed no fastapi-antd equivalent for either subject (Vite's error-overlay
+  plugin; `LEGACY` helper names already gone from production code).
+- `test_a_git_commit_header_is_not_read_into_a_build_turn.py` (12/12) — path/fixture repoint, but
+  also surfaced a **real content-loss bug in `template/fastapi-antd/AGENTS.md`**: this session's
+  earlier compression of the git-history-safety bullet (#328) had silently dropped several
+  safety-relevant details versus the pre-pivot wording — three of the six leaking `blame` flags
+  (`--line-porcelain`, `--incremental`, `git annotate`), the "do not work out which form is safe"
+  instruction, and the address-vs-command generalisation reasoning. This is unlike the Dashboard/
+  Control compression (a cosmetic checklist reflow) — it's a PII-leak-prevention rule with three
+  documented live incidents behind it, so the fix was to **restore the fuller bullet text**, not
+  shrink the test to match thinned-out safety guidance. `AGENTS.md` is 167 lines now (was ~161).
+- `test_a_binding_the_app_never_calls_says_so.py` — 16/18 (2 fail identically on the unmodified
+  baseline via `git stash`: `publish_available()`'s dogfood-safety check trips because `/mnt/code`
+  really is the mounted repo in this sandbox — pre-existing/environmental, not this pivot's doing).
+- `test_a_built_apps_instructions_carry_the_packs_words.py` (11/11) — rewrote assertions to match
+  the CURRENT (compressed) AGENTS.md content: "typechecks" → "compiles every `.py` file", the old
+  hardcoded accent-hex sentence → the `{platformName} theme into antd.ConfigProvider` line (which
+  wraps mid-sentence — `"the\nAcme Cloud theme..."`, match the literal newline), `src/appQuery.ts` →
+  `static/sage/appQuery.js`. Dropped the `basename={appBase}` "unknown token survives" check — this
+  stack's AGENTS.md genuinely contains no non-pack-token brace anymore (verified by grep), and the
+  general invariant is already covered by `test_brand.py::test_an_unknown_token_is_left_alone` against
+  synthetic content, so this isn't a coverage loss.
+- `test_a_legacy_root_agents_md_speaks_the_packs_words.py` (5/5), path/fixture repoint only.
+- `test_the_agents_file_reaches_the_model_in_the_packs_words.py` (6/6) — path/fixture repoint, plus
+  fixed two stale doc-comment examples (`App.tsx` / `basename={appBase}`, which no longer exists in
+  this stack) to point at a real current example (`sage_serve.py`'s `/u/{owner}/{project}/app/`).
+- `test_the_live_read_tools_reach_opencode_as_an_mcp_server.py` (13/13), path fix only.
+- `test_the_build_agent_can_reach_the_chat_artifacts.py` (18/18) — full `src/App.tsx`/`package.json`
+  → `static/app.js`/`app.py` conversion across ~15 call sites (scripted with a small Python replace
+  since the pattern repeated identically everywhere); template's own `.gitignore` fixture content
+  also simplified since `node_modules`/`dist` no longer mean anything here.
+- `test_an_app_that_calls_the_gateway_without_askmodel.py` (25/25) — path/fixture repoint only.
+  **Important finding, not a fix**: `_scan_app_sources` (`orchestrator/service.py`) walks the WHOLE
+  app tree via `os.walk` and is not filtered by `stack.source_globs` at all — only skips a fixed dir
+  list and reads by extension (`_SCAN_EXTS`, which still includes `.tsx`/`.ts`). So this file's fake
+  `src/Chat.tsx` write-paths did NOT need renaming to `static/*.js` to be picked up by the real
+  build-loop tests — they already were. Worth remembering before assuming every `src/`-shaped test
+  fixture needs a path rename: some only need the TEMPLATE/helper paths fixed, not every fake write.
+- `test_a_non_utf8_generated_file_is_repaired_not_refused.py` (4/4) and
+  `test_a_retry_budget_is_spent_in_whole_agent_turns.py` (8/8) — path/fixture repoints, including
+  copying the real `sage_serve.py`/`sage_queries.py`/`static/sage/appQuery.js`/`static/sage/appBase.js`
+  into a fake template (mirroring `test_bound_schema.py`'s established pattern).
+- `test_pinned_model.py` (11/11) — surfaced **two real, unrelated production bugs** in code this
+  session's earlier "always render the JS/global-script form" pass (see decision 5's neighbours)
+  actually missed:
+  1. **`pinned_model.py`'s and `pinned_model_api.py`'s `agents_block()` functions were still
+     generating react-vite-style code samples** — `` ```tsx ``  fences and
+     `import { askModel, checkModel } from "./appLlm"` / `import { callModelApi, ModelApiError }
+     from "./appModelApi"` — never converted to the plain-script `sage.*` form the rest of the
+     stack uses. This means every real Built App bound to an LLM Alias or Model API had its AGENTS.md
+     literally telling the agent to write an ES import that does not exist on this page. Fixed both
+     to `` ```js `` + `sage.askModel(...)` / `sage.callModelApi(...)`, matching `bound_schema.py`'s
+     already-correct `sage.runQuery` convention. Prose mentions of bare `` `askModel` ``/
+     `` `callModelApi` `` (no `sage.` prefix) were left alone — that's the established convention
+     for prose (`bound_schema.py` does the same for `runQuery`), only the fenced code samples were
+     wrong.
+  2. **`render_config()`'s header comment** (written into the real, committed
+     `static/sage/appLlm.config.js`) **and `pinned_model_api.py`'s equivalent had drifted from the
+     already-correct, hand-edited shipped template files.** The shipped `template/fastapi-antd/
+     static/sage/appLlm.config.js` already said `sage.askModel`; the Python function that's supposed
+     to be its single source of truth still generated bare `askModel`. Worse on the Model API side:
+     the shipped file's header had been rewritten to a shorter, more accurate warning, while
+     `pinned_model_api.py`'s function still generated the old text, which claimed the token is
+     "compiled into the app's bundle" — a bundler concept that does not exist on this no-build
+     stack. Fixed both functions' header text to match the shipped templates **exactly** (verified
+     byte-for-byte via a direct diff, not just eyeballed), and fixed the same stale "bundle" language
+     in two nearby docstrings in `pinned_model_api.py` for accuracy (no test pinned these, but they
+     directly misdescribe the mechanism).
+  One downstream test broke from fix (2) and was updated to match:
+  `test_model_api_credentials.py::test_the_generated_config_carries_the_url_and_token_and_warns_
+  about_the_bundle` (renamed to `..._about_the_exposure`; the "CAN READ THEM" phrase now wraps
+  across a comment-line boundary in the corrected text, `"CAN READ\n// THEM"`).
+  Verified the full affected batch together after both fixes: `test_pinned_model.py` +
+  `test_bound_schema.py` + `test_an_app_that_calls_the_gateway_without_askmodel.py` +
+  `test_model_api_credentials.py` = **163 passed, 0 failed**.
+
+**Two minor, low-priority doc-staleness items found but NOT fixed (no test pins them, pure prose)**:
+`sage/resources/gateway_bypass.py`'s module docstring (lines 3, 6, 27) still narrates `src/appLlm.ts`
+/`src/appLlm.config.ts` in prose (the actual code holds no hardcoded path — `DEV_PROXY_PATH`/
+`COMPLETIONS_PATH` are URL paths, not file paths, so this is pure documentation drift). And
+`orchestrator/service.py:4030`, inside the Chat/delegated-model-call prompt text
+(`_describe_binding` or similar, the `llm_alias` branch), still hard-codes the sentence
+"Do not read src/appLlm.ts for a recipe" — this one IS live text sent to the model in Chat's own
+delegated-tool-call flow, not just a comment, so it's a slightly higher-priority fix than the
+`gateway_bypass.py` docstrings, but out of scope of the file being worked when found. Worth a
+dedicated small fix early next session.
+
+**Remaining files from the original list, not yet started**: `test_a_build_whose_queries_all_fail_
+is_not_clean.py`, `test_a_catalog_that_yields_nothing_says_so.py`,
+`test_a_chat_turn_can_call_a_model_the_person_bound.py`, `test_bindings.py`,
+`test_preview_queries.py`, `test_publish_check.py`, `test_template_fixes_reach_an_existing_app.py`,
+`test_the_implement_agent_looks_in_one_message.py`, `test_the_path_sage_names_is_a_path_sage_
+allows.py`, `test_the_workbench_ships_the_licences_it_owes.py`, `test_use_in_app_binds_an_llm_
+alias.py`, plus the two large ones flagged repeatedly: `test_attach_upload.py` and
+`test_a_folder_is_the_unit_of_the_act.py`. Production code underneath the last two is confirmed
+stack-agnostic, so those two remain fixture-and-assertion rewrites, not production bug hunts —
+though per this update's `pinned_model.py` experience, do not assume a file's production code is
+correct just because it's stack-agnostic in shape; check `agents_block`-style generated text
+against what actually ships in `template/fastapi-antd/` before trusting it.
+
+## UPDATE 2026-09-23 (continued, same session): finished the rest of the backlog
+
+Finished every remaining file from the original list, plus the two large ones repeatedly flagged as
+needing dedicated time. All verified individually green:
+
+- `test_a_catalog_that_yields_nothing_says_so.py` (16/16) — path/fixture repoint
+  (`src/App.tsx`+`src/appQuery.ts` → `static/app.js`+`static/sage/appQuery.js`, plain
+  `sage.runQuery(...)` call instead of an ES import in the fake app source).
+- `test_use_in_app_binds_an_llm_alias.py` (6/6) — one path fix (real `appLlm.js` still carries the
+  same guard text this test checks for, just at its new path).
+- `test_template_fixes_reach_an_existing_app.py` (6/6) — path/fixture repoint. `_OWNED_SOURCES` is
+  now `static/sage/{appBase,appModelApi,appQuery,reportRuntimeError,errorBoundary}.js` +
+  `static/theme.js` (renamed from the old `ErrorBoundary.tsx`/`reportRuntimeError.ts` pair), so the
+  ordering test now checks `errorBoundary.js` calls `sage.reportRuntimeError(...)` (a global, not an
+  ES import) rather than a `from "./reportRuntimeError"` import line. The
+  "AGENTS.md forbids editing every refreshed file" test needed an actual judgment call, not a
+  rename: the current (compressed) AGENTS.md forbids `static/sage/` as ONE blanket directory rule
+  rather than naming every file under it individually, so the test now checks the blanket rule for
+  files under `static/sage/` and the individual backtick path for the one owned file outside it
+  (`static/theme.js`) — this is a legitimate representation change, not a coverage loss, since the
+  blanket rule does structurally cover every file under the directory.
+- `test_preview_queries.py` (20/20), `test_publish_check.py` (9/10, 1 pre-existing `/mnt/code`
+  dogfood-safety failure confirmed via baseline), `test_a_build_whose_queries_all_fail_is_not_clean.py`
+  (20/20) — all three needed only the `TEMPLATE` path repointed to `template/fastapi-antd` (plus
+  fixture reshaping in the two that build their own fake template). **Important finding, not a
+  fix**: `PreviewQueries.start()` calls `module.build_server(...)` where `module` is
+  `sage_queries.py` (`serve_module()`'s target, per `builtapp.py`'s `_SERVE_REL`) — NOT the
+  react-vite-only `serve.py` that `test_builtapp_serve.py` was about. `sage_queries.py` carries its
+  OWN standalone stdlib `build_server`/`QueryRoute`/`_QueryOnlyHandler` (a tiny query-only HTTP
+  server for the preview, separate from `sage_serve.py`'s `mount(app, executor=...)` used by the
+  published app's real FastAPI server). So the preview's live-query-while-building feature (#24)
+  already works correctly on fastapi-antd — nothing here was actually broken, despite `serve.py`
+  genuinely not existing. Worth remembering: `sage_serve.py` and `sage_queries.py` are not
+  interchangeable names for the same thing, and `serve_module()` only ever means the latter.
+- `test_attach_upload.py` (87/87) and `test_a_folder_is_the_unit_of_the_act.py` (45/45) — the two
+  files flagged repeatedly across this whole effort as needing dedicated time turned out to need
+  almost none: both were already passing except for ONE test each (the same one, structurally), left
+  over from this session's earlier `_write_agents_data_block` rewrite (`import.meta.env.BASE_URL +
+  "data/..."` / `"Invalid base URL"` → `sage.url("data/<slug>/<name>")` / `"Do NOT fetch a
+  leading-slash path"`). The dozens of `src/`-shaped fake-copy paths this file's docstrings warned
+  about were apparently already reshaped earlier in this session (via the shared `_orch()`/fixture
+  helpers these two files import from `test_chat_turn.py`/`test_bound_schema.py`, both already fixed
+  in the earlier 7-file regression batch) — so the "budget real time" warning in every prior status
+  update turned out to be stale by the time this session reached them. Lesson for next time: a file
+  flagged as large/risky should be RE-CHECKED (a quick `pytest -n0` run) before being scheduled for
+  dedicated effort, rather than trusted from an earlier note — the backlog's true size shrinks as
+  shared fixtures get fixed, and the note describing it does not update itself.
+
+**This closes every file in the original ~40-file list and the 7-file regression batch.**
+`grep -rl "react-vite\|REACT_VITE" backend/tests/*.py` still returns 8 files, all confirmed either
+already passing (harmless historical narration in a docstring, or — `test_the_workbench_ships_the_
+licences_it_owes.py` — a loop over both stack directories that tolerates the missing one) or
+intentionally still discussing `react-vite` as a legacy stack-name string
+(`test_a_built_app_declares_its_stack_at_birth.py`, which is specifically about the fallback
+behavior for an app whose record still says `react-vite`).
+
+## UPDATE 2026-09-23 (continued, same session): Phase 0 test suite is closed out
+
+A full `cd backend && uv run --extra dev pytest -q -n auto` was run at the end of the previous
+update. It surfaced two more files this session's earlier work had broken but the `react-vite`-string
+grep never caught (same trap as the "IMPORTANT CORRECTION" section above, same root cause: a deleted
+SYMBOL rather than a deleted file path) — both were **collection errors**, which poison `-n auto`'s
+reporting for the whole run:
+
+- `test_feedback.py` imported `parse_tsc`, deleted from `sage/feedback/runner.py` when typecheck was
+  replaced with `check_python_stack` (always Python/JS syntax check). Its coverage was already fully
+  duplicated by `test_parse_py_compile_extracts_errors`/`test_parse_node_check_extracts_errors`
+  (already present in the file, already fastapi-antd-shaped) — so deleting the one obsolete test was
+  not a coverage loss. Also fixed one assertion pinning the old "Typecheck passed." wording (now
+  "Syntax check passed.") and rewrote `test_implement_prompt_names_the_config_the_gate_checks`, whose
+  premise (`FeedbackRunner()._tsconfig`, an attribute that no longer exists) depended on a config file
+  that doesn't exist anymore either. Renamed to `..._names_the_same_check_the_gate_runs`, now pinned
+  on the literal `py_compile`/`node --check` command names in the `sage-implement` prompt instead —
+  **narrower than the original guarantee**, since there is no longer a shared config object linking
+  the prompt's prose to the runner's behavior for a test to pin against; noted as a real, permanent
+  gap rather than solved.
+- `test_supervisor_parse.py` imported `ViteSupervisor`/`parse_vite_url`/`make_supervisor`, all deleted
+  when `preview/supervisor.py` became `UvicornSupervisor`-only. Rewrote the file: kept
+  `parse_uvicorn_url` coverage, translated the `preview_port()` env-override/typo-fallback tests to
+  `UvicornSupervisor._env_port()` (the equivalent logic, now a method rather than a module function,
+  so real behavior — not just parsing — stayed covered), kept the already-fastapi-antd-shaped
+  `_spawn()` command-line test, and deleted `test_an_app_with_no_record_keeps_its_vite_preview`
+  outright: `_supervisor_for()` no longer dispatches on the app's record at all (`UvicornSupervisor`
+  unconditionally, per `service.py:544-548`), so there is nothing left for that test to be about.
+
+Both fixed and verified (9/9, 5/5). Grepped for every one of the four deleted symbols
+(`ViteSupervisor`, `parse_vite_url`, `make_supervisor`, `parse_tsc`) across `tests/` and `sage/` —
+clean, no other stragglers.
+
+**Full suite, final and reconciled:**
+
+```
+7774 collected == 99 failed + 7665 passed + 10 skipped, 0 errors
+```
+
+All 99 failures verified against the unmodified baseline via `git stash`/`git stash pop` (work
+restored and re-verified intact afterward): **identical failing-test-name set, before and after this
+session's changes** — `diff` of the two sorted lists is empty. These are the same pre-existing,
+environment-specific failures already characterized earlier in this doc (`publish_available()`'s
+`/mnt/code`-dogfood-safety check tripping because this sandbox's `/mnt/code` really is the mounted
+repo; `test_native_gateway_transport.py`'s codec tests; a handful of others) — none of them are this
+pivot's doing, and none of them are new. `make lint` (the repo-wide `cd backend && ruff check ..`
+target) is clean: **All checks passed!**
+
+**This closes Phase 0.** Every item in the Phase 0 checklist above is done; the ~40-file test-suite
+backlog plus the two 7-file/2-file regression batches found along the way are all fixed and verified;
+lint is clean; the full suite is green modulo a pre-existing, baseline-verified, environment-specific
+failure set that is not this session's to fix (it would need a sandbox without a real `/mnt/code`, or
+a rewrite of `publish_available()`'s own dogfood-safety check, which is out of scope for this pivot).
+
+**Two known, permanent (not-a-bug) gaps, recorded rather than silently dropped:**
+1. `sage_domino.py`'s relay/fence lost ~15 tests when `test_builtapp_serve.py` was deleted (its
+   subject, react-vite's own `serve.py`, has no equivalent) — `sage_domino.py` itself is unchanged
+   production code, so a future session should add a dedicated `test_sage_domino_relay.py`.
+2. `test_feedback.py`'s prompt/runner-drift guard is now weaker (see above) — there is no longer a
+   shared config object to pin both sides to, only matching literal command names in two independent
+   places.
+
+**Two minor doc-staleness items, still not fixed** (no test pins either, both pure prose, both named
+in the previous update too): `sage/resources/gateway_bypass.py`'s module docstring narrates
+`src/appLlm.ts`/`src/appLlm.config.ts`; `orchestrator/service.py`'s delegated-model-call prompt text
+(around line 4030) hardcodes "read src/appLlm.ts for a recipe" as LIVE text sent to the model in
+Chat's delegated-tool-call flow — this one is a real (if minor) live-prompt inaccuracy, not just a
+comment, and is worth a small dedicated fix early next session.
 
 ## Next session should
 
-1. **All production/template/UI code for Phase 0 is done** (every checklist item above through
-   "Additional work landed" is checked, one deliberate skip noted). What's left is entirely the test
-   suite: the ~40-file list above.
-2. Re-run the full suite fresh first (`cd backend && uv run --extra dev pytest -q -n auto`) to get a
-   real, current failure count and collection-error list — don't trust this session's number, it was
-   taken mid-edit. Fix the 4 collection-erroring `test_builtapp_*.py` files first (they can distort
-   `-n auto`'s reporting for the whole run), then re-run again before triaging the rest.
-3. `test_attach_upload.py` is the single largest remaining file — budget real time for it
-   specifically, per the notes above. `test_a_built_app_declares_its_stack_at_birth.py` needs
-   judgment (re-read decision 4), not a mechanical rename.
-4. Do **not** re-derive the mirror map if more mechanical stack-removal comes up — it's recorded in
-   decision 3 above; the sibling branch commit is `c4da4cfb` on `origin/remove-fastapi-antd-stack`.
-5. Run `make lint` and the full suite once more at the very end of Phase 0, per CLAUDE.md §5/§6 —
-   reconcile on COLLECTED count against a stated baseline, not on passed+failed.
-6. After Phase 0 is fully green and committed, move to Phase 1 (config.py + TokenSource) in a fresh
-   session/context, per `ONE-APP-PLAN.md`'s own phase boundaries.
+1. **Phase 0 is fully done and verified** — production/template/UI code, the entire test-suite
+   backlog, `make lint`, and the full suite (reconciled on COLLECTED count against a diffed baseline,
+   per CLAUDE.md §5/§6). Nothing from Phase 0 is left to do.
+2. Nothing in this repo has been committed by this session (see the earlier note about an
+   already-existing unrequested commit, `fc7ff826`, still needing the user's attention) — confirm
+   with the user before committing this session's changes, per this repo's CLAUDE.md.
+3. Fix the two minor doc-staleness items named just above (`gateway_bypass.py`'s docstring,
+   `service.py`'s delegated-model-call prompt text) — small, quick, and one of them is live-prompt
+   text rather than a comment.
+4. Consider the two named gaps above (`test_sage_domino_relay.py`, the weakened `test_feedback.py`
+   drift guard) — neither blocks Phase 1, both are real, minor coverage debt.
+5. Move to Phase 1 (config.py + TokenSource) in a fresh session/context, per `ONE-APP-PLAN.md`'s own
+   phase boundaries. Do **not** re-derive the mirror map if more mechanical stack-removal comes up —
+   it's recorded in decision 3 near the top of this file; the sibling branch commit is `c4da4cfb` on
+   `origin/remove-fastapi-antd-stack`.

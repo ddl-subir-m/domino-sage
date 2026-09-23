@@ -131,7 +131,7 @@ def test_the_live_read_tools_are_named_the_same_either_way():
         "the custom tool file and the Python handler disagree about the tool names")
 
     told = "\n".join(p.read_text() for p in (
-        root / "template" / "react-vite" / "AGENTS.md",
+        root / "template" / "fastapi-antd" / "AGENTS.md",
         root / "template" / "chat" / "AGENTS.md",
         root / "backend" / "sage" / "orchestrator" / "service.py",
     ))

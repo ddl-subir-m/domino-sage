@@ -19,7 +19,7 @@ import pytest
 
 from sage.workspace.manager import WorkspaceManager
 
-TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
 LEGACY = "Say **{dataset}**, **{dataSource}** and **{builtApp}** when you name one of these.\n"
 
 
@@ -46,8 +46,9 @@ def acme(tmp_path, monkeypatch):
 
 def _manager(tmp: Path) -> WorkspaceManager:
     template = tmp / "template"
-    template.mkdir(parents=True, exist_ok=True)
-    (template / "package.json").write_text("{}")
+    (template / "static").mkdir(parents=True, exist_ok=True)
+    (template / "static" / "app.js").write_text("placeholder")
+    (template / "app.py").write_text("# app\n")
     (template / "AGENTS.md").write_text((TEMPLATE / "AGENTS.md").read_text())
     return WorkspaceManager(workspace_dir=tmp / "mnt" / "code", template=template)
 

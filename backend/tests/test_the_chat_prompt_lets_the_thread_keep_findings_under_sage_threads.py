@@ -30,7 +30,7 @@ def test_the_prompt_carves_findings_md_out_of_both_sage_bans():
         # since #415 moved scratch and fetched data under `.sage/scratch/<threadId>/`, and the
         # count is pinned deliberately: a third exception added without editing this sentence
         # leaves the prompt telling the model the list is complete when it is not.
-        "Do not write under `src/`, `public/`, or `.sage/` — with two exceptions,",
+        "Do not write under `static/`, `public/`, or `.sage/` — with two exceptions,",
         "`.sage/scratch/<threadId>/` above and `.sage/threads/<threadId>/findings.md` below.",
         # The read ban is about the REST of `.sage/`, and has to let the exceptions back in —
         # a turn told to fetch a Dataset file under `.sage/` and then told never to read `.sage/`

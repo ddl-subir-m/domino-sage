@@ -200,7 +200,7 @@ def _resolve_log_conflict(ws: Path) -> None:
 
 def test_the_template_ships_both_rules(tmp_path: Path):
     """A project seeded after this change never tracks the archive in the first place."""
-    template = Path(__file__).resolve().parents[2] / "template" / "react-vite"
+    template = Path(__file__).resolve().parents[2] / "template" / "fastapi-antd"
     assert HISTORY_MD in _rules(template / ".gitignore")
     assert f"!{HISTORY_MD}" in _rules(template / ".ignore")
 

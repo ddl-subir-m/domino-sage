@@ -2000,12 +2000,16 @@ class WorkspaceManager:
         practice, only `react-vite`), reads as the one stack there is — the app is still on the disk
         and something has to answer for it (`workspace/stack.py` says why that's safe here).
 
-        ONE registry, the module's: `Workspace` answers off it too. Its template directory is always
-        rebuilt around THIS manager's own — `SAGE_TEMPLATE`'s override, when set — rather than the
-        module constant's, because there is only one stack and every caller already passes it.
+        ONE registry, the module's: `Workspace` answers off it too, and a stack this manager knew
+        that the value object did not would seed one template and name another's entry file. Only
+        the fastapi-antd entry's template directory is rebuilt around THIS manager's own —
+        `SAGE_TEMPLATE`'s override, when set, and the argument every caller already passes, covering
+        both a real `fastapi-antd` record and the fallback (which answers as that same Stack, #490).
+        A real second stack (if one is ever registered) answers for its own template on its own
+        terms, the way `stack.py`'s own constants do.
         """
         kind = STACKS.get(read_stack_name(self.apps_dir / app_id), FASTAPI_ANTD)
-        return replace(kind, template_dir=self._template)
+        return replace(kind, template_dir=self._template) if kind.name == FASTAPI_ANTD.name else kind
 
     def _default_stack_name(self) -> str:
         """The stack a new app gets when nobody chose one — the deployment's say, if it names a stack
