@@ -186,10 +186,8 @@ class DataUse:
                         used.add(oid)
                     source = _source_for_local_text(text, local_texts, direct.values())
                     if source:
-                        receipt = _local_receipt({"tool": "background", "state": {"input": {}}},
-                                                 source, text, status=_status_hint(text))
-                        message = {**message, "content": _replace_content(message.get("content"),
-                                                                          receipt)}
+                        message = {**message,
+                                   "content": _redact_message_text(message.get("content"), source)}
                 messages.append(message)
         return {**request, "messages": messages}, used
 
@@ -502,22 +500,53 @@ def _replace_call(message, cid, replacement):
         message["tool_calls"] = calls
 
 
+def _withheld_mark(source, comment=False):
+    """What stands in the place of a withheld value, as text of the kind it replaced.
+
+    `comment=True` for a slot that holds a command: a `#` line is a command a shell accepts, so a
+    sanitised `bash` call is still a call that would run.
+    """
+    count = len(source.get("sources") or [])
+    body = f"local data withheld: {count} source" + ("" if count == 1 else "s")
+    return f"# <{body}>" if comment else f"[{body}]"
+
+
+def _redacted_like(value, source, comment=False):
+    """A placeholder of the same JSON type as the value it replaces.
+
+    Scalars other than strings are kept: a limit, an offset or a flag is the model's own parameter,
+    and a number invented here can fall outside what the tool accepts.
+    """
+    if isinstance(value, str):
+        return _withheld_mark(source, comment=comment)
+    if isinstance(value, list):
+        return []
+    if isinstance(value, dict):
+        return {}
+    return value
+
+
 def _sanitize_call(call, source):
-    name, _args = tool_call_name_and_args(call)
-    receipt = {
-        "kind": "local_execution_request",
-        "tool": name,
-        "note": "Full local data arguments remain local.",
-        "sources": source.get("sources", []),
+    """Redact a call's argument VALUES, keeping every key the call carried (#507).
+
+    Replacing the whole arguments object left a `bash` call with no `command`, so the next call the
+    model wrote in that shape was refused by the tool as missing a required key. A path is kept as
+    it is: the receipt already names every source, so the path discloses nothing the model is not
+    being told anyway, and a redaction marker in a path slot is itself a shape worth imitating.
+    """
+    _name, args = tool_call_name_and_args(call)
+    clean = {
+        key: value if key in _PATH_KEYS else _redacted_like(value, source, key in _COMMAND_KEYS)
+        for key, value in args.items()
     }
     out = copy.deepcopy(call)
     if isinstance(out.get("function"), dict):
         raw = out["function"].get("arguments")
-        out["function"]["arguments"] = json.dumps(receipt) if isinstance(raw, str) else receipt
+        out["function"]["arguments"] = json.dumps(clean) if isinstance(raw, str) else clean
     elif "input" in out:
-        out["input"] = receipt
+        out["input"] = clean
     elif isinstance(out.get("state"), dict):
-        out["state"] = {**out["state"], "input": receipt}
+        out["state"] = {**out["state"], "input": clean}
     return out
 
 
@@ -562,6 +591,28 @@ def _replace_content(content, receipt):
     if isinstance(content, list):
         return [{"type": "text", "text": text}]
     return text
+
+
+def _redact_message_text(content, source):
+    """Withhold a message's text and leave a message behind (#507).
+
+    An assistant or user message is not a tool result, so a receipt object is not a valid instance
+    of it. Standing one in a message's place taught the model to answer the person in that shape,
+    and the person was shown the receipt as their answer. The text goes; what replaces it is text,
+    and every part the message carried is still there.
+
+    Every part carrying text is redacted, not only the `text` parts the match was found in: the
+    whole content was dropped before this, so a part that quotes the same rows under another type
+    must not survive the narrower rewrite. Parts with no text — an image attachment, a tool part
+    already rewritten above — are left to the guards that own them.
+    """
+    mark = _withheld_mark(source)
+    if isinstance(content, list):
+        return [{**part, "text": mark}
+                if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"]
+                else part
+                for part in content]
+    return mark
 
 
 def _local_receipt(call, source, raw, status=None):
@@ -753,14 +804,16 @@ def _rewrite_open_code_parts(message, sources, hidden, local_texts):
             local_texts.append(raw)
         receipt = _local_receipt(call, source, raw, status=state.get("status"))
         clean_state = {**state, "input": _sanitize_part_input(call, source)}
+        # An empty string carries no data to withhold, and `""` is what a call that succeeded
+        # leaves in `error` — a receipt written there reports a failure that did not happen (#507).
         for key in ("output", "error"):
-            if isinstance(clean_state.get(key), str):
+            if isinstance(clean_state.get(key), str) and clean_state[key]:
                 clean_state[key] = json.dumps(receipt)
         meta = clean_state.get("metadata")
         if isinstance(meta, dict):
             clean_meta = dict(meta)
             for key in ("output", "error"):
-                if isinstance(clean_meta.get(key), str):
+                if isinstance(clean_meta.get(key), str) and clean_meta[key]:
                     clean_meta[key] = json.dumps(receipt)
             clean_state["metadata"] = clean_meta
         for key in ("output", "error"):

@@ -29,6 +29,13 @@ def test_installed_codecs_keep_private_state_out_of_errors(protocol, kind):
     report = json.loads(run.stdout)
     assert len(report["requests"]) == 2
     assert report["requests"][0] == "/v1/sage/resolve"
+    # The resolved protocol decides the ENDPOINT, and that is the whole of #505's fix: gpt-5.4's
+    # tool-carrying turns 400 on chat/completions since the alias was repointed, so a `responses`
+    # route must not be posted to the chat one. Asserted here because this harness drives the
+    # production codec and is already parametrised over all three wires.
+    assert report["requests"][1] == {"messages": "/v1/sage/anthropic/messages",
+                                     "responses": "/v1/sage/responses",
+                                     "chat": "/v1/sage/chat/completions"}[protocol], report
     assert not report["errorLeaked"] and not report["raw"], report
     assert len(report["errors"]) == 1, report
     error = report["errors"][0]

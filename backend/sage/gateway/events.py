@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -9,6 +10,12 @@ from .protocol import Protocol
 
 _BOUNDARY = re.compile(br"\r?\n\r?\n")
 MAX_EVENT_BYTES = 2 * 1024 * 1024
+# A refusal body can be as large as the event that carried it, and the diag ring holds 400
+# lines. Clip so one refusal cannot push the rest of the turn out of it.
+MAX_LOGGED_ERROR_CHARS = 2000
+
+# "sage.*" -> surfaced by /api/diag's log tail and the Workspace Logs panel.
+log = logging.getLogger("sage.gateway")
 
 
 @dataclass
@@ -145,9 +152,20 @@ class StreamEvents:
         kind = event.get("type")
         error = event.get("error")
         if error or kind == "error":
-            # Error messages can echo a prompt or a signature. Record only the class.
+            # The STREAM keeps only the class: this event flows back into OpenCode's session
+            # history and is sent to the model next turn, so a body that echoes a prompt or an
+            # opaque signature must not ride along.
             code = error.get("code") or error.get("type") if isinstance(error, dict) else None
             self.error = code if code in {"overloaded_error", "rate_limit_error", "invalid_request_error"} else "upstream_error"
+            # The body itself goes to the log ring instead (#506). The ring is local to the
+            # workspace, already readable by the person whose workspace it is, and read by no
+            # model — which is the distinction the stream cannot make. Without it the only
+            # sentence naming WHY a turn was refused is discarded before anyone can read it.
+            # Written here, where the refusal is classified, because the 400 that matters is
+            # not retryable and kills the turn on the first refusal; a line written on a
+            # retry-exhaustion path would never appear for it. One line per error event.
+            log.warning("gateway stream error (%s): %s", self.error,
+                        json.dumps(error or event)[:MAX_LOGGED_ERROR_CHARS])
             self.terminal = "error"
         if self.protocol is Protocol.CHAT:
             self._usage(event.get("usage") or {})
