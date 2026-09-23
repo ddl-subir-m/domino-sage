@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from sage import build_diagnostics as diagnostics
 from sage import timing
 from sage.gateway.protocol import Protocol
 
@@ -330,6 +331,39 @@ def test_replayed_tool_announcements_do_not_duplicate_invocations(running, monke
     with active(orch) as headers:
         assert dispatch(client, headers, protocol, model).status_code == 200
     assert timing.as_dict(timing.finish_turn())["calls"][0]["tools"] == ["read", "read"]
+
+
+def test_provider_model_content_cannot_enter_the_persisted_download(
+        running, monkeypatch, tmp_path, caplog):
+    client, orch, gateway = running
+    private = "PRIVATE SENTINEL\nresult text, not a model identity"
+
+    def poison(items):
+        items[0]["model"] = private
+        return items
+
+    monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT, poison))
+    client.post("/api/project/model", json={"pick": "GLM 5.3 OR", "mode": "plan"})
+    timing.start_turn("build", turn_id="turn_private", app_id="app_private",
+                      conversation_id="thread_private")
+    with active(orch) as headers:
+        assert dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR").status_code == 200
+    record = timing.finish_turn()
+    call = timing.as_dict(record)["calls"][0]
+    assert call["model"] == call["requestedAlias"] == "GLM 5.3 OR"
+    assert call["responseReportedModel"] is None
+
+    identity = {"turnId": "turn_private", "appId": "app_private",
+                "conversationId": "thread_private", "kind": "build"}
+    row = diagnostics.snapshot(record, identity, terminal=True)
+    assert diagnostics.Store(tmp_path).put(row)
+    downloaded = diagnostics.Store(tmp_path).get(
+        "turn_private", "app_private", "thread_private")
+    serialized = json.dumps(downloaded)
+    assert private not in serialized and private not in caplog.text
+    saved = downloaded["timing"]["calls"][0]
+    assert saved["model"] == saved["requestedAlias"] == "GLM 5.3 OR"
+    assert saved["responseReportedModel"] is None
 
 
 def test_request_body_arriving_after_turn_close_cannot_record_in_the_next_turn(running, monkeypatch):

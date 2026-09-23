@@ -172,7 +172,7 @@ def test_alias_and_nested_composition_survive_the_export_sanitizer(tmp_path):
     rec = timing.TurnRecord("build", 1.0, 1.0, turn_id="turn_a",
                             app_id="app_a", conversation_id="thread_a")
     call = timing.ModelCall(1, 1.0, model="GLM 5.3 OR", requested_alias="GLM 5.3 OR",
-                            response_reported_model="provider model 7", t1=2.0,
+                            response_reported_model="provider-model-7", t1=2.0,
                             forwarded_request_bytes=total, request_composition=measured)
     rec.calls = [call]
     rec.t1 = 2.0
@@ -183,7 +183,7 @@ def test_alias_and_nested_composition_survive_the_export_sanitizer(tmp_path):
     restored = diagnostics.Store(tmp_path).get("turn_a", "app_a", "thread_a")
     saved = restored["timing"]["calls"][0]
     assert saved["model"] == saved["requestedAlias"] == "GLM 5.3 OR"
-    assert saved["responseReportedModel"] == "provider model 7"
+    assert saved["responseReportedModel"] == "provider-model-7"
     assert saved["requestComposition"]["totalBytes"] == total
     assert PRIVATE not in json.dumps(restored, ensure_ascii=False)
 
@@ -197,6 +197,37 @@ def test_alias_and_nested_composition_survive_the_export_sanitizer(tmp_path):
     restarted_call = restarted["timing"]["calls"][0]
     assert restarted_call["model"] == restarted_call["requestedAlias"] == "GLM 5.3 OR"
     assert restarted_call["requestComposition"]["totalBytes"] == total
+
+
+def test_malformed_nested_composition_is_zeroed_without_losing_the_capture(tmp_path):
+    measured = composition.measure({"messages": []}, 123)
+    measured["categories"]["instructionsBytes"] = PRIVATE
+    measured["categories"]["ordinaryTextBytes"] = True
+    measured["messagesByRole"]["system"] = PRIVATE
+    measured["messagesByRole"]["user"] = [PRIVATE]
+    measured["rewrites"]["redactedCalls"] = PRIVATE
+    measured["rewrites"]["markerEchoCorrections"] = True
+    rec = timing.TurnRecord("build", 1.0, 1.0, turn_id="turn_malformed")
+    rec.calls = [timing.ModelCall(
+        1, 1.0, model="GLM 5.3 OR", t1=2.0,
+        forwarded_request_bytes=123, request_composition=measured,
+    )]
+    rec.t1 = 2.0
+    identity = {"turnId": "turn_malformed", "appId": "app_a",
+                "conversationId": "thread_a", "kind": "build"}
+
+    row = diagnostics.snapshot(rec, identity, terminal=True)
+    assert diagnostics.Store(tmp_path).put(row)
+    restored = diagnostics.Store(tmp_path).get(
+        "turn_malformed", "app_a", "thread_a")
+    saved = restored["timing"]["calls"][0]["requestComposition"]
+    assert saved["messagesByRole"]["system"] == {"count": 0, "bytes": 0}
+    assert saved["messagesByRole"]["user"] == {"count": 0, "bytes": 0}
+    assert saved["categories"]["instructionsBytes"] == 0
+    assert saved["categories"]["ordinaryTextBytes"] == 0
+    assert saved["rewrites"]["redactedCalls"] == 0
+    assert saved["rewrites"]["markerEchoCorrections"] == 0
+    assert PRIVATE not in json.dumps(restored, ensure_ascii=False)
 
 
 def test_old_records_without_composition_remain_readable(tmp_path):

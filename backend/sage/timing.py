@@ -32,6 +32,7 @@ import collections
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -55,6 +56,14 @@ def _model_name(value: object) -> str | None:
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
         return None
     return value
+
+
+_REPORTED_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}\Z", re.ASCII)
+
+
+def _reported_model_name(value: object) -> str | None:
+    """Accept provider model evidence only when it has an identifier shape."""
+    return value if isinstance(value, str) and _REPORTED_MODEL.fullmatch(value) else None
 
 
 @dataclass
@@ -398,7 +407,7 @@ class _CallHandle:
                 if value is not None:
                     setattr(c, attr, value)
             reported = getattr(events, "reported_model", None)
-            if safe := _model_name(reported):
+            if safe := _reported_model_name(reported):
                 c.response_reported_model = safe
 
     def chunk(self) -> None:

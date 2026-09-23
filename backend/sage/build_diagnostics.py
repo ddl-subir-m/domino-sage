@@ -37,6 +37,7 @@ _lock = threading.RLock()
 _active: set[tuple[str, str]] = set()
 _TOKEN = re.compile(r"[\w.:/@+-]{1,160}\Z", re.ASCII)
 _MODEL_NAME = re.compile(r"[^\x00-\x1f\x7f]{1,160}\Z")
+_REPORTED_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}\Z", re.ASCII)
 
 # No catch-all copy: new recorder fields are private until this contract admits them.
 CALL_FIELDS = ["n", "model", "requestedAlias", "responseReportedModel", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort", "effortStatus", "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
@@ -72,7 +73,9 @@ def _metadata(row, keys):
         if key not in row:
             continue
         value = row[key]
-        if key in {"model", "requestedAlias", "responseReportedModel"}:
+        if key == "responseReportedModel":
+            valid = value is None or isinstance(value, str) and _REPORTED_MODEL.fullmatch(value)
+        elif key in {"model", "requestedAlias"}:
             valid = value is None or isinstance(value, str) and _MODEL_NAME.fullmatch(value)
         else:
             valid = (value is None
@@ -108,22 +111,25 @@ def _request_composition(value) -> dict | None:
     def number(raw):
         return raw if isinstance(raw, int) and not isinstance(raw, bool) and 0 <= raw <= 1 << 53 else 0
 
+    def mapping(raw):
+        return raw if isinstance(raw, dict) else {}
+
     category_keys = ("instructionsBytes", "toolSchemasBytes", "ordinaryTextBytes",
                      "toolCallsBytes", "toolResultsBytes", "mediaBytes", "opaqueStateBytes",
                      "unclassifiedBytes")
     role_keys = ("system", "developer", "user", "assistant", "tool", "unknown")
     rewrite_keys = ("redactedCalls", "localExecutionReceipts", "markerEchoCorrections",
                     "externalImageReceipts", "withheldImageReceipts")
-    categories = value.get("categories") if isinstance(value.get("categories"), dict) else {}
-    roles = value.get("messagesByRole") if isinstance(value.get("messagesByRole"), dict) else {}
-    rewrites = value.get("rewrites") if isinstance(value.get("rewrites"), dict) else {}
+    categories = mapping(value.get("categories"))
+    roles = mapping(value.get("messagesByRole"))
+    rewrites = mapping(value.get("rewrites"))
     return {
         "version": 1, "boundary": boundary, "status": status,
         "totalBytes": number(value.get("totalBytes")),
         "categories": {key: number(categories.get(key)) for key in category_keys},
         "messagesByRole": {
-            key: {"count": number((roles.get(key) or {}).get("count")),
-                  "bytes": number((roles.get(key) or {}).get("bytes"))}
+            key: {"count": number(mapping(roles.get(key)).get("count")),
+                  "bytes": number(mapping(roles.get(key)).get("bytes"))}
             for key in role_keys
         },
         "toolSchemaCount": number(value.get("toolSchemaCount")),
