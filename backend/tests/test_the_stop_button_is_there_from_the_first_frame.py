@@ -98,7 +98,7 @@ def test_the_bar_comes_down_when_the_turn_ends(mode: str):
     assert out["runningAfter"] is False
 
 
-@pytest.mark.parametrize("mode", ["droppedBuild", "droppedApprove"])
+@pytest.mark.parametrize("mode", ["droppedBuild", "droppedApprove", "droppedReadFailure"])
 def test_a_dropped_stream_keeps_stop_refreshes_and_then_leaves_building_after_cancel(mode: str):
     """The live failure from #512: the browser lost SSE while the backend kept running."""
     out = _run(mode)
@@ -110,8 +110,18 @@ def test_a_dropped_stream_keeps_stop_refreshes_and_then_leaves_building_after_ca
         "watcher": True,
     }
     assert out["afterRefresh"] == {"running": True, "stopOffered": True}
-    assert out["afterCancel"] == {"running": False, "stopOffered": False}
+    assert out["afterCancel"] == {
+        "running": False, "stopOffered": False, "requestedTurnId": "turn_abc"}
     assert out["afterRelease"] == {"running": False, "stopOffered": False}
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["build", "approve", "chat", "opening", "openingBuild", "openingApprove",
+     "requeued", "requeuedBuild", "requeuedApprove"],
+)
+def test_a_live_turn_claim_keeps_the_exact_backend_ticket(mode: str):
+    assert _run(mode)["midTurn"]["turnId"] == "turn_abc"
 
 
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])

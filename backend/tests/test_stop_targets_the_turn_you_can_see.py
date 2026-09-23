@@ -284,3 +284,61 @@ def test_a_stop_aimed_at_another_app_does_not_reach_this_build(tmp_path: Path):
     assert orch.stop_build(kind="build", conversation=tid, app=running["app"],
                            turn_id=running["turnId"]) is True
     assert build_done.wait(30) is True
+
+
+def test_a_stale_turn_id_alone_does_not_reach_the_running_build(tmp_path: Path):
+    oc = WatchedOpenCode(tmp_path / "mnt" / "code", [Turn(text="building")])
+    orch = _orch(tmp_path, oc)
+    gen = orch.build_stream("add a chart")
+
+    running = next(gen)
+    assert running["type"] == "running"
+    before = oc.interrupted
+    assert orch.stop_build(turn_id="a-turn-that-finished") is False
+    assert oc.interrupted == before
+
+    list(gen)
+
+
+def test_a_stale_app_alone_does_not_reach_the_running_build(tmp_path: Path):
+    oc = WatchedOpenCode(tmp_path / "mnt" / "code", [Turn(text="building")])
+    orch = _orch(tmp_path, oc)
+    gen = orch.build_stream("add a chart")
+
+    running = next(gen)
+    assert running["type"] == "running"
+    before = oc.interrupted
+    assert orch.stop_build(app="another-app") is False
+    assert oc.interrupted == before
+
+    list(gen)
+
+
+def test_a_delayed_stop_for_build_a_does_not_stop_build_b_in_the_same_scope(tmp_path: Path):
+    """A Stop request keeps A's exact ticket while the queue advances to an identical scope."""
+    oc = WatchedOpenCode(tmp_path / "mnt" / "code",
+                         [Turn(text="first"), Turn(text="second")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    build_a = orch.build_stream("first build", conversation=tid)
+    granted_a = next(build_a)
+    assert granted_a["type"] == "running"
+
+    build_b = orch.build_stream("second build", conversation=tid)
+    pending_b = next(build_b)
+    assert pending_b["type"] == "pending"
+
+    list(build_a)  # A finishes before its delayed Stop request reaches the route.
+    granted_b = next(build_b)
+    assert granted_b["type"] == "running"
+    assert granted_b["ticket"] != granted_a["ticket"]
+
+    current = orch.turn_state()["running_turn"]
+    assert current["turnId"] == granted_b["ticket"]
+    before = oc.interrupted
+    assert orch.stop_build(kind="build", conversation=tid, app=current["app"],
+                           turn_id=granted_a["ticket"]) is False
+    assert oc.interrupted == before, "A's delayed Stop interrupted B"
+
+    list(build_b)

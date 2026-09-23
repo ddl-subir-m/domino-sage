@@ -3862,8 +3862,9 @@ window.SW = window.SW || {};
   // writer of `state.runningTurn`, and nothing polls `/build/state` while a send is holding its own
   // stream open — so a build started here had no named turn to match for its whole length, and the
   // Stop bar under the composer stayed missing until a mode switch reloaded the state behind it.
-  // A streaming turn can answer the question itself: it knows its kind, its conversation and its
-  // app, which is every field the bar compares.
+  // A streaming turn can answer most of the question itself: it knows its kind, its conversation
+  // and its app. The backend's `running` frame supplies the exact ticket before work begins. That
+  // last field stops a delayed request from reaching a successor in the same scope.
   //
   // Claimed at SEND time rather than on the first frame (#371). On the first frame was still too
   // late, on every path and for one reason: no frame arrives until the turn has been past the gate
@@ -3872,19 +3873,18 @@ window.SW = window.SW || {};
   // with `append_history` and never streamed. Either way the person's question sat on screen with
   // no button under it for seconds.
   //
-  // A send knows every field of the name before it opens the stream, so there is nothing to wait
-  // for. The one thing a send does NOT know is whether its turn will run or wait in line, and that
-  // is what the queue's two rows answer: `pending` hands the name straight back (#79), `running`
-  // takes it again when the queue lets go (#377), and `nameableTurn` is the other half of the care
-  // the first of those takes.
+  // A send knows the display scope before it opens the stream, so it can show Stop at once. It does
+  // not know its exact ticket or whether it will run. The queue's two rows answer both questions:
+  // `pending` hands the provisional name straight back (#79), and `running` replaces it with the
+  // exact ticket when the turn owns the lock (#377).
   //
   // What it costs, stated rather than hidden: between the send and the stream's first byte the
   // Stop button is on screen for a turn the server has not admitted yet, and a Stop pressed in
   // there finds no turn to match, answers `stopped: false` and says "That turn had already
   // finished." while the turn then runs. That window is one round trip, against the gate and the
   // whole first-token wait it replaces.
-  function claimRunningTurn(kind, conversationId, appId) {
-    const claim = { kind, conversation: conversationId || '', app: appId || '' };
+  function claimRunningTurn(kind, conversationId, appId, turnId = '') {
+    const claim = { kind, conversation: conversationId || '', app: appId || '', turnId };
     state.runningTurn = claim;
     return claim;
   }
@@ -3909,6 +3909,23 @@ window.SW = window.SW || {};
   // and that one outlives the turn that is ending here.
   function releaseRunningTurn(claim) {
     if (claim && state.runningTurn === claim) state.runningTurn = null;
+  }
+
+  // Keep a Stop bound to the turn the person pressed it on. A new backend gives every live claim
+  // an exact ticket in its first `running` frame. During the short pre-frame window, or while an
+  // older stream drains across an upgrade, ask the authority once. Never send a scoped Stop with
+  // an empty ticket: the named app and Conversation can be identical on the successor turn.
+  async function exactStopTarget(kind, conversation, app) {
+    if (!(state.runningTurn && state.runningTurn.turnId)) {
+      const current = await SW.api.buildState().catch(() => null);
+      if (current) applyTurnState(current);
+    }
+    const target = state.runningTurn;
+    if (!target || !target.turnId || target.kind !== kind || target.conversation !== conversation) {
+      return null;
+    }
+    if (app && target.app && target.app !== app) return null;
+    return { ...target };
   }
 
   // What `/build/state` says, folded into the flags that render. The server's lock is the authority
@@ -7311,7 +7328,7 @@ window.SW = window.SW || {};
           // Cancel is worse than the sentence — the ticket has been popped off the deque by now, so
           // `cancel_pending_turn` finds nothing and the click does nothing at all.
           if (ev.type === 'running') {
-            claim = claimRunningTurn('build', turnThread, turnApp);
+            claim = claimRunningTurn('build', turnThread, turnApp, ev.ticket);
             dropQueuedTurn(ev.ticket);
             notify();
             return;
@@ -7319,9 +7336,8 @@ window.SW = window.SW || {};
           if (ev.contextChanged) { unran = true; store.seedComposer(ev.prompt || text); }
           if (ev.type === 'done' && ev.decision === 'cancelled') unran = true;
           // Past the queue and past the two ways a turn ends without running: this turn holds the
-          // lock, so name it. What is left for it since #377 is the one send that named nothing and
-          // then found the lock free — `nameableTurn` refused on a stale name, and an uncontended
-          // grant yields no `running` row to correct it. Everything else arrives here already named.
+          // lock. Current backends already sent the exact `running` row; this fallback keeps an
+          // older stream readable while it drains during an upgrade.
           if (!unran && !claim) {
             claim = claimRunningTurn('build', turnThread, turnApp);
           }
@@ -7757,7 +7773,7 @@ window.SW = window.SW || {};
           // frame either, so without this row the plan-approval from #126's screenshot came out of
           // the queue into a build with nothing to press for the whole gate and first-token wait.
           if (ev.type === 'running') {
-            claim = claimRunningTurn('build', turnThread, turnApp);
+            claim = claimRunningTurn('build', turnThread, turnApp, ev.ticket);
             dropQueuedTurn(ev.ticket);
             notify();
             return;
@@ -7769,9 +7785,9 @@ window.SW = window.SW || {};
               || (ev.type === 'done' && ['cancelled', 'plan moved on'].includes(ev.decision))) {
             unran = true;
           }
-          // Past the queue and past every way this turn ends without running: it holds the lock, so
-          // name it. What is left for it since #377 is the one send that named nothing and then
-          // found the lock free — see sendBuildPrompt. Everything else arrives here already named.
+          // Past the queue and past every way this turn ends without running: it holds the lock.
+          // Current backends already sent the exact `running` row; keep the fallback for an older
+          // stream draining during an upgrade.
           if (!unran && !claim) claim = claimRunningTurn('build', turnThread, turnApp);
           if (movedOn()) return;
           applyBuildEvent(ev);
@@ -7946,11 +7962,20 @@ window.SW = window.SW || {};
     async stopBuild() {
       state.buildTyping = 'Stopping…';
       notify();
+      const conversation = (state.thread && state.thread.id) || '';
+      const app = (state.activeApp && state.activeApp.id) || '';
+      const target = await exactStopTarget('build', conversation, app);
+      if (!target) {
+        state.buildTyping = state.buildRunning ? 'Working…' : null;
+        notify();
+        antd.message.info('That turn had already finished.');
+        return;
+      }
       const res = await SW.api.stopBuild({
         kind: 'build',
-        conversation: (state.thread && state.thread.id) || '',
-        app: (state.activeApp && state.activeApp.id) || '',
-        turnId: (state.runningTurn && state.runningTurn.turnId) || '',
+        conversation,
+        app,
+        turnId: target.turnId,
       });
       if (res && res.stopped === false) antd.message.info('That turn had already finished.');
       if (res && res.stopped === true) {
@@ -8308,7 +8333,7 @@ window.SW = window.SW || {};
           // same effect: from here the lock is this turn's, and the bar has a turn to name for the
           // gate and first-token wait that follows.
           if (ev.type === 'running') {
-            claim = claimRunningTurn('chat', turnThread, '');
+            claim = claimRunningTurn('chat', turnThread, '', ev.ticket);
             dropQueuedTurn(ev.ticket);
             notify();
             return;
@@ -8321,10 +8346,9 @@ window.SW = window.SW || {};
           }
           if (ev.type === 'done' && ev.decision === 'cancelled') { unran = true; return; }
           // Past the queue and past the two ways a turn ends without running: this one holds the
-          // lock, so name it. Before the `mine()` check below, because a turn whose reader has
-          // walked away is still the turn holding the lock. What is left for it since #377 is the
-          // one send that named nothing and then found the lock free — `nameableTurn` refused on a
-          // stale name, and an uncontended grant yields no `running` row to correct it.
+          // lock. Before the `mine()` check below, because a turn whose reader has walked away is
+          // still the turn holding the lock. The fallback keeps an older stream readable during an
+          // upgrade; current backends already sent the exact `running` row.
           if (!turnEnded && !claim) claim = claimRunningTurn('chat', turnThread, '');
           // Moved on. The turn is still running and the server is still writing its transcript, so
           // nothing is lost — reopening the conversation replays it. What is not wanted is this
@@ -8587,9 +8611,18 @@ window.SW = window.SW || {};
       state.typing = 'Stopping…';
       notify();
       try {
+        const conversation = (state.thread && state.thread.id) || '';
+        const target = await exactStopTarget('chat', conversation, '');
+        if (!target) {
+          antd.message.info('That turn had already finished.');
+          state.typing = state.chatRunning ? 'Thinking…' : null;
+          notify();
+          return;
+        }
         const res = await SW.api.stopBuild({
           kind: 'chat',
-          conversation: (state.thread && state.thread.id) || '',
+          conversation,
+          turnId: target.turnId,
         });
         if (res && res.stopped === false) antd.message.info('That turn had already finished.');
       } catch (err) {

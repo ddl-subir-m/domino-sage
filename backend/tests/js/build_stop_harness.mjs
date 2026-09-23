@@ -42,8 +42,8 @@ const USER = { chat: { type: 'user', text: 'how many rows?' } };
 // The queue's other end, and the one frame both modes share (#377). `_acquire_turn` yields it at
 // the fall-through past every refusal, which IS the grant — so it arrives before anything the turn
 // itself sends, on Chat ahead of the `user` frame above and on Build ahead of the first tool call.
-// A turn that never queued never sees one: it sent no `pending`, so its send-time claim never came
-// off. Same ticket as the `pending` it answers.
+// Every admitted turn sends this now. It is also the exact identity a delayed Stop must retain.
+// For a queued turn it has the same ticket as the `pending` row it answers.
 const RUNNING = { type: 'running', ticket: PENDING.ticket };
 const TOOL = { type: 'agent', kind: 'tool', tool: 'write', detail: 'src/App.tsx' };
 const BUILT = [{ type: 'done', ok: true, decision: 'built' }];
@@ -61,19 +61,20 @@ const ANSWERED = [{ type: 'delta', text: 'Six million rows.', final: true },
 // server, so the next thing down the wire after the POST is the first frame of real work, gate and
 // first token and all.
 const OPENING = {
-  build: [TOOL],
-  approve: [TOOL],
-  chat: [USER.chat, { type: 'delta', text: 'Looking…' }],
+  build: [RUNNING, TOOL],
+  approve: [RUNNING, TOOL],
+  chat: [RUNNING, USER.chat, { type: 'delta', text: 'Looking…' }],
   queued: [PENDING],
   // The same question of the other two sends. `queued` only ever asked it of sendBuildPrompt,
   // and each send has a name of its own to hand back now.
   queuedChat: [PENDING],
   queuedApprove: [PENDING],
-  opening: [USER.chat],
-  openingBuild: [],
-  openingApprove: [],
-  droppedBuild: [TOOL],
-  droppedApprove: [TOOL],
+  opening: [RUNNING, USER.chat],
+  openingBuild: [RUNNING],
+  openingApprove: [RUNNING],
+  droppedBuild: [RUNNING, TOOL],
+  droppedApprove: [RUNNING, TOOL],
+  droppedReadFailure: [RUNNING, TOOL],
   // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
   // behind it is the queue letting go. The wait for a first token starts again here, which is why
   // the pause is taken ON that frame — the `user` one Chat sends next, and the first tool call
@@ -85,7 +86,7 @@ const OPENING = {
   requeuedBuild: [PENDING, RUNNING],
   requeuedApprove: [PENDING, RUNNING],
   // The first of this mode's two turns, and the one that is really running.
-  secondInLine: [USER.chat, { type: 'delta', text: 'Looking…' }],
+  secondInLine: [RUNNING, USER.chat, { type: 'delta', text: 'Looking…' }],
 }[mode];
 const REST = {
   build: BUILT,
@@ -99,6 +100,7 @@ const REST = {
   openingApprove: [TOOL, ...BUILT],
   droppedBuild: [],
   droppedApprove: [],
+  droppedReadFailure: [],
   requeued: [USER.chat, ...ANSWERED],
   requeuedBuild: [TOOL, ...BUILT],
   requeuedApprove: [TOOL, ...BUILT],
@@ -111,7 +113,7 @@ const REST = {
 // handing the name back would blank the bar for a running turn. That is #126 from this direction,
 // and it is what the send-time claim has to be careful of.
 const SECOND = {
-  secondInLine: { opening: [PENDING], rest: [USER.chat, ...ANSWERED] },
+  secondInLine: { opening: [PENDING], rest: [RUNNING, USER.chat, ...ANSWERED] },
 }[mode];
 
 const frame = (ev) => new TextEncoder().encode(`data: ${JSON.stringify(ev)}\n\n`);
@@ -139,7 +141,8 @@ const atPause = new Promise((resolve) => {
 
 // Answered by every `/build/state` read. Deliberately empty of a running turn: this harness is
 // about what the tab can say for itself, and a poll that supplied the answer would hide the bug.
-let backendRunning = mode === 'droppedBuild' || mode === 'droppedApprove';
+const dropped = ['droppedBuild', 'droppedApprove', 'droppedReadFailure'].includes(mode);
+let backendRunning = dropped;
 const buildState = () => ({ running: backendRunning, wedged: false, pending: 0,
   running_turn: backendRunning
     ? { kind: 'build', conversation: 't1', app: 'app_1', turnId: 'turn_abc' } : null });
@@ -147,6 +150,7 @@ const intervalCallbacks = [];
 
 // Which send each opened stream is answering. Only the two-send modes ever pass 1.
 let posts = 0;
+const stopBodies = [];
 
 const sandbox = {
   console, JSON, Math, Date, process, Set, Map, Promise, Array, Object, String, Number, Boolean,
@@ -180,7 +184,7 @@ const sandbox = {
             sent = 2;
             reachedPause();
             await gate;
-            if (mode === 'droppedBuild' || mode === 'droppedApprove') {
+            if (dropped) {
               throw new TypeError('network error');
             }
             return { done: false, value: join(rest) };
@@ -190,8 +194,13 @@ const sandbox = {
       }) } };
     }
     if (href.includes('/build/stop')) {
+      stopBodies.push(JSON.parse(options.body));
       return { ok: true, status: 200, headers: { get: () => 'application/json' },
                json: async () => ({ stopped: true, turnId: 'turn_abc' }), text: async () => '' };
+    }
+    if (mode === 'droppedReadFailure' && !backendRunning
+        && (href.includes('/history') || href.includes('/apps'))) {
+      throw new TypeError('refresh read failed');
     }
     const json = href.includes('/build/state') ? buildState()
       : (href.includes('/history') || href.includes('/apps') ? [] : {});
@@ -222,6 +231,7 @@ const SEND = {
   opening: 'chat', openingBuild: 'build', openingApprove: 'approve', requeued: 'chat',
   requeuedBuild: 'build', requeuedApprove: 'approve',
   droppedBuild: 'build', droppedApprove: 'approve',
+  droppedReadFailure: 'build',
   secondInLine: 'chat', queuedChat: 'chat', queuedApprove: 'approve',
 }[mode];
 const kind = SEND === 'chat' ? 'chat' : 'build';
@@ -270,12 +280,13 @@ const midTurn = {
     ? SW.store.runningTurnHere('build', 't1', 'app_1')
     : SW.store.runningTurnHere('chat', 't1'),
   running: kind === 'chat' ? SW.store.get().chatRunning : SW.store.get().buildRunning,
+  turnId: SW.store.get().runningTurn && SW.store.get().runningTurn.turnId,
 };
 
 letGo();
 await Promise.all(second ? [turn, second] : [turn]);
 
-if (mode === 'droppedBuild' || mode === 'droppedApprove') {
+if (dropped) {
   const afterDrop = {
     running: SW.store.get().buildRunning,
     stopOffered: SW.store.runningTurnHere('build', 't1', 'app_1'),
@@ -293,6 +304,7 @@ if (mode === 'droppedBuild' || mode === 'droppedApprove') {
   const afterCancel = {
     running: SW.store.get().buildRunning,
     stopOffered: SW.store.runningTurnHere('build', 't1', 'app_1'),
+    requestedTurnId: stopBodies[0] && stopBodies[0].turnId,
   };
   // The accepted stop is still unwinding above. Once the backend releases it, the watcher settles.
   backendRunning = false;

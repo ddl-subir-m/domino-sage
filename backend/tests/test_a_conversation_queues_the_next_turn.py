@@ -268,10 +268,8 @@ def test_a_queued_build_says_when_the_queue_lets_it_go(tmp_path: Path):
     assert _of(events, "done")[0]["ok"] is True
 
 
-def test_a_turn_that_never_waited_says_nothing_about_being_granted(tmp_path: Path):
-    """The uncontended grant stays silent, and that is not an oversight. It sends no `pending`, so
-    the send-time claim (#371) was never handed back and there is nothing to take again — a row
-    here would be a second answer to a question already answered, on every turn in the Project."""
+def test_an_uncontended_turn_says_its_exact_identity_when_granted(tmp_path: Path):
+    """The browser knows the scope at send time, but only the backend knows the exact ticket."""
     oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="Six million rows.")])
     orch = _orch(tmp_path, oc, verdict="CHAT")
     tid = orch.create_thread()["id"]
@@ -280,7 +278,8 @@ def test_a_turn_that_never_waited_says_nothing_about_being_granted(tmp_path: Pat
 
     assert finished.wait(20) is True
     assert _of(events, "pending") == []
-    assert _of(events, "running") == []
+    assert len(_of(events, "running")) == 1
+    assert _of(events, "running")[0]["ticket"]
     assert _of(events, "done")[0]["ok"] is True
     orch._cancel_chat_idle_save()
 
@@ -325,6 +324,20 @@ def test_a_build_abandoned_on_the_grant_hands_the_lock_straight_back(tmp_path: P
     assert orch._turn_lock.acquire(blocking=False), "the grant row leaked the turn lock"
     orch._release_turn()
     assert oc.prompts == []                                 # and nothing of it ran
+
+
+def test_an_uncontended_build_abandoned_on_its_identity_hands_the_lock_back(tmp_path: Path):
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="never asked")])
+    orch = _orch(tmp_path, oc)
+    gen = orch.build_stream("add a chart")
+
+    assert next(gen)["type"] == "running"
+    gen.close()
+
+    assert orch._turns.running() is None
+    assert orch._turn_lock.acquire(blocking=False), "the identity row leaked the turn lock"
+    orch._release_turn()
+    assert oc.prompts == []
 
 
 # ---- the snapshot -------------------------------------------------------------------------------

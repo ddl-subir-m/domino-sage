@@ -240,8 +240,8 @@ def test_a_bare_continue_does_not_resend_the_refused_build_payload(tmp_path: Pat
 
     out = list(orch.build_stream("continue"))
 
-    assert [e["type"] for e in out] == ["ask-blocked", "done"]
-    assert "same content the gateway just refused" in out[0]["message"]
+    assert [e["type"] for e in out] == ["running", "ask-blocked", "done"]
+    assert "same content the gateway just refused" in out[1]["message"]
     assert [e["decision"] for e in _build_history(orch) if e.get("type") == "done"][-1] == (
         "recovery choice required")
 
