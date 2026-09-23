@@ -81,14 +81,26 @@ const json = (body, status = 200) => ({
   json: async () => body,
 });
 
-// A stream that ends immediately: this harness asks what the turn CARRIES, and the transcript it
-// draws afterwards belongs to the transcript's own tests.
-const stream = () => ({
-  ok: true,
-  status: 200,
-  headers: { get: () => 'text/event-stream' },
-  body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
-});
+// A successful turn has a terminal frame. A bare EOF means the viewer lost its stream and starts
+// recovery, which can correctly reload attachments while this harness is changing them by hand.
+const stream = () => {
+  const bytes = new TextEncoder().encode(
+    `data: ${JSON.stringify({ type: 'done', ok: true, decision: 'built' })}\n\n`
+  );
+  let sent = false;
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'text/event-stream' },
+    body: { getReader: () => ({
+      read: async () => {
+        if (sent) return { done: true, value: undefined };
+        sent = true;
+        return { done: false, value: bytes };
+      },
+    }) },
+  };
+};
 
 function serve(url, init) {
   const path = String(url).replace(/^\.\/api/, '');

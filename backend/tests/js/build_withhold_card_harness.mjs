@@ -64,6 +64,14 @@ function serve(url, opts) {
   }
   if (path.includes('health')) return json({ problems: [] });
   if (path.startsWith('/project/build/stream')) return sseResponse(events);
+  if (path.startsWith('/project/build/state')) return json({
+    running: true,
+    turn_epoch: 'boot_a',
+    running_turn: {
+      kind: 'build', conversation: 'conv_1', app: 'app_a',
+      turnId: 'turn_live', sequence: 1, epoch: 'boot_a',
+    },
+  });
   if (path.startsWith('/project/history')) return json({ history: served });
   if (path.startsWith('/apps')) return json({ items: [] });
   if (path.startsWith('/bindings')) return json({ bindings: [] });
@@ -73,7 +81,7 @@ function serve(url, opts) {
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, TextEncoder, TextDecoder,
-  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout: unrefTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
   encodeURIComponent, decodeURIComponent, URLSearchParams,
   requestAnimationFrame: (fn) => fn(),
   localStorage: (() => {
