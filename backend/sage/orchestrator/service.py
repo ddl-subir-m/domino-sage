@@ -56,6 +56,7 @@ from ..feedback.runner import FeedbackRunner
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..liveread import data_use as live_data_use
 from ..liveread import mcp as live_mcp
+from ..liveread import reference as live_reference
 from ..liveread import result as live_result
 from ..liveread import run as live_read
 from ..preview.prefix import domino_base_prefix, publish_available
@@ -7613,11 +7614,13 @@ class Orchestrator:
         for m in mentions:
             entry = known.get(m)
             asked = m
+            collapsed_folder = ""
             key, members = ("", []) if entry is not None else _folder_members(groups, m)
             # A folder of one is described exactly as well by naming the file, and better — the
             # branch the `AGENTS.md` block already takes. It is also the only one that hands the
             # agent a path its read tool can use.
             if len(members) == 1:
+                collapsed_folder = asked
                 entry, m, members = members[0], members[0]["path"], []
             if entry is None and not members:
                 continue
@@ -7648,6 +7651,8 @@ class Orchestrator:
             d = self._descriptor(project, entry, want_detail=True)
             item = {"path": m, "name": PurePosix(m).name,
                     "summary": d["summary"], "detail": _mention_block(d)}
+            if collapsed_folder:
+                item["asked"] = collapsed_folder
             if d["kind"] == "image":
                 item["image_uri"] = self._image_data_uri(real)
             out.append(item)
@@ -7669,6 +7674,37 @@ class Orchestrator:
         except (ValueError, OSError):
             return None
         return real if real.is_file() else None
+
+    def _reference_attachment_target(self, project: Project, entry: dict,
+                                     assets_by_id: dict[str, Asset] | None = None) -> Path | None:
+        """Verify one server-held attachment record against the bytes it is allowed to name."""
+        dataset_id = _bare_kind_id(str(entry.get("dataset_id") or ""), KIND_DATASET)
+        dataset_file = str(entry.get("file") or "")
+        rel = str(entry.get("path") or "")
+        if not dataset_id or not dataset_file or not rel:
+            return None
+        try:
+            asset = ((assets_by_id or {}).get(dataset_id)
+                     if assets_by_id is not None else self._find_asset(dataset_id))
+            if asset is None or asset.id != dataset_id:
+                return None
+            logical = _safe_join(project.app_for_turn().path, rel)
+            if asset.mount_path:
+                mount = Path(asset.mount_path).resolve(strict=True)
+                expected = _safe_join(mount, dataset_file).resolve(strict=True)
+                if not expected.is_relative_to(mount):
+                    return None
+            else:
+                # A remote Dataset file is a server-downloaded regular copy. A symlink has no
+                # trusted mount target to prove and is therefore not a reference-material grant.
+                if logical.is_symlink():
+                    return None
+                expected = logical.resolve(strict=True)
+                if not expected.is_relative_to(project.app_for_turn().path.resolve(strict=True)):
+                    return None
+            return expected if expected.is_file() else None
+        except (LookupError, OSError, RuntimeError, ValueError):
+            return None
 
     def _folder_mention(self, project: Project, folder: str, members: list[dict]) -> dict:
         """One `@folder` mention, said once (ADR-0030).
@@ -11395,8 +11431,11 @@ class Orchestrator:
             pass
 
         datasets: dict[str, Asset] = {}
+        datasets_by_id: dict[str, Asset] = {}
         try:
-            datasets = {a.name: a for a in self._assets.list_datasets(self._domino_project_id)}
+            listed_datasets = self._assets.list_datasets(self._domino_project_id)
+            datasets = {a.name: a for a in listed_datasets}
+            datasets_by_id = {a.id: a for a in listed_datasets}
         except Exception:
             pass
 
@@ -11439,6 +11478,21 @@ class Orchestrator:
                     return None
                 return target
             return None
+
+        def reference_for(source: str) -> live_reference.Authorized | None:
+            """One exact attachment reference, through the shared typed preparation grant."""
+            chat = bool(project.control.snapshot().chat_thread_id)
+            root = project.record.path if chat else project.app_for_turn().path
+            candidates = (store.read_context(thread_id).get("items", []) if chat
+                          else project.attachments_for_turn())
+            if chat:
+                candidates = [item for item in candidates if item.get("kind") == "file"]
+            return live_reference.authorize(
+                root, candidates, source, project.control.snapshot().withheld,
+                target_for=(None if chat else lambda row: self._reference_attachment_target(
+                    project, row, datasets_by_id
+                )),
+            )
 
         def record_data_use(event, reply):
             turn_id = self._data_use_turns.get(thread_id, "")
@@ -11486,6 +11540,7 @@ class Orchestrator:
             list_files=list_files,
             dataset_root=dataset_root,
             upload_for=upload_for,
+            reference_for=reference_for,
             record_data_use=record_data_use,
             analyze_text_batch=analyze_text_batch,
             record_refusal=record_refusal,
@@ -12138,6 +12193,10 @@ class Orchestrator:
                 "and a bounded batch_size. It sends only the selected text and stable task-local IDs "
                 "through the LLM Gateway, rejects missing, duplicate, unknown or malformed returned "
                 "IDs as incomplete, writes a result table, and reports coverage. "
+                "For an attached plain-text or Markdown requirements document, specification or "
+                "shell, use live_read_files with operation=document, dataset=upload, its exact "
+                "authorized path, and an optional exact heading. It sends at most 8,000 characters "
+                "through the LLM Gateway. Use this before read, cat, grep or sed on that document. "
                 "Omit selected_fields for structure only. Respect explicit user limits; row_limit "
                 "is only for a requested limit. Do not read unrelated raw rows into model context. "
                 "Source-code reads, tools, skills and task/to-do work remain available.")
@@ -16436,20 +16495,9 @@ class Orchestrator:
         # for one turn's worth of files.
         live_read_before = (snapshot_files(project.record.path)
                             if owns_turn and project.build_conversation else None)
-        # The token that lets this turn read a bound table (ADR-0041). Unlike the notes below it
-        # rides EVERY send and is never cleared: the nudge/fix follow-ups run in the same session,
-        # and a compaction that dropped the first send would otherwise leave the agent holding a
-        # tool it can no longer name a turn for. Repeating one line is the cheaper mistake.
-        live_read_note = (
-            self._data_use_note() + "\n" +
-            f"Read token: {self._mint_live_read_token(project.build_conversation)}. Pass it as "
-            "`token` on every `live_read_table`, `live_read_files` or `live_read_query` call. Use "
-            "those tools to look at a bound table or {dataSource}, and `live_read_query` to "
-            "work a number out of one, rather than telling the person you cannot see their "
-            f"data. Up to {_LIVE_READS_MAX} reads per turn: plan the few you need, then build."
-            if owns_turn and project.build_conversation else ""
-        )
-        live_read_note = brand.text(live_read_note) if live_read_note else ""
+        # Built after history-derived withholding is armed below. Besides ordering the token's
+        # Data-use identity correctly, this keeps the note beside the grant it names.
+        live_read_note = ""
         with timing.span("setup.session"):
             sid = session_id or self._ensure_session(project, project.build_conversation)
         project.active_session_id = sid
@@ -16745,6 +16793,22 @@ class Orchestrator:
         build_history_for_turn = project.app_for_turn().read_history(project.build_conversation)
         _warn_if_history_lossy(build_history_for_turn, "_build_stream (withheld)")
         withheld_token = project.control.arm_withheld(recall.withheld(build_history_for_turn))
+        # The token that lets this turn read a bound table (ADR-0041). Unlike the notes below it
+        # rides EVERY send and is never cleared: the nudge/fix follow-ups run in the same session,
+        # and a compaction that dropped the first send would otherwise leave the agent holding a
+        # tool it can no longer name a turn for. Repeating one line is the cheaper mistake.
+        #
+        # Minted after withholding is armed, before any explicit reference is prepared. A document
+        # operation recorded below therefore has this turn's identity and this turn's restrictions.
+        if owns_turn and project.build_conversation:
+            live_read_note = brand.text(
+                self._data_use_note() + "\n" +
+                f"Read token: {self._mint_live_read_token(project.build_conversation)}. Pass it as "
+                "`token` on every `live_read_table`, `live_read_files` or `live_read_query` call. "
+                "Use those tools to look at a bound table or {dataSource}, and `live_read_query` "
+                "to work a number out of one, rather than telling the person you cannot see their "
+                f"data. Up to {_LIVE_READS_MAX} reads per turn: plan the few you need, then build."
+            )
         # The failure-replan flag, consumed. Written here rather than beside its read because it has to
         # land after the pre-turn commit: a stop reverts the tree to that commit, and a flag cleared
         # ahead of it would take the gate the failure earned down with it.
@@ -17319,6 +17383,72 @@ class Orchestrator:
         # where to read. This is orientation, not file contents; the agent must still read before
         # editing. Only the current app's src/ is listed, never attached data or sibling apps.
         source_note = self._build_source_note(project.app_for_turn().path)
+        # Explicit text/Markdown references take their typed path before the model can try a local
+        # read. This is deliberately after the user row and after history-derived withholding is
+        # armed, but before the first normal model request. The content rides only in the in-memory
+        # attachment rendering; the event persisted below contains hashes and coverage, never text.
+        if mention_files and is_approval:
+            # Approval supplies every app attachment as a convenience list. It does not preserve
+            # which attachments the person explicitly referenced in the approved request. Until
+            # #517 records that exact set, a text descriptor must stay content-free: `_resolve_mentions`
+            # may otherwise put its 1,200-character preview into the first model request.
+            for attachment in mention_files:
+                if live_reference.source_type(str(attachment.get("path") or "")):
+                    attachment["detail"] = (
+                        "This text attachment was not prepared because this approval does not carry "
+                        "an explicit structured reference."
+                    )
+        elif mention_files:
+            attachment_manifest = project.attachments_for_turn()
+            root = project.app_for_turn().path
+            direct_sources = [str(source) for source in (mentions or [])]
+            direct_mentions = set(direct_sources)
+            explicit_paths = {
+                str(entry.get("path") or "") for entry in attachment_manifest
+                if str(entry.get("path") or "") in direct_mentions
+                or str(root / str(entry.get("path") or "")) in direct_mentions
+            }
+            prepared_references = live_reference.prepare_explicit(
+                root,
+                attachment_manifest,
+                direct_sources,
+                prompt=prompt,
+                withheld=project.control.snapshot().withheld,
+                target_for=lambda row: self._reference_attachment_target(project, row),
+            )
+            prepared_by_source = {item.source: item for item in prepared_references}
+            for attachment in mention_files:
+                source = str(attachment.get("path") or "")
+                if source not in explicit_paths:
+                    if attachment.get("asked") and live_reference.source_type(source):
+                        attachment["detail"] = (
+                            "This folder mention stays a bounded description. It does not transfer "
+                            "the text of files inside the folder."
+                        )
+                    continue
+                prepared = prepared_by_source.get(source)
+                if prepared is None:
+                    if live_reference.source_type(source):
+                        attachment["detail"] = (
+                            "This text attachment was not prepared because its exact attachment "
+                            "identity or storage target could not be authorized."
+                        )
+                    continue
+                attachment["detail"] = prepared.prompt_block()
+                event, reply = live_reference.data_use(
+                    prepared, purpose="Use an explicitly referenced attachment for this Build turn"
+                )
+                project.shim.data_use.record(
+                    event, reply, persist,
+                    self._data_use_turns.get(project.build_conversation, ""),
+                )
+                log.info(
+                    "reference preparation: source=%s type=%s status=%s selector=%s "
+                    "characters=%d/%d truncated=%s",
+                    prepared.source, prepared.source_type, prepared.status,
+                    prepared.selected_selector or "whole",
+                    prepared.sent_characters, prepared.selected_characters, prepared.truncated,
+                )
         # The blocks that ride the FIRST send only; each is cleared right after it, so a nudge
         # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
         # it re-sends the same turn into a session that heard none of this — so it puts them back.

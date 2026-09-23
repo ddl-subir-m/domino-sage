@@ -2218,13 +2218,37 @@ window.SW = window.SW || {};
       ...operations.map((event) => {
         const coverage = event.coverage || {};
         const textOperation = event.operation === 'text_analysis';
+        const documentOperation = event.operation === 'document_reference';
+        const documentPrepared = documentOperation && (!event.status || event.status === 'prepared');
+        const documentFailure = ({
+          withheld: 'Document content was withheld. No document text was prepared.',
+          source_too_large: 'The document exceeded the source-size limit. No document text was prepared.',
+          not_text: 'The file was not valid text. No document text was prepared.',
+          heading_not_unique: 'The requested heading was missing or not unique. No document text was prepared.',
+          heading_not_supported: 'This file type does not support heading selection. No document text was prepared.',
+          selector_too_long: 'The requested heading exceeded the selector limit. No document text was prepared.',
+          empty_document: 'The document contained no text to transfer.',
+          unavailable: 'The document was unavailable. No document text was prepared.',
+        })[event.status] || 'Document preparation failed. No document text was prepared.';
+        const source = String(event.source || 'unknown source');
         return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
-          h('p', null, textOperation ? 'Analyzed through the LLM Gateway from ' : 'Calculated in Domino from ',
-            h(Tag, { 'aria-label': `Source file: ${event.source}` }, event.source.split('/').pop()), '.'),
-          h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +
-            `${coverage.excluded} excluded; ${coverage.failed} failed; ${coverage.unfinished} unfinished.`),
-          h('p', null, `Selected fields: ${(event.selected_fields || []).join(', ') || 'Structure only'}.`),
-          h('p', null, 'Artifact: ', h(Tag, { 'aria-label': `Artifact: ${event.artifact}` }, event.artifact.split('/').pop())),
+          h('p', null, documentPrepared ? 'Prepared through the LLM Gateway from '
+            : documentOperation ? 'Document preparation did not transfer content from '
+            : textOperation ? 'Analyzed through the LLM Gateway from ' : 'Calculated in Domino from ',
+            h(Tag, { 'aria-label': `Source file: ${source}` }, source.split('/').pop()), '.'),
+          documentPrepared
+            ? h('p', null,
+              `${coverage.sent_characters || 0} of ${coverage.selected_characters || 0} characters prepared. `,
+              event.selected_selector ? `Heading: ${event.selected_selector}. ` : 'Whole document. ',
+              coverage.truncated ? 'The selected text was truncated.' : 'The selected text was complete.')
+            : documentOperation
+              ? h('p', null, documentFailure)
+            : h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +
+              `${coverage.excluded} excluded; ${coverage.failed} failed; ${coverage.unfinished} unfinished.`),
+          !documentOperation && h('p', null,
+            `Selected fields: ${(event.selected_fields || []).join(', ') || 'Structure only'}.`),
+          event.artifact && h('p', null, 'Artifact: ',
+            h(Tag, { 'aria-label': `Artifact: ${event.artifact}` }, event.artifact.split('/').pop())),
           ...(event.requests || []).map((request) => h('div', { key: request.request_id },
             h('p', null, 'Requested model: ',
               h(Tag, { 'aria-label': `Requested model: ${request.requested_alias}` }, request.requested_alias),

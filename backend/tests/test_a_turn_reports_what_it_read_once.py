@@ -109,6 +109,63 @@ def test_one_operation_still_draws_one_plain_card():
 
 
 @needs_node
+def test_a_document_reference_draws_coverage_without_row_only_fields():
+    event = {
+        "operation_id": "du_doc",
+        "turn_id": "turn_a",
+        "operation": "document_reference",
+        "source": "requirements.md",
+        "source_type": "markdown",
+        "requested_selector": "Programming Notes",
+        "selected_selector": "Programming Notes",
+        "coverage": {
+            "total": 120, "processed": 100, "excluded": 0, "failed": 0,
+            "unfinished": 20, "source_bytes": 240, "selected_characters": 120,
+            "sent_characters": 100, "truncated": True,
+        },
+        "requests": [],
+    }
+
+    drawn = _draw({"type": "data_used", "turnId": "turn_a", "events": [event]})
+
+    assert drawn["sections"] == 1
+    assert "Prepared through the LLM Gateway from" in drawn["words"]
+    assert "requirements.md" in drawn["words"]
+    assert "100 of 120 characters prepared" in drawn["words"]
+    assert "Heading: Programming Notes" in drawn["words"]
+    assert "truncated" in drawn["words"]
+    assert "Artifact:" not in drawn["words"]
+
+
+@needs_node
+@pytest.mark.parametrize(("status", "message"), [
+    ("withheld", "Document content was withheld"),
+    ("source_too_large", "exceeded the source-size limit"),
+    ("not_text", "was not valid text"),
+    ("heading_not_unique", "heading was missing or not unique"),
+    ("empty_document", "contained no text to transfer"),
+])
+def test_a_failed_document_reference_never_claims_that_content_was_prepared(status, message):
+    event = {
+        "operation_id": "du_failed",
+        "turn_id": "turn_a",
+        "operation": "document_reference",
+        "source": "requirements.md",
+        "source_type": "markdown",
+        "status": status,
+        "coverage": {"selected_characters": 0, "sent_characters": 0, "failed": 1},
+        "requests": [],
+    }
+
+    words = _draw({"type": "data_used", "turnId": "turn_a", "events": [event]})["words"]
+
+    assert "Document preparation did not transfer content from" in words
+    assert message in words
+    assert "Prepared through the LLM Gateway" not in words
+    assert "characters prepared" not in words
+
+
+@needs_node
 def test_a_re_recorded_operation_updates_its_section_rather_than_adding_one():
     """`DataUse.observe` rewrites an event every time a gateway request of its own settles, and
     persists the whole event again. The card must show the later one, not both."""
