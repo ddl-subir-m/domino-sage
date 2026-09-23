@@ -17,6 +17,11 @@ class RouteCapability:
     efforts_with_tools: tuple[str, ...] = ()
     reason: str = "Reasoning settings have not been verified for this model's current route."
     identity: tuple[str, ...] = ()
+    # Did a proof actually match, or is this the fallback? No other field answers that (#509).
+    # A MEASURED row can be empty — one deployment's `haiku` is verified to offer no levels at
+    # all — so `not efforts` reads True for "offers nothing" and for "nothing is known" alike,
+    # and those two need opposite responses. Last, so `resolve`'s positional call is unaffected.
+    verified: bool = False
 
     def settings(self, effort: str | None, *, tools: bool) -> dict:
         if effort is None:
@@ -47,8 +52,22 @@ def resolve(root: str, row: dict, evidence: list[dict]) -> RouteCapability:
             continue
         return RouteCapability(Protocol(proof["protocol"]), proof.get("native", False),
                                tuple(proof["efforts"]), tuple(proof["efforts_with_tools"]),
-                               proof.get("reason", ""), identity)
-    return RouteCapability(identity=identity)
+                               proof.get("reason", ""), identity, verified=True)
+    # No proof for THIS identity. The protocol stays CHAT and the levels stay empty, which is the
+    # conservative answer and is not the defect — the defect was that nobody could tell this apart
+    # from a verified model that offers nothing, so a repointed alias went back to refusing every
+    # tool-carrying turn in silence (#509). `verified` is what the log and the person's error read.
+    #
+    # The repair belongs HERE rather than in the readers, because it is right only for this branch:
+    # the fallback branch above can never be satisfied by measuring — `resolve` returns it without
+    # consulting evidence at all — and a reader appending one repair line to every unverified
+    # capability would tell somebody to run a command that cannot help them.
+    name = str(row.get("name") or "").strip()
+    return RouteCapability(
+        reason=("No measurement matches this model's route on this deployment, so no reasoning "
+                "setting can be offered for it and the turn takes the default wire."
+                + (f" Repair: scripts/reasoning-evidence.py '{name}' --write" if name else "")),
+        identity=identity)
 
 
 def legacy(model: str) -> RouteCapability:

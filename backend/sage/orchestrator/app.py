@@ -4255,6 +4255,40 @@ async def build_project(request: Request) -> JSONResponse:
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(e).__name__}: {e}"}})
 
 
+def _unverified_route_note(project) -> str:
+    """Why a gateway refusal may be nobody's fault but a missing measurement (#509).
+
+    `capabilities.resolve` answers only from `reasoning-evidence.json`, and a row is keyed on the
+    Alias identity INCLUDING `updated_at`. So any repoint of the alias upstream silently stops the
+    row matching, `resolve` falls through to a bare capability — protocol CHAT, no levels — and a
+    turn carrying tools goes to a wire the model may refuse. Measured on gpt-5.4 (#505): every new
+    workspace died on its first Build turn, in about 730ms, and nothing anywhere said why.
+
+    Asked here rather than plumbed through `on_resolved`, because the shim's own resolver is
+    already reachable (`Orchestrator.route_capability` is bound onto it) and a fourth callback
+    argument would change a contract that test doubles implement. Empty whenever the question does
+    not apply, so a caller can append it unconditionally.
+    """
+    resolved = getattr(project, "resolved_model", None)
+    model = getattr(resolved, "model", None)
+    resolver = getattr(getattr(project, "shim", None), "resolve_capability", None)
+    if not model or resolver is None:
+        return ""
+    try:
+        capability = resolver(model)
+    except Exception:
+        # A diagnostic must never replace the error it explains. `route_capability` raises when the
+        # gateway listing cannot be reached, which is exactly the moment this runs.
+        return ""
+    # `identity` and not `verified` alone: the fake/development contract is unverified by
+    # construction and carries no identity, and saying this on a local run would be a lie.
+    if not getattr(capability, "identity", ()) or getattr(capability, "verified", True):
+        return ""
+    # `reason` is composed by `resolve`, which is the only thing that knows WHICH unverified case
+    # this is — and so which repair, if any, is honest to offer.
+    return f" {capability.reason}"
+
+
 @control_app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     import json
@@ -4349,8 +4383,11 @@ async def chat_completions(request: Request):
                     log.error("guardrail refusal — nothing in the request matches a known rule; "
                               "the gateway's rules are not ours, re-probe with "
                               "scripts/guardrail-probe.py")
-            project.last_gateway_error = {"message": str(err), "upstream_status": err.status}
-            return JSONResponse(status_code=502, content={"error": {"message": str(err), "upstream_status": err.status}})
+            # The gateway's own text first and unmodified — `_guardrail_sentence` and
+            # `recall.reason_key` both read this string — with the route note after it (#509).
+            refused_msg = str(err) + _unverified_route_note(project)
+            project.last_gateway_error = {"message": refused_msg, "upstream_status": err.status}
+            return JSONResponse(status_code=502, content={"error": {"message": refused_msg, "upstream_status": err.status}})
         log.error("shim upstream failure: %s", err)
         project.last_gateway_error = {"message": f"{type(err).__name__}: {err}"}
         return JSONResponse(status_code=502, content={"error": {"message": f"{type(err).__name__}: {err}"}})
@@ -4430,6 +4467,7 @@ async def chat_completions(request: Request):
                     # stay None and `_withhold_search` would return without a word.
                     log.error("guardrail refused inside a 200 stream — the payload was NOT captured, "
                               "so no withhold search can run for it")
+                upstream_msg += _unverified_route_note(project)
                 project.last_gateway_error = {"message": upstream_msg}
                 stopped = True
                 yield from ka.error_sse(f"\n\n⚠️ The model gateway rejected this request: {upstream_msg}")
