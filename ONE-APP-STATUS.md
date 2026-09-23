@@ -1567,3 +1567,163 @@ again on a machine that can be confirmed to have had zero prior Sage runs (a tru
 clone, `backend/workspaces/` never populated), that would be the live counter-example this
 investigation couldn't produce, and it should reopen this exact question rather than be treated as a
 new, unrelated bug.
+
+## UPDATE 2026-09-23 (new session): Phase 3 steps 1, 2, and half of step 4 — `registry.create()`/`registry.clone()` built and tested; step 3 (door/workspace deletion) and the HTTP/UI wiring deliberately deferred
+
+Read `ONE-APP-PLAN.md` and this file fresh. Confirmed Phase 0-2 genuinely on disk and matching this
+file's own account (`git log` clean, working tree clean at session start).
+
+**This branch will likely never merge to `main`.** The product owner said so directly this session:
+`one-app-pivot-Etan` is meant to stay a permanent separate flavor of Sage, not something headed for a
+landing. `origin/main` had drifted 54 commits ahead by this session's start (unrelated stop-recovery/
+diagnostics work), with a real conflict in `orchestrator/service.py` on a trial `merge-tree`. Given the
+above, that divergence is not this branch's problem to reconcile — CLAUDE.md's "merge `main` before the
+suite" landing-session protocol does not apply here, and a future session should stop treating the
+main-divergence count as something to track or fix.
+
+**Scope decision for this session.** Phase 3's full step 3 (delete `door.py`/`door.html`/`/api/door*`,
+the workspace-lifecycle `ControlPlane` methods, `Orchestrator.stop()`, `environment/pluggable-tools.yaml`)
+touches on the order of 231 call sites across `app.py`/`service.py` alone (grepped, not guessed) — a
+large, high-blast-radius deletion that Phase 2's own prior session already found depends on the Projects
+home page existing first (see that update's "Deliberately NOT done this session" section). Rather than
+force that into one pass, this session did Phase 3 steps 1 and 2 in full, plus half of step 4 (the
+git-credential resolver generalization used by both), and left step 3 — together with the home page and
+the HTTP-route wiring for `create`/`clone` — for a dedicated follow-up. This mirrors the reasoning the
+Phase 2 session already recorded for its own deferral, rather than inventing a new one.
+
+**What was built, concretely:**
+
+1. **`sage/provision/seed.py`**: `seed_and_push()` gained an optional `dest: Path | None = None`. When
+   given, the template is committed and pushed directly into `dest` — which is then KEPT, not
+   discarded — instead of a throwaway tempdir; refactored around a shared `_seed_into(repo)` closure
+   so the no-`dest` path (the door's own `create_app`) is byte-identical to before. Added
+   `clone(clone_url, dest, *, branch="main", token_provider=None)`: the mirror of `seed_and_push` for
+   an EXISTING repo — same one-shot credential-helper mechanism, token travelling only through the
+   child git process's env, never argv/disk/logs.
+
+2. **`sage/provision/credentials.py`**: `_checkout_dirs(cwd=None, extra=None)` gained `extra`, a list
+   of additional directories swept after the built-in `/mnt/code` and before the trailing process-cwd
+   `None`. `extract_token(host, protocol="https", *, cwd=None, extra=None, settings_token="")` threads
+   `extra` through and adds `settings_token` as the LAST resort — tried only once every `git credential
+   fill` and origin-URL-embedded-credential answer comes up empty. This is `Settings.git_token`,
+   §2.1's laptop fallback for a machine with no git credential helper configured at all.
+   `credential_probe(host, protocol="https", *, extra=None, settings_token="")` got the same two
+   params (so `/api/diag`'s credential probe can't report "not found" for a token the real resolver
+   would use) and now also reports `settings_token_configured: bool` (never the value).
+
+3. **`sage/provision/service.py`**: split `ProvisionService.create_app` into a new public
+   `provision_project(display_name, *, name=None, dest_for=None) -> tuple[ProjectRef, RepoInfo]` —
+   repo create + seed + Domino project create, everything `create_app` used to do MINUS the workspace
+   launch — and a thin `create_app` that calls it, then launches the workspace exactly as before.
+   `dest_for`, when given, is called with the FINAL repo name (after any `-N` collision suffix
+   `_create_repo` took) and must return the directory to seed into, so a caller's own project
+   directory becomes the seeded working copy with no second clone. `create_app` passes no `dest_for` —
+   unchanged tempdir behavior.
+
+4. **`sage/projects/registry.py`** (`ProjectRegistry`): constructor gained
+   `provision: ProvisionService | None = None` and
+   `git_token_provider: Callable[[], str | None] | None = None`, both optional and both `None` on a
+   process with no Domino control plane configured, matching `open_app`'s own "no door in this
+   container" shape rather than a bare `AttributeError`.
+   - **`create(display_name) -> RegistryEntry`** (Phase 3 step 1): calls `provision.provision_project`
+     with a `dest_for` closure pointed at `workspace_dir(repo_name)`; writes `.sage/project.json` only
+     once the Domino project genuinely exists, matching `local_slugs()`'s own established rule that an
+     entry-less directory is invisible — a create that fails partway never shows up as a broken
+     project. The written `slug` is the ACTUAL repo name captured from the `dest_for` callback, not
+     `project.name` — Domino may echo back a normalized string, and a mismatch there would write
+     `project.json` into a directory `open()`/`entry()` can never find again by that slug. On any
+     failure, best-effort `shutil.rmtree`s the partial directory before re-raising, so a retry under
+     the same display name starts clean.
+   - **`clone(domino_project_id) -> RegistryEntry`** (Phase 3 step 2): looks the id up in
+     `control_plane.list_apps()` (`KeyError` if the token can't see it), derives the slug via the
+     existing `_slug_for_remote`, refuses with `FileExistsError` if that directory is already on disk
+     (a name collision this method does not resolve — `create()`'s `-N` retry only ever applies to a
+     brand-new repo name), then calls `provision.seed.clone` through the injected `git_token_provider`
+     and writes the entry. Same best-effort cleanup on failure.
+   - Neither method takes a lock around its git/network work — only `open()`'s `_open` dict mutation
+     is lock-guarded, deliberately, since different projects' `create`/`clone` calls are independent of
+     each other.
+
+5. **`sage/orchestrator/app.py`**: `_build_provision_service`'s shared `token_provider()` closure (used
+   for both the repo-create REST call and the seed push) now calls
+   `credentials.extract_token(host, extra=[str(_SAGE_HOME)], settings_token=_SETTINGS.git_token)`
+   instead of the bare `extract_token(host)` — the generalized resolver actually reaching a laptop's
+   configured Settings token, not a capability sitting unused. Added `_clone_git_token_provider()`
+   (same resolver shape, no per-call `cwd` to pin since a clone's destination doesn't exist as a
+   checkout yet) and wired it plus `provision=_provision` into `_REGISTRY = ProjectRegistry(...)`.
+   `_git_credential_diag()` (the `/api/diag` route) passes the same `extra`/`settings_token` through to
+   `credential_probe`.
+
+**A real regression found and fixed, not a pre-existing dogfood-class failure.**
+`tests/test_the_control_plane_routes_speak_the_packs_words.py::test_the_missing_git_credential_names_the_pack_and_keeps_the_git_host`
+monkeypatched `credentials.extract_token` with a fixed-arity `lambda host: ""`, which broke the moment
+`token_provider()`'s call site started passing `extra=`/`settings_token=` kwargs (`TypeError`, not the
+expected `RuntimeError`). Grepped every `extract_token` reference across the whole tree first — this
+was the only fixed-arity monkeypatch of it. Fixed to `lambda host, **kw: ""`.
+
+**Tests added, all passing when run individually (`-n0`) and together:**
+- `tests/test_project_registry.py`: +9 (4 for `create()`, 5 for `clone()`), plus a
+  `_FakeProvision`/`_FakeRepoInfo` fixture pair and a `whoami()` method (`who: str = "etan"`) added to
+  the existing `_FakeControlPlane` fixture.
+- `tests/test_provision_seed.py`: +4 (`dest`-seeding in place; 3 for `clone()` mirroring
+  `seed_and_push`'s own existing test shapes — token-via-env, no-token-ambient-env,
+  failure-surfaces-stderr-not-token).
+- `tests/test_provision_credentials.py`: +3 (extra-dir sweep, `settings_token` fallback,
+  real-credential-wins-over-fallback).
+- `tests/test_create_project.py`: +2 for `provision_project` directly (seeds into a real given `dest`
+  via an actual bare git repo; confirms no-`dest_for` still uses a throwaway tempdir).
+
+**Verification, following this repo's own protocol:**
+- Every touched/added test file green individually and combined, except the well-established
+  dogfood-safety class (real Domino/GitHub credentials genuinely reachable from this sandbox —
+  `/mnt/code` really is the mounted repo, same class this file has characterized every session). Two
+  hits (`test_provision_credentials.py::test_extract_token_reads_password`,
+  `test_create_project.py::test_a_container_that_cannot_provision_refuses_to_create`) confirmed via
+  `git stash`/`git stash pop` to fail identically on the unmodified baseline tree.
+- `make lint` (repo-wide): clean.
+- Full suite run #1 (before the regression fix above): **101 failed, 7769 passed, 10 skipped, 7880
+  collected**. All failures checked by name against this file's own established dogfood-safety class,
+  except one — `test_the_missing_git_credential_names_the_pack_and_keeps_the_git_host` — which was
+  this session's real regression above, found this way rather than by inspection alone.
+- Regression fixed; full suite re-run twice more for a trustworthy reconciliation (the first two
+  background runs' shell commands accidentally piped their own output through an in-command `tail`,
+  truncating what got saved — re-run a third time with output redirected to a plain file so the
+  complete `FAILED` list could actually be diffed, not just its tail): **100 failed, 7770 passed, 10
+  skipped, 7880 collected** — identical collected count across all three runs (7880), so nothing
+  affected collection. The failed count wobbles 99-101 run to run, matching the exact "2-failure wobble
+  … real network calls to a real, occasionally-quota-limited Domino API" class the Phase 1 update
+  already documented — not a fixed deterministic count. Diffed the full 100-name failure list from the
+  final clean run against every file this session touched or added: **zero of this session's new test
+  files appear anywhere in it**, and every failing file is one already named in this file's own
+  dogfood-safety catalogue (`test_publish_*`, `test_orchestrator.py`,
+  `test_a_rename_reaches_the_deployed_app.py`, `test_delete_app.py`, `test_gallery.py`, `test_attach.py`,
+  `test_the_control_plane_routes_speak_the_packs_words.py`, `test_the_service_speaks_the_packs_words.py`,
+  `test_prefix.py`, `test_provision_credentials.py`, `test_native_gateway_transport.py`,
+  `test_builtapp_queries.py`, `test_create_project.py`, `test_chat_shows_the_whole_conversation.py`,
+  `test_a_binding_the_app_never_calls_says_so.py`).
+
+**Discovered conflict, flagged rather than silently resolved: plan step 5's git-identity wording vs. an
+existing, reasoned design.** `ONE-APP-PLAN.md`'s Phase 3 step 5 says "Git identity: `workspace/git.py`
+commits as `whoami().fullName <email>`." But `sage/workspace/git.py`'s existing `_identity_args()`
+(~lines 146-161) already commits as `agent <agent@localhost>`, with an explicit docstring citing
+de-branding (ADR-0014's third arm) and the fact that git history is immutable — a name written into a
+commit can never be re-branded later without falsifying an already-committed record — and calls this
+"the author line of every save in a repo the partner's own customer can read." This session did NOT
+touch `workspace/git.py`. This is a real tension between the plan's literal text and an already-shipped,
+reasoned decision, not an oversight — it needs the product owner's call, not a silent pick either way.
+
+## Next session should
+
+1. Get the git-identity conflict above resolved with the user before touching `workspace/git.py`.
+2. Do the actual Phase 3 step 3 deletion (`door.py`, `door.html`, `/api/door*`, the workspace-lifecycle
+   `ControlPlane` methods and their `FakeControlPlane` counterparts,
+   `Orchestrator.stop()`/`/api/stop`/`_resolve_workspace_id`, `environment/pluggable-tools.yaml`,
+   `SAGE_BUILDER_TOOL`) together with building the Projects home page, repointing `/`, and wiring
+   `registry.create()`/`registry.clone()` to real HTTP routes (replacing the door-era
+   `POST /api/projects`/`/api/projects/{id}/open`/`/api/projects/status`) — one coordinated change, per
+   the reasoning the Phase 2 session already recorded for why these belong together.
+3. `registry.create()`/`clone()` are fully unit-tested but have never been driven through a real HTTP
+   request or against a real Domino sandbox — that live check is still owed, the same caveat this
+   file's Phase 1/2 updates already applied to their own new capabilities.
+4. The two long-standing, non-blocking coverage gaps from earlier sessions (`test_sage_domino_relay.py`,
+   `test_feedback.py`'s weakened drift guard) remain open, untouched this session.

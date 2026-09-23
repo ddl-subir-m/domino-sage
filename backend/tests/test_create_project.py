@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from sage.provision.domino import FakeControlPlane
-from sage.provision.github import FakeRepoProvider, RepoNameConflict
+from sage.provision.github import FakeRepoProvider, RepoInfo, RepoNameConflict
 from sage.provision.seed import seed_and_push
 from sage.provision.service import ProvisionService
 from sage.workspace.manager import ProjectRecord
@@ -99,6 +99,50 @@ def test_the_new_project_opens_this_creators_builder(tmp_path):
 
     assert cp.workspaces[created.project.id]
     assert created.open_url == f"/tester/sage-sales/notebookSession/run-{created.project.id}/"
+
+
+def test_provision_project_seeds_directly_into_the_given_destination(tmp_path):
+    """`registry.create` (Phase 3 step 1) needs the seeded template to land in the caller's own
+    project directory, not a throwaway tempdir — `dest_for` is how it says where."""
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "index.html").write_text("<!doctype html>")
+
+    class BareRepoProvider(FakeRepoProvider):
+        """A real bare repo on disk, so `seed_and_push`'s real push has something to push to."""
+
+        def create_repo(self, name, *, description="", private=True):
+            info = super().create_repo(name, description=description, private=private)
+            bare = tmp_path / "remotes" / f"{name}.git"
+            subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+            return RepoInfo(full_name=info.full_name, clone_url=str(bare), private=info.private)
+
+    seen: dict = {}
+
+    def dest_for(repo_name: str) -> Path:
+        seen["repo_name"] = repo_name
+        return tmp_path / "projects" / repo_name
+
+    service = ProvisionService(FakeControlPlane(), BareRepoProvider(), template, seed=seed_and_push)
+    project, repo = service.provision_project("Quarterly Revenue", dest_for=dest_for)
+
+    dest = tmp_path / "projects" / seen["repo_name"]
+    assert (dest / "index.html").exists()  # the seeded dir IS the working directory, not a tempdir
+    assert (dest / ".git").is_dir()
+    assert project.name == seen["repo_name"]
+    assert repo.clone_url == str(tmp_path / "remotes" / f"{seen['repo_name']}.git")
+
+
+def test_provision_project_with_no_dest_for_still_uses_a_throwaway_tempdir(tmp_path):
+    """`create_app` (the door's own path) passes no `dest_for` — unchanged from before this method
+    existed: the seed lands in a tempdir that is gone by the time this returns."""
+    seen: dict = {}
+    service = ProvisionService(
+        FakeControlPlane(), FakeRepoProvider(), tmp_path,
+        seed=lambda *a, dest=None, **k: seen.update(dest=dest),
+    )
+    service.provision_project("Sales")
+    assert seen["dest"] is None
 
 
 def test_a_failure_before_the_project_exists_rolls_the_repo_back(tmp_path):

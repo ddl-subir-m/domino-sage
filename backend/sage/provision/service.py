@@ -264,9 +264,16 @@ class ProvisionService:
         except Exception:
             log.warning("couldn't roll back repo %s (delete it manually)", repo.full_name, exc_info=True)
 
-    def create_app(self, display_name: str, *, name: str | None = None) -> AppCreated:
-        """Provision a Project: a private `sage-*` repo, a git-based Domino project of that same
-        name, and this caller's Sage Builder in it.
+    def provision_project(
+        self,
+        display_name: str,
+        *,
+        name: str | None = None,
+        dest_for: Callable[[str], Path] | None = None,
+    ) -> tuple[ProjectRef, RepoInfo]:
+        """Provision a Project's git half: a private `sage-*` repo and a git-based Domino project of
+        that same name — everything `create_app` does MINUS the workspace launch
+        (ONE-APP-PLAN.md §2.2's `registry.create`, Phase 3 step 1).
 
         The Domino project is named after the REPO, never after what the person typed (#46). Both
         halves of Sage look a Project up by that name — the door finds a viewer's Default with
@@ -277,12 +284,22 @@ class ProvisionService:
 
         `name` is an already-`sage-`-prefixed name to use instead of a slug of `display_name`; the
         door passes the Default's computed name.
+
+        `dest_for`, when given, is called with the FINAL repo name (after any `-N` collision suffix
+        `_create_repo` had to take) and must return the directory to seed the template into — the
+        seeded directory is then kept as the caller's own working copy (no second clone). Left out,
+        the template is seeded into a throwaway temp dir and discarded once pushed (the door's own
+        `create_app`, below).
         """
         display_name = display_name.strip()
         if not display_name:
             raise ValueError("app name is required")
 
         repo = self._create_repo(name or naming.repo_base(display_name), display_name)
+        # The repo name, not `name`: _create_repo may have taken a -N candidate, and the project
+        # (and, for a caller passing `dest_for`, the local directory) has to carry the same suffix.
+        repo_name = repo.full_name.split("/", 1)[-1]
+        dest = dest_for(repo_name) if dest_for is not None else None
         # Roll back the repo if we fail before the project exists — otherwise it's an orphan. Once
         # the project is created the app is real, so a later (workspace) failure must NOT delete it.
         try:
@@ -290,15 +307,17 @@ class ProvisionService:
                 repo.clone_url, self._template, branch=self._branch,
                 token_provider=self._push_token_provider,
                 settings={"displayName": display_name},
+                dest=dest,
             )
-            # The repo name, not `name`: _create_repo may have taken a -N candidate, and the project
-            # has to carry the same suffix.
-            repo_name = repo.full_name.split("/", 1)[-1]
             project = self._create_project(repo_name, repo.clone_url, display_name)
         except Exception:
             self._rollback_repo(repo)
             raise
+        return project, repo
 
+    def create_app(self, display_name: str, *, name: str | None = None) -> AppCreated:
+        """Provision a Project (git half, above) and launch this caller's Sage Builder in it."""
+        project, repo = self.provision_project(display_name, name=name)
         ws = self._cp.create_workspace(project.id, branch=self._branch)
         return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws, project.name))
 

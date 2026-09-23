@@ -103,15 +103,19 @@ _NO_PROMPT = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "SSH_ASKPASS": ""}
 _FILL_TIMEOUT = 15
 
 
-def _checkout_dirs(cwd: str | None = None) -> list[str | None]:
+def _checkout_dirs(cwd: str | None = None, extra: list[str | None] | None = None) -> list[str | None]:
     """Directories to ask git from, nearest-to-the-repo first.
 
     The mounted checkout comes first because that is where Domino authorized the push, and the
     process cwd comes last because /opt/sage/backend is Sage's own baked code, not the user's repo.
+
+    `extra` widens the sweep with directories this module has no fixed opinion about — Phase 3's
+    one-app resolver (ONE-APP-PLAN.md §2.1: "project dir, then $SAGE_HOME, then the App checkout")
+    passes `$SAGE_HOME` here rather than this module hardcoding a one-app-specific path.
     """
     seen: set[str] = set()
     out: list[str | None] = []
-    for c in (cwd, os.environ.get("SAGE_WORKSPACE_DIR"), "/mnt/code"):
+    for c in (cwd, os.environ.get("SAGE_WORKSPACE_DIR"), "/mnt/code", *(extra or [])):
         if not c or c in seen or not os.path.isdir(c):
             continue
         seen.add(c)
@@ -175,18 +179,30 @@ def _token_in_origin(cwd: str, host: str) -> str | None:
     return unquote(secret) if secret else None
 
 
-def extract_token(host: str, protocol: str = "https", *, cwd: str | None = None) -> str | None:
+def extract_token(
+    host: str,
+    protocol: str = "https",
+    *,
+    cwd: str | None = None,
+    extra: list[str | None] | None = None,
+    settings_token: str = "",
+) -> str | None:
     """Pull the HTTPS token for `host` from this container's git setup.
 
     Asks `git credential fill` from each checkout in `_checkout_dirs` (with and without the repo
     path), then falls back to a credential embedded in a checkout's origin URL. `cwd` pins the
-    checkout to ask from first.
+    checkout to ask from first; `extra` widens the sweep (see `_checkout_dirs`).
+
+    `settings_token`, when given, is the LAST resort (ONE-APP-PLAN.md §2.1/Phase 3's
+    `settings.git.token`) — a token entered directly in Settings, for a laptop with no git
+    credential helper configured at all. Every `git credential fill`/origin-URL answer above it
+    wins first, since those are Domino's own live credential, not a value a person had to copy in.
 
     In-memory only — the returned value is a live credential; callers MUST NOT log or persist it.
     Returns None when nothing yields a token (e.g. an SSH-key credential, which can't be extracted —
     those apps fall back to the BYO-repo path).
     """
-    dirs = _checkout_dirs(cwd)
+    dirs = _checkout_dirs(cwd, extra)
     for d in dirs:
         remote = remote_for(d) if d else None
         path = None
@@ -200,17 +216,23 @@ def extract_token(host: str, protocol: str = "https", *, cwd: str | None = None)
     for d in dirs:
         if d and (token := _token_in_origin(d, host)):
             return token
-    return None
+    return settings_token or None
 
 
-def credential_probe(host: str, protocol: str = "https") -> dict:
+def credential_probe(
+    host: str, protocol: str = "https", *, extra: list[str | None] | None = None,
+    settings_token: str = "",
+) -> dict:
     """Where a credential for `host` was and wasn't found, with no secret in the answer.
 
     /api/diag serves this. A Builder has no terminal, so without it "no HTTPS git credential" is a
     dead end: this says which checkouts were asked, whether each answered, and how long the answer
     was — enough to tell an SSH-only account from a credential we looked for in the wrong place.
+
+    `extra`/`settings_token` mirror `extract_token`'s own Phase 3 widening, so this diagnostic never
+    reports "not found" for a token the real resolver would have used.
     """
-    dirs = _checkout_dirs()
+    dirs = _checkout_dirs(extra=extra)
     asked = []
     for d in dirs:
         token = _fill(host, protocol, d, None)
@@ -221,5 +243,9 @@ def credential_probe(host: str, protocol: str = "https") -> dict:
             "fill_len": len(token) if token else 0,
             "origin_url_len": len(origin) if origin else 0,
         })
-    return {"host": host, "found": any(a["fill_len"] or a["origin_url_len"] for a in asked),
-            "asked": asked}
+    return {
+        "host": host,
+        "found": any(a["fill_len"] or a["origin_url_len"] for a in asked) or bool(settings_token),
+        "asked": asked,
+        "settings_token_configured": bool(settings_token),
+    }

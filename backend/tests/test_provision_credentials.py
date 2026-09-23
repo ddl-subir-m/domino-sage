@@ -103,6 +103,42 @@ def test_extract_token_ignores_an_origin_credential_for_another_host(tmp_path, m
     assert credentials.extract_token("github.com") is None
 
 
+def test_extract_token_sweeps_an_extra_directory_too(tmp_path, monkeypatch):
+    """Phase 3's resolver widens the sweep with `$SAGE_HOME` without this module hardcoding a
+    one-app-specific path — `extra` is how a caller says so."""
+    sage_home = tmp_path / "sage-home"
+    sage_home.mkdir()
+
+    def fill(cwd, query):
+        return "password=ghp_from_sage_home\n" if cwd == str(sage_home) else None
+
+    fake_run, _ = _run_stub(fill=fill)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert credentials.extract_token("github.com", extra=[str(sage_home)]) == "ghp_from_sage_home"
+
+
+def test_extract_token_falls_back_to_a_directly_configured_settings_token(monkeypatch):
+    """Nothing here can find a credential (no helper answers, no origin embeds one) — the last
+    resort is a token a person typed into Settings directly (`settings.git.token`, a laptop with no
+    credential helper configured at all)."""
+    fake_run, _ = _run_stub()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert credentials.extract_token("github.com", settings_token="ghp_from_settings") == "ghp_from_settings"
+
+
+def test_extract_token_prefers_a_real_credential_over_the_settings_fallback(monkeypatch):
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["git", "credential"]:
+            return types.SimpleNamespace(returncode=0, stdout="password=ghp_real\n")
+        return types.SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert credentials.extract_token("github.com", settings_token="ghp_from_settings") == "ghp_real"
+
+
 def test_the_credential_probe_reports_lengths_and_never_the_secret(tmp_path, monkeypatch):
     """A Builder has no terminal, so /api/diag is the only place the credential question can be
     asked twice — which it can only be if the answer carries no live token."""

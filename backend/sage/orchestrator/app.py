@@ -301,7 +301,9 @@ def _build_provision_service(control_plane):
         return None
 
     def token_provider() -> str:  # shared by repo create + seed push; in-memory, never logged
-        tok = credentials.extract_token(host)
+        tok = credentials.extract_token(
+            host, extra=[str(_SAGE_HOME)], settings_token=_SETTINGS.git_token,
+        )
         if not tok:
             # `host` rides in as a value: it is the literal the credential is stored under,
             # and `Account Settings > Git Credentials` is the platform's own menu path, which
@@ -662,7 +664,22 @@ def _build_project_orchestrator(entry: RegistryEntry, workspace_dir: Path) -> Or
     )
 
 
-_REGISTRY = ProjectRegistry(_SAGE_HOME, _build_project_orchestrator, control_plane=_control_plane)
+def _clone_git_token_provider() -> str | None:
+    """The HTTPS token `registry.clone()` authenticates with — Phase 3's generalised resolver
+    (ONE-APP-PLAN.md §2.1): `git credential fill` swept across `$SAGE_HOME` and the App checkout
+    (`credentials.extract_token`'s own built-in `/mnt/code`), then `settings.git.token` last, for a
+    laptop with no credential helper configured at all. No project-specific `cwd` to pin here —
+    unlike a create's push, a clone's destination does not exist as a checkout yet."""
+    from ..provision import credentials
+
+    host = os.environ.get("SAGE_GIT_HOST", "github.com").strip()
+    return credentials.extract_token(host, extra=[str(_SAGE_HOME)], settings_token=_SETTINGS.git_token)
+
+
+_REGISTRY = ProjectRegistry(
+    _SAGE_HOME, _build_project_orchestrator, control_plane=_control_plane,
+    provision=_provision, git_token_provider=_clone_git_token_provider,
+)
 
 # Preflight of Sage's own model slots (#17). Loud but not fatal: a slot resolves against the LLM
 # Gateway, so a gateway blip or one de-registered Alias would otherwise be enough to stop the
@@ -1480,7 +1497,9 @@ def _git_credential_diag() -> dict:
 
     host = os.environ.get("SAGE_GIT_HOST", "github.com").strip() or "github.com"
     try:
-        return credentials.credential_probe(host)
+        return credentials.credential_probe(
+            host, extra=[str(_SAGE_HOME)], settings_token=_SETTINGS.git_token,
+        )
     except Exception as e:  # a diagnostic must never be the thing that breaks the diagnostics page
         return {"host": host, "error": str(e)}
 

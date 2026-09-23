@@ -16,15 +16,23 @@ came from.
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..orchestrator.service import Orchestrator
     from ..provision.domino import ControlPlane
+    from ..provision.service import ProvisionService
+
+
+def _iso_now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 # Kept beside the project's own `.sage/` bookkeeping rather than at the project root, so a project's
 # root directory listing stays exactly what the git repo says it is.
@@ -95,11 +103,18 @@ class ProjectRegistry:
         home: Path,
         build_orchestrator: Callable[[RegistryEntry, Path], Orchestrator],
         control_plane: ControlPlane | None = None,
+        provision: ProvisionService | None = None,
+        git_token_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self._home = Path(home)
         self._projects_dir = self._home / "projects"
         self._build_orchestrator = build_orchestrator
         self._control_plane = control_plane
+        # Both optional, and both None on a process with no Domino control plane configured
+        # (§2.7's "first run with no host/token"): `create`/`clone` raise a clear error instead of
+        # a bare AttributeError, matching `open_app`'s own "no door in this container" shape.
+        self._provision = provision
+        self._git_token_provider = git_token_provider
         self._lock = threading.Lock()
         self._open: dict[str, Orchestrator] = {}
 
@@ -159,6 +174,95 @@ class ProjectRegistry:
         uri = (ref.git_url or "").rstrip("/")
         name = uri.rsplit("/", 1)[-1].removesuffix(".git") if uri else ""
         return name or ref.id
+
+    # -- provisioning (Phase 3 steps 1-2: new/existing Domino projects, no workspace) ----------
+
+    def create(self, display_name: str) -> RegistryEntry:
+        """Create a new `sage-*` Domino project + GitHub repo and land it locally as an open
+        project (ONE-APP-PLAN.md §2.2, Phase 3 step 1): `ProvisionService.create_app` minus the
+        workspace launch. The seeded template is committed and pushed directly into
+        `projects/<repo-name>/`, which becomes the project's own local checkout — no second clone.
+
+        The registry entry (`.sage/project.json`) is written only once the Domino project genuinely
+        exists, matching `local_slugs()`'s own rule that an entry-less directory is invisible — a
+        create that fails partway (repo made, Domino project refused) never shows up as a broken
+        project. The partial directory is then best-effort removed so a retry under the same
+        display name starts clean; if that cleanup itself fails, the leftover is silent in exactly
+        the way an interrupted create already is invisible to `local_slugs()`.
+        """
+        if self._provision is None:
+            raise RuntimeError("no provisioning service configured — cannot create a new project")
+        resolved: dict[str, Path] = {}
+
+        def dest_for(repo_name: str) -> Path:
+            dest = self.workspace_dir(repo_name)
+            resolved["slug"] = repo_name
+            resolved["dest"] = dest
+            return dest
+
+        try:
+            project, repo = self._provision.provision_project(display_name, dest_for=dest_for)
+        except Exception:
+            dest = resolved.get("dest")
+            if dest is not None and dest.exists():
+                shutil.rmtree(dest, ignore_errors=True)
+            raise
+
+        # `resolved["slug"]`, not `project.name`: nothing here relies on Domino echoing back the
+        # exact string it was asked to store, and `entry()`/`local_slugs()` scan by directory name —
+        # a mismatch there would write project.json into a directory `open()` can never find again.
+        slug = resolved["slug"]
+        entry = RegistryEntry(
+            slug=slug,
+            domino_project_id=project.id,
+            domino_project_name=project.name,
+            owner_name=self._control_plane.whoami().name if self._control_plane else "",
+            repo_url=repo.clone_url,
+            created_at=_iso_now(),
+        )
+        entry.save(self._record_path(slug))
+        return entry
+
+    def clone(self, domino_project_id: str) -> RegistryEntry:
+        """Clone an already-existing `sage-*` Domino project this token can see but this machine
+        has never opened (Phase 3 step 2) — the `local: false` rows `list()` already produces.
+
+        `slug` is derived the same way `list()`'s remote rows already are (`_slug_for_remote`), so
+        the row a person clicked keeps the same slug once it is local. Raises `KeyError` if the
+        token can no longer see that project, and `FileExistsError` if a directory with that slug is
+        already on disk (a name collision this method does not resolve — `create()`'s `-N` retry
+        loop lives in `naming.candidates`, which only applies to a brand-new repo name, not an
+        existing project's fixed one).
+        """
+        if self._control_plane is None:
+            raise RuntimeError("no Domino control plane configured — nothing to clone from")
+        ref = next((r for r in self._control_plane.list_apps() if r.id == domino_project_id), None)
+        if ref is None:
+            raise KeyError(f"no Domino project {domino_project_id!r} visible to this token")
+        slug = self._slug_for_remote(ref)
+        dest = self.workspace_dir(slug)
+        if dest.exists():
+            raise FileExistsError(f"projects/{slug} already exists locally")
+
+        from ..provision.seed import clone as git_clone
+
+        try:
+            git_clone(ref.git_url or "", dest, token_provider=self._git_token_provider)
+        except Exception:
+            if dest.exists():
+                shutil.rmtree(dest, ignore_errors=True)
+            raise
+
+        entry = RegistryEntry(
+            slug=slug,
+            domino_project_id=ref.id,
+            domino_project_name=ref.name,
+            owner_name=self._control_plane.whoami().name,
+            repo_url=ref.git_url or "",
+            created_at=_iso_now(),
+        )
+        entry.save(self._record_path(slug))
+        return entry
 
     # -- lifecycle ----------------------------------------------------------------------------
 

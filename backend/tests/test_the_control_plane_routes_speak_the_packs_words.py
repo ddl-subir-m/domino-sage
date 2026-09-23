@@ -112,7 +112,7 @@ def test_the_missing_git_credential_names_the_pack_and_keeps_the_git_host(acme, 
     import sage.orchestrator.app as appmod
     from sage.provision import credentials
 
-    monkeypatch.setattr(credentials, "extract_token", lambda host: "")
+    monkeypatch.setattr(credentials, "extract_token", lambda host, **kw: "")
     monkeypatch.setenv("SAGE_GIT_HOST", "github.com")
     service = appmod._build_provision_service(object())
 
