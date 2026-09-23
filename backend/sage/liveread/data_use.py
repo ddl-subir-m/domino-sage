@@ -565,6 +565,13 @@ def _echoes_the_withheld_mark(call):
 
     Keyed on `_MARK_BODY` rather than on the whole marker: the reproductions were not copies. The
     count varied, and one heredoc carried the literal `N` from no marker this code ever emitted.
+
+    The accepted cost of keying on a bare phrase: a call that legitimately carries "local data
+    withheld" in an argument — a person working on a governance CSV that uses those words — is
+    answered with the correction instead of its own result. Retire this by giving the marker a
+    token no prose would collide with, but only once something needs it; a rarer string is also a
+    string the model is likelier to reproduce EXACTLY, and exact reproduction is the case that
+    matters. Nothing measured has hit this.
     """
     _name, args = tool_call_name_and_args(call or {})
     return any(_MARK_BODY in value for value in args.values() if isinstance(value, str))
