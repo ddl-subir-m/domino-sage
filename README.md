@@ -1,11 +1,21 @@
 # sage — Domino AI App Builder
 
-A Domino-hosted, Replit/Cursor-style builder: a per-user container running a coding agent
-(OpenCode), a live React+Vite preview, an IDE-mode escape hatch, and an LLM router that switches
-between vendor and sovereign models through the Domino AI Gateway.
+A Replit/Cursor-style builder: one process running a coding agent (OpenCode), a live no-build
+preview, an IDE-mode escape hatch, and an LLM router that switches between vendor and sovereign
+models through the Domino AI Gateway. Runs as a Domino App or on a laptop — same code, either way.
 
 See `SPEC.md` (what) · `DESIGN.md` (module seams) · `PLAN.md` (execution plan) ·
 `diagrams/` (architecture) · `gateway-questions.md` (open items for the gateway team).
+
+## Run locally (laptop)
+
+```bash
+make setup          # once: npm ci + uv sync
+make orchestrator   # boots the whole thing on :8080
+```
+
+Open **http://localhost:8080/**, then Account → Settings → Connection to point it at your Domino
+host and a Personal Access Token. Without that, Sage still boots, just with nothing to talk to.
 
 ## Deploy as a Domino App
 
