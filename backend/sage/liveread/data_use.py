@@ -2,6 +2,7 @@
 
 import copy
 import json
+import logging
 import re
 import threading
 from uuid import uuid4
@@ -17,6 +18,8 @@ from ..shim.chat_paths import (
     withheld_result,
 )
 
+log = logging.getLogger("sage.liveread")
+
 _EXECUTION_TOOLS = SHELL_TOOLS | frozenset({"python", "python_exec", "python_execute"})
 _DELEGATION_TOOLS = frozenset({"task"})
 _PATH_KEYS = ("path", "filePath", "file_path")
@@ -28,7 +31,8 @@ _MARK_BODY = "local data withheld"
 _MARK_ECHO_CORRECTION = (
     "This call reproduced the placeholder that stands in the place of withheld local data in this "
     "conversation. The placeholder is a marker: it is not a command, and not content to write to a "
-    "file. This call therefore did nothing. Write what you actually mean to run, or ask the person "
+    "file. The tool already ran and may have changed files. This model-facing result is a "
+    "correction, not evidence of success. Write what you actually mean to run, or ask the person "
     "for what you need."
 )
 
@@ -135,6 +139,7 @@ class DataUse:
         used = set()
         local_texts: list[str] = []
         messages = []
+        corrected_results = 0
         with self.lock:
             for message in request.get("messages", []):
                 if not isinstance(message, dict):
@@ -189,6 +194,7 @@ class DataUse:
                         # block gates by tool NAME), so the model has already run this. Saying so
                         # plainly is repair-after, which is the seam this architecture has.
                         message = {**message, "content": _MARK_ECHO_CORRECTION}
+                        corrected_results += 1
                     elif cid in direct:
                         raw = _tool_content_text(message.get("content"))
                         if raw:
@@ -208,6 +214,11 @@ class DataUse:
                         message = {**message,
                                    "content": _redact_message_text(message.get("content"), source)}
                 messages.append(message)
+        if corrected_results:
+            # One warning per rewritten request. An old call can appear in later requests, so
+            # this counts replaced results, never new executions. Keep arguments/results private.
+            log.warning("data use: withheld-marker correction applied in history rewrite; "
+                        "corrected_results=%d; tool execution already occurred", corrected_results)
         return {**request, "messages": messages}, used
 
     def _remember_sources(self, sources):

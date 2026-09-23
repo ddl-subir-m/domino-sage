@@ -19,7 +19,9 @@ that collapses two different steps into one string takes away the model's own re
 steps it has taken.
 """
 
+import copy
 import json
+import logging
 
 from sage.driver.opencode import with_attachment_listing
 from sage.liveread.data_use import DataUse
@@ -74,7 +76,8 @@ def test_the_command_a_model_copied_off_a_placeholder_is_answered_not_receipted(
 
     answer = prepared["messages"][-1]["content"]
     assert isinstance(answer, str)
-    assert "not a command" in answer and "did nothing" in answer, "the model is told what it ran"
+    assert "not a command" in answer and "already ran" in answer
+    assert "did nothing" not in answer, "the rewrite cannot undo a tool execution"
     assert not _is_receipt(answer), (
         "a receipt reports a local execution that succeeded — which is the model's imitation "
         "being confirmed to it")
@@ -153,7 +156,7 @@ def test_a_call_with_no_named_source_does_not_claim_zero_sources():
     assert row not in json.dumps(prepared["messages"]), "still withheld"
 
 
-def test_an_ordinary_command_is_left_to_the_branch_that_owns_it():
+def test_an_ordinary_command_is_left_to_the_branch_that_owns_it(caplog):
     """The guard keys on a string this module emits. A turn that never meets a placeholder must
     not be able to tell this change is here."""
     data = DataUse()
@@ -166,6 +169,39 @@ def test_an_ordinary_command_is_left_to_the_branch_that_owns_it():
     answer = prepared["messages"][-1]["content"]
     assert _is_receipt(answer), "a real local execution still gets its receipt"
     assert "not a command" not in json.dumps(answer)
+    assert not [r for r in caplog.records if r.name == "sage.liveread"]
+
+
+def test_marker_warnings_count_rewritten_results_without_exposing_private_content(caplog):
+    data = DataUse()
+    request = {"messages": [
+        bash("private-call-id", "echo 'local data withheld; private-command-value'"),
+        {"role": "tool", "tool_call_id": "private-call-id", "content": "private-result-value"},
+        bash("second-private-id", "# <local data withheld: 0 sources>"),
+        {"role": "tool", "tool_call_id": "second-private-id", "content": "private-data-row"},
+    ]}
+    original = copy.deepcopy(request)
+    with caplog.at_level(logging.WARNING, logger="sage.liveread"):
+        for _ in range(2):
+            data.prepare(request)
+    records = [r for r in caplog.records if r.name == "sage.liveread"]
+    assert len(records) == 2, "one warning per history rewrite, not per tool execution"
+    assert all(r.levelno == logging.WARNING for r in records)
+    assert all("history rewrite" in r.message and "corrected_results=2" in r.message
+               for r in records)
+    assert "private-" not in caplog.text
+    assert request == original, "stored history and its real results remain intact"
+
+
+def test_legitimate_marker_phrase_is_observable_without_claiming_a_noop(caplog):
+    data = DataUse()
+    prepared, _ = data.prepare({"messages": [
+        bash("governance", "printf '%s' 'local data withheld'"),
+        {"role": "tool", "tool_call_id": "governance", "content": "local data withheld"},
+    ]})
+    assert "already ran" in prepared["messages"][-1]["content"]
+    assert "may have changed files" in prepared["messages"][-1]["content"]
+    assert "corrected_results=1" in caplog.text
 
 
 def _is_receipt(text):
