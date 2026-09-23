@@ -272,10 +272,15 @@ def test_a_stop_aimed_at_another_app_does_not_reach_this_build(tmp_path: Path):
 
     running = orch.turn_state()["running_turn"]
     assert running["app"], "the running build turn did not name the app it writes into"
+    assert running["turnId"], "the running build turn did not name its diagnostic identity"
 
     before = oc.interrupted
     assert orch.stop_build(kind="build", conversation=tid, app="another-app") is False
     assert oc.interrupted == before, "a Stop aimed at another app stopped this build"
+    assert orch.stop_build(kind="build", conversation=tid, app=running["app"],
+                           turn_id="another-turn") is False
+    assert oc.interrupted == before, "a Stop aimed at another turn stopped this build"
 
-    assert orch.stop_build(kind="build", conversation=tid, app=running["app"]) is True
+    assert orch.stop_build(kind="build", conversation=tid, app=running["app"],
+                           turn_id=running["turnId"]) is True
     assert build_done.wait(30) is True

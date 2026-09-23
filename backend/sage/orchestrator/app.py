@@ -1897,6 +1897,21 @@ def diag_opencode(q: str = "", n: int = 400) -> PlainTextResponse:
     return PlainTextResponse("\n".join(lines))
 
 
+@control_app.get("/api/project/build-diagnostics")
+def build_diagnostic_list(app_id: str) -> JSONResponse:
+    """Metadata-only captures for one app, including turns removed from its transcript."""
+    from fastapi import HTTPException
+
+    from ..build_diagnostics import Store
+
+    project = orchestrator.project(start_preview=False, seed_app=False)
+    try:
+        records = Store(project.record.path).list(app_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=503, detail="Diagnostics could not be read.") from None
+    return JSONResponse({"records": records}, headers={"Cache-Control": "no-store"})
+
+
 @control_app.get("/api/project/build-diagnostics/{turn_id}")
 def build_diagnostic_download(turn_id: str, app_id: str, conversation_id: str = "") -> JSONResponse:
     """Exact scoped capture. Uses the same Domino workspace authentication as Build history."""
@@ -4218,7 +4233,7 @@ async def stop_build(request: Request) -> JSONResponse:
     Stop ends ONE turn and the queue behind it advances (#79): you stopped that answer, not your
     other questions. Dropping a question you have changed your mind about is Cancel's job, below.
 
-    An optional `{kind, conversation}` body names the turn the Stop was aimed at, and it is declined
+    An optional `{kind, conversation, app, turnId}` body names the turn the Stop was aimed at, and it is declined
     when that turn is no longer the one running (#126) — the queue can hand the lock on between the
     press and the POST. No body means "stop whatever is running", which is what this always did and
     what a caller with one turn to mean still sends."""
@@ -4228,10 +4243,13 @@ async def stop_build(request: Request) -> JSONResponse:
         body = {}
     if not isinstance(body, dict):
         body = {}
+    running = orchestrator.turn_state().get("running_turn") or {}
     stopped = orchestrator.stop_build(kind=str(body.get("kind") or ""),
                                       conversation=str(body.get("conversation") or ""),
-                                      app=str(body.get("app") or ""))
-    return JSONResponse(content={"stopped": stopped})
+                                      app=str(body.get("app") or ""),
+                                      turn_id=str(body.get("turnId") or ""))
+    return JSONResponse(content={"stopped": stopped,
+                                 "turnId": str(running.get("turnId") or "") if stopped else ""})
 
 
 @control_app.get("/api/project/build/state")

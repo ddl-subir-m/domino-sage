@@ -5790,7 +5790,7 @@ class Orchestrator:
         `pending` is how many turns are waiting in line. Without it the composer's own queued rows
         are the only account of the queue, and a second tab's are invisible.
 
-        `running_turn` is WHICH turn, as `{kind, conversation}` (#126). `running` alone was enough
+        `running_turn` is WHICH turn, as `{kind, conversation, app, turnId}` (#126). `running` alone was enough
         while there was one control for one turn; under a queue a Stop bar has to know whether the
         turn holding the lock is the one on screen, and a Chat turn, a Build turn and another tab's
         turn all set `running` alike. It is None for the two holders that cannot be Stopped: a wedge,
@@ -5801,7 +5801,7 @@ class Orchestrator:
                 "pending": self._turns.depth(),
                 "running_turn": None if (self._turn_wedged or running is None) else
                                 {"kind": running.kind, "conversation": running.conversation,
-                                 "app": running.app}}
+                                 "app": running.app, "turnId": running.id}}
 
     def cancel_pending_turn(self, ticket_id: str) -> bool:
         """Drop a turn that is still waiting in line. False when there is no such turn (#79).
@@ -16852,6 +16852,9 @@ class Orchestrator:
 
         def handle_stop() -> dict:
             project.stop_requested = False
+            # The transcript is rolled back below, but the bounded diagnostic record must retain
+            # the terminal reason. It is a separate lifecycle record, not private transcript data.
+            build_diagnostics.observe({"type": "stopped"})
             # Stop is not a way past ADR-0045 (#259). The revert below is rooted in the Built App
             # and `examples/` is a symlink out of it, so a table this turn wrote survives the Stop —
             # rightly, it is an answer someone can still use. Its ROWS are a separate question, and
@@ -18522,6 +18525,7 @@ class Orchestrator:
                 # Stop retires the plan, exactly as it does on an unphased build: the person said
                 # they don't want this, so nothing is owed a retry and _approve_locked archives it.
                 project.app_for_turn().set_plan_retry_step(0)
+                build_diagnostics.observe({"type": "stopped"})
                 yield {"type": "stopped"}
                 return
             if outcome is not True:
@@ -19551,7 +19555,8 @@ class Orchestrator:
                 return self._workspace_id
         return None
 
-    def stop_build(self, kind: str = "", conversation: str = "", app: str = "") -> bool:
+    def stop_build(self, kind: str = "", conversation: str = "", app: str = "",
+                   turn_id: str = "") -> bool:
         """Interrupt the turn in flight — Build or Chat. Both poll `stop_requested` and
         both clear it as they unwind; Build also reverts the files and history the turn wrote,
         Chat keeps what it wrote (see _chat_stream, _build_stream's handle_stop).
@@ -19561,7 +19566,7 @@ class Orchestrator:
         Stop pressed twice, or pressed in the second a turn was already ending, silently killed the
         NEXT question before it ran a step.
 
-        `kind` and `conversation` name the turn the Stop was AIMED at, and it is a no-op when that
+        `kind`, `conversation`, `app`, and optional `turn_id` name the turn the Stop was AIMED at, and it is a no-op when that
         is no longer the turn running (#126). The queue made this necessary: Stop ends one turn and
         the queue advances (ADR-0013), so between the press and the POST the lock can change hands
         and the Stop lands on a question the person never aimed at. Naming nothing keeps the old
@@ -19586,6 +19591,8 @@ class Orchestrator:
             # An empty `running.app` matches anything: a Chat turn has no app, and a build whose app
             # could not be read must not become unstoppable over a field nobody could fill.
             if app and running.app and running.app != app:
+                return False
+            if turn_id and running.id != turn_id:
                 return False
         project = self.project()
         project.stop_requested = True

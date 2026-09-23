@@ -3763,6 +3763,9 @@ window.SW = window.SW || {};
   // Chat ends at done; its still-open suggestion stream no longer counts as a turn (#417).
   let liveBuildTurns = 0;
   let liveChatTurns = 0;
+  // The backend has accepted Stop for this exact turn but may still be unwinding its session and
+  // lock. Keep polling it without putting `building` back on screen during that cleanup window.
+  let stoppingTurnId = '';
 
   // Which Problems this tab has already pointed a toast at (ADR-0027). Per session and per id: the
   // toast fires on a Problem's FIRST appearance and never again, so a fault that stands for an hour
@@ -3917,6 +3920,15 @@ window.SW = window.SW || {};
     const turn = payload || {};
     state.turnWedged = !!turn.wedged;
     state.turnPending = turn.pending || 0;
+    const stopping = !!(stoppingTurnId && turn.running_turn
+      && turn.running_turn.turnId === stoppingTurnId);
+    if (stopping) {
+      state.runningTurn = null;
+      return false;
+    }
+    if (stoppingTurnId && (!turn.running_turn || turn.running_turn.turnId !== stoppingTurnId)) {
+      stoppingTurnId = '';
+    }
     // The same gap this function's OR already guards, one field along: between two queued turns the
     // lock is free for an instant, and a poll landing there reports no running turn. Blanking on it
     // would drop the Stop bar — or swap it to the other mode and back — as the queue drains. So a
@@ -4064,10 +4076,20 @@ window.SW = window.SW || {};
   // Made on a failed read it is simply false, and it hands the person a dead end — the log is on
   // disk and their builds are fine.
   async function loadAppHistory(ticket = appScopeTicket()) {
-    const read = await SW.api.appHistory().then(
-      (rows) => ({ rows, failed: false }),
-      () => ({ rows: [], failed: true })
-    );
+    const appId = (state.activeApp && state.activeApp.id) || '';
+    const [history, diagnostics] = await Promise.allSettled([
+      SW.api.appHistory(),
+      SW.api.buildDiagnostics(appId),
+    ]);
+    const diagnosticRows = diagnostics.status === 'fulfilled'
+      ? (diagnostics.value.records || []) : [];
+    const read = {
+      rows: history.status === 'fulfilled' ? history.value : [],
+      diagnostics: diagnosticRows,
+      historyFailed: history.status === 'rejected',
+      diagnosticsFailed: diagnostics.status === 'rejected',
+      failed: history.status === 'rejected' && diagnosticRows.length === 0,
+    };
     applyAppScope(ticket, { appHistory: read });
   }
 
@@ -7217,6 +7239,9 @@ window.SW = window.SW || {};
       // drawn just below has to come back off the screen again.
       let ticket = '';
       let unran = false;
+      let detached = false;
+      let streamAccepted = false;
+      let streamLost = false;
       // This tab's own name for the turn. Held so the `finally` can take back exactly what it put
       // there and nothing else.
       let claim = null;
@@ -7252,10 +7277,13 @@ window.SW = window.SW || {};
           const payload = await res.json().catch(() => ({}));
           throw new Error(payload.error || payload.message || res.statusText);
         }
+        streamAccepted = true;
         let stopped = false;
+        let terminalSeen = false;
         await readSSE(res, (ev) => {
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
+          if (ev.type === 'stopped' || ev.type === 'done') terminalSeen = true;
           // The queue's own two rows, which belong to this send rather than to the app on screen —
           // so they are read before the rail check below, not after it.
           if (ev.type === 'pending') {
@@ -7302,9 +7330,24 @@ window.SW = window.SW || {};
           applyBuildEvent(ev);
           notify();
         });
+        if (!terminalSeen) {
+          streamLost = true;
+          const running = await SW.api.buildState().catch(() => null);
+          detached = !running || !!running.running;
+          if (running) applyTurnState(running);
+        }
         if (stopped) await store.loadBuild({ keepPreview: true });
       } catch (err) {
         applyBuildEvent({ type: 'error', message: String(err.message || err) });
+        // EOF after an accepted response is a lost viewer, not proof that the backend turn ended.
+        // Ask the lock. If that read also fails, keep Stop available until the watcher gets a
+        // definite terminal answer; a network failure must not strand a live build without it.
+        if (streamAccepted) {
+          streamLost = true;
+          const running = await SW.api.buildState().catch(() => null);
+          detached = !running || !!running.running;
+          if (running) applyTurnState(running);
+        }
         // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame to
         // notice it by. This is where a refused POST lands — including `_turn_slot_refusal`, which
         // refuses on exactly the dead model slot the chip is about (ADR-0027).
@@ -7315,10 +7358,13 @@ window.SW = window.SW || {};
         // Not `false`: this tab can have several turns alive at once now, and the first one to
         // unwind used to clear a flag the others were still relying on. Any of them still here
         // means a turn is running in this project — its own, or the one it is queued behind.
-        state.buildRunning = liveBuildTurns > 0;
-        state.buildTyping = state.buildRunning ? state.buildTyping : null;
-        releaseRunningTurn(claim);
+        state.buildRunning = detached || liveBuildTurns > 0;
+        state.buildTyping = detached ? 'Connection lost — build is still running.'
+          : (state.buildRunning ? state.buildTyping : null);
+        if (!detached) releaseRunningTurn(claim);
         notify();
+        if (detached) store._watchBuild();
+        if (streamLost && !detached) await store.loadBuild({ keepPreview: true });
         // Reload rather than keep a half-turn on screen: the transcript showing now is the other
         // app's, and it was deliberately never given this turn's events. A turn that never ran gets
         // the same treatment for the opposite reason — the send optimistically drew a bubble for a
@@ -7656,6 +7702,9 @@ window.SW = window.SW || {};
       const turnThread = state.thread.id;
       let ticket = '';
       let unran = false;
+      let detached = false;
+      let streamAccepted = false;
+      let streamLost = false;
       // This tab's own name for the turn, so the Stop bar has something to match (#126). Held so
       // the `finally` takes back exactly what it put there. See claimRunningTurn.
       let claim = null;
@@ -7686,10 +7735,13 @@ window.SW = window.SW || {};
           const body = await res.json().catch(() => ({}));
           throw new Error(body.error || body.message || res.statusText);
         }
+        streamAccepted = true;
         let stopped = false;
+        let terminalSeen = false;
         await readSSE(res, (ev) => {
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
+          if (ev.type === 'stopped' || ev.type === 'done') terminalSeen = true;
           if (ev.type === 'pending') {
             ticket = ev.ticket;
             queueTurn(ev, 'build');
@@ -7725,9 +7777,21 @@ window.SW = window.SW || {};
           applyBuildEvent(ev);
           notify();
         });
+        if (!terminalSeen) {
+          streamLost = true;
+          const running = await SW.api.buildState().catch(() => null);
+          detached = !running || !!running.running;
+          if (running) applyTurnState(running);
+        }
         if (stopped) await store.loadBuild({ keepPreview: true });
       } catch (err) {
         applyBuildEvent({ type: 'error', message: String(err.message || err) });
+        if (streamAccepted) {
+          streamLost = true;
+          const running = await SW.api.buildState().catch(() => null);
+          detached = !running || !!running.running;
+          if (running) applyTurnState(running);
+        }
         // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame to
         // notice it by. This is where a refused POST lands — including `_turn_slot_refusal`, which
         // refuses on exactly the dead model slot the chip is about (ADR-0027).
@@ -7735,10 +7799,13 @@ window.SW = window.SW || {};
       } finally {
         liveBuildTurns -= 1;
         dropQueuedTurn(ticket);
-        state.buildRunning = liveBuildTurns > 0;
-        state.buildTyping = state.buildRunning ? state.buildTyping : null;
-        releaseRunningTurn(claim);
+        state.buildRunning = detached || liveBuildTurns > 0;
+        state.buildTyping = detached ? 'Connection lost — build is still running.'
+          : (state.buildRunning ? state.buildTyping : null);
+        if (!detached) releaseRunningTurn(claim);
         notify();
+        if (detached) store._watchBuild();
+        if (streamLost && !detached) await store.loadBuild({ keepPreview: true });
         // `unran` reloads for the same reason `movedOn` does: an approve that never ran left an
         // "Approved the plan." bubble the server has no record of, and the plan is still waiting.
         if (movedOn() || unran) await store.loadBuild({ keepPreview: true });
@@ -7883,9 +7950,18 @@ window.SW = window.SW || {};
         kind: 'build',
         conversation: (state.thread && state.thread.id) || '',
         app: (state.activeApp && state.activeApp.id) || '',
+        turnId: (state.runningTurn && state.runningTurn.turnId) || '',
       });
       if (res && res.stopped === false) antd.message.info('That turn had already finished.');
+      if (res && res.stopped === true) {
+        stoppingTurnId = res.turnId || '';
+        state.buildRunning = false;
+        state.buildTyping = null;
+        state.runningTurn = null;
+        notify();
+      }
       await store.loadBuild({ keepPreview: true });
+      if (res && res.stopped === true && stoppingTurnId) store._watchBuild();
     },
 
     // Cancel is not Stop. Stop interrupts the turn that is RUNNING; this drops one that is still
@@ -8032,12 +8108,17 @@ window.SW = window.SW || {};
         if (mine < settled) return;
         settled = mine;
         await applyBuildRead(hist);
+        const stopping = !!(stoppingTurnId && running.running_turn
+          && running.running_turn.turnId === stoppingTurnId);
         state.buildRunning = applyTurnState(running);
-        if (!state.buildRunning) {
+        if (!state.buildRunning && !stopping) {
           state.buildTyping = null;
           clearInterval(store._watchTimer);
           store._watchTimer = null;
-          await Promise.all([probePreview(), refreshBindings()]);
+          await Promise.all([
+            probePreview(), refreshBindings(),
+            state.buildHistoryOpen ? loadAppHistory() : Promise.resolve(),
+          ]);
         }
         notify();
       };

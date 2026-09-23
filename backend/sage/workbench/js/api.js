@@ -744,6 +744,9 @@ SW.api = {
     document.body.appendChild(link);
     try { link.click(); } finally { link.remove(); URL.revokeObjectURL(url); }
   },
+  buildDiagnostics: (appId) => request(
+    `/project/build-diagnostics?app_id=${encodeURIComponent(appId || '')}`
+  ),
   appHistory: () => request('/project/history?detail=off').then((r) => r.history || []),
   // What one tool call was called with, by its position in the app's log — the half `detail=off`
   // left behind. 404 when the stop button truncated the log after the list was read, which the

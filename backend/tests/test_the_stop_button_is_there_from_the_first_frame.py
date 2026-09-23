@@ -98,6 +98,22 @@ def test_the_bar_comes_down_when_the_turn_ends(mode: str):
     assert out["runningAfter"] is False
 
 
+@pytest.mark.parametrize("mode", ["droppedBuild", "droppedApprove"])
+def test_a_dropped_stream_keeps_stop_refreshes_and_then_leaves_building_after_cancel(mode: str):
+    """The live failure from #512: the browser lost SSE while the backend kept running."""
+    out = _run(mode)
+
+    assert out["afterDrop"] == {
+        "running": True,
+        "stopOffered": True,
+        "typing": "Connection lost — build is still running.",
+        "watcher": True,
+    }
+    assert out["afterRefresh"] == {"running": True, "stopOffered": True}
+    assert out["afterCancel"] == {"running": False, "stopOffered": False}
+    assert out["afterRelease"] == {"running": False, "stopOffered": False}
+
+
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])
 def test_stop_is_there_before_the_turn_has_anything_to_show_for_itself(mode: str):
     """The window #126 left behind, and the whole of #371.

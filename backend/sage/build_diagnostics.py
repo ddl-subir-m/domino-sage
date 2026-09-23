@@ -24,6 +24,9 @@ from . import timing
 
 log = logging.getLogger("sage.diagnostics")
 SCHEMA_VERSION = 1
+OUTCOMES = frozenset({"repeat_brake", "user_stop", "gateway_refusal", "error", "success"})
+PHASES = frozenset({"planning", "implementation"})
+CAPTURE_STATUSES = frozenset({"running", "finished", "interrupted"})
 MAX_RECORDS = 20
 MAX_RECORD_BYTES = 256 * 1024
 MAX_EVENTS = 4000
@@ -91,14 +94,44 @@ def source_revision() -> str | None:
         return None
 
 
-def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="unknown",
+def _phase(raw: dict, kind: str) -> str:
+    """A bounded display label, never a copy of model or transcript text."""
+    phases = {row.get("phase") for row in raw.get("calls", []) if isinstance(row, dict)}
+    if kind == "approve" or "implement" in phases:
+        return "implementation"
+    if "plan" in phases:
+        return "planning"
+    return "planning" if kind == "build" else "implementation"
+
+
+def _outcome(value: object) -> str:
+    """Read old persisted records through the new bounded terminal vocabulary."""
+    if value in OUTCOMES:
+        return str(value)
+    if value == "stopped":
+        return "user_stop"
+    return "error"
+
+
+def _started_at(value: object) -> str | float | int | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return value
+    if isinstance(value, str) and re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]{8,32}Z?", value):
+        return value
+    return None
+
+
+def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
              terminal=False, revision=None) -> dict:
     raw = timing.as_dict(rec) if rec is not None else {}
     record = {
         "schemaVersion": SCHEMA_VERSION,
         "sourceRevision": revision if isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{7,64}", revision) else None,
-        "turn": {**_metadata(identity, ["turnId", "appId", "conversationId", "kind"]), "startedAt": raw.get("startedAt", identity.get("startedAt", time.time()))},
-        "buildOutcome": {"status": outcome if outcome in {"success", "failure", "stopped"} else "unknown"},
+        "turn": {**_metadata(identity, ["turnId", "appId", "conversationId", "kind"]),
+                 "phase": _phase(raw, str(identity.get("kind") or "")),
+                 "startedAt": raw.get("startedAt", identity.get("startedAt", time.time()))},
+        "buildOutcome": {"status": _outcome(outcome)},
         "capture": {"status": "finished" if terminal else "interrupted",
                     "complete": False, "recorderEnabled": timing.enabled(), "recordAvailable": rec is not None,
                     "droppedEvents": {}, "upstreamTruncated": {}},
@@ -233,6 +266,10 @@ class Store:
             if record is None:
                 return None
             result = copy.deepcopy(record)
+            result.setdefault("turn", {})["phase"] = result.get("turn", {}).get("phase") or _phase(
+                result.get("timing", {}), str(result.get("turn", {}).get("kind") or ""))
+            result.setdefault("buildOutcome", {})["status"] = _outcome(
+                result.get("buildOutcome", {}).get("status"))
             if result["capture"]["status"] == "capturing":
                 result["capture"]["status"] = ("running" if (str(self.path), turn_id) in _active
                                                  else "interrupted")
@@ -241,13 +278,44 @@ class Store:
                                    "droppedRecords": body["droppedRecords"]}
             return result
 
+    def list(self, app_id: str) -> list[dict]:
+        """Bounded metadata-only summaries for one app, independent of its transcript."""
+        with _lock:
+            body = self._load()
+            rows = []
+            for record in body["records"]:
+                turn = record.get("turn", {})
+                if turn.get("appId") != app_id:
+                    continue
+                capture = record.get("capture", {})
+                status = capture.get("status")
+                if status == "capturing":
+                    status = ("running" if (str(self.path), turn.get("turnId")) in _active
+                              else "interrupted")
+                if status not in CAPTURE_STATUSES:
+                    status = "interrupted"
+                phase = turn.get("phase")
+                if phase not in PHASES:
+                    phase = _phase(record.get("timing", {}), str(turn.get("kind") or ""))
+                rows.append({
+                    "turn": {
+                        **_metadata(turn, ["turnId", "appId", "conversationId", "kind"]),
+                        "phase": phase,
+                        "startedAt": _started_at(turn.get("startedAt")),
+                    },
+                    "buildOutcome": {"status": _outcome(
+                        record.get("buildOutcome", {}).get("status"))},
+                    "capture": {"status": status, "complete": bool(capture.get("complete"))},
+                })
+            return rows
+
 
 @dataclass
 class Capture:
     store: Store
     identity: dict
     revision: str | None
-    outcome: str = "unknown"
+    outcome: str = "error"
     terminal: bool = False
 
 
@@ -273,18 +341,32 @@ def begin(root: Path, *, turn_id: str, app_id: str, conversation_id: str, kind: 
         log.warning("Build diagnostic start failed (%s)", type(exc).__name__)
 
 
+def observe(event: dict) -> str | None:
+    """Record one terminal event even when transcript rollback will remove that event."""
+    capture = _current.get()
+    if capture is None:
+        return None
+    if event.get("type") == "done":
+        capture.terminal = True
+        decision = str(event.get("decision") or "")
+        capture.outcome = (
+            "success" if event.get("ok") is True
+            else "repeat_brake" if decision in {"repeated", "looped"}
+            else "gateway_refusal" if decision in {"gateway error", "model unavailable"}
+            else "error"
+        )
+    elif event.get("type") == "stopped":
+        capture.terminal = True
+        capture.outcome = "user_stop"
+    return capture.identity["turnId"]
+
+
 def history_metadata(app_id: str, conversation_id: str | None, event: dict) -> dict:
     capture = _current.get()
     if (capture is None or capture.identity["appId"] != app_id
             or capture.identity["conversationId"] != (conversation_id or "")):
         return {}
-    if event.get("type") == "done":
-        capture.terminal = True
-        capture.outcome = ("success" if event.get("ok") is True else "failure"
-                           if event.get("ok") is False else "unknown")
-    elif event.get("type") == "stopped":
-        capture.terminal = True
-        capture.outcome = "stopped"
+    observe(event)
     return {"turnId": capture.identity["turnId"]}
 
 

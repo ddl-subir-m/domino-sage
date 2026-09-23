@@ -72,6 +72,8 @@ const OPENING = {
   opening: [USER.chat],
   openingBuild: [],
   openingApprove: [],
+  droppedBuild: [TOOL],
+  droppedApprove: [TOOL],
   // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
   // behind it is the queue letting go. The wait for a first token starts again here, which is why
   // the pause is taken ON that frame — the `user` one Chat sends next, and the first tool call
@@ -95,6 +97,8 @@ const REST = {
   opening: ANSWERED,
   openingBuild: [TOOL, ...BUILT],
   openingApprove: [TOOL, ...BUILT],
+  droppedBuild: [],
+  droppedApprove: [],
   requeued: [USER.chat, ...ANSWERED],
   requeuedBuild: [TOOL, ...BUILT],
   requeuedApprove: [TOOL, ...BUILT],
@@ -135,7 +139,11 @@ const atPause = new Promise((resolve) => {
 
 // Answered by every `/build/state` read. Deliberately empty of a running turn: this harness is
 // about what the tab can say for itself, and a poll that supplied the answer would hide the bug.
-const BUILD_STATE = { running: false, wedged: false, pending: 0, running_turn: null };
+let backendRunning = mode === 'droppedBuild' || mode === 'droppedApprove';
+const buildState = () => ({ running: backendRunning, wedged: false, pending: 0,
+  running_turn: backendRunning
+    ? { kind: 'build', conversation: 't1', app: 'app_1', turnId: 'turn_abc' } : null });
+const intervalCallbacks = [];
 
 // Which send each opened stream is answering. Only the two-send modes ever pass 1.
 let posts = 0;
@@ -143,7 +151,8 @@ let posts = 0;
 const sandbox = {
   console, JSON, Math, Date, process, Set, Map, Promise, Array, Object, String, Number, Boolean,
   RegExp, Error, TextEncoder, TextDecoder, URL, URLSearchParams, setTimeout: unrefTimeout, clearTimeout,
-  setInterval, clearInterval, Blob, ArrayBuffer, Uint8Array,
+  setInterval: (fn) => { intervalCallbacks.push(fn); return intervalCallbacks.length; },
+  clearInterval() {}, Blob, ArrayBuffer, Uint8Array,
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   requestAnimationFrame: (fn) => fn(),
   document: { addEventListener() {}, querySelector: () => null, body: {} },
@@ -167,12 +176,24 @@ const sandbox = {
       return { ok: true, body: { getReader: () => ({
         read: async () => {
           if (sent === 0) { sent = 1; return { done: false, value: join(opening) }; }
-          if (sent === 1) { sent = 2; reachedPause(); await gate; return { done: false, value: join(rest) }; }
+          if (sent === 1) {
+            sent = 2;
+            reachedPause();
+            await gate;
+            if (mode === 'droppedBuild' || mode === 'droppedApprove') {
+              throw new TypeError('network error');
+            }
+            return { done: false, value: join(rest) };
+          }
           return { done: true };
         },
       }) } };
     }
-    const json = href.includes('/build/state') ? BUILD_STATE
+    if (href.includes('/build/stop')) {
+      return { ok: true, status: 200, headers: { get: () => 'application/json' },
+               json: async () => ({ stopped: true, turnId: 'turn_abc' }), text: async () => '' };
+    }
+    const json = href.includes('/build/state') ? buildState()
       : (href.includes('/history') || href.includes('/apps') ? [] : {});
     return { ok: true, status: 200, headers: { get: () => 'application/json' },
              json: async () => json, text: async () => '' };
@@ -200,6 +221,7 @@ const SEND = {
   build: 'build', approve: 'approve', chat: 'chat', queued: 'build',
   opening: 'chat', openingBuild: 'build', openingApprove: 'approve', requeued: 'chat',
   requeuedBuild: 'build', requeuedApprove: 'approve',
+  droppedBuild: 'build', droppedApprove: 'approve',
   secondInLine: 'chat', queuedChat: 'chat', queuedApprove: 'approve',
 }[mode];
 const kind = SEND === 'chat' ? 'chat' : 'build';
@@ -252,6 +274,36 @@ const midTurn = {
 
 letGo();
 await Promise.all(second ? [turn, second] : [turn]);
+
+if (mode === 'droppedBuild' || mode === 'droppedApprove') {
+  const afterDrop = {
+    running: SW.store.get().buildRunning,
+    stopOffered: SW.store.runningTurnHere('build', 't1', 'app_1'),
+    typing: SW.store.get().buildTyping,
+    watcher: intervalCallbacks.length > 0,
+  };
+  // A refresh has no live stream or browser claim. It must rebuild both from `/build/state`.
+  SW.store.set({ buildRunning: false, runningTurn: null });
+  await SW.store.loadBuild({ keepPreview: true });
+  const afterRefresh = {
+    running: SW.store.get().buildRunning,
+    stopOffered: SW.store.runningTurnHere('build', 't1', 'app_1'),
+  };
+  await SW.store.stopBuild();
+  const afterCancel = {
+    running: SW.store.get().buildRunning,
+    stopOffered: SW.store.runningTurnHere('build', 't1', 'app_1'),
+  };
+  // The accepted stop is still unwinding above. Once the backend releases it, the watcher settles.
+  backendRunning = false;
+  await intervalCallbacks[intervalCallbacks.length - 1]();
+  const afterRelease = {
+    running: SW.store.get().buildRunning,
+    stopOffered: SW.store.runningTurnHere('build', 't1', 'app_1'),
+  };
+  console.log(JSON.stringify({ afterDrop, afterRefresh, afterCancel, afterRelease }));
+  process.exit(0);
+}
 
 console.log(JSON.stringify({
   midTurn,

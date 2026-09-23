@@ -45,17 +45,43 @@ window.SW = window.SW || {};
     // Held across renders, because grouping walks the WHOLE log and `app.js` re-renders the entire
     // tree on every `notify()` — which the 2s build tick fires. Re-parsing megabytes on each of
     // those would give back exactly what reading on demand was meant to save.
-    const runs = useMemo(
-      () =>
-        SW.buildRuns((appHistory && appHistory.rows) || [])
-          .map((message) => ({
+    const runs = useMemo(() => {
+      const summaries = (appHistory && appHistory.diagnostics) || [];
+      const byTurn = new Map(summaries.map((record) => [record.turn.turnId, record]));
+      const used = new Set();
+      const transcriptMessages = SW.buildRuns((appHistory && appHistory.rows) || []);
+      const transcript = transcriptMessages
+        .map((message, index) => {
+          const block = (message.blocks || []).find((b) => b.type === 'build_run');
+          if (!block) return null;
+          const turnId = block.diagnostics && block.diagnostics.turnId;
+          const record = turnId && byTurn.get(turnId);
+          if (record) used.add(turnId);
+          return {
             id: message.id,
-            block: (message.blocks || []).find((b) => b.type === 'build_run'),
-          }))
-          .filter((row) => row.block)
-          .reverse(),
-      [appHistory]
-    );
+            at: sortTime((record && record.turn.startedAt) || block.at,
+              index - transcriptMessages.length),
+            block: { ...block, diagnosticTurns: record ? [record]
+              : (block.diagnostics ? [{ turn: block.diagnostics }] : []) },
+          };
+        })
+        .filter(Boolean);
+      // A stopped turn can be absent from the transcript because Stop rolls that private content
+      // back. The diagnostic store is the lifecycle record, so it supplies a metadata-only row.
+      const retained = summaries
+        .filter((record) => !used.has(record.turn.turnId))
+        .map((record) => ({
+          id: `diagnostic_${record.turn.turnId}`,
+          at: sortTime(record.turn.startedAt, 0),
+          block: {
+            prompt: `${phaseLabel(record)} turn`,
+            at: record.turn.startedAt,
+            messages: [],
+            diagnosticTurns: [record],
+          },
+        }));
+      return transcript.concat(retained).sort((a, b) => Number(b.at || 0) - Number(a.at || 0));
+    }, [appHistory]);
 
     return h(
       Drawer,
@@ -113,6 +139,12 @@ window.SW = window.SW || {};
               // the extra rows read as a bug.
               'Includes builds asked for in other conversations.'
             ),
+            (appHistory.historyFailed || appHistory.diagnosticsFailed) && h(
+              'div', { role: 'alert', className: 'sw-bh-read-warning' },
+              appHistory.diagnosticsFailed
+                ? 'Diagnostic records could not be read. Transcript history is still shown.'
+                : 'Transcript history could not be read. Retained diagnostic records are still shown.'
+            ),
             runs.length === 0
               ? h(
                   'div',
@@ -133,21 +165,48 @@ window.SW = window.SW || {};
     );
   };
 
+  function sortTime(value, fallback) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed / 1000 : fallback;
+  }
+
+  function phaseLabel(record) {
+    const phase = record && record.turn && record.turn.phase;
+    return phase === 'implementation' ? 'Implementation' : phase === 'planning' ? 'Planning' : 'Build';
+  }
+
+  function outcomeLabel(record) {
+    if (record && record.capture && record.capture.status === 'running') return 'Running';
+    if (record && record.capture && record.capture.status === 'interrupted') return 'Interrupted';
+    const status = record && record.buildOutcome && record.buildOutcome.status;
+    return {
+      repeat_brake: 'Stopped — repeated calls',
+      user_stop: 'Stopped by user',
+      gateway_refusal: 'Gateway refused',
+      error: 'Failed',
+      success: 'Succeeded',
+    }[status] || 'Interrupted';
+  }
+
   // One build. Headed by the prompt that started it, because that is what a person remembers
   // asking for — the turns underneath are how it was answered, and they stay folded until asked
   // for. A run whose turns all folded away has nothing to open, so it offers nothing.
   function BuildRunRow({ block }) {
     const [open, setOpen] = useState(false);
-    const [downloading, setDownloading] = useState(false);
+    const [downloading, setDownloading] = useState('');
     const [downloadError, setDownloadError] = useState('');
-    const download = async () => {
-      setDownloading(true);
+    const download = async (record) => {
+      const target = record.turn || record;
+      setDownloading(target.turnId);
       setDownloadError('');
-      try { await SW.api.downloadBuildDiagnostics(block.diagnostics); }
+      try { await SW.api.downloadBuildDiagnostics(target); }
       catch (error) { setDownloadError(error.message || "Couldn't download diagnostics."); }
-      finally { setDownloading(false); }
+      finally { setDownloading(''); }
     };
     const turns = block.messages || [];
+    const diagnosticTurns = block.diagnosticTurns || [];
 
     return h(
       'div',
@@ -169,9 +228,16 @@ window.SW = window.SW || {};
         // Deriving one from its neighbours would be a number nobody wrote down.
         block.at && h('div', { className: 'sw-bh-run-at' }, SW.util.relativeTime(block.at))
       ),
-      h(Button, { size: 'small', disabled: !block.diagnostics, loading: downloading,
-        onClick: download, title: block.diagnostics ? undefined : 'Diagnostics were not captured for this older turn.' },
-        'Download diagnostics'),
+      diagnosticTurns.length === 0 && h(Button, { size: 'small', disabled: true,
+        title: 'Diagnostics were not captured for this older turn.' }, 'Download diagnostics'),
+      diagnosticTurns.map((record) => {
+        const target = record.turn || record;
+        return h('div', { className: 'sw-bh-diagnostic', key: target.turnId },
+          h('div', { className: 'sw-bh-diagnostic-label' },
+            `${phaseLabel(record)} · ${outcomeLabel(record)}`),
+          h(Button, { size: 'small', loading: downloading === target.turnId,
+            onClick: () => download(record) }, `Download ${phaseLabel(record).toLowerCase()} diagnostics`));
+      }),
       downloadError && h('div', { role: 'alert' }, downloadError),
       // The run's `app_change` cards are deliberately NOT drawn. Every row in this log is this
       // app's — the file is the app's (ADR-0008) — so a card per row would name the app the title

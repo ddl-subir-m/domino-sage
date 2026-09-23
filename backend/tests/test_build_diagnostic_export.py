@@ -2,6 +2,7 @@
 import json
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -51,6 +52,26 @@ def test_finished_capture_survives_a_real_process_restart(tmp_path):
     assert row["sourceRevision"] == "a" * 40
 
 
+def test_app_listing_survives_restart_and_does_not_need_transcript_content(tmp_path):
+    saved(tmp_path, "turn_plan", outcome="success")
+    stopped = diagnostics.snapshot(
+        record("turn_impl"), identity("turn_impl") | {"kind": "approve"},
+        outcome="user_stop", terminal=True, revision="b" * 40,
+    )
+    assert diagnostics.Store(tmp_path).put(stopped)
+    code = (
+        "import json; from pathlib import Path; from sage.build_diagnostics import Store; "
+        f"print(json.dumps(Store(Path({str(tmp_path)!r})).list('app_a')))"
+    )
+    rows = json.loads(subprocess.check_output([sys.executable, "-c", code], text=True))
+    assert [row["turn"]["turnId"] for row in rows] == ["turn_plan", "turn_impl"]
+    assert rows[0]["turn"]["phase"] == "planning"
+    assert rows[1]["turn"]["phase"] == "implementation"
+    assert rows[1]["buildOutcome"]["status"] == "user_stop"
+    assert set(rows[1]) == {"turn", "buildOutcome", "capture"}
+    assert "timing" not in json.dumps(rows)
+
+
 def test_retention_has_twenty_records_and_an_explicit_drop_count(tmp_path):
     for n in range(23):
         saved(tmp_path, f"turn_{n}")
@@ -71,14 +92,36 @@ def test_interrupted_start_remains_incomplete_after_restart(tmp_path):
             f"print(json.dumps(Store(Path({str(tmp_path)!r})).get('turn_a','app_a','thr_a')))")
     row = json.loads(subprocess.check_output([sys.executable, "-c", code], text=True))
     assert row["capture"]["status"] == "interrupted" and row["capture"]["complete"] is False
-    assert row["buildOutcome"]["status"] == "unknown"
+    assert row["buildOutcome"]["status"] == "error"
     timing.finish_turn()
 
 
 def test_finished_capture_does_not_invent_a_build_outcome(tmp_path):
     row = saved(tmp_path)
     assert row["capture"]["status"] == "finished"
-    assert row["buildOutcome"]["status"] == "unknown"
+    assert row["buildOutcome"]["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    ("event", "outcome"),
+    [
+        ({"type": "done", "ok": True}, "success"),
+        ({"type": "done", "ok": False, "decision": "repeated"}, "repeat_brake"),
+        ({"type": "done", "ok": False, "decision": "looped"}, "repeat_brake"),
+        ({"type": "done", "ok": False, "decision": "gateway error"}, "gateway_refusal"),
+        ({"type": "done", "ok": False, "decision": "bad output"}, "error"),
+        ({"type": "stopped"}, "user_stop"),
+    ],
+)
+def test_terminal_events_use_one_bounded_outcome_vocabulary(tmp_path, event, outcome):
+    timing.start_turn("build", turn_id="turn_a", app_id="app_a", conversation_id="thr_a")
+    diagnostics.begin(tmp_path, turn_id="turn_a", app_id="app_a",
+                      conversation_id="thr_a", kind="build")
+    diagnostics.observe(event)
+    diagnostics.finish(timing.finish_turn())
+    row = diagnostics.Store(tmp_path).get("turn_a", "app_a", "thr_a")
+    assert row["buildOutcome"]["status"] == outcome
+    assert row["buildOutcome"]["status"] in diagnostics.OUTCOMES
 
 
 def test_private_payloads_and_unknown_fields_never_reach_the_export(tmp_path):
@@ -167,6 +210,37 @@ def test_real_build_stamps_the_same_selected_turn_on_history_and_disk(tmp_path, 
     assert ignored.returncode == 0
 
 
+def test_a_stopped_approval_survives_transcript_rollback_as_user_stop(tmp_path):
+    orch, oc = _orch(tmp_path)
+    project = orch.project(start_preview=False)
+    project.workspace.write_plan("## Plan\n1. Build the app.")
+    oc.stay_running = True
+    events = []
+
+    thread = threading.Thread(target=lambda: events.extend(orch.approve_stream()), daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    running = None
+    while time.monotonic() < deadline:
+        running = orch.turn_state().get("running_turn")
+        if running:
+            break
+        time.sleep(0.01)
+    assert running and running["turnId"]
+    assert orch.stop_build(kind="build", app=running["app"], turn_id=running["turnId"])
+    thread.join(10)
+    assert not thread.is_alive()
+
+    rows = diagnostics.Store(project.record.path).list(running["app"])
+    stopped = next(row for row in rows if row["turn"]["turnId"] == running["turnId"])
+    assert stopped["turn"]["phase"] == "implementation"
+    assert stopped["buildOutcome"]["status"] == "user_stop"
+    assert stopped["capture"]["status"] == "finished"
+    assert any(event.get("type") == "stopped" for event in events)
+    assert all(row.get("turnId") != running["turnId"]
+               for row in project.workspace.read_history())
+
+
 def test_failed_persistence_does_not_fail_build(tmp_path, monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     orch, oc = _orch(tmp_path)
@@ -204,6 +278,12 @@ def test_exact_scope_and_prefix_on_existing_workspace_route(tmp_path, monkeypatc
         response = client.get(path, params={"app_id": app, "conversation_id": conversation})
         assert response.status_code == 404
     assert client.get(path.replace("turn_a", "expired"), params={"app_id": "app_a"}).status_code == 404
+
+    listing = client.get(prefix + "/api/project/build-diagnostics", params={"app_id": "app_a"})
+    assert listing.status_code == 200
+    assert [row["turn"]["turnId"] for row in listing.json()["records"]] == ["turn_a"]
+    assert client.get(prefix + "/api/project/build-diagnostics",
+                      params={"app_id": "app_b"}).json() == {"records": []}
 
 
 def test_history_download_selects_older_turn_and_uses_prefix_safe_api():

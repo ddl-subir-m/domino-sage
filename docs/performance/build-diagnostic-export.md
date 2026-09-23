@@ -1,9 +1,10 @@
 # Download one Build turn's diagnostics
 
-Build history has a **Download diagnostics** action for each captured turn. The action
-uses the app, conversation, and turn ID on that row. It never substitutes the latest
-capture. Old rows without an ID have a disabled action. An expired or absent capture
-returns HTTP 404; an unreadable store returns HTTP 503.
+Build history has a labeled diagnostic action for each captured Planning or Implementation
+turn. The list comes from persisted diagnostic summaries, so a stopped implementation remains
+visible after transcript rollback and restart. The action uses the app, conversation, and turn ID
+on that summary. It never substitutes the latest capture. Old rows without an ID have a disabled
+action. An expired or absent capture returns HTTP 404; an unreadable store returns HTTP 503.
 
 The route is `GET ./api/project/build-diagnostics/{turnId}?app_id=…&conversation_id=…`.
 It uses the existing workspace route and Domino proxy authentication. The relative
@@ -12,13 +13,18 @@ start a preview. Downloads use `Content-Disposition: attachment` and `Cache-Cont
 no-store`. Local tests cover route scope and prefixes; the deployed proxy's rejection
 of unauthenticated requests needs a live workspace check.
 
+The bounded summary route is `GET ./api/project/build-diagnostics?app_id=…`. It returns only
+turn identity, a fixed phase label, terminal outcome, capture status, capture completeness, and
+start time. It does not return transcript text or timing details.
+
 ## Version 1 contract
 
 - `schemaVersion`: export schema version, currently 1.
 - `sourceRevision`: the Sage Git revision when available, otherwise null.
-- `turn`: exact `turnId`, `appId`, `conversationId`, `kind`, and `startedAt`.
-- `buildOutcome.status`: `success`, `failure`, `stopped`, or `unknown`. Capture completion
-  does not imply a successful Build. Missing outcome remains unknown.
+- `turn`: exact `turnId`, `appId`, `conversationId`, `kind`, `phase`, and `startedAt`.
+- `buildOutcome.status`: `repeat_brake`, `user_stop`, `gateway_refusal`, `error`, or `success`.
+  Capture completion does not imply a successful Build. Older unknown or general failure values
+  read as `error`; older stopped values read as `user_stop`.
 - `capture`: lifecycle status, completeness, recorder availability, dropped event counts
   by section, and upstream truncation flags. Status is `running`, `finished`, or
   `interrupted`. A start record left by a prior process reads as interrupted.
