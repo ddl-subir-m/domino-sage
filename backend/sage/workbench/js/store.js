@@ -66,8 +66,10 @@ window.SW = window.SW || {};
     me: null,
     brand: BRAND_DEFAULT,
     projects: [],
-    // Whether this container can create or attach Projects at all (Domino + a git host).
-    // False on a laptop run, where New project has nothing to create against.
+    // Whether "New project" in the scope picker does anything yet. Always false for now
+    // (ONE-APP-PLAN.md §4 Phase 2 step 5): the registry's real `create()` — a GitHub repo, a seed
+    // push, a git-based Domino project — is Phase 3 work. The picker shows the action and says so
+    // rather than hiding it or offering a click that fails.
     canProvision: false,
     scope: NO_SCOPE,
     scopeFlash: false,
@@ -4166,42 +4168,6 @@ window.SW = window.SW || {};
 
   }
 
-  // Both ways out of this builder — switching Project and creating one — end the same way: a URL
-  // in another container, and a wait while its session comes up. One Sage Builder is bound to one
-  // project volume, so there is no version of this that stays on the page.
-  //
-  // The builder being left stays running. Stopping it would have to commit, pull, resolve and push
-  // first, and could cut off a build mid-turn; coming back is then a resume instead of a reuse.
-  async function handOver({ title, detail, failure, start }) {
-    const modal = antd.Modal.info({
-      title,
-      content: detail,
-      okButtonProps: { style: { display: 'none' } },
-      closable: false,
-      maskClosable: false,
-    });
-    try {
-      const opened = await start();
-      const projectId = (opened.project && opened.project.id) || opened.project_id;
-      let url = opened.running ? opened.open_url : null;
-      // A launched or resumed workspace reports Started while its session is still booting, and the
-      // builder inside binds its port later still — Domino's proxy answers 502 until it does. The
-      // status route waits for both, so this wait is the longer one: ~6 minutes, then say so.
-      for (let i = 0; !url && i < 120; i++) {
-        await new Promise((r) => setTimeout(r, 3000));
-        const s = await SW.api.projectStatus(projectId, opened.workspace_id).catch(() => null);
-        if (s && s.running && s.open_url) url = s.open_url;
-      }
-      if (!url) throw new Error('The workspace is taking longer than expected to start.');
-      modal.destroy();
-      window.location.replace(url);
-      return opened;
-    } catch (err) {
-      modal.destroy();
-      antd.Modal.error({ title: failure, content: String((err && err.message) || err) });
-      return null;
-    }
-  }
 
   const store = {
 
@@ -4877,26 +4843,21 @@ window.SW = window.SW || {};
         applyBrandChrome(brand);
       }
       state.projects = projects;
-      state.canProvision = !!(projects[0] && projects[0].provisioning);
-      // `projects[0]` is this container's own row, and it is the only row that carries the bound
-      // Project's display name and its model slots — the rest are Domino names and an id to attach
-      // by. When the listing read failed there is no such row at all, so both come off `/project`
-      // instead: `Project.status()` is built from this container and asks the control plane nothing,
-      // which is exactly why it can still answer when the listing cannot. The chip then goes on
-      // saying where you are and loses only the ability to move somewhere else, and the picker
-      // already explains that loss on the control itself, because `canProvision` is false above and
-      // the disabled New project button draws its own reason.
-      state.scope = projects[0] || (project && {
+      // This container's own identity (display name, untitled flag, model slots) comes straight off
+      // `/project` — the registry listing no longer synthesizes a "here" row for it (ONE-APP-PLAN.md
+      // §4 Phase 2 step 5): every row it returns names an OTHER project to switch to, marked
+      // `current` only for whichever one this call happened to be scoped to. `Project.status()` is
+      // built from this container and asks the control plane nothing, which is why it can still
+      // answer when the listing cannot; the chip then goes on saying where you are and loses only
+      // the ability to move somewhere else.
+      state.scope = (project && {
         ...NO_SCOPE,
         id: project.id,
         name: project.name || project.id,
         untitled: !!project.untitled,
         current: true,
       }) || state.scope;
-      // Same substitution, same reason: the model block in `projects[0]` was read off `/project` in
-      // the first place, so reading it from `/project` directly loses nothing. Without this, Build's
-      // picker would open on the seeded catalog with no slot marked current.
-      applyModelStatus(projects[0] || project);
+      applyModelStatus(project);
       state.charts = charts;
       state.starters = starters;
       state.notifications = notifications;
@@ -4985,37 +4946,6 @@ window.SW = window.SW || {};
         antd.message.info(`Switched to ${project.name}`);
       }
       await Promise.all([loadScopeData(), loadThreadList()]);
-    },
-
-    // Switching Project means LEAVING this container (#47). One Sage Builder is bound to one
-    // project volume, so the viewer's work in another Project lives in their builder there — this
-    // attaches it (reuse, resume, or create) and hands the browser over, the same move the door
-    // makes. A collaborator's builder in that Project is never taken over.
-    async attachProject(project) {
-      if (!project || project.current) return;
-      await handOver({
-        title: `Opening ${project.name}`,
-        detail: 'Starting your workspace there. This takes about a minute if it was stopped.',
-        failure: SW.brand.text("{assistantName} couldn't open {name}", { name: project.name }),
-        start: () => SW.api.openProject(project.id),
-      });
-    },
-
-    // New project is a real verb (#46): a private sage-* repo, the template seeded and pushed, a
-    // git-based Domino project, then this viewer's builder in it. The name typed here becomes the
-    // chip there — it rides into the repo, because the Domino project has to be named sage-<slug>
-    // for Sage to find it again.
-    async createProject(name) {
-      const trimmed = String(name || '').trim();
-      if (!trimmed) return null;   // the picker disables Create, so this is only belt-and-braces
-      return handOver({
-        title: `Creating the project ${trimmed}`,
-        detail: 'Setting up the repository and starting your workspace. This takes about a minute.',
-        // "couldn't create Sales dashboard" reads as a failure to build the thing named, which is
-        // not what failed — the project it would live in never got made. Name the noun.
-        failure: SW.brand.text("{assistantName} couldn't create the project {name}", { name: trimmed }),
-        start: () => SW.api.createProject(trimmed),
-      });
     },
 
     // Opening a thread adopts its project, so you never attach a resource

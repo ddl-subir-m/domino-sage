@@ -1,18 +1,23 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useRef, useEffect } = React;
-  const { Popover, Input, Button, Tooltip } = antd;
+  const { createElement: h, useState } = React;
+  const { Input, Button, Tooltip } = antd;
   const { PlusOutlined, DownOutlined, SearchOutlined } = icons;
 
   // Only the project this builder is bound to can be described from here — the others are a name
-  // and an id to attach by, so the row says what picking it does rather than inventing counts.
+  // and a slug to open by, so the row says what picking it does rather than inventing counts.
+  // A row this process hasn't cloned yet (`local: false`) has nothing here to open — Phase 3's
+  // `clone()` is what would make it openable — so it says that instead of offering a dead click.
   function ScopeRow({ project, onSelect }) {
+    const openable = project.current || project.local;
     return h(
       'button',
       {
         className: `sw-scope-row${project.current ? ' is-active' : ''}`,
-        onClick: () => onSelect(project),
+        disabled: !openable,
+        title: openable ? '' : 'Not on this machine yet.',
+        onClick: openable ? () => onSelect(project) : undefined,
       },
       h('span', { className: 'sw-scope-dot' }),
       h(
@@ -23,42 +28,23 @@ window.SW = window.SW || {};
       h(
         'span',
         { className: 'sw-scope-row-count' },
-        project.current ? 'You are here' : 'Open'
+        project.current ? 'You are here' : (project.local ? 'Open' : 'Not cloned yet')
       )
     );
   }
 
   SW.ScopePicker = function ScopePicker({ open, onOpenChange }) {
-    const { scope, projects, scopeFlash, canProvision } = SW.store.get();
+    const { scope, projects, scopeFlash } = SW.store.get();
     const [query, setQuery] = useState('');
-    const [creating, setCreating] = useState(false);
-    const [name, setName] = useState('');
-    const nameRef = useRef(null);
 
-    useEffect(() => {
-      if (creating && nameRef.current) nameRef.current.focus();
-    }, [creating]);
-
-    useEffect(() => {
-      if (!open) {
-        setCreating(false);
-        setName('');
-        setQuery('');
-      }
-    }, [open]);
-
-    const select = async (project) => {
+    // Switching Project is a same-origin navigation now, not a state swap or a workspace hand-over
+    // (ONE-APP-PLAN.md §2.3): every project this one process knows about is a path it already
+    // serves, `/p/<slug>/`, so opening one is leaving `/p/<here>/` for `/p/<slug>/` the way a link
+    // would. `current` never fires this — the row it names is where the picker already is.
+    const select = (project) => {
+      if (project.current) return;
       onOpenChange(false);
-      await SW.store.attachProject(project);
-    };
-
-    const create = async () => {
-      const trimmed = name.trim();
-      if (!trimmed) return;
-      onOpenChange(false);
-      setCreating(false);
-      setName('');
-      await SW.store.createProject(trimmed);
+      window.location.assign(`../${project.slug}/`);
     };
 
     const filtered = projects.filter((p) =>
@@ -68,40 +54,21 @@ window.SW = window.SW || {};
     const content = h(
       'div',
       { className: 'sw-scope-pop' },
-      creating
-        ? h(
-            'div',
-            { style: { padding: '10px 16px', display: 'flex', gap: 8 } },
-            h(Input, {
-              ref: nameRef,
-              placeholder: 'Project name',
-              value: name,
-              onChange: (e) => setName(e.target.value),
-              onPressEnter: create,
-              maxLength: 60,
-            }),
-            h(Button, { type: 'primary', onClick: create, disabled: !name.trim() }, 'Create')
-          )
-        : h(
-            Tooltip,
-            {
-              // Say why it can't be used, rather than offering a button that fails on click.
-              title: canProvision ? '' : SW.brand.text("{assistantName} can't reach {platformName}, "
-                + "so it can't create a {project}."),
-              placement: 'right',
-            },
-            h(
-              'button',
-              {
-                className: 'sw-scope-pop-new',
-                disabled: !canProvision,
-                onClick: () => setCreating(true),
-              },
-              h(PlusOutlined, null),
-              'New project',
-              h('kbd', null, '⏎')
-            )
-          ),
+      h(
+        Tooltip,
+        {
+          // Creating a Project from here is Phase 3 work (ONE-APP-PLAN.md §4) — say so rather than
+          // offering a button that fails on click, or hiding the action the target design keeps.
+          title: SW.brand.text('Creating a new {project} from here arrives in a later phase.'),
+          placement: 'right',
+        },
+        h(
+          'button',
+          { className: 'sw-scope-pop-new', disabled: true },
+          h(PlusOutlined, null),
+          'New project'
+        )
+      ),
 
       h(
         'div',
@@ -121,12 +88,12 @@ window.SW = window.SW || {};
         h('div', { className: 'sw-scope-pop-section' }, h('span', { className: 'sw-group-label' }, 'Recent')),
         filtered.length
           ? filtered.map((project) =>
-              h(ScopeRow, { key: project.id, project, onSelect: select })
+              h(ScopeRow, { key: project.slug, project, onSelect: select })
             )
           : h(
               'div',
               { style: { padding: '8px 16px 12px' }, className: 'sw-secondary' },
-              `No projects match "${query}". Create one above.`
+              `No projects match "${query}".`
             )
       ),
 

@@ -129,41 +129,37 @@ def test_the_status_poll_answers_about_this_viewers_builder(tmp_path):
 WB = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
 
 
-def test_picking_another_project_hands_the_browser_over_rather_than_swapping_state():
-    """One Sage Builder is bound to one project volume, so switching Project is a bounce, not a
-    local state swap — the same move the door makes, from inside the Workbench."""
-    store = (WB / "store.js").read_text()
+def test_picking_another_project_is_a_same_origin_navigation():
+    """Every project this ONE process knows about is a path it already serves, `/p/<slug>/`
+    (ONE-APP-PLAN.md §2.3), so switching Project is a plain link now, not a bounce to another
+    container's workspace and not a local state swap either."""
     picker = (WB / "components" / "scope-picker.js").read_text()
 
-    assert "async attachProject(project)" in store
-    assert "SW.api.openProject(project.id)" in store
-    assert "SW.api.projectStatus(" in store     # waits for the session
-    assert "window.location.replace(url)" in store
-    assert "SW.store.attachProject(project)" in picker
+    assert "window.location.assign(`../${project.slug}/`)" in picker
     assert "setScope" not in picker             # the chip no longer just relabels itself
+    assert "SW.store.attachProject" not in picker
+    assert "SW.api.openProject" not in picker
 
 
 def test_the_chip_describes_only_the_project_it_can_read():
-    """A Sage overlay lives in the builder that owns it. The other rows are a Domino name and an id
-    to attach by, so the row says what picking it does instead of inventing members and app counts.
-    """
+    """A Sage overlay lives in the builder that owns it. The other rows are a Domino name and a
+    slug to open by, so the row says what picking it does instead of inventing members and app
+    counts."""
     api = (WB / "api.js").read_text()
     picker = (WB / "components" / "scope-picker.js").read_text()
 
     assert "request('/projects')" in api
-    assert "openProject:" in api and "projectStatus:" in api
+    assert "openProject" not in api and "projectStatus" not in api
     assert "You are here" in picker
     assert "memberCount" not in picker and "appCount" not in picker
 
 
-def test_a_container_that_cannot_provision_offers_nothing_to_switch_to():
-    # A laptop run has no Projects to switch between, and says so rather than failing on click.
+def test_a_container_with_no_local_projects_offers_nothing_to_switch_to():
+    # A fresh laptop run has no Projects to switch between yet, and says so honestly.
     from fastapi.testclient import TestClient
 
     import sage.orchestrator.app as appmod
 
     client = TestClient(appmod.control_app)
     assert appmod._provision is None
-    assert client.get("/api/projects").json() == {"items": [], "provisioning": False}
-    assert client.post("/api/projects/p-1/open").status_code == 503
-    assert client.get("/api/projects/status?project_id=p-1").status_code == 503
+    assert client.get("/api/projects").json() == {"items": []}

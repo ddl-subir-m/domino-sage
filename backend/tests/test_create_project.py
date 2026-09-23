@@ -168,28 +168,30 @@ def test_a_container_that_cannot_provision_refuses_to_create():
 WB = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "js"
 
 
-def test_creating_a_project_hands_the_browser_over_to_the_new_builder():
+def test_the_workbench_no_longer_hands_the_browser_over_to_create():
+    """ONE-APP-PLAN.md §4 Phase 2 step 5: creating and switching used to end the same way — a URL
+    in another container and a wait for its session (`handOver`). Switching is now a same-origin
+    navigation (see `test_project_dispatch.py` and the scope-picker source), and creating is
+    disabled until Phase 3's registry-backed `create()` exists — so neither reaches for that
+    mechanism any more, and it is gone rather than left dangling with nothing to call it.
+    """
     store = (WB / "store.js").read_text()
-    api = (WB / "api.js").read_text()
 
-    assert "request('/projects', { method: 'POST', body: { name } })" in api
-    assert "SW.api.createProject(trimmed)" in store
-    assert "This project is the current scope" not in store   # the old refusal is gone
-    # Create and switch end the same way, so they share the wait and the hand-over.
-    assert "async function handOver(" in store
-    assert "window.location.replace(url)" in store
+    assert "async function handOver(" not in store
+    assert "async attachProject(" not in store
+    assert "async createProject(" not in store
+    assert "window.location.replace(url)" not in store
 
 
 def test_new_project_is_explained_rather_than_offered_when_it_cannot_work():
     picker = (WB / "components" / "scope-picker.js").read_text()
-    store = (WB / "store.js").read_text()
 
-    assert "disabled: !canProvision" in picker
+    assert "'sw-scope-pop-new', disabled: true" in picker
     # Says why, not just greyed out. Written as a token since ADR-0026 gave `Project` a noun
     # key, so the sentence a partner reads is theirs; what is pinned here is that the reason
     # is in the picker at all.
-    assert "can't create a {project}" in picker
-    assert "canProvision: false," in store
+    assert "arrives in a later phase" in picker
+    assert "{project}" in picker
 
 
 def test_new_conversation_still_does_not_provision():

@@ -1274,3 +1274,181 @@ repo's CLAUDE.md, that decision is the user's.
    target shape, and nobody has yet weighed whether the simplicity is worth keeping permanently.
 5. Do not re-derive the spike findings — they're in `ONE-APP-PLAN.md` §2.3's addendum and this file's
    prior update, both dated 2026-09-23.
+
+## UPDATE 2026-09-23 (new session): Phase 2 step 4's second half closed (no code needed, verified);
+## step 5 partly done — `GET /api/projects` + scope-picker rewritten; the Projects home page and
+## root-route (`/`) repoint deliberately NOT started this session (see reasoning below).
+
+Read `ONE-APP-PLAN.md` and this file fresh. Confirmed the branch was clean and Phase 2 steps 1-4 were
+genuinely on disk as described (`52a7be69`).
+
+**Step 4's second half turned out to need no new code — verified, not assumed.** The plan's own text
+worried about `/mcp/live-read` and `/mcp/delegated-model` resolving "by token across open
+orchestrators" for calls that arrive with no `/p/<slug>/` prefix. Traced the actual mechanism instead
+of building the token-resolution machinery the plan sketched:
+
+- `_write_project_opencode_config` (already landed) rewrites every `mcp.*.url` in a project's own
+  `opencode.json` to carry that project's `/p/<slug>` prefix (`test_project_opencode_config.py`
+  already pins this: `.../p/beta/mcp/live-read`).
+- `_ProjectDispatchMiddleware` (already landed) matches on path generically — `/p/<slug>/<anything>`
+  — with no allowlist of which routes count. It doesn't special-case `/mcp/`.
+- Given today's design keeps one `opencode serve` PER PROJECT (a named, deliberate gap in the
+  registry's own factory closure — see the "Shared OpenCodeServer" note above), every project's
+  OpenCode process dials its OWN `/p/<slug>/mcp/live-read`, which already lands on the right
+  Orchestrator through the existing generic path dispatch. The plan's token-resolution worry is real
+  only once OpenCode is SHARED across projects (deferred, unbuilt) — with N separate processes, path
+  dispatch already is the resolution mechanism.
+- Proved this rather than trusting the reasoning alone: added `test_project_dispatch.py`'s new
+  `_FakeProjectOrchestrator` + three tests hitting the REAL `control_app` (not the middleware in
+  isolation, which the file's earlier tests already covered) at `/p/<slug>/mcp/live-read` and
+  `/p/<slug>/mcp/delegated-model`, confirming each reaches that project's fake orchestrator and never
+  the default. 10/10 pass (7 pre-existing + 3 new).
+- **No production code changed for this step.** `orchestrator_for_live_token()` from the plan's §2.2
+  sketch was not built — it would be solving a problem the current per-project-process design doesn't
+  have. Worth reconsidering only if/when `_ensure_opencode` is ever hoisted to a shared server (the
+  named gap from the previous update).
+
+**Step 5, done this session:**
+
+1. **`GET /api/projects`** (`orchestrator/app.py`) rewritten from `_provision.list_apps()` (door-era,
+   `{"items":[...], "provisioning": bool}`) to `_REGISTRY.list(current)` (`{"items":[{slug, name,
+   local, current}]}`). `current` is `None` (no row marked) at root scope, and the dispatched
+   project's own slug when the call arrives through `/p/<slug>/api/projects` — read via
+   `current_orchestrator()._project_id` gated on `_CURRENT_ORCHESTRATOR.get() is not None`, so the
+   root-scope Projects home (not yet built — see below) and the in-Workbench scope chip share one
+   route with no query param needed. Works with no Domino control plane at all (a laptop with at
+   least one local clone still gets a real, non-empty answer) — only the REMOTE half of the merge
+   needs `_control_plane`. 2 new tests in `test_project_dispatch.py` pin this (root scope passes
+   `current=None`; a `/p/alpha/...` call passes `current="alpha"` and the route's JSON marks the
+   matching row).
+2. **`POST /api/projects`, `/api/projects/{id}/open`, `/api/projects/status` left completely
+   untouched.** The plan's own Phase 3 step 3 explicitly owns deleting these (along with
+   `door.py`/`door.html`/`/api/door*`) — they're door-era workspace-launch routes that don't fit the
+   one-app model, but replacing or deleting them now would be ahead of the phase that actually retires
+   workspaces. They are effectively orphaned by the frontend change below (nothing calls them from the
+   Workbench anymore), which is flagged rather than silently left implicit.
+3. **`scope-picker.js` rewritten**: `select(project)` is now `window.location.assign(`../${project
+   .slug}/`)` for a `local` row — a same-origin navigation to that project's own `/p/<slug>/`, since
+   every open project is already a path this ONE process serves (no more workspace hand-over, no more
+   polling). A row with `local: false` (a `sage-*` Domino project the token can see but hasn't been
+   cloned to this machine — Phase 3's `clone()` is what would fix that) renders disabled with
+   "Not cloned yet" rather than offering a click that 404s. "New project" is unconditionally disabled
+   with a tooltip ("Creating a new {project} from here arrives in a later phase") rather than gated on
+   `canProvision` — matching the product owner's explicit choice this session (asked via
+   `AskUserQuestion`: show the affordance, disabled and informational, rather than omitting it or
+   pulling Phase 3's `registry.create()` forward early).
+4. **`api.js`'s `projects()`** simplified to `request('/projects').then(listing => listing.items ||
+   [])` — no more merging `/project` + `/projects` into a synthetic "here" row (the registry's own
+   listing carries no such row now; `current` is a plain field on whichever row matches). `openProject`,
+   `projectStatus`, `createProject` deleted from `api.js` — their only callers (below) are gone too.
+5. **`store.js` cleanup, cascading from the same change:** `attachProject`, `createProject`, and
+   `handOver` (the workspace-hand-over modal + up-to-6-minute poll) deleted outright — `attachProject`
+   had exactly one caller (the picker's old `select`, now `location.assign`), and `createProject` had
+   exactly one caller (the picker's old `create`, now gone since "New" has no input state left to
+   submit); `handOver` then had zero callers left. Verified no other caller exists anywhere in
+   `sage/workbench/js/` before deleting (grepped the whole tree, not assumed). Boot (`load()`)
+   simplified: `state.scope`/`applyModelStatus` used to prefer `projects[0]` (the old synthetic "here"
+   row) and fall back to the raw `/project` read; since the registry listing carries no such row
+   anymore, both now read `/project` directly (which always carried the same fields — the old "here"
+   row was itself built by copying them, per `api.js`'s prior code) — one fallback chain instead of
+   two, same information. `state.canProvision` no longer derived per-boot (there is no
+   `.provisioning` field on a registry row) — left permanently `False` at its existing initial-state
+   default, comment updated to say why (Phase 3 is what would flip this back on).
+6. **Known, pre-existing dead code NOT touched, mentioned rather than fixed**: `store.js`'s
+   `setScope`/`adoptThreadScope`/`adoptAppScope` compare `state.projects` rows by `.id` — a field
+   registry rows never had even before this session (they carry `.slug`). Traced why this is not a
+   regression: in the one-container-per-project model (ADR-0004, still standing until Phase 3),
+   `adoptThreadScope`/`adoptAppScope`'s cross-project `find()` could only ever match the container's
+   OWN project in the old shape too (a thread belonging to a genuinely different project was never in
+   this container's own thread list to begin with), and the very next line's `target.id !==
+   state.scope.id` check made that case a no-op regardless. So this was already-vestigial,
+   likely-from-an-earlier-multi-project-per-container prototype (DEPLOY-PLAN.md §2 records one was
+   retired) — not something my change broke, just something it didn't fix. Left alone per CLAUDE.md
+   ("if you notice unrelated dead code, mention it — don't delete it").
+7. `node --check` on all three edited JS files: clean.
+
+**Tests updated to match (existing contract-pins on the retired mechanism, rewritten to pin the new
+one — not deleted, since the underlying behavior they guard still needs a pin):**
+`test_attach.py` (`test_picking_another_project_is_a_same_origin_navigation`,
+`test_the_chip_describes_only_the_project_it_can_read`,
+`test_a_container_with_no_local_projects_offers_nothing_to_switch_to` — the last one asserts
+`{"items": []}`, not the old `{"items": [], "provisioning": False}` shape), `test_create_project.py`
+(`test_the_workbench_no_longer_hands_the_browser_over_to_create`,
+`test_new_project_is_explained_rather_than_offered_when_it_cannot_work`).
+`test_new_conversation_still_does_not_provision` needed no change (its assertions were always about
+absence, which still holds now that the functions are gone rather than merely unreachable).
+
+**Verification, following this repo's own protocol — not a single green run trusted at face value:**
+
+- Targeted run of every directly-touched file (`test_project_dispatch.py`, `test_attach.py`,
+  `test_gallery.py`, `test_create_project.py`): 45 passed, 3 failed. All 3 diffed against baseline via
+  `git stash`/`git stash pop` (restored and spot-checked intact afterward) — **identical failures on
+  unmodified code**: this sandbox's `_provision`/`_control_plane` are genuinely configured (a real
+  Domino workspace), so every test asserting "`_provision is None`" or exercising a live
+  `create_app`/`open_app` call against this sandbox's real, already-taken repo names hits the same
+  well-established dogfood-safety/live-network class this whole plan's history has hit every session.
+  None of the 3 are new.
+- Widened the check to adjacent files most likely to share fixtures or boot-state assumptions
+  (`test_one_dead_service_does_not_blank_the_workbench.py`,
+  `test_the_control_plane_routes_speak_the_packs_words.py`,
+  `test_the_port_answers_before_the_server_does.py`, `test_project_registry.py`,
+  `test_project_opencode_config.py`): 53 passed, 2 failed, both diffed against baseline too and
+  confirmed identical (same live-network class, unrelated routes — `open_app`/`create_app` against a
+  real control plane).
+- `make lint` (repo-wide, from `/mnt/code`): clean.
+- **Full suite, reconciled**: `cd backend && uv run --extra dev pytest -q -n auto` →
+  `7853 collected == 100 failed + 7743 passed + 10 skipped`. Collected is exactly 5 more than the
+  Phase-2-dispatcher-landed baseline (7848) — the 5 new tests this session added (3 in
+  `test_project_dispatch.py` for step 4's second half, 2 for the `GET /api/projects` route), all of
+  which pass. Failed count is unchanged from that same baseline (100, both before and after this
+  session's work) — grouped the full failure list by file and confirmed every name is one of the
+  already-characterized classes (`test_native_gateway_transport`, `test_publish_*`,
+  `test_a_rename_reaches_the_deployed_app`, `test_orchestrator`, `test_delete_app`,
+  `test_the_control_plane_routes_speak_the_packs_words`, `test_the_service_speaks_the_packs_words`,
+  `test_provision_credentials`, `test_prefix`, `test_chat_shows_the_whole_conversation`,
+  `test_a_publish_says_what_leaves_domino`, `test_a_binding_the_app_never_calls_says_so`,
+  `test_builtapp_queries`), plus exactly the 3 in `test_attach.py`/`test_gallery.py`/
+  `test_create_project.py` this session's own rewritten tests inherited and already diffed against
+  baseline above. No new regressions.
+
+**Deliberately NOT done this session, and why — surfaced rather than silently cut:**
+
+- **The actual Projects home page (`workbench/home.html`) and repointing `/` to serve it were NOT
+  built.** The target architecture table (§2) says `/` becomes "Projects home: list, open, new,
+  settings" unconditionally, but `ui()`'s current door-vs-shell branch (`_DOOR_UI if proxy_is_app()
+  else _UI`) is still the live, currently-CORRECT implementation of ADR-0004 until Phase 3 actually
+  deletes `door.py`/`door.html`/`/api/door*` — and it is pinned by name in `test_workbench.py`,
+  `test_the_entry_pages_carry_the_packs_name.py`, and `test_the_favicon_comes_from_the_pack.py`.
+  Changing `/`'s branching now (e.g., to "home page at root scope, Workbench shell inside a
+  `/p/<slug>/` dispatch") would break those currently-valid pins ahead of the phase that is supposed
+  to retire what they pin, and there is no browser in this sandbox to verify a brand-new page's actual
+  rendering before shipping it as the FIRST thing every viewer sees. This is a real, deliberate scope
+  cut, surfaced to the user rather than guessed past: the registry-backed listing and the picker's
+  navigation model (both now real and tested) are the parts of step 5 that don't depend on
+  Phase 3's door removal; the home page itself does, structurally, even though the plan's phase table
+  files it under Phase 2. Whoever does Phase 3 should build `home.html` and repoint `/` in the SAME
+  change that deletes `door.html`, not before.
+- Given the above, `POST /api/projects`, `/api/projects/{id}/open`, `/api/projects/status`,
+  `door.py`, `door.html` are all untouched, as noted in point 2 above.
+
+## Next session should
+
+1. **Phase 2 is now functionally complete for everything that doesn't depend on Phase 3's door
+   removal.** Steps 1-4 (spike, registry, dispatcher, proxy, per-project opencode config, shutdown
+   sweep, and now step 4's second half) are done and verified. Step 5's registry-backed listing and
+   scope-picker rewrite are done and verified; the Projects home page and `/`'s repoint are the one
+   remaining piece, and they belong with Phase 3 (see reasoning above) rather than being forced into
+   Phase 2 ahead of door.html's actual deletion.
+2. Full suite is reconciled and green modulo the same 100-failure baseline class (see above) —
+   nothing further to check here before the next phase starts.
+3. Confirm with the user whether to commit this session's changes, and whether the recurring
+   auto-commit mechanism (now flagged three times on this branch — `fc7ff826`, `c2162aa8`, and
+   whatever lands this session) is worth investigating on its own.
+4. When Phase 3 lands `registry.create()`/`registry.clone()`: flip `state.canProvision` back on (or
+   retire the flag and just check `projects` for a `local: false` row), re-enable the picker's "New
+   project" and the disabled `ScopeRow` rows, and build `home.html` + repoint `/` in the same change
+   that deletes `door.py`/`door.html`/`/api/door*` — see the reasoning above for why these are one
+   change, not three.
+5. `_ensure_opencode`'s per-project-vs-shared-server question (carried over, still undecided) and the
+   two named Phase-0/1-era coverage gaps (`test_sage_domino_relay.py`, `test_feedback.py`'s weakened
+   drift guard) remain open, non-blocking items.

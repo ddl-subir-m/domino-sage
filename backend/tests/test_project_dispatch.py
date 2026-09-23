@@ -11,7 +11,9 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from sage.orchestrator import app as app_module
 from sage.orchestrator.app import _ProjectDispatchMiddleware, current_orchestrator
+from sage.projects.registry import ProjectRow
 
 
 class _FakeRegistry:
@@ -115,3 +117,136 @@ def test_a_slug_dispatch_extends_rather_than_replaces_an_existing_root_path():
     assert root_path == "/apps/some-uuid/p/alpha"
     assert path == "/apps/some-uuid/p/alpha/api/threads"
     assert int(orch_id) == id(alpha)
+
+
+# -- ONE-APP-PLAN.md §2.3 step 4's "second half": does a project's loopback MCP traffic actually
+# reach THAT project's Orchestrator, end to end through the real `control_app`? Not just the
+# middleware in isolation (above) — `_write_project_opencode_config` (ONE-APP-STATUS.md, Phase 2)
+# already rewrites every `mcp.*.url` in a project's own opencode.json to carry its `/p/<slug>`
+# prefix, so a per-project OpenCode process (today's design: one `opencode serve` per project, not
+# yet the shared server the target architecture calls for) dials `/p/<slug>/mcp/live-read` for
+# every call. `_ProjectDispatchMiddleware` matches on path generically — it has no allowlist of
+# which routes count — so this should already work with no new routing code. Proven here rather
+# than assumed: a fake project Orchestrator is registered directly in the real, module-level
+# `_REGISTRY`'s cache (bypassing the on-disk scan, the same shortcut `ProjectRegistry.open()`'s own
+# cache-hit branch takes), and a real HTTP call through `control_app` is checked to land on it
+# instead of the default Orchestrator every other root-scope test in this suite depends on.
+
+class _FakeProjectOrchestrator:
+    def __init__(self, project_id=None):
+        self.live_read_calls = []
+        self.delegated_calls = []
+        self._project_id = project_id
+
+    def live_read_call(self, message, probe=False):
+        self.live_read_calls.append((message, probe))
+        return {"jsonrpc": "2.0", "id": message.get("id"), "result": "ok"}
+
+    def delegated_model_call(self, message):
+        self.delegated_calls.append(message)
+        return {"jsonrpc": "2.0", "id": message.get("id"), "result": "ok"}
+
+
+def _register_fake_project(slug: str, fake) -> None:
+    with app_module._REGISTRY._lock:
+        app_module._REGISTRY._open[slug] = fake
+
+
+def _forget_project(slug: str) -> None:
+    with app_module._REGISTRY._lock:
+        app_module._REGISTRY._open.pop(slug, None)
+
+
+def test_a_project_scoped_live_read_call_reaches_that_projects_orchestrator():
+    fake = _FakeProjectOrchestrator()
+    _register_fake_project("alpha", fake)
+    try:
+        r = TestClient(app_module.control_app).post(
+            "/p/alpha/mcp/live-read",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}},
+        )
+        assert r.status_code == 200
+        assert len(fake.live_read_calls) == 1
+    finally:
+        _forget_project("alpha")
+
+
+def test_a_project_scoped_delegated_model_call_reaches_that_projects_orchestrator():
+    fake = _FakeProjectOrchestrator()
+    _register_fake_project("beta", fake)
+    try:
+        r = TestClient(app_module.control_app).post(
+            "/p/beta/mcp/delegated-model",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}},
+        )
+        assert r.status_code == 200
+        assert len(fake.delegated_calls) == 1
+    finally:
+        _forget_project("beta")
+
+
+def test_two_projects_mcp_traffic_never_crosses(monkeypatch):
+    """Not just "reaches a project" — reaches the RIGHT one, and never the default the rest of this
+    suite's ~267 monkeypatch-heavy files rely on being untouched by a request that named no slug."""
+    default_calls = []
+    monkeypatch.setattr(
+        app_module._DEFAULT_ORCHESTRATOR, "live_read_call",
+        lambda message, probe=False: default_calls.append(message) or {"result": "default"},
+    )
+    alpha, beta = _FakeProjectOrchestrator(), _FakeProjectOrchestrator()
+    _register_fake_project("alpha", alpha)
+    _register_fake_project("beta", beta)
+    try:
+        client = TestClient(app_module.control_app)
+        client.post("/p/alpha/mcp/live-read", json={"jsonrpc": "2.0", "id": 1, "method": "x"})
+        client.post("/p/beta/mcp/live-read", json={"jsonrpc": "2.0", "id": 2, "method": "x"})
+        assert len(alpha.live_read_calls) == 1
+        assert len(beta.live_read_calls) == 1
+        assert not default_calls
+    finally:
+        _forget_project("alpha")
+        _forget_project("beta")
+
+
+# -- ONE-APP-PLAN.md §4 Phase 2 step 5: `GET /api/projects` is registry-backed now, not
+# `_provision.list_apps()`. The registry's own merge logic (local clones + remote sage-* rows) is
+# tested at the unit level in `test_project_registry.py`; these prove the ROUTE calls it correctly
+# — with no "current" slug at root scope, and with this request's own project's slug once a call
+# arrives scoped through `/p/<slug>/`.
+
+def test_the_projects_route_marks_no_current_at_root_scope(monkeypatch):
+    seen = {}
+
+    def fake_list(current=None):
+        seen["current"] = current
+        return [ProjectRow(slug="alpha", name="Alpha", local=True, current=False)]
+
+    monkeypatch.setattr(app_module._REGISTRY, "list", fake_list)
+    r = TestClient(app_module.control_app).get("/api/projects")
+    assert r.status_code == 200
+    assert seen["current"] is None
+    assert r.json() == {"items": [{"slug": "alpha", "name": "Alpha", "local": True, "current": False}]}
+
+
+def test_the_projects_route_marks_current_for_a_project_scoped_call(monkeypatch):
+    fake = _FakeProjectOrchestrator(project_id="alpha")
+    _register_fake_project("alpha", fake)
+    seen = {}
+
+    def fake_list(current=None):
+        seen["current"] = current
+        return [
+            ProjectRow(slug="alpha", name="Alpha", local=True, current=True),
+            ProjectRow(slug="beta", name="Beta", local=True, current=False),
+        ]
+
+    monkeypatch.setattr(app_module._REGISTRY, "list", fake_list)
+    try:
+        r = TestClient(app_module.control_app).get("/p/alpha/api/projects")
+        assert r.status_code == 200
+        assert seen["current"] == "alpha"
+        assert {row["slug"]: row["current"] for row in r.json()["items"]} == {
+            "alpha": True, "beta": False,
+        }
+    finally:
+        _forget_project("alpha")

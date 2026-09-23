@@ -355,40 +355,12 @@ SW.api = {
   testSettings: (patch) => request('/settings/test', { method: 'POST', body: patch }),
   project: () => request('/project'),
 
-  // The project this builder is bound to, first, followed by the viewer's other Sage Projects (#47).
-  // Only the first entry can be described in full: its display name, its untitled flag and its model
-  // are read from this container. The rest are Domino names and an id to attach by — a Sage overlay
-  // lives in the builder that owns it, and this one cannot read another's.
-  projects: async () => {
-    const [p, listing] = await Promise.all([
-      request('/project'),
-      request('/projects').catch(() => ({ items: [], provisioning: false })),
-    ]);
-    const here = {
-      id: p.id,
-      name: p.name || p.id,
-      untitled: !!p.untitled,
-      ownerName: 'you',
-      memberCount: 1,
-      appCount: 1,
-      planCount: 0,
-      model: p.model,
-      current: true,
-      // A fact about this container, not this project — and this row is the only one that
-      // describes the container the Workbench is running in.
-      provisioning: listing.provisioning !== false,
-    };
-    const elsewhere = (listing.items || [])
-      .filter((it) => it && it.id && !it.current)
-      .map((it) => ({ id: it.id, name: it.name || it.id, current: false }));
-    return [here, ...elsewhere];
-  },
+  // Every project the registry knows: local clones on this machine plus any `sage-*` Domino
+  // project the token can see that isn't cloned here yet (ONE-APP-PLAN.md §2.2). `current` marks
+  // whichever one this call was scoped to — the scope chip's own project, when it is the one
+  // asking; nothing, from the Projects home. `local: false` rows are not yet openable.
+  projects: () => request('/projects').then((listing) => listing.items || []),
   gallery: () => request('/gallery'),
-  openProject: (id) => request(`/projects/${encodeURIComponent(id)}/open`, { method: 'POST' }),
-  projectStatus: (id, workspaceId) =>
-    request(`/projects/status?project_id=${encodeURIComponent(id)}` +
-      (workspaceId ? `&workspace_id=${encodeURIComponent(workspaceId)}` : '')),
-  createProject: (name) => request('/projects', { method: 'POST', body: { name } }),
   resources: async () => {
     // Membership is a local file. Do not wait on the Domino listing or on /project
     // (which starts the preview) — a hard refresh otherwise paints Data (0) for seconds.

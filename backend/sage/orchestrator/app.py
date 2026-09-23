@@ -1170,26 +1170,25 @@ async def door_status(project_id: str, workspace_id: str | None = None) -> JSONR
 
 @control_app.get("/api/projects")
 async def list_projects() -> JSONResponse:
-    """The Sage Projects this viewer can open, for the scope chip (#47).
+    """The Projects home's list, and the scope chip's (ONE-APP-PLAN.md §2.2, §4 Phase 2 step 5).
 
-    sage-* only, and not by a filter of ours: the control plane's own list keeps a Domino project
-    only when its git repo carries the `sage-` prefix, so an ordinary Domino project this viewer
-    owns never appears in the chip.
+    Registry-backed, not `_provision.list_apps()`: a local project clone needs no Domino control
+    plane to be listed or opened, so this answers something even off Domino (a laptop with at least
+    one project already cloned here) — `_control_plane` being `None` only drops the remote half of
+    the merge (a `sage-*` Domino project this token can see but hasn't been cloned to this machine
+    yet), not the whole route. `local: false` rows are not yet openable (Phase 3's `clone()` is what
+    makes one openable); the Projects home shows them anyway rather than hiding what the token can
+    see, and says why picking one does nothing yet.
 
-    Empty off Domino, and empty is honest — a laptop run has no Projects to switch between. The
-    chip still shows the project this builder is bound to; that entry comes from /api/project.
+    `current` is set only when this call arrives already scoped to a project (through
+    `/p/<slug>/api/projects`, e.g. the in-Workbench scope chip) — the root-scope Projects home has
+    no current project to mark.
     """
-    if _provision is None:
-        return JSONResponse(content={"items": [], "provisioning": False})
-    current = os.environ.get("DOMINO_PROJECT_ID", "")
-    try:
-        projects = await run_in_threadpool(_provision.list_apps)
-    except Exception as e:
-        log.exception("chip: couldn't list this viewer's Sage Projects")
-        return JSONResponse(status_code=502, content={"error": str(e)})
+    slug = current_orchestrator()._project_id if _CURRENT_ORCHESTRATOR.get() is not None else None
+    rows = await run_in_threadpool(_REGISTRY.list, slug)
     return JSONResponse(content={
-        "items": [{"id": p.id, "name": p.name, "current": p.id == current} for p in projects],
-        "provisioning": True,
+        "items": [{"slug": r.slug, "name": r.name, "local": r.local, "current": r.current}
+                  for r in rows],
     })
 
 
