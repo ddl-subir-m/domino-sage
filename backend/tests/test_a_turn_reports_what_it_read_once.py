@@ -138,12 +138,37 @@ def test_a_document_reference_draws_coverage_without_row_only_fields():
 
 
 @needs_node
+def test_a_pdf_reference_draws_selected_page_coverage():
+    event = {
+        "operation_id": "du_pdf",
+        "turn_id": "turn_a",
+        "operation": "document_reference",
+        "source": "requirements.pdf",
+        "source_type": "pdf",
+        "coverage": {
+            "total": 200, "processed": 200, "excluded": 0, "failed": 0,
+            "unfinished": 0, "source_bytes": 500, "selected_characters": 200,
+            "sent_characters": 200, "truncated": False, "source_pages": 8,
+            "selected_pages": [1, 3, 8], "pages_truncated": False,
+            "processed_pages": [1, 3, 8], "extracted_characters": 200,
+        },
+        "requests": [],
+    }
+
+    words = _draw({"type": "data_used", "turnId": "turn_a", "events": [event]})["words"]
+
+    assert "Pages: 1, 3, 8" in words
+    assert "Whole document" not in words
+
+
+@needs_node
 @pytest.mark.parametrize(("status", "message"), [
     ("withheld", "Document content was withheld"),
     ("source_too_large", "exceeded the source-size limit"),
     ("not_text", "was not valid text"),
     ("heading_not_unique", "heading was missing or not unique"),
     ("empty_document", "contained no text to transfer"),
+    ("no_extractable_text", "had no extractable text"),
 ])
 def test_a_failed_document_reference_never_claims_that_content_was_prepared(status, message):
     event = {

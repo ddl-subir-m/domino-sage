@@ -1,8 +1,8 @@
 """Bounded preparation of explicitly referenced attachments.
 
-This is the common policy boundary for reference material.  Authorization is an exact attachment
-manifest match.  Extraction is typed.  The first handler is text/Markdown; later handlers must keep
-the same authorization and Data-used contract rather than opening another file door.
+This is the common policy boundary for reference material. Authorization is an exact attachment
+manifest match. Extraction is typed, and every handler keeps the same authorization and Data-used
+contract rather than opening another file door.
 """
 
 from __future__ import annotations
@@ -15,12 +15,17 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+from ..document_text import DocumentTextError, extract_docx, extract_pdf
+
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_SELECTED_CHARS = 8_000
 MAX_SELECTOR_CHARS = 200
+MAX_PDF_PAGES = 20
 
 _TEXT_SUFFIXES = frozenset({".txt", ".text"})
 _MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+_DOCX_SUFFIXES = frozenset({".docx"})
+_PDF_SUFFIXES = frozenset({".pdf"})
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 
 
@@ -48,6 +53,11 @@ class Prepared:
     status: str
     source_sha256: str
     selected_sha256: str
+    source_pages: int = 0
+    selected_pages: tuple[int, ...] = ()
+    processed_pages: tuple[int, ...] = ()
+    pages_truncated: bool = False
+    extracted_characters: int = 0
 
     def prompt_block(self) -> str:
         if self.status != "prepared":
@@ -56,10 +66,14 @@ class Prepared:
                 f"Status: {self.status}. {self.text}"
             )
         coverage = f"{self.sent_characters} of {self.selected_characters} characters"
-        if self.selected_selector:
+        if self.source_type == "pdf" and self.processed_pages:
+            coverage += f" from pages {', '.join(str(page) for page in self.processed_pages)}"
+        elif self.selected_selector:
             coverage += f' from heading "{self.selected_selector}"'
-        if self.truncated:
+        if self.sent_characters < self.selected_characters:
             coverage += "; truncated at the 8,000-character limit"
+        if self.pages_truncated:
+            coverage += "; page coverage stopped at the 20-page or 8,000-character bound"
         return (
             f"Prepared reference text from {self.source} ({coverage}).\n"
             "Use this user-provided reference as requirements for this turn.\n"
@@ -133,7 +147,8 @@ def _is_withheld(root: Path, authorized: Authorized, source: str,
     return any("file:" + identity in hidden for identity in identities)
 
 
-def prepare(authorized: Authorized, *, selector: str = "", prompt: str = "") -> Prepared | None:
+def prepare(authorized: Authorized, *, selector: str = "", prompt: str = "",
+            pages: Iterable[int] | None = None) -> Prepared | None:
     """Dispatch an authorized file through its typed bounded handler.
 
     `None` means no core handler owns this type.  It is not permission to read it generically.
@@ -141,7 +156,22 @@ def prepare(authorized: Authorized, *, selector: str = "", prompt: str = "") -> 
     kind = source_type(authorized.path)
     if not kind:
         return None
-    return _prepare_text(authorized, kind=kind, selector=selector, prompt=prompt)
+    requested = " ".join(str(selector or "").split())
+    if len(requested) > MAX_SELECTOR_CHARS:
+        return _failure(authorized.source, kind, "selector_too_long", "")
+    if kind in {"text", "markdown"}:
+        if pages is not None:
+            return _failure(authorized.source, kind, "page_selection_not_supported", requested)
+        return _prepare_text(authorized, kind=kind, selector=requested, prompt=prompt)
+    if kind == "docx":
+        if requested:
+            return _failure(authorized.source, kind, "heading_not_supported", requested)
+        if pages is not None:
+            return _failure(authorized.source, kind, "page_selection_not_supported", requested)
+        return _prepare_docx(authorized)
+    if requested:
+        return _failure(authorized.source, kind, "heading_not_supported", requested)
+    return _prepare_pdf(authorized, pages=pages)
 
 
 def prepare_explicit(root: Path, manifest: Iterable[dict], sources: Iterable[str], *,
@@ -185,6 +215,14 @@ def data_use(prepared: Prepared, *, purpose: str) -> tuple[dict, dict]:
         "sent_characters": prepared.sent_characters,
         "truncated": prepared.truncated,
     }
+    if prepared.source_pages:
+        coverage.update({
+            "source_pages": prepared.source_pages,
+            "selected_pages": list(prepared.selected_pages),
+            "processed_pages": list(prepared.processed_pages),
+            "pages_truncated": prepared.pages_truncated,
+            "extracted_characters": prepared.extracted_characters,
+        })
     event = {
         "operation_id": operation_id,
         "operation": "document_reference",
@@ -204,6 +242,7 @@ def data_use(prepared: Prepared, *, purpose: str) -> tuple[dict, dict]:
         "source": prepared.source,
         "source_type": prepared.source_type,
         "selector": prepared.selected_selector or None,
+        "pages": list(prepared.processed_pages) or None,
         "coverage": coverage,
         "truncated": prepared.truncated,
         "status": prepared.status,
@@ -214,9 +253,7 @@ def data_use(prepared: Prepared, *, purpose: str) -> tuple[dict, dict]:
 
 
 def _prepare_text(authorized: Authorized, *, kind: str, selector: str, prompt: str) -> Prepared:
-    requested = " ".join(str(selector or "").split())
-    if len(requested) > MAX_SELECTOR_CHARS:
-        return _failure(authorized.source, kind, "selector_too_long", "")
+    requested = selector
     try:
         size = authorized.path.stat().st_size
     except OSError:
@@ -272,8 +309,88 @@ def _prepare_text(authorized: Authorized, *, kind: str, selector: str, prompt: s
     )
 
 
+def _prepare_docx(authorized: Authorized) -> Prepared:
+    loaded = _load_source(authorized, "docx")
+    if isinstance(loaded, Prepared):
+        return loaded
+    raw, size, source_hash = loaded
+    try:
+        extracted = extract_docx(raw, max_xml_bytes=MAX_SOURCE_BYTES)
+    except DocumentTextError as error:
+        return _failure(authorized.source, "docx", error.status, "", source_bytes=size,
+                        source_sha256=source_hash)
+    return _prepared_text(authorized.source, "docx", extracted.render(), size, source_hash)
+
+
+def _prepare_pdf(authorized: Authorized, *, pages: Iterable[int] | None) -> Prepared:
+    loaded = _load_source(authorized, "pdf")
+    if isinstance(loaded, Prepared):
+        return loaded
+    raw, size, source_hash = loaded
+    try:
+        extracted = extract_pdf(
+            raw, pages=pages, max_pages=MAX_PDF_PAGES, max_characters=MAX_SELECTED_CHARS
+        )
+    except ImportError:
+        return _failure(authorized.source, "pdf", "extraction_unavailable", "",
+                        source_bytes=size, source_sha256=source_hash)
+    except DocumentTextError as error:
+        return _failure(authorized.source, "pdf", error.status, "", source_bytes=size,
+                        source_sha256=source_hash)
+    page_count = extracted.page_count
+    selected_pages = extracted.selected_pages
+    selected = extracted.render()
+    if not selected.strip():
+        return _failure(authorized.source, "pdf", "no_extractable_text", "",
+                        source_bytes=size, source_sha256=source_hash,
+                        source_pages=page_count, selected_pages=selected_pages)
+    return _prepared_text(
+        authorized.source, "pdf", selected, size, source_hash,
+        source_pages=page_count, selected_pages=selected_pages, processed_pages=extracted.pages,
+        pages_truncated=extracted.pages_truncated,
+        extracted_characters=extracted.extracted_characters,
+    )
+
+
+def _load_source(authorized: Authorized, kind: str) -> tuple[bytes, int, str] | Prepared:
+    try:
+        size = authorized.path.stat().st_size
+    except OSError:
+        return _failure(authorized.source, kind, "unavailable", "")
+    if size > MAX_SOURCE_BYTES:
+        return _failure(authorized.source, kind, "source_too_large", "", source_bytes=size)
+    try:
+        raw = authorized.path.read_bytes()
+    except OSError:
+        return _failure(authorized.source, kind, "unavailable", "", source_bytes=size)
+    return raw, size, hashlib.sha256(raw).hexdigest()
+
+
+def _prepared_text(source: str, kind: str, selected: str, size: int, source_hash: str, *,
+                   source_pages: int = 0, selected_pages: tuple[int, ...] = (),
+                   processed_pages: tuple[int, ...] = (), pages_truncated: bool = False,
+                   extracted_characters: int = 0) -> Prepared:
+    selected_chars = len(selected)
+    if not selected.strip():
+        return _failure(source, kind, "empty_document", "", source_bytes=size,
+                        source_sha256=source_hash, source_pages=source_pages,
+                        selected_pages=selected_pages)
+    sent = selected[:MAX_SELECTED_CHARS]
+    return Prepared(
+        source=source, source_type=kind, text=sent, requested_selector="",
+        selected_selector="", source_bytes=size, selected_characters=selected_chars,
+        sent_characters=len(sent), truncated=(len(sent) < selected_chars or pages_truncated),
+        status="prepared", source_sha256=source_hash,
+        selected_sha256=hashlib.sha256(selected.encode("utf-8")).hexdigest(),
+        source_pages=source_pages, selected_pages=selected_pages,
+        processed_pages=processed_pages, pages_truncated=pages_truncated,
+        extracted_characters=extracted_characters,
+    )
+
+
 def _failure(source: str, kind: str, status: str, selector: str, *, source_bytes: int = 0,
-             source_sha256: str = "") -> Prepared:
+             source_sha256: str = "", source_pages: int = 0,
+             selected_pages: tuple[int, ...] = ()) -> Prepared:
     messages = {
         "unavailable": "The referenced document is unavailable.",
         "source_too_large": "The referenced document exceeds the 8 MiB source limit.",
@@ -283,10 +400,19 @@ def _failure(source: str, kind: str, status: str, selector: str, *, source_bytes
         "selector_too_long": "The requested heading exceeds the 200-character selector limit.",
         "empty_document": "The referenced document contains no text to transfer.",
         "withheld": "The person or administrator withheld this document from model requests.",
+        "malformed_document": "The referenced document is malformed or corrupt.",
+        "encrypted_document": "The referenced document is encrypted and cannot be prepared.",
+        "document_xml_too_large": "The Word document XML exceeds the 8 MiB extraction limit.",
+        "no_extractable_text": "The PDF has no extractable text. OCR is not available.",
+        "invalid_page_selection": "PDF pages must be a non-empty list of one-based integers.",
+        "too_many_pages": "A PDF reference can select at most 20 unique pages.",
+        "page_out_of_range": "The PDF page selection is outside the document.",
+        "page_selection_not_supported": "Page selection is supported only for PDF documents.",
+        "extraction_unavailable": "PDF text extraction is unavailable in this Sage runtime.",
     }
     text = messages[status]
     return Prepared(source, kind, text, selector, "", source_bytes, 0, 0, False, status,
-                    source_sha256, "")
+                    source_sha256, "", source_pages, selected_pages)
 
 
 def _headings(text: str) -> list[tuple[int, str, int, int]]:
@@ -331,4 +457,8 @@ def source_type(path: Path | str) -> str:
         return "markdown"
     if suffix in _TEXT_SUFFIXES:
         return "text"
+    if suffix in _DOCX_SUFFIXES:
+        return "docx"
+    if suffix in _PDF_SUFFIXES:
+        return "pdf"
     return ""

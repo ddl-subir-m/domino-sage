@@ -223,8 +223,8 @@ export const files = {
     "listing as all of them. Operation sum calculates a CSV from its authorized path, " +
     "and operation analyze_text sends only the selected text column with stable record ids through the LLM Gateway, " +
     "validates exact id coverage, writes a result table and returns coverage. Use dataset=upload for uploads. " +
-    "Operation document selects at most 8,000 characters from one explicitly attached plain-text or Markdown path; " +
-    "use heading for an exact unique Markdown section. Use this for attached requirements, specifications and shells " +
+    "Operation document selects at most 8,000 characters from one explicitly attached text, Markdown, DOCX or searchable PDF path; " +
+    "use heading for an exact unique Markdown section or pages for up to 20 one-based PDF pages. Use this for attached requirements, specifications and shells " +
     "before any generic read, cat, grep or sed. Use CSV operations for totals and complaint analysis; do not read " +
     "unrelated raw rows into model context. " +
     "Respect explicit user limits.",
@@ -248,6 +248,8 @@ export const files = {
     result_name: { type: ["string", "null"], description: "One filename without a directory." + OPTIONAL },
     purpose: { type: ["string", "null"], description: "Purpose of this operation." + OPTIONAL },
     heading: { type: ["string", "null"], description: "Exact unique Markdown heading." + OPTIONAL },
+    pages: { type: ["array", "null"], items: { type: "integer" }, maxItems: 20,
+      description: "One-based PDF pages; duplicates are removed and pages are sorted." + OPTIONAL },
     path: {
       type: ["string", "null"],
       description: "One file below it." + OPTIONAL + " Then the Dataset is listed instead.",

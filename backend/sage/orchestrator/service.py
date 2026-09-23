@@ -12193,9 +12193,11 @@ class Orchestrator:
                 "and a bounded batch_size. It sends only the selected text and stable task-local IDs "
                 "through the LLM Gateway, rejects missing, duplicate, unknown or malformed returned "
                 "IDs as incomplete, writes a result table, and reports coverage. "
-                "For an attached plain-text or Markdown requirements document, specification or "
+                "For an attached text, Markdown, DOCX or searchable PDF requirements document, "
+                "specification or "
                 "shell, use live_read_files with operation=document, dataset=upload, its exact "
-                "authorized path, and an optional exact heading. It sends at most 8,000 characters "
+                "authorized path, an optional exact Markdown heading, or up to 20 one-based PDF "
+                "pages. It sends at most 8,000 characters "
                 "through the LLM Gateway. Use this before read, cat, grep or sed on that document. "
                 "Omit selected_fields for structure only. Respect explicit user limits; row_limit "
                 "is only for a requested limit. Do not read unrelated raw rows into model context. "
@@ -17383,19 +17385,19 @@ class Orchestrator:
         # where to read. This is orientation, not file contents; the agent must still read before
         # editing. Only the current app's src/ is listed, never attached data or sibling apps.
         source_note = self._build_source_note(project.app_for_turn().path)
-        # Explicit text/Markdown references take their typed path before the model can try a local
+        # Explicit document references take their typed path before the model can try a local
         # read. This is deliberately after the user row and after history-derived withholding is
         # armed, but before the first normal model request. The content rides only in the in-memory
         # attachment rendering; the event persisted below contains hashes and coverage, never text.
         if mention_files and is_approval:
             # Approval supplies every app attachment as a convenience list. It does not preserve
             # which attachments the person explicitly referenced in the approved request. Until
-            # #517 records that exact set, a text descriptor must stay content-free: `_resolve_mentions`
+            # #517 records that exact set, a document descriptor must stay content-free: `_resolve_mentions`
             # may otherwise put its 1,200-character preview into the first model request.
             for attachment in mention_files:
                 if live_reference.source_type(str(attachment.get("path") or "")):
                     attachment["detail"] = (
-                        "This text attachment was not prepared because this approval does not carry "
+                        "This document attachment was not prepared because this approval does not carry "
                         "an explicit structured reference."
                     )
         elif mention_files:
@@ -17430,7 +17432,7 @@ class Orchestrator:
                 if prepared is None:
                     if live_reference.source_type(source):
                         attachment["detail"] = (
-                            "This text attachment was not prepared because its exact attachment "
+                            "This document attachment was not prepared because its exact attachment "
                             "identity or storage target could not be authorized."
                         )
                     continue

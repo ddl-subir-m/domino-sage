@@ -2229,6 +2229,15 @@ window.SW = window.SW || {};
           selector_too_long: 'The requested heading exceeded the selector limit. No document text was prepared.',
           empty_document: 'The document contained no text to transfer.',
           unavailable: 'The document was unavailable. No document text was prepared.',
+          malformed_document: 'The document was malformed or corrupt. No document text was prepared.',
+          encrypted_document: 'The document was encrypted. No document text was prepared.',
+          document_xml_too_large: 'The Word document XML exceeded the extraction limit. No document text was prepared.',
+          no_extractable_text: 'The PDF had no extractable text. No document text was prepared.',
+          invalid_page_selection: 'The PDF page selection was invalid. No document text was prepared.',
+          too_many_pages: 'The PDF selection exceeded the 20-page limit. No document text was prepared.',
+          page_out_of_range: 'The PDF page selection was outside the document. No document text was prepared.',
+          page_selection_not_supported: 'This document type does not support page selection. No document text was prepared.',
+          extraction_unavailable: 'PDF text extraction was unavailable. No document text was prepared.',
         })[event.status] || 'Document preparation failed. No document text was prepared.';
         const source = String(event.source || 'unknown source');
         return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
@@ -2239,7 +2248,9 @@ window.SW = window.SW || {};
           documentPrepared
             ? h('p', null,
               `${coverage.sent_characters || 0} of ${coverage.selected_characters || 0} characters prepared. `,
-              event.selected_selector ? `Heading: ${event.selected_selector}. ` : 'Whole document. ',
+              coverage.processed_pages?.length
+                ? `Pages: ${coverage.processed_pages.join(', ')}. `
+                : event.selected_selector ? `Heading: ${event.selected_selector}. ` : 'Whole document. ',
               coverage.truncated ? 'The selected text was truncated.' : 'The selected text was complete.')
             : documentOperation
               ? h('p', null, documentFailure)
