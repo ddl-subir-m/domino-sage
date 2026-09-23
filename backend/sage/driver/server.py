@@ -2,7 +2,7 @@
 
 Spawns one `opencode serve` per container (sessions are scoped by location.directory, so one
 server handles all project workspaces — matches D9). Discovers the server URL from stdout.
-Mirrors ViteSupervisor's spawn/discover/stop shape.
+Mirrors UvicornSupervisor's spawn/discover/stop shape.
 """
 from __future__ import annotations
 

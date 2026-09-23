@@ -1,7 +1,7 @@
 # Sage Workbench — Environment
 
-One Domino Environment image that carries Sage's code, the agent runtime (OpenCode), and a warm
-React+Vite template with baked `node_modules`. Chat and Build are one orchestrator process.
+One Domino Environment image that carries Sage's code, the agent runtime (OpenCode), and the
+no-build fastapi-antd template. Chat and Build are one orchestrator process.
 
 Two launch paths, same process:
 
@@ -134,11 +134,8 @@ that cannot reach the host boots the image it already has, which is the pre-exis
 
 Two things to know before you switch it on:
 
-- **`reset --hard`, never `git clean`.** The baked `node_modules` (202MB) and `.venv` are gitignored,
-  so a reset leaves them; a clean would delete both and leave the workspace unbootable.
-- **A template dependency change still needs a rebuild.** The reset updates
-  `template/react-vite/package-lock.json` but not the `node_modules` baked beside it. `app.sh`
-  hashes that lockfile either side of the reset and prints a `STALE` warning when it moves. Heed it.
+- **`reset --hard`, never `git clean`.** The baked `.venv` is gitignored, so a reset leaves it; a
+  clean would delete it and leave the workspace unbootable.
 
 Leave it off anywhere you treat as production, so a published Built App keeps running the image it
 was tested against.

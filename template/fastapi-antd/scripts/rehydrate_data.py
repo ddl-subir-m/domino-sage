@@ -12,9 +12,8 @@ execution starts, so what the App's hardware already has on disk is linked, not 
 Domino data library, for what the mounts could not provide — a Dataset shared from another project,
 or one added after the execution started — downloaded the same way the builder read them.
 
-The react-vite stack splits these across a Node script and this one, because that stack's first step
-has to run where Node is the only thing sure to be present. A fastapi-antd app is Python end to end,
-so both halves live here.
+fastapi-antd is the one stack Sage seeds (#490, one-app pivot) and it is Python end to end, so both
+steps live here in one script.
 """
 from __future__ import annotations
 

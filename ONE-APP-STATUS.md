@@ -231,6 +231,70 @@ a judgment call the plan didn't spell out.
       now would be dead code with no consumer, against CLAUDE.md's "no half-finished
       implementations." Revisit in Phase 4/5 when there's a reader for it.
 
+## IMPORTANT CORRECTION (found after the section below was first written)
+
+The original "~40 files" inventory was built by grepping the literal string `react-vite`/`REACT_VITE`.
+That undercounts: several files use a fake `src/App.tsx`-shaped fixture, or patch the now-removed
+`ViteSupervisor`/`link_warm_deps`, **without ever spelling "react-vite"**. Found this by actually
+running the suite and, critically, by **verifying against a baseline** (CLAUDE.md's "a red in a
+file your diff never opened" protocol) rather than assuming every red test was this pivot's fault:
+
+1. Ran the full suite once (background), then a scoped re-run excluding the known 39 files —
+   still found 138 failed / 50 errors. Investigated rather than assumed these were all new work.
+2. **50 errors, one root cause, already fixed this session:** `FakeVite`/`_fake_preview` fixtures in
+   `test_incoming_changes.py`, `test_switch_app.py`, and
+   `test_what_a_turn_waits_for_before_its_first_inference.py` (plus 5 more files that import fixtures
+   from `test_incoming_changes.py`: `test_a_resolved_merge_can_be_undone.py`,
+   `test_conflict_resolution_reaches_the_files.py`, `test_pull_latest_rejected_push.py`,
+   `test_unsent_work_is_a_problem_a_person_can_see.py`, `test_unsent_work_reaches_the_remote.py`) all
+   did `monkeypatch.setattr(svc, "ViteSupervisor", FakeVite)` — a symbol this session's edits removed
+   from `orchestrator/service.py`'s namespace. **Fixed**: retargeted all three defining sites to
+   `monkeypatch.setattr(svc, "UvicornSupervisor", FakeVite)` (the class body needed no other change).
+   Verified: those 3 files + their importers → **98/98 pass**.
+3. **Many of the remaining ~30 FAILED files are NOT regressions — verified against baseline, not
+   assumed.** Used `git stash` / `git stash pop` to run the identical 24-file set against the
+   ORIGINAL pre-session code, then diffed the two failure lists (`comm -13`). Of 138 failures across
+   those 24 files on modified code, **96 fail identically on the unmodified baseline** — pre-existing,
+   environment-specific (publish/provision/control-plane tests, e.g. `test_publish_guard.py`,
+   `test_provision_credentials.py`, `test_the_control_plane_routes_speak_the_packs_words.py`; sample
+   check showed `publish_available()`'s dogfood-safety check tripping because `/mnt/code` really is
+   the mounted repo in this sandbox — unrelated to the one-app pivot, not this session's problem to
+   fix). **Only the diffed set below is real, session-caused breakage.**
+4. **The verified, real regression list** (`comm -13 baseline modified` — 42 tests, 7 files, none
+   of them in the original 39-file grep list except `test_workspace.py` which was already known):
+   - `tests/test_a_broken_tool_call_ends_the_build_out_loud.py` (1 test)
+   - `tests/test_chat_and_build_get_their_own_context.py` (14 tests — likely the biggest of this
+     batch; not yet root-caused beyond "probably the same `src/App.tsx`-shaped fixture pattern as
+     `test_scope.py`" — confirm before assuming)
+   - `tests/test_scope.py` (6 tests) — **root cause confirmed**: builds a fake `src/App.tsx` and
+     calls `Orchestrator._source_paths`, which now reads `FASTAPI_ANTD.source_globs =
+     ("*.py", "static/**/*")` instead of react-vite's `("src/**/*",)`, so the fake file is never
+     matched. Fixture needs rebuilding as `static/app.js`-shaped.
+   - `tests/test_snapshot.py` (2 tests, "excluded_dirs" — check against `_SCAN_SKIP_DIRS`/git-ignore
+     assumptions, not yet root-caused)
+   - `tests/test_the_chat_prompt_lets_the_thread_keep_findings_under_sage_threads.py` (1 test)
+   - `tests/test_unbind_refs.py` (8 tests — likely same `src/`-fixture pattern as `test_scope.py`,
+     not yet confirmed)
+   - `tests/test_workspace.py` (9 tests — already catalogued above: 3 `link_warm_deps` tests to
+     delete outright, others need the `_fake_template` helper reshaped to fastapi-antd)
+5. **This means the true remaining test-suite scope is the original 39-file list PLUS these 7 more**,
+   not the 200-file list a naive broader grep (`node_modules`, `package.json`, `vite.config`, etc.)
+   would suggest — that grep is dominated by false positives from unrelated fixtures using those as
+   generic filenames. Trust this diffed list over any single-signal grep.
+6. **Process note for whoever continues this**: the `git stash`/`stash pop` round-trips above were
+   verified restored correctly each time (`git status --short` count and a content spot-check on
+   `stack.py`/`AGENTS.md`/`test_switch_app.py` before proceeding) — no work was lost. But this is a
+   risky pattern in a session with this much uncommitted state; a next session doing the same kind of
+   baseline check should consider a worktree instead if the repo's multi-session conventions
+   (CLAUDE.md's "Working alongside a landing session") make a bare stash riskier than it was here.
+
+**An unrequested commit exists on this branch and needs the user's attention.** `git log` shows
+`fc7ff826 "phs0"` sitting on `one-app-pivot-Etan`, containing exactly this session's `git rm -r
+template/react-vite` (39 files) — content is correct, but **no one in this session ran `git commit`**.
+It must have been created by some automated mechanism (a checkpoint/auto-commit feature, a hook —
+unknown which). Per this repo's CLAUDE.md ("NEVER commit changes unless the user explicitly asks"),
+flag this to the user rather than deciding on their behalf whether to keep, amend, or reset past it.
+
 ## Full-suite state at end of this session (2026-09-22)
 
 A full `cd backend && uv run --extra dev pytest -q -n auto` was kicked off in the background as this

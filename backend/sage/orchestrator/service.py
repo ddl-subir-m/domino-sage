@@ -60,7 +60,7 @@ from ..liveread import result as live_result
 from ..liveread import run as live_read
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
-from ..preview.supervisor import UvicornSupervisor, ViteSupervisor
+from ..preview.supervisor import UvicornSupervisor
 from ..provision import naming
 
 # The 404 the publish path has to tell from every other failure (#80). A runtime import, unlike the
@@ -182,7 +182,7 @@ from ..workspace.manager import (
     remove_ignore_line,
 )
 from ..workspace.snapshot import TurnSnapshot
-from ..workspace.stack import stack_of
+from ..workspace.stack import STACKS, stack_of
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     FINDINGS_MAX,
@@ -541,13 +541,11 @@ _ENTRY_POINT = "app.sh"
 # none.
 
 
-def _supervisor_for(workspace: Path, base_prefix: str):
-    """The preview server for the app at `workspace`, by its stack (#490): the template's Vite dev
-    server for a react-vite app, the app's own uvicorn for a fastapi-antd one. Reads the two classes
-    off this module at call time, so a test that stands in for `ViteSupervisor` still does."""
-    if stack_of(Path(workspace)).preview == "uvicorn":
-        return UvicornSupervisor(workspace, base_prefix)
-    return ViteSupervisor(workspace, base_prefix)
+def _supervisor_for(workspace: Path, base_prefix: str) -> UvicornSupervisor:
+    """The preview server for the app at `workspace`: the app's own uvicorn, reloaded on change.
+    Reads the class off this module at call time, so a test that stands in for it still does.
+    There is only one stack now, so there is nothing left to pick between (#490)."""
+    return UvicornSupervisor(workspace, base_prefix)
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
 # the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
@@ -2165,10 +2163,8 @@ _INSTALL_VERBS = frozenset({("npm", "install"), ("npm", "i"), ("npm", "add"), ("
 def _install_attempt(command: str) -> list[str]:
     """Packages a shell command is trying to add. Empty when it isn't adding any.
 
-    Two jobs. It's the evidence behind "curated stack, revisit after real usage" — a running list of
-    what agents reach for and don't find baked in. And it flags a turn that is about to lose its
-    node_modules: npm won't install into a symlinked one, so it deletes the link during reify before
-    it knows the install resolves (see WorkspaceManager.link_warm_deps).
+    The evidence behind "curated stack, revisit after real usage" — a running list of what agents
+    reach for and don't find baked in.
 
     A bare `npm install` returns nothing — it's a reinstall, not a request for something new.
     """
@@ -4320,7 +4316,7 @@ def _phase_note(text: str, limit: int = 400) -> str:
 
 def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
                   notes: list[str] | None = None, retry_errors: str = "",
-                  entry_file: str = "src/App.tsx") -> str:
+                  entry_file: str = "static/app.js") -> str:
     """The prompt for ONE phase of a phased build, sent into a brand-new session.
 
     Deliberately NOT the whole plan: carrying it would re-pay the context a fresh session just
@@ -4826,7 +4822,7 @@ class Project:
     # which is also the git repo root. Two surfaces, two directories (ADR-0008): ask this one for
     # what the Project owns, `workspace` for what the app owns, and neither for the other's.
     record: ProjectRecord
-    supervisor: ViteSupervisor
+    supervisor: UvicornSupervisor
     queries: PreviewQueries
     control: ModelControl
     shim: EnforcementShim
@@ -6390,8 +6386,7 @@ class Orchestrator:
         if self._project is None:
             return self.project(start_preview=False, seed_app=True)
         self._wm.ensure(self._project_id, seed_app=True)
-        if self._prepare_app_files():
-            self._restart_preview_for_config_change(self._project)
+        self._prepare_app_files()
         # The app may have been seeded just now, from a template that carries the pack's tokens and
         # no instructions block.
         self._voice_agents_md(self._project)
@@ -6928,8 +6923,7 @@ class Orchestrator:
         # emptying that one under it would leave its end-of-turn repairs with nothing to restore
         # from (see Project.turn_attached and _restore_attachments).
         project.attached = []
-        if self._prepare_app_files():
-            self._restart_preview_for_config_change(project)
+        self._prepare_app_files()
         self._voice_agents_md(project)   # the app being bound to may have been seeded just now
         self._splice_instructions(project)
         self._rehydrate_attached(project)
@@ -7022,15 +7016,9 @@ class Orchestrator:
                 {"type": "plan-superseded", "planId": earlier["id"], "by": new_plan_id,
                  "byConversation": conversation}, origin)
 
-    def _prepare_app_files(self) -> bool:
-        preview_config_changed = self._wm.refresh_preview_config()
+    def _prepare_app_files(self) -> None:
         self._wm.ensure_llm_helper()
         self._wm.refresh_owned_sources()
-        return preview_config_changed
-
-    def _restart_preview_for_config_change(self, project: Project) -> None:
-        project.supervisor.stop()
-        project.supervisor = _supervisor_for(project.workspace.path, domino_base_prefix())
 
     def _ensure_preview_running(self, project: Project) -> None:
         try:
@@ -7998,6 +7986,9 @@ class Orchestrator:
             # written and committed. Last of the gates, so a turn that was never going to run
             # doesn't stop to discuss the remote first.
             app = project.app_for_turn()
+            if app.exists() and app.stack_name not in STACKS:
+                yield from self._stack_unsupported_refusal(prompt, app)
+                return
             if skip_incoming_gate:
                 # The offer ANSWERED, not the gate bypassed — the check the offer just ran is what
                 # `_incoming_now` holds. Remembered against the remote commit it was about, so a
@@ -14273,6 +14264,25 @@ class Orchestrator:
             if ev["type"] != "user":  # the composer already rendered the user's own bubble
                 yield ev
 
+    def _stack_unsupported_refusal(self, prompt: str, app: Workspace):
+        """Events for a Build turn asked of an app whose stack this Sage no longer carries.
+
+        A project cloned from before the one-app pivot (2026-09-22) can hold a Built App seeded
+        from `react-vite`, which this Sage no longer serves, previews or knows how to refresh
+        (`workspace/stack.py`). Its files are real; only the backend's machinery for that shape is
+        gone. Refused here, before a turn touches `.stack.*` for real (re-seeding, publishing,
+        writing a helper), so the retirement of that machinery reads as a plain sentence instead of
+        a crash. Same event shape as `_ask_mode_refusal`; Chat is untouched by this app either way,
+        since Chat never asks `.stack` for a specific app's shape."""
+        project = self.project()
+        message = "This app was built with a stack this Sage no longer carries. Open it in Chat instead."
+        for ev in ({"type": "user", "text": prompt},
+                   {"type": "ask-blocked", "prompt": prompt, "message": message},
+                   {"type": "done", "ok": False, "decision": "stack not carried"}):
+            app.append_history(ev, project.build_conversation)
+            if ev["type"] != "user":
+                yield ev
+
     def _reset_offer(self, prompt: str, mentions: list[str] | None = None,
                      resources: list[dict] | None = None):
         """Events for "start over" — the control, not the reset (#36).
@@ -16135,11 +16145,6 @@ class Orchestrator:
 
         with timing.span("setup.seed"):
             project = self._ensure_seeded()
-        # Repair the warm node_modules before the turn, not only at attach — attach happens once per
-        # process, and an agent-run `npm install` can destroy the symlink mid-session and leave the
-        # workspace unable to build or preview (see WorkspaceManager.link_warm_deps).
-        if self._wm.link_warm_deps():
-            log.warning("workspace: restored the warm node_modules — an npm install had removed it")
         with timing.span("setup.opencode"):
             client = self._ensure_opencode()
         # A phase runs in the throwaway session its caller made; everything else reuses the project's.
@@ -16982,15 +16987,17 @@ class Orchestrator:
             "published, so a call written against it works while you build and breaks the moment "
             "it ships."
         )
+        entry_file = project.workspace.stack.entry_file
         LEAK_FIX_NUDGE = (
             "You copied attached data into the app's source, which leaks it into git — attached files "
             "live under public/data/ (gitignored on purpose) and must be READ from there at runtime, "
-            "not duplicated into src/. Delete the copy you made and load the data by fetching its "
-            "served path instead (see the 'Attached data' section in AGENTS.md for the exact URL)."
+            "not duplicated into the app's own code. Delete the copy you made and load the data by "
+            "fetching its served path instead (see the 'Attached data' section in AGENTS.md for the "
+            "exact URL)."
         )
         IMPLEMENT_NUDGE = (
             "You've explored and planned but haven't written any code yet. Now IMPLEMENT the "
-            "request: edit the project files (start with src/App.tsx) so the app actually builds "
+            f"request: edit the project files (start with {entry_file}) so the app actually builds "
             "what was asked. Make the code changes now."
         )
         RUNTIME_FIX_NUDGE = (
@@ -17305,8 +17312,6 @@ class Orchestrator:
                                         if tool == "bash" and (pkgs := _install_attempt(detail)):
                                             # The data behind "curated stack, revisit after real
                                             # usage": what agents reach for and can't find baked in.
-                                            # Also the warning that this turn may be about to lose
-                                            # its node_modules (see link_warm_deps).
                                             log.warning("dependency wanted: %s — via `%s`",
                                                         ", ".join(pkgs), detail)
                                         yield {"type": "active", "tool": tool, "detail": detail}
@@ -23630,26 +23635,23 @@ class Orchestrator:
         if project.attached:
             # Be prescriptive: give the EXACT disk path and the EXACT served URL per file. Agents
             # otherwise guess a flat `/data/<name>` (the files are nested under a dataset slug), hit
-            # the SPA fallback (index.html) instead of the CSV, and "fix" it by copying the file into
-            # src/ — which leaks the data into git (public/data/ is gitignored on purpose).
+            # a 404 instead of the CSV, and "fix" it by copying the file into the app's own source —
+            # which leaks the data into git (public/data/ is gitignored on purpose).
             lines += [
                 "## Attached data", "",
                 ("The user attached the files below. Each lives on disk at the path shown (read or "
                  "edit it there) and the running app serves it at the URL shown. Load one in app code "
-                 "by fetching it RELATIVE TO THE APP BASE, so it resolves in both the dev preview and "
-                 "the published app:"), "",
+                 "with `sage.url(...)`, so it resolves in both the dev preview and the published app:"),
+                "",
                 "```js",
-                "// import.meta.env.BASE_URL always ends in '/', so this string is a valid relative",
-                "// URL in both the dev preview and the published app.",
-                'const url = import.meta.env.BASE_URL + "data/<slug>/<name>";',
-                "const text = await fetch(url).then((r) => r.text());",
+                '// `sage.url` is on the page already (static/sage/appBase.js); nothing to import.',
+                'const text = await fetch(sage.url("data/<slug>/<name>")).then((r) => r.text());',
                 "```", "",
-                ("Do NOT wrap it in `new URL(path, import.meta.env.BASE_URL)` — BASE_URL is a path "
-                 "(e.g. `/`), not an absolute URL, so `new URL()` throws `Invalid base URL` and crashes "
-                 "the app on load. Just concatenate as shown. "
-                 "Do NOT fetch a leading-slash path like `/data/...` — it breaks under the app's base "
-                 "prefix. Do NOT copy these files into `src/`: `public/data/` is gitignored on purpose, "
-                 "so copying leaks the data into the app's git repo. @mention a file by its disk path."), "",
+                ("Do NOT fetch a leading-slash path like `/data/...` — it works in the preview only to "
+                 "break once published, because a published app is served under a path its own code "
+                 "cannot know. Do NOT copy these files into `static/`: `public/data/` is gitignored on "
+                 "purpose, so copying leaks the data into the app's git repo. @mention a file by its "
+                 "disk path."), "",
                 # grep/ripgrep skips ignored paths AND does not follow symlinks; every attachment is
                 # both. So a search over one silently returns nothing and the agent concludes the
                 # value isn't there — a wrong answer, not an error. Reading the exact path works.
@@ -23932,8 +23934,7 @@ class Orchestrator:
             return True
         owned = project.workspace.helpers.owned
         try:
-            # Where a call can appear is the stack's to say (#490): `src/*.ts*` for react-vite, the
-            # page's own scripts for fastapi-antd.
+            # Where a call can appear is the stack's to say (#490): the page's own scripts.
             for glob in project.workspace.stack.query_globs:
                 for path in root.glob(glob):
                     # Short-circuits left to right, so a helper Sage owns is never read at all.

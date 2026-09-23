@@ -1,10 +1,10 @@
-"""The query half of a published app's server, shared by every stack Sage can seed.
+"""The query half of a published app's server.
 
 Named queries against the Data Sources the app is bound to (#13 for the boundary, #14 for the
 executor behind it), the token-sidecar probe they depend on (ADR-0002), and one small HTTP route that
 answers them. Three callers share it, and that is the reason it is one file:
 
-  - `serve.py`, the react-vite static server, mounts the route beside the build it serves;
+  - `sage_serve.py` mounts the route beside the static tree it serves;
   - Sage's own preview runs the route alone on loopback while the app is still being built (#24);
   - Sage loads this file by path (`backend/sage/resources/builtapp.py`) to ask whether a catalog the
     agent just wrote will actually run.
@@ -12,7 +12,7 @@ answers them. Three callers share it, and that is the reason it is one file:
 So the name lookup, the parameter binding, the row cap and every refusal sentence are the published
 app's own rather than an approximation that drifts from it.
 
-Stdlib for everything except the query itself, for the reason serve.py is: this ships in the
+Stdlib for everything except the query itself, for the reason `sage_serve.py` is: this ships in the
 creator's app repo and imports under any python3 the image carries. The Domino SDK is imported late,
 inside the executor, because it is the one dependency here that cannot be installed and might be
 absent — `app.sh` picks an interpreter that carries it, and an app that reads no Data Source never

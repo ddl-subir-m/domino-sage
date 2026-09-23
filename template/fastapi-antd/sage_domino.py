@@ -65,6 +65,13 @@ PLATFORM_READS = (
     "/v4/datasetrw/datasets-v2",    # the only listing that carries taxonomy tags
     "/v4/datasetrw/snapshots/",     # every snapshot of one Dataset (`/api/…/snapshots/{id}` 404s here)
     "/v4/datasetrw/snapshot/",      # one snapshot: `files/recursive`, `file/raw?path=`
+    # namespaces/tags/entities — discovering Datasets by tag (LESSONS_LEARNED.md §6). Named here,
+    # not yet reachable: unlike every other family above, Taxonomy needs the EXTERNAL cluster URL
+    # and can 404 on `platform_host()` below (`DOMINO_API_HOST`, in-cluster) even when Governance
+    # and Core both answer fine there. §6 derives that URL from the sidecar token's own `iss`
+    # claim; this relay does not do that yet (one-app pivot, Phase 1 risk #9) — a call through this
+    # family will fail on a cluster where the in-cluster host does not also serve Taxonomy.
+    "/api/taxonomy/v1/",
 )
 _ONE_SEGMENT = "/api/users/v1/user/"
 _ONE_SEGMENT_DEPTH = len(_ONE_SEGMENT.strip("/").split("/")) + 1   # the family, plus the id

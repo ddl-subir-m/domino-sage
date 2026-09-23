@@ -9,8 +9,7 @@ have to write:
     files cannot know, see `inject_base_shim`);
   - the static tree and the attachments under `public/data/`, served with `no-cache` so an edit
     reaches the preview on the next request and a republish reaches every viewer;
-  - the app's named queries, answered by `sage_queries.py` beside this file — the same module the
-    react-vite stack's server mounts, so the two stacks cannot disagree about a refusal;
+  - the app's named queries, answered by `sage_queries.py` beside this file;
   - the boot lines Domino surfaces in the App's log: cold start, the token sidecar, the data
     library, the platform API host.
 

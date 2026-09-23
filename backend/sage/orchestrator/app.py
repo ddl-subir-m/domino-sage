@@ -298,7 +298,7 @@ def _build_provision_service(control_plane):
     return ProvisionService(
         control_plane,
         GitHubProvider(token_provider=token_provider),
-        Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
+        Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "fastapi-antd")),
         push_token_provider=token_provider,
     )
 
@@ -440,7 +440,7 @@ _provision = _build_provision_service(_control_plane)
 _door = _build_door(_provision, _control_plane)
 orchestrator = Orchestrator(
     workspace_dir=_WORKSPACE_DIR,
-    template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "react-vite")),
+    template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "fastapi-antd")),
     gateway=_gateway,
     catalog=_build_catalog(),
     project_id=os.environ.get("DOMINO_PROJECT_NAME", _WORKSPACE_DIR.name),
@@ -1308,7 +1308,7 @@ def _skill_diag() -> dict:
       the server's own  — the control. It answers for an instance no turn ever uses
       `.sage/chat-work` — does the globally seeded skill reach a CHAT turn
       `apps/<appId>`    — does `data-table` reach a BUILD turn. That one is NOT global: it ships in
-                          `template/react-vite/.opencode/skills/`, and a Build session finds it by
+                          `template/fastapi-antd/.opencode/skills/`, and a Build session finds it by
                           the up-walk from its own directory. Two different routes, one question.
 
     Read the control beside the other two. Control full and chat-work empty is discovery, not
@@ -4820,6 +4820,34 @@ def _install_opencode_tools(source_dir: Path, global_dir: Path) -> None:
                   "to Python, which puts rows in the model's context", dest, e)
 
 
+#: The skill name `helpers_for`-style code and AGENTS.md's platform-API gate both point at.
+_PLATFORM_SKILL_NAME = "domino-platform-api"
+#: The frontmatter `description` OpenCode filters skills on (≤300 chars) — the gate itself, so a
+#: request that never names one of these words never pays to load the reference behind it.
+_PLATFORM_SKILL_DESCRIPTION = (
+    "Reference for Domino's Datasets, Governance and Taxonomy APIs: dataset/snapshot lookup, "
+    "governance approval status, tag-based discovery, and the traps that produce silently-wrong "
+    "results. Load only when the request names a snapshot, version, approval, policy, tag, or "
+    "which datasets exist."
+)
+
+
+def _platform_api_skill_text(source_dir: Path) -> str | None:
+    """`~/.config/opencode/skills/domino-platform-api/SKILL.md`'s content: frontmatter, then the
+    body of `LESSONS_LEARNED.md` unchanged. None when that file cannot be read.
+
+    `LESSONS_LEARNED.md` stays at the repo root as the file people actually edit (#490, one-app
+    pivot) — this is the one place its bytes are copied anywhere, so editing it and rebuilding is
+    the whole update path, with no second copy to keep in step. `test_sage_chat_prompt.py`-style:
+    a test pins this function's output against the live file so the two cannot drift unnoticed.
+    """
+    try:
+        body = (source_dir / "LESSONS_LEARNED.md").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return f"---\nname: {_PLATFORM_SKILL_NAME}\ndescription: {_PLATFORM_SKILL_DESCRIPTION}\n---\n\n{body}"
+
+
 def _install_opencode_skills(source_dir: Path, global_dir: Path) -> None:
     """Put the seeded SKILLs where OpenCode reads them, one directory each.
 
@@ -4847,6 +4875,12 @@ def _install_opencode_skills(source_dir: Path, global_dir: Path) -> None:
 
     Best effort and loud on failure: without this the method is simply absent, and an agent with no
     method still answers, just badly and without saying so.
+
+    One skill here is not a directory under `template/skills/` like the rest: `domino-platform-api`
+    is GENERATED from `LESSONS_LEARNED.md` at this same install (#490, one-app pivot) — the file
+    people actually edit, frontmatter plus body, loaded on demand rather than inlined into every
+    AGENTS.md. It still goes through every rule above (description check, prune-on-rename, the
+    collision warning), because none of those rules are about where a skill's bytes came from.
     """
     import json
     import shutil
@@ -4857,6 +4891,12 @@ def _install_opencode_skills(source_dir: Path, global_dir: Path) -> None:
     except OSError as e:
         log.error("[wiring] could NOT read %s (%s) — Sage skills will be absent", src_dir, e)
         return
+    platform_skill = _platform_api_skill_text(source_dir)
+    if platform_skill is None:
+        log.error("[wiring] could NOT read %s — the domino-platform-api skill will be absent",
+                   source_dir / "LESSONS_LEARNED.md")
+    elif _PLATFORM_SKILL_NAME not in names:
+        names = sorted([*names, _PLATFORM_SKILL_NAME])
     if not names:
         log.error("[wiring] no Sage skills at %s — they will be absent from every turn", src_dir)
         return
@@ -4880,7 +4920,8 @@ def _install_opencode_skills(source_dir: Path, global_dir: Path) -> None:
         manifest.write_text(json.dumps(sorted(set(was) | set(names))))
         landed = []
         for name in names:
-            if not _skill_description(src_dir / name / "SKILL.md"):
+            generated = name == _PLATFORM_SKILL_NAME
+            if not generated and not _skill_description(src_dir / name / "SKILL.md"):
                 log.error("[wiring] skill %s has no usable frontmatter description — with none at "
                           "all OpenCode offers it to NO turn, and with an empty one it offers the "
                           "model nothing to decide on. Silent either way, until this line is read",
@@ -4890,10 +4931,14 @@ def _install_opencode_skills(source_dir: Path, global_dir: Path) -> None:
                             "replaced — that slot is shared by every checkout on this machine",
                             name, dest)
             shutil.rmtree(dest / name, ignore_errors=True)
-            # `dirs_exist_ok` because the line above is allowed to fail: a half-removed directory
-            # would otherwise raise `FileExistsError` here and take every skill sorted after this
-            # one with it.
-            shutil.copytree(src_dir / name, dest / name, dirs_exist_ok=True)
+            if generated:
+                (dest / name).mkdir(parents=True, exist_ok=True)
+                (dest / name / "SKILL.md").write_text(platform_skill)
+            else:
+                # `dirs_exist_ok` because the line above is allowed to fail: a half-removed
+                # directory would otherwise raise `FileExistsError` here and take every skill
+                # sorted after this one with it.
+                shutil.copytree(src_dir / name, dest / name, dirs_exist_ok=True)
             landed.append(name)
         gone, stuck = [], []
         for name in (n for n in was if n not in names):

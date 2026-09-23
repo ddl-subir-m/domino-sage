@@ -91,7 +91,7 @@ def _no_waiting(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fake_preview(monkeypatch):
     FakeVite.made = []
-    monkeypatch.setattr(svc, "ViteSupervisor", FakeVite)
+    monkeypatch.setattr(svc, "UvicornSupervisor", FakeVite)
     monkeypatch.setattr(svc, "PreviewQueries", FakeQueries)
     yield
     FakeVite.made = []

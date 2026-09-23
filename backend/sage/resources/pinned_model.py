@@ -7,7 +7,7 @@ Which file each of those is depends on the app — see `app_helpers`.
 
 Pinned, and pinned in the app's OWN repo, for two reasons. The app answers the same way for everyone
 who opens it, rather than resolving a model per viewer. And the published app has no Sage around it
-and no environment of its own to read — `app.sh` runs `vite build` in a container that has never
+and no environment of its own to read — `app.sh` runs `uvicorn` in a container that has never
 heard of `GATEWAY_BASE_URL`, so anything the app needs at runtime has to be in the repo before it
 ships.
 
@@ -99,10 +99,8 @@ def render_config(aliases: list[Binding], base: str | None, project: str | None,
         "// chosen yet. See ./{helper}.{ext}.\n",
         helper=names.llm, ext=names.ext,
     )
-    if names.ext == "js":
-        # A fastapi-antd page loads this as a plain script (#490): a global, not a module export.
-        return f"{header}window.{names.llm}Config = {{\n{body},{models}}};\n"
-    return f"{header}export const {names.llm}Config = {{\n{body},{models}}};\n"
+    # A fastapi-antd page loads this as a plain script (#490): a global, not a module export.
+    return f"{header}window.{names.llm}Config = {{\n{body},{models}}};\n"
 
 
 def agents_block(aliases: list[Binding], sources: list[Binding],

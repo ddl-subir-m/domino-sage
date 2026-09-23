@@ -108,7 +108,7 @@ def unbound_alias_notice(calls: list[tuple[str, list[str]]]) -> str | None:
     the Build header (ADR-0021). It was the Resources panel until #144 took the act off that panel's
     rows. The act is named and not renamed: the door's label is `Use in {app}` and this sentence does
     not know the app's name, so it describes the label rather than substituting a different verb for
-    it — the same way `template/react-vite/src/appLlm.ts` does under the same constraint.
+    it — the same way `template/fastapi-antd/static/sage/appLlm.js` does under the same constraint.
     """
     names = sorted({a for _, aliases in calls for a in aliases})
     if not names:

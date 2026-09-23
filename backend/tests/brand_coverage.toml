@@ -130,14 +130,8 @@ shows_pack = true
 kind = "shell-dom"
 shows_pack = true
 
-[[surface]]
-kind = "agents-md"
-template = "react-vite"
-shows_pack = true
-exempt = ["builder-nouns-as-synonyms"]
-
-# The no-build stack's instructions (ADR-0067): the same synonyms block, the same exemption, plus
-# the one code identifier that spells a pack noun.
+# The one Built App stack's instructions (ADR-0067, one-app pivot): the synonyms block, its
+# exemption, plus the one code identifier that spells a pack noun.
 [[surface]]
 kind = "agents-md"
 template = "fastapi-antd"

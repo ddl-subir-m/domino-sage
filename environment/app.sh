@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # Sage Builder entrypoint. Boots the single-port orchestrator (Chat + Build) baked into the Environment.
 #
-# Sage's code + warm template are baked at /opt/sage (see environment/Dockerfile); the user's app
-# repo mounts at /mnt/code at runtime and IS the workspace. No runtime npm/uv installs — everything
-# was baked — so cold start is just "boot the server".
+# Sage's code + the no-build fastapi-antd template are baked at /opt/sage (see
+# environment/Dockerfile); the user's app repo mounts at /mnt/code at runtime and IS the workspace.
+# No runtime npm/uv installs — everything was baked — so cold start is just "boot the server".
 set -euo pipefail
 
 # Where Sage's own code lives. Point this at a mount for a fast inner dev loop (edit on /mnt/code,
 # no image rebuild): e.g. SAGE_APP_HOME=/mnt/code in a git-based sage-source project.
 export SAGE_APP_HOME="${SAGE_APP_HOME:-/opt/sage}"
-# The warm template is ALWAYS the baked /opt/sage copy — its node_modules are baked there (Dockerfile
-# npm ci) and nowhere else. Deliberately NOT tied to SAGE_APP_HOME: the fast dev loop points that at
-# /mnt/code to edit backend code, but the mount's template carries no warm deps, so following it there
-# would boot the preview cold. Override SAGE_TEMPLATE explicitly only to iterate on the template itself.
-export SAGE_TEMPLATE="${SAGE_TEMPLATE:-/opt/sage/template/react-vite}"
+# The template is ALWAYS the baked /opt/sage copy, deliberately NOT tied to SAGE_APP_HOME: the fast
+# dev loop points that at /mnt/code to edit backend code, and following it there for the template
+# too would seed from a tree mid-edit. Override SAGE_TEMPLATE explicitly only to iterate on the
+# template itself.
+export SAGE_TEMPLATE="${SAGE_TEMPLATE:-/opt/sage/template/fastapi-antd}"
 export SAGE_OPENCODE_CWD="${SAGE_OPENCODE_CWD:-$SAGE_APP_HOME}"   # where opencode.json lives
 
 # The workspace = the app's git checkout. In a Sage Builder workspace that's the mounted app repo
@@ -66,7 +66,7 @@ fi
 
 # Our node (official tarball at /usr/local/bin, v22) must beat BOTH conda's node and the base
 # image's stale /usr/bin/node (Debian bookworm ships v18.19.1, which lacks node:util styleText and
-# hard-fails rolldown/vite). /usr/local first — this PATH is inherited by the Vite + OpenCode children.
+# OpenCode needs newer). /usr/local first — this PATH is inherited by the OpenCode child.
 export PATH="/usr/local/bin:/usr/bin:${PATH}"
 hash -r 2>/dev/null || true
 echo "[sage] node=$(command -v node) $(node -v)  opencode=$(opencode --version 2>/dev/null || echo '<missing>')"
@@ -90,8 +90,8 @@ echo "[sage] app_home=$SAGE_APP_HOME workspace=$SAGE_WORKSPACE_DIR port=$SAGE_CO
 # Three rules hold this together:
 #   1. Fail open. `set -e` is on, so every step sits in an `if` or ends `|| true`. A container that
 #      cannot reach the host boots the image it already has — the pre-existing behaviour.
-#   2. `reset --hard`, NEVER `git clean`. The baked node_modules (202MB) and .venv are gitignored,
-#      so a reset leaves them alone while a clean would delete both and leave the workspace unbootable.
+#   2. `reset --hard`, NEVER `git clean`. The baked `.venv` is gitignored, so a reset leaves it alone
+#      while a clean would delete it and leave the workspace unbootable.
 #   3. The borrowed token is never exported and never reaches argv — it is set for the single `git
 #      fetch` that needs it, so it lands in neither `ps` nor the orchestrator's environment. That
 #      matters: sage-chat runs with `bash: allow`, so this process's env is readable by asking.
@@ -133,10 +133,6 @@ if [ "${SAGE_SELF_UPDATE:-0}" = "1" ]; then
     done
 
     _su_was="$(git -C "$SAGE_APP_HOME" rev-parse --short HEAD 2>/dev/null || echo '?')"
-    # Hash the template lockfile either side of the reset. A code-only update is free, but one that
-    # moved the template's dependencies leaves the baked node_modules stale and needs a real rebuild.
-    _su_lock="$SAGE_APP_HOME/template/react-vite/package-lock.json"
-    _su_lock_was="$(md5sum "$_su_lock" 2>/dev/null | cut -d' ' -f1 || true)"
 
     if [ -z "$_su_tok" ]; then
       echo "[sage] self-update: no HTTPS credential for $_su_host here — staying on $_su_was"
@@ -149,17 +145,13 @@ if [ "${SAGE_SELF_UPDATE:-0}" = "1" ]; then
       echo "[sage] self-update: reset failed — staying on $_su_was"
     else
       echo "[sage] self-update: $_su_was -> $(git -C "$SAGE_APP_HOME" rev-parse --short HEAD) ($_su_rev)"
-      if [ "$(md5sum "$_su_lock" 2>/dev/null | cut -d' ' -f1 || true)" != "$_su_lock_was" ]; then
-        echo "[sage] WARNING: the template lockfile moved. The baked node_modules are now STALE and"
-        echo "[sage]          the preview may fail to start. Rebuild the Environment to clear this."
-      fi
       # Cheap: measured at 0s when the lock is unchanged. It needs PyPI when it is not, so a failure
       # here is survivable — the venv the image built is still the one we boot with.
       if ! (cd "$SAGE_APP_HOME/backend" && uv sync --extra domino >/dev/null 2>&1); then
         echo "[sage] self-update: uv sync failed (offline?) — running the baked venv"
       fi
     fi
-    unset _su_tok _su_dir _su_host _su_rev _su_was _su_lock _su_lock_was
+    unset _su_tok _su_dir _su_host _su_rev _su_was
   fi
   unset _su_skip
 fi

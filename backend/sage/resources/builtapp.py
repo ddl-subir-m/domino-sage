@@ -30,8 +30,8 @@ from typing import Any
 
 from .bindings import Binding
 
-# The template directory IS the app template (`template/react-vite`, per SAGE_TEMPLATE), so these are
-# the same `sage_queries.py` and `sage_domino.py` that `_DEPLOY_FILES` copies into every app.
+# The template directory IS the app template (`template/fastapi-antd`, per SAGE_TEMPLATE), so these
+# are the same `sage_queries.py` and `sage_domino.py` that `_DEPLOY_FILES` copies into every app.
 _SERVE_REL = Path("sage_queries.py")
 _DOMINO_REL = Path("sage_domino.py")
 _MODULE_NAME = "sage_builtapp_serve"

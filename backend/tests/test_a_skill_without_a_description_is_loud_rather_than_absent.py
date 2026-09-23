@@ -20,6 +20,11 @@ def _source(tmp_path: Path, name: str, front: str) -> Path:
     (tmp_path / "template" / "skills" / name).mkdir(parents=True)
     (tmp_path / "template" / "skills" / name / "SKILL.md").write_text(
         f"---\n{front}\n---\n\n# {name}\n\nBody.\n")
+    # A healthy source also carries `LESSONS_LEARNED.md`, which `_install_opencode_skills`
+    # generates a second, unrelated skill from (#490) — absent, that install logs its own loud
+    # error, which would make every fixture here read as unhealthy for a reason none of these
+    # tests are about.
+    (tmp_path / "LESSONS_LEARNED.md").write_text("# Reference\n\nBody.\n")
     return tmp_path
 
 

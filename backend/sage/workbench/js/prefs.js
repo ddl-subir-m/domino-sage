@@ -28,14 +28,6 @@ window.SW = window.SW || {};
     // yet — this ticket only gives the answer somewhere to live.
     conversationView: { fallback: 'split', values: ['split', 'unified'] },
 
-    // What kind of app a NEW app is (#490): the no-build FastAPI + Ant Design starter, or the React
-    // + TypeScript + Vite one every app used to be. A stack is fixed when an app is seeded and
-    // cannot be changed after, so this is only ever read at the moment New app is clicked — and
-    // it is per viewer, not per Project, because a Project holds many apps (ADR-0008) and the
-    // choice belongs to the person making the next one. The values are the names the server's
-    // registry knows; a name it does not is a 400 there, never a silent fallback here.
-    appStack: { fallback: 'fastapi-antd', values: ['fastapi-antd', 'react-vite'] },
-
     // What a confirmed handoff carries from the Conversation into the Built App (#58). These were
     // four checkboxes rebuilt from hardcoded defaults every time the sheet opened, so the same
     // person answered the same questions on every handoff. The fallbacks are those defaults

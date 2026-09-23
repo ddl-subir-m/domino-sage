@@ -1,9 +1,9 @@
 """Preview process supervisor (SPEC C1, PLAN 3.4).
 
-Spawns the generated app's dev server for a workspace, DISCOVERS its actual port, exposes
+Spawns the generated app's own server for a workspace, DISCOVERS its actual port, exposes
 `upstream()` for the preview proxy, restarts on crash (bounded), and cleans up its process group
-on stop. `ViteSupervisor` runs the react-vite template's Vite dev server; `UvicornSupervisor` runs a
-fastapi-antd app's own server with reload (#490). `make_supervisor` picks by the app's stack.
+on stop. `UvicornSupervisor` runs a fastapi-antd app's own server with reload (#490) — the only
+stack Sage carries, so the only supervisor.
 
 Deep module, narrow interface: start() / upstream() / stop(). How the port is discovered
 (parsing the server's own "listening" line) and how the process group is torn down is hidden.
@@ -21,52 +21,10 @@ import sys
 import threading
 from pathlib import Path
 
-from ..workspace.stack import stack_of
-
 log = logging.getLogger("sage.preview.supervisor")
 
-# Vite prints e.g.  "  ➜  Local:   http://localhost:5173/"
-_LOCAL_RE = re.compile(r"Local:\s+(https?://[^\s/]+)")
 # uvicorn prints e.g.  "INFO:     Uvicorn running on http://127.0.0.1:5173 (Press CTRL+C to quit)"
 _UVICORN_RE = re.compile(r"Uvicorn running on (https?://[^\s/]+)")
-
-# Vite's default dev server port (before auto-increment). A leftover process from a prior
-# session that was killed without going through stop() can squat here on one address family
-# (e.g. IPv6-only) while a fresh Vite grabs the other, so "localhost" nondeterministically
-# resolves to the stale one. Clearing it before every spawn keeps that from happening.
-_DEFAULT_PORT = 5173
-
-
-def preview_port() -> int:
-    """The port Vite is asked to start on. `SAGE_PREVIEW_PORT` overrides it.
-
-    One machine can hold two Sage instances — a worktree under QA beside the checkout it is being
-    compared against — and `_clear_stale_port` reaps whatever is LISTENING on this port before
-    every spawn. Sharing the port aims that reaping at the OTHER instance's dev server, so the two
-    take turns killing each other, silently: neither preview stays up, and the symptom is a preview
-    that hangs rather than an error that names the cause. Measured on 2026-09-05, where it cost a
-    UI comparison two false regressions before the collision was spotted in the log.
-
-    Vite still auto-increments from here when the port is taken (`strictPort` is false), and the
-    supervisor discovers the real port from Vite's own output either way. So this moves the
-    starting point and changes nothing else about how the port is settled.
-    """
-    raw = os.environ.get("SAGE_PREVIEW_PORT", "").strip()
-    if not raw:
-        return _DEFAULT_PORT
-    try:
-        return int(raw)
-    except ValueError:
-        # Falling back rather than raising: a typo here must not be the reason a build session
-        # cannot open a preview, and the warning says which value was ignored.
-        log.warning("preview: SAGE_PREVIEW_PORT=%r is not a number; using %d", raw, _DEFAULT_PORT)
-        return _DEFAULT_PORT
-
-
-def parse_vite_url(line: str) -> str | None:
-    """Pure helper: extract the base URL from a Vite 'Local:' line, else None."""
-    m = _LOCAL_RE.search(line)
-    return m.group(1) if m else None
 
 
 def parse_uvicorn_url(line: str) -> str | None:
@@ -75,27 +33,35 @@ def parse_uvicorn_url(line: str) -> str | None:
     return m.group(1) if m else None
 
 
-def make_supervisor(workspace: Path, base_prefix: str = "") -> ViteSupervisor:
-    """The supervisor for the app at `workspace`, by the stack its record names (#490)."""
-    if stack_of(Path(workspace)).preview == "uvicorn":
-        return UvicornSupervisor(workspace, base_prefix)
-    return ViteSupervisor(workspace, base_prefix)
+def _free_port() -> int:
+    """A port nothing is listening on right now. uvicorn has no auto-increment, so it is told
+    one rather than left to collide with a neighbour Sage instance's own preview."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
 
 
-class ViteSupervisor:
-    # What the proxy prepends to a path before forwarding: Vite serves at `<prefix>/preview` because
-    # that base is baked into what it emits (`vite.config.ts`), so the proxy has to land there.
-    # A server that serves at the root answers "".
-    def mount_base(self) -> str:
-        return f"{self._base_prefix}/preview"
+class UvicornSupervisor:
+    """A fastapi-antd app's own server, run with reload, for the preview (#490).
+
+    The app is served by the interpreter running Sage — the one interpreter here that is known to
+    carry fastapi and uvicorn — with `SAGE_PREVIEW=1`, which `sage_serve.py` stamps into the page
+    so the helpers know to reach the builder. `--reload` restarts the server when a `.py` file
+    changes; static files are read per request and need no restart at all.
+
+    It serves at the root, so the proxy prepends nothing: `mount_base` is "".
+    """
 
     # The server's own name, for the sentences a failure to start carries.
-    _NAME = "Vite dev server"
-    _parse_url = staticmethod(parse_vite_url)
+    _NAME = "uvicorn"
+    _parse_url = staticmethod(parse_uvicorn_url)
+
+    def mount_base(self) -> str:
+        return ""
 
     def __init__(self, workspace: Path, base_prefix: str = "", max_restarts: int = 3) -> None:
         self._workspace = Path(workspace)
-        self._base_prefix = base_prefix  # baked into Vite's `base`/HMR via SAGE_BASE_PREFIX
+        self._base_prefix = base_prefix  # unused by this stack; kept for the proxy's uniform call
         self._max_restarts = max_restarts
         self._proc: subprocess.Popen | None = None
         self._upstream: str | None = None
@@ -103,13 +69,13 @@ class ViteSupervisor:
         self._restarts = 0
         self._stopped = False
         self._last_error: str | None = None
-        self._tail: collections.deque[str] = collections.deque(maxlen=40)  # recent Vite output
+        self._tail: collections.deque[str] = collections.deque(maxlen=40)  # recent server output
 
     def start(self, ready_timeout_s: float = 30.0) -> str:
-        """Spawn Vite and block until its port is discovered. Returns the upstream base URL.
+        """Spawn the server and block until its port is discovered. Returns the upstream base URL.
 
-        Raises RuntimeError (with Vite's own recent output) if Vite exits before reporting a port —
-        e.g. an incompatible Node version — so the failure isn't an opaque assertion upstream.
+        Raises RuntimeError (with the server's own recent output) if it exits before reporting a
+        port, so the failure isn't an opaque assertion upstream.
         """
         self._spawn()
         timed_out = not self._ready.wait(timeout=ready_timeout_s)
@@ -135,23 +101,27 @@ class ViteSupervisor:
     def _spawn(self) -> None:
         self._ready.clear()
         self._upstream = None
-        port = preview_port()
+        port = _free_port() if not os.environ.get("SAGE_PREVIEW_PORT", "").strip() else self._env_port()
         self._clear_stale_port(port)
-        # start_new_session -> own process group so we can kill Vite + any children (esbuild).
-        # SAGE_BASE_PREFIX tells vite.config.ts the Domino proxy prefix to bake into `base`/HMR.
         self._proc = subprocess.Popen(
-            # `--port` after `--` so npm forwards it to Vite. Passed on the command line rather
-            # than set in `vite.config.ts` because a workspace seeded from an older template never
-            # re-seeds (#40) — the flag reaches those too, a config change would not.
-            ["npm", "run", "dev", "--", "--port", str(port)],
+            [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
+             "--reload", "--reload-dir", ".", "--log-level", "info"],
             cwd=self._workspace,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
-            env={**os.environ, "SAGE_BASE_PREFIX": self._base_prefix},
+            env={**os.environ, "SAGE_PREVIEW": "1"},
         )
         threading.Thread(target=self._read_output, args=(self._proc,), daemon=True).start()
+
+    def _env_port(self) -> int:
+        raw = os.environ.get("SAGE_PREVIEW_PORT", "").strip()
+        try:
+            return int(raw)
+        except ValueError:
+            log.warning("preview: SAGE_PREVIEW_PORT=%r is not a number; using a free port", raw)
+            return _free_port()
 
     def _read_output(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
@@ -173,20 +143,16 @@ class ViteSupervisor:
     def _kill(self) -> None:
         if self._proc and self._proc.poll() is None:
             try:
-                import os
-
                 os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 self._proc.terminate()
 
     def _clear_stale_port(self, port: int) -> None:
         """Reap any leftover process still listening on `port` from an unclean prior shutdown."""
-        import os
-
         try:
             # -sTCP:LISTEN restricts to the actual server socket — plain `-ti tcp:{port}` also
-            # matches client sockets (e.g. our own proxy's outgoing connections to Vite), which
-            # let this kill the orchestrator's own process group when its pid was among them.
+            # matches client sockets (e.g. our own proxy's outgoing connections), which let this
+            # kill the orchestrator's own process group when its pid was among them.
             pids = subprocess.run(
                 ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5,
                 check=False,  # lsof exits 1 when nothing is listening — the empty stdout is the answer
@@ -200,47 +166,3 @@ class ViteSupervisor:
                 continue
             else:
                 log.warning("preview: killed stale process %s squatting on port %d", pid, port)
-
-
-def _free_port() -> int:
-    """A port nothing is listening on right now. uvicorn has no auto-increment, so it is told
-    one rather than left to collide with the neighbour Vite would have stepped past."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
-class UvicornSupervisor(ViteSupervisor):
-    """A fastapi-antd app's own server, run with reload, for the preview (#490).
-
-    Same interface and the same restart loop as the Vite supervisor; what differs is the process.
-    The app is served by the interpreter running Sage — the one interpreter here that is known to
-    carry fastapi and uvicorn — with `SAGE_PREVIEW=1`, which `sage_serve.py` stamps into the page
-    so the helpers know to reach the builder. `--reload` restarts the server when a `.py` file
-    changes; static files are read per request and need no restart at all.
-
-    It serves at the root, so the proxy prepends nothing: `mount_base` is "".
-    """
-
-    _NAME = "uvicorn"
-    _parse_url = staticmethod(parse_uvicorn_url)
-
-    def mount_base(self) -> str:
-        return ""
-
-    def _spawn(self) -> None:
-        self._ready.clear()
-        self._upstream = None
-        port = _free_port() if not os.environ.get("SAGE_PREVIEW_PORT", "").strip() else preview_port()
-        self._clear_stale_port(port)
-        self._proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
-             "--reload", "--reload-dir", ".", "--log-level", "info"],
-            cwd=self._workspace,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-            env={**os.environ, "SAGE_PREVIEW": "1"},
-        )
-        threading.Thread(target=self._read_output, args=(self._proc,), daemon=True).start()

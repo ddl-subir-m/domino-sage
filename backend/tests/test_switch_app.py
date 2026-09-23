@@ -46,9 +46,9 @@ class ScriptedGateway:
 
 
 class FakeVite:
-    """Stands in for ViteSupervisor and records the two things a test asks about a preview: which
-    directory it serves, and whether it is running. Every instance ever made is kept, because
-    "only one runs at a time" is a claim about the ones that were left behind."""
+    """Stands in for UvicornSupervisor and records the two things a test asks about a preview:
+    which directory it serves, and whether it is running. Every instance ever made is kept,
+    because "only one runs at a time" is a claim about the ones that were left behind."""
 
     made: ClassVar[list] = []
 
@@ -100,7 +100,7 @@ def _no_waiting(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fake_preview(monkeypatch):
     FakeVite.made = []
-    monkeypatch.setattr(svc, "ViteSupervisor", FakeVite)
+    monkeypatch.setattr(svc, "UvicornSupervisor", FakeVite)
     monkeypatch.setattr(svc, "PreviewQueries", FakeQueries)
     yield
     FakeVite.made = []

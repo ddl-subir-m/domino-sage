@@ -1,9 +1,9 @@
 """Workspace module (SPEC C1/C9, DESIGN Seam 3 handoff).
 
-The single working directory (the Domino project's mounted volume) seeded from the warm
-React+Vite template. Deep module, narrow interface: callers ensure the workspace and read/write
-the plan artifact; how the template is materialized (seed source + symlink the warm
-node_modules) is hidden.
+The single working directory (the Domino project's mounted volume) seeded from the no-build
+fastapi-antd template. Deep module, narrow interface: callers ensure the workspace and read/write
+the plan artifact; how the template is materialized (a plain file copy — there is no build step
+and no `node_modules` to warm, #490) is hidden.
 
 Two record surfaces sit over that directory, because a Project holds many Built Apps
 (ADR-0008). `Workspace` is one Built App — its code, Bindings, plan copy, architecture note and
@@ -16,9 +16,6 @@ moved: `AGENTS.md`, `.sage/plan.md`, `.sage/bindings.json` and the rest keep the
 always had, one level down. `appId` comes from `new_id("app")` and never changes, because
 Domino fixes a published App's `entryPoint` at creation and a renamed directory would strand
 the deployment.
-
-node_modules is symlinked from the template rather than copied so each workspace is warm
-(deps already installed) without paying a multi-hundred-MB copy per project.
 """
 from __future__ import annotations
 
@@ -40,7 +37,7 @@ from ..orchestrator.brand import apply_voice
 from ..resources.app_helpers import HelperNames, helpers_for
 from ..router.models import ASSIGNABLE_SLOTS
 from . import plan_doc
-from .stack import LEGACY_STACK, REACT_VITE, STACK_KEY, STACKS, Stack, default_stack_name, read_stack_name
+from .stack import FASTAPI_ANTD, STACK_KEY, STACKS, Stack, default_stack_name, read_stack_name
 from .threads import CHAT_WORK, HistoryRows, new_id, safe_id
 
 log = logging.getLogger(__name__)
@@ -275,7 +272,7 @@ _PROJECT_IGNORE = (".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/
                    # (`_voice_legacy_root_agents_md`) and at the APP root (`_seed_file`), neither
                    # of which is under `.sage/`. The app's own `.sage/` is covered from here too —
                    # a root rule reaches the whole tree, so this does NOT need the same line added
-                   # to `template/react-vite/.gitignore`. A record that is not staging, such as
+                   # to `template/fastapi-antd/.gitignore`. A record that is not staging, such as
                    # `.sage/settings.json`, still commits.
                    #
                    # #308 is what makes this load-bearing rather than tidy. `update_bindings` and
@@ -290,15 +287,12 @@ _PROJECT_IGNORE = (".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/
 _RESET_CLEAR = (Path(".sage") / "queries.json",
                 Path(".sage") / "plan.md",
                 Path(".sage") / "architecture.md")
-# Proof that a node_modules is usable: the binary both `npm run dev` and `npm run build` invoke.
-_DEPS_SENTINEL = Path(".bin") / "vite"
 # What Domino runs to serve a published App, and what a refresh of the Sage-owned sources lands, are
-# the STACK's to say (#490): a react-vite app deploys a Python server beside a Node build, and an app
-# of another kind deploys something else, so `WorkspaceManager.stack` answers for the app in hand.
-# These two names are the react-vite answers, kept because the tests read the ORDER off them — the
-# order is the safety property, and it is explained where the tuples are (`stack.py`).
-_DEPLOY_FILES = REACT_VITE.deploy_files
-_OWNED_SOURCES = REACT_VITE.owned_sources
+# the STACK's to say (#490), so `WorkspaceManager.stack` answers for the app in hand. These two names
+# are the fastapi-antd answers, kept because the tests read the ORDER off them — the order is the
+# safety property, and it is explained where the tuples are (`stack.py`).
+_DEPLOY_FILES = FASTAPI_ANTD.deploy_files
+_OWNED_SOURCES = FASTAPI_ANTD.owned_sources
 # One binding writer at a time. Workspace is a frozen value object that callers re-create freely, so
 # the lock cannot live on the instance; a process-wide one is enough because a Sage process serves a
 # single project (D9) and every binding write goes through update_bindings.
@@ -416,8 +410,8 @@ def _app_dir_names(apps_dir: Path) -> list[str]:
 
     Module level because two callers ask it of the same directory from opposite ends —
     `WorkspaceManager.app_ids` from the Project, `Workspace.sibling_app_ids` from inside one app —
-    and a second copy of the filter would drift. The symlink test is the part that matters: the
-    warm `node_modules` link sits beside the apps and is not one.
+    and a second copy of the filter would drift. The symlink test guards against anything sitting
+    beside the apps that isn't one.
 
     Sorted by name, which sorts by age: `new_id` leads with epoch-ms, so the directory name carries
     an order no list has to remember.
@@ -1110,9 +1104,9 @@ class Workspace:
     @property
     def stack(self) -> Stack:
         """The stack behind `stack_name`, for what it names: helpers, entry file, sentinel. A caller
-        that wants the TEMPLATE goes through the manager, whose react-vite entry may point at an
-        overridden directory (`SAGE_TEMPLATE`)."""
-        return STACKS.get(self.stack_name, REACT_VITE)
+        that wants the TEMPLATE goes through the manager, whose entry may point at an overridden
+        directory (`SAGE_TEMPLATE`)."""
+        return STACKS.get(self.stack_name, FASTAPI_ANTD)
 
     def record_stack(self, name: str) -> None:
         """Write the kind of app this is, once. Write-if-absent like `mark_created`, and for the
@@ -1964,9 +1958,8 @@ class WorkspaceManager:
 
     Per D9 one container hosts one project, so the volume IS the project's mounted directory
     (git-based: /mnt/code), not a per-id copy under some root. The app lives one level down, in
-    `apps/<appId>/` (ADR-0008): `ensure` idempotently seeds the warm React+Vite template into that
-    directory the first time and guarantees the warm node_modules symlink; a directory that
-    already holds an app is left untouched.
+    `apps/<appId>/` (ADR-0008): `ensure` idempotently seeds the no-build fastapi-antd template into
+    that directory the first time; a directory that already holds an app is left untouched.
 
     A Project holds several, and this manager points at one of them at a time. The list is found by
     scanning `apps/` rather than read from an index file: an index is one file with many writers,
@@ -1975,9 +1968,8 @@ class WorkspaceManager:
 
     def __init__(self, workspace_dir: Path, template: Path) -> None:
         self._dir = Path(workspace_dir)
-        # The react-vite template's directory: the one override `SAGE_TEMPLATE` has always been,
-        # and the argument every caller already passes. Every other kind of app comes from where
-        # its `Stack` says (#490) — see `stack_for`.
+        # The fastapi-antd template's directory: the one override `SAGE_TEMPLATE` has always been,
+        # and the argument every caller already passes — see `stack_for`.
         self._template = Path(template)
         # The app every caller in this process means by "the app": the one selected, or the id
         # minted for an app that has no directory yet. Chat opens a volume with no app on it, and
@@ -2004,28 +1996,27 @@ class WorkspaceManager:
         return self.stack_for(self.selected_app_id())
 
     def stack_for(self, app_id: str) -> Stack:
-        """The stack recorded for one app. Absent reads as react-vite: every app born before the
-        record existed is one. A record naming a stack this Sage does not carry reads the same way,
-        because the app is still on the disk and something has to answer for it.
+        """The stack recorded for one app. Absent, or naming a stack this Sage no longer carries (in
+        practice, only `react-vite`), reads as the one stack there is — the app is still on the disk
+        and something has to answer for it (`workspace/stack.py` says why that's safe here).
 
-        ONE registry, the module's: `Workspace` answers off it too, and a stack this manager knew
-        that the value object did not would seed one template and name another's entry file. The
-        react-vite entry is rebuilt around THIS manager's template directory — `SAGE_TEMPLATE` has
-        always been that one override, and the argument every caller already passes.
+        ONE registry, the module's: `Workspace` answers off it too. Its template directory is always
+        rebuilt around THIS manager's own — `SAGE_TEMPLATE`'s override, when set — rather than the
+        module constant's, because there is only one stack and every caller already passes it.
         """
-        kind = STACKS.get(read_stack_name(self.apps_dir / app_id), REACT_VITE)
-        return replace(kind, template_dir=self._template) if kind.name == LEGACY_STACK else kind
+        kind = STACKS.get(read_stack_name(self.apps_dir / app_id), FASTAPI_ANTD)
+        return replace(kind, template_dir=self._template)
 
     def _default_stack_name(self) -> str:
         """The stack a new app gets when nobody chose one — the deployment's say, if it names a stack
-        Sage can seed, else react-vite. Said in the log rather than raised: a typo in an environment
-        variable should not decide that no app can be born."""
+        Sage can seed, else the one stack there is. Said in the log rather than raised: a typo in an
+        environment variable should not decide that no app can be born."""
         wanted = default_stack_name()
         if wanted in STACKS:
             return wanted
         log.warning("SAGE_DEFAULT_STACK=%r names no stack this Sage carries; seeding %s",
-                    wanted, LEGACY_STACK)
-        return LEGACY_STACK
+                    wanted, FASTAPI_ANTD.name)
+        return FASTAPI_ANTD.name
 
     @property
     def path(self) -> Path:
@@ -2178,12 +2169,11 @@ class WorkspaceManager:
                 shutil.copytree(item, dest, ignore=_IGNORE, dirs_exist_ok=True)
             else:
                 _seed_file(item, dest)
-        self.link_warm_deps()
 
     def ensure(self, project_id: str, seed_app: bool = True, stack: str | None = None) -> Workspace:
         """Get-or-seed this Project's Built App. Idempotent: seeds the template into
         `apps/<appId>/` only when that directory has no app yet (none of the stack's sentinel file,
-        `package.json` for react-vite), never clobbering an app already there.
+        `app.py`), never clobbering an app already there.
 
         `stack` is the kind of app to seed if this call is the app's birth (#490); it is ignored for
         an app that already exists, whose kind is the one its record holds.
@@ -2239,7 +2229,6 @@ class WorkspaceManager:
                         shutil.copytree(item, dest, ignore=_IGNORE)
                     else:
                         _seed_file(item, dest)
-            self.link_warm_deps()
         return Workspace(project_id, app, self.selected_app_id())
 
     def _ensure_project_ignores(self) -> None:
@@ -2303,46 +2292,6 @@ class WorkspaceManager:
         """
         return ProjectRecord(project_id, self._dir)
 
-    def link_warm_deps(self) -> bool:
-        """Point node_modules at the baked template copy, repairing a wrecked one. True if changed.
-
-        Repair, not just create. An agent-run `npm install` refuses to write into a symlinked
-        node_modules: it deletes the link ("npm warn reify Removing non-directory …") and puts a
-        real directory there — and it does that during reify, BEFORE it knows whether the install
-        resolves. Install a package that 404s and npm aborts having already destroyed the link, so
-        the volume is left with no deps at all: every later build fails, and the preview can't start
-        because `npm run dev` has no node_modules/.bin/vite. Verified live 2026-08-13.
-
-        The sentinel is that vite binary — it's what both `npm run dev` and `npm run build` invoke.
-        Present means the deps are usable and we keep our hands off, whether they're ours or an
-        agent's successful install. Absent means wreckage, and the warm copy is strictly better than
-        what's there. A template without the sentinel isn't one we can lend from, so we do nothing.
-        """
-        tmpl = self.stack.template_dir / "node_modules"
-        if not tmpl.exists():
-            return False
-        node_modules = self.app_path / "node_modules"
-
-        # Nothing usable there: never linked, or a link left dangling. exists() follows the link and
-        # reports False while the link itself is still present, which is why the unlink comes first.
-        if not node_modules.exists():
-            if node_modules.is_symlink():
-                node_modules.unlink()
-            os.symlink(tmpl, node_modules)
-            return True
-
-        # Something IS there, so only replace it where we can prove it's wreckage — which needs a
-        # template carrying the sentinel to compare against. Without one we leave the volume alone
-        # rather than guess, and this stays exactly the create-if-absent link it has always been.
-        if (tmpl / _DEPS_SENTINEL).exists() and not (node_modules / _DEPS_SENTINEL).exists():
-            if node_modules.is_symlink() or node_modules.is_file():
-                node_modules.unlink()
-            else:
-                shutil.rmtree(node_modules, ignore_errors=True)
-            os.symlink(tmpl, node_modules)
-            return True
-        return False
-
     def refresh_entry_script(self) -> bool:
         """Bring the workspace's deploy files back in line with the template. True if any changed.
 
@@ -2372,24 +2321,6 @@ class WorkspaceManager:
             shutil.copy2(src, dst)  # copy2 keeps the +x bit Domino needs to run app.sh
             changed = True
         return changed
-
-    def refresh_preview_config(self) -> bool:
-        """Bring `vite.config.ts` back in line with the template. True if it changed.
-
-        The preview twin of refresh_entry_script, and it exists for the same reason that one does: the
-        file is committed when the project is seeded, so an app keeps whatever copy it was born with,
-        and a fix to the template reaches only new apps while every existing one goes on hitting the
-        bug we already fixed. AGENTS.md already tells the agent not to touch this file, so there is
-        nothing of theirs in it to lose.
-
-        Refreshed at ATTACH rather than at publish, unlike the deploy files: what it configures is the
-        preview, so by publish time the damage it prevents has already been done. It has to land
-        before ViteSupervisor.start(), because the dev server reads this file once at boot.
-
-        A stack whose preview reads no config file has nothing to refresh (#490).
-        """
-        config = self.stack.preview_config
-        return bool(config) and self._ensure_helper(config, refresh=True)
 
     def ensure_llm_helper(self) -> bool:
         """Put the Sage-owned model helper in the workspace, replacing a stale copy. True if written.

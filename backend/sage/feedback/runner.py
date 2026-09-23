@@ -1,15 +1,13 @@
 """Feedback runner (SPEC C10, PLAN 5.1, AC11).
 
 After an agent edit, check the workspace and turn the result into a structured report the agent
-can consume on its next turn. For a react-vite app the check is the typecheck (`tsc --noEmit`): the
-fast, high-value signal that catches most of what small models get wrong (types, missing imports,
-bad JSX) without a full build. For a fastapi-antd app (#490) there is nothing to type: the check
-compiles every `.py` and syntax-checks every `.js` the page loads, which catches the file that
-would have failed to import or to parse before a viewer does. Browser-console capture is a
-Phase-1 add (needs a headless view of the preview).
+can consume on its next turn. There is nothing to type-check: the check compiles every `.py` and
+syntax-checks every `.js` the page loads, which catches the file that would have failed to import
+or to parse before a viewer does. Browser-console capture is a Phase-1 add (needs a headless view
+of the preview).
 
-Deep module, narrow interface: `FeedbackRunner.check(workspace) -> FeedbackReport`. Which check
-runs is the workspace's stack's to say; the parsers are pure and unit-tested.
+Deep module, narrow interface: `FeedbackRunner.check(workspace) -> FeedbackReport`. The parsers
+are pure and unit-tested.
 """
 from __future__ import annotations
 
@@ -19,10 +17,6 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..workspace.stack import stack_of
-
-# tsc line: "src/App.tsx(12,5): error TS2304: Cannot find name 'foo'."
-_TSC_RE = re.compile(r"^(?P<file>[^(]+)\((?P<line>\d+),(?P<col>\d+)\):\s+error\s+(?P<code>TS\d+):\s+(?P<msg>.*)$")
 # py_compile: a `File "app.py", line 12` line, then the source, a caret, and the error line.
 _PY_FILE_RE = re.compile(r'^\s*File "(?P<file>[^"]+)", line (?P<line>\d+)')
 _PY_ERR_RE = re.compile(r"^(?P<code>\w*Error):\s*(?P<msg>.*)$")
@@ -47,9 +41,7 @@ class FeedbackReport:
     ok: bool
     errors: list[FeedbackError] = field(default_factory=list)
     raw: str = ""
-    # What ran, as the agent's message names it. "Typecheck" for tsc; "Syntax check" for the
-    # compile-and-parse pass a stack with no types gets.
-    kind: str = "Typecheck"
+    kind: str = "Syntax check"
 
     def signature(self) -> str:
         """Stable key for no-progress detection: the set of (file,line,code) sorted."""
@@ -65,23 +57,6 @@ class FeedbackReport:
         if len(self.errors) > max_errors:
             lines.append(f"...and {len(self.errors) - max_errors} more.")
         return "\n".join(lines)
-
-
-def parse_tsc(output: str) -> list[FeedbackError]:
-    errors: list[FeedbackError] = []
-    for line in output.splitlines():
-        m = _TSC_RE.match(line.strip())
-        if m:
-            errors.append(
-                FeedbackError(
-                    file=m["file"].strip(),
-                    line=int(m["line"]),
-                    col=int(m["col"]),
-                    code=m["code"],
-                    message=m["msg"].strip(),
-                )
-            )
-    return errors
 
 
 def parse_py_compile(output: str, workspace: Path | None = None) -> list[FeedbackError]:
@@ -126,10 +101,10 @@ def _relative(path: str, workspace: Path | None) -> str:
 
 
 def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackReport:
-    """The end-of-turn check for a fastapi-antd app: every .py compiles, every .js the page loads
-    parses, and the starter placeholder is gone. No types, so no typecheck — but a file that will
-    not compile is a server that will not start, and a script that will not parse is a blank page,
-    and both are worth a turn before a viewer sees them."""
+    """The end-of-turn check: every .py compiles, every .js the page loads parses, and the starter
+    placeholder is gone. No types, so no typecheck — but a file that will not compile is a server
+    that will not start, and a script that will not parse is a blank page, and both are worth a
+    turn before a viewer sees them."""
     workspace = Path(workspace)
     py_files = sorted(p for p in workspace.rglob("*.py")
                       if not any(part.startswith(".") or part == "__pycache__" for part in
@@ -178,38 +153,8 @@ def _python() -> str:
 
 
 class FeedbackRunner:
-    def __init__(self, tsconfig: str = "tsconfig.app.json", timeout_s: float = 120.0) -> None:
-        self._tsconfig = tsconfig
+    def __init__(self, timeout_s: float = 120.0) -> None:
         self._timeout_s = timeout_s
 
     def check(self, workspace: Path) -> FeedbackReport:
-        # Which check is the workspace's stack's to say (#490); the caller holds one runner.
-        if stack_of(Path(workspace)).checker == "python":
-            return check_python_stack(workspace, self._timeout_s)
-        try:
-            proc = subprocess.run(
-                ["npx", "tsc", "--noEmit", "-p", self._tsconfig],
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                timeout=self._timeout_s,
-                check=False,  # tsc exits nonzero ON type errors — that's the result being read, not a failure
-            )
-        except subprocess.TimeoutExpired as e:
-            return FeedbackReport(ok=False, raw=f"typecheck timed out after {self._timeout_s}s: {e}")
-
-        out = (proc.stdout or "") + (proc.stderr or "")
-        errors = parse_tsc(out)
-        # The shipped starter typechecks even when every generated component is unused. Feed
-        # that exact unfinished screen into the existing repair loop before accepting the build.
-        entry = workspace / "src" / "App.tsx"
-        if proc.returncode == 0 and entry.is_file():
-            source = entry.read_text()
-            if re.search(r'<main\s+className=[\"\']sage-placeholder[\"\']\s*>', source):
-                errors.append(FeedbackError(
-                    file="src/App.tsx", line=1, col=1, code="SAGE001",
-                    message="The starter placeholder is still the app's screen. Replace it with "
-                            "the requested app and connect the components you wrote.",
-                ))
-        # tsc exits non-zero on errors; treat clean only when exit 0 AND no parsed errors.
-        return FeedbackReport(ok=(proc.returncode == 0 and not errors), errors=errors, raw=out)
+        return check_python_stack(workspace, self._timeout_s)
