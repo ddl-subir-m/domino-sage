@@ -570,6 +570,69 @@ def test_the_source_config_is_the_fallback_when_nothing_was_installed(monkeypatc
     assert env["OPENCODE_CONFIG"] == str(cwd / "opencode.json")
 
 
+def test_opencode_argv_execs_a_resolved_binary_directly(tmp_path):
+    """`npx opencode` was tried first and, live-verified on a real laptop, does NOT fall back to a
+    same-named binary already on `PATH` — it went straight to `npm error 404 ... registry.npmjs
+    .org/opencode` regardless. `shutil.which` is what replaces that judgment call: unambiguous,
+    and exactly what a shell itself would resolve."""
+    from sage.driver.server import _opencode_argv
+
+    bin_dir = tmp_path / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True)
+    binary = bin_dir / "opencode"
+    binary.write_text("#!/bin/sh\necho fake\n")
+    binary.chmod(0o755)
+
+    argv = _opencode_argv(["serve", "--port", "0"], {"PATH": str(bin_dir)})
+
+    assert argv == [str(binary), "serve", "--port", "0"]
+
+
+def test_opencode_argv_falls_back_to_npx_when_nothing_resolves(tmp_path):
+    from sage.driver.server import _opencode_argv
+
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+
+    argv = _opencode_argv(["serve"], {"PATH": str(empty_dir)})
+
+    assert argv == ["npx", "opencode", "serve"]
+
+
+def test_start_execs_the_resolved_binary_not_npx(monkeypatch, tmp_path):
+    """End to end through `start()`, not just the helper in isolation: a real executable on the
+    repo's own `node_modules/.bin` is what the spawned process actually runs."""
+    import io
+
+    from sage.driver import server as drv
+
+    bin_dir = tmp_path / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True)
+    binary = bin_dir / "opencode"
+    binary.write_text("#!/bin/sh\necho fake\n")
+    binary.chmod(0o755)
+    monkeypatch.setattr(drv, "_REPO_BIN", bin_dir)
+
+    seen = {}
+
+    class _Proc:
+        pid = 1
+        stdout = io.StringIO("opencode server listening on http://127.0.0.1:4096\n")
+
+        def poll(self):
+            return 0
+
+    def _popen(cmd, **kw):
+        seen["cmd"] = cmd
+        return _Proc()
+
+    monkeypatch.setattr(drv.subprocess, "Popen", _popen)
+    drv.OpenCodeServer(cwd=tmp_path / "sage-opencode").start(ready_timeout_s=5.0)
+
+    assert seen["cmd"][0] == str(binary)
+    assert seen["cmd"][1] == "serve"
+
+
 def test_a_locally_pinned_opencode_is_found_regardless_of_cwd(monkeypatch, tmp_path):
     """`npx` resolves a local install by walking up from ITS OWN cwd, and that cwd is
     `~/.config/sage-opencode` — never the repo — so a laptop's `npm ci` install (no global one;

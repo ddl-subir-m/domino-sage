@@ -1452,3 +1452,58 @@ absence, which still holds now that the functions are gone rather than merely un
 5. `_ensure_opencode`'s per-project-vs-shared-server question (carried over, still undecided) and the
    two named Phase-0/1-era coverage gaps (`test_sage_domino_relay.py`, `test_feedback.py`'s weakened
    drift guard) remain open, non-blocking items.
+
+## UPDATE 2026-09-23: two real laptop-host bugs found and fixed during the product owner's own
+## first live smoke test — recorded here since Phase 2's own verification never actually drove a
+## real chat turn end-to-end (no browser, no `npx` in any sandbox this whole plan has used so far).
+
+1. **`scope-picker.js` threw `ReferenceError: Popover is not defined` on load** — this session's own
+   earlier edit (trimming `useRef`/`useEffect` off the React destructure) accidentally dropped
+   `Popover` too, which the file still uses lower down. `node --check` cannot catch this class of
+   bug (syntax-only, no reference resolution) — a real gap in how this session verified JS edits.
+   Fixed: restored `Popover` to the destructure; re-audited every other destructured symbol in the
+   file by counting occurrences instead of trusting a per-symbol grep list again.
+2. **Chat failed with `TimeoutError: opencode serve did not report a URL`, and the laptop story
+   masked its own cause.** `OpenCodeServer.start()` (`driver/server.py`) spawns `opencode serve`
+   with `cwd=~/.config/sage-opencode` (`_opencode_project_dir()`, deliberately outside the repo, to
+   keep a checked-out worktree's `git status` clean). `npx` resolves a LOCAL install by walking up
+   from ITS OWN cwd — never the repo — so this only ever worked because the Domino Environment's
+   Dockerfile does `npm install -g opencode-ai` (global, on `PATH` regardless of cwd). A laptop's
+   `make setup` only does a local `npm ci`, so from `~/.config/sage-opencode` there was nothing to
+   find, and `npx` silently fell through to fetching from the registry — hanging for the full 30s
+   timeout with zero output. **This is a real, previously-undiscovered gap the laptop host exposes
+   for the first time**, not something introduced by this pivot's own edits — `_opencode_project_dir`
+   predates it. **First fix attempt was wrong, and the diagnostic tail (below) is exactly what proved
+   it**: prepending the repo's `node_modules/.bin` to `PATH` (on the theory that `npx opencode` falls
+   back to a same-named binary already on `PATH` before considering the registry) did NOT work — the
+   product owner's very next real chat turn hit the new tail and it read `npm error 404 Not Found -
+   GET https://registry.npmjs.org/opencode`. `npx` went straight for the registry regardless of the
+   augmented `PATH`; whatever its actual PATH-fallback rule is, it is not the one guessed at first.
+   **Real fix**: `_opencode_argv()` resolves the binary itself via `shutil.which("opencode",
+   path=env["PATH"])` — unambiguous, exactly what a shell would find — and execs that path directly,
+   bypassing `npx`'s own package-vs-registry judgment call entirely; falls back to `["npx",
+   "opencode", ...]` only when nothing resolves. The `PATH`-prepend from the first attempt is KEPT,
+   not reverted — it's now what `shutil.which` actually searches, so the two fixes compose rather
+   than one replacing the other. Also fixed, and what surfaced the wrong first attempt so quickly:
+   the timeout no longer fails silently — `_read()` keeps a 40-line tail of everything the child
+   process printed regardless of `SAGE_OPENCODE_LOG`, and `TimeoutError` includes it plus the exit
+   code if the process already died. 6 new tests in `test_driver.py` (43 total, all passing);
+   `make lint` clean. **Not yet re-confirmed against the product owner's own laptop** — the fix is
+   verified at the unit level (a real resolved binary is exec'd, proven by `test_start_execs_the_
+   resolved_binary_not_npx`) but the next real chat turn on their machine is the actual proof.
+3. **A real open risk from Phase 1 is now resolved, live, by the product owner's own laptop**: a bare
+   Domino account PAT sent as `Authorization: Bearer` IS accepted by their LLM Gateway
+   (`curl .../v1/chat/completions -H "Authorization: Bearer $DOMINO_PAT"` succeeded) — matching
+   `gateway_bearer()`'s no-`dgw_`-key branch exactly. `ONE-APP-PLAN.md`'s risk #2 updated to record
+   this rather than leave it as an open question for the next session to re-litigate. The `Gateway
+   API key` field in Settings stays as an override for a deployment that genuinely needs one, not a
+   default requirement.
+
+**Lesson for whoever verifies UI/process-spawning changes next**: `node --check` and a pytest suite
+that mocks `subprocess.Popen` cannot catch either of these classes of bug — a missing destructured
+name only breaks at the exact line that reads it, and a `cwd`/`PATH`/global-vs-local install
+mismatch is invisible to anything that fakes the subprocess. Both were only found by a real person
+running the real thing on a real laptop. Budget for that as part of "done", not as optional polish
+— this plan's own Phase 7 verify line already says as much ("fresh laptop clone → `make setup &&
+make dev` → ... no Domino workspace involved"), and this session is the first time anyone actually
+tried it.

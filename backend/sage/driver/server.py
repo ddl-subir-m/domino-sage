@@ -9,6 +9,7 @@ from __future__ import annotations
 import collections
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -28,6 +29,29 @@ _REPO_BIN = Path(__file__).resolve().parents[3] / "node_modules" / ".bin"
 def parse_server_url(line: str) -> str | None:
     m = _LISTEN_RE.search(line)
     return m.group(1).rstrip("/") if m else None
+
+
+def _opencode_argv(args: list[str], env: dict) -> list[str]:
+    """The command line to actually exec — bypassing `npx opencode`'s own resolution rather than
+    trusting it, because that trust was tried first and is what this function replaces.
+
+    Putting the repo's `node_modules/.bin` on `PATH` (`_env()`) was the first fix attempted here,
+    on the theory that `npx <name>` falls back to whatever `<name>` already resolves to on `PATH`
+    before it ever considers the registry. Live-verified WRONG on a real laptop, 2026-09-23: `npx
+    opencode` still went straight to `npm error 404 ... registry.npmjs.org/opencode` — there is no
+    package literally named `opencode` (the pinned one is `opencode-ai`, which merely PROVIDES a
+    `bin` called `opencode`) — with the augmented `PATH` doing nothing to stop it. Whatever `npx`'s
+    own PATH-fallback rule actually is, it is not the one this module bet on.
+
+    `shutil.which` is unambiguous: it does exactly one thing, and that thing is "is a file named
+    this executable somewhere on PATH", the way a shell itself would answer. Resolving the binary
+    OURSELVES and exec'ing it directly removes `npx`'s package-vs-registry judgment call from the
+    path entirely — there is nothing left for it to get wrong. Falls back to `npx opencode` only
+    when nothing named `opencode` is on the given PATH at all, so an environment this reasoning
+    hasn't seen yet still gets today's behavior rather than a hard failure.
+    """
+    found = shutil.which("opencode", path=env.get("PATH", ""))
+    return [found, *args] if found else ["npx", "opencode", *args]
 
 
 class OpenCodeServer:
@@ -55,15 +79,13 @@ class OpenCodeServer:
         tokens, deliberately left unresolved so a pack never writes its words into a repo file, and
         handing OpenCode that file makes it read the braces out loud to the user.
 
-        `PATH` gets the repo's own `node_modules/.bin` prepended, when it exists. `npx` resolves a
-        LOCAL install by walking up from the CHILD PROCESS'S cwd — and that cwd is deliberately
-        `~/.config/sage-opencode` (`_opencode_project_dir`'s docstring), never the repo, so a laptop
-        running the pinned `npm ci` install (no global install — the Domino Environment's Dockerfile
-        is the only place `opencode-ai` is `npm install -g`'d) has nothing on that walk to find, and
-        `npx` falls through to fetching from the registry — which hangs (no TTY to answer its
-        prompt) for exactly as long as `start()`'s timeout, printing nothing. Putting the pinned
-        binary on `PATH` directly is what the global install already does for the App; this makes a
-        laptop's local one behave the same way regardless of cwd, with no cwd/env detection needed.
+        `PATH` gets the repo's own `node_modules/.bin` prepended, when it exists — a laptop's local,
+        pinned `npm ci` install has nothing else to make it visible regardless of the CHILD
+        PROCESS'S cwd (deliberately `~/.config/sage-opencode`, never the repo —
+        `_opencode_project_dir`'s docstring), the way the Domino Environment's global
+        `npm install -g` already is. This is what `_opencode_argv` below actually resolves the
+        binary against — `npx opencode` itself was tried first and does NOT reliably fall back to
+        a same-named binary already on `PATH`; see that function's docstring for what was measured.
         """
         env = dict(os.environ)
         for cfg in (_VOICED_CONFIG, self._cwd / "opencode.json"):
@@ -88,18 +110,19 @@ class OpenCodeServer:
 
         Output only, never raised: this exists to be read on a page when something is already wrong.
         """
+        env = self._env()
         try:
-            out = subprocess.run(["npx", "opencode", *args], cwd=cwd or str(self._cwd),
-                                 env=self._env(), capture_output=True, text=True,
+            out = subprocess.run(_opencode_argv(args, env), cwd=cwd or str(self._cwd),
+                                 env=env, capture_output=True, text=True,
                                  timeout=timeout_s, check=False)
         except Exception as e:
             return f"{type(e).__name__}: {e}"
         return ((out.stdout or "") + (out.stderr or "")).strip() or f"(no output, exit {out.returncode})"
 
     def start(self, ready_timeout_s: float = 30.0) -> str:
-        cmd = ["npx", "opencode", "serve", "--port", str(self._port), "--hostname", "127.0.0.1"]
+        args = ["serve", "--port", str(self._port), "--hostname", "127.0.0.1"]
         if self._log_path:
-            cmd.append("--print-logs")
+            args.append("--print-logs")
         # OpenCode says nothing about its MCP servers at the default level: it connects, or it
         # silently does not, and the log reads identically either way. That is the whole reason a
         # missing Live read took an evening to chase — `/api/diag` can now prove the config is right
@@ -110,7 +133,7 @@ class OpenCodeServer:
         # and read it back with /api/diag/opencode?q=mcp.
         level = os.environ.get("SAGE_OPENCODE_LOG_LEVEL", "").strip()
         if level:
-            cmd += ["--log-level", level]
+            args += ["--log-level", level]
         # OpenCode resolves PROJECT config off the git root of the SESSION directory, NOT off this
         # cwd — measured live on 05fded1, see the reopened #199. Every Sage session runs under the
         # workspace volume (`.sage/chat-work` for Chat, `apps/<appId>/` for Build), so the project
@@ -132,7 +155,7 @@ class OpenCodeServer:
         # pack's braces out loud.
         env = self._env()
         self._proc = subprocess.Popen(
-            cmd,
+            _opencode_argv(args, env),
             cwd=self._cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
