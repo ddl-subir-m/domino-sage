@@ -171,7 +171,7 @@ from ..router.models import (
     reasoning_efforts_for,
     signing_slot,
 )
-from ..router.phase_classifier import WRITE_TOOLS
+from ..router.phase_classifier import SHELL_TOOLS, WRITE_TOOLS
 from ..shim.enforcement import EnforcementShim
 from ..workspace import plan_doc
 from ..workspace.manager import (
@@ -3548,6 +3548,23 @@ def _call_fingerprint(tool: str, inp: object) -> str:
     return hashlib.sha1(f"{tool}\0{body}".encode()).hexdigest()
 
 
+def _repeat_fingerprint(tool: str, inp: object) -> str:
+    """The behavioral repeat key, narrowed only for marker-bearing shell calls (#510).
+
+    Shell display metadata changed on the measured A-B-A loop while the executable command stayed
+    fixed. For that unsafe marker case, the tool and command are the behavior. Every other call
+    keeps whole-input identity, especially writes, edits, and legitimate read ranges.
+    """
+    name = str(tool or "").strip().lower()
+    if (name in SHELL_TOOLS and isinstance(inp, dict)
+            and live_data_use.arguments_echo_withheld_mark(inp)):
+        command = next((inp.get(key) for key in ("command", "cmd", "code")
+                        if isinstance(inp.get(key), str)), None)
+        if command is not None:
+            return _call_fingerprint(name, {"command": command})
+    return _call_fingerprint(tool, inp)
+
+
 class _RepeatBrake:
     """Identical tool calls IN A ROW, within one turn.
 
@@ -3578,7 +3595,7 @@ class _RepeatBrake:
         self.label = ""
 
     def saw(self, fingerprint: str, label: str, *, session_id: str = "",
-            call_id: str = "", tool: str = "") -> bool:
+            call_id: str = "", tool: str = "", arguments=None) -> bool:
         """True when this call is the `_REPEAT_LIMIT`-th identical one in a row."""
         if not fingerprint:
             return False
@@ -3590,7 +3607,7 @@ class _RepeatBrake:
         stopped = self.n >= _REPEAT_LIMIT
         self._timing.brake(session_id=session_id, call_id=call_id, tool=tool,
                             fingerprint=fingerprint, consecutive=self.n,
-                            limit=_REPEAT_LIMIT, stopped=stopped)
+                            limit=_REPEAT_LIMIT, stopped=stopped, arguments=arguments)
         return stopped
 
 
@@ -3642,7 +3659,7 @@ def _repeat_answer(msgs: object, fingerprint: str) -> str:
             # in the other, and a brake that trips while the answer silently drops is the shape
             # this whole function exists to avoid.
             tool = str(part.get("tool") or part.get("name") or pt)
-            if _call_fingerprint(tool, state.get("input")) != fingerprint:
+            if _repeat_fingerprint(tool, state.get("input")) != fingerprint:
                 continue
             said = state.get("error") if tool in _REPEAT_ANSWER_TOOLS else ""
             if isinstance(said, str) and said.strip():
@@ -13248,7 +13265,7 @@ class Orchestrator:
             # The fingerprint of each open call, by call id, waiting for the close that counts it.
             # Beside `running_tools` rather than in it: that one holds a label written to be read
             # by a person, and a label cannot key a repeat (see `_call_fingerprint`).
-            pending_calls: dict[str, str] = {}
+            pending_calls: dict[str, tuple[str, object, str]] = {}
             # Which of the two counters owns the brake. Set by the first tool frame the stream
             # delivers and never unset — `tap.seen_any` cannot stand in for it, because a drain
             # can come back empty at the top of a poll whose transcript read then counts a call
@@ -13402,7 +13419,7 @@ class Orchestrator:
                         # ended a busy turn this way — and it is not this brake's to close.
                         log.error("chat: the session would not confirm it stopped; cleaning up "
                                   "under it anyway — the next turn may meet a live writer")
-                    yield from publish_chat_artifacts("repeated" if looped else "timeout")
+                    yield from publish_chat_artifacts("repeat_brake" if looped else "timeout")
                     # Whether the reserved slice actually left something to come back to (#454).
                     # Asked HERE and not inside the flush, because `refuse_oversize_findings` runs
                     # inside the publish above and puts the WHOLE file back when this turn's append
@@ -13504,7 +13521,7 @@ class Orchestrator:
                         )
                     err = {"type": "error", "message": message}
                     done = {"type": "done", "ok": False,
-                            "decision": "repeated" if looped else "timeout"}
+                            "decision": "repeat_brake" if looped else "timeout"}
                     # Before the error, as on the path that finishes: what the turn produced, then
                     # why it stopped. `done` still carries them, so a client that reads only the
                     # terminal event sees them too.
@@ -13601,10 +13618,10 @@ class Orchestrator:
                             args = ev.payload.get("input")
                             tool = str(ev.payload.get("tool") or "")
                             if isinstance(args, dict) and args:
-                                pending_calls[call] = _call_fingerprint(tool, args)
+                                pending_calls[call] = (_repeat_fingerprint(tool, args), args, tool)
                             elif not pending_calls.get(call) and ev.payload.get("command"):
-                                pending_calls[call] = _call_fingerprint(
-                                    tool, {"command": str(ev.payload["command"])})
+                                thin = {"command": str(ev.payload["command"])}
+                                pending_calls[call] = (_repeat_fingerprint(tool, thin), thin, tool)
                             running_tools[call] = _tool_label(ev.payload)
                             if path := _tool_path(ev.payload):
                                 running_paths[call] = path
@@ -13613,9 +13630,10 @@ class Orchestrator:
                             # Counting the open killed the third one in flight, and a turn stopped
                             # before its third answer has no third answer to read back — which lost
                             # the half of the sentence that says what the step kept replying.
-                            if not looped and brake.saw(pending_calls.pop(call, ""),
-                                                        running_tools.get(call, ""),
-                                                        session_id=sid, call_id=call):
+                            pending = pending_calls.pop(call, ("", None, ""))
+                            if not looped and brake.saw(pending[0], running_tools.get(call, ""),
+                                                        session_id=sid, call_id=call,
+                                                        tool=pending[2], arguments=pending[1]):
                                 # Read BEFORE the stop below interrupts the session. An interrupt
                                 # lands on any call still open as an aborted tool part, and a
                                 # fourth repeat aborted that way reads back as what the step
@@ -13761,11 +13779,12 @@ class Orchestrator:
                             last_activity = time.monotonic()
                             tool = part.get("tool") or part.get("name") or pt
                             if not stream_owned and not looped and brake.saw(
-                                    _call_fingerprint(str(tool),
-                                                      (part.get("state") or {}).get("input")),
+                                    _repeat_fingerprint(str(tool),
+                                                        (part.get("state") or {}).get("input")),
                                     _tool_label({"tool": tool,
                                                  "input": (part.get("state") or {}).get("input")}),
-                                    session_id=sid, call_id=str(part.get("callID") or ""), tool=str(tool)):
+                                    session_id=sid, call_id=str(part.get("callID") or ""), tool=str(tool),
+                                    arguments=(part.get("state") or {}).get("input")):
                                 # The same brake as the stream's, on the turns the stream never
                                 # reached — which are exactly the turns Chat can already see least
                                 # of, and so the ones most able to ride to the ceiling unreported.
@@ -16933,7 +16952,7 @@ class Orchestrator:
             raise TurnWedged()
 
         def stalled_offer(quiet_for: float, *, in_tool: bool, looped: str = "",
-                          decision: str = "repeated"):
+                          decision: str = "repeat_brake"):
             """The transcript's half of giving up on a wedged turn (#39).
 
             `looped` is the other way a turn is given up on (#246): not silence, but the same call
@@ -17015,7 +17034,7 @@ class Orchestrator:
                     # changes it leaves — without one, "you can see how far it got" points at nothing.
                     yield persist(_app_change_event(project.app_for_turn()))
             # `decision` is the word the status line prints after "Stopped —", so a looped turn
-            # names which loop it was: `repeated` for three of one call, `looped` for the shell
+            # names which loop it was: `repeat_brake` for three of one call, `looped` for the shell
             # cap. The person is told the count in the card; the status line must not then say
             # "repeated" over a turn whose calls were all different.
             yield persist({"type": "done", "ok": False,
@@ -17417,9 +17436,10 @@ class Orchestrator:
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
                             args = (part.get("state") or {}).get("input") \
                                 if isinstance(part.get("state"), dict) else None
-                            if not looped and brake.saw(_call_fingerprint(tool, args),
+                            if not looped and brake.saw(_repeat_fingerprint(tool, args),
                                                         _tool_label({"tool": tool, "input": args}),
-                                                        session_id=sid, call_id=str(part.get("callID") or ""), tool=str(tool)):
+                                                        session_id=sid, call_id=str(part.get("callID") or ""),
+                                                        tool=str(tool), arguments=args):
                                 # The answer is already in `msgs`, so unlike Chat this costs no
                                 # read. Taken now rather than at the exit below because the exit
                                 # runs after the walk that would mark the part seen.
@@ -17571,7 +17591,7 @@ class Orchestrator:
                     restore_mode()
                     yield from stalled_offer(0.0, in_tool=False, looped=looped,
                                              decision="looped" if (shell_capped or write_capped)
-                                             else "repeated")
+                                             else "repeat_brake")
                     return
                 if not appeared and time.monotonic() - start > 12:
                     break

@@ -8,7 +8,7 @@ import pytest
 
 from sage import timing, tool_timing
 from sage.driver.opencode import map_session_event
-from sage.orchestrator.service import _call_fingerprint, _RepeatBrake
+from sage.orchestrator.service import _call_fingerprint, _repeat_fingerprint, _RepeatBrake
 
 pytestmark = pytest.mark.usefixtures("ledger")
 
@@ -129,6 +129,31 @@ def test_repeat_brake_keeps_ids_name_and_counts_but_no_command_and_no_late_turn(
     timing.start_turn("build")
     brake.saw(fingerprint, "label", session_id="s", call_id="late")
     assert readout()["repeatBrake"] == []
+
+
+def test_marker_cycle_reports_turn_local_executable_and_metadata_variants(clock):
+    timing.start_turn("build")
+    brake = _RepeatBrake()
+    private_key = "/private/uploads/person.csv"
+    private_values = ["private-alpha-value", "private-beta-value", "private-alpha-value"]
+    calls = [
+        {"command": "true", "description": "local data withheld", private_key: value}
+        for value in private_values
+    ]
+    for n, args in enumerate(calls):
+        assert brake.saw(_repeat_fingerprint("bash", args), "bash (true)",
+                         session_id="s", call_id=str(n), tool="bash",
+                         arguments=args) is (n == 2)
+    rows = readout()["repeatBrake"]
+    assert [row["executableVariant"] for row in rows] == [1, 1, 1]
+    assert [row["metadataVariant"] for row in rows] == [1, 2, 1]
+    assert rows[-1]["detectedCycleLength"] == 2
+    assert rows[-1]["argumentKeys"] == ["command", "description"]
+    assert [row["unknownArgumentKeyCount"] for row in rows] == [1, 1, 1]
+    assert [row["unknownArgumentKeysTruncated"] for row in rows] == [False, False, False]
+    assert private_key not in json.dumps(rows)
+    assert not any(value in json.dumps(rows) for value in private_values)
+    assert "local data withheld" not in json.dumps(rows)
 
 
 def test_driver_preserves_available_tool_clock_and_omitted_completion_name(clock):

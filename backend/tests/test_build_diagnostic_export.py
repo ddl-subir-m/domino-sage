@@ -106,6 +106,7 @@ def test_finished_capture_does_not_invent_a_build_outcome(tmp_path):
     ("event", "outcome"),
     [
         ({"type": "done", "ok": True}, "success"),
+        ({"type": "done", "ok": False, "decision": "repeat_brake"}, "repeat_brake"),
         ({"type": "done", "ok": False, "decision": "repeated"}, "repeat_brake"),
         ({"type": "done", "ok": False, "decision": "looped"}, "repeat_brake"),
         ({"type": "done", "ok": False, "decision": "gateway error"}, "gateway_refusal"),
@@ -143,7 +144,10 @@ def test_private_payloads_and_unknown_fields_never_reach_the_export(tmp_path):
     rec.t1 = rec.t0 + 1
     rec.intervals = [{"name": "poll.read", "atMs": 1, "ms": 20, "ok": True, "error": private}]
     rec.repeat_brake = [{"sessionId": "session_a", "tool": "bash", "stopped": True,
-                         "inputFingerprint": "abc123", "command": private}]
+                         "inputFingerprint": "abc123", "command": private,
+                         "argumentKeys": ["command", "description", private],
+                         "argumentKeysTruncated": False, "executableVariant": 1,
+                         "metadataVariant": 2, "detectedCycleLength": 2}]
     rec.counters[private] = 9
     row = diagnostics.snapshot(rec, identity(), terminal=True)
     assert diagnostics.Store(tmp_path).put(row)
@@ -155,6 +159,39 @@ def test_private_payloads_and_unknown_fields_never_reach_the_export(tmp_path):
     assert row["timing"]["tools"][0]["range"] == {"offset": 2}
     assert row["timing"]["tools"][0]["targetFingerprint"]
     assert row["timing"]["repeatBrake"][0]["stopped"] is True
+    assert row["timing"]["repeatBrake"][0] == {
+        "sessionId": "session_a", "tool": "bash", "inputFingerprint": "abc123",
+        "stopped": True, "argumentKeysTruncated": False, "executableVariant": 1,
+        "metadataVariant": 2, "detectedCycleLength": 2,
+        "argumentKeys": ["command", "description"],
+    }
+
+
+def test_model_supplied_argument_key_is_counted_not_persisted(tmp_path):
+    private_key = "/private/uploads/person.csv"
+    private_values = ["private-alpha-value", "private-beta-value", "private-alpha-value"]
+    rec = record()
+    rec.t1 = None
+    observer = timing.ToolObserver(rec, diagnostics._lock)
+    for n, value in enumerate(private_values):
+        observer.brake(session_id="session_a", call_id=f"call_{n}", tool="bash",
+                       fingerprint="family", consecutive=n + 1, limit=3, stopped=n == 2,
+                       arguments={"command": "true", "description": "step", private_key: value})
+    rec.t1 = rec.t0 + 1
+
+    row = diagnostics.snapshot(rec, identity(), terminal=True)
+    assert diagnostics.Store(tmp_path).put(row)
+    timing_json = json.dumps(timing.as_dict(rec))
+    serialized = json.dumps(diagnostics.Store(tmp_path).get("turn_a", "app_a", "thr_a"))
+
+    assert private_key not in timing_json
+    assert private_key not in serialized and private_key not in diagnostics.Store(tmp_path).path.read_text()
+    assert not any(value in timing_json or value in serialized for value in private_values)
+    brakes = row["timing"]["repeatBrake"]
+    assert [brake["metadataVariant"] for brake in brakes] == [1, 2, 1]
+    assert all(brake["argumentKeys"] == ["command", "description"] for brake in brakes)
+    assert all(brake["unknownArgumentKeyCount"] == 1 for brake in brakes)
+    assert all(brake["unknownArgumentKeysTruncated"] is False for brake in brakes)
 
 
 def test_nested_events_and_bytes_are_capped_and_reported(monkeypatch):
