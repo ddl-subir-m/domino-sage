@@ -319,7 +319,8 @@ def session_policy(directory: Path, session: str, state, *, opaque: bool) -> Non
         path.write_text(fingerprint)
 
 
-def prepare_native(shim, body, protocol, project, session, on_resolved=None, *, policy_directory=None):
+def prepare_native(shim, body, protocol, project, session, on_resolved=None, *, policy_directory=None,
+                   rewrite_counts=None):
     view = NativeView(body, protocol)
     state = shim._control.snapshot()
     if policy_directory is not None:
@@ -327,7 +328,8 @@ def prepare_native(shim, body, protocol, project, session, on_resolved=None, *, 
     elif view.opaque and state.withheld:
         raise NativeCheckpointRequired()
     request, labels, used, capability = shim.prepare(view.request, project, session,
-                                                   on_resolved, native=True)
+                                                   on_resolved, native=True,
+                                                   rewrite_counts=rewrite_counts)
     if body.get("model") != request["model"] or protocol is not capability.protocol:
         raise NativePolicyError("The resolved model route changed. Resolve the route again before sending.")
     result = view.render(request)

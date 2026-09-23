@@ -16,6 +16,7 @@ from .. import timing
 from ..gateway.client import GatewayUpstreamError, StreamCancellation
 from ..gateway.events import StreamEvents
 from ..gateway.protocol import Protocol
+from ..request_composition import measure, wire_bytes
 from ..shim import keepalive as ka
 from ..shim.enforcement import _capture_refusal
 from ..shim.native import (
@@ -94,6 +95,7 @@ def install(app, get_orchestrator):
             call.request(len(raw))
 
             resolution = None
+            rewrite_counts = {}
             def resolved(model, phase, reason):
                 nonlocal resolution
                 resolution = (model, phase, reason)
@@ -103,14 +105,16 @@ def install(app, get_orchestrator):
                              for message in body.get("messages", []) for call in message.get("tool_calls", []))
                 session_policy(project.record.path, session, project.control.snapshot(), opaque=bool(opaque))
                 outbound, labels, used, capability = project.shim.prepare(body, project.id, session,
-                                                                         resolved, native=True)
+                                                                         resolved, native=True,
+                                                                         rewrite_counts=rewrite_counts)
                 if outbound["model"] != body.get("model") or capability.protocol is not protocol:
                     raise NativePolicyError("The resolved model route changed. Retry this turn.")
                 view = outbound
             else:
                 outbound, labels, used, view, capability = prepare_native(
                     project.shim, body, protocol, project.id, session, resolved,
-                    policy_directory=project.record.path)
+                    policy_directory=project.record.path,
+                    rewrite_counts=rewrite_counts)
             if resolution is not None:
                 project.note_resolved(*resolution, protocol=protocol.value,
                                       effort=view.get("reasoning_effort"), native=capability.native)
@@ -138,13 +142,15 @@ def install(app, get_orchestrator):
         # Match httpx's JSON body encoder, after the final native contract rewrite. Only the
         # length survives; neither payload nor private native state enters the timing record.
         try:
-            forwarded_bytes = len(json.dumps(outbound, ensure_ascii=False, separators=(",", ":"),
-                                             allow_nan=False).encode("utf-8"))
-        except (TypeError, ValueError):
+            forwarded_bytes = wire_bytes(outbound)
+            composition = measure(outbound, forwarded_bytes, rewrite_counts)
+        except Exception:
             # Let the transport retain its existing invalid-payload error path. Diagnostics
             # must not replace that response with an uncaught serializer exception.
             forwarded_bytes = None
-        call.prepared(forwarded_bytes)
+            composition = None
+        call.prepared(forwarded_bytes, requested_alias=outbound.get("model"),
+                      request_composition=composition)
         events = StreamEvents(protocol, response_contract=contract)
         cancel = StreamCancellation()
         upstream = project.shim.gateway.route(outbound, labels, protocol=protocol, cancel=cancel)
