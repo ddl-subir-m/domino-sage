@@ -36,9 +36,10 @@ MAX_STORE_BYTES = MAX_RECORDS * MAX_RECORD_BYTES + 4096
 _lock = threading.RLock()
 _active: set[tuple[str, str]] = set()
 _TOKEN = re.compile(r"[\w.:/@+-]{1,160}\Z", re.ASCII)
+_MODEL_NAME = re.compile(r"[^\x00-\x1f\x7f]{1,160}\Z")
 
 # No catch-all copy: new recorder fields are private until this contract admits them.
-CALL_FIELDS = ["n", "model", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort", "effortStatus", "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
+CALL_FIELDS = ["n", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort", "effortStatus", "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
 TOOL_FIELDS = ["sessionId", "harnessCallId", "partId", "identitySource", "tool", "firstObservedMs", "lastObservedMs", "completedObservedMs", "observationSource", "startUnixMs", "endUnixMs", "startSource", "endSource", "executionMs", "completionLagMs", "targetFingerprint", "queryFingerprint", "targetMetadataFinal", "editSincePreviousRead", "opaqueOperationSincePreviousRead", "targetState", "status", "observedMs", "startAtMs", "endAtMs", "clockPlacement"]
 INVOKE_FIELDS = ["name", "providerId", "protocolIndex", "identityStatus", "metadataTruncated"]
 SPAN_FIELDS = ["name", "depth", "atMs", "ms", "open", "no_edit_attempt", "wrote_code", "retry_exhausted"]
@@ -53,7 +54,7 @@ COUNTERS = {"poll.iterations", "tools.unidentified_events", "attachments.request
             *{"attachments.repair_failed." + name for name in
               ("ValueError", "OSError", "FileNotFoundError", "LookupError", "ResourceUnavailable")}}
 OBSERVATIONS = {"attachments.resolution_ms", "emit.lag_ms", "poll.read_ms", "poll.sleep_ms"}
-TEXT_FIELDS = {"appId", "conversationId", "kind", "name", "model", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort",
+TEXT_FIELDS = {"appId", "conversationId", "kind", "name", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort",
                "effortStatus", "sessionId", "rootSessionId", "outcome", "providerId", "identityStatus",
                "harnessCallId", "partId", "identitySource", "tool", "observationSource", "startSource",
                "endSource", "targetFingerprint", "queryFingerprint", "targetState", "status",
@@ -71,12 +72,15 @@ def _metadata(row, keys):
         if key not in row:
             continue
         value = row[key]
-        valid = (value is None
-                 or key in BOOL_FIELDS and isinstance(value, bool)
-                 or key not in TEXT_FIELDS | BOOL_FIELDS and isinstance(value, (int, float))
-                 and not isinstance(value, bool) and math.isfinite(value)
-                 or key in TEXT_FIELDS and isinstance(value, str)
-                 and (_TOKEN.fullmatch(value) or key == "conversationId" and value == ""))
+        if key in {"model", "requestedAlias"}:
+            valid = value is None or isinstance(value, str) and _MODEL_NAME.fullmatch(value)
+        else:
+            valid = (value is None
+                     or key in BOOL_FIELDS and isinstance(value, bool)
+                     or key not in TEXT_FIELDS | BOOL_FIELDS and isinstance(value, (int, float))
+                     and not isinstance(value, bool) and math.isfinite(value)
+                     or key in TEXT_FIELDS and isinstance(value, str)
+                     and (_TOKEN.fullmatch(value) or key == "conversationId" and value == ""))
         if valid:
             out[key] = value
     return out
@@ -84,6 +88,53 @@ def _metadata(row, keys):
 
 def _encode(value) -> bytes:
     return json.dumps(value, separators=(",", ":"), allow_nan=False).encode()
+
+
+def _request_composition(value) -> dict | None:
+    """Copy only the fixed numeric composition schema into a persisted capture."""
+    if not isinstance(value, dict) or value.get("version") != 1:
+        return None
+    status = value.get("status")
+    boundary = value.get("boundary")
+    reason = value.get("limitReason")
+    if status not in {"complete", "limited", "unavailable"}:
+        return None
+    if boundary != "final_forwarded_json":
+        return None
+    if reason not in {None, "payload_bytes", "nodes", "depth", "classification_overlap",
+                      "measurement_error"}:
+        return None
+
+    def number(raw):
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) and 0 <= raw <= 1 << 53 else 0
+
+    def mapping(raw):
+        return raw if isinstance(raw, dict) else {}
+
+    category_keys = ("instructionsBytes", "toolSchemasBytes", "ordinaryTextBytes",
+                     "toolCallsBytes", "toolResultsBytes", "mediaBytes", "opaqueStateBytes",
+                     "unclassifiedBytes")
+    role_keys = ("system", "developer", "user", "assistant", "tool", "unknown")
+    rewrite_keys = ("redactedCalls", "localExecutionReceipts", "markerEchoCorrections",
+                    "externalImageReceipts", "withheldImageReceipts")
+    categories = mapping(value.get("categories"))
+    roles = mapping(value.get("messagesByRole"))
+    rewrites = mapping(value.get("rewrites"))
+    return {
+        "version": 1, "boundary": boundary, "status": status,
+        "totalBytes": number(value.get("totalBytes")),
+        "categories": {key: number(categories.get(key)) for key in category_keys},
+        "messagesByRole": {
+            key: {"count": number(mapping(roles.get(key)).get("count")),
+                  "bytes": number(mapping(roles.get(key)).get("bytes"))}
+            for key in role_keys
+        },
+        "toolSchemaCount": number(value.get("toolSchemaCount")),
+        "toolCallCount": number(value.get("toolCallCount")),
+        "toolArgumentsBytes": number(value.get("toolArgumentsBytes")),
+        "rewrites": {key: number(rewrites.get(key)) for key in rewrite_keys},
+        "limitReason": reason,
+    }
 
 
 @lru_cache(maxsize=1)
@@ -162,6 +213,13 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
                                             + len(invocations) - len(entry["toolInvocations"]))
                 entry["tools"] = [v for v in row.get("tools", [])[:40]
                                   if isinstance(v, str) and _TOKEN.fullmatch(v)]
+                composition = _request_composition(row.get("requestComposition"))
+                if composition is not None:
+                    entry["requestComposition"] = composition
+                reported = row.get("responseReportedModel")
+                if (isinstance(reported, str)
+                        and reported in {entry.get("model"), entry.get("requestedAlias")}):
+                    entry["responseReportedModel"] = reported
             if section == "spans":
                 why = row.get("why")
                 reasons = {"first send": "first_send", "runtime repair": "runtime_repair",

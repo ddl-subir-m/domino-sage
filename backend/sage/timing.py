@@ -48,6 +48,15 @@ log = logging.getLogger(__name__)
 _HISTORY = 20
 
 
+def _model_name(value: object) -> str | None:
+    """Bound model evidence without applying the identifier rule that rejects spaces."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 160:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return None
+    return value
+
+
 @dataclass
 class Span:
     name: str
@@ -86,6 +95,9 @@ class ModelCall:
     max_chunk_gap: float = 0.0
     outcome: str = "running"
     forwarded_request_bytes: int | None = None
+    requested_alias: str | None = None
+    response_reported_model: str | None = None
+    request_composition: dict | None = None
     tool_invocations: list[dict] = field(default_factory=list)
     tools_truncated: bool = False
     output_tokens: int | None = None
@@ -351,11 +363,14 @@ class _CallHandle:
             if c is not None and c.first_byte is None:
                 c.first_byte = time.monotonic()
 
-    def prepared(self, forwarded_bytes: int | None = None) -> None:
+    def prepared(self, forwarded_bytes: int | None = None, *, requested_alias: str | None = None,
+                 request_composition: dict | None = None) -> None:
         with self._active() as c:
             if c is not None and c.prepared is None:
                 c.prepared = time.monotonic()
                 c.forwarded_request_bytes = forwarded_bytes
+                c.requested_alias = _model_name(requested_alias)
+                c.request_composition = request_composition
 
     def tool(self, names: list[str]) -> None:
         """Legacy non-native readers supply newly announced names, not cumulative sets."""
@@ -382,6 +397,12 @@ class _CallHandle:
                 value = getattr(events, attr)
                 if value is not None:
                     setattr(c, attr, value)
+            reported = getattr(events, "reported_model", None)
+            # This field came from the provider stream. Its shape cannot make it trusted: secrets
+            # and result text can have a valid identifier shape too. Retain it only when it echoes
+            # an identity already trusted from routing or the final outbound request.
+            if isinstance(reported, str) and reported in {c.model, c.requested_alias}:
+                c.response_reported_model = reported
 
     def chunk(self) -> None:
         with self._active() as c:
@@ -395,7 +416,7 @@ class _CallHandle:
     def model(self, name: str, phase: str = "", reason: str = "") -> None:
         with self._active() as c:
             if c is not None:
-                c.model = name or c.model
+                c.model = _model_name(name) or c.model
                 c.phase = phase or c.phase
                 c.reason = reason or c.reason
 
@@ -554,6 +575,9 @@ def as_dict(rec: TurnRecord) -> dict:
                    "lastChunkMs": _offset(c.last_chunk, c.t0),
                    "maxChunkGapMs": round(c.max_chunk_gap * 1000),
                    "outcome": c.outcome, "forwardedReqBytes": c.forwarded_request_bytes,
+                   "requestedAlias": c.requested_alias,
+                   "responseReportedModel": c.response_reported_model,
+                   "requestComposition": c.request_composition,
                    "toolInvocations": [dict(t) for t in c.tool_invocations],
                    "toolsTruncated": c.tools_truncated,
                    "outTokens": c.output_tokens, "reasoningTokens": c.reasoning_tokens,

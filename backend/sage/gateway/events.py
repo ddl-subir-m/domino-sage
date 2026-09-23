@@ -28,6 +28,9 @@ class StreamEvents:
     output_tokens: int | None = None
     cached_tokens: int | None = None
     reasoning_tokens: int | None = None
+    # Provider response metadata. This is evidence reported on the wire, not verified serving
+    # identity; the diagnostic exporter validates it as a bounded model name.
+    reported_model: str | None = None
     saw_text: bool = False
     saw_tool_argument: bool = False
     tool_invocations: list[dict] = field(default_factory=list)
@@ -203,6 +206,11 @@ class StreamEvents:
 
     def _event(self, event: dict) -> None:
         kind = event.get("type")
+        reported = (event.get("model") if self.protocol is Protocol.CHAT else
+                    (event.get("message") or {}).get("model") if self.protocol is Protocol.MESSAGES
+                    else (event.get("response") or {}).get("model"))
+        if isinstance(reported, str) and reported:
+            self.reported_model = reported
         error = event.get("error")
         if error or kind == "error":
             # The STREAM keeps only the class: this event flows back into OpenCode's session

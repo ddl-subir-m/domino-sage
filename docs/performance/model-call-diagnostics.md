@@ -17,6 +17,11 @@ at Sage's gateway boundary, not a measurement of provider compute or reasoning t
   wire lane. `requestedEffort` is the explicit override, or null. `effortStatus` is
   `explicit`, `provider_default` (no override; actual provider level unknown), or
   `unknown` (a caller did not supply route metadata).
+- `requestedAlias` is the model value on the final outbound request. Model names use a
+  bounded validator that permits spaces, so aliases such as `GLM 5.3 OR` survive the
+  persisted Build export. `responseReportedModel`, when present, is provider-reported
+  response evidence retained only when it exactly echoes the trusted resolved or
+  requested alias for that call. It is not verified serving-model identity.
 
 ## Time and size
 
@@ -35,6 +40,21 @@ of call start from turn start.
 - `reqBytes`: incoming OpenCode request. `forwardedReqBytes`: final rewritten JSON body,
   including the Responses contract nonce, encoded with the transport's JSON settings.
   Neither body is retained by this measurement.
+
+`requestComposition` is an optional versioned breakdown of that final forwarded JSON.
+Version 1 has boundary `final_forwarded_json`. Its main byte categories are mutually
+exclusive and sum exactly to `forwardedReqBytes`. Text categories measure serialized
+text values. Tool, media, and opaque categories measure their protocol objects. JSON
+structure and unknown fields are `unclassifiedBytes`. Role totals are a separate
+overlapping view of final wire rows.
+`toolArgumentsBytes` is a subset of `toolCallsBytes`. Rewrite counts come from the actual
+Data-use rewrite branches and describe the history in this request. The object contains
+only fixed keys, enums, and bounded nonnegative counts. It contains no message text,
+schema text, names, paths, arguments, results, receipts, signatures, or tool IDs.
+
+A request over the payload, node, or depth bound reports `limited` and assigns the whole
+known total to `unclassifiedBytes`. A measurement error reports `unavailable`. Neither
+condition changes or blocks the model request. Older records omit this object.
 
 `inTokens`, `cachedTokens`, `outTokens` and `reasoningTokens` preserve missing values.
 Reasoning usage is a reported component, not an amount added to the output total.
