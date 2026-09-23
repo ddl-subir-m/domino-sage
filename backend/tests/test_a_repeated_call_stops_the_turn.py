@@ -23,6 +23,7 @@ from sage.orchestrator.service import (
     Orchestrator,
     _call_fingerprint,
     _repeat_answer,
+    _repeat_fingerprint,
     _repeat_message,
     _RepeatBrake,
 )
@@ -66,6 +67,43 @@ def test_two_writes_to_one_file_are_not_the_same_call():
     assert brake.saw(first, "write (src/App.tsx)") is False
     assert brake.saw(second, "write (src/App.tsx)") is False
     assert brake.saw(third, "write (src/App.tsx)") is False
+
+
+def test_marker_shell_metadata_variants_are_one_executable_repeat_family():
+    brake = _RepeatBrake()
+    calls = [
+        {"command": "true", "description": "local data withheld A"},
+        {"command": "true", "description": "local data withheld B"},
+        {"command": "true", "description": "local data withheld A"},
+    ]
+    answers = [brake.saw(_repeat_fingerprint("bash", args), "bash (true)",
+                         tool="bash", arguments=args) for args in calls]
+    assert answers == [False, False, True]
+
+
+def test_marker_repeat_family_keeps_commands_and_legitimate_read_ranges_distinct():
+    brake = _RepeatBrake()
+    shells = [
+        {"command": "true", "description": "local data withheld A"},
+        {"command": "false", "description": "local data withheld B"},
+        {"command": "true", "description": "local data withheld A"},
+    ]
+    assert all(not brake.saw(_repeat_fingerprint("bash", args), "bash", arguments=args)
+               for args in shells)
+    reads = [{"filePath": "same.csv", "offset": n, "limit": 10} for n in (0, 10, 0)]
+    assert all(not brake.saw(_repeat_fingerprint("read", args), "read", arguments=args)
+               for args in reads)
+
+
+def test_ordinary_shell_metadata_keeps_full_input_identity():
+    brake = _RepeatBrake()
+    calls = [
+        {"command": "true", "description": "step A"},
+        {"command": "true", "description": "step B"},
+        {"command": "true", "description": "step A"},
+    ]
+    assert all(not brake.saw(_repeat_fingerprint("bash", args), "bash", arguments=args)
+               for args in calls)
 
 
 def test_the_key_never_carries_what_it_keyed_on():
@@ -298,7 +336,7 @@ def test_a_build_turn_that_repeats_one_call_is_stopped_and_told_what_repeated(tm
     assert "ls -R public/data/sage-x/uploads" in card[0]["message"]
     # Named, not quoted: #246 looped through bash, whose error is whatever the program printed.
     assert _ANSWER not in card[0]["message"]
-    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeated"
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
     # The session is stopped rather than left running against the working tree.
     assert oc.interrupted == 1
     # It braked on the third, not after twenty.
@@ -336,6 +374,33 @@ def test_a_build_turn_that_is_not_repeating_itself_is_left_alone(tmp_path: Path)
 
     assert [e for e in events if e.get("type") == "build-stalled"] == []
     assert next(e for e in events if e.get("type") == "done")["ok"] is True
+
+
+def test_a_build_marker_metadata_cycle_stops_before_a_fourth_true_call(tmp_path: Path):
+    class MarkerLoopOpenCode(LoopingOpenCode):
+        def messages(self, session_id: str, *, limit: int | None = None):
+            if self._next > 0:
+                self.emitted += 1
+                variant = "A" if self.emitted % 2 else "B"
+                self._by_session.setdefault(session_id, []).append({
+                    "id": f"marker-{self.emitted}", "type": "assistant", "content": [{
+                        "id": f"marker-{self.emitted}-tool", "type": "tool", "tool": "bash",
+                        "state": {"status": "completed", "input": {
+                            "command": "true",
+                            "description": f"local data withheld {variant}",
+                        }, "output": ""},
+                    }],
+                })
+            return FakeOpenCode.messages(self, session_id, limit=limit)
+
+    oc = MarkerLoopOpenCode(tmp_path / "mnt" / "code", [Turn(text="looking")])
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart the uploads"))
+
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
+    assert oc.emitted == svc._REPEAT_LIMIT
+    assert oc.interrupted == 1
 
 
 # ---- Chat -------------------------------------------------------------------------------------
@@ -420,7 +485,7 @@ def test_a_chat_turn_that_repeats_one_call_is_stopped_and_told_what_repeated(tmp
     assert _ANSWER not in err["message"]    # bash is not a tool whose error is quoted
     # The sentence that sent somebody after the wrong thing, on a turn that had plenty to say.
     assert "stopped making progress" not in err["message"]
-    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeated"
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
     assert oc.interrupted == 1
 
 
@@ -456,7 +521,7 @@ def test_a_stopped_chat_turn_says_what_a_read_refused_before_it_stuck(tmp_path: 
     err = next(e for e in events if e.get("type") == "error")
     assert "ran the same step" in err["message"]
     assert "Before that, a read was refused: gong isn't in this conversation" in err["message"]
-    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeated"
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
 
 
 def test_a_stopped_chat_turn_with_no_refusal_carries_none(tmp_path: Path):
@@ -515,7 +580,7 @@ def test_the_brake_counts_the_same_either_way_a_bash_call_opens(tmp_path: Path):
 
     events = list(orch.chat_stream(tid, "whats in my uploads"))
 
-    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeated"
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
     err = next(e for e in events if e.get("type") == "error")
     assert "ls -R public/data/sage-x/uploads" in err["message"]
 
@@ -748,7 +813,7 @@ def test_a_chat_turn_with_no_stream_is_braked_off_the_transcript(tmp_path: Path,
 
     events = list(orch.chat_stream(tid, "whats in my uploads"))
 
-    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeated"
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
     err = next(e for e in events if e.get("type") == "error")
     assert "ls -R public/data/sage-x/uploads" in err["message"]
 
@@ -774,7 +839,7 @@ def test_a_looping_chat_session_that_will_not_stop_is_still_cleaned_up_after(tmp
     with caplog.at_level(logging.ERROR, logger="sage.orchestrator"):
         events = list(orch.chat_stream(tid, "whats in my uploads"))
 
-    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeated"
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
     assert any("would not confirm it stopped" in r.getMessage() for r in caplog.records)
     assert ran == ["revert", "withhold"]
 
@@ -792,7 +857,7 @@ def test_a_stop_pressed_as_the_brake_trips_does_not_outlive_the_turn(tmp_path: P
 
     events = list(orch.build_stream("chart the uploads"))
 
-    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeated"
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
     assert project.stop_requested is False
 
 
@@ -834,7 +899,7 @@ def test_a_stop_pressed_while_chat_brakes_does_not_outlive_the_turn(tmp_path: Pa
 
     events = list(orch.chat_stream(tid, "whats in my uploads"))
 
-    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeated"
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
     assert project.stop_requested is False
 
 
@@ -906,7 +971,7 @@ def test_the_stream_taking_over_does_not_inherit_the_transcripts_count(tmp_path:
 
     events = list(orch.chat_stream(tid, "whats in my uploads"))
 
-    assert [e for e in events if e.get("decision") == "repeated"] == []
+    assert [e for e in events if e.get("decision") == "repeat_brake"] == []
 
 
 # --- THE THIRD SHAPE: the writes themselves keep being refused (#494) ---------------------------

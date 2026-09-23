@@ -100,7 +100,10 @@ def test_private_payloads_and_unknown_fields_never_reach_the_export(tmp_path):
     rec.t1 = rec.t0 + 1
     rec.intervals = [{"name": "poll.read", "atMs": 1, "ms": 20, "ok": True, "error": private}]
     rec.repeat_brake = [{"sessionId": "session_a", "tool": "bash", "stopped": True,
-                         "inputFingerprint": "abc123", "command": private}]
+                         "inputFingerprint": "abc123", "command": private,
+                         "argumentKeys": ["command", "description"],
+                         "argumentKeysTruncated": False, "executableVariant": 1,
+                         "metadataVariant": 2, "detectedCycleLength": 2}]
     rec.counters[private] = 9
     row = diagnostics.snapshot(rec, identity(), terminal=True)
     assert diagnostics.Store(tmp_path).put(row)
@@ -112,6 +115,12 @@ def test_private_payloads_and_unknown_fields_never_reach_the_export(tmp_path):
     assert row["timing"]["tools"][0]["range"] == {"offset": 2}
     assert row["timing"]["tools"][0]["targetFingerprint"]
     assert row["timing"]["repeatBrake"][0]["stopped"] is True
+    assert row["timing"]["repeatBrake"][0] == {
+        "sessionId": "session_a", "tool": "bash", "inputFingerprint": "abc123",
+        "stopped": True, "argumentKeysTruncated": False, "executableVariant": 1,
+        "metadataVariant": 2, "detectedCycleLength": 2,
+        "argumentKeys": ["command", "description"],
+    }
 
 
 def test_nested_events_and_bytes_are_capped_and_reported(monkeypatch):

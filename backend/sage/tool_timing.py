@@ -11,9 +11,12 @@ import time
 
 MAX_TOOLS = 500
 MAX_INTERVALS = 2000
+MAX_ARGUMENT_KEYS = 16
 _READS = {"read", "glob", "grep", "list", "live_read_files", "live_read_table"}
 _EDITS = {"edit", "write"}
 _READ_ONLY = _READS | {"todoread", "todowrite"}
+_SHELLS = {"bash", "shell", "sh", "run", "run_command", "execute", "exec", "terminal"}
+_COMMAND_KEYS = ("command", "cmd", "code")
 
 
 def harness_times(part: dict, *, event_type: str = "") -> dict:
@@ -46,9 +49,18 @@ class ToolObserver:
         self._edits = {}
         self._opaque = 0
         self._sequence = 0
+        self._variants: dict[str, dict[str, int]] = {"executable": {}, "metadata": {}}
+        self._brake_metadata: dict[str, list[int]] = {}
 
     def _fingerprint(self, value) -> str:
         return hmac.new(self._salt, json.dumps(value, sort_keys=True).encode(), hashlib.sha256).hexdigest()
+
+    def _variant(self, kind: str, value) -> int:
+        key = self._fingerprint(value)
+        variants = self._variants[kind]
+        if key not in variants:
+            variants[key] = len(variants) + 1
+        return variants[key]
 
     def part(self, session: str, part: dict, *, directory: str | None = None) -> None:
         state = part.get("state") or {}
@@ -148,7 +160,7 @@ class ToolObserver:
                 run["completionLagMs"] = observed_wall - end if observed_wall >= end else None
 
     def brake(self, *, session_id: str, call_id: str, tool: str, fingerprint: str,
-              consecutive: int, limit: int, stopped: bool) -> None:
+              consecutive: int, limit: int, stopped: bool, arguments=None) -> None:
         rec = self.record
         if rec is None:
             return
@@ -160,11 +172,35 @@ class ToolObserver:
                 return
             if rec.t1 is None:
                 started = self._runs.get((session_id, "call", call_id), {})
-                rec.repeat_brake.append({"sessionId": session_id, "harnessCallId": call_id or None,
-                                         "tool": (tool or started.get("tool", "unknown"))[:80],
-                                         "inputFingerprint": self._fingerprint(fingerprint),
-                                         "consecutive": consecutive, "limit": limit, "stopped": stopped,
-                                         "atMs": (time.monotonic() - rec.t0) * 1000})
+                name = str(tool or started.get("tool", "unknown"))[:80]
+                row = {"sessionId": session_id, "harnessCallId": call_id or None,
+                       "tool": name, "inputFingerprint": self._fingerprint(fingerprint),
+                       "consecutive": consecutive, "limit": limit, "stopped": stopped,
+                       "atMs": (time.monotonic() - rec.t0) * 1000}
+                if isinstance(arguments, dict):
+                    keys = sorted(str(key) for key in arguments
+                                  if isinstance(key, str) and key)
+                    row["argumentKeys"] = keys[:MAX_ARGUMENT_KEYS]
+                    row["argumentKeysTruncated"] = len(keys) > MAX_ARGUMENT_KEYS
+                    if name.lower() in _SHELLS:
+                        command = next((arguments.get(key) for key in _COMMAND_KEYS
+                                        if isinstance(arguments.get(key), str)), None)
+                        metadata = {key: value for key, value in arguments.items()
+                                    if key not in _COMMAND_KEYS}
+                        row["executableVariant"] = self._variant(
+                            "executable", {"tool": name.lower(), "command": command})
+                        row["metadataVariant"] = self._variant("metadata", metadata)
+                        if consecutive == 1:
+                            self._brake_metadata[fingerprint] = []
+                        sequence = self._brake_metadata.setdefault(fingerprint, [])
+                        sequence.append(row["metadataVariant"])
+                        del sequence[:-12]
+                        if stopped:
+                            for cycle in range(1, len(sequence)):
+                                if sequence[-1] == sequence[-1 - cycle]:
+                                    row["detectedCycleLength"] = cycle
+                                    break
+                rec.repeat_brake.append(row)
 
     def interval(self, name: str, start: float, *, ok: bool = True, running: bool | None = None) -> None:
         rec = self.record

@@ -7,6 +7,7 @@ import re
 import threading
 from uuid import uuid4
 
+from .. import timing
 from ..router.phase_classifier import READ_TOOLS, SHELL_TOOLS
 from ..shim.chat_paths import (
     MENTION_MARK,
@@ -20,7 +21,8 @@ from ..shim.chat_paths import (
 
 log = logging.getLogger("sage.liveread")
 
-_EXECUTION_TOOLS = SHELL_TOOLS | frozenset({"python", "python_exec", "python_execute"})
+_PYTHON_TOOLS = frozenset({"python", "python_exec", "python_execute"})
+_EXECUTION_TOOLS = SHELL_TOOLS | _PYTHON_TOOLS
 _DELEGATION_TOOLS = frozenset({"task"})
 _PATH_KEYS = ("path", "filePath", "file_path")
 _COMMAND_KEYS = ("command", "cmd", "code")
@@ -28,6 +30,10 @@ _EXIT = "Command exited with code "
 # The one string every redaction placeholder carries, so that a placeholder the model has written
 # back into its own work can be recognised however it was reshaped (#510).
 _MARK_BODY = "local data withheld"
+_MAX_LOGGED_MARKER_ECHOES = 10_000
+_MARK_ECHO_REPLACEMENT = "[copied withheld placeholder removed after prior execution]"
+_MARK_ECHO_COMMAND_REPLACEMENT = ": # copied withheld placeholder removed after prior execution"
+_MARK_ECHO_PYTHON_REPLACEMENT = "# copied withheld placeholder removed after prior execution"
 _MARK_ECHO_CORRECTION = (
     "This call reproduced the placeholder that stands in the place of withheld local data in this "
     "conversation. The placeholder is a marker: it is not a command, and not content to write to a "
@@ -75,6 +81,9 @@ class DataUse:
         self.operations = {}
         self.sources = []
         self.lock = threading.RLock()
+        # Call ids are process-local OpenCode identities. They are held only in memory and are
+        # never logged or exported. A process restart deliberately resets this dedupe.
+        self._logged_marker_echoes: set[str] = set()
 
     def record(self, event, reply, persist, turn_id):
         with self.lock:
@@ -139,7 +148,8 @@ class DataUse:
         used = set()
         local_texts: list[str] = []
         messages = []
-        corrected_results = 0
+        call_messages: dict[str, dict] = {}
+        newly_observed_echoes: list[str] = []
         with self.lock:
             for message in request.get("messages", []):
                 if not isinstance(message, dict):
@@ -152,6 +162,8 @@ class DataUse:
                     if isinstance(call, dict):
                         cid = str(call.get("id") or "")
                         calls[call.get("id")] = call
+                        if cid:
+                            call_messages[cid] = message
                         source = _sources_for_call(call, sources, hidden)
                         if cid and source:
                             direct[cid] = source
@@ -194,7 +206,15 @@ class DataUse:
                         # block gates by tool NAME), so the model has already run this. Saying so
                         # plainly is repair-after, which is the seam this architecture has.
                         message = {**message, "content": _MARK_ECHO_CORRECTION}
-                        corrected_results += 1
+                        if cid and cid in call_messages:
+                            visible = next((item for item in call_messages[cid].get("tool_calls") or []
+                                            if isinstance(item, dict)
+                                            and str(item.get("id") or "") == cid), call)
+                            _replace_call(call_messages[cid], cid, _repair_marker_echo_call(visible))
+                        if (cid and cid not in self._logged_marker_echoes
+                                and len(self._logged_marker_echoes) < _MAX_LOGGED_MARKER_ECHOES):
+                            self._logged_marker_echoes.add(cid)
+                            newly_observed_echoes.append(cid)
                     elif cid in direct:
                         raw = _tool_content_text(message.get("content"))
                         if raw:
@@ -214,11 +234,19 @@ class DataUse:
                         message = {**message,
                                    "content": _redact_message_text(message.get("content"), source)}
                 messages.append(message)
-        if corrected_results:
-            # One warning per rewritten request. An old call can appear in later requests, so
-            # this counts replaced results, never new executions. Keep arguments/results private.
-            log.warning("data use: withheld-marker correction applied in history rewrite; "
-                        "corrected_results=%d; tool execution already occurred", corrected_results)
+        if newly_observed_echoes:
+            rec = timing.current()
+            turn_id = rec.turn_id if rec is not None else "unknown"
+            ordinal = rec.calls[-1].n if rec is not None and rec.calls else 0
+            observed = len(self._logged_marker_echoes) - len(newly_observed_echoes)
+            for _cid in newly_observed_echoes:
+                observed = min(observed + 1, _MAX_LOGGED_MARKER_ECHOES)
+                # One event per new completed echo. The call id is used only for in-memory dedupe;
+                # commands, arguments, results, paths and call ids never enter this event.
+                log.warning("data use: newly completed withheld-marker echo corrected; "
+                            "turn_id=%s model_call_ordinal=%d new_marker_echoes=1 "
+                            "observed_marker_echoes=%d; tool execution already occurred",
+                            turn_id, ordinal, observed)
         return {**request, "messages": messages}, used
 
     def _remember_sources(self, sources):
@@ -585,7 +613,52 @@ def _echoes_the_withheld_mark(call):
     matters. Nothing measured has hit this.
     """
     _name, args = tool_call_name_and_args(call or {})
-    return any(_MARK_BODY in value for value in args.values() if isinstance(value, str))
+    return arguments_echo_withheld_mark(args)
+
+
+def arguments_echo_withheld_mark(arguments):
+    """Whether any model-authored string argument carries the withheld marker."""
+    if isinstance(arguments, str):
+        return _MARK_BODY in arguments
+    if isinstance(arguments, list):
+        return any(arguments_echo_withheld_mark(value) for value in arguments)
+    if isinstance(arguments, dict):
+        return any(arguments_echo_withheld_mark(value) for value in arguments.values())
+    return False
+
+
+def _repair_marker_echo_call(call):
+    """Remove the imitable marker from the outbound copy of a completed call.
+
+    The real call has already executed. Required keys and JSON types stay present, while no string
+    argument sent back to the model can teach it the marker again. The source history is untouched.
+    """
+    name, args = tool_call_name_and_args(call or {})
+
+    def clean(value, key=""):
+        if isinstance(value, str) and _MARK_BODY in value:
+            if name in _EXECUTION_TOOLS and key in _COMMAND_KEYS:
+                if name in _PYTHON_TOOLS:
+                    return _MARK_ECHO_PYTHON_REPLACEMENT
+                return _MARK_ECHO_COMMAND_REPLACEMENT
+            return _MARK_ECHO_REPLACEMENT
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if isinstance(value, dict):
+            return {nested_key: clean(item, str(nested_key))
+                    for nested_key, item in value.items()}
+        return value
+
+    repaired = clean(args)
+    out = copy.deepcopy(call)
+    if isinstance(out.get("function"), dict):
+        raw = out["function"].get("arguments")
+        out["function"]["arguments"] = json.dumps(repaired) if isinstance(raw, str) else repaired
+    elif "input" in out:
+        out["input"] = repaired
+    elif isinstance(out.get("state"), dict):
+        out["state"] = {**out["state"], "input": repaired}
+    return out
 
 
 def _redacted_like(value, source, comment=False):
