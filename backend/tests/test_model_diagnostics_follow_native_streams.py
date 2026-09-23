@@ -28,7 +28,7 @@ LANES = [("GLM 5.3 OR", Protocol.CHAT), ("Opus-4.8", Protocol.MESSAGES),
 def frames(protocol, request):
     """Two reads, each split into three argument events; no input usage on purpose."""
     if protocol is Protocol.CHAT:
-        yield {"choices": [{"index": 0, "delta": {"content": "private text"}}]}
+        yield {"model": "provider-reported", "choices": [{"index": 0, "delta": {"content": "private text"}}]}
         for i in range(2):
             yield {"choices": [{"index": 0, "delta": {"tool_calls": [
                 {"index": i, "id": f"provider_{i}", "function": {"name": "read"}}]}}]}
@@ -38,6 +38,7 @@ def frames(protocol, request):
         yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}],
                "usage": {"completion_tokens": 17, "completion_tokens_details": {"reasoning_tokens": 4}}}
     elif protocol is Protocol.MESSAGES:
+        yield {"type": "message_start", "message": {"model": "provider-reported"}}
         yield {"type": "content_block_delta", "index": 2,
                "delta": {"type": "text_delta", "text": "private text"}}
         for i in range(2):
@@ -57,6 +58,7 @@ def frames(protocol, request):
             for fragment in ('{"path":', '"private-row"', '}'):
                 yield {"type": "response.function_call_arguments.delta", "item_id": f"item_{i}", "delta": fragment}
         yield {"type": "response.completed", "response": {
+            "model": "provider-reported",
             "store": False, "metadata": request["metadata"], "reasoning": request.get("reasoning", {}),
             "usage": {"output_tokens": 17, "output_tokens_details": {"reasoning_tokens": 4}}}}
 
@@ -92,6 +94,8 @@ def test_native_pump_counts_two_reads_and_exposes_metadata(running, monkeypatch,
         assert call["turnId"] == rec["turnId"] and call["callId"]
         assert call["sessionId"] == call["rootSessionId"] == "ses_native"
         assert call["protocol"] == protocol.value and call["model"] == model
+        assert call["requestedAlias"] == model
+        assert call["responseReportedModel"] == "provider-reported"
         assert call["effortStatus"] == "provider_default" and call["requestedEffort"] is None
         assert call["firstTextMs"] is not None and call["firstToolArgumentMs"] is not None
         assert call["lastChunkMs"] >= call["firstToolArgumentMs"] >= call["ttfbMs"]
@@ -99,6 +103,21 @@ def test_native_pump_counts_two_reads_and_exposes_metadata(running, monkeypatch,
         import httpx
         encoded = httpx.Request("POST", "https://example.test", json=gateway.seen[-1][0]).content
         assert call["forwardedReqBytes"] == len(encoded)
+        composition = call["requestComposition"]
+        assert composition["status"] == "complete"
+        assert composition["boundary"] == "final_forwarded_json"
+        assert composition["totalBytes"] == call["forwardedReqBytes"]
+        assert sum(composition["categories"].values()) == call["forwardedReqBytes"]
+        assert composition["toolSchemaCount"] == 2  # Plan mode removes write.
+        assert composition["rewrites"] == {
+            "redactedCalls": 0, "localExecutionReceipts": 0,
+            "markerEchoCorrections": 0, "externalImageReceipts": 0,
+            "withheldImageReceipts": 0,
+        }
+        if protocol is Protocol.MESSAGES:
+            assert "cache_control" in json.dumps(gateway.seen[-1][0])
+        if protocol is Protocol.RESPONSES:
+            assert gateway.seen[-1][0]["metadata"]["sage_route_check"]
         assert call["reqBytes"] > 0
         assert "private-row" not in json.dumps(call) and "private text" not in json.dumps(call)
     finally:

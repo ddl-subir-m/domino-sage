@@ -242,7 +242,7 @@ class EnforcementShim:
         return self.data_use.observe(stream, request, used)
 
     def prepare(self, request: dict[str, Any], project: str, session: str | None = None,
-                on_resolved=None, *, native: bool = False):
+                on_resolved=None, *, native: bool = False, rewrite_counts=None):
         """Route the request and resolve its capability, ready for a protocol to stream it.
 
         `project` is kept for the log line only — the gateway captures the caller's Domino project
@@ -591,7 +591,8 @@ class EnforcementShim:
                 "role": "system", "content": f"[sage] Routing note: {what}",
             }]}
 
-        request = self.data_use.apply_restrictions(request, withheld=state.withheld)
+        request = self.data_use.apply_restrictions(
+            request, withheld=state.withheld, rewrite_counts=rewrite_counts)
 
         # Attached images against a non-vision model: strip them here rather than switch models or
         # let it fly. The resolved model is only known at this point (per request). Passing an image
@@ -717,5 +718,6 @@ class EnforcementShim:
             version=_SAGE_VERSION,
             project_name=self._project_name,
         )
-        request, used = self.data_use.prepare(request, withheld=state.withheld)
+        request, used = self.data_use.prepare(
+            request, withheld=state.withheld, rewrite_counts=rewrite_counts)
         return request, labels, used, capability

@@ -117,7 +117,7 @@ class DataUse:
             return [copy.deepcopy(event) for event, _, _ in self.operations.values()
                     if event["turn_id"] == turn_id]
 
-    def apply_restrictions(self, request, withheld=None):
+    def apply_restrictions(self, request, withheld=None, rewrite_counts=None):
         if not isinstance(request.get("messages"), list):
             return request
         hidden = _withheld_sources(withheld)
@@ -126,13 +126,13 @@ class DataUse:
         return {
             **request,
             "messages": [
-                _rewrite_withheld_image_attachments(message, hidden)
+                _rewrite_withheld_image_attachments(message, hidden, rewrite_counts)
                 if isinstance(message, dict) else message
                 for message in request["messages"]
             ],
         }
 
-    def prepare(self, request, withheld=None):
+    def prepare(self, request, withheld=None, rewrite_counts=None):
         """Build the model-facing view of known data-bearing local tool results.
 
         The transcript still holds the local result the person saw. This rewrites only the request
@@ -162,8 +162,9 @@ class DataUse:
                     messages.append(message)
                     continue
                 message = copy.deepcopy(message)
-                message = _rewrite_withheld_image_attachments(message, hidden)
-                message = _rewrite_open_code_parts(message, sources, hidden, local_texts)
+                message = _rewrite_withheld_image_attachments(message, hidden, rewrite_counts)
+                message = _rewrite_open_code_parts(
+                    message, sources, hidden, local_texts, rewrite_counts)
                 for call in message.get("tool_calls") or []:
                     if isinstance(call, dict):
                         cid = str(call.get("id") or "")
@@ -174,6 +175,7 @@ class DataUse:
                         if cid and source:
                             direct[cid] = source
                             call = _sanitize_call(call, source)
+                            _bump(rewrite_counts, "redactedCalls")
                             _replace_call(message, cid, call)
                         else:
                             raw_args = _call_arguments_text(call)
@@ -181,6 +183,7 @@ class DataUse:
                                 source = {"sources": [], "withheld": False}
                                 direct[cid] = source
                                 _replace_call(message, cid, _sanitize_call(call, source))
+                                _bump(rewrite_counts, "redactedCalls")
                             for oid, _event, reply in self._selected_operation_args(raw_args):
                                 used.add(oid)
                 if message.get("role") == "tool":
@@ -212,6 +215,7 @@ class DataUse:
                         # block gates by tool NAME), so the model has already run this. Saying so
                         # plainly is repair-after, which is the seam this architecture has.
                         message = {**message, "content": _MARK_ECHO_CORRECTION}
+                        _bump(rewrite_counts, "markerEchoCorrections")
                         if cid and cid in call_messages:
                             visible = next((item for item in call_messages[cid].get("tool_calls") or []
                                             if isinstance(item, dict)
@@ -227,8 +231,9 @@ class DataUse:
                                                  status=_status_hint(raw, call))
                         message = {**message, "content": _replace_content(message.get("content"),
                                                                           receipt)}
+                        _bump(rewrite_counts, "localExecutionReceipts")
                     else:
-                        message = _rewrite_image_result(message, call)
+                        message = _rewrite_image_result(message, call, rewrite_counts)
                 else:
                     text = _tool_content_text(message.get("content"))
                     for oid, _event, _reply in self._selected_operation_args(text):
@@ -844,7 +849,7 @@ def _has_status_hint(text, status):
     ))
 
 
-def _rewrite_image_result(message, call):
+def _rewrite_image_result(message, call, rewrite_counts=None):
     content = message.get("content")
     if not isinstance(content, list) or not any(_is_image_part(p) for p in content):
         return message
@@ -864,12 +869,13 @@ def _rewrite_image_result(message, call):
     for part in content:
         if _is_image_part(part):
             parts.append({"type": "text", "text": json.dumps(receipt)})
+            _bump(rewrite_counts, "externalImageReceipts")
         else:
             parts.append(part)
     return {**message, "content": parts}
 
 
-def _rewrite_withheld_image_attachments(message, hidden):
+def _rewrite_withheld_image_attachments(message, hidden, rewrite_counts=None):
     content = message.get("content")
     if not hidden or not isinstance(content, list) or not any(_is_image_part(p) for p in content):
         return message
@@ -886,10 +892,13 @@ def _rewrite_withheld_image_attachments(message, hidden):
         ),
         "sources": _dedupe_sources(found),
     }
-    parts = [
-        {"type": "text", "text": json.dumps(receipt)} if _is_image_part(part) else part
-        for part in content
-    ]
+    parts = []
+    for part in content:
+        if _is_image_part(part):
+            parts.append({"type": "text", "text": json.dumps(receipt)})
+            _bump(rewrite_counts, "withheldImageReceipts")
+        else:
+            parts.append(part)
     return {**message, "content": parts}
 
 
@@ -954,7 +963,7 @@ def _flatten(value):
         yield value
 
 
-def _rewrite_open_code_parts(message, sources, hidden, local_texts):
+def _rewrite_open_code_parts(message, sources, hidden, local_texts, rewrite_counts=None):
     content = message.get("content")
     if not isinstance(content, list):
         return message
@@ -975,22 +984,26 @@ def _rewrite_open_code_parts(message, sources, hidden, local_texts):
         if raw:
             local_texts.append(raw)
         receipt = _local_receipt(call, source, raw, status=state.get("status"))
+        _bump(rewrite_counts, "redactedCalls")
         clean_state = {**state, "input": _sanitize_part_input(call, source)}
         # An empty string carries no data to withhold, and `""` is what a call that succeeded
         # leaves in `error` — a receipt written there reports a failure that did not happen (#507).
         for key in ("output", "error"):
             if isinstance(clean_state.get(key), str) and clean_state[key]:
                 clean_state[key] = json.dumps(receipt)
+                _bump(rewrite_counts, "localExecutionReceipts")
         meta = clean_state.get("metadata")
         if isinstance(meta, dict):
             clean_meta = dict(meta)
             for key in ("output", "error"):
                 if isinstance(clean_meta.get(key), str) and clean_meta[key]:
                     clean_meta[key] = json.dumps(receipt)
+                    _bump(rewrite_counts, "localExecutionReceipts")
             clean_state["metadata"] = clean_meta
         for key in ("output", "error"):
             if isinstance(clean_state.get(key), list):
-                clean_state[key] = _replace_image_parts(clean_state[key], call)
+                clean_state[key] = _replace_image_parts(
+                    clean_state[key], call, rewrite_counts)
         parts.append({**part, "state": clean_state})
         changed = True
     return {**message, "content": parts} if changed else message
@@ -1002,6 +1015,13 @@ def _sanitize_part_input(call, source):
     return (state or {}).get("input", {})
 
 
-def _replace_image_parts(parts, call):
-    message = _rewrite_image_result({"role": "tool", "content": parts}, call)
+def _replace_image_parts(parts, call, rewrite_counts=None):
+    message = _rewrite_image_result(
+        {"role": "tool", "content": parts}, call, rewrite_counts)
     return message.get("content", parts)
+
+
+def _bump(counts, key):
+    """Increment fixed request-local metadata without making diagnostics required."""
+    if counts is not None:
+        counts[key] = counts.get(key, 0) + 1
