@@ -200,7 +200,7 @@ from ..workspace.threads import (
     title_from_prompt,
     withhold_table_rows,
 )
-from . import brand, chat_compact, chat_intent, recall, scope, table_rank, withhold
+from . import attachment_repair, brand, chat_compact, chat_intent, recall, scope, table_rank, withhold
 from . import handoff as chat_handoff
 from .describe import describe, fit_image
 from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
@@ -4944,6 +4944,7 @@ class Project:
     # rather than in the one that appeared under them. None between turns.
     turn_app: Workspace | None = None
     turn_attached: list[dict] | None = None
+    turn_attachment_failures: set[str] = field(default_factory=set)
     # Where the UI sends a user to read what this project has cost, and the tag value to filter by
     # once they land. Both None off-Domino (or in fake/openai gateway mode), which hides the link —
     # a dead link to a dashboard that has no Sage data reads as a bug.
@@ -7446,7 +7447,7 @@ class Orchestrator:
         `detail` a mention inlines and the `detail` a manifest holds could come to differ.
         """
         try:
-            real = _safe_join(project.workspace.path, entry["path"]).resolve()
+            real = _safe_join(project.app_for_turn().path, entry["path"]).resolve()
             d = describe(str(real))
             if d["kind"] == "image":
                 # Whether the agent will actually SEE this image, settled once here so the Data
@@ -7469,8 +7470,8 @@ class Orchestrator:
         it. None when nothing to attach."""
         if not mentions:
             return None
-        known = {e["path"]: e for e in project.attached}
-        groups = _by_folder(project.attached)
+        known = {e["path"]: e for e in project.attachments_for_turn()}
+        groups = _by_folder(project.attachments_for_turn())
         out: list[dict] = []
         # Whether this turn learned a shape worth keeping. `_descriptor` fills the cache into the
         # entry and leaves the write to its caller (ADR-0029), so a turn that describes a file for
@@ -7523,7 +7524,7 @@ class Orchestrator:
                 item["image_uri"] = self._image_data_uri(real)
             out.append(item)
         if fresh:
-            project.workspace.write_attachments(project.attached)
+            project.app_for_turn().write_attachments(project.attachments_for_turn())
         return out or None
 
     @staticmethod
@@ -14156,8 +14157,39 @@ class Orchestrator:
         finally:
             self._release_turn()
 
-    def _restore_attachments(self) -> None:
-        """Put back any attachment the turn just deleted (#37).
+    def _prepare_build_attachments(
+        self, project: Project, mentions: list[str] | None,
+    ) -> tuple[list[str] | None, list[str]]:
+        """Select only this app's inputs; an explicit mention list narrows that selection."""
+        started = time.monotonic()
+        attached = project.attachments_for_turn()
+        selected = mentions or [entry["path"] for entry in attached]
+        known = {entry["path"]: entry for entry in attached}
+        groups = _by_folder(attached)
+        eligible: dict[str, dict] = {}
+        for path in selected:
+            if path in known:
+                eligible[path] = known[path]
+            else:
+                _, members = _folder_members(groups, path)
+                eligible.update((entry["path"], entry) for entry in members)
+        missing = [entry for path, entry in eligible.items() if self._on_disk(project, path) is None]
+        if missing:
+            self._restore_attachments(missing)
+        unavailable = [path for path in eligible if self._on_disk(project, path) is None]
+        project.turn_attachment_failures.update(unavailable)
+        counts = {"requested": len(mentions or []), "eligible": len(eligible),
+                  "resolved": len(eligible) - len(unavailable), "unavailable": len(unavailable)}
+        for key, value in counts.items():
+            timing.count("attachments." + key, value)
+        elapsed = (time.monotonic() - started) * 1000
+        timing.observe("attachments.resolution_ms", elapsed)
+        log.info("attachments preflight: requested=%d eligible=%d resolved=%d unavailable=%d ms=%.1f",
+                 *counts.values(), elapsed)
+        return selected or None, unavailable
+
+    def _restore_attachments(self, entries: list[dict] | None = None) -> None:
+        """Repair absent attachment paths; absence alone does not identify who removed them (#513).
 
         Told to "remove everything you have built", a live agent took the user's uploaded CSV with it:
         the file left the @ menu and they had to attach it again to say the same sentence. AGENTS.md
@@ -14176,8 +14208,8 @@ class Orchestrator:
         and re-link anything whose symlink went missing. Both attach paths write the same entry shape
         (see attach_file and the upload path), so one re-link covers a dataset file and an upload.
 
-        Best-effort and end-of-turn, like _recheck_app_data beside it: this must never be the thing
-        that fails a build that otherwise worked."""
+        Used before Build dispatch and in best-effort end-of-turn cleanup. Remote recovery
+        shares a bounded budget, and a failed recovery never starts a planning loop."""
         try:
             project = self.project()
         except Exception:
@@ -14188,27 +14220,27 @@ class Orchestrator:
         app = project.app_for_turn()
         attached = project.attachments_for_turn()
         restored: list[str] = []
-        for entry in list(attached):
+        deadline = time.monotonic() + attachment_repair.TIMEOUT_S
+        for entry in list(attached if entries is None else entries):
+            if entry["path"] in project.turn_attachment_failures:
+                continue
             try:
                 dest = _safe_join(app.path, entry["path"])
-                if dest.is_symlink() or dest.exists():
+                if self._on_disk(project, entry["path"]) is not None:
                     continue
-                # Raises LookupError for a rehydrated entry with no dataset_id, which the except
-                # below treats like any other unrestorable one.
-                asset = self._find_asset(entry.get("dataset_id"))
-                rel_path = entry.get("dataset_rel_path") or entry.get("file") or ""
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if not asset.mount_path:
-                    # No mount to re-link to, which is not the dead end it used to be: the same
-                    # download that made this attachment can make it again.
-                    self._assets.download_file(asset, rel_path, dest)
-                else:
-                    src = _safe_join(Path(asset.mount_path), rel_path)
-                    if not src.is_file():
-                        continue
-                    dest.symlink_to(src)
+                if time.monotonic() >= deadline:
+                    break
+                reason = "dangling" if dest.is_symlink() else "absent"
+                attachment_repair.repair(entry, dest, self._find_asset, self._assets,
+                                         deadline - time.monotonic())
+                timing.count("attachments.restored." + reason)
                 restored.append(entry["path"])
-            except (ValueError, OSError, LookupError):
+            except (ValueError, OSError, LookupError, ResourceUnavailable) as exc:
+                timing.count("attachments.repair_failed." + type(exc).__name__)
+                # Do not repeat a failed preflight download in end-of-turn cleanup. A new
+                # turn retries, so a mount restored between requests is picked up.
+                if project.turn_app is not None:
+                    project.turn_attachment_failures.add(entry["path"])
                 continue            # one unrestorable attachment must not strand the others
         try:
             # Unconditional, not only when `restored` is non-empty: the entry can survive on disk
@@ -14218,7 +14250,7 @@ class Orchestrator:
         except OSError:
             log.exception("attachments: could not rewrite the manifest")
         if restored:
-            log.warning("attachments: the turn deleted %d attachment(s); restored %s",
+            log.warning("attachments: restored %d absent attachment path(s): %s",
                         len(restored), ", ".join(restored))
             try:
                 app.append_history({"type": "attachments-restored", "paths": restored},
@@ -14236,6 +14268,7 @@ class Orchestrator:
         turn began in rather than whichever one is on screen when it gets there."""
         project.turn_app = project.workspace
         project.turn_attached = project.attached
+        project.turn_attachment_failures.clear()
 
     def _clear_turn_baseline(self) -> None:
         """Mark "no turn running" so _rebaseline_turn stops touching the baseline once the turn that
@@ -14252,6 +14285,7 @@ class Orchestrator:
             self._project.active_session_id = None
             self._project.turn_app = None
             self._project.turn_attached = None
+            self._project.turn_attachment_failures.clear()
         except Exception:
             pass
 
@@ -16135,6 +16169,25 @@ class Orchestrator:
 
         with timing.span("setup.seed"):
             project = self._ensure_seeded()
+        # Approval already carries these app-selected paths. The first request must use the
+        # same resolver before opening a session or paying for a scope/model call (#513).
+        with timing.span("setup.attachments"):
+            mentions, missing_inputs = self._prepare_build_attachments(project, mentions)
+        if missing_inputs:
+            # An approved plan still needs to be built after its inputs return.
+            self._turn_gave_up = True
+            message = ("Build did not start because these attached files are unavailable: "
+                       + ", ".join(missing_inputs[:20])
+                       + (" (additional files omitted)" if len(missing_inputs) > 20 else "")
+                       + ". Restore the source or remove and attach these files again.")
+            for event in ({"type": "user", "text": user_text or prompt},
+                          {"type": "mentions-unresolved", "message": message},
+                          {"type": "done", "ok": False, "decision": "attachments unavailable"}):
+                if brief is None:
+                    project.app_for_turn().append_history(event, project.build_conversation)
+                if event["type"] != "user":
+                    yield event
+            return
         # Repair the warm node_modules before the turn, not only at attach — attach happens once per
         # process, and an agent-run `npm install` can destroy the symlink mid-session and leave the
         # workspace unable to build or preview (see WorkspaceManager.link_warm_deps).
