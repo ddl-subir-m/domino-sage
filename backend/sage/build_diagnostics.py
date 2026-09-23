@@ -21,6 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from . import timing
+from .tool_timing import argument_keys_for_tool
 
 log = logging.getLogger("sage.diagnostics")
 SCHEMA_VERSION = 1
@@ -39,7 +40,10 @@ TOOL_FIELDS = ["sessionId", "harnessCallId", "partId", "identitySource", "tool",
 INVOKE_FIELDS = ["name", "providerId", "protocolIndex", "identityStatus", "metadataTruncated"]
 SPAN_FIELDS = ["name", "depth", "atMs", "ms", "open", "no_edit_attempt", "wrote_code", "retry_exhausted"]
 INTERVAL_FIELDS = ["name", "atMs", "ms", "ok", "running"]
-BRAKE_FIELDS = ["sessionId", "harnessCallId", "tool", "inputFingerprint", "consecutive", "limit", "stopped", "atMs"]
+BRAKE_FIELDS = ["sessionId", "harnessCallId", "tool", "inputFingerprint", "consecutive", "limit",
+                "stopped", "atMs", "argumentKeysTruncated", "executableVariant",
+                "metadataVariant", "detectedCycleLength", "unknownArgumentKeyCount",
+                "unknownArgumentKeysTruncated"]
 COUNTERS = {"poll.iterations", "tools.unidentified_events", "attachments.requested",
             "attachments.eligible", "attachments.resolved", "attachments.unavailable",
             "attachments.restored.absent", "attachments.restored.dangling",
@@ -53,7 +57,7 @@ TEXT_FIELDS = {"appId", "conversationId", "kind", "name", "model", "phase", "rea
                "clockPlacement", "inputFingerprint"}
 BOOL_FIELDS = {"ok", "running", "open", "toolsTruncated", "metadataTruncated", "targetMetadataFinal",
                "editSincePreviousRead", "opaqueOperationSincePreviousRead", "stopped", "wrote_code",
-               "retry_exhausted"}
+               "retry_exhausted", "argumentKeysTruncated", "unknownArgumentKeysTruncated"}
 
 
 def _metadata(row, keys):
@@ -143,6 +147,9 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="unknown"
                     entry["retry_reason"] = row["retry_reason"]
             if section == "tools":
                 entry["range"] = _metadata(row.get("range", {}), ["offset", "limit", "startLine", "endLine"])
+            if section == "repeatBrake":
+                entry["argumentKeys"] = argument_keys_for_tool(
+                    row.get("tool", ""), row.get("argumentKeys", []))[:16]
             kept.append(entry)
         data[section] = kept
         drops[section] = len(rows) - len(kept)

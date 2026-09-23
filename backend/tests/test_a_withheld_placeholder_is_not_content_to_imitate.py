@@ -22,8 +22,10 @@ steps it has taken.
 import copy
 import json
 import logging
+from types import SimpleNamespace
 
 from sage.driver.opencode import with_attachment_listing
+from sage.liveread import data_use as data_use_module
 from sage.liveread.data_use import DataUse
 
 PATH = "public/data/upload/uploads/sales.csv"
@@ -75,7 +77,12 @@ def test_the_command_a_model_copied_off_a_placeholder_is_answered_not_receipted(
     ]})
 
     answer = prepared["messages"][-1]["content"]
+    sent = prepared["messages"][-2]["tool_calls"][0]["function"]["arguments"]
+    sent_args = json.loads(sent)
     assert isinstance(answer, str)
+    assert "local data withheld" not in sent, "the repaired history cannot teach the marker again"
+    assert "command" in sent_args, "the tool-call schema stays valid"
+    assert sent_args["description"] != "a step", "repair must not undo the earlier data redaction"
     assert "not a command" in answer and "already ran" in answer
     assert "did nothing" not in answer, "the rewrite cannot undo a tool execution"
     assert not _is_receipt(answer), (
@@ -172,8 +179,10 @@ def test_an_ordinary_command_is_left_to_the_branch_that_owns_it(caplog):
     assert not [r for r in caplog.records if r.name == "sage.liveread"]
 
 
-def test_marker_warnings_count_rewritten_results_without_exposing_private_content(caplog):
+def test_marker_warnings_report_each_new_echo_once_without_private_content(caplog, monkeypatch):
     data = DataUse()
+    monkeypatch.setattr(data_use_module.timing, "current", lambda: SimpleNamespace(
+        turn_id="turn_safe", calls=[SimpleNamespace(n=7)]))
     request = {"messages": [
         bash("private-call-id", "echo 'local data withheld; private-command-value'"),
         {"role": "tool", "tool_call_id": "private-call-id", "content": "private-result-value"},
@@ -185,12 +194,42 @@ def test_marker_warnings_count_rewritten_results_without_exposing_private_conten
         for _ in range(2):
             data.prepare(request)
     records = [r for r in caplog.records if r.name == "sage.liveread"]
-    assert len(records) == 2, "one warning per history rewrite, not per tool execution"
+    assert len(records) == 2, "one warning per newly completed echo, never on replay"
     assert all(r.levelno == logging.WARNING for r in records)
-    assert all("history rewrite" in r.message and "corrected_results=2" in r.message
+    assert all("new_marker_echoes=1" in r.message for r in records)
+    assert ["observed_marker_echoes=1" in records[0].message,
+            "observed_marker_echoes=2" in records[1].message] == [True, True]
+    assert all("turn_id=turn_safe" in r.message and "model_call_ordinal=7" in r.message
                for r in records)
     assert "private-" not in caplog.text
     assert request == original, "stored history and its real results remain intact"
+
+
+def test_marker_warning_dedupe_stays_bounded_without_silencing_new_echoes(caplog, monkeypatch):
+    monkeypatch.setattr(data_use_module, "_MARKER_ECHO_DEDUPE_IDS", 2)
+    monkeypatch.setattr(data_use_module, "_MARKER_ECHO_COUNT_CAP", 2)
+    data = DataUse()
+
+    def history(ids):
+        messages = []
+        for cid in ids:
+            messages.extend([
+                bash(cid, "true local data withheld"),
+                {"role": "tool", "tool_call_id": cid, "content": "private result"},
+            ])
+        return {"messages": messages}
+
+    with caplog.at_level(logging.WARNING, logger="sage.liveread"):
+        for end in range(1, 5):
+            data.prepare(history([f"call-{n}" for n in range(end)]))
+        data.prepare(history(["call-2", "call-3"]))
+
+    records = [record for record in caplog.records if record.name == "sage.liveread"]
+    assert len(records) == 4, "new echoes still log after the cumulative count saturates"
+    assert ["observed_marker_echoes=1" in records[0].message,
+            *["observed_marker_echoes=2" in record.message for record in records[1:]]] == [
+                True, True, True, True]
+    assert len(data._logged_marker_echoes) == len(data._logged_marker_echo_order) == 2
 
 
 def test_legitimate_marker_phrase_is_observable_without_claiming_a_noop(caplog):
@@ -201,7 +240,29 @@ def test_legitimate_marker_phrase_is_observable_without_claiming_a_noop(caplog):
     ]})
     assert "already ran" in prepared["messages"][-1]["content"]
     assert "may have changed files" in prepared["messages"][-1]["content"]
-    assert "corrected_results=1" in caplog.text
+    assert "new_marker_echoes=1" in caplog.text
+
+
+def test_completed_echo_arguments_are_repaired_without_mutating_history():
+    data = DataUse()
+    request = {"messages": [
+        {"role": "assistant", "tool_calls": [{"id": "nested", "type": "function",
+         "function": {"name": "task", "arguments": json.dumps({
+             "prompt": "use local data withheld here",
+             "options": ["local data withheld", {"note": "safe"}],
+         })}}]},
+        {"role": "tool", "tool_call_id": "nested", "content": "private result"},
+    ]}
+    original = copy.deepcopy(request)
+
+    prepared, _ = data.prepare(request)
+
+    outbound = prepared["messages"][0]["tool_calls"][0]["function"]["arguments"]
+    assert "local data withheld" not in outbound
+    args = json.loads(outbound)
+    assert set(args) == {"prompt", "options"} and isinstance(args["options"], list)
+    assert "already ran" in prepared["messages"][1]["content"]
+    assert request == original
 
 
 def _is_receipt(text):
