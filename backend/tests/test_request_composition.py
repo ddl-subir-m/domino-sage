@@ -172,7 +172,7 @@ def test_alias_and_nested_composition_survive_the_export_sanitizer(tmp_path):
     rec = timing.TurnRecord("build", 1.0, 1.0, turn_id="turn_a",
                             app_id="app_a", conversation_id="thread_a")
     call = timing.ModelCall(1, 1.0, model="GLM 5.3 OR", requested_alias="GLM 5.3 OR",
-                            response_reported_model="provider-model-7", t1=2.0,
+                            response_reported_model="GLM 5.3 OR", t1=2.0,
                             forwarded_request_bytes=total, request_composition=measured)
     rec.calls = [call]
     rec.t1 = 2.0
@@ -183,7 +183,7 @@ def test_alias_and_nested_composition_survive_the_export_sanitizer(tmp_path):
     restored = diagnostics.Store(tmp_path).get("turn_a", "app_a", "thread_a")
     saved = restored["timing"]["calls"][0]
     assert saved["model"] == saved["requestedAlias"] == "GLM 5.3 OR"
-    assert saved["responseReportedModel"] == "provider-model-7"
+    assert saved["responseReportedModel"] == "GLM 5.3 OR"
     assert saved["requestComposition"]["totalBytes"] == total
     assert PRIVATE not in json.dumps(restored, ensure_ascii=False)
 
@@ -228,6 +228,26 @@ def test_malformed_nested_composition_is_zeroed_without_losing_the_capture(tmp_p
     assert saved["rewrites"]["redactedCalls"] == 0
     assert saved["rewrites"]["markerEchoCorrections"] == 0
     assert PRIVATE not in json.dumps(restored, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("private", ["PRIVATE_SENTINEL", "sk-live-secret123"])
+def test_export_drops_untrusted_identifier_shaped_response_models(tmp_path, private):
+    rec = timing.TurnRecord("build", 1.0, 1.0, turn_id="turn_untrusted")
+    rec.calls = [timing.ModelCall(
+        1, 1.0, model="GLM 5.3 OR", requested_alias="GLM 5.3 OR",
+        response_reported_model=private, t1=2.0,
+    )]
+    rec.t1 = 2.0
+    identity = {"turnId": "turn_untrusted", "appId": "app_a",
+                "conversationId": "thread_a", "kind": "build"}
+    row = diagnostics.snapshot(rec, identity, terminal=True)
+    assert diagnostics.Store(tmp_path).put(row)
+    restored = diagnostics.Store(tmp_path).get(
+        "turn_untrusted", "app_a", "thread_a")
+    call = restored["timing"]["calls"][0]
+    assert call["model"] == call["requestedAlias"] == "GLM 5.3 OR"
+    assert "responseReportedModel" not in call
+    assert private not in json.dumps(restored)
 
 
 def test_old_records_without_composition_remain_readable(tmp_path):

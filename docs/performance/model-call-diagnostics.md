@@ -20,8 +20,8 @@ at Sage's gateway boundary, not a measurement of provider compute or reasoning t
 - `requestedAlias` is the model value on the final outbound request. Model names use a
   bounded validator that permits spaces, so aliases such as `GLM 5.3 OR` survive the
   persisted Build export. `responseReportedModel`, when present, is provider-reported
-  response evidence accepted only with a strict model-identifier shape. It is not
-  verified serving-model identity.
+  response evidence retained only when it exactly echoes the trusted resolved or
+  requested alias for that call. It is not verified serving-model identity.
 
 ## Time and size
 

@@ -29,7 +29,7 @@ LANES = [("GLM 5.3 OR", Protocol.CHAT), ("Opus-4.8", Protocol.MESSAGES),
 def frames(protocol, request):
     """Two reads, each split into three argument events; no input usage on purpose."""
     if protocol is Protocol.CHAT:
-        yield {"model": "provider-reported", "choices": [{"index": 0, "delta": {"content": "private text"}}]}
+        yield {"model": request["model"], "choices": [{"index": 0, "delta": {"content": "private text"}}]}
         for i in range(2):
             yield {"choices": [{"index": 0, "delta": {"tool_calls": [
                 {"index": i, "id": f"provider_{i}", "function": {"name": "read"}}]}}]}
@@ -39,7 +39,7 @@ def frames(protocol, request):
         yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}],
                "usage": {"completion_tokens": 17, "completion_tokens_details": {"reasoning_tokens": 4}}}
     elif protocol is Protocol.MESSAGES:
-        yield {"type": "message_start", "message": {"model": "provider-reported"}}
+        yield {"type": "message_start", "message": {"model": request["model"]}}
         yield {"type": "content_block_delta", "index": 2,
                "delta": {"type": "text_delta", "text": "private text"}}
         for i in range(2):
@@ -59,7 +59,7 @@ def frames(protocol, request):
             for fragment in ('{"path":', '"private-row"', '}'):
                 yield {"type": "response.function_call_arguments.delta", "item_id": f"item_{i}", "delta": fragment}
         yield {"type": "response.completed", "response": {
-            "model": "provider-reported",
+            "model": request["model"],
             "store": False, "metadata": request["metadata"], "reasoning": request.get("reasoning", {}),
             "usage": {"output_tokens": 17, "output_tokens_details": {"reasoning_tokens": 4}}}}
 
@@ -96,7 +96,7 @@ def test_native_pump_counts_two_reads_and_exposes_metadata(running, monkeypatch,
         assert call["sessionId"] == call["rootSessionId"] == "ses_native"
         assert call["protocol"] == protocol.value and call["model"] == model
         assert call["requestedAlias"] == model
-        assert call["responseReportedModel"] == "provider-reported"
+        assert call["responseReportedModel"] == model
         assert call["effortStatus"] == "provider_default" and call["requestedEffort"] is None
         assert call["firstTextMs"] is not None and call["firstToolArgumentMs"] is not None
         assert call["lastChunkMs"] >= call["firstToolArgumentMs"] >= call["ttfbMs"]
@@ -333,10 +333,10 @@ def test_replayed_tool_announcements_do_not_duplicate_invocations(running, monke
     assert timing.as_dict(timing.finish_turn())["calls"][0]["tools"] == ["read", "read"]
 
 
+@pytest.mark.parametrize("private", ["PRIVATE_SENTINEL", "sk-live-secret123"])
 def test_provider_model_content_cannot_enter_the_persisted_download(
-        running, monkeypatch, tmp_path, caplog):
+        running, monkeypatch, tmp_path, caplog, private):
     client, orch, gateway = running
-    private = "PRIVATE SENTINEL\nresult text, not a model identity"
 
     def poison(items):
         items[0]["model"] = private
@@ -363,7 +363,7 @@ def test_provider_model_content_cannot_enter_the_persisted_download(
     assert private not in serialized and private not in caplog.text
     saved = downloaded["timing"]["calls"][0]
     assert saved["model"] == saved["requestedAlias"] == "GLM 5.3 OR"
-    assert saved["responseReportedModel"] is None
+    assert "responseReportedModel" not in saved
 
 
 def test_request_body_arriving_after_turn_close_cannot_record_in_the_next_turn(running, monkeypatch):

@@ -37,10 +37,9 @@ _lock = threading.RLock()
 _active: set[tuple[str, str]] = set()
 _TOKEN = re.compile(r"[\w.:/@+-]{1,160}\Z", re.ASCII)
 _MODEL_NAME = re.compile(r"[^\x00-\x1f\x7f]{1,160}\Z")
-_REPORTED_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}\Z", re.ASCII)
 
 # No catch-all copy: new recorder fields are private until this contract admits them.
-CALL_FIELDS = ["n", "model", "requestedAlias", "responseReportedModel", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort", "effortStatus", "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
+CALL_FIELDS = ["n", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort", "effortStatus", "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
 TOOL_FIELDS = ["sessionId", "harnessCallId", "partId", "identitySource", "tool", "firstObservedMs", "lastObservedMs", "completedObservedMs", "observationSource", "startUnixMs", "endUnixMs", "startSource", "endSource", "executionMs", "completionLagMs", "targetFingerprint", "queryFingerprint", "targetMetadataFinal", "editSincePreviousRead", "opaqueOperationSincePreviousRead", "targetState", "status", "observedMs", "startAtMs", "endAtMs", "clockPlacement"]
 INVOKE_FIELDS = ["name", "providerId", "protocolIndex", "identityStatus", "metadataTruncated"]
 SPAN_FIELDS = ["name", "depth", "atMs", "ms", "open", "no_edit_attempt", "wrote_code", "retry_exhausted"]
@@ -55,7 +54,7 @@ COUNTERS = {"poll.iterations", "tools.unidentified_events", "attachments.request
             *{"attachments.repair_failed." + name for name in
               ("ValueError", "OSError", "FileNotFoundError", "LookupError", "ResourceUnavailable")}}
 OBSERVATIONS = {"attachments.resolution_ms", "emit.lag_ms", "poll.read_ms", "poll.sleep_ms"}
-TEXT_FIELDS = {"appId", "conversationId", "kind", "name", "model", "requestedAlias", "responseReportedModel", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort",
+TEXT_FIELDS = {"appId", "conversationId", "kind", "name", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort",
                "effortStatus", "sessionId", "rootSessionId", "outcome", "providerId", "identityStatus",
                "harnessCallId", "partId", "identitySource", "tool", "observationSource", "startSource",
                "endSource", "targetFingerprint", "queryFingerprint", "targetState", "status",
@@ -73,9 +72,7 @@ def _metadata(row, keys):
         if key not in row:
             continue
         value = row[key]
-        if key == "responseReportedModel":
-            valid = value is None or isinstance(value, str) and _REPORTED_MODEL.fullmatch(value)
-        elif key in {"model", "requestedAlias"}:
+        if key in {"model", "requestedAlias"}:
             valid = value is None or isinstance(value, str) and _MODEL_NAME.fullmatch(value)
         else:
             valid = (value is None
@@ -219,6 +216,10 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
                 composition = _request_composition(row.get("requestComposition"))
                 if composition is not None:
                     entry["requestComposition"] = composition
+                reported = row.get("responseReportedModel")
+                if (isinstance(reported, str)
+                        and reported in {entry.get("model"), entry.get("requestedAlias")}):
+                    entry["responseReportedModel"] = reported
             if section == "spans":
                 why = row.get("why")
                 reasons = {"first send": "first_send", "runtime repair": "runtime_repair",
