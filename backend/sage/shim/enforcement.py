@@ -609,8 +609,16 @@ class EnforcementShim:
         if is_bedrock(request["model"]) and isinstance(request.get("messages"), list):
             request = {**request, "messages": split_parallel_tool_calls(request["messages"])}
 
-        log.info(
-            "model policy: requested=%s -> resolved=%s (%s, phase=%s, locked=%s, effort=%s)",
+        # A route that HAS a gateway identity but no matching proof is on the CHAT default because
+        # nothing is known about it, not because CHAT was measured (#509). Keyed on `identity` and
+        # not on `verified` alone: `legacy` — the fake/development contract, and this shim's own
+        # default — is unverified by construction and carries no identity, so a dev turn must not
+        # raise this. Said at `warning` so it reaches the warn tail and the Workspace Logs panel,
+        # which is where somebody looking at a dead turn will actually meet it.
+        unverified = bool(capability.identity) and not capability.verified
+        log.log(
+            logging.WARNING if unverified else logging.INFO,
+            "model policy: requested=%s -> resolved=%s (%s, phase=%s, locked=%s, effort=%s)%s",
             requested, request["model"], decision.reason.value, state.phase.value, decision.locked,
             # What went on the wire, not what the decision proposed: the two differ whenever a level
             # was dropped or the Chat floor answered. Named here and not only on the drop path,
@@ -622,6 +630,7 @@ class EnforcementShim:
             # distinction that issue turns on, since `none` explicitly sent and the field omitted
             # are the two requests gpt-5.4 answers differently.
             request.get("reasoning_effort", "<absent>"),
+            f" ROUTE UNVERIFIED — {capability.reason}" if unverified else "",
         )
         if on_resolved is not None:
             try:
