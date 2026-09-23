@@ -85,7 +85,9 @@ def extract_docx(source, *, max_xml_bytes: int) -> DocxText:
     paragraphs: list[str] = []
     tables: list[tuple[str, ...]] = []
 
-    def walk(element) -> None:
+    pending = [root]
+    while pending:
+        element = pending.pop()
         local = _local_name(element.tag)
         if local == "tbl":
             rows: list[str] = []
@@ -95,21 +97,19 @@ def extract_docx(source, *, max_xml_bytes: int) -> DocxText:
                 if any(cells):
                     rows.append(" | ".join(cells))
             tables.append(tuple(rows))
-            return
+            continue
         if local == "p":
             text = _element_text(element)
             if text:
                 paragraphs.append(text)
-            return
-        for child in element:
-            walk(child)
-
-    walk(root)
+            continue
+        pending.extend(reversed(element))
     return DocxText(tuple(paragraphs), tuple(tables))
 
 
 def extract_pdf(source, *, pages=None, max_pages: int = 20,
-                max_characters: int | None = None, include_outline: bool = False) -> PdfText:
+                max_characters: int | None = None, include_outline: bool = False,
+                fail_on_page_error: bool = True) -> PdfText:
     """Extract a validated bounded set of one-based PDF pages."""
     from pypdf import PdfReader
 
@@ -123,7 +123,12 @@ def extract_pdf(source, *, pages=None, max_pages: int = 20,
         texts: list[str] = []
         extracted_characters = 0
         for page in selected_pages:
-            text = reader.pages[page - 1].extract_text() or ""
+            try:
+                text = reader.pages[page - 1].extract_text() or ""
+            except Exception:
+                if fail_on_page_error:
+                    raise
+                text = ""
             processed.append(page)
             texts.append(text)
             extracted_characters += len(text)

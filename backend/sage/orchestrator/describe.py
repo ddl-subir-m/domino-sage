@@ -531,7 +531,8 @@ def _describe_pdf(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     """
     try:
         extracted = extract_pdf(
-            path, max_pages=_PDF_MAX_PAGES_SCANNED, include_outline=True
+            path, max_pages=_PDF_MAX_PAGES_SCANNED, include_outline=True,
+            fail_on_page_error=False,
         )
     except ImportError:
         return (f"PDF document — {human_bytes(size)}, page details unavailable",

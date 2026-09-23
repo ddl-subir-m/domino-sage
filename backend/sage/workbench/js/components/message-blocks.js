@@ -2220,6 +2220,15 @@ window.SW = window.SW || {};
         const textOperation = event.operation === 'text_analysis';
         const documentOperation = event.operation === 'document_reference';
         const documentPrepared = documentOperation && (!event.status || event.status === 'prepared');
+        const selectedPages = Array.isArray(coverage.selected_pages) ? coverage.selected_pages : [];
+        const processedPages = Array.isArray(coverage.processed_pages) ? coverage.processed_pages : [];
+        const pdfPageCoverage = documentPrepared && event.source_type === 'pdf'
+          ? `PDF pages: ${coverage.source_pages || 0} source; ` +
+            `${selectedPages.length} selected (${selectedPages.join(', ') || 'none'}); ` +
+            `${processedPages.length} processed (${processedPages.join(', ') || 'none'}). `
+          : '';
+        const documentTextTruncated = Number(coverage.sent_characters || 0) <
+          Number(coverage.selected_characters || 0);
         const documentFailure = ({
           withheld: 'Document content was withheld. No document text was prepared.',
           source_too_large: 'The document exceeded the source-size limit. No document text was prepared.',
@@ -2248,10 +2257,13 @@ window.SW = window.SW || {};
           documentPrepared
             ? h('p', null,
               `${coverage.sent_characters || 0} of ${coverage.selected_characters || 0} characters prepared. `,
-              coverage.processed_pages?.length
-                ? `Pages: ${coverage.processed_pages.join(', ')}. `
-                : event.selected_selector ? `Heading: ${event.selected_selector}. ` : 'Whole document. ',
-              coverage.truncated ? 'The selected text was truncated.' : 'The selected text was complete.')
+              pdfPageCoverage || (processedPages.length
+                ? `Pages: ${processedPages.join(', ')}. `
+                : event.selected_selector ? `Heading: ${event.selected_selector}. ` : 'Whole document. '),
+              documentTextTruncated
+                ? 'The selected text was truncated. ' : 'The selected text was complete. ',
+              coverage.pages_truncated
+                ? 'Page coverage was capped.' : '')
             : documentOperation
               ? h('p', null, documentFailure)
             : h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +

@@ -10,6 +10,7 @@ from sage.assets.provider import FakeAssetProvider
 from sage.driver.opencode import with_attachment_listing
 from sage.liveread import reference, run
 from sage.liveread.data_use import DataUse
+from sage.orchestrator.describe import describe
 
 from .test_a_dropped_mention_reaches_the_agents_prompt import _orch
 
@@ -153,6 +154,20 @@ def test_docx_rejects_an_uncompressed_document_xml_above_the_limit(tmp_path: Pat
     assert prepared.text == "The Word document XML exceeds the 8 MiB extraction limit."
 
 
+def test_docx_deep_xml_uses_a_bounded_iterative_traversal(tmp_path: Path):
+    depth = 1_500
+    body = ("<w:sdt>" * depth + "<w:p><w:r><w:t>DEEP DOCX RULE</w:t></w:r></w:p>"
+            + "</w:sdt>" * depth)
+    path = _docx(tmp_path, body)
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+
+    prepared = reference.prepare(authorized)
+
+    assert prepared is not None and prepared.status == "prepared"
+    assert "DEEP DOCX RULE" in prepared.text
+
+
 def test_pdf_selection_is_one_based_deduplicated_sorted_and_content_free(tmp_path: Path):
     path = _pdf(tmp_path, ["UNIQUE PAGE ONE", "PRIVATE PAGE TWO", "UNIQUE PAGE THREE"])
     authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
@@ -190,6 +205,48 @@ def test_pdf_default_stops_at_twenty_pages_and_eight_thousand_characters(tmp_pat
     assert prepared.sent_characters == reference.MAX_SELECTED_CHARS
     assert prepared.truncated is True
     assert "PAGE 21" not in prepared.text
+
+
+def test_pdf_page_cap_is_separate_from_text_truncation(tmp_path: Path):
+    path = _pdf(tmp_path, [f"short page {number}" for number in range(1, 26)])
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+
+    prepared = reference.prepare(authorized)
+
+    assert prepared is not None and prepared.status == "prepared"
+    assert prepared.source_pages == 25
+    assert prepared.selected_pages == tuple(range(1, 21))
+    assert prepared.processed_pages == tuple(range(1, 21))
+    assert prepared.pages_truncated is True
+    assert prepared.sent_characters == prepared.selected_characters
+    assert prepared.truncated is True
+
+
+def test_pdf_descriptor_tolerates_one_bad_page_but_reference_preparation_fails_closed(
+        tmp_path: Path, monkeypatch):
+    from pypdf._page import PageObject
+
+    path = _pdf(tmp_path, ["GOOD PAGE ONE", "BAD PAGE TWO", "GOOD PAGE THREE"])
+    extract_text = PageObject.extract_text
+
+    def flaky_extract(self, *args, **kwargs):
+        text = extract_text(self, *args, **kwargs)
+        if "BAD PAGE TWO" in text:
+            raise ValueError("synthetic page failure")
+        return text
+
+    monkeypatch.setattr(PageObject, "extract_text", flaky_extract)
+
+    descriptor = describe(str(path))
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+    prepared = reference.prepare(authorized)
+
+    assert descriptor["kind"] == "pdf"
+    assert "could not be parsed" not in descriptor["summary"]
+    assert "p1=13, p2=0, p3=15" in descriptor["detail"]
+    assert prepared is not None and prepared.status == "malformed_document"
 
 
 def test_scanned_encrypted_malformed_and_invalid_pdf_selections_fail_closed(tmp_path: Path):

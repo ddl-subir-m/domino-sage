@@ -157,8 +157,36 @@ def test_a_pdf_reference_draws_selected_page_coverage():
 
     words = _draw({"type": "data_used", "turnId": "turn_a", "events": [event]})["words"]
 
-    assert "Pages: 1, 3, 8" in words
+    assert "PDF pages: 8 source; 3 selected (1, 3, 8); 3 processed (1, 3, 8)" in words
     assert "Whole document" not in words
+
+
+@needs_node
+def test_a_pdf_page_cap_does_not_claim_that_complete_text_was_truncated():
+    pages = list(range(1, 21))
+    event = {
+        "operation_id": "du_pdf_cap",
+        "turn_id": "turn_a",
+        "operation": "document_reference",
+        "source": "requirements.pdf",
+        "source_type": "pdf",
+        "coverage": {
+            "total": 400, "processed": 400, "excluded": 0, "failed": 0,
+            "unfinished": 0, "source_bytes": 1_000, "selected_characters": 400,
+            "sent_characters": 400, "truncated": True, "source_pages": 25,
+            "selected_pages": pages, "processed_pages": pages,
+            "pages_truncated": True, "extracted_characters": 250,
+        },
+        "requests": [],
+    }
+
+    words = _draw({"type": "data_used", "turnId": "turn_a", "events": [event]})["words"]
+
+    assert "PDF pages: 25 source; 20 selected" in words
+    assert "20 processed" in words
+    assert "The selected text was complete" in words
+    assert "Page coverage was capped" in words
+    assert "The selected text was truncated" not in words
 
 
 @needs_node
