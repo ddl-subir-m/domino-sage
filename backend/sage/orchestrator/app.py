@@ -1908,7 +1908,7 @@ def build_diagnostic_download(turn_id: str, app_id: str, conversation_id: str = 
     try:
         record = Store(project.record.path).get(turn_id, app_id, conversation_id)
     except (OSError, ValueError, KeyError, TypeError):
-        raise HTTPException(status_code=503, detail="Build diagnostics could not be read.") from None
+        raise HTTPException(status_code=503, detail="Diagnostics could not be read.") from None
     if record is None:
         raise HTTPException(status_code=404,
                             detail="Diagnostics were not captured for this turn or have expired.")
