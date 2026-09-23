@@ -138,6 +138,17 @@ def test_a_successor_keeps_its_header_identity_until_it_can_own_the_claim():
         "turnId": "turn_b", "stopPosts": 1, "requestedTurnId": "turn_b"}
 
 
+def test_a_successor_header_is_promoted_when_the_current_turn_releases():
+    """B's header arrives while A owns the claim. A's terminal release must expose exact B before
+    B sends any frame, so Stop is both visible and aimed at B in that interval."""
+    assert _run("deferredHeaderRace") == {
+        "beforeAEnds": "turn_a",
+        "afterAEnds": {"turnId": "turn_b", "stopOffered": True},
+        "stopPosts": 1,
+        "requestedTurnId": "turn_b",
+    }
+
+
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])
 def test_stop_is_there_before_the_turn_has_anything_to_show_for_itself(mode: str):
     """The window #126 left behind, and the whole of #371.

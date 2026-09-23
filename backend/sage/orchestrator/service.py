@@ -709,8 +709,8 @@ class _TurnQueue:
         self._running: _TurnTicket | None = None
         # Routes mint a ticket before StreamingResponse sends its headers. The generator that
         # admits it is lazy, so keep that process-owned identity here until admission. This makes
-        # an exact Stop between headers and the first body byte atomic with admission. The bound
-        # Each reservation is one-shot. Admission removes it whether it was cancelled or allowed.
+        # an exact Stop between headers and the first body byte atomic with admission. Each
+        # reservation is one-shot. Admission removes it whether it was cancelled or allowed.
         self._reserved: dict[str, dict] = {}
 
     def reserve(self, ticket_id: str, *, kind: str, conversation: str, app: str) -> None:
@@ -721,21 +721,37 @@ class _TurnQueue:
                 "cancelled": False,
             }
 
-    def cancel_reserved(self, ticket_id: str, *, kind: str, conversation: str,
-                        app: str) -> bool:
-        """Cancel a known response ticket once. Unknown or stale identities stay harmless."""
+    @staticmethod
+    def _matches_target(target, *, kind: str, conversation: str, app: str) -> bool:
+        return not ((kind and target.kind != kind)
+                    or (conversation and target.conversation != conversation)
+                    or (app and target.app and target.app != app))
+
+    def cancel_before_running(self, ticket_id: str, *, kind: str, conversation: str,
+                              app: str) -> bool:
+        """Cancel an exact reserved or waiting ticket without touching the running turn."""
         with self._cond:
             row = self._reserved.get(ticket_id)
-            if row is None or row["cancelled"]:
-                return False
-            if kind and row["kind"] != kind:
-                return False
-            if conversation and row["conversation"] != conversation:
-                return False
-            if app and row["app"] and row["app"] != app:
-                return False
-            row["cancelled"] = True
-            return True
+            if row is not None:
+                if row["cancelled"]:
+                    return False
+                if ((kind and row["kind"] != kind)
+                        or (conversation and row["conversation"] != conversation)
+                        or (app and row["app"] and row["app"] != app)):
+                    return False
+                row["cancelled"] = True
+                return True
+            for ticket in self._waiting:
+                if ticket.id != ticket_id:
+                    continue
+                if not self._matches_target(
+                        ticket, kind=kind, conversation=conversation, app=app):
+                    return False
+                ticket.outcome = "cancelled"
+                self._waiting.remove(ticket)
+                self._cond.notify_all()
+                return True
+            return False
 
     def discard_reservation(self, ticket_id: str) -> None:
         """Forget a response ticket whose stream ended or disconnected before admission."""
@@ -19645,8 +19661,8 @@ class Orchestrator:
         Stop a publish, and that is the answer rather than an omission.
 
         A route reserves its exact `turn_id` before its lazy StreamingResponse body starts. An
-        exact Stop in that short gap marks only that process-minted ticket; admission consumes the
-        mark and returns a cancelled terminal event without starting model work.
+        exact Stop can cancel that process-minted reservation or the waiting ticket admission made
+        from it. Both paths return a cancelled terminal event without starting model work.
 
         Returns whether it actually interrupted or cancelled anything, so the route stops answering
         `{"stopped": true}` to a Stop it declined to fire — the same class of lie as the button
@@ -19654,8 +19670,12 @@ class Orchestrator:
         """
         running = self._turns.running()
         if turn_id and (running is None or running.id != turn_id):
-            return self._turns.cancel_reserved(
-                turn_id, kind=kind, conversation=conversation, app=app)
+            if self._turns.cancel_before_running(
+                    turn_id, kind=kind, conversation=conversation, app=app):
+                return True
+            running = self._turns.running()
+            if running is None or running.id != turn_id:
+                return False
         if not self.turn_busy():
             return False
         if kind or conversation or app or turn_id:

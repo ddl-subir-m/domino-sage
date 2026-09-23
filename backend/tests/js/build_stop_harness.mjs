@@ -77,6 +77,7 @@ const OPENING = {
   droppedReadFailure: [TOOL],
   preframeStopRace: [],
   successorHeaderRace: [TOOL],
+  deferredHeaderRace: [USER.chat, { type: 'delta', text: 'Looking…' }],
   // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
   // behind it is the queue letting go. The wait for a first token starts again here, which is why
   // the pause is taken ON that frame — the `user` one Chat sends next, and the first tool call
@@ -105,6 +106,7 @@ const REST = {
   droppedReadFailure: [],
   preframeStopRace: BUILT,
   successorHeaderRace: BUILT,
+  deferredHeaderRace: ANSWERED,
   requeued: [USER.chat, ...ANSWERED],
   requeuedBuild: [TOOL, ...BUILT],
   requeuedApprove: [TOOL, ...BUILT],
@@ -118,6 +120,7 @@ const REST = {
 // and it is what the send-time claim has to be careful of.
 const SECOND = {
   secondInLine: { opening: [PENDING_2], rest: [RUNNING_2, USER.chat, ...ANSWERED] },
+  deferredHeaderRace: { opening: [], rest: [USER.chat, ...ANSWERED] },
 }[mode];
 
 const frame = (ev) => new TextEncoder().encode(`data: ${JSON.stringify(ev)}\n\n`);
@@ -128,6 +131,10 @@ const join = (evs) => evs.map(frame).reduce(
 // screen is read, and it is the state a poll would otherwise have had two seconds to repair.
 let letGo = () => {};
 const gate = new Promise((resolve) => { letGo = resolve; });
+let letFirstGo = () => {};
+const firstGate = new Promise((resolve) => { letFirstGo = resolve; });
+let letSecondGo = () => {};
+const secondGate = new Promise((resolve) => { letSecondGo = resolve; });
 
 // Resolved the moment the reader comes back for a second chunk. `readSSE` drains a chunk into the
 // handler before it reads again, so by then every opening frame has been delivered AND handled —
@@ -189,8 +196,9 @@ const sandbox = {
       if (!first && !SECOND) throw new Error(`mode ${mode} opened a second stream`);
       const opening = first ? OPENING : SECOND.opening;
       const rest = first ? REST : SECOND.rest;
-      const responseTurnId = mode === 'successorHeaderRace'
-        ? 'turn_b' : (first ? 'turn_abc' : 'turn_def');
+      const responseTurnId = mode === 'successorHeaderRace' ? 'turn_b'
+        : mode === 'deferredHeaderRace' ? (first ? 'turn_a' : 'turn_b')
+          : (first ? 'turn_abc' : 'turn_def');
       if (mode === 'successorHeaderRace') {
         markRequestStarted();
         await responseGate;
@@ -204,7 +212,7 @@ const sandbox = {
           if (sent === 1) {
             sent = 2;
             reachedPause();
-            await gate;
+            await (mode === 'deferredHeaderRace' ? (first ? firstGate : secondGate) : gate);
             if (dropped) {
               throw new TypeError('network error');
             }
@@ -262,6 +270,7 @@ const SEND = {
   droppedReadFailure: 'build',
   preframeStopRace: 'build',
   successorHeaderRace: 'build',
+  deferredHeaderRace: 'chat',
   secondInLine: 'chat', queuedChat: 'chat', queuedApprove: 'approve',
 }[mode];
 const kind = SEND === 'chat' ? 'chat' : 'build';
@@ -338,6 +347,27 @@ if (mode === 'preframeStopRace') {
   console.log(JSON.stringify({
     buildStateReads,
     buildStateReadsAtStop,
+    stopPosts: stopBodies.length,
+    requestedTurnId: stopBodies[0] && stopBodies[0].turnId,
+  }));
+  process.exit(0);
+}
+
+if (mode === 'deferredHeaderRace') {
+  const beforeAEnds = SW.store.get().runningTurn && SW.store.get().runningTurn.turnId;
+  letFirstGo();
+  await turn;
+  const afterAEnds = {
+    turnId: SW.store.get().runningTurn && SW.store.get().runningTurn.turnId,
+    stopOffered: SW.store.runningTurnHere('chat', 't1'),
+  };
+  const stop = SW.store.stopChat();
+  await stop;
+  letSecondGo();
+  await second;
+  console.log(JSON.stringify({
+    beforeAEnds,
+    afterAEnds,
     stopPosts: stopBodies.length,
     requestedTurnId: stopBodies[0] && stopBodies[0].turnId,
   }));

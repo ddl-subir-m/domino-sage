@@ -3904,6 +3904,39 @@ window.SW = window.SW || {};
     return true;
   }
 
+  // A later request can receive its exact response header while the earlier turn still owns the
+  // visible claim. Keep those request identities in send order. The head is promoted only when
+  // the current claim releases. A `pending` frame blocks promotion until that request's `running`
+  // frame arrives, so a third send can never jump over a queued second one.
+  const deferredRunningTurns = [];
+
+  function promoteDeferredRunningTurn() {
+    if (state.runningTurn || !deferredRunningTurns.length) return;
+    const entry = deferredRunningTurns[0];
+    if (entry.waiting || entry.promoted) return;
+    entry.promoted = true;
+    entry.accept(claimRunningTurn(
+      entry.kind, entry.conversation, entry.app, entry.turnId));
+  }
+
+  function deferRunningTurn(kind, conversation, app, turnId, accept) {
+    const entry = { kind, conversation, app, turnId, accept, waiting: false, promoted: false };
+    deferredRunningTurns.push(entry);
+    return entry;
+  }
+
+  function holdDeferredRunningTurn(entry) {
+    if (!entry) return;
+    entry.waiting = true;
+    entry.promoted = false;
+  }
+
+  function removeDeferredRunningTurn(entry) {
+    if (!entry) return;
+    const index = deferredRunningTurns.indexOf(entry);
+    if (index >= 0) deferredRunningTurns.splice(index, 1);
+  }
+
   // Whether a send may name its turn before it has heard a frame (#371). A name already standing
   // belongs to a turn that holds the lock — this tab's own, or one a `/build/state` poll read off
   // the server — and this send will be queued behind it, so the bar is already telling the truth.
@@ -3914,7 +3947,8 @@ window.SW = window.SW || {};
   // several turns alive at once, and the second one is going to wait in line: were it to name
   // itself over the turn that is actually running, the `pending` frame handing that name back
   // would blank the bar over the running turn — #126 made from this direction. A send that finds
-  // a name standing stays nameless until the queue lets it through, which is where it was before.
+  // a name standing stays nameless. Its exact header waits in the FIFO above until that claim
+  // releases; a pending frame keeps it waiting until the queue grants it.
   function nameableTurn() {
     return !state.runningTurn;
   }
@@ -3923,7 +3957,10 @@ window.SW = window.SW || {};
   // standing. A poll, or a later turn in this tab, may have replaced it with a different answer,
   // and that one outlives the turn that is ending here.
   function releaseRunningTurn(claim) {
-    if (claim && state.runningTurn === claim) state.runningTurn = null;
+    if (claim && state.runningTurn === claim) {
+      state.runningTurn = null;
+      promoteDeferredRunningTurn();
+    }
   }
 
   // Keep a Stop bound to the turn the person pressed it on. A new backend gives every live claim
@@ -7284,6 +7321,7 @@ window.SW = window.SW || {};
       // there and nothing else.
       let claim = null;
       let exactTurnId = '';
+      let deferredClaim = null;
       // Whatever card this turn is the answer to has now been answered (#209). Every button on
       // every one of them ends here, so this is where they stop being clickable — the reload each
       // of those callers does just above is what used to retire them, and it cannot any more.
@@ -7322,6 +7360,10 @@ window.SW = window.SW || {};
         else if (!claim && exactTurnId && !state.runningTurn) {
           claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
           notify();
+        } else if (!claim && exactTurnId) {
+          deferredClaim = deferRunningTurn(
+            'build', turnThread, turnApp, exactTurnId,
+            (nextClaim) => { claim = nextClaim; notify(); });
         }
         streamAccepted = true;
         let stopped = false;
@@ -7335,6 +7377,7 @@ window.SW = window.SW || {};
           if (ev.type === 'pending') {
             ticket = ev.ticket;
             queueTurn(ev, 'build');
+            holdDeferredRunningTurn(deferredClaim);
             // The send named this turn before it could know it would wait in line. This is where
             // it finds out, so this is where the name goes back (#79, #371) — a queued turn holds
             // nothing, and a Stop over it would be a Stop over somebody else's work.
@@ -7357,6 +7400,8 @@ window.SW = window.SW || {};
           // Cancel is worse than the sentence — the ticket has been popped off the deque by now, so
           // `cancel_pending_turn` finds nothing and the click does nothing at all.
           if (ev.type === 'running') {
+            removeDeferredRunningTurn(deferredClaim);
+            deferredClaim = null;
             claim = claimRunningTurn('build', turnThread, turnApp, ev.ticket);
             dropQueuedTurn(ev.ticket);
             notify();
@@ -7367,7 +7412,7 @@ window.SW = window.SW || {};
           // Past the queue and past the two ways a turn ends without running: this turn holds the
           // lock. Current backends sent the exact response header; this fallback keeps an older
           // stream readable while it drains during an upgrade.
-          if (!unran && !claim) {
+          if (!unran && !claim && !deferredClaim) {
             claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
           }
           // Once the rail has moved on, these events describe an app that is no longer on screen.
@@ -7406,6 +7451,8 @@ window.SW = window.SW || {};
         state.buildRunning = detached || liveBuildTurns > 0;
         state.buildTyping = detached ? 'Connection lost — build is still running.'
           : (state.buildRunning ? state.buildTyping : null);
+        removeDeferredRunningTurn(deferredClaim);
+        deferredClaim = null;
         if (!detached) releaseRunningTurn(claim);
         notify();
         if (detached) store._watchBuild();
@@ -7754,6 +7801,7 @@ window.SW = window.SW || {};
       // the `finally` takes back exactly what it put there. See claimRunningTurn.
       let claim = null;
       let exactTurnId = '';
+      let deferredClaim = null;
       // The same sentence the server writes for this turn, so the optimistic row does not change
       // wording the moment the transcript reloads underneath it.
       appendBuildRow({ type: 'user', text: buildAgain ? BUILD_AGAIN_TEXT : 'Approved the plan.' });
@@ -7787,6 +7835,10 @@ window.SW = window.SW || {};
         else if (!claim && exactTurnId && !state.runningTurn) {
           claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
           notify();
+        } else if (!claim && exactTurnId) {
+          deferredClaim = deferRunningTurn(
+            'build', turnThread, turnApp, exactTurnId,
+            (nextClaim) => { claim = nextClaim; notify(); });
         }
         streamAccepted = true;
         let stopped = false;
@@ -7798,6 +7850,7 @@ window.SW = window.SW || {};
           if (ev.type === 'pending') {
             ticket = ev.ticket;
             queueTurn(ev, 'build');
+            holdDeferredRunningTurn(deferredClaim);
             // Named at send time, and this frame is the answer to the one question a send cannot
             // ask itself: the turn is waiting in line, so it holds nothing to stop (#79, #371).
             // Taken again on the `running` row below, which is the queue letting go (#377).
@@ -7810,6 +7863,8 @@ window.SW = window.SW || {};
           // frame either, so without this row the plan-approval from #126's screenshot came out of
           // the queue into a build with nothing to press for the whole gate and first-token wait.
           if (ev.type === 'running') {
+            removeDeferredRunningTurn(deferredClaim);
+            deferredClaim = null;
             claim = claimRunningTurn('build', turnThread, turnApp, ev.ticket);
             dropQueuedTurn(ev.ticket);
             notify();
@@ -7825,7 +7880,7 @@ window.SW = window.SW || {};
           // Past the queue and past every way this turn ends without running: it holds the lock.
           // Current backends sent the exact response header; keep the fallback for an older stream
           // draining during an upgrade.
-          if (!unran && !claim) {
+          if (!unran && !claim && !deferredClaim) {
             claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
           }
           if (movedOn()) return;
@@ -7857,6 +7912,8 @@ window.SW = window.SW || {};
         state.buildRunning = detached || liveBuildTurns > 0;
         state.buildTyping = detached ? 'Connection lost — build is still running.'
           : (state.buildRunning ? state.buildTyping : null);
+        removeDeferredRunningTurn(deferredClaim);
+        deferredClaim = null;
         if (!detached) releaseRunningTurn(claim);
         notify();
         if (detached) store._watchBuild();
@@ -8259,6 +8316,7 @@ window.SW = window.SW || {};
       // send holds the only stream there is. See claimRunningTurn.
       let claim = null;
       let exactTurnId = '';
+      let deferredClaim = null;
       liveChatTurns += 1;
       state.typing = 'Thinking…';
       state.chatRunning = true;
@@ -8279,6 +8337,8 @@ window.SW = window.SW || {};
         dropQueuedTurn(ticket);
         state.chatRunning = liveChatTurns > 0;
         if (mine() && (!state.chatRunning || state.runningTurn === claim)) state.typing = null;
+        removeDeferredRunningTurn(deferredClaim);
+        deferredClaim = null;
         releaseRunningTurn(claim);
         notify();
       };
@@ -8345,6 +8405,10 @@ window.SW = window.SW || {};
         else if (!claim && exactTurnId && !state.runningTurn) {
           claim = claimRunningTurn('chat', turnThread, '', exactTurnId);
           notify();
+        } else if (!claim && exactTurnId) {
+          deferredClaim = deferRunningTurn(
+            'chat', turnThread, '', exactTurnId,
+            (nextClaim) => { claim = nextClaim; notify(); });
         }
         await readSSE(res, async (ev) => {
           if (!ev) return;
@@ -8369,6 +8433,7 @@ window.SW = window.SW || {};
           if (ev.type === 'pending') {
             ticket = ev.ticket;
             queueTurn(ev, 'chat');
+            holdDeferredRunningTurn(deferredClaim);
             // Named at send time, before this send could know it would wait. A queued turn holds
             // nothing, so the name goes back (#79, #371), until the `running` row takes it again.
             releaseRunningTurn(claim);
@@ -8380,6 +8445,8 @@ window.SW = window.SW || {};
           // same effect: from here the lock is this turn's, and the bar has a turn to name for the
           // gate and first-token wait that follows.
           if (ev.type === 'running') {
+            removeDeferredRunningTurn(deferredClaim);
+            deferredClaim = null;
             claim = claimRunningTurn('chat', turnThread, '', ev.ticket);
             dropQueuedTurn(ev.ticket);
             notify();
@@ -8396,7 +8463,7 @@ window.SW = window.SW || {};
           // lock. Before the `mine()` check below, because a turn whose reader has walked away is
           // still the turn holding the lock. The fallback keeps an older stream readable during an
           // upgrade; current backends sent the exact response header.
-          if (!turnEnded && !claim) {
+          if (!turnEnded && !claim && !deferredClaim) {
             claim = claimRunningTurn('chat', turnThread, '', exactTurnId);
           }
           // Moved on. The turn is still running and the server is still writing its transcript, so

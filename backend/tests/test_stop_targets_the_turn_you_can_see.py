@@ -237,6 +237,81 @@ def test_stop_between_response_headers_and_body_cancels_before_model_work(monkey
     assert orch.stop_build(turn_id=turn_id) is False
 
 
+def test_exact_stop_cancels_a_route_ticket_after_admission_but_before_pending_is_delivered(
+        monkeypatch, tmp_path: Path):
+    """A route reservation becomes a waiting queue ticket before its pending byte reaches the
+    browser. Exact Stop must find the same ticket on either side of that transition."""
+    from starlette.requests import Request
+
+    from sage.orchestrator import app as appmod
+
+    oc = FakeOpenCode(tmp_path / "mnt" / "code",
+                      [Turn(text="A ran"), Turn(text="B must not run")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    build_a = orch.build_stream("A", conversation=tid, turn_id="turn_a")
+    next(build_a)
+    prompts_before_b = len(oc.prompts)
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+
+    pending_ready = threading.Event()
+    deliver_pending = threading.Event()
+
+    def withhold_pending(events, _what):
+        first = next(events)
+        assert first["type"] == "pending"
+        pending_ready.set()
+        assert deliver_pending.wait(10)
+        yield f"data: {json.dumps(first)}\n\n"
+        for event in events:
+            yield f"data: {json.dumps(event)}\n\n"
+
+    monkeypatch.setattr(appmod, "_turn_sse", withhold_pending)
+    response = appmod.build_stream({"prompt": "B", "conversation": tid})
+    turn_id = response.headers["X-Sage-Turn-Id"]
+
+    async def stop_while_pending_is_withheld() -> tuple[dict, str]:
+        chunks = []
+
+        async def consume():
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+
+        reader = asyncio.create_task(consume())
+        assert await asyncio.to_thread(pending_ready.wait, 10)
+        assert orch.stop_build(kind="build", conversation=tid, app="another-app",
+                               turn_id=turn_id) is False
+        payload = json.dumps({"kind": "build", "conversation": tid,
+                              "app": orch.project().workspace.app_id,
+                              "turnId": turn_id}).encode()
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if sent:
+                return {"type": "http.disconnect"}
+            sent = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+
+        request = Request({"type": "http", "method": "POST",
+                           "path": "/api/project/build/stop",
+                           "headers": [(b"content-type", b"application/json")]}, receive)
+        stopped = await appmod.stop_build(request)
+        deliver_pending.set()
+        await reader
+        return json.loads(stopped.body), "".join(chunks)
+
+    stopped, body = asyncio.run(stop_while_pending_is_withheld())
+
+    assert stopped == {"stopped": True, "turnId": turn_id}
+    events = [json.loads(line.removeprefix("data: ")) for line in body.splitlines()
+              if line.startswith("data: ")]
+    assert [event["type"] for event in events] == ["pending", "done"]
+    assert events[-1] == {"type": "done", "ok": False, "decision": "cancelled"}
+    assert len(oc.prompts) == prompts_before_b
+    list(build_a)
+
+
 def test_an_unknown_exact_ticket_cannot_poison_a_later_turn(tmp_path: Path):
     oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="ran")])
     orch = _orch(tmp_path, oc)
