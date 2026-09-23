@@ -654,13 +654,17 @@ class _TurnTicket:
     before the ticket is admitted, because a queue with nothing in front of it makes a turn running
     in the same call."""
 
-    __slots__ = ("app", "conversation", "granted", "id", "kind", "outcome", "snapshot")
+    __slots__ = ("admitted", "app", "claimed", "conversation", "granted", "id", "kind",
+                 "outcome", "queued", "snapshot")
 
     def __init__(self, ticket_id: str) -> None:
         self.id = ticket_id
         self.snapshot: dict = {}
         self.outcome = ""       # "" while waiting, then "ready" | "cancelled" | "wedged"
         self.granted = False    # the verdict the entry point reads: did this turn get to run?
+        self.admitted = False   # the queue already owns this route ticket before headers are sent
+        self.queued = False     # it entered behind another turn and therefore owes pending/running
+        self.claimed = False    # the lazy service generator has taken lifecycle ownership
         self.kind = ""          # "build" | "chat" — the screen this turn can be stopped from
         self.conversation = ""
         # Which Built App a build turn writes into. The Conversation is not enough on its own: the
@@ -707,19 +711,6 @@ class _TurnQueue:
         # not a gap: publish, reset and the other raw-lock callers never queue, so a busy Project
         # with no running turn is exactly what "busy, and not a turn you can Stop" looks like.
         self._running: _TurnTicket | None = None
-        # Routes mint a ticket before StreamingResponse sends its headers. The generator that
-        # admits it is lazy, so keep that process-owned identity here until admission. This makes
-        # an exact Stop between headers and the first body byte atomic with admission. Each
-        # reservation is one-shot. Admission removes it whether it was cancelled or allowed.
-        self._reserved: dict[str, dict] = {}
-
-    def reserve(self, ticket_id: str, *, kind: str, conversation: str, app: str) -> None:
-        """Register one route-minted response ticket before its lazy stream can be admitted."""
-        with self._cond:
-            self._reserved[ticket_id] = {
-                "kind": kind, "conversation": conversation, "app": app,
-                "cancelled": False,
-            }
 
     @staticmethod
     def _matches_target(target, *, kind: str, conversation: str, app: str) -> bool:
@@ -727,46 +718,70 @@ class _TurnQueue:
                     or (conversation and target.conversation != conversation)
                     or (app and target.app and target.app != app))
 
-    def cancel_before_running(self, ticket_id: str, *, kind: str, conversation: str,
-                              app: str) -> bool:
-        """Cancel an exact reserved or waiting ticket without touching the running turn."""
+    def stop_exact(self, ticket_id: str, *, kind: str, conversation: str, app: str) -> str:
+        """Return `cancelled`, `running`, or `missing` for one exact scoped ticket."""
         with self._cond:
-            row = self._reserved.get(ticket_id)
-            if row is not None:
-                if row["cancelled"]:
-                    return False
-                if ((kind and row["kind"] != kind)
-                        or (conversation and row["conversation"] != conversation)
-                        or (app and row["app"] and row["app"] != app)):
-                    return False
-                row["cancelled"] = True
-                return True
             for ticket in self._waiting:
                 if ticket.id != ticket_id:
                     continue
                 if not self._matches_target(
                         ticket, kind=kind, conversation=conversation, app=app):
-                    return False
+                    return "missing"
                 ticket.outcome = "cancelled"
                 self._waiting.remove(ticket)
+                self._promote_head()
                 self._cond.notify_all()
-                return True
-            return False
+                return "cancelled"
+            ticket = self._running
+            if (ticket is None or ticket.id != ticket_id
+                    or not self._matches_target(
+                        ticket, kind=kind, conversation=conversation, app=app)):
+                return "missing"
+            if ticket.claimed:
+                return "running"
+            self._cancel_unclaimed_running(ticket)
+            return "cancelled"
 
-    def discard_reservation(self, ticket_id: str) -> None:
-        """Forget a response ticket whose stream ended or disconnected before admission."""
+    def _cancel_unclaimed_running(self, ticket: _TurnTicket) -> None:
+        """Caller holds `_cond`; release a pre-start ticket and advance server queue order."""
+        ticket.outcome = "cancelled"
+        self._running = None
+        self._lock.release()
+        self._promote_head()
+        self._cond.notify_all()
+
+    def abandon_unclaimed(self, ticket: _TurnTicket) -> None:
+        """Clean up a response whose body never let its service generator take ownership."""
         with self._cond:
-            self._reserved.pop(ticket_id, None)
+            if ticket.claimed:
+                return
+            if self._running is ticket:
+                self._cancel_unclaimed_running(ticket)
+                return
+            if ticket in self._waiting:
+                ticket.outcome = "cancelled"
+                self._waiting.remove(ticket)
+                self._promote_head()
+                self._cond.notify_all()
+
+    def claim(self, ticket: _TurnTicket) -> None:
+        with self._cond:
+            ticket.claimed = True
 
     def admit(self, ticket: _TurnTicket) -> bool:
         """Join the queue, taking the lock straight away if nothing else is asking for it."""
         with self._cond:
-            reserved = self._reserved.pop(ticket.id, None)
-            if reserved is not None and reserved["cancelled"]:
-                ticket.outcome = "cancelled"
-                return False
             self._waiting.append(ticket)
-            return self._take(ticket)
+            ticket.admitted = True
+            admitted = self._take(ticket)
+            ticket.queued = not admitted
+            return admitted
+
+    def _promote_head(self) -> bool:
+        """Caller holds `_cond`; give a free lock to the next server-ordered ticket."""
+        if not self._waiting:
+            return False
+        return self._take(self._waiting[0])
 
     def _take(self, ticket: _TurnTicket) -> bool:
         """Caller holds `_cond`. True once this ticket owns the turn lock."""
@@ -817,6 +832,7 @@ class _TurnQueue:
         with self._cond:
             self._running = None
             self._lock.release()
+            self._promote_head()
             self._cond.notify_all()
 
     def ahead_of(self, ticket: _TurnTicket) -> int:
@@ -5884,15 +5900,23 @@ class Orchestrator:
         interrupted the running turn would throw away work in progress."""
         return self._turns.cancel(ticket_id)
 
-    def reserve_stream_turn(self, turn_id: str, *, kind: str, conversation: str = "",
-                            app: bool = False) -> None:
-        """Make a route-minted ticket stoppable before its lazy response body starts."""
-        self._turns.reserve(turn_id, kind=kind, conversation=conversation,
-                            app=self._turn_app_id() if app else "")
+    def prepare_stream_turn(self, turn_id: str, *, kind: str, conversation: str = "",
+                            app: bool = False) -> tuple[_TurnTicket, str]:
+        """Admit a route ticket before headers; return it and `running|pending|refused`."""
+        ticket = _TurnTicket(turn_id)
+        ticket.kind = kind
+        ticket.conversation = conversation
+        ticket.app = self._turn_app_id() if app else ""
+        if self._turn_wedged:
+            return ticket, "refused"
+        running = self._turns.admit(ticket)
+        if ticket.queued:
+            ticket.snapshot = self._turn_snapshot(conversation or None, app=app)
+        return ticket, "running" if running else "pending"
 
-    def release_stream_turn(self, turn_id: str) -> None:
-        """Release a response reservation after its stream closes or its client disconnects."""
-        self._turns.discard_reservation(turn_id)
+    def release_stream_turn(self, ticket: _TurnTicket) -> None:
+        """Release a pre-admitted ticket whose response ended before its generator claimed it."""
+        self._turns.abandon_unclaimed(ticket)
 
     def _release_turn(self) -> None:
         """Hand the turn lock back, waking whatever queued behind it (#79).
@@ -7945,7 +7969,7 @@ class Orchestrator:
                      skip_table_gate: bool = False, skip_source_gate: bool = False,
                      chosen_source: str = "", skip_dataset_gate: bool = False,
                      dismissed_dataset: str = "", dataset_pick: str = "",
-                     *, turn_id: str | None = None):
+                     *, turn_id: str | None = None, turn_ticket: _TurnTicket | None = None):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time still. If a turn is already streaming, this one WAITS in line rather than
@@ -7989,7 +8013,7 @@ class Orchestrator:
         is the thing that was picked. It names the record; the record still has to confirm it."""
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
-        ticket = _TurnTicket(turn_id or new_id("turn"))
+        ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         timing.start_turn("build", prompt, turn_id=ticket.id, conversation_id=conversation)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
@@ -8975,7 +8999,8 @@ class Orchestrator:
                     already_asked: bool = False, skip_table_gate: bool = False,
                     skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                     skip_investigation_gate: bool = False, declined: bool = False,
-                    other_lane_grant: str = "", turn_id: str | None = None):
+                    other_lane_grant: str = "", turn_id: str | None = None,
+                    turn_ticket: _TurnTicket | None = None):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
         `already_asked` means this question is on the Thread and was offered Build rather than an
@@ -9011,7 +9036,7 @@ class Orchestrator:
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
         # was written against.
-        ticket = _TurnTicket(turn_id or new_id("turn"))
+        ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         timing.start_turn("chat", prompt, turn_id=ticket.id, conversation_id=thread_id)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="chat", conversation=thread_id, prompt=prompt,
@@ -9343,7 +9368,8 @@ class Orchestrator:
         self._arm_chat_idle_save(immediate or "idle",
                                  delay=self._chat_save_turn_s if immediate else None)
 
-    def decline_handoff_stream(self, thread_id: str, *, turn_id: str | None = None):
+    def decline_handoff_stream(self, thread_id: str, *, turn_id: str | None = None,
+                               turn_ticket: _TurnTicket | None = None):
         """`Not now` on a Build offer: stop offering, and answer the question if one is waiting.
 
         Suppression stays permanent, and deliberately so — it is the person saying stop, and the spec
@@ -9382,7 +9408,7 @@ class Orchestrator:
             yield {"type": "done", "ok": True, "decision": "suppressed"}
             return
         yield from self.chat_stream(thread_id, pending, already_asked=True, declined=True,
-                                    turn_id=turn_id)
+                                    turn_id=turn_id, turn_ticket=turn_ticket)
 
     def _explicit_handoff(self, store: ThreadStore, thread_id: str, prompt: str) -> dict | None:
         """The regex half of handoff detection. No model call, so it is safe to run BEFORE a turn.
@@ -16004,26 +16030,31 @@ class Orchestrator:
 
         A wedged workspace is refused at the door instead of queued. The lock is held for good
         there (#39), so a queue behind it is a spinner that never resolves."""
-        if self._turn_wedged:
+        if self._turn_wedged and not ticket.admitted:
+            ticket.claimed = True
             yield from self._wedged_refusal()
             return
         # Before admit, not after: a queue with nothing in front of it hands over the lock inside
         # `admit()`, so a ticket named afterwards would be running and anonymous in between (#126).
-        ticket.kind = kind
-        ticket.conversation = conversation or ""
-        ticket.app = self._turn_app_id() if app else ""
-        if self._turns.admit(ticket):
-            ticket.granted = True
-            self._begin_model_record()
-            return
+        if not ticket.admitted:
+            ticket.kind = kind
+            ticket.conversation = conversation or ""
+            ticket.app = self._turn_app_id() if app else ""
+            self._turns.admit(ticket)
+            if ticket.queued:
+                ticket.snapshot = self._turn_snapshot(conversation, app=app)
+        self._turns.claim(ticket)
         if ticket.outcome == "cancelled":
             yield {"type": "done", "ok": False, "decision": "cancelled"}
             return
-        ticket.snapshot = self._turn_snapshot(conversation, app=app)
+        if not ticket.queued:
+            ticket.granted = True
+            self._begin_model_record()
+            return
         try:
             yield {"type": "pending", "ticket": ticket.id, "prompt": prompt,
                    "message": turn_pending_message(self._turns.ahead_of(ticket))}
-            outcome = self._turns.wait(ticket)
+            outcome = ticket.outcome or self._turns.wait(ticket)
             if outcome == "cancelled":
                 yield {"type": "done", "ok": False, "decision": "cancelled"}
                 return
@@ -18225,7 +18256,8 @@ class Orchestrator:
 
     def approve_stream(self, answers: str = "", plan_edits: str | None = None,
                        conversation: str | None = None, plan_id: str = "",
-                       build_again: bool = False, *, turn_id: str | None = None):
+                       build_again: bool = False, *, turn_id: str | None = None,
+                       turn_ticket: _TurnTicket | None = None):
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
         turn to misread. Approval means "build it now", so if the user is in Plan or Ask mode we run
@@ -18245,7 +18277,7 @@ class Orchestrator:
         # an approve asked for mid-turn queues behind it (#79) rather than being refused, because an
         # approve IS a build turn and a Workbench that queued one and refused the other is a rule
         # people would have to learn instead of guess.
-        ticket = _TurnTicket(turn_id or new_id("turn"))
+        ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         timing.start_turn("approve", turn_id=ticket.id, conversation_id=conversation)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="build", conversation=conversation, prompt="",
@@ -19660,22 +19692,23 @@ class Orchestrator:
         always sent. A raw-lock holder has no ticket, so an aimed Stop never matches one: you cannot
         Stop a publish, and that is the answer rather than an omission.
 
-        A route reserves its exact `turn_id` before its lazy StreamingResponse body starts. An
-        exact Stop can cancel that process-minted reservation or the waiting ticket admission made
-        from it. Both paths return a cancelled terminal event without starting model work.
+        A route admits its exact `turn_id` before its lazy StreamingResponse body starts. An exact
+        Stop can cancel that pre-start running ticket or its waiting ticket. Both paths return a
+        cancelled terminal event without starting model work.
 
         Returns whether it actually interrupted or cancelled anything, so the route stops answering
         `{"stopped": true}` to a Stop it declined to fire — the same class of lie as the button
         this fixes.
         """
         running = self._turns.running()
-        if turn_id and (running is None or running.id != turn_id):
-            if self._turns.cancel_before_running(
-                    turn_id, kind=kind, conversation=conversation, app=app):
+        if turn_id:
+            exact = self._turns.stop_exact(
+                turn_id, kind=kind, conversation=conversation, app=app)
+            if exact == "cancelled":
                 return True
-            running = self._turns.running()
-            if running is None or running.id != turn_id:
+            if exact != "running":
                 return False
+            running = self._turns.running()
         if not self.turn_busy():
             return False
         if kind or conversation or app or turn_id:

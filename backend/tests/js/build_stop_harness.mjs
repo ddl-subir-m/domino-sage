@@ -77,7 +77,7 @@ const OPENING = {
   droppedReadFailure: [TOOL],
   preframeStopRace: [],
   successorHeaderRace: [TOOL],
-  deferredHeaderRace: [USER.chat, { type: 'delta', text: 'Looking…' }],
+  authoritativeHeaders: [USER.chat, { type: 'delta', text: 'Looking…' }],
   // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
   // behind it is the queue letting go. The wait for a first token starts again here, which is why
   // the pause is taken ON that frame — the `user` one Chat sends next, and the first tool call
@@ -106,7 +106,7 @@ const REST = {
   droppedReadFailure: [],
   preframeStopRace: BUILT,
   successorHeaderRace: BUILT,
-  deferredHeaderRace: ANSWERED,
+  authoritativeHeaders: ANSWERED,
   requeued: [USER.chat, ...ANSWERED],
   requeuedBuild: [TOOL, ...BUILT],
   requeuedApprove: [TOOL, ...BUILT],
@@ -120,8 +120,15 @@ const REST = {
 // and it is what the send-time claim has to be careful of.
 const SECOND = {
   secondInLine: { opening: [PENDING_2], rest: [RUNNING_2, USER.chat, ...ANSWERED] },
-  deferredHeaderRace: { opening: [], rest: [USER.chat, ...ANSWERED] },
+  authoritativeHeaders: {
+    opening: [{ ...PENDING, ticket: 'turn_b' }],
+    rest: [{ type: 'running', ticket: 'turn_b' }, USER.chat, ...ANSWERED],
+  },
 }[mode];
+const THIRD = mode === 'authoritativeHeaders' ? {
+  opening: [{ ...PENDING, ticket: 'turn_c' }],
+  rest: [{ type: 'running', ticket: 'turn_c' }, USER.chat, ...ANSWERED],
+} : null;
 
 const frame = (ev) => new TextEncoder().encode(`data: ${JSON.stringify(ev)}\n\n`);
 const join = (evs) => evs.map(frame).reduce(
@@ -131,10 +138,6 @@ const join = (evs) => evs.map(frame).reduce(
 // screen is read, and it is the state a poll would otherwise have had two seconds to repair.
 let letGo = () => {};
 const gate = new Promise((resolve) => { letGo = resolve; });
-let letFirstGo = () => {};
-const firstGate = new Promise((resolve) => { letFirstGo = resolve; });
-let letSecondGo = () => {};
-const secondGate = new Promise((resolve) => { letSecondGo = resolve; });
 
 // Resolved the moment the reader comes back for a second chunk. `readSSE` drains a chunk into the
 // handler before it reads again, so by then every opening frame has been delivered AND handled —
@@ -144,7 +147,7 @@ const secondGate = new Promise((resolve) => { letSecondGo = resolve; });
 //
 // Every stream this mode opens has to be at that pause before the screen is read, which for the
 // two-send modes is both of them.
-let pausesLeft = SECOND ? 2 : 1;
+let pausesLeft = THIRD ? 3 : (SECOND ? 2 : 1);
 let reachedPause = () => {};
 const atPause = new Promise((resolve) => {
   reachedPause = () => { pausesLeft -= 1; if (pausesLeft === 0) resolve(); };
@@ -166,6 +169,10 @@ let markRequestStarted = () => {};
 const requestStarted = new Promise((resolve) => { markRequestStarted = resolve; });
 let answerResponse = () => {};
 const responseGate = new Promise((resolve) => { answerResponse = resolve; });
+const headerAnswers = [];
+const headerGates = Array.from({ length: 3 }, (_, index) => new Promise((resolve) => {
+  headerAnswers[index] = resolve;
+}));
 
 // Which send each opened stream is answering. Only the two-send modes ever pass 1.
 let posts = 0;
@@ -188,31 +195,41 @@ const sandbox = {
     if (options && options.method === 'POST'
         && (href.includes('/build/stream') || href.includes('/build/approve')
             || href.includes('/chat/stream'))) {
-      const first = posts === 0;
+      const index = posts;
+      const first = index === 0;
       posts += 1;
       // Loud on purpose. A mode that opens a stream this file did not plan for would otherwise get
       // a `TypeError` the send catches into an `error` frame, and the run would still print a
       // verdict — about a turn that never streamed.
       if (!first && !SECOND) throw new Error(`mode ${mode} opened a second stream`);
-      const opening = first ? OPENING : SECOND.opening;
-      const rest = first ? REST : SECOND.rest;
+      if (index > 1 && !THIRD) throw new Error(`mode ${mode} opened a third stream`);
+      const later = index === 1 ? SECOND : THIRD;
+      const opening = first ? OPENING : later.opening;
+      const rest = first ? REST : later.rest;
       const responseTurnId = mode === 'successorHeaderRace' ? 'turn_b'
-        : mode === 'deferredHeaderRace' ? (first ? 'turn_a' : 'turn_b')
+        : mode === 'authoritativeHeaders' ? ['turn_a', 'turn_b', 'turn_c'][index]
           : (first ? 'turn_abc' : 'turn_def');
+      const pendingResponse = ['queued', 'queuedChat', 'queuedApprove', 'requeued',
+        'requeuedBuild', 'requeuedApprove'].includes(mode)
+        || (!first && ['secondInLine', 'authoritativeHeaders'].includes(mode));
       if (mode === 'successorHeaderRace') {
         markRequestStarted();
         await responseGate;
       }
+      if (mode === 'authoritativeHeaders') await headerGates[index];
       let sent = 0;
-      return { ok: true, headers: { get: (name) => (
-        String(name).toLowerCase() === 'x-sage-turn-id' ? responseTurnId : 'text/event-stream'
-      ) }, body: { getReader: () => ({
+      return { ok: true, headers: { get: (name) => {
+        const header = String(name).toLowerCase();
+        if (header === 'x-sage-turn-id') return responseTurnId;
+        if (header === 'x-sage-turn-state') return pendingResponse ? 'pending' : 'running';
+        return 'text/event-stream';
+      } }, body: { getReader: () => ({
         read: async () => {
           if (sent === 0) { sent = 1; return { done: false, value: join(opening) }; }
           if (sent === 1) {
             sent = 2;
             reachedPause();
-            await (mode === 'deferredHeaderRace' ? (first ? firstGate : secondGate) : gate);
+            await gate;
             if (dropped) {
               throw new TypeError('network error');
             }
@@ -270,7 +287,7 @@ const SEND = {
   droppedReadFailure: 'build',
   preframeStopRace: 'build',
   successorHeaderRace: 'build',
-  deferredHeaderRace: 'chat',
+  authoritativeHeaders: 'chat',
   secondInLine: 'chat', queuedChat: 'chat', queuedApprove: 'approve',
 }[mode];
 const kind = SEND === 'chat' ? 'chat' : 'build';
@@ -281,6 +298,17 @@ const turn = SEND === 'approve' ? SW.store.approveBuild('')
 // before its first `await`, so which of the two got there first is decided here and not by the
 // scheduler.
 const second = SECOND ? SW.store.sendMessage('and how many columns?') : null;
+const third = THIRD ? SW.store.sendMessage('and how many regions?') : null;
+
+if (mode === 'authoritativeHeaders') {
+  // HTTP scheduling returns C, then B, then A. The static server state, not arrival order, says A
+  // owns the lock and B/C are pending.
+  headerAnswers[2]();
+  await Promise.resolve();
+  headerAnswers[1]();
+  await Promise.resolve();
+  headerAnswers[0]();
+}
 
 if (mode === 'successorHeaderRace') {
   // B was sent while A owned the claim, so B could not name itself at send time. A ends before
@@ -353,21 +381,14 @@ if (mode === 'preframeStopRace') {
   process.exit(0);
 }
 
-if (mode === 'deferredHeaderRace') {
-  const beforeAEnds = SW.store.get().runningTurn && SW.store.get().runningTurn.turnId;
-  letFirstGo();
-  await turn;
-  const afterAEnds = {
-    turnId: SW.store.get().runningTurn && SW.store.get().runningTurn.turnId,
-    stopOffered: SW.store.runningTurnHere('chat', 't1'),
-  };
+if (mode === 'authoritativeHeaders') {
   const stop = SW.store.stopChat();
   await stop;
-  letSecondGo();
-  await second;
+  letGo();
+  await Promise.all([turn, second, third]);
   console.log(JSON.stringify({
-    beforeAEnds,
-    afterAEnds,
+    turnId: midTurn.turnId,
+    queued: midTurn.queued,
     stopPosts: stopBodies.length,
     requestedTurnId: stopBodies[0] && stopBodies[0].turnId,
   }));

@@ -138,15 +138,12 @@ def test_a_successor_keeps_its_header_identity_until_it_can_own_the_claim():
         "turnId": "turn_b", "stopPosts": 1, "requestedTurnId": "turn_b"}
 
 
-def test_a_successor_header_is_promoted_when_the_current_turn_releases():
-    """B's header arrives while A owns the claim. A's terminal release must expose exact B before
-    B sends any frame, so Stop is both visible and aimed at B in that interval."""
-    assert _run("deferredHeaderRace") == {
-        "beforeAEnds": "turn_a",
-        "afterAEnds": {"turnId": "turn_b", "stopOffered": True},
-        "stopPosts": 1,
-        "requestedTurnId": "turn_b",
-    }
+def test_out_of_order_response_headers_obey_server_admission_state():
+    """C, B, then A headers arrive. Only A says running, so response order cannot make B or C the
+    visible Stop target while their pending frames are held."""
+    assert _run("authoritativeHeaders") == {
+        "turnId": "turn_a", "queued": 2,
+        "stopPosts": 1, "requestedTurnId": "turn_a"}
 
 
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])

@@ -150,18 +150,16 @@ def test_each_stream_header_is_the_exact_ticket_passed_to_the_service(
     class Streams:
         def __init__(self) -> None:
             self.turn_ids: dict[str, str] = {}
-            self.reservations: dict[str, dict] = {}
             self.released: list[str] = []
 
-        def reserve_stream_turn(self, turn_id: str, **kwargs) -> None:
-            self.reservations[turn_id] = kwargs
+        def prepare_stream_turn(self, turn_id: str, **_kwargs):
+            return type("Ticket", (), {"id": turn_id})(), "running"
 
-        def release_stream_turn(self, turn_id: str) -> None:
-            self.reservations.pop(turn_id, None)
-            self.released.append(turn_id)
+        def release_stream_turn(self, ticket) -> None:
+            self.released.append(ticket.id)
 
         def _stream(self, name: str, kwargs: dict):
-            self.turn_ids[name] = kwargs["turn_id"]
+            self.turn_ids[name] = kwargs["turn_ticket"].id
             yield {"type": "done", "ok": True}
 
         def build_stream(self, *args, **kwargs):
@@ -184,8 +182,8 @@ def test_each_stream_header_is_the_exact_ticket_passed_to_the_service(
     turn_id = response.headers["X-Sage-Turn-Id"]
     assert turn_id.startswith("turn_")
     assert streams.turn_ids[method] == turn_id
-    assert turn_id not in streams.reservations
     assert streams.released == [turn_id]
+    assert response.headers["X-Sage-Turn-State"] == "running"
     assert '"type": "running"' not in response.text
 
 
@@ -310,6 +308,71 @@ def test_exact_stop_cancels_a_route_ticket_after_admission_but_before_pending_is
     assert events[-1] == {"type": "done", "ok": False, "decision": "cancelled"}
     assert len(oc.prompts) == prompts_before_b
     list(build_a)
+
+
+def test_three_pre_body_route_tickets_follow_server_admission_order(monkeypatch, tmp_path: Path):
+    """Header delivery order cannot reorder A, B, C. Cancel B, then cancelling running A must
+    promote C, which is the only exact ticket that can be stopped as running."""
+    from sage.orchestrator import app as appmod
+
+    oc = FakeOpenCode(tmp_path / "mnt" / "code",
+                      [Turn(text="must not run"), Turn(text="must not run")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+
+    responses = [appmod.build_stream({"prompt": prompt, "conversation": tid})
+                 for prompt in ("A", "B", "C")]
+    ids = [response.headers["X-Sage-Turn-Id"] for response in responses]
+    assert [response.headers["X-Sage-Turn-State"] for response in responses] == [
+        "running", "pending", "pending"]
+
+    # Read the static headers in the opposite order. The queue order remains A, B, C.
+    assert [responses[index].headers["X-Sage-Turn-Id"] for index in (2, 1, 0)] == ids[::-1]
+    app_id = orch.project().workspace.app_id
+    target = {"kind": "build", "conversation": tid, "app": app_id}
+
+    assert orch.stop_build(**target, turn_id=ids[1]) is True
+    assert orch.stop_build(**target, turn_id=ids[0]) is True
+    assert orch.turn_state()["running_turn"]["turnId"] == ids[2]
+    assert orch.stop_build(**target, turn_id=ids[1]) is False
+    assert orch.stop_build(**target, turn_id=ids[2]) is True
+    assert orch.turn_state()["running_turn"] is None
+
+    async def consume_all() -> list[list[dict]]:
+        out = []
+        for response in responses:
+            events = []
+            async for chunk in response.body_iterator:
+                text = chunk.decode() if isinstance(chunk, bytes) else chunk
+                events.extend(json.loads(line.removeprefix("data: "))
+                              for line in text.splitlines() if line.startswith("data: "))
+            out.append(events)
+        return out
+
+    events = asyncio.run(consume_all())
+    assert all(turn[-1] == {"type": "done", "ok": False, "decision": "cancelled"}
+               for turn in events)
+    assert oc.prompts == []
+
+
+def test_response_cleanup_releases_an_unclaimed_ticket_and_promotes_the_next(tmp_path: Path):
+    """A disconnect can run the response background task before either lazy body starts."""
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+
+    ticket_a, state_a = orch.prepare_stream_turn(
+        "turn_a", kind="build", conversation=tid, app=True)
+    ticket_b, state_b = orch.prepare_stream_turn(
+        "turn_b", kind="build", conversation=tid, app=True)
+    assert (state_a, state_b) == ("running", "pending")
+
+    orch.release_stream_turn(ticket_a)
+    assert orch.turn_state()["running_turn"]["turnId"] == "turn_b"
+    orch.release_stream_turn(ticket_b)
+    assert orch.turn_state()["running_turn"] is None
+    assert oc.prompts == []
 
 
 def test_an_unknown_exact_ticket_cannot_poison_a_later_turn(tmp_path: Path):
