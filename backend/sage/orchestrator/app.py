@@ -1,10 +1,20 @@
 """Orchestrator app — one API over the assembled builder (SPEC C1).
 
-One ASGI app on one port (Phase 1): project lifecycle + model control + the /v1 shim OpenCode
-targets, with the preview proxy (active project's Vite dev server, HTTP + HMR) mounted under
-`/preview`. Everything is served under Domino's proxy path prefix (rewrite:false preserves it); a
-tiny ASGI middleware strips that prefix so bare-registered routes match, and Vite bakes the same
-prefix into its `base` so the preview round-trips through the one port. Prefix is empty locally.
+One ASGI app on one port: project lifecycle + model control + the /v1 shim OpenCode targets, with
+the preview proxy (active project's Vite dev server, HTTP + HMR) mounted under `/preview`.
+Everything is served under Domino's proxy path prefix (rewrite:false preserves it); a tiny ASGI
+middleware strips that prefix so bare-registered routes match, and Vite bakes the same prefix into
+its `base` so the preview round-trips through the one port. Prefix is empty locally.
+
+Since ONE-APP-PLAN.md Phase 2, this one process also holds MANY project directories
+($SAGE_HOME/projects/<slug>/, ProjectRegistry in ..projects.registry): a request under
+`/p/<slug>/...` is dispatched by `_ProjectDispatchMiddleware` to that project's own Orchestrator,
+bound for the request's lifetime through the `current_orchestrator()` ContextVar. Every route in
+this file still reads the plain `orchestrator` name — it is a proxy over that ContextVar now, not a
+concrete Orchestrator, so the ~128 route bodies below needed no per-call-site change (see the Phase
+2 spike addendum in ONE-APP-PLAN.md §2.3). A request naming no project (every root-scope route, and
+every test that never dispatches through `/p/<slug>/`) resolves to the one default Orchestrator this
+module still builds at import time, exactly as before Phase 2.
 
 Run:  uv run python -m sage.orchestrator.app
 """
@@ -23,6 +33,7 @@ import re
 import signal
 import threading
 import time
+from contextvars import ContextVar
 from mimetypes import guess_type
 from pathlib import Path
 from urllib.parse import quote
@@ -43,6 +54,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from starlette.concurrency import run_in_threadpool
+from starlette.routing import get_route_path
 from starlette.staticfiles import StaticFiles
 
 _WB = Path(__file__).resolve().parents[1] / "workbench"
@@ -68,6 +80,7 @@ from ..gateway.open_models import OPEN_WEIGHT_MODELS
 from ..platform.auth import TokenSource, build_token_source, gateway_bearer
 from ..preview.prefix import domino_base_prefix, domino_project_label, proxy_is_app, publish_available
 from ..preview.proxy import make_preview_app
+from ..projects.registry import ProjectRegistry, RegistryEntry
 from ..resources import health
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
@@ -334,6 +347,11 @@ _SETTINGS = sage_config.load(_SAGE_HOME)
 _TOKEN_SOURCE: TokenSource | None = build_token_source(_SETTINGS.domino_host, _SETTINGS.domino_token)
 
 _gateway, GATEWAY_MODE = build_gateway(_TOKEN_SOURCE, _SETTINGS.gateway_api_key, _SETTINGS.gateway_url())
+# Read here rather than inside `run()` so a lazily-built per-project Orchestrator (ONE-APP-PLAN.md
+# §2.2) can align its own `opencode.json` to the port this whole process serves, the same way
+# `_install_opencode_config` already aligns the legacy single project's — `run()` below uses this
+# same constant instead of recomputing it, so there is exactly one place either reads it from.
+_CONTROL_PORT = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
 # One builder is bound to one project volume. On Domino (git-based) that's the mounted repo at
 # /mnt/code; locally it defaults to a scratch dir. The display id is the Domino project name.
 _WORKSPACE_DIR = Path(os.environ.get("SAGE_WORKSPACE_DIR", _REPO / "backend" / "workspaces" / "app"))
@@ -455,18 +473,26 @@ _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
 _control_plane = _build_control_plane()
 _provision = _build_provision_service(_control_plane)
 _door = _build_door(_provision, _control_plane)
-orchestrator = Orchestrator(
+# Built once, shared by the legacy default Orchestrator below AND by every per-project one the
+# registry opens (ONE-APP-PLAN.md's "shared, process-wide" services list, §2). Hoisted out of the
+# constructor call (each used to be built inline, once, only for the one Orchestrator that existed)
+# so a second Orchestrator does not reconstruct — and re-log the boot-time "no Domino host
+# configured" notice from — its own independent copy.
+_CATALOG = _build_catalog()
+_ASSETS = _build_assets()
+_RESOURCES = _build_resources()
+_DEFAULT_ORCHESTRATOR = Orchestrator(
     workspace_dir=_WORKSPACE_DIR,
     template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "fastapi-antd")),
     gateway=_gateway,
-    catalog=_build_catalog(),
+    catalog=_CATALOG,
     project_id=os.environ.get("DOMINO_PROJECT_NAME", _WORKSPACE_DIR.name),
     # Not SAGE_OPENCODE_CWD: that names the checked-in *source*, and a server run there loads it as
     # project config (#199). This is the server's cwd and the dir `_opencode_base_port` reads, so
     # /api/diag reports the port of the file OpenCode really dials.
     opencode_cwd=_opencode_project_dir(),
-    assets=_build_assets(),
-    resources=_build_resources(),
+    assets=_ASSETS,
+    resources=_RESOURCES,
     domino_project_id=os.environ.get("DOMINO_PROJECT_ID"),
     control_plane=_control_plane,
     domino_project_name=os.environ.get("DOMINO_PROJECT_NAME"),
@@ -480,6 +506,163 @@ orchestrator = Orchestrator(
     gateway_mode=GATEWAY_MODE,
     token_source=_TOKEN_SOURCE,
 )
+
+# --- Per-project registry (ONE-APP-PLAN.md §2.2, §2.3) --------------------------------------------
+#
+# `_CURRENT_ORCHESTRATOR` is set for the lifetime of one request by `_ProjectDispatchMiddleware`
+# below, when — and only when — that request's path names a project (`/p/<slug>/...`). Every other
+# request (every existing root-scope route, and every one of this suite's ~267 files that reach in
+# and monkeypatch `app_module.orchestrator`'s attributes directly, relying on it being one stable
+# object for the life of the test process) resolves to `_DEFAULT_ORCHESTRATOR`, unchanged from
+# today. See the Phase 2 spike addendum in ONE-APP-PLAN.md §2.3 for why this shape (rather than a
+# bare `__getattr__` proxy, and rather than `ContextVar.set()` once at import time) is the one that
+# keeps every existing caller working.
+_CURRENT_ORCHESTRATOR: ContextVar[Orchestrator | None] = ContextVar("current_orchestrator", default=None)
+
+
+def current_orchestrator() -> Orchestrator:
+    return _CURRENT_ORCHESTRATOR.get() or _DEFAULT_ORCHESTRATOR
+
+
+class _OrchestratorProxy:
+    """Stands in for a concrete `Orchestrator` at the `orchestrator` module name, so all ~163
+    existing `orchestrator.<attr>` reads in this file need no per-call-site rewrite.
+
+    Forwards both reads AND writes/deletes to whatever `current_orchestrator()` resolves to — not
+    just `__getattr__` — because plain `setattr(orchestrator, "_wm", fake)` (what this suite's
+    tests already do, in bulk) would otherwise land in THIS object's own `__dict__`, silently
+    shadowing the real one: `__getattr__` only runs on a lookup MISS, so a later read would find the
+    proxy's own shadowed attribute and never reach the object the test meant to patch. No `__init__`
+    and no instance state of its own, so there is nothing for a stray `object.__setattr__` call here
+    to collide with.
+    """
+
+    def __getattr__(self, name):
+        return getattr(current_orchestrator(), name)
+
+    def __setattr__(self, name, value):
+        setattr(current_orchestrator(), name, value)
+
+    def __delattr__(self, name):
+        delattr(current_orchestrator(), name)
+
+
+orchestrator = _OrchestratorProxy()
+
+
+def _write_project_opencode_config(source_dir: Path, control_port: int, slug: str, dest_path: Path) -> None:
+    """Fill the REAL project-config slot for one project: a gitignored `opencode.json` at that
+    project's own git root (ONE-APP-PLAN.md §2.3's spike addendum, 2026-09-23).
+
+    OpenCode's own config cascade already resolves project config off the git root of the SESSION
+    directory and ranks it above both `OPENCODE_CONFIG` and the global copy — a prior investigation
+    in this codebase measured this on opencode-ai@1.18.4 (#199/#202; see `_install_opencode_config`'s
+    docstring). That slot was left unfilled for the one pre-Phase-2 project because filling it would
+    dirty `git status` on the one shared workspace volume; a per-project file here is gitignored, so
+    that reason does not apply.
+
+    Writes the FULL voiced config, not a `{"provider":{"sage-gateway":{"options":{"baseURL":...}}}}`
+    stub: nothing in this codebase's history proves OpenCode deep-merges a partial provider entry
+    against the global config's `npm`/`models` for the same provider id, and the one place this repo
+    DID fill a project slot before (`_install_opencode_config`'s own `_opencode_project_dir()` write)
+    it wrote the whole transformed config. Every URL naming this process's own port is ALSO given
+    this project's `/p/<slug>` path prefix, since (unlike the legacy single-project shim) every
+    project's model/MCP traffic dials the one shared control port through that prefix.
+
+    Deliberately simpler than `_install_opencode_config`: no native-codec/reasoning-settings branch
+    (a real, named gap — that feature has not yet been extended to a per-project config) and no
+    tools/skills install, since those are GLOBAL slots already reached from any session directory
+    (installed once at boot, covering every project already).
+    """
+    import json
+    from copy import deepcopy
+    from urllib.parse import urlsplit, urlunsplit
+
+    from .brand import apply_agent_voice
+
+    src = source_dir / "opencode.json"
+    try:
+        cfg = json.loads(src.read_text())
+    except Exception as e:  # missing/unreadable — flag, don't crash the caller
+        log.error("[wiring] cannot read %s for project %r: %s", src, slug, e)
+        return
+
+    def _on_this_project(url: str) -> str:
+        parts = urlsplit(url)
+        if not parts.scheme:
+            return url
+        host = parts.netloc.rsplit(":", 1)[0] if ":" in parts.netloc else parts.netloc
+        return urlunsplit((parts.scheme, f"{host}:{control_port}", f"/p/{slug}{parts.path}",
+                            parts.query, parts.fragment))
+
+    opts = ((cfg.get("provider") or {}).get("sage-gateway") or {}).get("options") or {}
+    base = opts.get("baseURL", "")
+    if base:
+        opts["baseURL"] = _on_this_project(base)
+    for server in (cfg.get("mcp") or {}).values():
+        url = (server or {}).get("url", "")
+        if url:
+            server["url"] = _on_this_project(url)
+        # Mirrors `_install_opencode_config`'s identical rewrite: a `local` server is a command
+        # OpenCode spawns from the SESSION directory, not from here, so a relative path must be
+        # anchored to the checked-in source it came from.
+        argv = (server or {}).get("command")
+        if isinstance(argv, list):
+            server["command"] = [
+                str((source_dir / a).resolve()) if isinstance(a, str) and "/" in a
+                and not a.startswith("/") else a
+                for a in argv
+            ]
+    voiced = json.dumps(apply_agent_voice(deepcopy(cfg)), indent=2) + "\n"
+    try:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_text(voiced)
+        log.info("[wiring] installed project opencode config for %r at %s", slug, dest_path)
+    except OSError as e:
+        log.error("[wiring] could NOT install project opencode config for %r (%s)", slug, e)
+
+
+def _build_project_orchestrator(entry: RegistryEntry, workspace_dir: Path) -> Orchestrator:
+    """The registry's factory closure (§2.2): every process-wide shared service built above, once,
+    threaded through; only the per-project fields (workspace, ids, labels) differ per call."""
+    _write_project_opencode_config(
+        # The same checked-in `opencode.json` source `run()` hands `_install_opencode_config` —
+        # kept as its own read here (rather than a shared module-level constant) because
+        # `SAGE_OPENCODE_CWD` is an env var a test or a laptop run may set after import.
+        Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)),
+        _CONTROL_PORT, entry.slug, workspace_dir / "opencode.json",
+    )
+    cost_label = domino_project_label(fallback=entry.domino_project_name)
+    return Orchestrator(
+        workspace_dir=workspace_dir,
+        template=Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "fastapi-antd")),
+        gateway=_gateway,
+        catalog=_CATALOG,
+        project_id=entry.slug,
+        # Each project gets its own OpenCode server process (lazily started on first turn, exactly
+        # as `_ensure_opencode` already does for the legacy default) rather than the single shared
+        # server the target architecture calls for — hoisting `OpenCodeServer` out of `Orchestrator`
+        # so every project shares ONE is real, named, deferred work (ONE-APP-PLAN.md §2.2's "Shared
+        # `OpenCodeServer` hoisted out of `Orchestrator._ensure_opencode`"), not silently dropped.
+        # This directory only needs to not collide with another project's; it does not need to BE
+        # the project's own git root — that role is `workspace_dir` itself, which is what
+        # `_write_project_opencode_config` above just wrote into.
+        opencode_cwd=Path(os.path.expanduser(f"~/.config/sage-opencode/{entry.slug}")),
+        assets=_ASSETS,
+        resources=_RESOURCES,
+        domino_project_id=entry.domino_project_id,
+        control_plane=_control_plane,
+        domino_project_name=entry.domino_project_name,
+        cost_project_label=cost_label,
+        gateway_ui_url=_gateway_ui_url(cost_label),
+        manage_url=_manage_app_url(),
+        browser_gateway_base=_browser_gateway_base(),
+        gateway_mode=GATEWAY_MODE,
+        token_source=_TOKEN_SOURCE,
+    )
+
+
+_REGISTRY = ProjectRegistry(_SAGE_HOME, _build_project_orchestrator, control_plane=_control_plane)
 
 # Preflight of Sage's own model slots (#17). Loud but not fatal: a slot resolves against the LLM
 # Gateway, so a gateway blip or one de-registered Alias would otherwise be enough to stop the
@@ -743,7 +926,12 @@ async def _lifespan(app: FastAPI):
                        (_warm_then_check_permissions, "sage-warm-opencode")):
         threading.Thread(target=_boot, args=(step,), name=name, daemon=True).start()
     yield
-    orchestrator.shutdown()
+    _DEFAULT_ORCHESTRATOR.shutdown()
+    # Every project the registry ever opened, not just the default one — `shutdown()` is what saves
+    # in-progress work to git and stops that project's own preview/OpenCode processes, and a project
+    # a request dispatched to earlier in this process's life must get the same treatment on exit.
+    for orch in _REGISTRY.all_open():
+        orch.shutdown()
 
 
 control_app = FastAPI(title="sage orchestrator", lifespan=_lifespan)
@@ -774,7 +962,10 @@ class _PrefixMiddleware:
     # prefix misconfiguration in that workspace could never be reported again. Nothing broke — the
     # route matches either way, since no prefix is what a loopback call is supposed to carry — so
     # the whole cost was a diagnostic that had already been fired.
-    _UNPROXIED = ("/v1/", "/healthz", "/mcp/")
+    #
+    # `/p/` joined this list for the identical reason (ONE-APP-PLAN.md §2.3): OpenCode's own model
+    # calls now dial `/p/<slug>/v1/...` over loopback, carrying no Domino prefix either.
+    _UNPROXIED = ("/v1/", "/healthz", "/mcp/", "/p/")
 
     def __init__(self, app, prefix: str) -> None:
         self._app = app
@@ -793,6 +984,55 @@ class _PrefixMiddleware:
         await self._app(scope, receive, send)
 
 
+class _ProjectDispatchMiddleware:
+    """Routes `/p/<slug>/<rest>` to that project's `Orchestrator` (ONE-APP-PLAN.md §2.3).
+
+    Registered BELOW `_PrefixMiddleware` — Starlette wraps the middleware added FIRST closest to the
+    router, so an EARLIER `add_middleware` call runs LATER at request time — so by the time this
+    runs, `root_path` already carries Domino's own mount prefix (or stays empty for a loopback call).
+    This only ever EXTENDS `root_path`, mirroring `_PrefixMiddleware`'s own rule of never rewriting
+    `path` (a rewritten path would double-count against a nested Mount, e.g. `/preview`); Starlette's
+    own `get_route_path` is what both this class and the router underneath compute the
+    already-un-prefixed route path with, so the two never disagree about where the prefix ends.
+
+    A request with no `/p/<slug>` segment passes straight through untouched — every existing
+    root-scope route, and every test that talks to `control_app` directly, keeps working exactly as
+    before. `current_orchestrator()`'s `ContextVar` is only ever SET here, for the lifetime of one
+    request.
+    """
+
+    def __init__(self, app, registry: ProjectRegistry) -> None:
+        self._app = app
+        self._registry = registry
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await self._app(scope, receive, send)
+            return
+        route_path = get_route_path(scope)
+        if not route_path.startswith("/p/"):
+            await self._app(scope, receive, send)
+            return
+        slug, _, _rest = route_path[len("/p/"):].partition("/")
+        if not slug:
+            await self._app(scope, receive, send)
+            return
+        try:
+            orch = self._registry.open(slug)
+        except KeyError:
+            response = JSONResponse({"detail": f"no such project {slug!r}"}, status_code=404)
+            await response(scope, receive, send)
+            return
+        scope = dict(scope)
+        scope["root_path"] = scope.get("root_path", "") + f"/p/{slug}"
+        token = _CURRENT_ORCHESTRATOR.set(orch)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            _CURRENT_ORCHESTRATOR.reset(token)
+
+
+control_app.add_middleware(_ProjectDispatchMiddleware, registry=_REGISTRY)
 control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 
 
@@ -5109,7 +5349,7 @@ def run() -> None:
 
     import uvicorn
 
-    control_port = int(os.environ.get("SAGE_CONTROL_PORT", "8080"))
+    control_port = _CONTROL_PORT
     _install_opencode_config(Path(os.environ.get("SAGE_OPENCODE_CWD", _REPO)), control_port)
     # Loopback locally; Domino's pluggable-tool proxy reaches the tool port from outside the
     # process, so set SAGE_CONTROL_HOST=0.0.0.0 there (matches the Phase-0 spike).
@@ -5130,7 +5370,9 @@ def run() -> None:
         try:
             await server.serve()
         finally:
-            orchestrator.shutdown()
+            _DEFAULT_ORCHESTRATOR.shutdown()
+            for orch in _REGISTRY.all_open():
+                orch.shutdown()
 
     asyncio.run(_serve())
 

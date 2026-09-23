@@ -132,6 +132,63 @@ Verify early (Phase 2, step 1): the `ContextVar` survives into `StreamingRespons
 ```
 OpenCode merges project config over the global one, so every model call for a session in that repo arrives under `/p/<slug>/v1/…` and the existing `/v1/*` handlers run against the right orchestrator with no lookup. Verify the deep-merge in Phase 2 (OpenCode 1.18.4). Fallback if `provider.options` does not merge: force the native provider (`driver/provider.mjs`, which sends `x-session-id`) and resolve via `orchestrator_for_session`. The diagnostic that flags a project `opencode.json` as a foreign shadow (`app.py:1522-1560`) is inverted to expect ours.
 
+**Phase 2 spike addendum (2026-09-23) — both open questions above answered from this codebase's own
+prior research, not by running a live OpenCode server (no network in this sandbox for `npx`):**
+
+1. **Project config lands at the right place already, by construction.** `driver/server.py` and
+   `orchestrator/app.py:_install_opencode_config`'s own docstrings record hard-won findings from an
+   earlier investigation (#199/#202, "measured on opencode-ai@1.18.4"): OpenCode resolves PROJECT
+   config off the **git root of the SESSION directory** (`location.directory`), not the server's
+   cwd, and project config outranks both `OPENCODE_CONFIG` and the global config. Today that slot is
+   deliberately left unfilled — Sage's one workspace volume is the session directory for every
+   session, and writing a config file into it would dirty `git status` in a single-project world. A
+   per-project **gitignored** `opencode.json` at `projects/<slug>/opencode.json` fills exactly the
+   slot this research already proved wins, with none of the reason they left it unfilled (gitignored
+   files don't show up in `git status`).
+2. **Don't rely on a partial-stub deep merge — write the full voiced config per project instead.**
+   Nothing in this codebase's history tests whether OpenCode deep-merges a **partial** provider
+   config (just `options.baseURL`) against the global config's `npm`/`models`/other keys for the
+   same provider id, or replaces the whole `sage-gateway` entry wholesale (which would silently drop
+   `npm` and `models` and break the provider). The one place this repo DID consider filling the
+   project slot, it wrote the **entire** transformed config, not a stub (`_install_opencode_config`'s
+   own comment: "the voiced blob still goes to `_opencode_project_dir()` as well... it costs nothing
+   to have the file beside it be a voiced one rather than the template"). Phase 2 should follow that
+   precedent: `registry.open(slug)` calls the same transform `_install_opencode_config` already
+   applies (parameterized by target path and this project's shim port) to write the FULL resolved
+   config to `projects/<slug>/opencode.json`, not the plan's original two-line stub. This removes
+   risk #3 by construction instead of gambling on unverified merge semantics — refactor
+   `_install_opencode_config` to take a `(source_dir, control_port, dest_path)` so both the global
+   slot and every project slot go through one tested code path.
+3. **The `ContextVar`/proxy question is not actually a risk in this codebase.** Checked every
+   SSE route in `app.py` (`build_stream`, `chat_stream`, `build_approve`, `decline_handoff`,
+   `_install_native_routes(control_app, lambda: orchestrator)`) and grepped every non-attribute use
+   of the `orchestrator` name (163 plain `orchestrator.<attr>` reads, zero `isinstance` checks, zero
+   places that store the module global by reference for later reuse outside the request). Every
+   streaming route already calls `orchestrator.<method>(...)` **synchronously, in the route
+   handler**, before building the `StreamingResponse` — the generator that results closes over the
+   already-bound method of a concrete `Orchestrator` instance; it never re-reads the name later. A
+   `current_orchestrator()` ContextVar lookup only has to be correct at that one synchronous call
+   site, which is no different from today's plain global read. **The thin proxy object is safe as
+   originally proposed** — no FastAPI-dependency rewrite of 128 signatures needed.
+4. **A real risk the plan didn't name: ~267 test files monkeypatch `app_module.orchestrator`'s
+   attributes directly** (`monkeypatch.setattr(app_module.orchestrator, "_wm", fake)`, etc.), relying
+   on it being the SAME concrete `Orchestrator` object for the life of the test process (it's built
+   once at import time and Python caches the module). A naive `__getattr__`-only proxy breaks this
+   silently: `setattr(proxy, "_wm", fake)` would shadow the proxy's own `__dict__` instead of reaching
+   the real object, since `__getattr__` is only consulted on lookup miss. **Fix, decided here:** the
+   proxy also implements `__setattr__`/`__delattr__`, forwarding to whatever `current_orchestrator()`
+   resolves to; and `current_orchestrator()` itself is `_CURRENT.get() or _DEFAULT`, where `_DEFAULT`
+   is a plain module-level `Orchestrator` built exactly as today (not a ContextVar `.set()` at import
+   time, which would depend on context-inheritance semantics across worker threads/tasks — an
+   explicit `or _DEFAULT` fallback needs none of that). The dispatcher's per-request `ContextVar.set()`
+   is then a pure OVERLAY used only inside a real `/p/<slug>/...` dispatch; every existing test and
+   every pre-Phase-2 root-scope route keeps resolving to `_DEFAULT`, unchanged, with zero of the
+   267 files touched.
+5. **Naming collision caught before it was written:** `sage.workspace.manager.ProjectRecord` already
+   owns that class name for a different record (a Project's plan/settings/session bookkeeping at the
+   volume root, ADR-0008). The registry's own 6-key file (§2.2) is implemented as `RegistryEntry` in
+   `sage/projects/registry.py`, landed this session — see ONE-APP-STATUS.md.
+
 ### 2.4 Preview
 
 `UvicornSupervisor` only; `ViteSupervisor`, `preview_port()`, `_clear_stale_port` and the `lsof` reaper go. Port is `_free_port()`, `--strictPort` semantics by construction. Mount base is `""` (uvicorn serves at root), so `/p/<slug>/preview/<path>` → `http://127.0.0.1:<port>/<path>`. The page's `sage_serve.py` shim writes `<base href>` from the received path, and every helper uses `sage.url()` — so under `/apps/<uuid>/p/<slug>/preview/` nothing in the served HTML needs rewriting. `PreviewQueries` (the app's own `sage_queries.py` on loopback) stays per project. Supervisors start on a background thread per orchestrator (the #500 rule), never on the request path. The supervisor passes the child `DOMINO_API_HOST` and, on a laptop, `SAGE_DOMINO_TOKEN`, so `sage_queries.py`'s Flight executor and `sage_domino.py` can authenticate without a sidecar (template change in Phase 5).
@@ -291,8 +348,8 @@ ADRs: a new ADR "Sage is one process holding many project directories" supersedi
 |---|---|---|---|
 | 1 | The SDK rejects a Domino PAT as `token=` off-Domino | Phase 1/5 laptop dataset reads and every Data Source query | REST `file/raw` fallback for Datasets; Data Sources unavailable on laptops until a JWT source exists (acceptable: other resource kinds may be placeholders) |
 | 2 | The LLM Gateway does not accept a Domino PAT | Phase 1 laptop model calls | `settings.gateway.apiKey` (`dgw_`) field; already what `.env.example` describes |
-| 3 | OpenCode does not deep-merge `provider.options` from a project `opencode.json` | Phase 2 shim routing | Native provider always on + `x-session-id` lookup |
-| 4 | `ContextVar` does not reach a streaming generator | Phase 2 | Capture at route entry, pass explicitly |
+| 3 | OpenCode does not deep-merge `provider.options` from a project `opencode.json` | Phase 2 shim routing | **RESOLVED by the Phase 2 spike (2026-09-23), not by testing the merge — by not needing it.** Write the FULL voiced config per project (the same transform `_install_opencode_config` already applies for the global slot), not a `{"provider":{"sage-gateway":{"options":{"baseURL":...}}}}` stub. See §2.3 addendum below. |
+| 4 | `ContextVar` does not reach a streaming generator | Phase 2 | **RESOLVED by the Phase 2 spike (2026-09-23): not a risk in this codebase's shape.** Every SSE route (`build_stream`, `chat_stream`, `build_approve`, `decline_handoff`) already calls `orchestrator.<method>(...)` *synchronously in the route handler*, before constructing the `StreamingResponse` — the returned generator is a bound method closing over the already-resolved `Orchestrator` instance, not a re-lookup. A ContextVar-backed accessor only ever needs to resolve correctly at that one synchronous call point, which is exactly where a normal attribute read already happens today. No capture-and-pass-explicit rewrite needed. See §2.3 addendum. |
 | 5 | The field problems that motivated `remove-fastapi-antd-stack` | Phase 0 onward | Another developer is on them; read that branch's commit body and issues before Phase 0 and carry any fix that is about the stack itself (interpreter search in `app.sh`, CDN script order — LESSONS §9) rather than about workspaces |
 | 6 | 24k-line `service.py` and 128 routes: the multi-project change is mechanical but wide | Phase 2 | Proxy object keeps call sites unchanged; land the spike first; one PR for the dispatcher, one for the registry |
 | 7 | App container restarts lose un-attached scratch uploads | Phase 7 | Mounted `sage-home` Dataset when available; say so in the UI ("not saved until attached") |

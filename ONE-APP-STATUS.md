@@ -998,3 +998,122 @@ real work to hand off either way, committed or not.
 5. The `derive_gateway_url()` open risk (finding 3) is worth a real check the first time this code
    runs inside an actual published App rather than a workspace — record whatever that App's
    `DOMINO_API_HOST` actually looks like.
+
+## UPDATE 2026-09-23 (new session): Phase 2 started — spike done, registry.py landed, dispatcher not yet started
+
+Read `ONE-APP-PLAN.md` and this file fresh (new session, no prior context). Confirmed Phase 0/1 are
+genuinely committed on this branch (`a627b0ec`, `a9690c98`, `9eaa0620` — `git log` matches the
+status doc's own claim; working tree was clean at session start). Did Phase 2 step 1 (the spike) and
+half of step 2 (the registry module, not yet wired into `app.py`).
+
+**Phase 2 step 1 — spike. Findings written into `ONE-APP-PLAN.md` §2.3 directly (both open
+questions the plan asked for), not just here.** Summary:
+
+1. **OpenCode project-config resolution is exactly what the plan assumes, and it's already proven
+   in this codebase** — `driver/server.py`'s and `orchestrator/app.py`'s own docstrings record a
+   prior investigation (#199/#202, "measured on opencode-ai@1.18.4"): project config is resolved off
+   the git root of the **session directory**, outranks both `OPENCODE_CONFIG` and global, and is
+   deliberately left unfilled today only because filling it would dirty `git status` on the one
+   shared workspace volume. A gitignored `projects/<slug>/opencode.json` sidesteps that reason
+   entirely.
+2. **Real, not-yet-verified risk found and resolved by avoiding it rather than testing it**: nothing
+   in this codebase's history proves OpenCode deep-merges a *partial* project config's
+   `provider.sage-gateway.options.baseURL` against the global config's `npm`/`models` for the same
+   provider id — and the one place this repo DID fill a project slot before, it wrote the FULL
+   transformed config, not a stub. **Decision: Phase 2 must write the full voiced config per project
+   (reusing `_install_opencode_config`'s exact transform, parameterized by destination path and that
+   project's shim port), not the plan's original two-line stub.** This removes the plan's risk #3
+   by construction. Not yet implemented — `_install_opencode_config` still only writes the one global
+   slot; refactoring it to a `(source_dir, control_port, dest_path)` shape and calling it once more
+   per `registry.open()` is dispatcher-phase work, not done this session.
+3. **ContextVar-into-SSE-generator is not actually a risk here, verified by reading every streaming
+   route**: `build_stream`/`chat_stream`/`build_approve`/`decline_handoff` all call
+   `orchestrator.<method>(...)` *synchronously in the route handler*, before the `StreamingResponse`
+   is built — the resulting generator closes over an already-bound method on a concrete instance, it
+   never re-reads the module name later. A ContextVar lookup only needs to be correct at that one
+   synchronous call, same as a plain global read today. Plan's risk #4 resolved; no capture-and-pass
+   rewrite needed.
+4. **A real risk the plan never named, found by grepping test usage, not assumed**: ~267 test files
+   do `monkeypatch.setattr(app_module.orchestrator, "_wm", fake)` etc., relying on
+   `app_module.orchestrator` being the SAME concrete `Orchestrator` instance for the whole test
+   process (built once at import time; pytest's module-import caching keeps it that way across every
+   test file). A bare `__getattr__`-only proxy silently BREAKS this: `setattr(proxy, "_wm", fake)`
+   would land in the proxy's own `__dict__`, shadowing it, rather than reaching the real object,
+   because `__getattr__` is only consulted on a lookup MISS — nothing would look re-broken until a
+   later test read `app_module.orchestrator._wm` through `__getattr__` and got the ORIGINAL value
+   back, silently invalidating whatever the earlier monkeypatch thought it had changed. **Decision:
+   the future proxy must implement `__setattr__`/`__delattr__` too (forwarding to whatever
+   `current_orchestrator()` resolves to), and `current_orchestrator()` must be `_CURRENT.get() or
+   _DEFAULT` — an explicit fallback to a plain module-level `Orchestrator` built exactly as today —
+   rather than relying on a ContextVar `.set()` at import time inheriting correctly across worker
+   threads. This keeps every one of the 267 files, and every pre-Phase-2 root-scope route, resolving
+   to `_DEFAULT` completely unchanged; the dispatcher's per-request `ContextVar.set()` becomes a pure
+   overlay used only inside a real `/p/<slug>/...` dispatch.** Not yet implemented — the proxy class
+   and `_CURRENT`/`_DEFAULT` split are dispatcher-phase work.
+5. **Also checked and ruled out**: no `isinstance(orchestrator, ...)` checks and no code that stores
+   the module-level `orchestrator` name by reference for reuse outside a request — every one of the
+   163 non-test call sites in `app.py` is a plain `orchestrator.<attr>` read, confirming the thin
+   proxy approach is mechanically sufficient for 100% of `app.py`'s route bodies with zero call-site
+   edits, once the `__setattr__` fix above is in place.
+
+**Phase 2 step 2 (partial) — `backend/sage/projects/registry.py` landed, not yet wired into
+`app.py`.** `ProjectRegistry` per plan §2.2: `RegistryEntry` (the 6-key `.sage/project.json` record —
+named `RegistryEntry` rather than `ProjectRecord` because `sage.workspace.manager.ProjectRecord`
+already owns that name for a different record, ADR-0008; caught before it was written, not after),
+`ProjectRow` (a `list()` row), `local_slugs()` (directory scan, no index, matching
+`WorkspaceManager`'s own rule — a half-written `create()` with no entry file yet is deliberately
+invisible), `entry()`, `list(current=)` (merges local rows with `control_plane.list_apps()` — reused
+the EXISTING `ControlPlane.list_apps() -> list[ProjectRef]` / `_SAGE_REPO_PREFIX` filtering
+`door.py`/`domino.py` already implement, not reinvented; local rows win on a slug collision), `open()`
+(get-or-build via an injected factory closure, raises `KeyError` for an unknown slug), `is_open()`,
+`close()` (drops the cache; best-effort stops the bound `Project`'s `UvicornSupervisor` if a turn
+ever started one — ADR-0040 means there's at most one live per Orchestrator — but this is explicitly
+NOT yet Phase 4's real per-project preview lifecycle, since today's supervisor is reached only
+through whatever `Project` an Orchestrator happens to have bound, not a first-class handle the
+registry owns; recorded as a real, temporary gap in the method's own docstring rather than silently
+assumed handled).
+
+The registry itself does not know how to build an `Orchestrator` — it takes a
+`build_orchestrator(entry, workspace_dir) -> Orchestrator` factory at construction, matching the
+plan's "shared, process-wide services built once by the caller" split. Nothing about `app.py`'s
+bootstrap was touched this session; the factory closure that will supply the real shared services
+(gateway, catalog, control plane, assets, resources, token source — all already process-wide
+singletons per Phase 1) is dispatcher-phase work.
+
+15 new tests, `tests/test_project_registry.py`, using bare dataclass fakes rather than a real
+`Orchestrator`/`UvicornSupervisor` (this module doesn't need to know about either concrete type at
+test time — verified by keeping the test file free of any import from `orchestrator.service` or
+`preview.supervisor`). All pass. `make lint` (repo-wide) clean. Full suite collection: **7825**,
+exactly 15 more than the Phase-1-close baseline (7810) — reconciled by counting, not assumed. Full
+run not repeated this session (nothing outside the new file was touched, so the Phase-1-close
+baseline-diffed failure set — the publish/provision/control-plane/`native_gateway_transport`
+dogfood-safety class — stands unchanged; re-verify at the next natural full-run checkpoint rather
+than re-running it for a change that touched one new, isolated file).
+
+**Not started, and deliberately not attempted this session**: the actual dispatcher (ASGI wrapper in
+`app.py`, the `_CURRENT`/`_DEFAULT` ContextVar split, the `orchestrator` proxy class with
+`__setattr__`/`__delattr__`, `_install_opencode_config`'s refactor to a reusable
+`(source_dir, control_port, dest_path)` shape, deleting `_PrefixMiddleware`/`preview/prefix.py`, the
+Projects home page, and the JS scope-picker rewrite). This is deliberately held at a checkpoint
+before touching `app.py`'s `orchestrator` global — the object 267 test files depend on and every one
+of `app.py`'s 128 routes read from — since the design above, while grounded in real findings rather
+than assumption, has not yet been built and run against the suite. Flagged to the user for a
+go-ahead before executing it repo-wide (CLAUDE.md §1: surface a judgment call rather than picking
+silently for a change this wide — the plan's own §2.3 text explicitly calls the proxy-vs-dependency
+choice "the reviewer's call at Phase 2").
+
+## Next session should
+
+1. If the user confirmed the `_CURRENT`/`_DEFAULT` ContextVar-with-fallback + `__setattr__`-forwarding
+   proxy design above: implement the dispatcher (plan §2.3 steps 3-4), refactor
+   `_install_opencode_config` to the reusable shape (step 2's remaining half), wire `registry`'s
+   factory closure to the real shared services already built in Phase 1's bootstrap, then the Projects
+   home page and scope-picker (step 5). Run the FULL suite after the proxy substitution specifically
+   — that is the one change with a real chance of a wide, silent regression across the 267
+   monkeypatching files, and it deserves its own isolated full run before anything else lands on top
+   of it.
+2. Do not re-derive the spike findings above — they're also duplicated into `ONE-APP-PLAN.md` §2.3
+   and its risk table (rows 3-4 marked RESOLVED with the same reasoning), so either doc alone is
+   enough to resume from.
+3. Not committed. Confirm with the user before committing this session's changes (registry.py, its
+   tests, and the two plan-doc edits), same as every prior session on this branch.
