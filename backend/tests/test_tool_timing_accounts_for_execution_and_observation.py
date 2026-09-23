@@ -135,10 +135,10 @@ def test_marker_cycle_reports_turn_local_executable_and_metadata_variants(clock)
     timing.start_turn("build")
     brake = _RepeatBrake()
     private_key = "/private/uploads/person.csv"
+    private_values = ["private-alpha-value", "private-beta-value", "private-alpha-value"]
     calls = [
-        {"command": "true", "description": "local data withheld A", private_key: "one"},
-        {"command": "true", "description": "local data withheld B", private_key: "two"},
-        {"command": "true", "description": "local data withheld A", private_key: "three"},
+        {"command": "true", "description": "local data withheld", private_key: value}
+        for value in private_values
     ]
     for n, args in enumerate(calls):
         assert brake.saw(_repeat_fingerprint("bash", args), "bash (true)",
@@ -152,6 +152,7 @@ def test_marker_cycle_reports_turn_local_executable_and_metadata_variants(clock)
     assert [row["unknownArgumentKeyCount"] for row in rows] == [1, 1, 1]
     assert [row["unknownArgumentKeysTruncated"] for row in rows] == [False, False, False]
     assert private_key not in json.dumps(rows)
+    assert not any(value in json.dumps(rows) for value in private_values)
     assert "local data withheld" not in json.dumps(rows)
 
 

@@ -210,7 +210,7 @@ class ToolObserver:
                         command = next((arguments.get(key) for key in _COMMAND_KEYS
                                         if isinstance(arguments.get(key), str)), None)
                         metadata = {key: value for key, value in arguments.items()
-                                    if key in allowed and key not in _COMMAND_KEYS}
+                                    if key not in _COMMAND_KEYS}
                         row["executableVariant"] = self._variant(
                             "executable", {"tool": name.lower(), "command": command})
                         row["metadataVariant"] = self._variant("metadata", metadata)

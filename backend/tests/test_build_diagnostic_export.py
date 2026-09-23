@@ -125,24 +125,29 @@ def test_private_payloads_and_unknown_fields_never_reach_the_export(tmp_path):
 
 def test_model_supplied_argument_key_is_counted_not_persisted(tmp_path):
     private_key = "/private/uploads/person.csv"
+    private_values = ["private-alpha-value", "private-beta-value", "private-alpha-value"]
     rec = record()
     rec.t1 = None
     observer = timing.ToolObserver(rec, diagnostics._lock)
-    observer.brake(session_id="session_a", call_id="call_a", tool="bash",
-                   fingerprint="family", consecutive=1, limit=3, stopped=False,
-                   arguments={"command": "true", "description": "step", private_key: "value"})
+    for n, value in enumerate(private_values):
+        observer.brake(session_id="session_a", call_id=f"call_{n}", tool="bash",
+                       fingerprint="family", consecutive=n + 1, limit=3, stopped=n == 2,
+                       arguments={"command": "true", "description": "step", private_key: value})
     rec.t1 = rec.t0 + 1
 
     row = diagnostics.snapshot(rec, identity(), terminal=True)
     assert diagnostics.Store(tmp_path).put(row)
+    timing_json = json.dumps(timing.as_dict(rec))
     serialized = json.dumps(diagnostics.Store(tmp_path).get("turn_a", "app_a", "thr_a"))
 
-    assert private_key not in json.dumps(timing.as_dict(rec))
+    assert private_key not in timing_json
     assert private_key not in serialized and private_key not in diagnostics.Store(tmp_path).path.read_text()
-    brake = row["timing"]["repeatBrake"][0]
-    assert brake["argumentKeys"] == ["command", "description"]
-    assert brake["unknownArgumentKeyCount"] == 1
-    assert brake["unknownArgumentKeysTruncated"] is False
+    assert not any(value in timing_json or value in serialized for value in private_values)
+    brakes = row["timing"]["repeatBrake"]
+    assert [brake["metadataVariant"] for brake in brakes] == [1, 2, 1]
+    assert all(brake["argumentKeys"] == ["command", "description"] for brake in brakes)
+    assert all(brake["unknownArgumentKeyCount"] == 1 for brake in brakes)
+    assert all(brake["unknownArgumentKeysTruncated"] is False for brake in brakes)
 
 
 def test_nested_events_and_bytes_are_capped_and_reported(monkeypatch):
