@@ -747,3 +747,254 @@ comment, and is worth a small dedicated fix early next session.
    phase boundaries. Do **not** re-derive the mirror map if more mechanical stack-removal comes up —
    it's recorded in decision 3 near the top of this file; the sibling branch commit is `c4da4cfb` on
    `origin/remove-fastapi-antd-stack`.
+
+## UPDATE 2026-09-23 (new session): Phase 1 — Config and one TokenSource. DONE and verified.
+
+Also did the item 3 above named ("Fix the two minor doc-staleness items") before starting Phase 1:
+`gateway_bypass.py`'s docstring/comments and `service.py`'s delegated-model-call prompt text
+(`llm_alias` branch) both repointed from `src/appLlm.ts`/`src/appLlm.config.ts` to
+`static/sage/appLlm.js`/`static/sage/appLlm.config.js`; one test
+(`test_the_service_speaks_the_packs_words.py::test_a_language_model_row_hands_the_turn_a_way_to_call_it`)
+updated to match the corrected live-prompt sentence. Verified against baseline via `git stash` that
+the one test failure this touched (`test_publishing_off_platform_names_the_pack`) is pre-existing and
+unrelated (see below — it's part of the dogfood-safety class). Item 4 (the two named test-coverage
+gaps, `test_sage_domino_relay.py` and `test_feedback.py`'s weakened drift guard) was **not** picked
+up — still open, still non-blocking, still real. `fc7ff826`'s "unrequested commit" concern is now
+moot: Phase 0's work is confirmed committed and pushed (`a627b0ec "phase 0 done"`, `git log` shows it
+on `origin/one-app-pivot-Etan`) — nothing to flag there anymore.
+
+**A live sandbox discovery that shapes this whole phase, found before writing any code, not
+assumed.** This session's sandbox is itself a real Domino workspace (`DOMINO_API_HOST`,
+`DOMINO_USER_API_KEY`, `DOMINO_ENVIRONMENT_ID`, `DOMINO_HARDWARE_TIER_ID` all genuinely set,
+`localhost:8899` sidecar reachable) — so several of Phase 1's own "live checks... cannot be
+unit-tested" requirements were actually checkable, and were checked, with `curl`/`httpx`/the real
+`domino_data` SDK, never by assumption:
+
+1. **A static Domino account key and a sidecar JWT are NOT interchangeable on the wire — this
+   contradicts the plan's own text, not just fills a gap in it.** `GET /api/users/v1/self` and
+   `GET /api/projects/beta/projects`: the account key (`DOMINO_USER_API_KEY`) sent as
+   `Authorization: Bearer <key>` is REFUSED — 403, `"Not authorized: No current user in request"`
+   from `/self`. The SAME key sent as `X-Domino-Api-Key: <key>` is accepted (200). A sidecar JWT
+   sent as `Authorization: Bearer <jwt>` is accepted (200) — the header style already shipped
+   everywhere (`DominoControlPlane._headers()`), unchanged, still correct for sidecar. One
+   inconsistency worth remembering: `GET /api/datasetrw/v2/datasets` (the family
+   `assets/provider.py`'s `DominoAssetProvider` already calls) tolerated the account key as
+   `Bearer` too — so that provider's three existing raw-Bearer call sites were deliberately left
+   unchanged rather than "fixed" into a header scheme nothing there needed.
+2. **The `domino_data` SDK mirrors the exact same split, and `assets/provider.py`'s OWN docstring
+   had already half-recorded this before Phase 1 touched it** (`"Passing an account API key as
+   token= instead is rejected with 'Your role does not authorize you to perform this action'"` —
+   a slightly different error string than what this session got, `"Anonymous principals are not
+   supported"`, probably a version difference, same conclusion either way):
+   `DatasetClient(token=<static key>)` fails; `DatasetClient(api_key=<static key>)` **and**
+   `DatasetClient(token=<sidecar JWT>)` both work — live-verified against a real Dataset
+   (`dataset-new-project-oct-28-671fc113401a7124d7887576`, `list_files()` returned `0` with no
+   auth error either way). `DataSourceClient` shares the identical `api_key=`/`token=` constructor
+   shape; NOT independently live-tested (no live Data Source query attempted), the assumption is
+   "same shape, same rule" and it is exactly that — an assumption, flagged as one in
+   `platform/auth.py`'s own docstring, not quietly treated as verified.
+3. **`derive_gateway_url()`'s "apps.<host>" formula — literally what ONE-APP-PLAN.md §2.1 specifies
+   — does not resolve from inside this workspace, and is UNVERIFIED for the App context the plan
+   actually means it for.** `DOMINO_API_HOST` here is `http://nucleus-frontend.domino-platform:80`,
+   an internal k8s service name; the sandbox's real public origin (from `VSCODE_PROXY_URI`) is
+   `cloud-dogfood.domino.tech` — an unrelated string, not a subdomain swap of the internal one.
+   `curl`ing the derived URL (`https://apps.nucleus-frontend.domino-platform/apps/llm_gateway/v1/
+   models`) timed out (`HTTP 000`, no DNS/route from here). Implemented anyway, exactly as the plan
+   specifies, because `Settings.gateway_url()` only ever uses it as a **fallback default** behind an
+   explicit `gateway_base_url` override — so a wrong guess costs a person one form field, not a
+   crash. Whether the formula holds from inside an actual published App (a genuinely different
+   network position than a workspace) is still open; nothing here could test that. Recorded as an
+   open risk, not silently shipped as fact.
+
+**What got built**, matching the plan's own Phase 1 checklist:
+
+1. `backend/sage/config.py` (new): `Settings` frozen dataclass (`domino_host`, `domino_token`,
+   `gateway_base_url`, `gateway_api_key`, `git_token`, `publish_environment_id`,
+   `publish_hardware_tier_id`) + `load(home, env)`/`save(home, settings)` reading
+   `$SAGE_HOME/settings.json` with env vars overriding per-field (`DOMINO_API_HOST`,
+   `DOMINO_USER_API_KEY`, `GATEWAY_BASE_URL`, `GATEWAY_API_KEY`, `DOMINO_ENVIRONMENT_ID`,
+   `DOMINO_HARDWARE_TIER_ID` — the platform's own injected names, verified present in this sandbox,
+   not invented). `derive_gateway_url(host)` and `resolve_sage_home(env)` per §2.1 — the latter
+   deliberately does NOT implement the App's per-user-id nested-under-a-mounted-Dataset path yet
+   (that detection needs a real App to test against, i.e. Phase 7); it falls back to `/tmp/sage-home`
+   (ephemeral, on Domino) or `~/.sage` (laptop) — safe defaults, not the full spec, and said so in
+   the docstring rather than pretending otherwise. `Settings.redacted()` is the `GET /api/settings`
+   shape: secret fields collapse to a bool, never the value. 14 tests, `tests/test_config.py`.
+2. `backend/sage/platform/auth.py` (new package): `TokenSource` — `kind` ("static"/"sidecar"),
+   `.bearer()`, `.headers()` (the header-scheme split from finding 1), `.sdk_kwarg()` (finding 2),
+   `.whoami()` cached **forever per instance** (not re-keyed per token value like
+   `DominoControlPlane.whoami()` — that class's cache is deliberately kept keyed on the live token
+   because ONE of its instances used to serve MANY viewers behind the old multi-viewer door,
+   ADR-0004/`test_whoami_follows_the_token.py`; a `TokenSource` is one person for its whole life
+   under decision #1, so caching forever is correct here, not stale). `build_token_source(host,
+   token, env)`: static when a token is configured, else sidecar, `None` with no host at all.
+   `gateway_bearer(gateway_api_key, token_source, env)`: an explicit `dgw_` key wins, else the SAME
+   `TokenSource` every other Domino call uses (§0's "one TokenSource ... feeds ... the LLM Gateway
+   listing"), else sidecar as a last resort. 11 tests, `tests/test_token_source.py`, including one
+   that pins the header-scheme split with a mock transport so a future edit can't silently drift a
+   static key back onto a bare `Bearer` header.
+3. **Every build site the plan named, rewired to the shared `Settings`/`TokenSource`, none of them
+   left as a second, independent "check the key, else sidecar" branch:**
+   - `gateway/factory.py`'s `build_gateway()`: gained optional `token_source`/`gateway_api_key`/
+     `base_url` params (all default to the old raw-env behavior, so `shim/app.py`'s and
+     `tools/probe.py`'s bare `build_gateway()` calls — and this module's own existing tests — are
+     completely unchanged); `orchestrator/app.py` is the only caller that passes the new params.
+     `resolve_mode()` also gained an optional `base_url` override, so a gateway configured ONLY
+     through Settings (no env vars at all — the laptop story) still resolves to `domino` mode
+     instead of reading as `fake` because the env var it would have derived from was never set.
+   - `orchestrator/app.py`: one process-wide bootstrap block (`_SAGE_HOME`, `_SETTINGS`,
+     `_TOKEN_SOURCE`) built once, near the top, before `build_gateway()` is called. `_domino_api_
+     token()` deleted outright (was: `DOMINO_API_KEY`-or-sidecar, used by nobody with a real key in
+     production since `DOMINO_API_KEY` was never Domino's own injected name — see decision below).
+     `_build_assets()`, `_build_resources()`, `_preview_llm()` all read `_SETTINGS`/`_TOKEN_SOURCE`
+     instead of raw env; the gateway-token duplication that existed independently in THREE places
+     (`factory.py`, `_build_resources`, `_preview_llm`, all doing the identical `GATEWAY_API_KEY`-
+     or-sidecar check) collapsed to one shared `gateway_bearer()` call in each.
+   - `_build_control_plane()`: repointed to read `_SETTINGS.domino_host`/`publish_environment_id`/
+     `publish_hardware_tier_id` (same values as before when only env vars are set — behavior-
+     identical for every existing deployment), but **deliberately kept sidecar-only**, not wired to
+     `_TOKEN_SOURCE`. Finding 1 is why: `DominoControlPlane._headers()` always sends `Authorization:
+     Bearer`, which finding 1 proved is REFUSED for a static key on `/api/projects/beta/projects` —
+     the exact endpoint project creation/listing needs. Wiring a static-key `TokenSource` in here
+     today would ship a laptop control-plane path that is silently broken the first time it's used.
+     `DominoControlPlane._headers()` needs the same static/sidecar header split `TokenSource` has
+     before this is safe — that's a Phase 3 prerequisite (the first phase that actually drives the
+     control plane from a laptop), named here so it isn't rediscovered the hard way.
+   - `assets/provider.py`'s `DominoAssetProvider`: gained an optional `sdk_credential` param
+     (a zero-arg callable returning `TokenSource.sdk_kwarg()`'s dict). `None` (default) keeps
+     TODAY'S exact `DatasetClient()` no-arg/sidecar-implicit behavior untouched; only a static
+     `TokenSource` causes `_sdk_dataset()` to pass `**sdk_credential()` (i.e. `api_key=...`)
+     instead. Zero behavior change for every existing App/workspace deployment.
+   - `resources/provider.py`'s `DominoResourceProvider`: same `sdk_credential` pattern, used by
+     `_query()`/`run_statement()`'s `DataSourceClient()` construction. **Also gained a
+     class-level** `_sdk_credential = None` **default** (not just set in `__init__`) — two existing
+     tests (`test_a_read_given_no_level_refuses_instead_of_sending_dots.py`,
+     `test_a_store_that_was_never_reached_does_not_report_its_plumbing.py`) build a narrow instance
+     via `DominoResourceProvider.__new__(...)` to exercise `_query`'s exception classification
+     without a real constructor call, and the first version of this change broke both — a class
+     attribute is what makes an object built that way still resolve `_sdk_credential` correctly.
+     Caught by running the affected files directly, not assumed safe from reading the diff.
+4. `Orchestrator.__init__` gained `token_source: TokenSource | None = None`. `_viewer_id()` (was a
+   bare module-level function reading `DOMINO_USER_ID`) became a method, `self._viewer_id()`, at all
+   5 call sites, reading `self._token_source.whoami().id` with a `try/except` fallback to `"me"` — an
+   identity-API hiccup must never break authoring a plan document. `_hydrate_untitled()` similarly:
+   the `DOMINO_USER_NAME`/`DOMINO_STARTING_USERNAME`/`DOMINO_USER_ID` fallbacks are GONE, replaced by
+   the same `whoami()`-with-fallback pattern. `GET /api/me` (`orchestrator/app.py`): same removal,
+   same `whoami()`-first pattern, falling back to `"me"`/`"You"` only when there's no `TokenSource`
+   at all or `whoami()` raises. **Test-fixture consequence, not a production bug:**
+   `tests/test_chat_turn.py`'s `_orch()` helper gained an optional `token_source` param and a
+   `_FakeTokenSource` stub (just `.whoami()`, no network); `test_default_slug_hydrates_the_default_
+   chip` (the one existing test that relied on the removed env fallbacks) now passes a
+   `_FakeTokenSource` instead of `monkeypatch.setenv`. 3 new tests added alongside it pinning
+   `_viewer_id()`'s three paths (a configured identity, none configured, `whoami()` raising).
+5. `GET/PUT /api/settings` + `POST /api/settings/test` (`orchestrator/app.py`), named
+   `get_connection_settings`/`save_connection_settings`/`test_connection_settings` internally (a
+   pre-existing, UNRELATED route at `/api/project/settings` already used the bare name
+   `get_settings` — `ruff`'s `F811` caught the collision before it shipped). `GET` answers
+   `Settings.redacted()`. `PUT` validates every key against `Settings`'s real field names (400 on
+   an unknown one), persists to `$SAGE_HOME/settings.json`, updates the module-level `_SETTINGS` so
+   `GET` reflects it — but **does NOT hot-swap** `_gateway`/`_control_plane`/the asset/resource
+   providers or the one `orchestrator`, all built once at import time; the response carries
+   `restartRequired: true` and says so, rather than pretending a live reconfigure happened. This is
+   a deliberate Phase 1 scope cut, not an oversight: hot-reconfiguring a running process's Domino
+   identity mid-session is real, unproven work Phase 2's per-project registry is a much more natural
+   place for (a registry that already builds an `Orchestrator` per project on demand can rebuild one
+   on a settings change too; today's code has exactly one, built once, at boot). `POST .../test`
+   builds a THROWAWAY `TokenSource` from whatever the request body carries (falling back to the
+   already-saved value per field), calls `.whoami()`, and reports `{ok, id, name}` or `{ok: false,
+   error}` — deliberately independent of `_TOKEN_SOURCE`, because it has to test what the FORM
+   holds, not what already booted. **Live-verified end-to-end, not just unit-tested**: called with
+   this sandbox's real `DOMINO_API_HOST`/`DOMINO_USER_API_KEY` through the actual FastAPI
+   `TestClient`, it returned `{"ok": true, "id": "671fd3aa49827159bd79ed53", "name":
+   "etan_lightstone"}` — the real user id/name Domino injects into this workspace's own env,
+   round-tripped correctly through the whole route, the header-scheme fix, and the real cluster. 8
+   tests, `tests/test_settings_api.py` (mocking `build_token_source` for the failure/success-shape
+   cases, not re-hitting the network in the suite).
+6. Minimal Connection UI: `api.js` gained `settings()`/`saveSettings()`/`testSettings()`; `shell.js`'s
+   `SettingsDrawer` gained a `ConnectionSettings` section (host, token, gateway URL, gateway key —
+   each secret an `antd.Input.Password` showing "Already set — leave blank to keep it" rather than
+   the value; Save and Test connection buttons; a result line). Environment/hardware-tier PICKERS
+   were deliberately not built — `ONE-APP-PLAN.md`'s own phase table puts those in **Phase 6**, not
+   here (Settings already has the two fields as plain strings for now). **Two real bugs found and
+   fixed while verifying this against the existing JS test suite, neither caught by writing the code
+   itself:**
+   - `test_a_problem_informs_and_never_blocks.py::test_nothing_goes_grey_because_a_problem_is_true`
+     scans the ENTIRE rendered `Shell` tree for anything `disabled` (ADR-0027: nothing gates on
+     missing state, blanket rule, not scoped to Problem-related controls specifically). My first cut
+     disabled "Test connection" with no host configured; removed the `disabled` prop entirely —
+     the click now always reaches the same request, and the server's refusal becomes the on-screen
+     result, matching the informer-not-blocker house style rather than greying a control out.
+   - `test_the_paranoid_pack_finds_no_leak.py`'s brand-neutrality scan caught four literal
+     `"Domino ..."` strings in `aria-label`/placeholder text I'd written (should have used
+     `SW.brand.text('{platformName} ...')` from the start, the way every other user-facing string in
+     this file does) — fixed. The SAME class of bug also existed in my own NEW backend code
+     (`test_connection_settings`'s `"no Domino host given"` error) and was caught by the identical
+     test on the Python side; fixed there too (`brand_text("no {platformName} host given")`).
+   Both are recorded because they are the second and third time IN THIS SESSION that a
+   correctness-adjacent guard test (F811 naming collision, a `__new__`-bypassed test fixture, a
+   brand-neutrality scanner) caught something a plain code review would not have — the tests here
+   are pulling real weight, not padding.
+7. `tools/app_visibility.py:105` (named in the plan as a build site) — deliberately left untouched.
+   It is a standalone, manually-run diagnostic script (`uv run python -m sage.tools.app_visibility`,
+   its own docstring: "Run it TWICE, inside the workspace of a project that has a published app"),
+   never imported by the live app, always run inside an actual Domino workspace with a real sidecar
+   by construction. There is no Settings-driven laptop story for a script whose whole premise is
+   "you are already inside a workspace" — threading `Settings`/`TokenSource` through it would be
+   speculative generality with no caller that needs it.
+
+**Full-suite verification, following this repo's own protocol (CLAUDE.md §5/§6) — not a single
+run trusted at face value:**
+
+- Collected count: **7810**, exactly 36 more than the last Phase-0-close baseline (`a627b0ec`,
+  7774) — all 36 are this session's own new tests (14 + 11 + 8 in the three new files, 3 more added
+  to `test_chat_turn.py`), reconciled by counting them, not assumed.
+- First full run: **110 failed** / 7690 passed / 10 skipped. Investigated rather than assumed —
+  diffed against the SAME 110 node ids run on the unmodified baseline tree (`git stash`): 100 of
+  110 failed identically on baseline too (the well-established publish/provision/control-plane/
+  `native_gateway_transport` dogfood-safety class this whole plan has hit every session). The other
+  **10 were real**, not baseline noise:
+  - 9 in `resources/provider.py`'s new `_sdk_credential` class attribute gap (finding 3's fix,
+    above) — `AttributeError: 'DominoResourceProvider' object has no attribute '_sdk_credential'`.
+  - 1 the brand-neutrality leak in `test_connection_settings`'s error string (finding 6's fix,
+    above).
+  Both fixed (see items 3 and 6). Re-ran the exact same 110 node ids on the fixed tree: down to the
+  expected baseline-shaped set.
+- **Final, clean full run on the fully-fixed tree**: `7810 collected == 101 failed + 7699 passed +
+  10 skipped`. 99 (not 101) was baseline's number from the Phase-0-close session; the 2-failure
+  wobble between runs of the SAME dogfood-safety/live-network class is consistent with what that
+  class already is — real network calls to a real, occasionally-quota-limited Domino API (one
+  baseline run in this same session hit `"Workspace quota exceeded for user across all projects"`
+  from a live `POST /v4/workspace/.../workspace` call), not a fixed deterministic count. Checked
+  the full failure list by name, not just the count: every one of the 101 is in the same publish/
+  provision/"container that cannot provision"/`native_gateway_transport` family already
+  characterized across this whole plan's history, except one
+  (`test_an_opening_conversation_shows_it.py::test_a_cross_project_open_keeps_its_marker_through_
+  the_scope_switch`) that does not reproduce alone (`1 passed in 6.99s`) — the CLAUDE.md "did not
+  reproduce" outcome for a file this diff never opened, not a regression to chase further. None of
+  this session's own 36 new tests are in the failure list, in any of the three runs.
+- `make lint`: clean, both before and after the two fixes above.
+
+**Not committed.** Same as every prior session on this branch: nothing here has been `git commit`ed.
+Confirm with the user before committing (CLAUDE.md: never commit unless explicitly asked) — there is
+real work to hand off either way, committed or not.
+
+## Next session should
+
+1. **Phase 1 is done and verified** per the section immediately above. Nothing from Phase 1's own
+   checklist is left, modulo the two deliberately-scoped-out items named there (environment/tier
+   pickers → Phase 6; `DominoControlPlane` static-key support → Phase 3 prerequisite).
+2. Confirm with the user whether to commit this session's changes (and the still-open Phase-0-era
+   items: `test_sage_domino_relay.py`, `test_feedback.py`'s weakened drift guard — neither blocks
+   Phase 2).
+3. Before Phase 2 (registry + per-project routing): re-read `ONE-APP-PLAN.md` §2.2-§2.3 with this
+   session's findings in mind. In particular, Phase 2 hoists `OpenCodeServer` out of `Orchestrator`
+   and will need to decide how `TokenSource`/`Settings` become per-registry rather than the single
+   process-wide globals they are today — `_SETTINGS`/`_TOKEN_SOURCE` in `orchestrator/app.py` are
+   written as module-level singletons on purpose, matching how `_gateway`/`_control_plane` already
+   work, but Phase 2's whole point is that a per-project construct replaces exactly this pattern.
+4. If a `DominoControlPlane` static-PAT path becomes needed for Phase 3, start from finding 1 above
+   (`_headers()` needs to send `X-Domino-Api-Key` for a static key, `Authorization: Bearer` for a
+   sidecar JWT) rather than re-discovering it live again.
+5. The `derive_gateway_url()` open risk (finding 3) is worth a real check the first time this code
+   runs inside an actual published App rather than a workspace — record whatever that App's
+   `DOMINO_API_HOST` actually looks like.
