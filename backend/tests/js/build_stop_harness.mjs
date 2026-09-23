@@ -76,6 +76,7 @@ const OPENING = {
   droppedApprove: [TOOL],
   droppedReadFailure: [TOOL],
   preframeStopRace: [],
+  successorHeaderRace: [TOOL],
   // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
   // behind it is the queue letting go. The wait for a first token starts again here, which is why
   // the pause is taken ON that frame — the `user` one Chat sends next, and the first tool call
@@ -103,6 +104,7 @@ const REST = {
   droppedApprove: [],
   droppedReadFailure: [],
   preframeStopRace: BUILT,
+  successorHeaderRace: BUILT,
   requeued: [USER.chat, ...ANSWERED],
   requeuedBuild: [TOOL, ...BUILT],
   requeuedApprove: [TOOL, ...BUILT],
@@ -153,6 +155,10 @@ const intervalCallbacks = [];
 let buildStateReads = 0;
 let answerRaceState = () => {};
 const raceStateGate = new Promise((resolve) => { answerRaceState = resolve; });
+let markRequestStarted = () => {};
+const requestStarted = new Promise((resolve) => { markRequestStarted = resolve; });
+let answerResponse = () => {};
+const responseGate = new Promise((resolve) => { answerResponse = resolve; });
 
 // Which send each opened stream is answering. Only the two-send modes ever pass 1.
 let posts = 0;
@@ -183,7 +189,12 @@ const sandbox = {
       if (!first && !SECOND) throw new Error(`mode ${mode} opened a second stream`);
       const opening = first ? OPENING : SECOND.opening;
       const rest = first ? REST : SECOND.rest;
-      const responseTurnId = first ? 'turn_abc' : 'turn_def';
+      const responseTurnId = mode === 'successorHeaderRace'
+        ? 'turn_b' : (first ? 'turn_abc' : 'turn_def');
+      if (mode === 'successorHeaderRace') {
+        markRequestStarted();
+        await responseGate;
+      }
       let sent = 0;
       return { ok: true, headers: { get: (name) => (
         String(name).toLowerCase() === 'x-sage-turn-id' ? responseTurnId : 'text/event-stream'
@@ -237,6 +248,8 @@ SW.store.set({
   scope: { id: 'p', name: 'P' },
   activeApp: { id: 'app_1', name: 'Usage Pulse' },
   apps: [{ id: 'app_1', name: 'Usage Pulse' }],
+  runningTurn: mode === 'successorHeaderRace'
+    ? { kind: 'build', conversation: 't1', app: 'app_1', turnId: 'turn_a' } : null,
 });
 
 // Which of the three sends each mode drives. Two of them are a build turn and one is a chat turn,
@@ -248,6 +261,7 @@ const SEND = {
   droppedBuild: 'build', droppedApprove: 'approve',
   droppedReadFailure: 'build',
   preframeStopRace: 'build',
+  successorHeaderRace: 'build',
   secondInLine: 'chat', queuedChat: 'chat', queuedApprove: 'approve',
 }[mode];
 const kind = SEND === 'chat' ? 'chat' : 'build';
@@ -258,6 +272,15 @@ const turn = SEND === 'approve' ? SW.store.approveBuild('')
 // before its first `await`, so which of the two got there first is decided here and not by the
 // scheduler.
 const second = SECOND ? SW.store.sendMessage('and how many columns?') : null;
+
+if (mode === 'successorHeaderRace') {
+  // B was sent while A owned the claim, so B could not name itself at send time. A ends before
+  // B's response arrives. B has no pending/running queue frame; its response header must survive
+  // in B's request and name the fallback claim without ever renaming A.
+  await requestStarted;
+  SW.store.set({ runningTurn: null });
+  answerResponse();
+}
 
 // Bounded, so that a send which never opens a stream at all says so rather than hanging: the
 // timeout is an error about the harness, not a verdict about the store.
@@ -315,6 +338,19 @@ if (mode === 'preframeStopRace') {
   console.log(JSON.stringify({
     buildStateReads,
     buildStateReadsAtStop,
+    stopPosts: stopBodies.length,
+    requestedTurnId: stopBodies[0] && stopBodies[0].turnId,
+  }));
+  process.exit(0);
+}
+
+if (mode === 'successorHeaderRace') {
+  const stop = SW.store.stopBuild();
+  await stop;
+  letGo();
+  await turn;
+  console.log(JSON.stringify({
+    turnId: midTurn.turnId,
     stopPosts: stopBodies.length,
     requestedTurnId: stopBodies[0] && stopBodies[0].turnId,
   }));

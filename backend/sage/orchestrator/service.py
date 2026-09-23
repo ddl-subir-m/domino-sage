@@ -707,10 +707,48 @@ class _TurnQueue:
         # not a gap: publish, reset and the other raw-lock callers never queue, so a busy Project
         # with no running turn is exactly what "busy, and not a turn you can Stop" looks like.
         self._running: _TurnTicket | None = None
+        # Routes mint a ticket before StreamingResponse sends its headers. The generator that
+        # admits it is lazy, so keep that process-owned identity here until admission. This makes
+        # an exact Stop between headers and the first body byte atomic with admission. The bound
+        # Each reservation is one-shot. Admission removes it whether it was cancelled or allowed.
+        self._reserved: dict[str, dict] = {}
+
+    def reserve(self, ticket_id: str, *, kind: str, conversation: str, app: str) -> None:
+        """Register one route-minted response ticket before its lazy stream can be admitted."""
+        with self._cond:
+            self._reserved[ticket_id] = {
+                "kind": kind, "conversation": conversation, "app": app,
+                "cancelled": False,
+            }
+
+    def cancel_reserved(self, ticket_id: str, *, kind: str, conversation: str,
+                        app: str) -> bool:
+        """Cancel a known response ticket once. Unknown or stale identities stay harmless."""
+        with self._cond:
+            row = self._reserved.get(ticket_id)
+            if row is None or row["cancelled"]:
+                return False
+            if kind and row["kind"] != kind:
+                return False
+            if conversation and row["conversation"] != conversation:
+                return False
+            if app and row["app"] and row["app"] != app:
+                return False
+            row["cancelled"] = True
+            return True
+
+    def discard_reservation(self, ticket_id: str) -> None:
+        """Forget a response ticket whose stream ended or disconnected before admission."""
+        with self._cond:
+            self._reserved.pop(ticket_id, None)
 
     def admit(self, ticket: _TurnTicket) -> bool:
         """Join the queue, taking the lock straight away if nothing else is asking for it."""
         with self._cond:
+            reserved = self._reserved.pop(ticket.id, None)
+            if reserved is not None and reserved["cancelled"]:
+                ticket.outcome = "cancelled"
+                return False
             self._waiting.append(ticket)
             return self._take(ticket)
 
@@ -5829,6 +5867,16 @@ class Orchestrator:
         queue would throw away questions somebody still wants answered, and a Cancel that
         interrupted the running turn would throw away work in progress."""
         return self._turns.cancel(ticket_id)
+
+    def reserve_stream_turn(self, turn_id: str, *, kind: str, conversation: str = "",
+                            app: bool = False) -> None:
+        """Make a route-minted ticket stoppable before its lazy response body starts."""
+        self._turns.reserve(turn_id, kind=kind, conversation=conversation,
+                            app=self._turn_app_id() if app else "")
+
+    def release_stream_turn(self, turn_id: str) -> None:
+        """Release a response reservation after its stream closes or its client disconnects."""
+        self._turns.discard_reservation(turn_id)
 
     def _release_turn(self) -> None:
         """Hand the turn lock back, waking whatever queued behind it (#79).
@@ -15952,6 +16000,9 @@ class Orchestrator:
             ticket.granted = True
             self._begin_model_record()
             return
+        if ticket.outcome == "cancelled":
+            yield {"type": "done", "ok": False, "decision": "cancelled"}
+            return
         ticket.snapshot = self._turn_snapshot(conversation, app=app)
         try:
             yield {"type": "pending", "ticket": ticket.id, "prompt": prompt,
@@ -19593,10 +19644,18 @@ class Orchestrator:
         always sent. A raw-lock holder has no ticket, so an aimed Stop never matches one: you cannot
         Stop a publish, and that is the answer rather than an omission.
 
-        Returns whether it actually interrupted anything, so the route stops answering
+        A route reserves its exact `turn_id` before its lazy StreamingResponse body starts. An
+        exact Stop in that short gap marks only that process-minted ticket; admission consumes the
+        mark and returns a cancelled terminal event without starting model work.
+
+        Returns whether it actually interrupted or cancelled anything, so the route stops answering
         `{"stopped": true}` to a Stop it declined to fire — the same class of lie as the button
         this fixes.
         """
+        running = self._turns.running()
+        if turn_id and (running is None or running.id != turn_id):
+            return self._turns.cancel_reserved(
+                turn_id, kind=kind, conversation=conversation, app=app)
         if not self.turn_busy():
             return False
         if kind or conversation or app or turn_id:

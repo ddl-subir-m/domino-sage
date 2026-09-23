@@ -21,6 +21,7 @@ the server can say WHICH turn is running, so a control can refuse to fire at one
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -149,6 +150,15 @@ def test_each_stream_header_is_the_exact_ticket_passed_to_the_service(
     class Streams:
         def __init__(self) -> None:
             self.turn_ids: dict[str, str] = {}
+            self.reservations: dict[str, dict] = {}
+            self.released: list[str] = []
+
+        def reserve_stream_turn(self, turn_id: str, **kwargs) -> None:
+            self.reservations[turn_id] = kwargs
+
+        def release_stream_turn(self, turn_id: str) -> None:
+            self.reservations.pop(turn_id, None)
+            self.released.append(turn_id)
 
         def _stream(self, name: str, kwargs: dict):
             self.turn_ids[name] = kwargs["turn_id"]
@@ -174,7 +184,68 @@ def test_each_stream_header_is_the_exact_ticket_passed_to_the_service(
     turn_id = response.headers["X-Sage-Turn-Id"]
     assert turn_id.startswith("turn_")
     assert streams.turn_ids[method] == turn_id
+    assert turn_id not in streams.reservations
+    assert streams.released == [turn_id]
     assert '"type": "running"' not in response.text
+
+
+def test_stop_between_response_headers_and_body_cancels_before_model_work(monkeypatch, tmp_path: Path):
+    """StreamingResponse publishes headers before it starts its lazy generator. The exact ticket
+    must already be stoppable in that gap, and admission must consume the Stop once."""
+    from starlette.requests import Request
+
+    from sage.orchestrator import app as appmod
+
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="must not run")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+
+    response = appmod.build_stream({"prompt": "build it", "conversation": tid})
+    turn_id = response.headers["X-Sage-Turn-Id"]
+
+    async def stop_then_read() -> tuple[dict, str]:
+        payload = json.dumps({"kind": "build", "conversation": tid,
+                              "app": orch.project().workspace.app_id,
+                              "turnId": turn_id}).encode()
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if sent:
+                return {"type": "http.disconnect"}
+            sent = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+
+        request = Request({"type": "http", "method": "POST",
+                           "path": "/api/project/build/stop",
+                           "headers": [(b"content-type", b"application/json")]}, receive)
+        stopped = await appmod.stop_build(request)
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return json.loads(stopped.body), "".join(chunks)
+
+    stopped, body = asyncio.run(stop_then_read())
+
+    assert stopped == {"stopped": True, "turnId": turn_id}
+    assert [json.loads(line.removeprefix("data: ")) for line in body.splitlines()
+            if line.startswith("data: ")] == [
+                {"type": "done", "ok": False, "decision": "cancelled"},
+            ]
+    assert oc.prompts == []
+    assert orch.stop_build(turn_id=turn_id) is False
+
+
+def test_an_unknown_exact_ticket_cannot_poison_a_later_turn(tmp_path: Path):
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="ran")])
+    orch = _orch(tmp_path, oc)
+
+    assert orch.stop_build(turn_id="turn_future") is False
+    events = list(orch.build_stream("build it", turn_id="turn_future"))
+
+    assert oc.prompts
+    assert events[-1]["type"] == "done"
 
 
 # ---- the running turn has a name ----------------------------------------------------------------

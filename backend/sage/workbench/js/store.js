@@ -3890,12 +3890,17 @@ window.SW = window.SW || {};
   }
 
   // The route allocates the backend ticket before it opens the stream and returns that exact id in
-  // a response header. Attach it only to the provisional claim made by THIS request. A second send
-  // can already be queued behind another live turn; its header must not rename that active turn.
+  // a response header. Keep it with THIS request, and attach it only when this request owns the
+  // visible claim. A second send can already sit behind another live turn; its header must not
+  // rename that active turn, but it still needs the id if the active turn ends before its response.
+  function responseTurnId(turnId) {
+    return typeof turnId === 'string' && /^turn_[A-Za-z0-9_-]+$/.test(turnId) ? turnId : '';
+  }
+
   function bindRunningTurn(claim, turnId) {
-    if (!claim || state.runningTurn !== claim || claim.turnId
-        || typeof turnId !== 'string' || !/^turn_[A-Za-z0-9_-]+$/.test(turnId)) return false;
-    claim.turnId = turnId;
+    const exact = responseTurnId(turnId);
+    if (!claim || state.runningTurn !== claim || claim.turnId || !exact) return false;
+    claim.turnId = exact;
     return true;
   }
 
@@ -7278,6 +7283,7 @@ window.SW = window.SW || {};
       // This tab's own name for the turn. Held so the `finally` can take back exactly what it put
       // there and nothing else.
       let claim = null;
+      let exactTurnId = '';
       // Whatever card this turn is the answer to has now been answered (#209). Every button on
       // every one of them ends here, so this is where they stop being clickable — the reload each
       // of those callers does just above is what used to retire them, and it cannot any more.
@@ -7310,8 +7316,13 @@ window.SW = window.SW || {};
           const payload = await res.json().catch(() => ({}));
           throw new Error(payload.error || payload.message || res.statusText);
         }
-        if (bindRunningTurn(claim, res.headers && res.headers.get
-          && res.headers.get('X-Sage-Turn-Id'))) notify();
+        exactTurnId = responseTurnId(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Id'));
+        if (bindRunningTurn(claim, exactTurnId)) notify();
+        else if (!claim && exactTurnId && !state.runningTurn) {
+          claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
+          notify();
+        }
         streamAccepted = true;
         let stopped = false;
         let terminalSeen = false;
@@ -7357,7 +7368,7 @@ window.SW = window.SW || {};
           // lock. Current backends sent the exact response header; this fallback keeps an older
           // stream readable while it drains during an upgrade.
           if (!unran && !claim) {
-            claim = claimRunningTurn('build', turnThread, turnApp);
+            claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
           }
           // Once the rail has moved on, these events describe an app that is no longer on screen.
           if (movedOn()) return;
@@ -7742,6 +7753,7 @@ window.SW = window.SW || {};
       // This tab's own name for the turn, so the Stop bar has something to match (#126). Held so
       // the `finally` takes back exactly what it put there. See claimRunningTurn.
       let claim = null;
+      let exactTurnId = '';
       // The same sentence the server writes for this turn, so the optimistic row does not change
       // wording the moment the transcript reloads underneath it.
       appendBuildRow({ type: 'user', text: buildAgain ? BUILD_AGAIN_TEXT : 'Approved the plan.' });
@@ -7769,8 +7781,13 @@ window.SW = window.SW || {};
           const body = await res.json().catch(() => ({}));
           throw new Error(body.error || body.message || res.statusText);
         }
-        if (bindRunningTurn(claim, res.headers && res.headers.get
-          && res.headers.get('X-Sage-Turn-Id'))) notify();
+        exactTurnId = responseTurnId(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Id'));
+        if (bindRunningTurn(claim, exactTurnId)) notify();
+        else if (!claim && exactTurnId && !state.runningTurn) {
+          claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
+          notify();
+        }
         streamAccepted = true;
         let stopped = false;
         let terminalSeen = false;
@@ -7808,7 +7825,9 @@ window.SW = window.SW || {};
           // Past the queue and past every way this turn ends without running: it holds the lock.
           // Current backends sent the exact response header; keep the fallback for an older stream
           // draining during an upgrade.
-          if (!unran && !claim) claim = claimRunningTurn('build', turnThread, turnApp);
+          if (!unran && !claim) {
+            claim = claimRunningTurn('build', turnThread, turnApp, exactTurnId);
+          }
           if (movedOn()) return;
           applyBuildEvent(ev);
           notify();
@@ -8239,6 +8258,7 @@ window.SW = window.SW || {};
       // And this tab's own name for the turn, so Chat's Stop bar has something to match while this
       // send holds the only stream there is. See claimRunningTurn.
       let claim = null;
+      let exactTurnId = '';
       liveChatTurns += 1;
       state.typing = 'Thinking…';
       state.chatRunning = true;
@@ -8319,8 +8339,13 @@ window.SW = window.SW || {};
           const payload = await res.json().catch(() => ({}));
           throw new Error(payload.error || payload.message || res.statusText);
         }
-        if (bindRunningTurn(claim, res.headers && res.headers.get
-          && res.headers.get('X-Sage-Turn-Id'))) notify();
+        exactTurnId = responseTurnId(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Id'));
+        if (bindRunningTurn(claim, exactTurnId)) notify();
+        else if (!claim && exactTurnId && !state.runningTurn) {
+          claim = claimRunningTurn('chat', turnThread, '', exactTurnId);
+          notify();
+        }
         await readSSE(res, async (ev) => {
           if (!ev) return;
           if (ev.type === 'done') {
@@ -8371,7 +8396,9 @@ window.SW = window.SW || {};
           // lock. Before the `mine()` check below, because a turn whose reader has walked away is
           // still the turn holding the lock. The fallback keeps an older stream readable during an
           // upgrade; current backends sent the exact response header.
-          if (!turnEnded && !claim) claim = claimRunningTurn('chat', turnThread, '');
+          if (!turnEnded && !claim) {
+            claim = claimRunningTurn('chat', turnThread, '', exactTurnId);
+          }
           // Moved on. The turn is still running and the server is still writing its transcript, so
           // nothing is lost — reopening the conversation replays it. What is not wanted is this
           // answer appearing under a different question.

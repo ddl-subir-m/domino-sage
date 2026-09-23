@@ -41,6 +41,7 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.staticfiles import StaticFiles
 
@@ -3371,13 +3372,16 @@ def build_stream(body: dict) -> StreamingResponse:
             return refuse_with("unknown conversation")
 
     turn_id = new_id("turn")
+    orchestrator.reserve_stream_turn(turn_id, kind="build",
+                                     conversation=str(conversation or ""), app=True)
     return StreamingResponse(
         _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,
                                             skip_reset_gate, skip_incoming_gate, skip_table_gate,
                                             skip_source_gate, chosen_source, skip_dataset_gate,
                                             dismissed_dataset, dataset_pick, turn_id=turn_id),
                   "build_stream"),
-        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id})
+        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_id))
 
 
 # The Build rail's list, as the Chat rail's is /api/threads. Two lists, one per mode: a Project
@@ -3815,13 +3819,15 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     dropped = str((body or {}).get("datasetDismissed") or "")
     invq = bool((body or {}).get("investigationAnswered"))
     turn_id = new_id("turn")
+    orchestrator.reserve_stream_turn(turn_id, kind="chat", conversation=thread_id)
     return StreamingResponse(
         _turn_sse(orchestrator.chat_stream(
             thread_id, prompt, already_asked=asked, skip_table_gate=tbl,
             skip_dataset_gate=dset, dismissed_dataset=dropped,
             skip_investigation_gate=invq,
             other_lane_grant=grant, turn_id=turn_id), "chat_stream"),
-        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id})
+        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_id))
 
 
 # The Chat half of the candidate click (#188). Its own route rather than the Binding one above,
@@ -3896,10 +3902,12 @@ def decline_handoff(thread_id: str) -> StreamingResponse:
     """`Not now` on a Build offer. Streams, because declining an offer that was made INSTEAD of an
     answer has to produce the answer — see `Orchestrator.decline_handoff_stream`."""
     turn_id = new_id("turn")
+    orchestrator.reserve_stream_turn(turn_id, kind="chat", conversation=thread_id)
     return StreamingResponse(
         _turn_sse(orchestrator.decline_handoff_stream(thread_id, turn_id=turn_id),
                   "decline_handoff"),
-        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id})
+        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_id))
 
 
 @control_app.post("/api/threads/{thread_id}/recall/clear")
@@ -3999,11 +4007,14 @@ def build_approve(body: dict) -> StreamingResponse:
     build_again = bool((body or {}).get("build_again"))
 
     turn_id = new_id("turn")
+    orchestrator.reserve_stream_turn(turn_id, kind="build",
+                                     conversation=str(conversation or ""), app=True)
     return StreamingResponse(
         _turn_sse(orchestrator.approve_stream(answers, plan_edits, conversation, plan_id,
                                               build_again=build_again, turn_id=turn_id),
                   "approve_stream"),
-        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id})
+        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_id))
 
 
 @control_app.get("/api/project/settings")
@@ -4255,7 +4266,8 @@ async def stop_build(request: Request) -> JSONResponse:
                                       app=str(body.get("app") or ""),
                                       turn_id=str(body.get("turnId") or ""))
     return JSONResponse(content={"stopped": stopped,
-                                 "turnId": str(running.get("turnId") or "") if stopped else ""})
+                                 "turnId": str(body.get("turnId") or running.get("turnId") or "")
+                                           if stopped else ""})
 
 
 @control_app.get("/api/project/build/state")

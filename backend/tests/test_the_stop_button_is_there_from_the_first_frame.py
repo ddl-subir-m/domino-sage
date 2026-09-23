@@ -131,6 +131,13 @@ def test_a_preframe_stop_does_not_adopt_a_same_scope_successor_from_state():
         "stopPosts": 1, "requestedTurnId": "turn_abc"}
 
 
+def test_a_successor_keeps_its_header_identity_until_it_can_own_the_claim():
+    """B is sent while A owns the claim. A ends before B's response arrives, and B receives no
+    queue frames. Its saved response ticket must still be the exact ticket Stop sends."""
+    assert _run("successorHeaderRace") == {
+        "turnId": "turn_b", "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])
 def test_stop_is_there_before_the_turn_has_anything_to_show_for_itself(mode: str):
     """The window #126 left behind, and the whole of #371.
