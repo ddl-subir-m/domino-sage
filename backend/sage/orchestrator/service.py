@@ -16990,7 +16990,8 @@ class Orchestrator:
         )
         IMPLEMENT_NUDGE = (
             "You've explored and planned but haven't written any code yet. Now IMPLEMENT the "
-            "request: edit the project files (start with src/App.tsx) so the app actually builds "
+            f"request: edit the project files (start with {project.app_for_turn().stack.entry_file}) "
+            "so the app actually builds "
             "what was asked. Make the code changes now."
         )
         RUNTIME_FIX_NUDGE = (
@@ -17857,6 +17858,14 @@ class Orchestrator:
                 # so a real edit is never misread as "planned but wrote no code". Compare the tree hash
                 # to this turn's start (not the build-start baseline) so only edits made THIS turn count.
                 wrote_code = agent_wrote()
+                if turn_span is not None:
+                    # The existing per-dispatch span records the bounded recovery's outcome,
+                    # without copying the request or attached data into diagnostic fields.
+                    turn_span.fields.update(stack=project.app_for_turn().stack.name,
+                                            no_edit_attempt=nudges, wrote_code=wrote_code)
+                    if report.ok and not wrote_code:
+                        turn_span.fields.update(retry_reason="no_edit",
+                                                retry_exhausted=nudges >= MAX_NUDGES)
                 # A gated turn that wrote code broke the guarantee it exists to provide: the user was
                 # promised a plan to approve and got an unreviewed build instead. Don't fall through
                 # to the ordinary build path (that's what silently swallowed the gate before the shim
