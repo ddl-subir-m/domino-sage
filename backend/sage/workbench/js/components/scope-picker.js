@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState } = React;
-  const { Input, Button, Tooltip } = antd;
+  const { Popover, Input, Button, Tooltip } = antd;
   const { PlusOutlined, DownOutlined, SearchOutlined } = icons;
 
   // Only the project this builder is bound to can be described from here — the others are a name
