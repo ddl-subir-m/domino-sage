@@ -1,4 +1,6 @@
 """OpenCode driver: event mapping + feedback-loop control flow (Step 5 wiring / Seam 3)."""
+import os
+
 import httpx
 
 from sage.driver.opencode import (
@@ -442,6 +444,30 @@ def test_closing_the_stream_stops_the_reader_because_event_never_ends(monkeypatc
     assert closed == [True]   # and the connection went with it
 
 
+def test_a_timeout_reports_what_opencode_actually_said(monkeypatch, tmp_path):
+    """A server that never prints "listening on" used to time out in total silence — nothing it
+    said reached the caller unless `SAGE_OPENCODE_LOG` happened to be set. Whatever it DID print
+    should be in the exception, not just "did not report a URL"."""
+    import io
+
+    import pytest
+
+    from sage.driver import server as drv
+
+    class _Proc:
+        pid = 1
+        stdout = io.StringIO("Error: Cannot find module 'opencode-ai'\n")
+
+        def poll(self):
+            return 1  # already exited by the time start() gives up
+
+    monkeypatch.setattr(drv.subprocess, "Popen", lambda cmd, **kw: _Proc())
+    with pytest.raises(TimeoutError) as exc:
+        drv.OpenCodeServer(cwd=tmp_path).start(ready_timeout_s=0.2)
+    assert "Cannot find module 'opencode-ai'" in str(exc.value)
+    assert "code 1" in str(exc.value)
+
+
 def _spawn_capturing_env(monkeypatch, cwd):
     """Start an OpenCodeServer against a fake `opencode serve` and hand back the env it spawned with."""
     import io
@@ -542,6 +568,32 @@ def test_the_source_config_is_the_fallback_when_nothing_was_installed(monkeypatc
     env = _spawn_capturing_env(monkeypatch, cwd)
 
     assert env["OPENCODE_CONFIG"] == str(cwd / "opencode.json")
+
+
+def test_a_locally_pinned_opencode_is_found_regardless_of_cwd(monkeypatch, tmp_path):
+    """`npx` resolves a local install by walking up from ITS OWN cwd, and that cwd is
+    `~/.config/sage-opencode` — never the repo — so a laptop's `npm ci` install (no global one;
+    only the Domino Environment image installs `opencode-ai` globally) would otherwise be
+    invisible to every server spawned this way, however correctly it was installed."""
+    from sage.driver import server as drv
+
+    fake_bin = tmp_path / "repo" / "node_modules" / ".bin"
+    fake_bin.mkdir(parents=True)
+    monkeypatch.setattr(drv, "_REPO_BIN", fake_bin)
+
+    env = _spawn_capturing_env(monkeypatch, tmp_path / "sage-opencode")  # cwd outside the repo
+
+    assert env["PATH"].split(os.pathsep)[0] == str(fake_bin)
+
+
+def test_no_local_install_leaves_path_alone(monkeypatch, tmp_path):
+    from sage.driver import server as drv
+
+    monkeypatch.setattr(drv, "_REPO_BIN", tmp_path / "no" / "such" / "dir")
+
+    env = _spawn_capturing_env(monkeypatch, tmp_path / "sage-opencode")
+
+    assert env["PATH"] == os.environ.get("PATH", "")
 
 
 class _StubbornProc:

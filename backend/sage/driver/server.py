@@ -6,6 +6,7 @@ Mirrors UvicornSupervisor's spawn/discover/stop shape.
 """
 from __future__ import annotations
 
+import collections
 import os
 import re
 import signal
@@ -19,6 +20,9 @@ _LISTEN_RE = re.compile(r"listening on\s+(https?://[^\s]+)")
 # Where `_install_opencode_config` puts the pack-voiced config. Kept in sync with app.py by this
 # comment and the test that reads both.
 _VOICED_CONFIG = Path(os.path.expanduser("~/.config/opencode/opencode.json"))
+
+# `sage/driver/server.py` -> sage -> backend -> repo root.
+_REPO_BIN = Path(__file__).resolve().parents[3] / "node_modules" / ".bin"
 
 
 def parse_server_url(line: str) -> str | None:
@@ -34,6 +38,11 @@ class OpenCodeServer:
         self._proc: subprocess.Popen | None = None
         self._url: str | None = None
         self._ready = threading.Event()
+        # Kept regardless of `_log_path`: a server that never printed "listening on" used to time
+        # out in total silence, because the only place its output went was an optional log file
+        # nobody enables by default. A tail is enough to tell "opencode isn't installed" from "the
+        # wrong Node version" from "it started fine but slowly" without reproducing by hand.
+        self._tail: collections.deque[str] = collections.deque(maxlen=40)
 
     def _env(self) -> dict:
         """The environment `opencode` runs in. Shared with `cli()` below, which is the point: a
@@ -45,12 +54,24 @@ class OpenCodeServer:
         checked-in source names the assistant and the nouns as `{assistantName}` / `{dataset}`
         tokens, deliberately left unresolved so a pack never writes its words into a repo file, and
         handing OpenCode that file makes it read the braces out loud to the user.
+
+        `PATH` gets the repo's own `node_modules/.bin` prepended, when it exists. `npx` resolves a
+        LOCAL install by walking up from the CHILD PROCESS'S cwd — and that cwd is deliberately
+        `~/.config/sage-opencode` (`_opencode_project_dir`'s docstring), never the repo, so a laptop
+        running the pinned `npm ci` install (no global install — the Domino Environment's Dockerfile
+        is the only place `opencode-ai` is `npm install -g`'d) has nothing on that walk to find, and
+        `npx` falls through to fetching from the registry — which hangs (no TTY to answer its
+        prompt) for exactly as long as `start()`'s timeout, printing nothing. Putting the pinned
+        binary on `PATH` directly is what the global install already does for the App; this makes a
+        laptop's local one behave the same way regardless of cwd, with no cwd/env detection needed.
         """
         env = dict(os.environ)
         for cfg in (_VOICED_CONFIG, self._cwd / "opencode.json"):
             if cfg.exists():
                 env["OPENCODE_CONFIG"] = str(cfg)
                 break
+        if _REPO_BIN.is_dir():
+            env["PATH"] = f"{_REPO_BIN}{os.pathsep}{env.get('PATH', '')}"
         return env
 
     def cli(self, args: list[str], cwd: str | None = None, timeout_s: float = 30.0) -> str:
@@ -121,8 +142,15 @@ class OpenCodeServer:
         )
         threading.Thread(target=self._read, args=(self._proc,), daemon=True).start()
         if not self._ready.wait(timeout=ready_timeout_s):
+            exit_code = self._proc.poll()
             self.stop()
-            raise TimeoutError("opencode serve did not report a URL")
+            detail = "\n".join(self._tail) or "(no output at all)"
+            status = (f"it had already exited with code {exit_code}" if exit_code is not None
+                      else "it was still running with no url printed")
+            raise TimeoutError(
+                f"opencode serve did not report a URL within {ready_timeout_s:.0f}s — {status}. "
+                f"Last output:\n{detail}"
+            )
         assert self._url is not None
         return self._url
 
@@ -138,6 +166,7 @@ class OpenCodeServer:
             if logf:
                 logf.write(line)
                 logf.flush()
+            self._tail.append(line.rstrip("\n"))
             if self._url is None and (u := parse_server_url(line)):
                 self._url = u
                 self._ready.set()
