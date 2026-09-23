@@ -1071,6 +1071,119 @@ def test_the_sentence_invents_nothing_when_the_slots_hold_two_models(tmp_path: P
     assert "assign a different model to the build slot" in said
 
 
+# --- A REFUSED edit is not a write (#508) --------------------------------------------------------
+# `made_edits` used to trip on any part named `edit`/`write` whatever its status, and it never goes
+# back down inside a turn. So one refused edit made `agent_wrote()` true for the rest of the turn,
+# and six decisions read that — the shell cap above among them, which is keyed on `not
+# agent_wrote()` and so was disarmed by precisely the turn it exists for.
+
+
+class _EditOnce(FakeOpenCode):
+    """One turn, one `edit` part carrying the status the test names, and nothing else.
+
+    `heredoc` writes a file and reports NO tool for it — the `printf > file` hole that the
+    working-tree half of `agent_wrote()` exists for. `Turn.writes` cannot stand in for it: the fake
+    emits a COMPLETED `write` part beside every one of those, which is the other half, and a test
+    built on it would pass whichever half was doing the work.
+    """
+
+    def __init__(self, workspace: Path, *, status: str, heredoc: bool = False) -> None:
+        super().__init__(workspace, [Turn(text="that's done")])
+        self.status = status
+        self.heredoc = heredoc
+
+    def send_prompt(self, session_id: str, *a, **k) -> None:
+        super().send_prompt(session_id, *a, **k)
+        if self.heredoc:
+            path = self._session_dir(session_id) / "src" / "Chart.tsx"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("export const Chart = () => null\n")
+        # Ahead of the turn's text, where a real one sits: the loop walks parts in order and the
+        # text part is what ends the turn.
+        self._by_session[session_id][-1]["content"].insert(0, {
+            "id": "edit-1", "type": "tool", "tool": "edit",
+            "state": {"status": self.status, "input": {"filePath": "src/App.tsx"},
+                      "error": "oldString not found in file"}})
+
+
+def test_a_turn_whose_only_edit_was_refused_did_not_write(tmp_path: Path, monkeypatch):
+    """No nudges, so the turn's verdict is the one thing under test rather than the retry loop."""
+    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
+    oc = _EditOnce(tmp_path / "mnt" / "code", status="error")
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    done = next(e for e in events if e.get("type") == "done")
+    assert done["ok"] is False
+    assert "didn't change any files" in done["decision"] \
+        or "couldn't get past planning" in done["decision"]
+    # And nothing told the person their app had changed, because it had not.
+    assert [e for e in events if e.get("type") == "app-change"] == []
+
+
+def test_a_turn_whose_edit_landed_still_wrote(tmp_path: Path, monkeypatch):
+    """The other side of the same key, and the one that stops the fix being `made_edits = False`.
+
+    Nothing reaches the disk here, so the tree hash cannot answer this one — only the tool part can.
+    """
+    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
+    oc = _EditOnce(tmp_path / "mnt" / "code", status="completed")
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    assert next(e for e in events if e.get("type") == "done")["ok"] is True
+
+
+def test_the_working_tree_answers_for_a_write_no_tool_reported(tmp_path: Path, monkeypatch):
+    """The refused edit says no and the disk says yes, so `agent_wrote()` must still say yes."""
+    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
+    oc = _EditOnce(tmp_path / "mnt" / "code", status="error", heredoc=True)
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    assert next(e for e in events if e.get("type") == "done")["ok"] is True
+
+
+class RefusedThenCountingOpenCode(CountingOpenCode):
+    """The measured 2026-09-22 shape: a write refused early, then nothing but different shell calls.
+
+    One refusal is all it takes — `made_edits` never resets — so the plant is deliberately a single
+    part at the front rather than a stream of them.
+    """
+
+    def __init__(self, workspace: Path, turns: list[Turn] | None = None) -> None:
+        super().__init__(workspace, turns)
+        self.refused = False
+
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
+        if self._next > 0 and not self.refused:
+            self.refused = True
+            self._by_session.setdefault(session_id, []).append(
+                {"id": "refused-m", "type": "assistant",
+                 "content": [{"id": "refused-1", "type": "tool", "tool": "edit",
+                              "state": {"status": "error",
+                                        "input": {"filePath": "src/App.tsx"},
+                                        "error": "oldString not found in file"}}]})
+        return super().messages(session_id, limit=limit)
+
+
+def test_the_shell_cap_fires_on_a_turn_whose_write_was_refused(tmp_path: Path):
+    """The whole point of #508. Before the status check this turn could not be stopped at all: the
+    fake asserts on its own poll count rather than running to a wall clock, so the red is the
+    counting session never being capped."""
+    oc = RefusedThenCountingOpenCode(tmp_path / "mnt" / "code", [Turn(text="looking")])
+    orch = _orch(tmp_path, oc, "BUILD")
+
+    events = list(orch.build_stream("chart them"))
+
+    assert len(_shell_cap_fired(events)) == 1
+    assert next(e for e in events if e.get("type") == "done")["decision"] == "looped"
+    assert oc.interrupted == 1
+
+
 # --- What a refused patch looked like (#494) -----------------------------------------------------
 # The evidence that was missing when this issue was filed: the refusal text is the tool's REPLY, and
 # nothing recorded the REQUEST, so a malformed envelope, an answer cut off at the output cap and
