@@ -89,6 +89,8 @@ const OPENING = {
   lateRunningHeader: [{ type: 'done', ok: true, decision: 'answered' }],
   legacyIdlessLateHeader: [{ type: 'done', ok: true, decision: 'answered' }],
   restartEpochRace: [{ type: 'done', ok: true, decision: 'answered' }],
+  localBeatsState: [USER.chat, { type: 'delta', text: 'Looking…' }],
+  stoppedLocalBeatsState: [TOOL],
   // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
   // behind it is the queue letting go. The wait for a first token starts again here, which is why
   // the pause is taken ON that frame — the `user` one Chat sends next, and the first tool call
@@ -124,6 +126,8 @@ const REST = {
   lateRunningHeader: [],
   legacyIdlessLateHeader: [],
   restartEpochRace: [],
+  localBeatsState: ANSWERED,
+  stoppedLocalBeatsState: BUILT,
   requeued: [USER.chat, ...ANSWERED],
   requeuedBuild: [TOOL, ...BUILT],
   requeuedApprove: [TOOL, ...BUILT],
@@ -209,6 +213,8 @@ const stateGates = [0, 1].map((_, index) => new Promise((resolve) => {
 }));
 let answerRaceState = () => {};
 const raceStateGate = new Promise((resolve) => { answerRaceState = resolve; });
+let answerCrossSourceState = () => {};
+const crossSourceStateGate = new Promise((resolve) => { answerCrossSourceState = resolve; });
 let markRequestStarted = () => {};
 const requestStarted = new Promise((resolve) => { markRequestStarted = resolve; });
 let answerResponse = () => {};
@@ -257,6 +263,7 @@ const sandbox = {
       const responseTurnId = (mode === 'legacyIdlessLateHeader' && first)
           || mode === 'legacyNoIdentity' ? ''
         : mode === 'restartEpochRace' ? (first ? 'turn_a' : 'turn_b')
+        : ['localBeatsState', 'stoppedLocalBeatsState'].includes(mode) ? 'turn_b'
         : mode === 'successorHeaderRace' ? 'turn_b'
         : mode === 'authoritativeHeaders' ? ['turn_a', 'turn_b', 'turn_c'][index]
           : (first ? 'turn_abc' : 'turn_def');
@@ -285,11 +292,13 @@ const sandbox = {
           if (mode === 'legacyNoIdentity' || mode === 'successorHeaderRace'
               || (mode === 'legacyIdlessLateHeader' && first)) return null;
           if (mode === 'restartEpochRace') return first ? '9' : '1';
+          if (['localBeatsState', 'stoppedLocalBeatsState'].includes(mode)) return '1';
           return String(index + 1);
         }
         if (header === 'x-sage-turn-epoch') {
           if (mode === 'legacyNoIdentity') return null;
           if (mode === 'restartEpochRace') return first ? 'boot_old' : 'boot_new';
+          if (['localBeatsState', 'stoppedLocalBeatsState'].includes(mode)) return 'boot_new';
           return EPOCH;
         }
         return 'text/event-stream';
@@ -312,9 +321,10 @@ const sandbox = {
     }
     if (href.includes('/build/stop')) {
       buildStateReadsAtStop = buildStateReads;
-      stopBodies.push(JSON.parse(options.body));
+      const body = JSON.parse(options.body);
+      stopBodies.push(body);
       return { ok: true, status: 200, headers: { get: () => 'application/json' },
-               json: async () => ({ stopped: true, turnId: 'turn_abc' }), text: async () => '' };
+               json: async () => ({ stopped: true, turnId: body.turnId }), text: async () => '' };
     }
     if (mode === 'droppedReadFailure' && !backendRunning
         && (href.includes('/history') || href.includes('/apps'))) {
@@ -335,6 +345,23 @@ const sandbox = {
             sequence, epoch } };
         return { ok: true, status: 200, headers: { get: () => 'application/json' },
                  json: async () => answer, text: async () => '' };
+      }
+      if (['localBeatsState', 'stoppedLocalBeatsState'].includes(mode)) {
+        const index = buildStateReads - 1;
+        if (index === 0) {
+          await crossSourceStateGate;
+          const build = mode === 'stoppedLocalBeatsState';
+          const answer = { running: true, wedged: false, pending: 0, turn_epoch: 'boot_old',
+            running_turn: { kind: build ? 'build' : 'chat', conversation: 't1',
+              app: build ? 'app_1' : '', turnId: 'turn_a', sequence: 9,
+              epoch: 'boot_old' } };
+          return { ok: true, status: 200, headers: { get: () => 'application/json' },
+                   json: async () => answer, text: async () => '' };
+        }
+        backendRunning = true;
+        backendKind = mode === 'stoppedLocalBeatsState' ? 'build' : 'chat';
+        backendTurnId = 'turn_b';
+        backendEpoch = 'boot_new';
       }
     }
     const json = href.includes('/build/state') ? buildState()
@@ -385,6 +412,19 @@ if (mode === 'chatStateReverse') {
   process.exit(0);
 }
 
+let delayedCrossSourceState = null;
+if (['localBeatsState', 'stoppedLocalBeatsState'].includes(mode)) {
+  delayedCrossSourceState = SW.store.refreshTurnState();
+}
+
+if (mode === 'restartEpochRace') {
+  backendRunning = true;
+  backendKind = 'chat';
+  backendTurnId = 'turn_a';
+  backendEpoch = 'boot_old';
+  await SW.store.refreshTurnState();
+}
+
 // Which of the three sends each mode drives. Two of them are a build turn and one is a chat turn,
 // and that is the only axis the readout below cares about.
 const SEND = {
@@ -395,6 +435,7 @@ const SEND = {
   droppedReadFailure: 'build',
   droppedStateFailure: 'build', stopStateFailure: 'build',
   legacyNoIdentity: 'build', restartEpochRace: 'chat',
+  localBeatsState: 'chat', stoppedLocalBeatsState: 'build',
   preframeStopRace: 'build',
   successorHeaderRace: 'build',
   authoritativeHeaders: 'chat',
@@ -430,14 +471,9 @@ if (['lateRunningHeader', 'legacyIdlessLateHeader'].includes(mode)) {
 }
 
 if (mode === 'restartEpochRace') {
-  // B runs in a restarted backend whose sequence began at one. State establishes that epoch
-  // before A's delayed old-process headers arrive.
+  // State established old-process A before either local response arrived. B's current response
+  // establishes the restarted backend directly; no state poll is needed between B and late A.
   await pauseGates[1];
-  backendRunning = true;
-  backendKind = 'chat';
-  backendTurnId = 'turn_b';
-  backendEpoch = 'boot_new';
-  await SW.store.refreshTurnState();
   headerAnswers[0]();
 }
 
@@ -559,6 +595,32 @@ if (mode === 'restartEpochRace') {
   await Promise.all([turn, second]);
   console.log(JSON.stringify({ turnId: midTurn.turnId, epoch: midTurn.epoch,
     sequence: midTurn.sequence, stopPosts: stopBodies.length,
+    requestedTurnId: stopBodies[0] && stopBodies[0].turnId }));
+  process.exit(0);
+}
+
+if (mode === 'localBeatsState') {
+  answerCrossSourceState();
+  await delayedCrossSourceState;
+  const afterState = SW.store.get().runningTurn;
+  await SW.store.stopChat();
+  letGo();
+  await turn;
+  console.log(JSON.stringify({ turnId: afterState && afterState.turnId,
+    epoch: afterState && afterState.epoch, sequence: afterState && afterState.sequence,
+    stopPosts: stopBodies.length, requestedTurnId: stopBodies[0] && stopBodies[0].turnId }));
+  process.exit(0);
+}
+
+if (mode === 'stoppedLocalBeatsState') {
+  await SW.store.stopBuild();
+  answerCrossSourceState();
+  await delayedCrossSourceState;
+  const afterState = SW.store.get().runningTurn;
+  letGo();
+  await turn;
+  console.log(JSON.stringify({ running: SW.store.get().buildRunning,
+    turnId: afterState && afterState.turnId, stopPosts: stopBodies.length,
     requestedTurnId: stopBodies[0] && stopBodies[0].turnId }));
   process.exit(0);
 }

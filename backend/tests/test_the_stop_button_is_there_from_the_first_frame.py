@@ -167,10 +167,54 @@ def test_legacy_backend_state_reconstructs_a_new_running_turn_after_refresh():
 
 
 def test_a_backend_restart_replaces_old_sequence_and_rejects_the_delayed_old_header():
-    """Sequence one in a new process is newer than sequence nine in the old process."""
+    """Local B establishes the new process without a state poll, then rejects late local A."""
     assert _run("restartEpochRace") == {
         "turnId": "turn_b", "epoch": "boot_new", "sequence": 1,
         "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+def test_a_local_header_that_settles_after_a_state_read_started_wins():
+    """A delayed old state answer cannot replace B after B's local header has settled."""
+    assert _run("localBeatsState") == {
+        "turnId": "turn_b", "epoch": "boot_new", "sequence": 1,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+def test_a_delayed_state_answer_cannot_restore_a_turn_after_stop_was_accepted():
+    """The same ownership order preserves the accepted-Stop unwind latch."""
+    assert _run("stoppedLocalBeatsState") == {
+        "running": False, "turnId": None,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("restartEpochRace", {
+            "turnId": "turn_b", "epoch": "boot_new", "sequence": 1,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+        ("authoritativeHeaders", {
+            "turnId": "turn_a", "sequence": 1, "queued": 2,
+            "stopPosts": 1, "requestedTurnId": "turn_a"}),
+        ("lateRunningHeader", {
+            "turnId": "turn_b", "sequence": 2,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+        ("chatStateReverse", {
+            "turnId": "turn_b", "epoch": "boot_new", "sequence": 1}),
+        ("localBeatsState", {
+            "turnId": "turn_b", "epoch": "boot_new", "sequence": 1,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+        ("stoppedLocalBeatsState", {
+            "running": False, "turnId": None,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+        ("legacyIdlessLateHeader", {
+            "turnId": "turn_b", "sequence": 2,
+            "stopPosts": 1, "requestedTurnId": "turn_b"}),
+    ],
+)
+def test_cross_source_ownership_ordering_matrix(mode: str, expected: dict):
+    """New valid ownership wins across headers, events, state, restart, and Stop unwind."""
+    assert _run(mode) == expected
 
 
 def test_an_old_backend_without_any_exact_identity_offers_only_a_safe_message():

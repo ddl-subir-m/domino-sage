@@ -3768,8 +3768,11 @@ window.SW = window.SW || {};
   let turnRequestOrder = 0;
   let newestTurnClaimOrder = 0;
   let authoritativeTurnEpoch = '';
-  // Every successful `/build/state` answer is authoritative, so overlapping readers settle in
-  // request order. A failed read advances nothing and therefore cannot erase a useful answer.
+  let authoritativeTurnRequestOrder = 0;
+  let localTurnOwnershipGeneration = 0;
+  // Successful `/build/state` answers settle in request order. A local exact header/event is a
+  // newer ownership fact when it settles after a read starts, so that read is discarded too.
+  // Failed reads advance neither clock and therefore cannot erase a useful answer.
   let turnStatePolled = 0;
   let turnStateSettled = 0;
   // The backend has accepted Stop for this exact turn but may still be unwinding its session and
@@ -3903,7 +3906,8 @@ window.SW = window.SW || {};
     const revision = responseTurnSequence(sequence);
     const boot = responseTurnEpoch(epoch);
     const order = Number.isSafeInteger(requestOrder) && requestOrder > 0 ? requestOrder : 0;
-    if (boot && authoritativeTurnEpoch && boot !== authoritativeTurnEpoch) return null;
+    if (boot && authoritativeTurnEpoch && boot !== authoritativeTurnEpoch
+        && (!order || order <= authoritativeTurnRequestOrder)) return null;
     if (!boot && authoritativeTurnEpoch) {
       const known = state.runningTurn;
       if (!known || !exact || known.turnId !== exact) return null;
@@ -3917,9 +3921,13 @@ window.SW = window.SW || {};
       if (sameEpoch && revision && currentRevision && revision === currentRevision
           && current.turnId && exact && current.turnId !== exact) return null;
       if (sameEpoch && revision && currentRevision && revision === currentRevision
-          && current.turnId === exact) return current;
+          && current.turnId === exact) {
+        current.requestOrder = Math.max(current.requestOrder || 0, order);
+        settleLocalTurnOwnership(boot, order, exact);
+        return current;
+      }
       if (boot && current.epoch && boot !== current.epoch
-          && (!order || !current.requestOrder || order < current.requestOrder)) return null;
+          && (!order || order <= (current.requestOrder || 0))) return null;
       // An older backend supplies no order. It can keep the same exact claim, or fill an empty
       // slot, but cannot replace a different or provisional live claim by guessing that it is newer.
       if (!boot && !revision && (!exact || !current.turnId || current.turnId !== exact)) return null;
@@ -3929,8 +3937,21 @@ window.SW = window.SW || {};
                     turnId: exact, sequence: revision, epoch: boot,
                     requestOrder: order, stopUnavailable: !exact };
     state.runningTurn = claim;
-    if (order) newestTurnClaimOrder = Math.max(newestTurnClaimOrder, order);
+    settleLocalTurnOwnership(boot, order, exact);
     return claim;
+  }
+
+  function settleLocalTurnOwnership(epoch, requestOrder, exact) {
+    if (!requestOrder) return;
+    newestTurnClaimOrder = Math.max(newestTurnClaimOrder, requestOrder);
+    if (!exact) return;
+    // This is the cross-source clock. A state read captures it before I/O; an exact local
+    // header/event that settles while that read waits makes the answer stale before it is applied.
+    localTurnOwnershipGeneration += 1;
+    if (epoch) {
+      authoritativeTurnEpoch = epoch;
+      authoritativeTurnRequestOrder = requestOrder;
+    }
   }
 
   // The route admits the backend ticket before it opens the stream, then returns its exact id and
@@ -3958,24 +3979,35 @@ window.SW = window.SW || {};
     const exact = responseTurnId(turnId);
     if (!claim || state.runningTurn !== claim || claim.turnId || !exact) return false;
     const boot = responseTurnEpoch(epoch);
-    if (boot && authoritativeTurnEpoch && boot !== authoritativeTurnEpoch) return false;
+    if (requestOrder && requestOrder < newestTurnClaimOrder) return false;
+    if (boot && authoritativeTurnEpoch && boot !== authoritativeTurnEpoch
+        && (!requestOrder || requestOrder <= authoritativeTurnRequestOrder)) return false;
     if (!boot && authoritativeTurnEpoch) return false;
     claim.turnId = exact;
     claim.sequence = responseTurnSequence(sequence);
     claim.epoch = boot;
     claim.requestOrder = requestOrder;
     claim.stopUnavailable = false;
-    if (requestOrder) newestTurnClaimOrder = Math.max(newestTurnClaimOrder, requestOrder);
+    settleLocalTurnOwnership(boot, requestOrder, exact);
     return true;
   }
 
   async function readAuthoritativeTurnState() {
     const mine = ++turnStatePolled;
+    const localGeneration = localTurnOwnershipGeneration;
+    const localRequestWatermark = turnRequestOrder;
     let payload;
     try { payload = await SW.api.buildState(); }
     catch (_error) { return null; }
     if (mine < turnStateSettled) return null;
+    if (localGeneration !== localTurnOwnershipGeneration) return null;
     turnStateSettled = mine;
+    const epoch = responseTurnEpoch(
+      payload && (payload.turn_epoch || (payload.running_turn && payload.running_turn.epoch)));
+    if (epoch) {
+      authoritativeTurnEpoch = epoch;
+      authoritativeTurnRequestOrder = localRequestWatermark;
+    }
     return payload;
   }
 
@@ -4041,7 +4073,6 @@ window.SW = window.SW || {};
     state.turnPending = turn.pending || 0;
     const incomingEpoch = responseTurnEpoch(
       turn.turn_epoch || (turn.running_turn && turn.running_turn.epoch));
-    if (incomingEpoch) authoritativeTurnEpoch = incomingEpoch;
     const stopping = !!(stoppingTurnId && turn.running_turn
       && turn.running_turn.turnId === stoppingTurnId);
     if (stopping) {
