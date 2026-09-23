@@ -38,6 +38,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+from .tool_timing import ToolObserver, tool_readout
+
 log = logging.getLogger(__name__)
 
 # How many finished turns stay readable. A build is minutes, so this is the last session or two of
@@ -135,6 +137,13 @@ class TurnRecord:
     conversation_id: str | None = None
     spans: list[Span] = field(default_factory=list)
     calls: list[ModelCall] = field(default_factory=list)
+    tools: list[dict] = field(default_factory=list)
+    _tool_observer: ToolObserver | None = field(default=None, repr=False)
+    tools_truncated: bool = False
+    intervals: list[dict] = field(default_factory=list)
+    intervals_truncated: bool = False
+    repeat_brake: list[dict] = field(default_factory=list)
+    repeat_brake_truncated: bool = False
     counters: dict[str, float] = field(default_factory=dict)
     observations: dict[str, list[float]] = field(default_factory=dict)
     t1: float | None = None
@@ -444,6 +453,16 @@ def model_call(model: str = "", phase: str = "", *, record=_CURRENT_RECORD,
         return _CallHandle(None)
 
 
+def tool_observer() -> ToolObserver:
+    with _lock:
+        rec = _current if enabled() else None
+        if rec is None:
+            return ToolObserver(None, _lock)
+        if rec._tool_observer is None:
+            rec._tool_observer = ToolObserver(rec, _lock)
+        return rec._tool_observer
+
+
 def current() -> TurnRecord | None:
     return _current
 
@@ -545,6 +564,12 @@ def as_dict(rec: TurnRecord) -> dict:
                    "chunks": c.chunks, "reqBytes": c.request_bytes, "tools": list(c.tools),
                    "inTokens": c.input_tokens, "cachedTokens": c.cached_tokens,
                    "ok": c.ok, "error": c.error} for c in rec.calls],
+        "tools": [tool_readout(t, rec) for t in rec.tools],
+        "toolsTruncated": rec.tools_truncated,
+        "intervals": [dict(i) for i in rec.intervals],
+        "intervalsTruncated": rec.intervals_truncated,
+        "repeatBrake": [dict(b) for b in rec.repeat_brake],
+        "repeatBrakeTruncated": rec.repeat_brake_truncated,
         "counters": {k: round(v, 1) for k, v in rec.counters.items()},
         "observations": {k: {"n": len(v), "p50": round(_pct(v, 0.5)), "p90": round(_pct(v, 0.9)),
                              "max": round(max(v)) if v else 0, "sum": round(sum(v))}
