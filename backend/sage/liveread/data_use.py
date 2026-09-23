@@ -105,10 +105,14 @@ class DataUse:
             for oid, event in latest.items():
                 if oid in self.operations:
                     continue
-                reply = {"data_use": oid, "columns": event["columns"],
-                         "result_rows": event.get("result_rows"),
-                         "local_reference": event["artifact"], "coverage": event["coverage"],
+                reply = {"data_use": oid, "coverage": event.get("coverage") or {},
                          "selected_fields": []}
+                if "columns" in event:
+                    reply["columns"] = event.get("columns") or []
+                if "result_rows" in event:
+                    reply["result_rows"] = event.get("result_rows")
+                if event.get("artifact"):
+                    reply["local_reference"] = event["artifact"]
                 self.operations[oid] = (copy.deepcopy(event), reply, persist)
                 self._remember_sources([_source_from_event(event)])
 
@@ -195,7 +199,8 @@ class DataUse:
                     if path and content not in (withheld_result(path),
                                                 withheld_result("a message in this conversation")):
                         for event, reply, _ in self.operations.values():
-                            if path == event["artifact"] or path.endswith("/" + event["artifact"]):
+                            artifact = str(event.get("artifact") or "")
+                            if artifact and (path == artifact or path.endswith("/" + artifact)):
                                 shape = {k: v for k, v in reply.items() if k != "selected"}
                                 shape["selected_fields"] = []
                                 message = {**message, "content": json.dumps(shape)}
@@ -511,7 +516,8 @@ def _shape_from_text(text):
 def _source_from_event(event):
     return {"path": str(event.get("source") or event.get("artifact") or ""),
             "columns": list(event.get("columns") or []),
-            "rows": event.get("coverage", {}).get("processed", event.get("result_rows"))}
+            "rows": (None if event.get("operation") == "document_reference"
+                     else event.get("coverage", {}).get("processed", event.get("result_rows")))}
 
 
 def _withheld_sources(keys):

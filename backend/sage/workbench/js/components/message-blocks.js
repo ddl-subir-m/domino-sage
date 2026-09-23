@@ -2218,13 +2218,23 @@ window.SW = window.SW || {};
       ...operations.map((event) => {
         const coverage = event.coverage || {};
         const textOperation = event.operation === 'text_analysis';
+        const documentOperation = event.operation === 'document_reference';
+        const source = String(event.source || 'unknown source');
         return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
-          h('p', null, textOperation ? 'Analyzed through the LLM Gateway from ' : 'Calculated in Domino from ',
-            h(Tag, { 'aria-label': `Source file: ${event.source}` }, event.source.split('/').pop()), '.'),
-          h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +
-            `${coverage.excluded} excluded; ${coverage.failed} failed; ${coverage.unfinished} unfinished.`),
-          h('p', null, `Selected fields: ${(event.selected_fields || []).join(', ') || 'Structure only'}.`),
-          h('p', null, 'Artifact: ', h(Tag, { 'aria-label': `Artifact: ${event.artifact}` }, event.artifact.split('/').pop())),
+          h('p', null, documentOperation ? 'Prepared through the LLM Gateway from '
+            : textOperation ? 'Analyzed through the LLM Gateway from ' : 'Calculated in Domino from ',
+            h(Tag, { 'aria-label': `Source file: ${source}` }, source.split('/').pop()), '.'),
+          documentOperation
+            ? h('p', null,
+              `${coverage.sent_characters || 0} of ${coverage.selected_characters || 0} characters prepared. `,
+              event.selected_selector ? `Heading: ${event.selected_selector}. ` : 'Whole document. ',
+              coverage.truncated ? 'The selected text was truncated.' : 'The selected text was complete.')
+            : h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +
+              `${coverage.excluded} excluded; ${coverage.failed} failed; ${coverage.unfinished} unfinished.`),
+          !documentOperation && h('p', null,
+            `Selected fields: ${(event.selected_fields || []).join(', ') || 'Structure only'}.`),
+          event.artifact && h('p', null, 'Artifact: ',
+            h(Tag, { 'aria-label': `Artifact: ${event.artifact}` }, event.artifact.split('/').pop())),
           ...(event.requests || []).map((request) => h('div', { key: request.request_id },
             h('p', null, 'Requested model: ',
               h(Tag, { 'aria-label': `Requested model: ${request.requested_alias}` }, request.requested_alias),

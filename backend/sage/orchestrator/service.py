@@ -56,6 +56,7 @@ from ..feedback.runner import FeedbackRunner
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..liveread import data_use as live_data_use
 from ..liveread import mcp as live_mcp
+from ..liveread import reference as live_reference
 from ..liveread import result as live_result
 from ..liveread import run as live_read
 from ..preview.prefix import domino_base_prefix, publish_available
@@ -11440,6 +11441,18 @@ class Orchestrator:
                 return target
             return None
 
+        def reference_for(source: str) -> live_reference.Authorized | None:
+            """One exact attachment reference, through the shared typed preparation grant."""
+            chat = bool(project.control.snapshot().chat_thread_id)
+            root = project.record.path if chat else project.app_for_turn().path
+            candidates = (store.read_context(thread_id).get("items", []) if chat
+                          else project.app_for_turn().read_attachments())
+            if chat:
+                candidates = [item for item in candidates if item.get("kind") == "file"]
+            return live_reference.authorize(
+                root, candidates, source, project.control.snapshot().withheld
+            )
+
         def record_data_use(event, reply):
             turn_id = self._data_use_turns.get(thread_id, "")
             if project.control.snapshot().chat_thread_id:
@@ -11486,6 +11499,7 @@ class Orchestrator:
             list_files=list_files,
             dataset_root=dataset_root,
             upload_for=upload_for,
+            reference_for=reference_for,
             record_data_use=record_data_use,
             analyze_text_batch=analyze_text_batch,
             record_refusal=record_refusal,
@@ -12138,6 +12152,10 @@ class Orchestrator:
                 "and a bounded batch_size. It sends only the selected text and stable task-local IDs "
                 "through the LLM Gateway, rejects missing, duplicate, unknown or malformed returned "
                 "IDs as incomplete, writes a result table, and reports coverage. "
+                "For an attached plain-text or Markdown requirements document, specification or "
+                "shell, use live_read_files with operation=document, dataset=upload, its exact "
+                "authorized path, and an optional exact heading. It sends at most 8,000 characters "
+                "through the LLM Gateway. Use this before read, cat, grep or sed on that document. "
                 "Omit selected_fields for structure only. Respect explicit user limits; row_limit "
                 "is only for a requested limit. Do not read unrelated raw rows into model context. "
                 "Source-code reads, tools, skills and task/to-do work remain available.")
@@ -16436,20 +16454,9 @@ class Orchestrator:
         # for one turn's worth of files.
         live_read_before = (snapshot_files(project.record.path)
                             if owns_turn and project.build_conversation else None)
-        # The token that lets this turn read a bound table (ADR-0041). Unlike the notes below it
-        # rides EVERY send and is never cleared: the nudge/fix follow-ups run in the same session,
-        # and a compaction that dropped the first send would otherwise leave the agent holding a
-        # tool it can no longer name a turn for. Repeating one line is the cheaper mistake.
-        live_read_note = (
-            self._data_use_note() + "\n" +
-            f"Read token: {self._mint_live_read_token(project.build_conversation)}. Pass it as "
-            "`token` on every `live_read_table`, `live_read_files` or `live_read_query` call. Use "
-            "those tools to look at a bound table or {dataSource}, and `live_read_query` to "
-            "work a number out of one, rather than telling the person you cannot see their "
-            f"data. Up to {_LIVE_READS_MAX} reads per turn: plan the few you need, then build."
-            if owns_turn and project.build_conversation else ""
-        )
-        live_read_note = brand.text(live_read_note) if live_read_note else ""
+        # Built after history-derived withholding is armed below. Besides ordering the token's
+        # Data-use identity correctly, this keeps the note beside the grant it names.
+        live_read_note = ""
         with timing.span("setup.session"):
             sid = session_id or self._ensure_session(project, project.build_conversation)
         project.active_session_id = sid
@@ -16745,6 +16752,22 @@ class Orchestrator:
         build_history_for_turn = project.app_for_turn().read_history(project.build_conversation)
         _warn_if_history_lossy(build_history_for_turn, "_build_stream (withheld)")
         withheld_token = project.control.arm_withheld(recall.withheld(build_history_for_turn))
+        # The token that lets this turn read a bound table (ADR-0041). Unlike the notes below it
+        # rides EVERY send and is never cleared: the nudge/fix follow-ups run in the same session,
+        # and a compaction that dropped the first send would otherwise leave the agent holding a
+        # tool it can no longer name a turn for. Repeating one line is the cheaper mistake.
+        #
+        # Minted after withholding is armed, before any explicit reference is prepared. A document
+        # operation recorded below therefore has this turn's identity and this turn's restrictions.
+        if owns_turn and project.build_conversation:
+            live_read_note = brand.text(
+                self._data_use_note() + "\n" +
+                f"Read token: {self._mint_live_read_token(project.build_conversation)}. Pass it as "
+                "`token` on every `live_read_table`, `live_read_files` or `live_read_query` call. "
+                "Use those tools to look at a bound table or {dataSource}, and `live_read_query` "
+                "to work a number out of one, rather than telling the person you cannot see their "
+                f"data. Up to {_LIVE_READS_MAX} reads per turn: plan the few you need, then build."
+            )
         # The failure-replan flag, consumed. Written here rather than beside its read because it has to
         # land after the pre-turn commit: a stop reverts the tree to that commit, and a flag cleared
         # ahead of it would take the gate the failure earned down with it.
@@ -17319,6 +17342,49 @@ class Orchestrator:
         # where to read. This is orientation, not file contents; the agent must still read before
         # editing. Only the current app's src/ is listed, never attached data or sibling apps.
         source_note = self._build_source_note(project.app_for_turn().path)
+        # Explicit text/Markdown references take their typed path before the model can try a local
+        # read. This is deliberately after the user row and after history-derived withholding is
+        # armed, but before the first normal model request. The content rides only in the in-memory
+        # attachment rendering; the event persisted below contains hashes and coverage, never text.
+        if mention_files and is_approval:
+            # Approval supplies every app attachment as a convenience list. It does not preserve
+            # which attachments the person explicitly referenced in the approved request. Until
+            # #517 records that exact set, a text descriptor must stay content-free: `_resolve_mentions`
+            # may otherwise put its 1,200-character preview into the first model request.
+            for attachment in mention_files:
+                if live_reference.source_type(str(attachment.get("path") or "")):
+                    attachment["detail"] = (
+                        "This text attachment was not prepared because this approval does not carry "
+                        "an explicit structured reference."
+                    )
+        elif mention_files:
+            prepared_references = live_reference.prepare_explicit(
+                project.app_for_turn().path,
+                project.attachments_for_turn(),
+                [str(item.get("path") or "") for item in mention_files],
+                prompt=prompt,
+                withheld=project.control.snapshot().withheld,
+            )
+            prepared_by_source = {item.source: item for item in prepared_references}
+            for attachment in mention_files:
+                prepared = prepared_by_source.get(str(attachment.get("path") or ""))
+                if prepared is None:
+                    continue
+                attachment["detail"] = prepared.prompt_block()
+                event, reply = live_reference.data_use(
+                    prepared, purpose="Use an explicitly referenced attachment for this Build turn"
+                )
+                project.shim.data_use.record(
+                    event, reply, persist,
+                    self._data_use_turns.get(project.build_conversation, ""),
+                )
+                log.info(
+                    "reference preparation: source=%s type=%s status=%s selector=%s "
+                    "characters=%d/%d truncated=%s",
+                    prepared.source, prepared.source_type, prepared.status,
+                    prepared.selected_selector or "whole",
+                    prepared.sent_characters, prepared.selected_characters, prepared.truncated,
+                )
         # The blocks that ride the FIRST send only; each is cleared right after it, so a nudge
         # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
         # it re-sends the same turn into a session that heard none of this — so it puts them back.

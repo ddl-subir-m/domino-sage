@@ -223,13 +223,16 @@ export const files = {
     "listing as all of them. Operation sum calculates a CSV from its authorized path, " +
     "and operation analyze_text sends only the selected text column with stable record ids through the LLM Gateway, " +
     "validates exact id coverage, writes a result table and returns coverage. Use dataset=upload for uploads. " +
-    "Use this for CSV totals and complaint analysis; do not read unrelated raw rows into model context. " +
+    "Operation document selects at most 8,000 characters from one explicitly attached plain-text or Markdown path; " +
+    "use heading for an exact unique Markdown section. Use this for attached requirements, specifications and shells " +
+    "before any generic read, cat, grep or sed. Use CSV operations for totals and complaint analysis; do not read " +
+    "unrelated raw rows into model context. " +
     "Respect explicit user limits.",
   args: {
     token,
     dataset: { type: "string", description: "The Dataset name." },
-    operation: { type: ["string", "null"], enum: ["sum", "analyze_text", null],
-      description: "Calculate CSV totals or analyze CSV text." + OPTIONAL },
+    operation: { type: ["string", "null"], enum: ["sum", "analyze_text", "document", null],
+      description: "Calculate CSV totals, analyze CSV text, or select bounded document text." + OPTIONAL },
     group_by: { type: ["string", "null"], description: "The group column for sum." + OPTIONAL },
     sum_column: { type: ["string", "null"], description: "The numeric column for sum." + OPTIONAL },
     text_column: { type: ["string", "null"], description: "The CSV column containing text for analyze_text." + OPTIONAL },
@@ -243,7 +246,8 @@ export const files = {
       description: "Result columns and/or total. Null returns structure only." },
     row_limit: { type: ["integer", "null"], description: "Explicit user row limit; null for all rows." },
     result_name: { type: ["string", "null"], description: "One filename without a directory." + OPTIONAL },
-    purpose: { type: ["string", "null"], description: "Purpose of this calculation." + OPTIONAL },
+    purpose: { type: ["string", "null"], description: "Purpose of this operation." + OPTIONAL },
+    heading: { type: ["string", "null"], description: "Exact unique Markdown heading." + OPTIONAL },
     path: {
       type: ["string", "null"],
       description: "One file below it." + OPTIONAL + " Then the Dataset is listed instead.",

@@ -150,8 +150,9 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "token": _TOKEN,
                 "dataset": {"type": "string", "description": "The Dataset name."},
-                "operation": {"type": "string", "enum": ["sum", "analyze_text"],
-                              "description": "Calculate CSV totals or analyze CSV text."},
+                "operation": {"type": "string", "enum": ["sum", "analyze_text", "document"],
+                              "description": "Calculate CSV totals, analyze CSV text, or select "
+                                             "bounded attached document text."},
                 "group_by": {"type": "string"},
                 "sum_column": {"type": "string"},
                 "text_column": {"type": "string"},
@@ -165,6 +166,7 @@ TOOLS: list[dict[str, Any]] = [
                 "row_limit": {"type": "integer", "description": "Explicit user row limit; omit for all rows."},
                 "result_name": {"type": "string"},
                 "purpose": {"type": "string"},
+                "heading": {"type": "string", "description": "Exact unique Markdown heading."},
                 "path": {
                     "type": "string",
                     "description": "One file below it. Omit to list the Dataset instead.",

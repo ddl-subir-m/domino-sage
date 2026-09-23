@@ -24,7 +24,7 @@ from uuid import uuid4
 
 from ..orchestrator import brand
 from ..resources.provider import ResourceUnavailable, ScopeIncomplete
-from . import disclosure, grant, result
+from . import disclosure, grant, reference, result
 
 log = logging.getLogger("sage.liveread")
 
@@ -71,6 +71,7 @@ class Turn:
     list_files: Callable[[str], Any] | None = None
     dataset_root: Callable[[str], Path | None] | None = None
     upload_for: Callable[[str], Path | None] | None = None
+    reference_for: Callable[[str], reference.Authorized | None] | None = None
     record_data_use: Callable[..., None] | None = None
     analyze_text_batch: Callable[[dict[str, Any]], Any] | None = None
     # Told the sentence a `not-in-range` refusal handed the model (#488). The Turn is built fresh
@@ -347,6 +348,8 @@ def _files(args: dict, turn: Turn) -> str:
     if args.get("operation") == "analyze_text":
         from .text_analysis import analyze
         return analyze(args, turn)
+    if args.get("operation") == "document":
+        return _document(args, turn)
     name = str(args.get("dataset") or "")
     rel = str(args.get("path") or "")
     if not rel:
@@ -385,6 +388,32 @@ def _files(args: dict, turn: Turn) -> str:
                        path=rel),
     )
     return _receipt_text(receipt, rel)
+
+
+def _document(args: dict, turn: Turn) -> str:
+    """Select bounded text from one exact authorized attachment."""
+    rel = str(args.get("path") or "")
+    if str(args.get("dataset") or "") != "upload" or not rel:
+        return _no_card(
+            "Name one authorized attached path and use dataset=upload for a document reference."
+        )
+    authorized = turn.reference_for(rel) if turn.reference_for else None
+    if authorized is None:
+        return _no_card(
+            f"{rel or 'That document'} is not an authorized attached file in this conversation."
+        )
+    prepared = reference.prepare(authorized, selector=str(args.get("heading") or ""))
+    if prepared is None:
+        return _no_card(
+            f"{rel} is not a plain-text or Markdown document. Use its bounded typed operation "
+            "instead of a generic file read."
+        )
+    event, reply = reference.data_use(
+        prepared, purpose=str(args.get("purpose") or "Use an attached document as requirements")
+    )
+    if turn.record_data_use:
+        turn.record_data_use(event, reply)
+    return json.dumps(reply)
 
 
 def _file_rows(turn: Turn, name: str, rel: str) -> Read:
