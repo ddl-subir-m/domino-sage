@@ -166,6 +166,42 @@ def test_legacy_backend_state_reconstructs_a_new_running_turn_after_refresh():
         "turnId": "turn_b", "sequence": 0, "stopOffered": True}
 
 
+def test_a_backend_restart_replaces_old_sequence_and_rejects_the_delayed_old_header():
+    """Sequence one in a new process is newer than sequence nine in the old process."""
+    assert _run("restartEpochRace") == {
+        "turnId": "turn_b", "epoch": "boot_new", "sequence": 1,
+        "stopPosts": 1, "requestedTurnId": "turn_b"}
+
+
+def test_an_old_backend_without_any_exact_identity_offers_only_a_safe_message():
+    """No header and no queue event means no correlated Stop can be sent safely."""
+    assert _run("legacyNoIdentity") == {
+        "stopOffered": False,
+        "message": "Stop is unavailable for this turn. Refresh Sage to update it.",
+        "stopPosts": 0, "buildStateReads": 0}
+
+
+def test_overlapping_chat_state_reads_settle_in_request_order():
+    """Slow A cannot overwrite B after B's newer state response has settled."""
+    assert _run("chatStateReverse") == {
+        "turnId": "turn_b", "epoch": "boot_new", "sequence": 1}
+
+
+def test_a_failed_state_read_after_stream_loss_keeps_the_exact_stop_claim():
+    assert _run("droppedStateFailure") == {
+        "running": True, "stopOffered": True,
+        "typing": "Connection lost — build is still running.", "watcher": True,
+        "turnId": "turn_abc"}
+
+
+def test_a_failed_state_read_during_stop_unwind_keeps_the_accepted_stop_latch():
+    out = _run("stopStateFailure")
+    assert out["afterCancel"] == {
+        "running": False, "stopOffered": False, "requestedTurnId": "turn_abc"}
+    assert out["afterUnwind"] == {"running": False, "stopOffered": False}
+    assert out["afterRelease"] == {"running": False, "stopOffered": False}
+
+
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])
 def test_stop_is_there_before_the_turn_has_anything_to_show_for_itself(mode: str):
     """The window #126 left behind, and the whole of #371.

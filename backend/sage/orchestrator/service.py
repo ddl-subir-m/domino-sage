@@ -654,8 +654,8 @@ class _TurnTicket:
     before the ticket is admitted, because a queue with nothing in front of it makes a turn running
     in the same call."""
 
-    __slots__ = ("admitted", "app", "claimed", "conversation", "granted", "id", "kind",
-                 "outcome", "queued", "sequence", "snapshot")
+    __slots__ = ("admitted", "app", "claimed", "conversation", "epoch", "granted", "id",
+                 "kind", "outcome", "queued", "sequence", "snapshot")
 
     def __init__(self, ticket_id: str) -> None:
         self.id = ticket_id
@@ -666,6 +666,7 @@ class _TurnTicket:
         self.queued = False     # it entered behind another turn and therefore owes pending/running
         self.claimed = False    # the lazy service generator has taken lifecycle ownership
         self.sequence = 0       # process-local server admission order; zero means not admitted
+        self.epoch = ""         # process boot that owns the process-local sequence
         self.kind = ""          # "build" | "chat" — the screen this turn can be stopped from
         self.conversation = ""
         # Which Built App a build turn writes into. The Conversation is not enough on its own: the
@@ -702,8 +703,9 @@ class _TurnQueue:
     anybody, so the head ticket re-tests it on a short timer. Every release that goes through
     `release()` wakes it at once, so the timer is the backstop and not the mechanism."""
 
-    def __init__(self, lock: threading.Lock, poll_s: float = 0.05) -> None:
+    def __init__(self, lock: threading.Lock, epoch: str, poll_s: float = 0.05) -> None:
         self._lock = lock
+        self._epoch = epoch
         self._poll_s = poll_s
         self._cond = threading.Condition()
         self._waiting: deque[_TurnTicket] = deque()
@@ -776,6 +778,7 @@ class _TurnQueue:
             if not ticket.sequence:
                 self._last_sequence += 1
                 ticket.sequence = self._last_sequence
+                ticket.epoch = self._epoch
             self._waiting.append(ticket)
             ticket.admitted = True
             admitted = self._take(ticket)
@@ -5766,7 +5769,8 @@ class Orchestrator:
         self._stop_control_lock = threading.Lock()
         # The order the streaming turns take that lock in. Only build_stream, chat_stream and
         # approve_stream go through it — see _TurnQueue for why the lock stays a plain Lock.
-        self._turns = _TurnQueue(self._turn_lock)
+        self._turn_epoch = new_id("boot")
+        self._turns = _TurnQueue(self._turn_lock, self._turn_epoch)
         # Set when a turn was given up on and its OpenCode session would not confirm it stopped
         # (#39). The lock above is then deliberately never released, so every later turn is refused
         # rather than run over a session that may still be writing. Nothing clears this: restarting
@@ -5886,7 +5890,8 @@ class Orchestrator:
         `pending` is how many turns are waiting in line. Without it the composer's own queued rows
         are the only account of the queue, and a second tab's are invisible.
 
-        `running_turn` is WHICH turn, as `{kind, conversation, app, turnId, sequence}` (#126). `running` alone was enough
+        `running_turn` is WHICH turn, as `{kind, conversation, app, turnId, sequence, epoch}`
+        (#126). `running` alone was enough
         while there was one control for one turn; under a queue a Stop bar has to know whether the
         turn holding the lock is the one on screen, and a Chat turn, a Build turn and another tab's
         turn all set `running` alike. It is None for the two holders that cannot be Stopped: a wedge,
@@ -5894,11 +5899,12 @@ class Orchestrator:
         which never queued and has no ticket."""
         running = self._turns.running()
         return {"running": self.turn_busy(), "wedged": self._turn_wedged,
+                "turn_epoch": self._turn_epoch,
                 "pending": self._turns.depth(),
                 "running_turn": None if (self._turn_wedged or running is None) else
                                 {"kind": running.kind, "conversation": running.conversation,
                                  "app": running.app, "turnId": running.id,
-                                 "sequence": running.sequence}}
+                                 "sequence": running.sequence, "epoch": running.epoch}}
 
     def cancel_pending_turn(self, ticket_id: str) -> bool:
         """Drop a turn that is still waiting in line. False when there is no such turn (#79).
@@ -16113,6 +16119,7 @@ class Orchestrator:
             return
         try:
             yield {"type": "pending", "ticket": ticket.id, "sequence": ticket.sequence,
+                   "epoch": ticket.epoch,
                    "prompt": prompt,
                    "message": turn_pending_message(self._turns.ahead_of(ticket))}
             outcome = ticket.outcome or self._turns.wait(ticket)
@@ -16142,7 +16149,8 @@ class Orchestrator:
             # person owned a running turn the bar described as somebody else's, for the whole gate
             # and first-token wait. It carries the ticket and nothing else. The client already knew
             # the kind, Conversation and app; only the backend can supply this exact identity.
-            yield {"type": "running", "ticket": ticket.id, "sequence": ticket.sequence}
+            yield {"type": "running", "ticket": ticket.id, "sequence": ticket.sequence,
+                   "epoch": ticket.epoch}
             ticket.granted = True
             if begin_model_record:
                 self._begin_model_record()
@@ -19772,6 +19780,10 @@ class Orchestrator:
                 if exact != "running":
                     return False
                 running = self._turns.running()
+            # Publish, reset, and the other raw lock users carry no ticket. Even the legacy
+            # unscoped Stop must refuse them, or its flag survives into the next real turn.
+            if running is None:
+                return False
             if not self.turn_busy():
                 return False
             if kind or conversation or app or turn_id:

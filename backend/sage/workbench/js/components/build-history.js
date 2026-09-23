@@ -62,7 +62,7 @@ window.SW = window.SW || {};
             at: sortTime((record && record.turn.startedAt) || block.at,
               index - transcriptMessages.length),
             block: { ...block, diagnosticTurns: record ? [record]
-              : (block.diagnostics ? [{ turn: block.diagnostics }] : []) },
+              : (block.diagnostics ? [{ turn: block.diagnostics, identityOnly: true }] : []) },
           };
         })
         .filter(Boolean);
@@ -178,6 +178,7 @@ window.SW = window.SW || {};
   }
 
   function outcomeLabel(record) {
+    if (record && record.identityOnly) return 'Status unavailable';
     if (record && record.capture && record.capture.status === 'running') return 'Running';
     if (record && record.capture && record.capture.status === 'interrupted') return 'Interrupted';
     const status = record && record.buildOutcome && record.buildOutcome.status;
@@ -236,7 +237,8 @@ window.SW = window.SW || {};
           h('div', { className: 'sw-bh-diagnostic-label' },
             `${phaseLabel(record)} · ${outcomeLabel(record)}`),
           h(Button, { size: 'small', loading: downloading === target.turnId,
-            onClick: () => download(record) }, `Download ${phaseLabel(record).toLowerCase()} diagnostics`));
+            onClick: () => download(record) }, record.identityOnly ? 'Download diagnostics'
+              : `Download ${phaseLabel(record).toLowerCase()} diagnostics`));
       }),
       downloadError && h('div', { role: 'alert' }, downloadError),
       // The run's `app_change` cards are deliberately NOT drawn. Every row in this log is this

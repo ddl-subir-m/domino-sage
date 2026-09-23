@@ -3763,6 +3763,15 @@ window.SW = window.SW || {};
   // Chat ends at done; its still-open suggestion stream no longer counts as a turn (#417).
   let liveBuildTurns = 0;
   let liveChatTurns = 0;
+  // Turn sequences restart with the backend process. The epoch makes that reset explicit, while
+  // request order rejects a delayed response callback from an older local send.
+  let turnRequestOrder = 0;
+  let newestTurnClaimOrder = 0;
+  let authoritativeTurnEpoch = '';
+  // Every successful `/build/state` answer is authoritative, so overlapping readers settle in
+  // request order. A failed read advances nothing and therefore cannot erase a useful answer.
+  let turnStatePolled = 0;
+  let turnStateSettled = 0;
   // The backend has accepted Stop for this exact turn but may still be unwinding its session and
   // lock. Keep polling it without putting `building` back on screen during that cleanup window.
   let stoppingTurnId = '';
@@ -3828,10 +3837,14 @@ window.SW = window.SW || {};
   // one Conversation, so a build you switched the rail away from is as invisible as one in another
   // conversation (#126, #77). A running turn with no app — every Chat turn, and any build whose app
   // could not be read — matches whatever is on screen, so the Stop bar fails towards being offered.
-  function runningTurnHere(kind, conversationId, appId) {
-    const t = state.runningTurn;
+  function sameRunningTurnScope(t, kind, conversationId, appId) {
     if (!t || t.kind !== kind || !conversationId || t.conversation !== conversationId) return false;
     return !t.app || !appId || t.app === appId;
+  }
+
+  function runningTurnHere(kind, conversationId, appId) {
+    const t = state.runningTurn;
+    return sameRunningTurnScope(t, kind, conversationId, appId) && !t.stopUnavailable;
   }
 
   // The other side of the same question, for the line a mode shows INSTEAD of Stop. Only ask it
@@ -3844,6 +3857,9 @@ window.SW = window.SW || {};
     const t = state.runningTurn;
     if (!t) return { text: 'The workspace is busy.', href: null };
     if (runningTurnHere(kind, conversationId, appId)) return null;
+    if (sameRunningTurnScope(t, kind, conversationId, appId) && t.stopUnavailable) {
+      return { text: 'Stop is unavailable for this turn. Refresh Sage to update it.', href: null };
+    }
     const what = t.kind === 'chat' ? 'Chat is answering' : 'Build is running';
     // Name the axis that actually DIFFERS. A build running in this very conversation on another
     // Built App, described by its conversation, names the place you are already standing and links
@@ -3881,25 +3897,39 @@ window.SW = window.SW || {};
   // Before the response headers arrive the claim is provisional and cannot be stopped safely.
   // The route admits the exact ticket before it returns those headers; the browser then replaces
   // the provisional claim with that server-owned identity before it reads the first stream event.
-  function claimRunningTurn(kind, conversationId, appId, turnId = '', sequence = 0) {
+  function claimRunningTurn(kind, conversationId, appId, turnId = '', sequence = 0,
+                            epoch = '', requestOrder = 0) {
     const exact = responseTurnId(turnId);
     const revision = responseTurnSequence(sequence);
+    const boot = responseTurnEpoch(epoch);
+    const order = Number.isSafeInteger(requestOrder) && requestOrder > 0 ? requestOrder : 0;
+    if (boot && authoritativeTurnEpoch && boot !== authoritativeTurnEpoch) return null;
+    if (!boot && authoritativeTurnEpoch) {
+      const known = state.runningTurn;
+      if (!known || !exact || known.turnId !== exact) return null;
+    }
+    if (order && order < newestTurnClaimOrder) return null;
     const current = state.runningTurn;
     if (current) {
       const currentRevision = responseTurnSequence(current.sequence);
-      if (revision && currentRevision && revision < currentRevision) return null;
-      if (revision && currentRevision && revision === currentRevision
+      const sameEpoch = !!(boot && current.epoch && boot === current.epoch);
+      if (sameEpoch && revision && currentRevision && revision < currentRevision) return null;
+      if (sameEpoch && revision && currentRevision && revision === currentRevision
           && current.turnId && exact && current.turnId !== exact) return null;
-      if (revision && currentRevision && revision === currentRevision
+      if (sameEpoch && revision && currentRevision && revision === currentRevision
           && current.turnId === exact) return current;
+      if (boot && current.epoch && boot !== current.epoch
+          && (!order || !current.requestOrder || order < current.requestOrder)) return null;
       // An older backend supplies no order. It can keep the same exact claim, or fill an empty
       // slot, but cannot replace a different or provisional live claim by guessing that it is newer.
-      if (!revision && (!exact || !current.turnId || current.turnId !== exact)) return null;
-      if (!revision) return current;
+      if (!boot && !revision && (!exact || !current.turnId || current.turnId !== exact)) return null;
+      if (!boot && !revision) return current;
     }
     const claim = { kind, conversation: conversationId || '', app: appId || '',
-                    turnId: exact, sequence: revision };
+                    turnId: exact, sequence: revision, epoch: boot,
+                    requestOrder: order, stopUnavailable: !exact };
     state.runningTurn = claim;
+    if (order) newestTurnClaimOrder = Math.max(newestTurnClaimOrder, order);
     return claim;
   }
 
@@ -3920,12 +3950,33 @@ window.SW = window.SW || {};
     return Number.isSafeInteger(revision) && revision > 0 ? revision : 0;
   }
 
-  function bindRunningTurn(claim, turnId, sequence = 0) {
+  function responseTurnEpoch(epoch) {
+    return typeof epoch === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(epoch) ? epoch : '';
+  }
+
+  function bindRunningTurn(claim, turnId, sequence = 0, epoch = '', requestOrder = 0) {
     const exact = responseTurnId(turnId);
     if (!claim || state.runningTurn !== claim || claim.turnId || !exact) return false;
+    const boot = responseTurnEpoch(epoch);
+    if (boot && authoritativeTurnEpoch && boot !== authoritativeTurnEpoch) return false;
+    if (!boot && authoritativeTurnEpoch) return false;
     claim.turnId = exact;
     claim.sequence = responseTurnSequence(sequence);
+    claim.epoch = boot;
+    claim.requestOrder = requestOrder;
+    claim.stopUnavailable = false;
+    if (requestOrder) newestTurnClaimOrder = Math.max(newestTurnClaimOrder, requestOrder);
     return true;
+  }
+
+  async function readAuthoritativeTurnState() {
+    const mine = ++turnStatePolled;
+    let payload;
+    try { payload = await SW.api.buildState(); }
+    catch (_error) { return null; }
+    if (mine < turnStateSettled) return null;
+    turnStateSettled = mine;
+    return payload;
   }
 
   // Whether a send may name its turn before it has heard a frame (#371). A name already standing
@@ -3954,6 +4005,11 @@ window.SW = window.SW || {};
   // an exact ticket in the response header. Never send a scoped Stop with an empty ticket:
   // the named app and Conversation can be identical on the successor turn. Only a tab with no
   // local claim reconstructs the identity from backend state.
+  //
+  // During a rolling upgrade, an old backend can supply neither the response header nor a queue
+  // event with a ticket. That turn cannot be stopped safely: the browser keeps an unavailable
+  // claim so the turn bar explains that Sage must be refreshed, and this function returns null.
+  // It never degrades to the old unscoped or scope-only Stop.
   async function exactStopTarget(kind, conversation, app) {
     // A provisional claim is THIS tab's turn before its identity header. Polling here can race:
     // that turn can finish and a same-scope successor can start before `/build/state` answers.
@@ -3962,7 +4018,7 @@ window.SW = window.SW || {};
     // No local claim is the refresh/second-tab case. There is no earlier identity to preserve, so
     // the backend is the only authority and reconstructing from it is correct.
     if (!state.runningTurn) {
-      const current = await SW.api.buildState().catch(() => null);
+      const current = await readAuthoritativeTurnState();
       if (current) applyTurnState(current);
     }
     const target = state.runningTurn;
@@ -3983,10 +4039,10 @@ window.SW = window.SW || {};
     const reconstructing = liveBuildTurns === 0 && liveChatTurns === 0;
     state.turnWedged = !!turn.wedged;
     state.turnPending = turn.pending || 0;
-    const incomingSequence = responseTurnSequence(turn.running_turn && turn.running_turn.sequence);
-    const currentSequence = responseTurnSequence(state.runningTurn && state.runningTurn.sequence);
-    const stale = !!(incomingSequence && currentSequence && incomingSequence < currentSequence);
-    const stopping = !!(stoppingTurnId && turn.running_turn && !stale
+    const incomingEpoch = responseTurnEpoch(
+      turn.turn_epoch || (turn.running_turn && turn.running_turn.epoch));
+    if (incomingEpoch) authoritativeTurnEpoch = incomingEpoch;
+    const stopping = !!(stoppingTurnId && turn.running_turn
       && turn.running_turn.turnId === stoppingTurnId);
     if (stopping) {
       state.runningTurn = null;
@@ -4001,22 +4057,20 @@ window.SW = window.SW || {};
     // named turn is always believed, and only a NAMELESS answer is held back while this tab still
     // has a turn of its own alive to hand the lock straight on to.
     if (turn.running_turn) {
-      if (reconstructing && !incomingSequence) {
-        // A refresh or watcher with no local request owns no earlier claim. `/build/state` is the
-        // authority here, including on an older backend with no sequence header: completed A must
-        // be replaceable by current B. Response headers never take this path.
-        state.runningTurn = {
-          kind: turn.running_turn.kind,
-          conversation: turn.running_turn.conversation || '',
-          app: turn.running_turn.app || '',
-          turnId: responseTurnId(turn.running_turn.turnId),
-          sequence: responseTurnSequence(turn.running_turn.sequence),
-        };
-      } else {
-        claimRunningTurn(turn.running_turn.kind, turn.running_turn.conversation,
-                         turn.running_turn.app, turn.running_turn.turnId,
-                         turn.running_turn.sequence);
-      }
+      // A successful state response is the backend's current answer, across process restarts too.
+      // Missing exact identity is kept as an explicit unavailable claim; it never becomes an
+      // unscoped Stop request against an old server.
+      const exact = responseTurnId(turn.running_turn.turnId);
+      state.runningTurn = {
+        kind: turn.running_turn.kind,
+        conversation: turn.running_turn.conversation || '',
+        app: turn.running_turn.app || '',
+        turnId: exact,
+        sequence: responseTurnSequence(turn.running_turn.sequence),
+        epoch: incomingEpoch,
+        requestOrder: 0,
+        stopUnavailable: !exact,
+      };
     }
     else if (liveBuildTurns === 0 && liveChatTurns === 0) state.runningTurn = null;
     return !!turn.running || liveBuildTurns > 0 || liveChatTurns > 0;
@@ -7330,6 +7384,8 @@ window.SW = window.SW || {};
       let claim = null;
       let exactTurnId = '';
       let exactTurnSequence = 0;
+      let exactTurnEpoch = '';
+      const requestOrder = ++turnRequestOrder;
       // Whatever card this turn is the answer to has now been answered (#209). Every button on
       // every one of them ends here, so this is where they stop being clickable — the reload each
       // of those callers does just above is what used to retire them, and it cannot any more.
@@ -7341,7 +7397,8 @@ window.SW = window.SW || {};
       // reads them as one answer, and a busy flag with no name behind it is the "The workspace is
       // busy." caption over this tab's own turn (#371). Handed back below if the turn queues.
       // Skipped when a name is already standing — see nameableTurn.
-      if (nameableTurn()) claim = claimRunningTurn('build', turnThread, turnApp);
+      if (nameableTurn()) claim = claimRunningTurn(
+        'build', turnThread, turnApp, '', 0, '', requestOrder);
       state.buildTyping = 'Working…';
       notify();
       try {
@@ -7366,21 +7423,26 @@ window.SW = window.SW || {};
           && res.headers.get('X-Sage-Turn-Id'));
         exactTurnSequence = responseTurnSequence(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-Sequence'));
+        exactTurnEpoch = responseTurnEpoch(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Epoch'));
         const turnState = responseTurnState(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-State'));
         if (exactTurnId && turnState === 'running' && exactTurnSequence) {
           claim = claimRunningTurn(
-            'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
+            'build', turnThread, turnApp, exactTurnId, exactTurnSequence,
+            exactTurnEpoch, requestOrder);
           notify();
         } else if (turnState === 'pending' || turnState === 'refused') {
           releaseRunningTurn(claim);
           claim = null;
           notify();
-        } else if (bindRunningTurn(claim, exactTurnId, exactTurnSequence)) {
+        } else if (bindRunningTurn(
+          claim, exactTurnId, exactTurnSequence, exactTurnEpoch, requestOrder)) {
           notify();
         } else if (exactTurnId && !state.runningTurn) {
           claim = claimRunningTurn(
-            'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
+            'build', turnThread, turnApp, exactTurnId, exactTurnSequence,
+            exactTurnEpoch, requestOrder);
           notify();
         }
         streamAccepted = true;
@@ -7418,7 +7480,7 @@ window.SW = window.SW || {};
           // `cancel_pending_turn` finds nothing and the click does nothing at all.
           if (ev.type === 'running') {
             claim = claimRunningTurn(
-              'build', turnThread, turnApp, ev.ticket, ev.sequence);
+              'build', turnThread, turnApp, ev.ticket, ev.sequence, ev.epoch, requestOrder);
             dropQueuedTurn(ev.ticket);
             notify();
             return;
@@ -7430,7 +7492,8 @@ window.SW = window.SW || {};
           // stream readable while it drains during an upgrade.
           if (!unran && !claim) {
             claim = claimRunningTurn(
-              'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
+              'build', turnThread, turnApp, exactTurnId, exactTurnSequence,
+              exactTurnEpoch, requestOrder);
           }
           // Once the rail has moved on, these events describe an app that is no longer on screen.
           if (movedOn()) return;
@@ -7439,7 +7502,7 @@ window.SW = window.SW || {};
         });
         if (!terminalSeen) {
           streamLost = true;
-          const running = await SW.api.buildState().catch(() => null);
+          const running = await readAuthoritativeTurnState();
           detached = !running || !!running.running;
           if (running) applyTurnState(running);
         }
@@ -7451,7 +7514,7 @@ window.SW = window.SW || {};
         // definite terminal answer; a network failure must not strand a live build without it.
         if (streamAccepted) {
           streamLost = true;
-          const running = await SW.api.buildState().catch(() => null);
+          const running = await readAuthoritativeTurnState();
           detached = !running || !!running.running;
           if (running) applyTurnState(running);
         }
@@ -7817,6 +7880,8 @@ window.SW = window.SW || {};
       let claim = null;
       let exactTurnId = '';
       let exactTurnSequence = 0;
+      let exactTurnEpoch = '';
+      const requestOrder = ++turnRequestOrder;
       // The same sentence the server writes for this turn, so the optimistic row does not change
       // wording the moment the transcript reloads underneath it.
       appendBuildRow({ type: 'user', text: buildAgain ? BUILD_AGAIN_TEXT : 'Approved the plan.' });
@@ -7825,7 +7890,8 @@ window.SW = window.SW || {};
       // Beside the busy flag, for the reason sendBuildPrompt claims beside it (#371). This is the
       // path from the screenshot in #126: a plan approved, and a build to watch with nothing to
       // press — and the seconds before its first frame were the last of that still standing.
-      if (nameableTurn()) claim = claimRunningTurn('build', turnThread, turnApp);
+      if (nameableTurn()) claim = claimRunningTurn(
+        'build', turnThread, turnApp, '', 0, '', requestOrder);
       state.buildTyping = 'Building…';
       notify();
       try {
@@ -7848,21 +7914,26 @@ window.SW = window.SW || {};
           && res.headers.get('X-Sage-Turn-Id'));
         exactTurnSequence = responseTurnSequence(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-Sequence'));
+        exactTurnEpoch = responseTurnEpoch(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Epoch'));
         const turnState = responseTurnState(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-State'));
         if (exactTurnId && turnState === 'running' && exactTurnSequence) {
           claim = claimRunningTurn(
-            'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
+            'build', turnThread, turnApp, exactTurnId, exactTurnSequence,
+            exactTurnEpoch, requestOrder);
           notify();
         } else if (turnState === 'pending' || turnState === 'refused') {
           releaseRunningTurn(claim);
           claim = null;
           notify();
-        } else if (bindRunningTurn(claim, exactTurnId, exactTurnSequence)) {
+        } else if (bindRunningTurn(
+          claim, exactTurnId, exactTurnSequence, exactTurnEpoch, requestOrder)) {
           notify();
         } else if (exactTurnId && !state.runningTurn) {
           claim = claimRunningTurn(
-            'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
+            'build', turnThread, turnApp, exactTurnId, exactTurnSequence,
+            exactTurnEpoch, requestOrder);
           notify();
         }
         streamAccepted = true;
@@ -7888,7 +7959,7 @@ window.SW = window.SW || {};
           // the queue into a build with nothing to press for the whole gate and first-token wait.
           if (ev.type === 'running') {
             claim = claimRunningTurn(
-              'build', turnThread, turnApp, ev.ticket, ev.sequence);
+              'build', turnThread, turnApp, ev.ticket, ev.sequence, ev.epoch, requestOrder);
             dropQueuedTurn(ev.ticket);
             notify();
             return;
@@ -7905,7 +7976,8 @@ window.SW = window.SW || {};
           // draining during an upgrade.
           if (!unran && !claim) {
             claim = claimRunningTurn(
-              'build', turnThread, turnApp, exactTurnId, exactTurnSequence);
+              'build', turnThread, turnApp, exactTurnId, exactTurnSequence,
+              exactTurnEpoch, requestOrder);
           }
           if (movedOn()) return;
           applyBuildEvent(ev);
@@ -7913,7 +7985,7 @@ window.SW = window.SW || {};
         });
         if (!terminalSeen) {
           streamLost = true;
-          const running = await SW.api.buildState().catch(() => null);
+          const running = await readAuthoritativeTurnState();
           detached = !running || !!running.running;
           if (running) applyTurnState(running);
         }
@@ -7922,7 +7994,7 @@ window.SW = window.SW || {};
         applyBuildEvent({ type: 'error', message: String(err.message || err) });
         if (streamAccepted) {
           streamLost = true;
-          const running = await SW.api.buildState().catch(() => null);
+          const running = await readAuthoritativeTurnState();
           detached = !running || !!running.running;
           if (running) applyTurnState(running);
         }
@@ -8189,7 +8261,7 @@ window.SW = window.SW || {};
         conversation
           ? readBuildTranscript(conversation)
           : Promise.resolve({ merged: null, history: [] }),
-        SW.api.buildState().catch(() => ({ running: false })),
+        readAuthoritativeTurnState(),
         refreshBindings(ticket),
         refreshProjectPlan(),
         // The cascade would be this function's own work done twice: `attached` is off the read
@@ -8197,8 +8269,10 @@ window.SW = window.SW || {};
         loadAppList({ cascade: false, ticket }),
       ]);
       await applyBuildRead(hist);
-      state.buildRunning = applyTurnState(running);
-      state.buildTyping = state.buildRunning ? 'Working…' : null;
+      if (running) {
+        state.buildRunning = applyTurnState(running);
+        state.buildTyping = state.buildRunning ? 'Working…' : null;
+      }
       if (!options.keepPreview) state.previewStatus = 'starting';
       notify();
       await probePreview();
@@ -8236,7 +8310,7 @@ window.SW = window.SW || {};
       let settled = 0;
       const tick = async () => {
         const mine = ++polled;
-        const running = await SW.api.buildState().catch(() => ({ running: true }));
+        const running = await readAuthoritativeTurnState();
         // The rail rides along: which app a build is running in is a row's state, and someone who
         // switched away from that app has no other way to see the turn still going (#77).
         await loadAppList();
@@ -8251,9 +8325,13 @@ window.SW = window.SW || {};
         if (mine < settled) return;
         settled = mine;
         await applyBuildRead(hist);
-        const stopping = !!(stoppingTurnId && running.running_turn
+        if (!running) {
+          notify();
+          return;
+        }
+        const stopping = !!(running && stoppingTurnId && running.running_turn
           && running.running_turn.turnId === stoppingTurnId);
-        state.buildRunning = applyTurnState(running);
+        if (running) state.buildRunning = applyTurnState(running);
         if (!state.buildRunning && !stopping) {
           state.buildTyping = null;
           clearInterval(store._watchTimer);
@@ -8339,6 +8417,8 @@ window.SW = window.SW || {};
       let claim = null;
       let exactTurnId = '';
       let exactTurnSequence = 0;
+      let exactTurnEpoch = '';
+      const requestOrder = ++turnRequestOrder;
       liveChatTurns += 1;
       state.typing = 'Thinking…';
       state.chatRunning = true;
@@ -8346,7 +8426,8 @@ window.SW = window.SW || {};
       // Chat's handler skips the `user` frame, so waiting for a frame that claims meant waiting
       // out the gate and the model's first token with the question already on screen. Handed back
       // below if the turn turns out to be queued.
-      if (nameableTurn()) claim = claimRunningTurn('chat', turnThread, '');
+      if (nameableTurn()) claim = claimRunningTurn(
+        'chat', turnThread, '', '', 0, '', requestOrder);
       notify();
 
       // The server releases its turn at done. Keep reading the suggestion tail, but stop
@@ -8423,21 +8504,26 @@ window.SW = window.SW || {};
           && res.headers.get('X-Sage-Turn-Id'));
         exactTurnSequence = responseTurnSequence(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-Sequence'));
+        exactTurnEpoch = responseTurnEpoch(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Epoch'));
         const turnState = responseTurnState(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-State'));
         if (exactTurnId && turnState === 'running' && exactTurnSequence) {
           claim = claimRunningTurn(
-            'chat', turnThread, '', exactTurnId, exactTurnSequence);
+            'chat', turnThread, '', exactTurnId, exactTurnSequence,
+            exactTurnEpoch, requestOrder);
           notify();
         } else if (turnState === 'pending' || turnState === 'refused') {
           releaseRunningTurn(claim);
           claim = null;
           notify();
-        } else if (bindRunningTurn(claim, exactTurnId, exactTurnSequence)) {
+        } else if (bindRunningTurn(
+          claim, exactTurnId, exactTurnSequence, exactTurnEpoch, requestOrder)) {
           notify();
         } else if (exactTurnId && !state.runningTurn) {
           claim = claimRunningTurn(
-            'chat', turnThread, '', exactTurnId, exactTurnSequence);
+            'chat', turnThread, '', exactTurnId, exactTurnSequence,
+            exactTurnEpoch, requestOrder);
           notify();
         }
         await readSSE(res, async (ev) => {
@@ -8475,7 +8561,7 @@ window.SW = window.SW || {};
           // gate and first-token wait that follows.
           if (ev.type === 'running') {
             claim = claimRunningTurn(
-              'chat', turnThread, '', ev.ticket, ev.sequence);
+              'chat', turnThread, '', ev.ticket, ev.sequence, ev.epoch, requestOrder);
             dropQueuedTurn(ev.ticket);
             notify();
             return;
@@ -8493,7 +8579,8 @@ window.SW = window.SW || {};
           // upgrade; current backends sent the exact response header.
           if (!turnEnded && !claim) {
             claim = claimRunningTurn(
-              'chat', turnThread, '', exactTurnId, exactTurnSequence);
+              'chat', turnThread, '', exactTurnId, exactTurnSequence,
+              exactTurnEpoch, requestOrder);
           }
           // Moved on. The turn is still running and the server is still writing its transcript, so
           // nothing is lost — reopening the conversation replays it. What is not wanted is this
@@ -8788,7 +8875,8 @@ window.SW = window.SW || {};
     // decides is the turn bar and Stop rather than whether anything can be typed; `wedged` rides
     // along, because a wedged workspace is the one that still refuses (#79).
     async refreshTurnState() {
-      const turn = await SW.api.buildState().catch(() => ({ running: false }));
+      const turn = await readAuthoritativeTurnState();
+      if (!turn) return;
       const was = state.chatRunning;
       const running = applyTurnState(turn);
       state.chatRunning = running;
@@ -8811,7 +8899,8 @@ window.SW = window.SW || {};
     _watchTurn() {
       if (store._turnWatchTimer) return;
       store._turnWatchTimer = setInterval(async () => {
-        const turn = await SW.api.buildState().catch(() => ({ running: true }));
+        const turn = await readAuthoritativeTurnState();
+        if (!turn) return;
         if (applyTurnState(turn)) return;
         clearInterval(store._turnWatchTimer);
         store._turnWatchTimer = null;

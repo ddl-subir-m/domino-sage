@@ -153,7 +153,8 @@ def test_each_stream_header_is_the_exact_ticket_passed_to_the_service(
             self.released: list[str] = []
 
         def prepare_stream_turn(self, turn_id: str, **_kwargs):
-            return type("Ticket", (), {"id": turn_id, "sequence": 41})(), "running"
+            return type("Ticket", (), {
+                "id": turn_id, "sequence": 41, "epoch": "boot_test"})(), "running"
 
         def release_stream_turn(self, ticket) -> None:
             self.released.append(ticket.id)
@@ -185,6 +186,7 @@ def test_each_stream_header_is_the_exact_ticket_passed_to_the_service(
     assert streams.released == [turn_id]
     assert response.headers["X-Sage-Turn-State"] == "running"
     assert response.headers["X-Sage-Turn-Sequence"] == "41"
+    assert response.headers["X-Sage-Turn-Epoch"] == "boot_test"
     assert '"type": "running"' not in response.text
 
 
@@ -570,6 +572,8 @@ def test_three_pre_body_route_tickets_follow_server_admission_order(monkeypatch,
         "running", "pending", "pending"]
     assert [response.headers["X-Sage-Turn-Sequence"] for response in responses] == [
         "1", "2", "3"]
+    assert [response.headers["X-Sage-Turn-Epoch"] for response in responses] == [
+        orch._turn_epoch, orch._turn_epoch, orch._turn_epoch]
 
     # Read the static headers in the opposite order. The queue order remains A, B, C.
     assert [responses[index].headers["X-Sage-Turn-Id"] for index in (2, 1, 0)] == ids[::-1]
@@ -580,6 +584,7 @@ def test_three_pre_body_route_tickets_follow_server_admission_order(monkeypatch,
     assert orch.stop_build(**target, turn_id=ids[0]) is True
     assert orch.turn_state()["running_turn"]["turnId"] == ids[2]
     assert orch.turn_state()["running_turn"]["sequence"] == 3
+    assert orch.turn_state()["running_turn"]["epoch"] == orch._turn_epoch
     assert orch.stop_build(**target, turn_id=ids[1]) is False
     assert orch.stop_build(**target, turn_id=ids[2]) is True
     assert orch.turn_state()["running_turn"] is None
@@ -743,6 +748,23 @@ def test_a_raw_lock_holder_reports_a_busy_project_and_no_turn(tmp_path: Path):
         assert state["running_turn"] is None
     finally:
         orch._release_turn()
+
+
+def test_an_unscoped_stop_cannot_flag_a_raw_lock_holder_or_the_next_turn(tmp_path: Path):
+    """Legacy Stop still needs a real turn ticket. A publish/reset lock has none."""
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="next turn survives")])
+    orch = _orch(tmp_path, oc)
+
+    assert orch._turn_lock.acquire(blocking=False)
+    try:
+        assert orch.stop_build() is False
+        assert orch.project().stop_requested is False
+    finally:
+        orch._release_turn()
+
+    events = list(orch.build_stream("run next", turn_id="turn_next"))
+    assert not any(event.get("type") == "stopped" for event in events)
+    assert events[-1].get("decision") not in {"stopped", "cancelled"}
 
 
 def test_a_wedged_lock_reports_no_turn(tmp_path: Path):
