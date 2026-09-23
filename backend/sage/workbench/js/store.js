@@ -3457,6 +3457,7 @@ window.SW = window.SW || {};
         blocks: [{
           type: 'build_run',
           prompt: run.prompt,
+          diagnostics: run.diagnostics,
           // When the run was asked for, off the user row that opened it. Absent on every row
           // written before Sage started stamping the clock, and a surface that shows the time
           // leaves it off rather than inventing one — the rule `durationMs` already follows in
@@ -3482,6 +3483,8 @@ window.SW = window.SW || {};
           order: ev.order === undefined ? i : ev.order,
           at: ev.at,
           prompt: ev.text || '',
+          diagnostics: ev.turnId && ev.app ? { turnId: ev.turnId, appId: ev.app,
+            conversationId: ev.conversation || '' } : null,
           rows: [],
         };
       }

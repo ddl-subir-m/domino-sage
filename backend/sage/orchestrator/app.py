@@ -1897,6 +1897,27 @@ def diag_opencode(q: str = "", n: int = 400) -> PlainTextResponse:
     return PlainTextResponse("\n".join(lines))
 
 
+@control_app.get("/api/project/build-diagnostics/{turn_id}")
+def build_diagnostic_download(turn_id: str, app_id: str, conversation_id: str = "") -> JSONResponse:
+    """Exact scoped capture. Uses the same Domino workspace authentication as Build history."""
+    from fastapi import HTTPException
+
+    from ..build_diagnostics import Store
+
+    project = orchestrator.project(start_preview=False, seed_app=False)
+    try:
+        record = Store(project.record.path).get(turn_id, app_id, conversation_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise HTTPException(status_code=503, detail="Build diagnostics could not be read.") from None
+    if record is None:
+        raise HTTPException(status_code=404,
+                            detail="Diagnostics were not captured for this turn or have expired.")
+    # The path is never derived from caller IDs. Encode the filename independently too.
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", turn_id)[:100]
+    return JSONResponse(record, headers={"Content-Disposition":
+                        f'attachment; filename="build-{safe_id}.json"', "Cache-Control": "no-store"})
+
+
 @control_app.get("/api/diag/timing")
 def diag_timing(n: int = 5, format: str = "text") -> PlainTextResponse:
     """Where the last few turns actually spent their wall clock.
