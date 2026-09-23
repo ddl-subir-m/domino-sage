@@ -5756,10 +5756,14 @@ class Orchestrator:
         # Turns still run ONE AT A TIME under the queue below (#79): what changed is what happens to
         # the second one, not how many run. A streaming turn waits its turn; everything else is
         # refused on the spot, because a control with no composer behind it that sat silently until
-        # a long build finished would look like a control that did nothing (#89). Stop stays
-        # lock-free (it only sets stop_requested, which the running turn polls) so it can always
-        # interrupt the held turn.
+        # a long build finished would look like a control that did nothing (#89). Stop never takes
+        # this turn lock (it only sets stop_requested, which the running turn polls), so it can
+        # always interrupt the held turn.
         self._turn_lock = threading.Lock()
+        # Makes Stop and the decline-handoff control commit one atomic choice. Stop must either
+        # publish its flag before decline changes the Thread, or find that decline already released
+        # its exact ticket. The OpenCode network interrupt happens after this lock is released.
+        self._stop_control_lock = threading.Lock()
         # The order the streaming turns take that lock in. Only build_stream, chat_stream and
         # approve_stream go through it — see _TurnQueue for why the lock stays a plain Lock.
         self._turns = _TurnQueue(self._turn_lock)
@@ -9409,33 +9413,48 @@ class Orchestrator:
 
         try:
             project = self.project()
-            if project.stop_requested:
-                # Stop can land while a queued decline is paused on its `running` event. Consume it
-                # before this turn reads or changes the Thread, and before the flag can reach the
-                # next turn.
-                project.stop_requested = False
-                self._release_turn()
+            store = ThreadStore(self._chat_project().record.path)
+            with self._stop_control_lock:
+                if project.stop_requested:
+                    # Stop won the local decision before this control commit. Consume its flag and
+                    # release the exact ticket while Stop is excluded, so it cannot reach the next
+                    # turn.
+                    project.stop_requested = False
+                    self._release_turn()
+                    decision = "stopped"
+                    pending = ""
+                elif store.get(thread_id) is None:
+                    self._release_turn()
+                    decision = "unknown"
+                    pending = ""
+                else:
+                    history = store.read_history(thread_id)
+                    _warn_if_history_lossy(history, "decline_handoff_stream")
+                    pending = chat_handoff.unanswered_ask(history)
+                    store.suppress_handoff(thread_id)
+                    if pending:
+                        decision = "answer"
+                    else:
+                        # Stop arriving after this release sees that its exact target is gone. It
+                        # cannot leave a flag for the next turn.
+                        self._release_turn()
+                        decision = "suppressed"
+
+            if decision == "stopped":
                 yield {"type": "stopped", "message": brand.text(
                     "Stopped. Anything {assistantName} had already written is kept.")}
                 yield {"type": "done", "ok": False, "decision": "stopped"}
                 return
-            store = ThreadStore(self._chat_project().record.path)
-            if store.get(thread_id) is None:
-                self._release_turn()
+            if decision == "unknown":
                 yield {"type": "error", "message": "Unknown thread"}
                 # Never written to history, for the same structural reason as its twin in
                 # `_chat_stream` (#335): persisting it would create a Thread directory for an id
                 # the line above established does not exist.
                 yield {"type": "done", "ok": False, "decision": "unknown thread"}
                 return
-            history = store.read_history(thread_id)
-            _warn_if_history_lossy(history, "decline_handoff_stream")
-            pending = chat_handoff.unanswered_ask(history)
-            store.suppress_handoff(thread_id)
-            if not pending:
+            if decision == "suppressed":
                 # An offer the classifier raised, and the turn that raised it already answered.
                 # There is nothing to run, and running the last question again would answer twice.
-                self._release_turn()
                 yield {"type": "done", "ok": True, "decision": "suppressed"}
                 return
             # Chat now owns the already granted ticket and its release. Admitting here again would
@@ -19743,40 +19762,41 @@ class Orchestrator:
         `{"stopped": true}` to a Stop it declined to fire — the same class of lie as the button
         this fixes.
         """
-        running = self._turns.running()
-        if turn_id:
-            exact = self._turns.stop_exact(
-                turn_id, kind=kind, conversation=conversation, app=app)
-            if exact == "cancelled":
-                return True
-            if exact != "running":
-                return False
+        with self._stop_control_lock:
             running = self._turns.running()
-        if not self.turn_busy():
-            return False
-        if kind or conversation or app or turn_id:
-            running = self._turns.running()
-            if running is None:
+            if turn_id:
+                exact = self._turns.stop_exact(
+                    turn_id, kind=kind, conversation=conversation, app=app)
+                if exact == "cancelled":
+                    return True
+                if exact != "running":
+                    return False
+                running = self._turns.running()
+            if not self.turn_busy():
                 return False
-            if kind and running.kind != kind:
-                return False
-            if conversation and running.conversation != conversation:
-                return False
-            # An empty `running.app` matches anything: a Chat turn has no app, and a build whose app
-            # could not be read must not become unstoppable over a field nobody could fill.
-            if app and running.app and running.app != app:
-                return False
-            if turn_id and running.id != turn_id:
-                return False
-        project = self.project()
-        project.stop_requested = True
-        # The LIVE session, not the project's: during a phased build the project session is idle and
-        # interrupting it would leave the running phase generating for another poll cycle or more,
-        # which reads as a Stop button that doesn't work.
-        sid = project.active_session_id or project.session_id
-        if sid and self._oc_client is not None:
+            if kind or conversation or app or turn_id:
+                running = self._turns.running()
+                if running is None:
+                    return False
+                if kind and running.kind != kind:
+                    return False
+                if conversation and running.conversation != conversation:
+                    return False
+                # An empty `running.app` matches anything: a Chat turn has no app, and a build whose
+                # app could not be read must not become unstoppable over a field nobody could fill.
+                if app and running.app and running.app != app:
+                    return False
+                if turn_id and running.id != turn_id:
+                    return False
+            project = self.project()
+            project.stop_requested = True
+            # Capture the LIVE session under the decision lock. The interrupt is a network call and
+            # must not hold up an unrelated decline commit.
+            sid = project.active_session_id or project.session_id
+            client = self._oc_client
+        if sid and client is not None:
             try:
-                self._oc_client.interrupt(sid)
+                client.interrupt(sid)
             except httpx.HTTPError:
                 pass
         return True

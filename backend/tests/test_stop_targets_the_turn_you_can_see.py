@@ -309,39 +309,137 @@ def test_a_queued_no_pending_decline_waits_before_it_suppresses(
     assert [entry["status"] for entry in store.read_handoffs(tid)] == ["suppressed"]
 
 
-def test_stop_after_a_decline_running_event_prevents_suppression_and_clears_the_flag(tmp_path: Path):
-    """Stop can land on the running yield. Decline must consume it before touching the Thread."""
+def test_decline_control_commit_finishes_before_a_later_exact_stop(
+        monkeypatch, tmp_path: Path):
+    """The production SSE pump holds the control boundary through suppression and release.
+
+    A Stop that arrives inside that commit must wait, then find its exact ticket gone. It must not
+    leave a flag for the next turn.
+    """
+    from sage.orchestrator import app as appmod
     from sage.workspace.threads import ThreadStore
 
-    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="A ran"), Turn(text="B ran")])
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [])
     orch = _orch(tmp_path, oc)
     tid = orch.create_thread()["id"]
+    monkeypatch.setattr(appmod, "orchestrator", orch)
     store = ThreadStore(orch.project(start_preview=False).record.path)
-    build_a = orch.build_stream("A", conversation=tid, turn_id="turn_a")
-    next(build_a)
+    original_suppress = ThreadStore.suppress_handoff
+    suppress_entered = threading.Event()
+    release_suppress = threading.Event()
 
-    decline_ticket, state = orch.prepare_stream_turn(
-        "turn_decline", kind="chat", conversation=tid)
-    assert state == "pending"
-    decline = orch.decline_handoff_stream(tid, turn_ticket=decline_ticket)
-    assert next(decline)["type"] == "pending"
-    list(build_a)
-    running = next(decline)
-    assert running == {"type": "running", "ticket": "turn_decline",
-                       "sequence": decline_ticket.sequence}
+    def blocked_suppress(self, thread_id):
+        suppress_entered.set()
+        assert release_suppress.wait(10)
+        return original_suppress(self, thread_id)
 
-    next_ticket, state = orch.prepare_stream_turn(
-        "turn_b", kind="build", conversation=tid, app=True)
-    assert state == "pending"
-    assert orch.stop_build(kind="chat", conversation=tid, turn_id="turn_decline") is True
-    assert store.read_handoffs(tid) == []
-    assert [event["type"] for event in decline] == ["stopped", "done"]
+    monkeypatch.setattr(ThreadStore, "suppress_handoff", blocked_suppress)
+    response = appmod.decline_handoff(tid)
+    turn_id = response.headers["X-Sage-Turn-Id"]
+    events: list[dict] = []
+    response_finished = threading.Event()
+
+    def consume() -> None:
+        async def read() -> None:
+            async for chunk in response.body_iterator:
+                text = chunk.decode() if isinstance(chunk, bytes) else chunk
+                events.extend(json.loads(line.removeprefix("data: "))
+                              for line in text.splitlines() if line.startswith("data: "))
+        try:
+            asyncio.run(read())
+        finally:
+            response_finished.set()
+
+    threading.Thread(target=consume, daemon=True).start()
+    assert suppress_entered.wait(10)
+    stop_result: list[bool] = []
+    stop_started = threading.Event()
+
+    def stop() -> None:
+        stop_started.set()
+        stop_result.append(orch.stop_build(
+            kind="chat", conversation=tid, turn_id=turn_id))
+
+    stopper = threading.Thread(target=stop, daemon=True)
+    stopper.start()
+    assert stop_started.wait(10)
+    assert stopper.is_alive()
+    release_suppress.set()
+    stopper.join(10)
+
+    assert response_finished.wait(10)
+    assert stop_result == [False]
+    assert events == [{"type": "done", "ok": True, "decision": "suppressed"}]
+    assert [entry["status"] for entry in store.read_handoffs(tid)] == ["suppressed"]
+    assert orch.project().stop_requested is False
+
+
+def test_exact_stop_before_decline_control_commit_aborts_without_a_stale_flag(
+        monkeypatch, tmp_path: Path):
+    """Stop wins after the production pump claims the ticket but before the control commit.
+
+    Decline consumes that Stop without suppression. Its next route turn then completes normally.
+    """
+    from sage.orchestrator import app as appmod
+    from sage.workspace.threads import ThreadStore
+
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    response = appmod.decline_handoff(tid)
+    turn_id = response.headers["X-Sage-Turn-Id"]
+    original_project = orch.project
+    before_commit = threading.Event()
+    resume_commit = threading.Event()
+    paused = False
+
+    def pause_pump_before_commit(*args, **kwargs):
+        nonlocal paused
+        project = original_project(*args, **kwargs)
+        running = orch._turns.running()
+        if (threading.current_thread().name == "sage-decline_handoff" and not paused
+                and running is not None and running.id == turn_id and running.claimed):
+            paused = True
+            before_commit.set()
+            assert resume_commit.wait(10)
+        return project
+
+    monkeypatch.setattr(orch, "project", pause_pump_before_commit)
+    events: list[dict] = []
+    response_finished = threading.Event()
+
+    def consume(target, output: list[dict], finished: threading.Event) -> None:
+        async def read() -> None:
+            async for chunk in target.body_iterator:
+                text = chunk.decode() if isinstance(chunk, bytes) else chunk
+                output.extend(json.loads(line.removeprefix("data: "))
+                              for line in text.splitlines() if line.startswith("data: "))
+        try:
+            asyncio.run(read())
+        finally:
+            finished.set()
+
+    threading.Thread(target=consume, args=(response, events, response_finished), daemon=True).start()
+    assert before_commit.wait(10)
+    assert orch.stop_build(kind="chat", conversation=tid, turn_id=turn_id) is True
+    resume_commit.set()
+
+    assert response_finished.wait(10)
+    assert [event["type"] for event in events] == ["stopped", "done"]
+    assert events[-1] == {"type": "done", "ok": False, "decision": "stopped"}
     assert store.read_handoffs(tid) == []
     assert orch.project().stop_requested is False
 
-    events_b = list(orch.build_stream("B", conversation=tid, turn_ticket=next_ticket))
-    assert events_b[-1].get("decision") not in {"stopped", "cancelled"}
-    assert not any(event.get("type") == "stopped" for event in events_b)
+    next_response = appmod.decline_handoff(tid)
+    next_events: list[dict] = []
+    next_finished = threading.Event()
+    threading.Thread(target=consume, args=(next_response, next_events, next_finished),
+                     daemon=True).start()
+    assert next_finished.wait(10)
+    assert next_events == [{"type": "done", "ok": True, "decision": "suppressed"}]
+    assert orch.project().stop_requested is False
 
 
 def test_decline_setup_failure_releases_only_its_ticket_and_promotes_once(
