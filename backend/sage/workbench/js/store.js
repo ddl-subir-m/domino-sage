@@ -3912,11 +3912,17 @@ window.SW = window.SW || {};
   }
 
   // Keep a Stop bound to the turn the person pressed it on. A new backend gives every live claim
-  // an exact ticket in its first `running` frame. During the short pre-frame window, or while an
-  // older stream drains across an upgrade, ask the authority once. Never send a scoped Stop with
-  // an empty ticket: the named app and Conversation can be identical on the successor turn.
+  // an exact ticket in its first `running` frame. Never send a scoped Stop with an empty ticket:
+  // the named app and Conversation can be identical on the successor turn. Only a tab with no
+  // local claim reconstructs the identity from backend state.
   async function exactStopTarget(kind, conversation, app) {
-    if (!(state.runningTurn && state.runningTurn.turnId)) {
+    // A provisional claim is THIS tab's turn before its identity frame. Polling here can race:
+    // that turn can finish and a same-scope successor can start before `/build/state` answers.
+    // The reply would name the successor and turn one click into a Stop aimed at the wrong turn.
+    if (state.runningTurn && !state.runningTurn.turnId) return null;
+    // No local claim is the refresh/second-tab case. There is no earlier identity to preserve, so
+    // the backend is the only authority and reconstructing from it is correct.
+    if (!state.runningTurn) {
       const current = await SW.api.buildState().catch(() => null);
       if (current) applyTurnState(current);
     }

@@ -124,6 +124,11 @@ def test_a_live_turn_claim_keeps_the_exact_backend_ticket(mode: str):
     assert _run(mode)["midTurn"]["turnId"] == "turn_abc"
 
 
+def test_a_preframe_stop_does_not_adopt_a_same_scope_successor_from_state():
+    """A provisional claim belongs to A; a later state answer can already belong to B."""
+    assert _run("preframeStopRace") == {"buildStateReads": 0, "stopPosts": 0}
+
+
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])
 def test_stop_is_there_before_the_turn_has_anything_to_show_for_itself(mode: str):
     """The window #126 left behind, and the whole of #371.

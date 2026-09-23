@@ -75,6 +75,7 @@ const OPENING = {
   droppedBuild: [RUNNING, TOOL],
   droppedApprove: [RUNNING, TOOL],
   droppedReadFailure: [RUNNING, TOOL],
+  preframeStopRace: [],
   // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
   // behind it is the queue letting go. The wait for a first token starts again here, which is why
   // the pause is taken ON that frame — the `user` one Chat sends next, and the first tool call
@@ -101,6 +102,7 @@ const REST = {
   droppedBuild: [],
   droppedApprove: [],
   droppedReadFailure: [],
+  preframeStopRace: [RUNNING, ...BUILT],
   requeued: [USER.chat, ...ANSWERED],
   requeuedBuild: [TOOL, ...BUILT],
   requeuedApprove: [TOOL, ...BUILT],
@@ -143,10 +145,14 @@ const atPause = new Promise((resolve) => {
 // about what the tab can say for itself, and a poll that supplied the answer would hide the bug.
 const dropped = ['droppedBuild', 'droppedApprove', 'droppedReadFailure'].includes(mode);
 let backendRunning = dropped;
+let backendTurnId = 'turn_abc';
 const buildState = () => ({ running: backendRunning, wedged: false, pending: 0,
   running_turn: backendRunning
-    ? { kind: 'build', conversation: 't1', app: 'app_1', turnId: 'turn_abc' } : null });
+    ? { kind: 'build', conversation: 't1', app: 'app_1', turnId: backendTurnId } : null });
 const intervalCallbacks = [];
+let buildStateReads = 0;
+let answerRaceState = () => {};
+const raceStateGate = new Promise((resolve) => { answerRaceState = resolve; });
 
 // Which send each opened stream is answering. Only the two-send modes ever pass 1.
 let posts = 0;
@@ -202,6 +208,10 @@ const sandbox = {
         && (href.includes('/history') || href.includes('/apps'))) {
       throw new TypeError('refresh read failed');
     }
+    if (href.includes('/build/state')) {
+      buildStateReads += 1;
+      if (mode === 'preframeStopRace') await raceStateGate;
+    }
     const json = href.includes('/build/state') ? buildState()
       : (href.includes('/history') || href.includes('/apps') ? [] : {});
     return { ok: true, status: 200, headers: { get: () => 'application/json' },
@@ -232,6 +242,7 @@ const SEND = {
   requeuedBuild: 'build', requeuedApprove: 'approve',
   droppedBuild: 'build', droppedApprove: 'approve',
   droppedReadFailure: 'build',
+  preframeStopRace: 'build',
   secondInLine: 'chat', queuedChat: 'chat', queuedApprove: 'approve',
 }[mode];
 const kind = SEND === 'chat' ? 'chat' : 'build';
@@ -282,6 +293,23 @@ const midTurn = {
   running: kind === 'chat' ? SW.store.get().chatRunning : SW.store.get().buildRunning,
   turnId: SW.store.get().runningTurn && SW.store.get().runningTurn.turnId,
 };
+
+if (mode === 'preframeStopRace') {
+  // Stop is pressed while A has only a provisional local claim. Under the old code this starts a
+  // state read. A then finishes and same-scope B becomes the backend answer before that read lands,
+  // so the click adopts and stops B. The safe path returns before either request is made.
+  const stop = SW.store.stopBuild();
+  await Promise.resolve();
+  await Promise.resolve();
+  letGo();
+  await turn;
+  backendRunning = true;
+  backendTurnId = 'turn_b';
+  answerRaceState();
+  await stop;
+  console.log(JSON.stringify({ buildStateReads, stopPosts: stopBodies.length }));
+  process.exit(0);
+}
 
 letGo();
 await Promise.all(second ? [turn, second] : [turn]);
