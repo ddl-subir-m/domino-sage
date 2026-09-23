@@ -29,6 +29,7 @@ const PENDING = {
   prompt: 'build me a dashboard',
   message: 'Waiting on the turn that is running.',
 };
+const PENDING_2 = { ...PENDING, ticket: 'turn_def' };
 // The frame the server really sends first on the CHAT path, and only there: it paints the person's
 // own question, and it is yielded as soon as the turn has the lock, long before the model has said
 // anything (`service.py` `_chat_stream`, `yield user_ev`). The store's handler skips it, so it
@@ -39,12 +40,11 @@ const PENDING = {
 // the transcript and never the stream. A build's first STREAMED frame is its first real work frame,
 // which is why `openingBuild` and `openingApprove` below pause on no frame at all.
 const USER = { chat: { type: 'user', text: 'how many rows?' } };
-// The queue's other end, and the one frame both modes share (#377). `_acquire_turn` yields it at
-// the fall-through past every refusal, which IS the grant — so it arrives before anything the turn
-// itself sends, on Chat ahead of the `user` frame above and on Build ahead of the first tool call.
-// Every admitted turn sends this now. It is also the exact identity a delayed Stop must retain.
-// For a queued turn it has the same ticket as the `pending` row it answers.
+// The queue's other end (#377). `_acquire_turn` yields it only after a `pending` frame. An
+// uncontended turn keeps its established event sequence and receives its exact identity in the
+// response header instead. For a queued turn this has the same ticket as the `pending` row.
 const RUNNING = { type: 'running', ticket: PENDING.ticket };
+const RUNNING_2 = { type: 'running', ticket: PENDING_2.ticket };
 const TOOL = { type: 'agent', kind: 'tool', tool: 'write', detail: 'src/App.tsx' };
 const BUILT = [{ type: 'done', ok: true, decision: 'built' }];
 const ANSWERED = [{ type: 'delta', text: 'Six million rows.', final: true },
@@ -61,20 +61,20 @@ const ANSWERED = [{ type: 'delta', text: 'Six million rows.', final: true },
 // server, so the next thing down the wire after the POST is the first frame of real work, gate and
 // first token and all.
 const OPENING = {
-  build: [RUNNING, TOOL],
-  approve: [RUNNING, TOOL],
-  chat: [RUNNING, USER.chat, { type: 'delta', text: 'Looking…' }],
+  build: [TOOL],
+  approve: [TOOL],
+  chat: [USER.chat, { type: 'delta', text: 'Looking…' }],
   queued: [PENDING],
   // The same question of the other two sends. `queued` only ever asked it of sendBuildPrompt,
   // and each send has a name of its own to hand back now.
   queuedChat: [PENDING],
   queuedApprove: [PENDING],
-  opening: [RUNNING, USER.chat],
-  openingBuild: [RUNNING],
-  openingApprove: [RUNNING],
-  droppedBuild: [RUNNING, TOOL],
-  droppedApprove: [RUNNING, TOOL],
-  droppedReadFailure: [RUNNING, TOOL],
+  opening: [USER.chat],
+  openingBuild: [],
+  openingApprove: [],
+  droppedBuild: [TOOL],
+  droppedApprove: [TOOL],
+  droppedReadFailure: [TOOL],
   preframeStopRace: [],
   // Out of the queue and running: the `pending` frame handed the name back, and the `running` frame
   // behind it is the queue letting go. The wait for a first token starts again here, which is why
@@ -87,7 +87,7 @@ const OPENING = {
   requeuedBuild: [PENDING, RUNNING],
   requeuedApprove: [PENDING, RUNNING],
   // The first of this mode's two turns, and the one that is really running.
-  secondInLine: [RUNNING, USER.chat, { type: 'delta', text: 'Looking…' }],
+  secondInLine: [USER.chat, { type: 'delta', text: 'Looking…' }],
 }[mode];
 const REST = {
   build: BUILT,
@@ -102,7 +102,7 @@ const REST = {
   droppedBuild: [],
   droppedApprove: [],
   droppedReadFailure: [],
-  preframeStopRace: [RUNNING, ...BUILT],
+  preframeStopRace: BUILT,
   requeued: [USER.chat, ...ANSWERED],
   requeuedBuild: [TOOL, ...BUILT],
   requeuedApprove: [TOOL, ...BUILT],
@@ -115,7 +115,7 @@ const REST = {
 // handing the name back would blank the bar for a running turn. That is #126 from this direction,
 // and it is what the send-time claim has to be careful of.
 const SECOND = {
-  secondInLine: { opening: [PENDING], rest: [RUNNING, USER.chat, ...ANSWERED] },
+  secondInLine: { opening: [PENDING_2], rest: [RUNNING_2, USER.chat, ...ANSWERED] },
 }[mode];
 
 const frame = (ev) => new TextEncoder().encode(`data: ${JSON.stringify(ev)}\n\n`);
@@ -157,6 +157,7 @@ const raceStateGate = new Promise((resolve) => { answerRaceState = resolve; });
 // Which send each opened stream is answering. Only the two-send modes ever pass 1.
 let posts = 0;
 const stopBodies = [];
+let buildStateReadsAtStop = null;
 
 const sandbox = {
   console, JSON, Math, Date, process, Set, Map, Promise, Array, Object, String, Number, Boolean,
@@ -182,8 +183,11 @@ const sandbox = {
       if (!first && !SECOND) throw new Error(`mode ${mode} opened a second stream`);
       const opening = first ? OPENING : SECOND.opening;
       const rest = first ? REST : SECOND.rest;
+      const responseTurnId = first ? 'turn_abc' : 'turn_def';
       let sent = 0;
-      return { ok: true, body: { getReader: () => ({
+      return { ok: true, headers: { get: (name) => (
+        String(name).toLowerCase() === 'x-sage-turn-id' ? responseTurnId : 'text/event-stream'
+      ) }, body: { getReader: () => ({
         read: async () => {
           if (sent === 0) { sent = 1; return { done: false, value: join(opening) }; }
           if (sent === 1) {
@@ -200,6 +204,7 @@ const sandbox = {
       }) } };
     }
     if (href.includes('/build/stop')) {
+      buildStateReadsAtStop = buildStateReads;
       stopBodies.push(JSON.parse(options.body));
       return { ok: true, status: 200, headers: { get: () => 'application/json' },
                json: async () => ({ stopped: true, turnId: 'turn_abc' }), text: async () => '' };
@@ -295,9 +300,9 @@ const midTurn = {
 };
 
 if (mode === 'preframeStopRace') {
-  // Stop is pressed while A has only a provisional local claim. Under the old code this starts a
-  // state read. A then finishes and same-scope B becomes the backend answer before that read lands,
-  // so the click adopts and stops B. The safe path returns before either request is made.
+  // The static header has already bound A's exact ticket, although no SSE frame has arrived. A
+  // Stop must use that ticket directly and must never poll state, where a same-scope B could be
+  // mistaken for A after the stream finishes.
   const stop = SW.store.stopBuild();
   await Promise.resolve();
   await Promise.resolve();
@@ -307,7 +312,12 @@ if (mode === 'preframeStopRace') {
   backendTurnId = 'turn_b';
   answerRaceState();
   await stop;
-  console.log(JSON.stringify({ buildStateReads, stopPosts: stopBodies.length }));
+  console.log(JSON.stringify({
+    buildStateReads,
+    buildStateReadsAtStop,
+    stopPosts: stopBodies.length,
+    requestedTurnId: stopBodies[0] && stopBodies[0].turnId,
+  }));
   process.exit(0);
 }
 

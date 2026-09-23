@@ -157,10 +157,9 @@ def test_the_checklist_is_announced_before_any_work(tmp_path: Path):
     orch, _oc, _project, _ = _plan_then_phases(tmp_path)
     events = list(orch.approve_stream())
 
-    work = [event for event in events if event["type"] != "running"]
-    assert _kinds(work)[0] == "build-plan"
-    assert [s["label"] for s in work[0]["steps"]] == ["Data module", "Trades table", "Currency filter"]
-    assert work[0]["steps"][0]["files"] == ["src/data.ts"]
+    assert _kinds(events)[0] == "build-plan"
+    assert [s["label"] for s in events[0]["steps"]] == ["Data module", "Trades table", "Currency filter"]
+    assert events[0]["steps"][0]["files"] == ["src/data.ts"]
 
 
 def test_a_phase_sees_its_own_brief_and_not_the_others(tmp_path: Path):

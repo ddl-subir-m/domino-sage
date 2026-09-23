@@ -7880,7 +7880,8 @@ class Orchestrator:
                      skip_reset_gate: bool = False, skip_incoming_gate: bool = False,
                      skip_table_gate: bool = False, skip_source_gate: bool = False,
                      chosen_source: str = "", skip_dataset_gate: bool = False,
-                     dismissed_dataset: str = "", dataset_pick: str = ""):
+                     dismissed_dataset: str = "", dataset_pick: str = "",
+                     *, turn_id: str | None = None):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
         One turn at a time still. If a turn is already streaming, this one WAITS in line rather than
@@ -7924,7 +7925,7 @@ class Orchestrator:
         is the thing that was picked. It names the record; the record still has to confirm it."""
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
-        ticket = _TurnTicket(new_id("turn"))
+        ticket = _TurnTicket(turn_id or new_id("turn"))
         timing.start_turn("build", prompt, turn_id=ticket.id, conversation_id=conversation)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
@@ -8910,7 +8911,7 @@ class Orchestrator:
                     already_asked: bool = False, skip_table_gate: bool = False,
                     skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                     skip_investigation_gate: bool = False, declined: bool = False,
-                    other_lane_grant: str = ""):
+                    other_lane_grant: str = "", turn_id: str | None = None):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
         `already_asked` means this question is on the Thread and was offered Build rather than an
@@ -8946,7 +8947,7 @@ class Orchestrator:
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
         # was written against.
-        ticket = _TurnTicket(new_id("turn"))
+        ticket = _TurnTicket(turn_id or new_id("turn"))
         timing.start_turn("chat", prompt, turn_id=ticket.id, conversation_id=thread_id)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="chat", conversation=thread_id, prompt=prompt,
@@ -9278,7 +9279,7 @@ class Orchestrator:
         self._arm_chat_idle_save(immediate or "idle",
                                  delay=self._chat_save_turn_s if immediate else None)
 
-    def decline_handoff_stream(self, thread_id: str):
+    def decline_handoff_stream(self, thread_id: str, *, turn_id: str | None = None):
         """`Not now` on a Build offer: stop offering, and answer the question if one is waiting.
 
         Suppression stays permanent, and deliberately so — it is the person saying stop, and the spec
@@ -9316,7 +9317,8 @@ class Orchestrator:
             # nothing to run, and running the last question again would answer it twice.
             yield {"type": "done", "ok": True, "decision": "suppressed"}
             return
-        yield from self.chat_stream(thread_id, pending, already_asked=True, declined=True)
+        yield from self.chat_stream(thread_id, pending, already_asked=True, declined=True,
+                                    turn_id=turn_id)
 
     def _explicit_handoff(self, store: ThreadStore, thread_id: str, prompt: str) -> dict | None:
         """The regex half of handoff detection. No model call, so it is safe to run BEFORE a turn.
@@ -15929,8 +15931,9 @@ class Orchestrator:
                       prompt: str, app: bool):
         """Take the turn lock for a streaming turn, waiting in line rather than refusing (#79).
 
-        Yields a `running` row with the exact ticket for every admitted turn, plus a `pending` row
-        while a queued turn waits (#377), and the refusal if it never gets to run. It then sets
+        Yields what the wait owes the client: a `pending` row while a queued turn waits, a `running`
+        row when that queued turn gets the lock (#377), and the refusal if it never gets to run.
+        An uncontended turn adds no event to the established public stream. It then sets
         `ticket.granted`, which is the verdict the entry point reads. The wait is held
         on the client's own connection: a turn IS its HTTP request here, so a queued turn that
         nobody was connected to would have nowhere to stream.
@@ -15946,18 +15949,8 @@ class Orchestrator:
         ticket.conversation = conversation or ""
         ticket.app = self._turn_app_id() if app else ""
         if self._turns.admit(ticket):
-            # Every admitted turn says its exact identity before it does work. The browser can
-            # name the kind, Conversation and app before the POST, but only this queue owns the
-            # ticket id. Without it a delayed Stop can land on a successor turn in the same scope.
-            # Keep `granted` false across the yield so abandoning the stream here releases the
-            # lock, exactly as the queued grant below does.
-            try:
-                yield {"type": "running", "ticket": ticket.id}
-                ticket.granted = True
-                self._begin_model_record()
-            finally:
-                if not ticket.granted and self._turns.running() is ticket:
-                    self._release_turn()
+            ticket.granted = True
+            self._begin_model_record()
             return
         ticket.snapshot = self._turn_snapshot(conversation, app=app)
         try:
@@ -18165,7 +18158,7 @@ class Orchestrator:
 
     def approve_stream(self, answers: str = "", plan_edits: str | None = None,
                        conversation: str | None = None, plan_id: str = "",
-                       build_again: bool = False):
+                       build_again: bool = False, *, turn_id: str | None = None):
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
         turn to misread. Approval means "build it now", so if the user is in Plan or Ask mode we run
@@ -18185,7 +18178,7 @@ class Orchestrator:
         # an approve asked for mid-turn queues behind it (#79) rather than being refused, because an
         # approve IS a build turn and a Workbench that queued one and refused the other is a rule
         # people would have to learn instead of guess.
-        ticket = _TurnTicket(new_id("turn"))
+        ticket = _TurnTicket(turn_id or new_id("turn"))
         timing.start_turn("approve", turn_id=ticket.id, conversation_id=conversation)
         with timing.span("turn.acquire"):
             yield from self._acquire_turn(ticket, kind="build", conversation=conversation, prompt="",

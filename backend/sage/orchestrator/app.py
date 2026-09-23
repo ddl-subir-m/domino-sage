@@ -90,6 +90,7 @@ from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     ThreadStore,
     artifact_bytes,
+    new_id,
     oversized_artifacts,
     safe_id,
 )
@@ -3369,13 +3370,14 @@ def build_stream(body: dict) -> StreamingResponse:
         except ValueError:
             return refuse_with("unknown conversation")
 
+    turn_id = new_id("turn")
     return StreamingResponse(
         _turn_sse(orchestrator.build_stream(prompt, mentions, resources, conversation,
                                             skip_reset_gate, skip_incoming_gate, skip_table_gate,
                                             skip_source_gate, chosen_source, skip_dataset_gate,
-                                            dismissed_dataset, dataset_pick),
+                                            dismissed_dataset, dataset_pick, turn_id=turn_id),
                   "build_stream"),
-        media_type="text/event-stream")
+        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id})
 
 
 # The Build rail's list, as the Chat rail's is /api/threads. Two lists, one per mode: a Project
@@ -3812,13 +3814,14 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     dset = bool((body or {}).get("skipDatasetGate"))
     dropped = str((body or {}).get("datasetDismissed") or "")
     invq = bool((body or {}).get("investigationAnswered"))
+    turn_id = new_id("turn")
     return StreamingResponse(
         _turn_sse(orchestrator.chat_stream(
             thread_id, prompt, already_asked=asked, skip_table_gate=tbl,
             skip_dataset_gate=dset, dismissed_dataset=dropped,
             skip_investigation_gate=invq,
-            other_lane_grant=grant), "chat_stream"),
-        media_type="text/event-stream")
+            other_lane_grant=grant, turn_id=turn_id), "chat_stream"),
+        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id})
 
 
 # The Chat half of the candidate click (#188). Its own route rather than the Binding one above,
@@ -3892,9 +3895,11 @@ async def pin_thread_dataset_file(thread_id: str, dataset_id: str,
 def decline_handoff(thread_id: str) -> StreamingResponse:
     """`Not now` on a Build offer. Streams, because declining an offer that was made INSTEAD of an
     answer has to produce the answer — see `Orchestrator.decline_handoff_stream`."""
+    turn_id = new_id("turn")
     return StreamingResponse(
-        _turn_sse(orchestrator.decline_handoff_stream(thread_id), "decline_handoff"),
-        media_type="text/event-stream")
+        _turn_sse(orchestrator.decline_handoff_stream(thread_id, turn_id=turn_id),
+                  "decline_handoff"),
+        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id})
 
 
 @control_app.post("/api/threads/{thread_id}/recall/clear")
@@ -3993,11 +3998,12 @@ def build_approve(body: dict) -> StreamingResponse:
     plan_id = (body or {}).get("plan_id") or ""   # "" = no card sent one; fall back to the newest
     build_again = bool((body or {}).get("build_again"))
 
+    turn_id = new_id("turn")
     return StreamingResponse(
         _turn_sse(orchestrator.approve_stream(answers, plan_edits, conversation, plan_id,
-                                              build_again=build_again),
+                                              build_again=build_again, turn_id=turn_id),
                   "approve_stream"),
-        media_type="text/event-stream")
+        media_type="text/event-stream", headers={"X-Sage-Turn-Id": turn_id})
 
 
 @control_app.get("/api/project/settings")

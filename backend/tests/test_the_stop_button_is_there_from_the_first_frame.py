@@ -125,8 +125,10 @@ def test_a_live_turn_claim_keeps_the_exact_backend_ticket(mode: str):
 
 
 def test_a_preframe_stop_does_not_adopt_a_same_scope_successor_from_state():
-    """A provisional claim belongs to A; a later state answer can already belong to B."""
-    assert _run("preframeStopRace") == {"buildStateReads": 0, "stopPosts": 0}
+    """The response header binds A before any frame; a later state answer may belong to B."""
+    assert _run("preframeStopRace") == {
+        "buildStateReads": 1, "buildStateReadsAtStop": 0,
+        "stopPosts": 1, "requestedTurnId": "turn_abc"}
 
 
 @pytest.mark.parametrize("mode", ["opening", "openingBuild", "openingApprove"])
@@ -219,6 +221,7 @@ def test_a_second_question_does_not_take_the_name_off_the_one_that_is_running():
 
     assert out["midTurn"]["stopOffered"] is True
     assert out["midTurn"]["elsewhere"] is None
+    assert out["midTurn"]["turnId"] == "turn_abc", "the queued turn's header renamed the live turn"
     assert out["runningTurnAfter"] is None
 
 

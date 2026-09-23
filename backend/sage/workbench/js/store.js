@@ -3863,8 +3863,8 @@ window.SW = window.SW || {};
   // stream open — so a build started here had no named turn to match for its whole length, and the
   // Stop bar under the composer stayed missing until a mode switch reloaded the state behind it.
   // A streaming turn can answer most of the question itself: it knows its kind, its conversation
-  // and its app. The backend's `running` frame supplies the exact ticket before work begins. That
-  // last field stops a delayed request from reaching a successor in the same scope.
+  // and its app. The response header supplies the exact ticket before any event is read. That last
+  // field stops a delayed request from reaching a successor in the same scope.
   //
   // Claimed at SEND time rather than on the first frame (#371). On the first frame was still too
   // late, on every path and for one reason: no frame arrives until the turn has been past the gate
@@ -3873,12 +3873,12 @@ window.SW = window.SW || {};
   // with `append_history` and never streamed. Either way the person's question sat on screen with
   // no button under it for seconds.
   //
-  // A send knows the display scope before it opens the stream, so it can show Stop at once. It does
-  // not know its exact ticket or whether it will run. The queue's two rows answer both questions:
-  // `pending` hands the provisional name straight back (#79), and `running` replaces it with the
-  // exact ticket when the turn owns the lock (#377).
+  // A send knows the display scope before it opens the stream, so it can show Stop at once. The
+  // response header adds the exact ticket. The queue rows answer whether it will run: `pending`
+  // hands the provisional name straight back (#79), and `running` restores it when the queued turn
+  // owns the lock (#377).
   //
-  // What it costs, stated rather than hidden: between the send and the stream's first byte the
+  // What it costs, stated rather than hidden: between the send and the response headers the
   // Stop button is on screen for a turn the server has not admitted yet, and a Stop pressed in
   // there finds no turn to match, answers `stopped: false` and says "That turn had already
   // finished." while the turn then runs. That window is one round trip, against the gate and the
@@ -3887,6 +3887,16 @@ window.SW = window.SW || {};
     const claim = { kind, conversation: conversationId || '', app: appId || '', turnId };
     state.runningTurn = claim;
     return claim;
+  }
+
+  // The route allocates the backend ticket before it opens the stream and returns that exact id in
+  // a response header. Attach it only to the provisional claim made by THIS request. A second send
+  // can already be queued behind another live turn; its header must not rename that active turn.
+  function bindRunningTurn(claim, turnId) {
+    if (!claim || state.runningTurn !== claim || claim.turnId
+        || typeof turnId !== 'string' || !/^turn_[A-Za-z0-9_-]+$/.test(turnId)) return false;
+    claim.turnId = turnId;
+    return true;
   }
 
   // Whether a send may name its turn before it has heard a frame (#371). A name already standing
@@ -3912,11 +3922,11 @@ window.SW = window.SW || {};
   }
 
   // Keep a Stop bound to the turn the person pressed it on. A new backend gives every live claim
-  // an exact ticket in its first `running` frame. Never send a scoped Stop with an empty ticket:
+  // an exact ticket in the response header. Never send a scoped Stop with an empty ticket:
   // the named app and Conversation can be identical on the successor turn. Only a tab with no
   // local claim reconstructs the identity from backend state.
   async function exactStopTarget(kind, conversation, app) {
-    // A provisional claim is THIS tab's turn before its identity frame. Polling here can race:
+    // A provisional claim is THIS tab's turn before its identity header. Polling here can race:
     // that turn can finish and a same-scope successor can start before `/build/state` answers.
     // The reply would name the successor and turn one click into a Stop aimed at the wrong turn.
     if (state.runningTurn && !state.runningTurn.turnId) return null;
@@ -7300,6 +7310,8 @@ window.SW = window.SW || {};
           const payload = await res.json().catch(() => ({}));
           throw new Error(payload.error || payload.message || res.statusText);
         }
+        if (bindRunningTurn(claim, res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Id'))) notify();
         streamAccepted = true;
         let stopped = false;
         let terminalSeen = false;
@@ -7342,8 +7354,8 @@ window.SW = window.SW || {};
           if (ev.contextChanged) { unran = true; store.seedComposer(ev.prompt || text); }
           if (ev.type === 'done' && ev.decision === 'cancelled') unran = true;
           // Past the queue and past the two ways a turn ends without running: this turn holds the
-          // lock. Current backends already sent the exact `running` row; this fallback keeps an
-          // older stream readable while it drains during an upgrade.
+          // lock. Current backends sent the exact response header; this fallback keeps an older
+          // stream readable while it drains during an upgrade.
           if (!unran && !claim) {
             claim = claimRunningTurn('build', turnThread, turnApp);
           }
@@ -7757,6 +7769,8 @@ window.SW = window.SW || {};
           const body = await res.json().catch(() => ({}));
           throw new Error(body.error || body.message || res.statusText);
         }
+        if (bindRunningTurn(claim, res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Id'))) notify();
         streamAccepted = true;
         let stopped = false;
         let terminalSeen = false;
@@ -7792,8 +7806,8 @@ window.SW = window.SW || {};
             unran = true;
           }
           // Past the queue and past every way this turn ends without running: it holds the lock.
-          // Current backends already sent the exact `running` row; keep the fallback for an older
-          // stream draining during an upgrade.
+          // Current backends sent the exact response header; keep the fallback for an older stream
+          // draining during an upgrade.
           if (!unran && !claim) claim = claimRunningTurn('build', turnThread, turnApp);
           if (movedOn()) return;
           applyBuildEvent(ev);
@@ -8305,6 +8319,8 @@ window.SW = window.SW || {};
           const payload = await res.json().catch(() => ({}));
           throw new Error(payload.error || payload.message || res.statusText);
         }
+        if (bindRunningTurn(claim, res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Id'))) notify();
         await readSSE(res, async (ev) => {
           if (!ev) return;
           if (ev.type === 'done') {
@@ -8354,7 +8370,7 @@ window.SW = window.SW || {};
           // Past the queue and past the two ways a turn ends without running: this one holds the
           // lock. Before the `mine()` check below, because a turn whose reader has walked away is
           // still the turn holding the lock. The fallback keeps an older stream readable during an
-          // upgrade; current backends already sent the exact `running` row.
+          // upgrade; current backends sent the exact response header.
           if (!turnEnded && !claim) claim = claimRunningTurn('chat', turnThread, '');
           // Moved on. The turn is still running and the server is still writing its transcript, so
           // nothing is lost — reopening the conversation replays it. What is not wanted is this

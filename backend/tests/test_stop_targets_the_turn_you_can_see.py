@@ -26,6 +26,9 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+from fastapi.testclient import TestClient
+
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
@@ -127,6 +130,51 @@ def _wait_for(predicate, timeout: float = 20.0) -> None:
 def _pending(events: list[dict]) -> dict:
     _wait_for(lambda: any(e.get("type") == "pending" for e in events))
     return next(e for e in events if e["type"] == "pending")
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "method"),
+    [
+        ("/api/project/build/stream", {"prompt": "build it"}, "build_stream"),
+        ("/api/project/build/approve", {}, "approve_stream"),
+        ("/api/threads/thread_a/chat/stream", {"prompt": "answer it"}, "chat_stream"),
+        ("/api/threads/thread_a/handoff/decline", {}, "decline_handoff_stream"),
+    ],
+)
+def test_each_stream_header_is_the_exact_ticket_passed_to_the_service(
+        monkeypatch, path: str, body: dict, method: str):
+    """Headers arrive before SSE, so Stop can bind the ticket without adding a public event."""
+    from sage.orchestrator import app as appmod
+
+    class Streams:
+        def __init__(self) -> None:
+            self.turn_ids: dict[str, str] = {}
+
+        def _stream(self, name: str, kwargs: dict):
+            self.turn_ids[name] = kwargs["turn_id"]
+            yield {"type": "done", "ok": True}
+
+        def build_stream(self, *args, **kwargs):
+            return self._stream("build_stream", kwargs)
+
+        def approve_stream(self, *args, **kwargs):
+            return self._stream("approve_stream", kwargs)
+
+        def chat_stream(self, *args, **kwargs):
+            return self._stream("chat_stream", kwargs)
+
+        def decline_handoff_stream(self, *args, **kwargs):
+            return self._stream("decline_handoff_stream", kwargs)
+
+    streams = Streams()
+    monkeypatch.setattr(appmod, "orchestrator", streams)
+
+    response = TestClient(appmod.control_app).post(path, json=body)
+
+    turn_id = response.headers["X-Sage-Turn-Id"]
+    assert turn_id.startswith("turn_")
+    assert streams.turn_ids[method] == turn_id
+    assert '"type": "running"' not in response.text
 
 
 # ---- the running turn has a name ----------------------------------------------------------------
@@ -289,10 +337,10 @@ def test_a_stop_aimed_at_another_app_does_not_reach_this_build(tmp_path: Path):
 def test_a_stale_turn_id_alone_does_not_reach_the_running_build(tmp_path: Path):
     oc = WatchedOpenCode(tmp_path / "mnt" / "code", [Turn(text="building")])
     orch = _orch(tmp_path, oc)
-    gen = orch.build_stream("add a chart")
+    gen = orch.build_stream("add a chart", turn_id="turn_current")
 
-    running = next(gen)
-    assert running["type"] == "running"
+    next(gen)
+    assert orch.turn_state()["running_turn"]["turnId"] == "turn_current"
     before = oc.interrupted
     assert orch.stop_build(turn_id="a-turn-that-finished") is False
     assert oc.interrupted == before
@@ -303,10 +351,10 @@ def test_a_stale_turn_id_alone_does_not_reach_the_running_build(tmp_path: Path):
 def test_a_stale_app_alone_does_not_reach_the_running_build(tmp_path: Path):
     oc = WatchedOpenCode(tmp_path / "mnt" / "code", [Turn(text="building")])
     orch = _orch(tmp_path, oc)
-    gen = orch.build_stream("add a chart")
+    gen = orch.build_stream("add a chart", turn_id="turn_current")
 
-    running = next(gen)
-    assert running["type"] == "running"
+    next(gen)
+    assert orch.turn_state()["running_turn"]["turnId"] == "turn_current"
     before = oc.interrupted
     assert orch.stop_build(app="another-app") is False
     assert oc.interrupted == before
@@ -321,24 +369,24 @@ def test_a_delayed_stop_for_build_a_does_not_stop_build_b_in_the_same_scope(tmp_
     orch = _orch(tmp_path, oc)
     tid = orch.create_thread()["id"]
 
-    build_a = orch.build_stream("first build", conversation=tid)
-    granted_a = next(build_a)
-    assert granted_a["type"] == "running"
+    build_a = orch.build_stream("first build", conversation=tid, turn_id="turn_a")
+    next(build_a)
+    assert orch.turn_state()["running_turn"]["turnId"] == "turn_a"
 
-    build_b = orch.build_stream("second build", conversation=tid)
+    build_b = orch.build_stream("second build", conversation=tid, turn_id="turn_b")
     pending_b = next(build_b)
     assert pending_b["type"] == "pending"
 
     list(build_a)  # A finishes before its delayed Stop request reaches the route.
     granted_b = next(build_b)
     assert granted_b["type"] == "running"
-    assert granted_b["ticket"] != granted_a["ticket"]
+    assert granted_b["ticket"] == "turn_b"
 
     current = orch.turn_state()["running_turn"]
     assert current["turnId"] == granted_b["ticket"]
     before = oc.interrupted
     assert orch.stop_build(kind="build", conversation=tid, app=current["app"],
-                           turn_id=granted_a["ticket"]) is False
+                           turn_id="turn_a") is False
     assert oc.interrupted == before, "A's delayed Stop interrupted B"
 
     list(build_b)
