@@ -48,7 +48,10 @@ def test_opencode_declares_the_same_vision_models_as_the_router():
         and row.get("modalities", {}).get("input") == ["text", "image"]
     }
 
-    assert declared == VISION_CAPABLE
+    # `sage-model` is not a model but the handle every non-GPT prompt names (#539). It must accept
+    # images, or OpenCode drops them before the shim can route them to a vision model.
+    assert "sage-model" in declared
+    assert declared - {"sage-model"} == VISION_CAPABLE
 
 
 def test_one_mixed_prompt_uses_typed_carriers_and_excludes_the_neighbor(tmp_path: Path, caplog):

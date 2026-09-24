@@ -20,6 +20,7 @@ from sage.orchestrator.service import (
     Project,
     _model_active_status,
 )
+from sage.router.model_control import ModelControl
 
 from .test_native_model_controls import active, dispatch, running  # noqa: F401
 
@@ -140,6 +141,9 @@ def test_run_sage_plan_retries_the_immutable_request_in_the_same_directory():
         def disarm_read_only(self, token):
             pass
 
+        def snapshot(self):
+            return ModelControl().snapshot()
+
     class Client:
         def __init__(self):
             self._dirs = {"old": "/same/app"}
@@ -152,7 +156,7 @@ def test_run_sage_plan_retries_the_immutable_request_in_the_same_directory():
                     {"type": "text", "text": "# App\n\nA complete plan"}]}]
             return []
 
-        def send_prompt(self, sid, prompt, agent):
+        def send_prompt(self, sid, prompt, agent, model=None):
             self.sent.append((sid, prompt, agent))
             if sid == "old":
                 project.last_gateway_error = {

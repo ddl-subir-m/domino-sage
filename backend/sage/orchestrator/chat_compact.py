@@ -73,6 +73,8 @@ CONTEXT_LIMITS: dict[str, int] = {
     "local-domino-llm": 32_768,
     "bedrock-qwen3-coder": 262_144,
     "gpt-5.4": 922_000,
+    # Not an alias: the neutral handle a non-GPT prompt names (#539). Its row copies gpt-5.4's.
+    "sage-model": 922_000,
     "sonnet": 1_000_000,
     # Unmeasurable: not in this gateway's /v1/models, so it is not offered here and cannot be asked.
     "haiku": 200_000,
