@@ -15,8 +15,10 @@ the 2026-09-23 mirror-map section still names Phase 3 step 3 as the next thing t
 finished in the 2026-09-24 update at the bottom of this file). As of 2026-09-24: Phases 0-2 and
 Phase 3 steps 1-4 are done and verified; Phase 3 step 3 (door/workspace-lifecycle deletion, the
 Projects home page, wiring `create`/`clone` to real HTTP routes) is ALSO now done — see the final
-`## UPDATE` block. **Nothing on this branch has been committed** — nearly 40 files are sitting
-uncommitted in the working tree as of that update; confirm with the user before committing anything.
+`## UPDATE` block. **Committed and pushed** at `79f9a5a9` ("ph impl") on `one-app-pivot-Etan`,
+working tree clean — the commit was made and pushed by the user directly, not by an agent session.
+None of it has been live-smoke-tested in a real browser yet (see that update's own verification
+section for exactly what has and hasn't been checked).
 
 **Scope per session:** one phase at a time (Phase 0 alone is already sized ~1-2 PRs per the plan's
 own table). Update this file's checklist as you go, and the "Design calls" section whenever you make
