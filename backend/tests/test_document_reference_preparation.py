@@ -295,6 +295,43 @@ def test_pdf_over_limit_withheld_and_unauthorized_inputs_fail_closed(tmp_path: P
     assert reference.authorize(tmp_path, manifest, "unmentioned.pdf") is None
 
 
+def test_docx_and_pdf_plan_records_reprepare_through_the_shared_policy(tmp_path: Path):
+    docx = _docx(
+        tmp_path,
+        "<w:p><w:r><w:t>RESTARTED DOCX RULE</w:t></w:r></w:p>",
+    )
+    pdf = _pdf(tmp_path, ["RESTARTED PDF RULE"])
+    manifest = [{"path": docx.name}, {"path": pdf.name}]
+    first = reference.prepare_explicit(
+        tmp_path, manifest, [docx.name, pdf.name], prompt="Follow both documents"
+    )
+
+    saved = [reference.plan_record(item) for item in first]
+    replayed = reference.prepare_plan_records(tmp_path, manifest, saved)
+
+    assert [item.source_type for item in replayed] == ["docx", "pdf"]
+    assert "RESTARTED DOCX RULE" in replayed[0].text
+    assert "RESTARTED PDF RULE" in replayed[1].text
+
+
+def test_pdf_planning_failure_remains_truthful_after_the_source_is_replaced(tmp_path: Path):
+    path = tmp_path / "requirements.pdf"
+    path.write_bytes(b"%PDF-1.7\nnot a document")
+    manifest = [{"path": path.name}]
+    authorized = reference.authorize(tmp_path, manifest, path.name)
+    assert authorized is not None
+    failed = reference.prepare(authorized)
+    assert failed is not None and failed.status == "malformed_document"
+    saved = [reference.plan_record(failed)]
+    _pdf(tmp_path, ["TEXT PLANNING NEVER SAW"], name=path.name)
+
+    replayed = reference.prepare_plan_records(tmp_path, manifest, saved)
+
+    assert len(replayed) == 1
+    assert replayed[0].status == "malformed_document"
+    assert "TEXT PLANNING NEVER SAW" not in replayed[0].prompt_block()
+
+
 def test_authorization_is_exact_honors_withholding_and_does_not_expand_a_folder(tmp_path: Path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "one.md").write_text("one")

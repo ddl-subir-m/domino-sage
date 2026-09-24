@@ -27,6 +27,14 @@ _MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 _DOCX_SUFFIXES = frozenset({".docx"})
 _PDF_SUFFIXES = frozenset({".pdf"})
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_PLANNING_FAILURES = frozenset({
+    "unavailable", "source_too_large", "not_text", "heading_not_unique",
+    "heading_not_supported", "selector_too_long", "empty_document", "withheld",
+    "malformed_document", "encrypted_document", "document_xml_too_large",
+    "no_extractable_text", "invalid_page_selection", "too_many_pages",
+    "page_out_of_range", "page_selection_not_supported", "extraction_unavailable",
+})
 
 
 @dataclass(frozen=True)
@@ -197,6 +205,90 @@ def prepare_explicit(root: Path, manifest: Iterable[dict], sources: Iterable[str
         if prepared is not None:
             out.append(prepared)
             seen.add(authorized.source)
+    return out
+
+
+def plan_record(prepared: Prepared) -> dict:
+    """The content-free identity needed to prepare this exact reference again."""
+    return {
+        "source": prepared.source,
+        "handler": prepared.source_type,
+        # A failed selection has no selected selector. The attempted selector is what makes approval
+        # repeat the same bounded failure instead of silently widening to the whole document.
+        "selector": prepared.requested_selector or prepared.selected_selector,
+        "sha256": prepared.source_sha256,
+        "status": prepared.status,
+    }
+
+
+def plan_records(value: object) -> list[dict]:
+    """Read durable plan records without trusting extra or malformed metadata.
+
+    Plans written before reference persistence have no records and therefore return an empty list.
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        source = str(raw.get("source") or "")
+        handler = str(raw.get("handler") or "")
+        selector = " ".join(str(raw.get("selector") or "").split())
+        digest = str(raw.get("sha256") or "").casefold()
+        kind = source_type(source)
+        if not source or source in seen or not kind:
+            continue
+        valid_digest = _SHA256.fullmatch(digest) is not None
+        raw_status = str(raw.get("status") or "")
+        # Records written by the first #517 revision have no status. They remain transferable only
+        # when they have the complete digest that revision promised. Missing or malformed evidence
+        # becomes a visible bounded failure, never permission to use today's bytes.
+        status = raw_status or ("prepared" if valid_digest else "saved_record_invalid")
+        if (handler != kind or len(selector) > MAX_SELECTOR_CHARS
+                or (digest and not valid_digest)
+                or (status == "prepared" and not valid_digest)
+                or status not in _PLANNING_FAILURES | {"prepared"}):
+            status = "saved_record_invalid"
+        out.append({"source": source, "handler": kind,
+                    "selector": selector if len(selector) <= MAX_SELECTOR_CHARS else "",
+                    "sha256": digest if valid_digest else "", "status": status})
+        seen.add(source)
+    return out
+
+
+def prepare_plan_records(root: Path, manifest: Iterable[dict], records: object, *,
+                         withheld: Iterable[str] = (),
+                         target_for: Callable[[dict], Path | None] | None = None) -> list[Prepared]:
+    """Re-authorize and re-prepare only the references saved with an approved plan."""
+    rows = list(manifest)
+    out: list[Prepared] = []
+    for record in plan_records(records):
+        source = record["source"]
+        kind = record["handler"]
+        selector = record["selector"]
+        authorized = _resolve(root, rows, source, target_for=target_for)
+        if authorized is None:
+            out.append(_failure(source, kind, "not_authorized", selector))
+            continue
+        if _is_withheld(root, authorized, source, withheld):
+            out.append(_failure(source, kind, "withheld", selector))
+            continue
+        if record["status"] != "prepared":
+            out.append(_failure(source, kind, record["status"], selector))
+            continue
+        prepared = prepare(authorized, selector=selector)
+        if prepared is None:
+            out.append(_failure(source, kind, "handler_changed", selector))
+            continue
+        expected = record["sha256"]
+        if prepared.source_sha256 != expected:
+            out.append(_failure(source, kind, "source_changed", selector,
+                                source_bytes=prepared.source_bytes,
+                                source_sha256=prepared.source_sha256))
+            continue
+        out.append(prepared)
     return out
 
 
@@ -409,6 +501,12 @@ def _failure(source: str, kind: str, status: str, selector: str, *, source_bytes
         "page_out_of_range": "The PDF page selection is outside the document.",
         "page_selection_not_supported": "Page selection is supported only for PDF documents.",
         "extraction_unavailable": "PDF text extraction is unavailable in this Sage runtime.",
+        "not_authorized": "The saved reference is unavailable or is no longer authorized.",
+        "handler_changed": "The saved reference no longer has its approved content type.",
+        "source_changed": "The referenced document changed after the plan was prepared.",
+        "saved_record_invalid": (
+            "The saved reference record is incomplete or invalid, so no document content was sent."
+        ),
     }
     text = messages[status]
     return Prepared(source, kind, text, selector, "", source_bytes, 0, 0, False, status,

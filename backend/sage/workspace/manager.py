@@ -492,7 +492,8 @@ class ProjectRecord:
 
     def create_plan_doc(self, markdown: str, *, title: str, author: str = "",
                         origin_thread_id: str = "", status: str = "draft",
-                        app_id: str = "", previous_plan_id: str = "") -> dict:
+                        app_id: str = "", previous_plan_id: str = "",
+                        explicit_references: list[dict] | None = None) -> dict:
         """Store a plan's markdown as version 1 of a new document, and return the whole document."""
         self.plan_docs_dir.mkdir(parents=True, exist_ok=True)
         n = len([p for p in self.plan_docs_dir.iterdir() if p.is_dir()]) + 1
@@ -528,6 +529,12 @@ class ProjectRecord:
             # pin does for `read_archived_plan_doc_id` (see `read_plan_pin`), and a dangling id
             # looks no different from a live one until it is read.
             "previousPlanId": previous_plan_id,
+            # Exact content-free attachment identities from a Build turn that wrote this plan.
+            # `None` means an older or non-Build plan whose approval keeps the legacy attachment
+            # behavior; an empty list means a Build plan that explicitly referenced no document.
+            **({"explicitReferencesVersion": 1,
+                "explicitReferences": list(explicit_references or [])}
+               if explicit_references is not None else {}),
             # Put away, not thrown away (#167). A flag beside the status rather than a value inside
             # it: status is single-valued, so archiving an approved plan AS a status would spend
             # the review outcome to tidy a list, and hand back a document that had forgotten three
@@ -559,8 +566,13 @@ class ProjectRecord:
         # panel's chain and the plan page's own back-link an `undefined` to tell apart from "follows
         # nothing". A string either way, so one comparison answers both.
         previous = meta.get("previousPlanId")
+        references = meta.get("explicitReferences")
         return {**meta, "archived": bool(meta.get("archived")),
                 "previousPlanId": previous.strip() if isinstance(previous, str) else "",
+                "explicitReferencesVersion": (
+                    1 if meta.get("explicitReferencesVersion") == 1 else 0
+                ),
+                "explicitReferences": references if isinstance(references, list) else [],
                 "summary": parsed["summary"], "sections": parsed["sections"],
                 "markdown": markdown}
 
