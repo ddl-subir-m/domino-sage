@@ -2210,3 +2210,41 @@ reachable Domino host in this environment) — the next real test is the product
 `_control_plane`/`_provision`/`_TOKEN_SOURCE` — those are built once at import time — so saving a
 PAT in Settings requires restarting `make orchestrator` before either fix here can take effect;
 the settings route's own response already says `"restartRequired": true`, but it's easy to miss.
+
+## UPDATE 2026-09-24 (same session, continued): a SECOND real bug from the same laptop retry —
+## the fix above worked (control plane now builds and calls Domino for real), but Domino answered
+## 403 "Anonymous user cannot list projects" — a corrupted token, not an unreachable one
+
+**Traced, not assumed.** The 403 came from a REAL `GET /api/projects/beta/projects` call reaching
+Domino (proof the Phase-3-gap fix above is working) and being refused with "Not authorized:
+Anonymous user cannot list projects" — Domino received *something* but didn't recognize it as this
+account. Read `home.html`'s own `saveConnection()`: it trims `hostInput.value` before sending but
+never trimmed `tokenInput.value`/`gitTokenInput.value` — a PAT pasted with a trailing space or
+newline (common from a browser paste) is saved and sent byte-for-byte, and Domino treats that
+different, invalid string as unrecognized rather than as the real account. Matches the product
+owner's own suspicion exactly ("its not being truncated right?").
+
+**Fixed**: `home.html`'s `saveConnection()`/`testConnection()` now `.trim()` the token fields the
+same way the host field already was. Checked the Workbench's own Account-settings drawer
+(`shell.js`'s `ConnectionSettings`) for the identical gap while there — found it too (`save()`'s
+`patch = { ...fields }` and `test()`'s `patch.domino_token = fields.domino_token` both sent every
+field, including secrets, completely untrimmed) — fixed both, since it's the same defect in a
+sibling implementation of the identical field and would have bitten the product owner again the
+moment they reached that drawer from inside an open project.
+
+**Also named, not fixed — a second real possibility for the same symptom that only the product
+owner can check**: `config.py`'s `load()` has `DOMINO_USER_API_KEY`/`DOMINO_API_HOST` env vars
+that unconditionally OVERRIDE whatever is saved to `settings.json`, by design ("facts about where
+this process is running, not a preference a stale file should be able to override" — the module's
+own docstring). If either is set in the shell `make orchestrator` runs in — a stale key from an
+earlier Domino CLI login, for instance — every Settings save is silently discarded on every
+restart, with nothing in the UI or the API response saying so. Told the product owner to check
+`env | grep -i domino` before their next retry; there is no code fix for this (it's intentional
+behavior), only a real observability gap (no way to tell, from Settings, whether the effective
+token came from the file or an env override) that nobody has built yet.
+
+**Verification**: `node --check` on both edited files, `test_settings_api.py` (11/11, unaffected —
+no test pins the untrimmed behavior), `make lint` (repo-wide): clean. **Not verified**: whether
+trimming actually was the product owner's root cause, or whether it turns out to be the env-var
+override instead — both are real, both are now either fixed or clearly named; only their own next
+retry (after restarting again) says which one it actually was.

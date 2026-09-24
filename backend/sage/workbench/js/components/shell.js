@@ -616,8 +616,11 @@ window.SW = window.SW || {};
       setSaving(true);
       try {
         // Blank secret fields are omitted rather than sent as "", so a save that only changes the
-        // host does not overwrite an already-saved token with nothing.
-        const patch = { ...fields };
+        // host does not overwrite an already-saved token with nothing. Trimmed: a pasted token
+        // carrying a trailing space/newline is a different, invalid key that Domino reads as
+        // anonymous rather than as this account, with no error to point at the mismatch.
+        const patch = {};
+        for (const [key, value] of Object.entries(fields)) patch[key] = value.trim();
         if (!patch.domino_token) delete patch.domino_token;
         if (!patch.gateway_api_key) delete patch.gateway_api_key;
         const saved = await SW.api.saveSettings(patch);
@@ -640,8 +643,8 @@ window.SW = window.SW || {};
       setTestResult(null);
       try {
         const patch = {};
-        if (fields.domino_host) patch.domino_host = fields.domino_host;
-        if (fields.domino_token) patch.domino_token = fields.domino_token;
+        if (fields.domino_host.trim()) patch.domino_host = fields.domino_host.trim();
+        if (fields.domino_token.trim()) patch.domino_token = fields.domino_token.trim();
         const result = await SW.api.testSettings(patch);
         setTestResult(result);
       } catch (err) {

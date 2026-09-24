@@ -271,8 +271,8 @@
         connectionError.hidden = true;
         connectionStatus.textContent = 'Saving…';
         var patch = { domino_host: hostInput.value.trim() };
-        if (tokenInput.value) patch.domino_token = tokenInput.value;
-        if (gitTokenInput.value) patch.git_token = gitTokenInput.value;
+        if (tokenInput.value.trim()) patch.domino_token = tokenInput.value.trim();
+        if (gitTokenInput.value.trim()) patch.git_token = gitTokenInput.value.trim();
         try {
           var r = await fetch(api + '/settings', {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
@@ -297,7 +297,7 @@
         connectionStatus.textContent = 'Testing…';
         connectionStatus.className = 'status';
         var body = { domino_host: hostInput.value.trim() };
-        if (tokenInput.value) body.domino_token = tokenInput.value;
+        if (tokenInput.value.trim()) body.domino_token = tokenInput.value.trim();
         try {
           var r = await fetch(api + '/settings/test', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
