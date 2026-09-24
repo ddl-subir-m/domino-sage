@@ -1,6 +1,7 @@
 """Metadata through the real native endpoint, parser, pump and JSON readout (#511)."""
 import copy
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,8 @@ from sage.build_intent import BuildIntent
 from sage.build_policy import BuildPolicy
 from sage.context_rollover import ContextRolloverState
 from sage.gateway.protocol import Protocol
+from sage.router import llm_router
+from sage.router.models import EffortSource, Mode, Phase, Reason, SessionState
 
 from .test_native_model_controls import active, dispatch
 from .test_native_model_controls import running as native_running
@@ -100,7 +103,12 @@ def test_native_pump_counts_two_reads_and_exposes_metadata(running, monkeypatch,
         assert call["protocol"] == protocol.value and call["model"] == model
         assert call["requestedAlias"] == model
         assert call["responseReportedModel"] == model
-        assert call["effortStatus"] == "provider_default" and call["requestedEffort"] is None
+        assert {key: call[key] for key in ("configuredEffort", "effectiveEffort", "effortSource",
+                                           "effortStatus", "requestedEffort")} == {
+            "configuredEffort": None, "effectiveEffort": None,
+            "effortSource": "provider_default", "effortStatus": "provider_default",
+            "requestedEffort": None,
+        }
         assert call["firstTextMs"] is not None and call["firstToolArgumentMs"] is not None
         assert call["lastChunkMs"] >= call["firstToolArgumentMs"] >= call["ttfbMs"]
         assert call["maxChunkGapMs"] >= 0 and call["outcome"] == "success"
@@ -195,8 +203,165 @@ def test_explicit_effort_absent_usage_and_child_session_are_not_guessed(running,
     assert record["turnId"] == call["turnId"] == "turn_known"
     assert record["appId"] == "app_known" and record["conversationId"] == "thread_known"
     assert call["sessionId"] == "ses_child" and call["rootSessionId"] == "ses_native"
-    assert call["effortStatus"] == "explicit" and call["requestedEffort"] == "low"
+    assert {key: call[key] for key in ("configuredEffort", "effectiveEffort", "effortSource",
+                                       "effortStatus", "requestedEffort")} == {
+        "configuredEffort": "low", "effectiveEffort": "low", "effortSource": "user",
+        "effortStatus": "applied", "requestedEffort": "low",
+    }
     assert all(call[k] is None for k in ("inTokens", "outTokens", "cachedTokens", "reasoningTokens"))
+
+
+def _automatic_stage_call(running, monkeypatch, *, phase, model="GLM 5.3 OR",
+                          saved_slots=frozenset(), effort=None, approved=None, recovery=False):
+    client, orch, gateway = running
+    monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT))
+    project = orch._project
+    project.control.pick(None)
+    project.control.set_mode(Mode.AUTO)
+    project.control.set_phase(Phase.PLAN if recovery else phase)
+    catalog = replace(project.shim.catalog, plan=model, implement=model,
+                      plan_effort=effort if phase is Phase.PLAN else None,
+                      implement_effort=effort if phase is Phase.IMPLEMENT else None)
+    if approved:
+        catalog = replace(catalog, sovereign_plan=next(iter(approved)),
+                          sovereign_implement=next(iter(approved)))
+    project.shim.set_catalog(catalog)
+    rows_token = project.control.arm_saved_effort_slots(saved_slots)
+    mode_token = None
+    if recovery:
+        mode_token = project.control.arm_turn_mode(Mode.AUTO)
+        project.control.set_turn_mode(Mode.IMPLEMENT)
+    sensitivity_token = (project.control.arm_sensitivity(frozenset(approved), tuple(approved))
+                         if approved else None)
+    messages = ([{"role": "assistant", "tool_calls": [
+        {"id": "edit_1", "type": "function",
+         "function": {"name": "edit", "arguments": "{}"}}]}]
+        if phase is Phase.IMPLEMENT else None)
+    timing.start_turn("build")
+    try:
+        with active(orch) as headers:
+            final_model = next(iter(approved)) if approved else model
+            response = dispatch(client, headers, Protocol.CHAT, final_model, messages)
+        assert response.status_code == 200, response.text
+        return gateway.seen[-1][0], timing.as_dict(timing.finish_turn())["calls"][0]
+    finally:
+        if timing.current() is not None:
+            timing.finish_turn()
+        if sensitivity_token is not None:
+            project.control.disarm_sensitivity(sensitivity_token)
+        if mode_token is not None:
+            project.control.disarm_turn_mode(mode_token)
+        project.control.disarm_saved_effort_slots(rows_token)
+
+
+@pytest.mark.parametrize(("phase", "expected"), [(Phase.PLAN, "high"),
+                                                   (Phase.IMPLEMENT, "low")])
+def test_automatic_build_stages_send_their_policy_effort_and_record_its_source(
+        running, monkeypatch, phase, expected):
+    outbound, call = _automatic_stage_call(running, monkeypatch, phase=phase)
+
+    assert outbound["reasoning_effort"] == expected
+    assert {key: call[key] for key in ("configuredEffort", "effectiveEffort", "effortSource",
+                                       "effortStatus", "requestedEffort")} == {
+        "configuredEffort": expected, "effectiveEffort": expected,
+        "effortSource": "stage_default", "effortStatus": "applied",
+        "requestedEffort": expected,
+    }
+
+
+def test_stage_default_uses_any_measured_alias_and_omits_an_unsupported_one(running, monkeypatch):
+    supported, supported_call = _automatic_stage_call(
+        running, monkeypatch, phase=Phase.PLAN, model="domino/gemini-3.7-flash")
+    assert supported["reasoning_effort"] == "high"
+    assert supported_call["effortStatus"] == "applied"
+
+    unsupported, unsupported_call = _automatic_stage_call(
+        running, monkeypatch, phase=Phase.PLAN, model="unprobed")
+    assert "reasoning_effort" not in unsupported
+    assert (unsupported_call["configuredEffort"], unsupported_call["effectiveEffort"],
+            unsupported_call["effortSource"], unsupported_call["effortStatus"]) == (
+                "high", None, "stage_default", "unsupported")
+
+
+@pytest.mark.parametrize(("effort", "source", "status"), [
+    ("max", "user", "applied"),
+    (None, "provider_default", "provider_default"),
+])
+def test_saved_row_effort_and_explicit_model_default_beat_the_stage_default(
+        running, monkeypatch, effort, source, status):
+    outbound, call = _automatic_stage_call(
+        running, monkeypatch, phase=Phase.PLAN, saved_slots=frozenset({"plan"}), effort=effort)
+
+    assert outbound.get("reasoning_effort") == effort
+    assert (call["configuredEffort"], call["effectiveEffort"], call["effortSource"],
+            call["effortStatus"]) == (effort, effort, source, status)
+
+
+def test_sensitivity_validates_the_existing_stage_decision_against_the_final_alias(
+        running, monkeypatch):
+    approved = {"domino/gemini-3.7-flash"}
+    outbound, call = _automatic_stage_call(
+        running, monkeypatch, phase=Phase.PLAN, model="GLM 5.3 OR", approved=approved)
+
+    assert outbound["model"] == "domino/gemini-3.7-flash"
+    assert outbound["reasoning_effort"] == "high"
+    assert (call["effortSource"], call["effortStatus"]) == ("stage_default", "applied")
+
+
+def test_sensitivity_keeps_a_persons_saved_effort_and_validates_the_final_alias(
+        running, monkeypatch):
+    approved = {"domino/gemini-3.7-flash"}
+    outbound, call = _automatic_stage_call(
+        running, monkeypatch, phase=Phase.PLAN, model="GLM 5.3 OR",
+        saved_slots=frozenset({"plan"}), effort="max", approved=approved)
+
+    assert outbound["model"] == "domino/gemini-3.7-flash"
+    assert outbound["reasoning_effort"] == "max"
+    assert (call["configuredEffort"], call["effectiveEffort"], call["effortSource"],
+            call["effortStatus"]) == ("max", "max", "user", "applied")
+
+
+def test_signing_pin_uses_the_saved_row_for_the_slot_that_actually_runs(running):
+    _client, orch, _gateway = running
+    catalog = replace(
+        orch._project.shim.catalog,
+        plan="GLM 5.3 OR", implement="gemini-3.7-flash",
+        plan_effort="max", implement_effort="low",
+    )
+    state = SessionState(
+        mode=Mode.AUTO, phase=Phase.PLAN,
+        saved_effort_slots=frozenset({"plan", "implement"}), effort_rows_armed=True,
+    )
+
+    decision = llm_router.resolve(state, catalog)
+
+    assert (decision.model, decision.reason, decision.effort, decision.effort_source) == (
+        "gemini-3.7-flash", Reason.SIGNING_PIN, "low", EffortSource.USER)
+
+
+def test_clean_pre_edit_recovery_keeps_the_implement_stage_policy(running, monkeypatch):
+    outbound, call = _automatic_stage_call(
+        running, monkeypatch, phase=Phase.IMPLEMENT, recovery=True)
+
+    assert outbound["reasoning_effort"] == "low"
+    assert (call["configuredEffort"], call["effectiveEffort"], call["effortSource"],
+            call["effortStatus"]) == ("low", "low", "stage_default", "applied")
+
+
+def test_effort_export_rejects_the_whole_record_when_any_enum_or_value_is_invalid():
+    valid = {"configuredEffort": "high", "effectiveEffort": "high",
+             "requestedEffort": "high", "effortSource": "stage_default",
+             "effortStatus": "applied"}
+    assert diagnostics._effort_metadata(valid) == valid
+    for key, bad in (("configuredEffort", "PRIVATE_CONFIGURED"),
+                     ("effectiveEffort", "PRIVATE_EFFECTIVE"),
+                     ("requestedEffort", "PRIVATE_REQUESTED"),
+                     ("effortSource", "PRIVATE_SOURCE"),
+                     ("effortStatus", "PRIVATE_STATUS")):
+        row = {**valid, key: bad}
+        assert diagnostics._effort_metadata(row) is None
+    assert diagnostics._effort_metadata({**valid, "effortSource": "provider_default"}) is None
+    assert diagnostics._effort_metadata({**valid, "requestedEffort": "low"}) is None
 
 
 def test_cancelled_native_call_stays_on_the_original_turn(running, monkeypatch, caplog):

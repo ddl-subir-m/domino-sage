@@ -29,6 +29,7 @@ from dataclasses import replace
 
 from .models import (
     ASSIGNABLE_SLOTS,
+    EffortSource,
     Mode,
     ModelCatalog,
     ModelDecision,
@@ -45,7 +46,26 @@ def resolve(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     # gateway alias; the standing Build Auto/Ask/Plan/Implement choice must not leak into it.
     if state.chat_thread_id:
         return _lock_sensitivity(_resolve_chat(state, catalog), state, catalog)
-    return _lock_sensitivity(_pin_signing(_resolve_build(state, catalog), catalog), state, catalog)
+    return _lock_sensitivity(
+        _pin_signing(_resolve_build(state, catalog), state, catalog), state, catalog)
+
+
+def _slot_effort(
+    state: SessionState, catalog: ModelCatalog, slot: str, *, stage_default: bool
+) -> tuple[str | None, EffortSource]:
+    """Return the saved choice for one slot without losing present-null row semantics."""
+    effort = getattr(catalog, f"{slot}_effort")
+    if slot in state.saved_effort_slots:
+        return effort, EffortSource.USER if effort is not None else EffortSource.PROVIDER_DEFAULT
+    if stage_default and state.effort_rows_armed:
+        return None, EffortSource.STAGE_DEFAULT
+    return effort, EffortSource.USER if effort is not None else EffortSource.PROVIDER_DEFAULT
+
+
+def _picked_effort(state: SessionState) -> tuple[str | None, EffortSource]:
+    return (state.picked_effort,
+            EffortSource.USER if state.picked_effort is not None
+            else EffortSource.PROVIDER_DEFAULT)
 
 
 def _lock_sensitivity(
@@ -68,14 +88,14 @@ def _lock_sensitivity(
         return decision
     if decision.model in approved:
         return replace(decision, locked=True)
-    # No effort. The lock picks by approval, not by slot, so nothing here made an assignment — and
-    # an approved model that happens to equal some other slot's is still not that slot's assignment
-    # (ADR-0049). Inheriting one from the barred slot is the stale-effort defect wearing a
-    # coincidence. The approved-passthrough above keeps the effort, because the slot still answered.
-    return ModelDecision(
-        model=_nearest_approved(state, catalog, approved), reason=Reason.SENSITIVITY, locked=True,
-        effort=None,
-    )
+    final_model = _nearest_approved(state, catalog, approved)
+    # An armed Build turn keeps the configured decision and validates it against the model that
+    # actually receives the request. This preserves an explicit Model default and lets an automatic
+    # stage apply its default to the final approved alias (#532). Other callers keep the established
+    # Chat/Ask behavior: the lock chose no assignment, so it carries no effort.
+    if state.effort_rows_armed:
+        return replace(decision, model=final_model, reason=Reason.SENSITIVITY, locked=True)
+    return ModelDecision(model=final_model, reason=Reason.SENSITIVITY, locked=True)
 
 
 def nearest_approved(state: SessionState, catalog: ModelCatalog) -> str:
@@ -215,12 +235,18 @@ def resolve_unsigned(state: SessionState, catalog: ModelCatalog) -> ModelDecisio
     for slot in ASSIGNABLE_SLOTS:
         model = getattr(catalog, slot)
         if not signs(model):
+            effort, source = _slot_effort(
+                state, catalog, slot,
+                stage_default=not state.chat_thread_id and state.mode is not Mode.ASK,
+            )
             return ModelDecision(model=model, reason=Reason.SIGNING_VETO, locked=False,
-                                 effort=getattr(catalog, f"{slot}_effort"))
+                                 effort=effort, effort_source=source)
     return None
 
 
-def _pin_signing(decision: ModelDecision, catalog: ModelCatalog) -> ModelDecision:
+def _pin_signing(
+    decision: ModelDecision, state: SessionState, catalog: ModelCatalog
+) -> ModelDecision:
     """Hold a Build session on the signing model, if any slot it could reach names one (ADR-0032).
 
     The slot set is every ASSIGNABLE_SLOT, not just the phase's own: all three share one harness
@@ -248,23 +274,28 @@ def _pin_signing(decision: ModelDecision, catalog: ModelCatalog) -> ModelDecisio
     # there the pin moved nothing, so the asking slot's own assignment is still the one that chose
     # what runs, and two slots holding the same alias with different efforts is the per-phase split
     # working rather than a coincidence to be normalised away.
+    effort, source = _slot_effort(
+        state, catalog, slot, stage_default=state.mode is not Mode.ASK)
     return ModelDecision(model=model, reason=Reason.SIGNING_PIN, locked=False,
-                         effort=getattr(catalog, f"{slot}_effort"))
+                         effort=effort, effort_source=source)
 
 
 def _resolve_build(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     # 1. Auto mode: the pipeline drives model choice by phase.
     if state.mode is Mode.AUTO:
         if state.phase is Phase.PLAN:
+            effort, source = _slot_effort(state, catalog, "plan", stage_default=True)
             return ModelDecision(model=catalog.plan, reason=Reason.AUTO_PLAN, locked=False,
-                                 effort=catalog.plan_effort)
+                                 effort=effort, effort_source=source)
+        effort, source = _slot_effort(state, catalog, "implement", stage_default=True)
         return ModelDecision(model=catalog.implement, reason=Reason.AUTO_IMPLEMENT, locked=False,
-                             effort=catalog.implement_effort)
+                             effort=effort, effort_source=source)
 
     # 2. Ask mode: pinned to the ask model. Read-only is enforced by the shim, not routing.
     if state.mode is Mode.ASK:
+        effort, source = _slot_effort(state, catalog, "ask", stage_default=False)
         return ModelDecision(model=catalog.ask, reason=Reason.ASK_PINNED, locked=False,
-                             effort=catalog.ask_effort)
+                             effort=effort, effort_source=source)
 
     # 3. Plan mode: pinned to the plan model, overridable by an explicit pick.
     if state.mode is Mode.PLAN:
@@ -274,17 +305,22 @@ def _resolve_build(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
             # the version anyone writes first, and it applies a level chosen for a model the person
             # just moved off. `None` when they picked no level, which is every pick made before the
             # menu could carry one (#295) and every pick of an alias that advertises none.
+            effort, source = _picked_effort(state)
             return ModelDecision(model=state.picked_model, reason=Reason.PLAN_OVERRIDE, locked=False,
-                                 effort=state.picked_effort)
+                                 effort=effort, effort_source=source)
+        effort, source = _slot_effort(state, catalog, "plan", stage_default=True)
         return ModelDecision(model=catalog.plan, reason=Reason.PLAN_PINNED, locked=False,
-                             effort=catalog.plan_effort)
+                             effort=effort, effort_source=source)
 
     # 4. Implement mode: pinned to the implement model, overridable by an explicit pick.
     if state.picked_model is not None:
+        effort, source = _picked_effort(state)
         return ModelDecision(model=state.picked_model, reason=Reason.IMPLEMENT_OVERRIDE,
-                             locked=False, effort=state.picked_effort)   # the pick's own, as above
+                             locked=False, effort=effort,
+                             effort_source=source)   # the pick's own, as above
+    effort, source = _slot_effort(state, catalog, "implement", stage_default=True)
     return ModelDecision(model=catalog.implement, reason=Reason.IMPLEMENT_PINNED, locked=False,
-                         effort=catalog.implement_effort)
+                         effort=effort, effort_source=source)
 
 
 def _resolve_chat(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
@@ -294,6 +330,9 @@ def _resolve_chat(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
         # `picked_effort` is Build's, and they stay two fields because they are two standing
         # choices on two models; see `SessionState` and `_resolve_build`.
         return ModelDecision(model=state.chat_model, reason=Reason.CHAT_OVERRIDE, locked=False,
-                             effort=state.reasoning_effort)
+                             effort=state.reasoning_effort,
+                             effort_source=(EffortSource.USER if state.reasoning_effort is not None
+                                            else EffortSource.PROVIDER_DEFAULT))
+    effort, source = _slot_effort(state, catalog, "ask", stage_default=False)
     return ModelDecision(model=catalog.ask, reason=Reason.CHAT_DEFAULT, locked=False,
-                         effort=catalog.ask_effort)
+                         effort=effort, effort_source=source)

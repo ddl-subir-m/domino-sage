@@ -35,6 +35,8 @@ build_context_automatic_rollover_limit
                                  SAGE_BUILD_CONTEXT_AUTOMATIC_ROLLOVER_LIMIT       1
 build_context_continuation_reference_max_count
                                  SAGE_BUILD_CONTEXT_CONTINUATION_REFERENCE_MAX_COUNT 100
+plan_reasoning_effort            SAGE_BUILD_PLAN_REASONING_EFFORT                    high
+implement_reasoning_effort       SAGE_BUILD_IMPLEMENT_REASONING_EFFORT               low
 ===============================  ================================================  =========
 
 [1] ``SAGE_MAX_NUDGES`` remains an alias.
@@ -86,6 +88,8 @@ class BuildPolicy:
     build_context_non_media_max_bytes: int = 786_432
     build_context_automatic_rollover_limit: int = 1
     build_context_continuation_reference_max_count: int = 100
+    plan_reasoning_effort: str = "high"
+    implement_reasoning_effort: str = "low"
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,17 +133,24 @@ _SETTINGS = (
              "SAGE_BUILD_CONTEXT_AUTOMATIC_ROLLOVER_LIMIT"),
     _Setting("build_context_continuation_reference_max_count",
              "SAGE_BUILD_CONTEXT_CONTINUATION_REFERENCE_MAX_COUNT"),
+    _Setting("plan_reasoning_effort", "SAGE_BUILD_PLAN_REASONING_EFFORT", "effort"),
+    _Setting("implement_reasoning_effort", "SAGE_BUILD_IMPLEMENT_REASONING_EFFORT", "effort"),
 )
 
 _POSITIVE_INTEGER = re.compile(r"[0-9]+\Z")
 _POSITIVE_NUMBER = re.compile(
     r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
+_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "max", "xhigh"})
 
 
-def _value(setting: _Setting, key: str, raw: str) -> int | float:
+def _value(setting: _Setting, key: str, raw: str) -> int | float | str:
     try:
         if isinstance(raw, bool):
             raise TypeError
+        if setting.kind == "effort":
+            if raw not in _REASONING_EFFORTS:
+                raise ValueError
+            return raw
         if setting.kind == "count":
             if not _POSITIVE_INTEGER.fullmatch(raw):
                 raise ValueError

@@ -17387,6 +17387,12 @@ class Orchestrator:
         # it's the user's standing choice now and runs their next turn. `mode` overrides the pick for
         # a turn Sage runs on the user's behalf (approving a plan from a read-only mode).
         mode_token = project.control.arm_turn_mode(mode_at_start)
+        # Row PRESENCE is a user choice even when its effort value is null (Model default). Read it
+        # once at the turn boundary and carry only slot names through routing; the provider hot path
+        # must not reopen project settings on every inference (#532).
+        saved_effort_slots_token = project.control.arm_saved_effort_slots(
+            frozenset(project.record.read_catalog_overrides())
+        )
         # What this Conversation has stopped sending on this app (ADR-0022). Read out of the Build
         # transcript rather than the Thread's, because a Conversation can drive several Built Apps
         # and each has its own session — the same reason `_record_build_recall_offer` counts per
@@ -17664,6 +17670,7 @@ class Orchestrator:
             # the user's standing choice was never touched and there is nothing to put back. Whatever
             # they picked while this turn streamed is what runs next.
             project.control.disarm_turn_mode(mode_token)
+            project.control.disarm_saved_effort_slots(saved_effort_slots_token)
             # Safe to drop here even though this runs before the refusal is written: the search
             # below withholds against the payload it captured, not against the armed set, and every
             # request this turn will make has already been made.
