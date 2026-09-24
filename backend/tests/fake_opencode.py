@@ -200,7 +200,7 @@ class FakeOpenCode:
         # `session` recorded too: a phased build's assertions are mostly about WHICH session saw
         # which prompt.
         self.prompts.append({"text": text, "agent": agent, "attachments": attachments,
-                             "session": session_id})
+                             "session": session_id, "model": model})
         # One flat script consumed in order, regardless of session — the Nth send_prompt across the
         # whole run performs the Nth scripted turn, so tests read top-to-bottom.
         turn = self.turns[self._next] if self._next < len(self.turns) else Turn()

@@ -7,9 +7,9 @@ tools. That handle was `gpt-5.4`, so Sonnet, Gemini, GLM and Qwen all had `apply
 weaker model's broken envelope can return "Success" and write nothing (#534).
 
 Rig, 2026-09-24, real 1.18.4 against a fake model: the same `sage-implement` turn under `gpt-5.4`
-and under a neutral handle differed ONLY in the tool set and the "You are powered by" line. A
-session saved under `gpt-5.4` and prompted again after the switch ran with no error, on its own
-saved model — so `gpt-5.4` stays listed, and only new sessions change.
+and under a neutral handle differed ONLY in the tool set and the "You are powered by" line. So each
+prompt now names its handle: `gpt-5.4` when the turn runs on GPT, which is trained on the patch
+envelope, and the neutral `sage-model` for every other model.
 """
 from __future__ import annotations
 
@@ -20,7 +20,14 @@ from pathlib import Path
 import httpx
 import pytest
 
+from .fake_opencode import Turn
 from .opencode_server import BINARY, _opencode_server
+from .test_a_prompt_naming_no_app_asks_what_to_build import (  # noqa: F401  (_no_waiting: autouse)
+    _REFUSAL,
+    _build,
+    _no_waiting,
+    _run,
+)
 from .test_enforcement_shim import CATALOG, _patch_messages, _tool_names
 from .test_enforcement_shim import _handled_with as _handled  # noqa: F401
 
@@ -84,3 +91,77 @@ def test_the_pinned_opencode_offers_edit_to_the_default_handle_and_patch_to_gpt(
         legacy = _tools_for(url, str(runtime), "gpt-5.4")
     assert {"edit", "write"} <= default and "apply_patch" not in default
     assert "apply_patch" in legacy and not {"edit", "write"} & legacy
+
+
+# --- GPT keeps `apply_patch`: the handle is chosen per prompt ----------------------------------
+#
+# Rig, 2026-09-24: in ONE session, a prompt naming `gpt-5.4` was offered `apply_patch` and the next,
+# naming `sage-model`, `edit` and `write`. OpenCode honours `model` on each v1 prompt.
+
+def _project(catalog=CATALOG, mode=None):
+    from types import SimpleNamespace
+
+    from sage.router.model_control import ModelControl
+    from sage.router.models import Mode
+
+    return SimpleNamespace(control=ModelControl(mode=mode or Mode.AUTO),
+                           shim=SimpleNamespace(catalog=catalog))
+
+
+def _handle(project) -> str:
+    from sage.orchestrator.service import _tool_handle
+
+    handle = _tool_handle(project)
+    assert handle["providerID"] == "sage-gateway"
+    return handle["modelID"]
+
+
+def _catalog(**slots):
+    from dataclasses import replace
+    return replace(CATALOG, **slots)
+
+
+def test_gpt_on_both_auto_phases_gets_the_gpt_handle():
+    assert _handle(_project(_catalog(plan="gpt-5.4", implement="gpt-5.5"))) == "gpt-5.4"
+
+
+def test_auto_with_one_phase_off_gpt_gets_the_neutral_handle():
+    """Auto moves between plan and implement call by call, inside one prompt. GPT given `edit`
+    still edits; GLM given only `apply_patch` does not."""
+    assert _handle(_project(_catalog(plan="gpt-5.4", implement="glm-5.3"))) == "sage-model"
+    assert _handle(_project(_catalog(plan="glm-5.3", implement="gpt-5.4"))) == "sage-model"
+
+
+def test_a_pinned_mode_reads_only_its_own_model():
+    from sage.router.models import Mode
+
+    catalog = _catalog(plan="glm-5.3", implement="gpt-5.4")
+    assert _handle(_project(catalog, Mode.IMPLEMENT)) == "gpt-5.4"
+    assert _handle(_project(catalog, Mode.PLAN)) == "sage-model"
+
+
+def test_a_chat_turn_reads_its_own_pick_not_the_build_slots():
+    project = _project(_catalog(plan="glm-5.3", implement="glm-5.3"))
+    project.control.pick_chat("gpt-5.4")
+    project.control.arm_chat("thread")
+    assert _handle(project) == "gpt-5.4"
+    project.control.pick_chat("sonnet")
+    assert _handle(project) == "sage-model"
+
+
+def test_the_ids_opencode_itself_leaves_on_edit_get_the_neutral_handle():
+    for model in ("gpt-oss-120b", "gpt-4o", "sonnet", "GLM 5.3 OR"):
+        assert _handle(_project(_catalog(plan=model, implement=model))) == "sage-model", model
+
+
+def test_a_turn_that_will_not_resolve_gets_the_neutral_handle():
+    project = _project(_catalog(plan="gpt-5.4", implement="gpt-5.4"))
+    project.control.arm_sensitivity(frozenset())  # an empty approved set raises in the router
+    assert _handle(project) == "sage-model"
+
+
+def test_every_prompt_of_a_build_turn_names_its_handle(tmp_path):
+    orch, oc = _build(tmp_path, [Turn(text=_REFUSAL)])
+    _run(orch, "build me a table of lab samples")
+    assert [p["model"] for p in oc.prompts] == [
+        {"providerID": "sage-gateway", "modelID": "sage-model"}] * len(oc.prompts)

@@ -2230,6 +2230,31 @@ def _agent_for_mode(mode: Mode) -> str | None:
     return _MODE_AGENT.get(mode)
 
 
+def _gives_patch(model: str) -> bool:
+    """OpenCode 1.18.4's own test (`ToolRegistry.tools`): `apply_patch` in place of `edit`/`write`."""
+    return "gpt-" in model and "oss" not in model and "gpt-4" not in model
+
+
+def _tool_handle(project) -> dict:
+    """The model OpenCode is told this prompt runs on, which decides its edit tools (#539).
+
+    OpenCode picks `apply_patch` or `edit`/`write` from this id alone, and the shim swaps in the real
+    alias only after that. So GPT, trained on the patch envelope, gets `gpt-5.4`, and every other
+    model gets the neutral `sage-model`. Auto can move a turn between its plan and implement models
+    call by call, so the GPT handle needs BOTH to be GPT: a GPT model given `edit` still edits, but
+    any other model given only `apply_patch` has no edit tool it can use. A turn that will not
+    resolve gets the neutral handle for the same reason.
+    """
+    state = project.control.snapshot()
+    states = ([replace(state, phase=phase) for phase in Phase]
+              if state.mode is Mode.AUTO else [state])
+    try:
+        patch = all(_gives_patch(llm_router.resolve(s, project.shim.catalog).model) for s in states)
+    except Exception:
+        patch = False
+    return {"providerID": "sage-gateway", "modelID": "gpt-5.4" if patch else "sage-model"}
+
+
 # Interrogative leads and build verbs for _looks_like_question. Kept tight on purpose: ambiguous
 # leads ("give", "show", "tell", "list", "get") stay OUT so they fall through to gating.
 _QUESTION_LEAD = frozenset({
@@ -7748,7 +7773,7 @@ class Orchestrator:
                 while True:
                     project.last_gateway_error = None
                     agent = _agent_for_mode(project.control.snapshot().mode)
-                    client.send_prompt(sid, text, agent=agent)
+                    client.send_prompt(sid, text, model=_tool_handle(project), agent=agent)
                     client.wait_for_idle(sid)
                     guard = project.pre_edit_guard
                     state = project.context_rollover
@@ -10498,7 +10523,7 @@ class Orchestrator:
                 project.last_gateway_error = None
                 project.model_calls = 0
                 seen = self._seen_baseline(client, sid)
-                client.send_prompt(sid, original_prompt, agent="sage-plan")
+                client.send_prompt(sid, original_prompt, model=_tool_handle(project), agent="sage-plan")
                 client.wait_for_idle(sid)
                 parts: list[str] = []
                 for message in client.messages(sid):
@@ -13058,7 +13083,8 @@ class Orchestrator:
 
         def dispatch() -> None:
             try:
-                client.send_prompt(sid, ask, agent="sage-chat", chat=True)
+                client.send_prompt(sid, ask, model=_tool_handle(self._chat_project()), agent="sage-chat",
+                                   chat=True)
                 sent.append(True)
             except Exception:
                 log.warning("chat: the findings request failed")
@@ -14045,7 +14071,7 @@ class Orchestrator:
                         "how you work."
                     )
             with timing.span("setup.dispatch"):
-                client.send_prompt(sid, turn_prompt, agent="sage-chat",
+                client.send_prompt(sid, turn_prompt, model=_tool_handle(project), agent="sage-chat",
                                    attachments=mentioned, chat=True)
             if owed:
                 # Discharged by a turn REACHING the model on the new session, which is not the same
@@ -14713,7 +14739,7 @@ class Orchestrator:
                                     seen.add(_part_key(m, i, part))
                         try:
                             with timing.span("chat.table_repair"):
-                                client.send_prompt(sid, tables.repair_prompt(repairable),
+                                client.send_prompt(sid, tables.repair_prompt(repairable), model=_tool_handle(project),
                                                    agent="sage-chat", chat=True)
                         except Exception:
                             log.warning("chat: table repair request failed")
@@ -18781,7 +18807,8 @@ class Orchestrator:
                                                            resource_note,
                                                            unusable_note, ambiguous_note,
                                                            broken_retry_note) if p),
-                                   agent=agent, attachments=mention_files)
+                                   model=_tool_handle(project), agent=agent,
+                                   attachments=mention_files)
                 if fresh_session:
                     self._turn_gave_up = False
             except Exception:
@@ -20777,7 +20804,7 @@ class Orchestrator:
             "listed above."
         )
         project.last_gateway_error = None
-        client.send_prompt(sid, prompt)
+        client.send_prompt(sid, prompt, model=_tool_handle(project))
         client.wait_for_idle(sid)
         if project.last_gateway_error is not None:
             git.abort_merge(path)

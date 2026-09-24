@@ -4856,9 +4856,9 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
             # One stable handle keeps OpenCode's persisted provider metadata intact.
             # Actual Alias and route selection come from the server capability resolver.
             # The DEFAULT handle is neutral (#539): OpenCode offers `apply_patch` INSTEAD of
-            # `edit`/`write` to any id containing `gpt-` (1.18.4 `ToolRegistry.tools`), and every
-            # alias travels under this one handle. `gpt-5.4` stays listed so a session saved under it
-            # still resolves, and the summarise call that names it still works.
+            # `edit`/`write` to any id containing `gpt-` (1.18.4 `ToolRegistry.tools`). Each prompt
+            # names one of the two handles (`service._tool_handle`): `gpt-5.4` when the turn runs on
+            # GPT, `sage-model` otherwise. The summarise call names `gpt-5.4` too.
             handle = {**models.get("sage-model", models["gpt-5.4"]), "reasoning": True}
             provider["models"] = {"gpt-5.4": {**models["gpt-5.4"], "reasoning": True},
                                   "sage-model": handle}
