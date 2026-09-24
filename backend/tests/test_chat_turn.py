@@ -2176,7 +2176,8 @@ def test_empty_plan_does_not_mark_planned(tmp_path: Path):
 
 def test_a_handoff_plan_without_execution_details_is_not_persisted(tmp_path: Path):
     malformed = "# Desk exposure\n\nA dashboard.\n\n## Plan\n1. Add the table.\n"
-    orch, _ = _orch(tmp_path, [Turn(text="Rates."), Turn(text=malformed)])
+    orch, _ = _orch(
+        tmp_path, [Turn(text="Rates."), Turn(text=malformed), Turn(text=malformed)])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
 
