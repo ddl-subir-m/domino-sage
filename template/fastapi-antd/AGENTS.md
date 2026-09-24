@@ -63,6 +63,15 @@ identifiers into a plan. Describe the product structure and behavior instead.
 <!-- sage:build-profile:v1:common:end -->
 
 <!-- sage:build-profile:v1:implement:begin -->
+## What the final check rejects
+
+When your turn ends, Sage runs one check. Any failure sends you back for a repair turn:
+
+1. A `.py` file that does not compile (`python -m py_compile`).
+2. A `.js` file in `static/` (except `static/vendor/` and `static/sage/`) that `node --check`
+   refuses. Plain browser JavaScript only: no JSX, no `import` of a package.
+3. `SAGE001`: the starter placeholder is still the screen in `static/app.js`. Replace it.
+
 ## Implementation turn
 
 Build the user's app by editing `static/app.js`, the files beside it, and `app.py` when the app needs

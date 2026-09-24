@@ -512,6 +512,13 @@ def install(app, get_orchestrator):
                     "turn_id": running_ticket.id,
                     "elapsed_ms": round(snapshot["elapsedSeconds"] * 1000),
                     "chunk_count": snapshot["chunkCount"],
+                    # What the stall hint needs (#538): was the effort left to the provider, and
+                    # could this alias have taken one on a request like this.
+                    "model": outbound.get("model", ""),
+                    "effort_source": (effort_decision.source.value
+                                      if effort_decision is not None else ""),
+                    "efforts": list(capability.efforts_with_tools if outbound.get("tools")
+                                    else capability.efforts),
                 })
             if isinstance(error, GatewayUpstreamError):
                 project.last_gateway_error["upstream_status"] = error.status

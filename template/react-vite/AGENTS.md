@@ -62,6 +62,13 @@ identifiers into a plan. Describe the product structure and behavior instead.
 <!-- sage:build-profile:v1:common:end -->
 
 <!-- sage:build-profile:v1:implement:begin -->
+## What the final check rejects
+
+When your turn ends, Sage runs one check. Any failure sends you back for a repair turn:
+
+1. A TypeScript error from `tsc --noEmit`.
+2. `SAGE001`: the starter placeholder is still the screen in `src/App.tsx`. Replace it.
+
 ## Implementation turn
 
 Build the user's app by editing `src/`. There is no install or build step to run.

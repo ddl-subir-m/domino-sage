@@ -2806,6 +2806,18 @@ _FAILED_PLAN_DECISIONS = frozenset({"no app described", "empty plan"})
 _PLANNING_STOPPED = "Planning stopped"
 
 
+def _effort_hint(err: dict) -> str:
+    """One sentence for a planner that stalled on Model default, or "" (#538).
+
+    MEASURED 2026-09-24: GLM 5.3 OR on Model default reasoned for 120 s with no answer, then acted in
+    3.5 s on the same request. Said, never done: "Model default" is the person's saved choice."""
+    efforts = [str(e) for e in err.get("efforts") or []]
+    if err.get("effort_source") != "provider_default" or not efforts:
+        return ""
+    return (f" {err.get('model') or 'This model'} ran on Model default, which puts no limit on "
+            f"its thinking. Setting its Plan effort ({', '.join(efforts)}) can prevent this.")
+
+
 def _failed_plan_request(history: list[dict], prompt: str) -> str | None:
     """The request a failed plan turn was about, when `prompt` only asks to go on (#537).
 
@@ -5496,6 +5508,58 @@ _PLAN_REFUSAL = (
     "change to one — a shell command, a pasted error, a stray note — write exactly "
     f"{_NO_APP_SENTINEL} on the first line, then one sentence naming what is missing, and nothing "
     "else: no headings, no plan. Never invent an app the request did not ask for.")
+
+
+def _plan_example(data_step: tuple[str, str], screen_files: str) -> str:
+    return f"""An example of the SHAPE only, for a different app. Never reuse its name, screens, files or \
+content; plan the request below.
+
+# Sample Intake Log
+
+Logs lab samples as they arrive and flags the late ones.
+
+## Problem & outcome
+Arrivals are tracked by email, so a late sample is found days later. Once this exists, every late \
+sample shows the same morning.
+
+## Who uses this
+The lab coordinator who checks arrivals each morning.
+
+## What it does
+- Lists samples from the attached arrivals file.
+- Flags samples more than two days past their due date.
+
+## Screens
+- **Arrivals** — a table of samples with a late flag and a site filter.
+
+## Done when
+- The table shows every row of the arrivals file.
+- A sample three days past due shows the late flag.
+
+## Plan
+### 1. Arrivals data
+- Files — {data_step[0]}
+- Do — {data_step[1]}
+- Done when — Each sample comes back with its due date and a late flag.
+
+### 2. Arrivals table
+- Files — {screen_files}
+- Do — Replace the starter screen with a table of samples, a site filter and a late tag.
+- Done when — The preview shows the table with late rows tagged.
+- Don't touch — {data_step[0]}"""
+
+
+# One worked plan per stack (weaker models copy an example better than they follow rules), with
+# that stack's real files so the example never teaches a path the app does not have. Kept out of
+# `_PLAN_SHAPE` because the Chat handoff shares that constant.
+_PLAN_EXAMPLES = {
+    "fastapi-antd": _plan_example(
+        ("app.py", "Add a route that reads the arrivals file and returns each sample."),
+        "static/app.js, static/app.css"),
+    "react-vite": _plan_example(
+        ("src/arrivals.ts", "Read the arrivals file and return each sample."),
+        "src/App.tsx, src/App.css"),
+}
 
 
 # Heads the person's own words in a gated plan turn (#537). The data notes ride AFTER the request
@@ -17767,6 +17831,8 @@ class Orchestrator:
             # Labelled (#537). The person's sentence was ~0.4 KB of a 14 KB message, unmarked, with
             # ~10 KB of data notes after it; a planner took the notes for the request and refused.
             current = _PLAN_REQUEST_LABEL + current
+            shape += "\n\n" + _PLAN_EXAMPLES.get(
+                stack_of(project.app_for_turn().path).name, _PLAN_EXAMPLES["react-vite"])
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
                            "would touch so the plan fits the current code, then write the plan. "
@@ -18339,6 +18405,9 @@ class Orchestrator:
                     target_for=lambda row: self._reference_attachment_target(project, row),
                     descriptors=descriptors,
                 )
+                if gate:
+                    prepared_references = [live_reference.for_planning(item)
+                                           for item in prepared_references]
                 plan_reference_records = [live_reference.plan_record(item)
                                           for item in prepared_references]
             if fresh_session and project.stop_requested:
@@ -19380,7 +19449,7 @@ class Orchestrator:
                         restarted = yield from restart_planning_session(
                             correction="",
                             reason=("the planner produced no action — restarting once in a "
-                                    "clean session"),
+                                    "clean session." + _effort_hint(err)),
                         )
                         if restarted:
                             iterate_reason = "planning no-action recovery"
@@ -19392,7 +19461,8 @@ class Orchestrator:
                     yield persist({
                         "type": "error",
                         "message": (_PLANNING_STOPPED + " because the clean retry also produced no "
-                                    "text or tool call. Try the request again."),
+                                    "text or tool call. Try the request again."
+                                    + _effort_hint(err)),
                     })
                     yield persist({"type": "done", "ok": False,
                                    "decision": "model_no_action_timeout"})
