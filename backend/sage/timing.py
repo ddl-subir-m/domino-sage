@@ -159,6 +159,7 @@ class TurnRecord:
     repeat_brake_truncated: bool = False
     implementation_session: dict = field(default_factory=dict)
     pre_edit_guard: dict = field(default_factory=dict)
+    context_rollover: dict = field(default_factory=dict)
     counters: dict[str, float] = field(default_factory=dict)
     observations: dict[str, list[float]] = field(default_factory=dict)
     t1: float | None = None
@@ -305,7 +306,8 @@ def implementation_session(*, fresh: bool, reason: str, created: bool,
     record that lifecycle outcome.
     """
     if reason not in {
-        "approved_plan", "phase", "broken_call_recovery", "pre_edit_recovery", "reused",
+        "approved_plan", "phase", "broken_call_recovery", "pre_edit_recovery",
+        "context_rollover", "reused",
     }:
         return
     rec = _current
@@ -366,6 +368,42 @@ def pre_edit_guard(value: dict) -> None:
             rec.pre_edit_guard = safe
     except Exception:
         log.debug("timing: pre-edit guard update failed", exc_info=True)
+
+
+def context_rollover(value: dict) -> None:
+    """Record only the fixed numeric whole-request context state."""
+    rec = _current
+    if rec is None:
+        return
+    try:
+        integers = (
+            "policyVersion", "limitNonMediaBytes", "sessionGeneration", "rolloverCount",
+            "totalWireBytes", "mediaBytes", "nonMediaContextBytes",
+        )
+        safe = {}
+        for key in integers:
+            item = value.get(key)
+            if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+                return
+            safe[key] = item
+        if safe["policyVersion"] != 1:
+            return
+        if value.get("measurementStatus") not in {"complete", "unavailable"}:
+            return
+        if value.get("action") not in {"route", "rollover", "offer_continue", "fail"}:
+            return
+        offered = value.get("continuationOffered")
+        if not isinstance(offered, bool):
+            return
+        safe.update({
+            "measurementStatus": value["measurementStatus"],
+            "action": value["action"],
+            "continuationOffered": offered,
+        })
+        with _lock:
+            rec.context_rollover = safe
+    except Exception:
+        log.debug("timing: context rollover update failed", exc_info=True)
 
 
 @contextmanager
@@ -662,6 +700,7 @@ def as_dict(rec: TurnRecord) -> dict:
         "running": rec.t1 is None,
         "implementationSession": dict(rec.implementation_session),
         "preEditGuard": dict(rec.pre_edit_guard),
+        "contextRollover": dict(rec.context_rollover),
         "spans": [{"name": s.name, "depth": s.depth, "atMs": round((s.t0 - rec.t0) * 1000),
                    "ms": round(s.ms), "open": s.t1 is None, **s.fields} for s in rec.spans],
         "calls": [{"n": c.n, "model": c.model, "phase": c.phase, "reason": c.reason,

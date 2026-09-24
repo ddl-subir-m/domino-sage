@@ -33,6 +33,8 @@ build_context_non_media_max_bytes
                                  SAGE_BUILD_CONTEXT_NON_MEDIA_MAX_BYTES            786432
 build_context_automatic_rollover_limit
                                  SAGE_BUILD_CONTEXT_AUTOMATIC_ROLLOVER_LIMIT       1
+build_context_continuation_reference_max_count
+                                 SAGE_BUILD_CONTEXT_CONTINUATION_REFERENCE_MAX_COUNT 100
 ===============================  ================================================  =========
 
 [1] ``SAGE_MAX_NUDGES`` remains an alias.
@@ -83,6 +85,7 @@ class BuildPolicy:
     pre_edit_clean_recovery_limit: int = 1
     build_context_non_media_max_bytes: int = 786_432
     build_context_automatic_rollover_limit: int = 1
+    build_context_continuation_reference_max_count: int = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +127,8 @@ _SETTINGS = (
              "SAGE_BUILD_CONTEXT_NON_MEDIA_MAX_BYTES"),
     _Setting("build_context_automatic_rollover_limit",
              "SAGE_BUILD_CONTEXT_AUTOMATIC_ROLLOVER_LIMIT"),
+    _Setting("build_context_continuation_reference_max_count",
+             "SAGE_BUILD_CONTEXT_CONTINUATION_REFERENCE_MAX_COUNT"),
 )
 
 _POSITIVE_INTEGER = re.compile(r"[0-9]+\Z")

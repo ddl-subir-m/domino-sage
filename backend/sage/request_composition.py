@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+from .tool_result_window import is_media_part
+
 _DIAGNOSTIC_TOOL_NAMES = frozenset({
     "apply_patch", "artifact_write", "bash", "delegated_model_call", "edit", "fetch", "glob",
     "get_file", "grep", "list", "live_read_files", "live_read_query", "live_read_table", "ls",
@@ -301,7 +303,7 @@ def _measure_content(content, categories, result) -> None:
         kind = part.get("type")
         if kind in ("text", "input_text", "output_text"):
             categories["ordinaryTextBytes"] += wire_bytes(part.get("text", ""))
-        elif kind in ("image", "image_url", "input_image"):
+        elif is_media_part(part):
             categories["mediaBytes"] += wire_bytes(part)
         elif kind in ("thinking", "redacted_thinking", "reasoning"):
             categories["opaqueStateBytes"] += wire_bytes(part)

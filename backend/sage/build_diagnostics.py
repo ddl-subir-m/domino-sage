@@ -28,7 +28,8 @@ from .workspace.stack import STACKS
 log = logging.getLogger("sage.diagnostics")
 SCHEMA_VERSION = 1
 OUTCOMES = frozenset({
-    "repeat_brake", "user_stop", "gateway_refusal", "pre_edit_limit", "error", "success",
+    "repeat_brake", "user_stop", "gateway_refusal", "pre_edit_limit", "context_limit",
+    "context_measurement_unavailable", "error", "success",
 })
 PHASES = frozenset({"planning", "implementation"})
 CAPTURE_STATUSES = frozenset({"running", "finished", "interrupted"})
@@ -236,7 +237,8 @@ def _implementation_session(value) -> dict | None:
         return None
     reason = value.get("reason")
     if reason not in {
-        "approved_plan", "phase", "broken_call_recovery", "pre_edit_recovery", "reused",
+        "approved_plan", "phase", "broken_call_recovery", "pre_edit_recovery",
+        "context_rollover", "reused",
     }:
         return None
     keys = ("fresh", "created", "persisted", "dispatchStarted")
@@ -293,6 +295,33 @@ def _pre_edit_guard(value) -> dict | None:
         "firstEditObserved": value["firstEditObserved"],
         "trigger": value["trigger"],
         "action": value["action"],
+    }
+
+
+def _context_rollover(value) -> dict | None:
+    """Copy only the exact content-free context rollover schema."""
+    if (not isinstance(value, dict) or value.get("policyVersion") != 1
+            or isinstance(value.get("policyVersion"), bool)):
+        return None
+    if value.get("measurementStatus") not in {"complete", "unavailable"}:
+        return None
+    if value.get("action") not in {"route", "rollover", "offer_continue", "fail"}:
+        return None
+    if not isinstance(value.get("continuationOffered"), bool):
+        return None
+    keys = (
+        "limitNonMediaBytes", "sessionGeneration", "rolloverCount", "totalWireBytes",
+        "mediaBytes", "nonMediaContextBytes",
+    )
+    if any(not isinstance(value.get(key), int) or isinstance(value.get(key), bool)
+           or value[key] < 0 for key in keys):
+        return None
+    return {
+        "policyVersion": 1,
+        **{key: value[key] for key in keys},
+        "measurementStatus": value["measurementStatus"],
+        "action": value["action"],
+        "continuationOffered": value["continuationOffered"],
     }
 
 
@@ -358,6 +387,9 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
     pre_edit_guard = _pre_edit_guard(raw.get("preEditGuard"))
     if pre_edit_guard is not None:
         record["preEditGuard"] = pre_edit_guard
+    context_rollover = _context_rollover(raw.get("contextRollover"))
+    if context_rollover is not None:
+        record["contextRollover"] = context_rollover
     if plan_contract is not None:
         record["planContract"] = plan_contract
     drops = record["capture"]["droppedEvents"]
@@ -592,6 +624,9 @@ def observe(event: dict) -> str | None:
             else "repeat_brake" if decision in {"repeat_brake", "repeated", "looped"}
             else "gateway_refusal" if decision in {"gateway error", "model unavailable"}
             else "pre_edit_limit" if decision == "pre_edit_limit"
+            else "context_limit" if decision == "context_limit"
+            else "context_measurement_unavailable"
+            if decision == "context_measurement_unavailable"
             else "error"
         )
     elif event.get("type") == "stopped":

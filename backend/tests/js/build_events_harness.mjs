@@ -13,7 +13,8 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { history } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { history, continuation = null, click = false } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const calls = [];
 
 const json = (body) => ({
   ok: true, status: 200,
@@ -22,9 +23,16 @@ const json = (body) => ({
   text: async () => JSON.stringify(body),
 });
 
-function serve(url) {
+function serve(url, options = {}) {
   const path = String(url).replace(/^\.\/api/, '');
   if (path.startsWith('/project/history')) return json({ history });
+  if (path.startsWith('/project/build/state')) return json({
+    running: false, pending: 0, wedged: false, context_continuation: continuation,
+  });
+  if (path.startsWith('/project/build/continue')) {
+    calls.push({ path, body: JSON.parse(options.body || '{}') });
+    return json({ status: 'already_claimed' });
+  }
   if (path.startsWith('/apps')) return json({ items: [] });
   if (path.startsWith('/bindings')) return json({ bindings: [] });
   return json({});
@@ -50,9 +58,9 @@ const sandbox = {
   },
   antd: { message: { success() {}, info() {}, warning() {}, error() {} } },
   icons: new Proxy({}, { get: (_, name) => String(name) }),
-  fetch: async (url) => {
+  fetch: async (url, options = {}) => {
     await new Promise((r) => setTimeout(r, 0));
-    return serve(url);
+    return serve(url, options);
   },
 };
 sandbox.window = sandbox;
@@ -84,7 +92,13 @@ SW.store.set({
 await SW.store.loadBuild();
 await settle();
 
-const blocks = SW.store.get().buildMessages.flatMap((m) => m.blocks || []);
+let blocks = SW.store.get().buildMessages.flatMap((m) => m.blocks || []);
+if (click) {
+  const card = blocks.find((b) => b.type === 'build_context_limit');
+  if (card) await SW.store.continueContextBuild(card);
+  await settle();
+  blocks = SW.store.get().buildMessages.flatMap((m) => m.blocks || []);
+}
 console.log(JSON.stringify({
   values: blocks.filter((b) => b.type === 'status').map((b) => b.value),
   types: blocks.map((b) => b.type),
@@ -92,4 +106,7 @@ console.log(JSON.stringify({
   // that drew the right sentence can still have taken the button that sentence points at (#125).
   plans: blocks.filter((b) => b.type === 'build_plan')
     .map((b) => ({ pending: !!b.pending, cancelled: !!b.cancelled })),
+  context: blocks.filter((b) => b.type === 'build_context_limit')
+    .map((b) => ({ live: !!b.live, continuationId: b.continuationId, message: b.message })),
+  calls,
 }));
