@@ -155,9 +155,24 @@ def test_stream_outcomes_keep_their_distinct_meaning(running, monkeypatch, model
         dispatch(client, headers, protocol, model)
     record = timing.finish_turn()
     call = timing.as_dict(record)["calls"][0]
-    assert call["outcome"] == {"missing": "incomplete", "cap": "incomplete", "error": "error", "refusal": "refusal"}[ending]
+    assert call["outcome"] == {
+        "missing": "incomplete", "cap": "model_output_limit",
+        "error": "error", "refusal": "refusal",
+    }[ending]
     assert call["ok"] is False
     assert "private refusal" not in json.dumps(call)
+    gateway_error = orch._project.last_gateway_error or {}
+    if ending == "cap":
+        assert set(gateway_error) == {"message", "code", "finish_reason"}
+        assert gateway_error["code"] == "model_output_limit"
+        assert gateway_error["finish_reason"] == {
+            Protocol.CHAT: "length",
+            Protocol.MESSAGES: "max_tokens",
+            Protocol.RESPONSES: "max_output_tokens",
+        }[protocol]
+        assert "private" not in json.dumps(gateway_error)
+    else:
+        assert "code" not in gateway_error
 
 
 @pytest.mark.parametrize("model,protocol", LANES)

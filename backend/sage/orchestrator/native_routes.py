@@ -48,6 +48,7 @@ _CONTEXT_ROLLOVER_REQUIRED = "Sage stopped this request so the Build can continu
 _CONTEXT_CONTINUE_REQUIRED = "Sage stopped this request because the Build reached its context limit."
 _CONTEXT_MEASUREMENT_ERROR = "Sage could not measure the final model request safely."
 _TURN_SCOPE_CHANGED = "Sage stopped this request because its Build turn ended before it was ready."
+_MODEL_OUTPUT_LIMIT_ERRORS = frozenset({"length", "max_tokens", "max_output_tokens"})
 
 
 def _record_build_intent(call, intent, check, failure_stage):
@@ -429,6 +430,12 @@ def install(app, get_orchestrator):
             elif isinstance(error, ValueError) and (events.terminal is None or events.error in
                     ("length", "max_tokens", "pause_turn", "max_output_tokens", "response.incomplete")):
                 outcome = "incomplete"
+            if events.error in _MODEL_OUTPUT_LIMIT_ERRORS:
+                project.last_gateway_error.update({
+                    "code": "model_output_limit",
+                    "finish_reason": events.error,
+                })
+                outcome = "model_output_limit"
             call.done(ok=False, error=message, outcome=outcome)
             return message
 

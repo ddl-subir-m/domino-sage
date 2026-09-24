@@ -186,6 +186,56 @@ def test_a_plain_build_that_hits_a_gateway_error_says_nothing_about_a_plan(tmp_p
     assert "still here" not in error["message"]
 
 
+def test_output_limit_before_first_edit_gets_one_clean_recovery_then_stops(tmp_path: Path):
+    orch, oc = _build(tmp_path, [PLAN, Turn(), Turn()])
+    original_send = oc.send_prompt
+
+    def output_limited(*args, **kwargs):
+        original_send(*args, **kwargs)
+        if oc._next in {2, 3}:
+            orch.project(start_preview=False).last_gateway_error = {
+                "message": "The model reached its output limit before it completed the turn.",
+                "code": "model_output_limit",
+                "finish_reason": "length",
+            }
+
+    oc.send_prompt = output_limited
+
+    list(orch.build_stream("build me a consumption dashboard"))
+    events = list(orch.approve_stream())
+
+    assert len(oc.prompts) == 3
+    assert oc.prompts[1]["session"] != oc.prompts[2]["session"]
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert [event["type"] for event in events].count("build-pre-edit-limit") == 1
+    assert _done(events)["decision"] == "pre_edit_limit"
+
+
+def test_output_limit_after_first_edit_preserves_the_edit_and_does_not_retry(tmp_path: Path):
+    orch, oc = _build(tmp_path, [PLAN, Turn(writes={"src/App.tsx": "// edited before cap\n"})])
+    original_send = oc.send_prompt
+
+    def output_limited(*args, **kwargs):
+        original_send(*args, **kwargs)
+        if oc._next == 2:
+            orch.project(start_preview=False).last_gateway_error = {
+                "message": "The model reached its output limit after it edited the app.",
+                "code": "model_output_limit",
+                "finish_reason": "length",
+            }
+
+    oc.send_prompt = output_limited
+
+    list(orch.build_stream("build me a consumption dashboard"))
+    events = list(orch.approve_stream())
+
+    assert len(oc.prompts) == 2
+    assert (orch.project(start_preview=False).workspace.path / "src" / "App.tsx").read_text() == (
+        "// edited before cap\n")
+    assert not [event for event in events if event["type"] == "build-recovery"]
+    assert _done(events)["decision"] == "gateway error"
+
+
 def test_try_again_builds_the_approved_plan_instead_of_proposing_a_second_one(tmp_path: Path):
     orch, oc = _build(tmp_path, [
         PLAN,                                              # 1. the plan

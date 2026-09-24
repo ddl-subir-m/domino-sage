@@ -29,6 +29,7 @@ class PreEditTrigger(str, Enum):
     REQUEST_BYTES = "request_bytes"
     TOOL_RESULT_BYTES = "tool_result_bytes"
     NO_EDIT_COMPLETION = "no_edit_completion"
+    MODEL_OUTPUT_LIMIT = "model_output_limit"
     REQUEST_MEASUREMENT_UNAVAILABLE = "request_measurement_unavailable"
     TREE_WITNESS_UNAVAILABLE = "tree_witness_unavailable"
     SESSION_ABORT_UNCONFIRMED = "session_abort_unconfirmed"
@@ -241,6 +242,13 @@ class PreEditGuard:
 
     def no_edit_completion(self) -> PreEditDecision:
         """Handle an OpenCode completion that left the authoritative tree unchanged."""
+        return self._completion_without_edit(PreEditTrigger.NO_EDIT_COMPLETION)
+
+    def model_output_limit(self) -> PreEditDecision:
+        """Handle a provider output cap before the authoritative first app edit."""
+        return self._completion_without_edit(PreEditTrigger.MODEL_OUTPUT_LIMIT)
+
+    def _completion_without_edit(self, trigger: PreEditTrigger) -> PreEditDecision:
         with self._lock:
             if self._state is PreEditState.DISARMED:
                 return PreEditDecision(PreEditAction.DISARM)
@@ -251,7 +259,7 @@ class PreEditGuard:
             witness = self._witness_locked()
             if witness is not None:
                 return witness
-            return self._limit_decision_locked(PreEditTrigger.NO_EDIT_COMPLETION)
+            return self._limit_decision_locked(trigger)
 
     def begin_recovery(self) -> PreEditDecision:
         """Recheck the tree and grant recovery ownership immediately before session creation."""
