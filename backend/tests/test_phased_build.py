@@ -363,12 +363,146 @@ def test_stop_mid_build_reverts_every_phase(tmp_path: Path):
 
 # --- degrade + regression -------------------------------------------------------------------------
 
-def test_an_unparseable_new_plan_is_not_offered_for_approval(tmp_path: Path):
-    _orch, _oc, project, plan_events = _plan_then_phases(tmp_path, plan=PROSE_PLAN)
+def test_an_unparseable_new_plan_is_retried_once_then_not_offered_for_approval(tmp_path: Path):
+    turns = [Turn(text=PROSE_PLAN), Turn(text=PROSE_PLAN)]
+    orch, oc, project = _build(tmp_path, turns)
+
+    plan_events = list(orch.build_stream("build me a trades dashboard"))
 
     assert not _of(plan_events, "plan-proposed")
     assert _of(plan_events, "done")[0]["decision"] == "invalid execution plan"
     assert project.record.list_plan_docs() == []
+    assert len(oc.sessions) == 2
+    assert len(_of(plan_events, "iterate")) == 1
+
+
+def test_an_invalid_plan_recovers_in_a_clean_session_without_copying_the_plan(tmp_path: Path):
+    private_bad_plan = PROSE_PLAN + "\nPRIVATE MALFORMED PLAN SENTINEL"
+    original_request = "Build the trades dashboard from the selected references."
+    orch, oc, project = _build(
+        tmp_path, [Turn(text=private_bad_plan), Turn(text=PHASED_PLAN)])
+
+    events = list(orch.build_stream(original_request))
+
+    proposed = _of(events, "plan-proposed")
+    assert len(proposed) == 1
+    assert proposed[0]["plan"] == PHASED_PLAN.strip()
+    assert len(oc.sessions) == 2
+    assert {session["directory"] for session in oc.sessions} == {
+        str(project.workspace.path)}
+    assert oc.interrupted == 1
+    assert [prompt["session"] for prompt in oc.prompts] == [
+        "fake-session", "fake-session-2"]
+    recovery_prompt = oc.prompts[1]["text"]
+    assert recovery_prompt.count(original_request) == 1
+    assert "required execution-plan structure" in recovery_prompt
+    assert "numbered execution step" in recovery_prompt
+    assert "PRIVATE MALFORMED PLAN SENTINEL" not in recovery_prompt
+    assert len(_of(events, "iterate")) == 1
+    assert project.record.list_plan_docs()[0]["markdown"] == PHASED_PLAN.strip()
+    diagnostics = json.loads(
+        (project.record.path / ".sage" / "build-diagnostics.json").read_text())
+    recovery = diagnostics["records"][-1]["planningRecovery"]
+    assert recovery == {
+        "attempt": "initial",
+        "trigger": "invalid_execution_plan",
+        "action": "recover",
+    }
+    assert "implementationSession" not in diagnostics["records"][-1]
+    assert "PRIVATE MALFORMED PLAN SENTINEL" not in json.dumps(diagnostics)
+
+
+def test_stop_before_invalid_plan_replacement_starts_no_recovery(
+    tmp_path: Path, monkeypatch,
+):
+    orch, oc, project = _build(tmp_path, [Turn(text=PROSE_PLAN), Turn(text=PHASED_PLAN)])
+
+    def stop_before_replacement(*_args, **_kwargs):
+        project.stop_requested = True
+        return True
+
+    monkeypatch.setattr(orch, "_stop_wedged_session", stop_before_replacement)
+
+    events = list(orch.build_stream("build me a trades dashboard"))
+
+    assert _of(events, "stopped")
+    assert not _of(events, "iterate")
+    assert not _of(events, "plan-proposed")
+    assert len(oc.sessions) == 1
+    assert len(oc.prompts) == 1
+    assert project.stop_requested is False
+
+
+def test_invalid_plan_stop_failure_starts_no_replacement_session(
+    tmp_path: Path, monkeypatch,
+):
+    orch, oc, _project = _build(
+        tmp_path, [Turn(text=PROSE_PLAN), Turn(text=PHASED_PLAN)])
+    monkeypatch.setattr(orch, "_stop_wedged_session", lambda *_args, **_kwargs: False)
+
+    events = list(orch.build_stream("build me a trades dashboard"))
+
+    assert len(oc.sessions) == 1
+    assert len(oc.prompts) == 1
+    assert _of(events, "build-stalled")
+    assert _of(events, "done")[0]["decision"] == "wedged"
+
+
+def test_invalid_plan_recovery_does_not_spend_implementation_recovery(tmp_path: Path):
+    turns = [
+        Turn(text=PROSE_PLAN),
+        Turn(text=PHASED_PLAN),
+        Turn(text="I did not edit the app."),
+        _writes("src/data.ts"),
+        _writes("src/Table.tsx"),
+        _writes("src/Filter.tsx"),
+    ]
+    orch, _oc, _project = _build(tmp_path, turns, no_edit_nudge_limit=0)
+
+    plan_events = list(orch.build_stream("build me a trades dashboard"))
+    build_events = list(orch.approve_stream())
+
+    assert len(_of(plan_events, "iterate")) == 1
+    assert len(_of(build_events, "build-recovery")) == 1
+    assert _of(build_events, "done")[0]["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("first_invalid", "decision"),
+    [(True, "model_no_action_timeout"), (False, "invalid execution plan")],
+)
+def test_invalid_plan_and_no_action_share_one_planning_recovery(
+    tmp_path: Path, first_invalid: bool, decision: str,
+):
+    turns = ([Turn(text=PROSE_PLAN), Turn()] if first_invalid
+             else [Turn(), Turn(text=PROSE_PLAN)])
+    orch, oc, project = _build(tmp_path, turns)
+    sent = 0
+    send_prompt = oc.send_prompt
+
+    def send_with_no_action(*args, **kwargs):
+        nonlocal sent
+        sent += 1
+        send_prompt(*args, **kwargs)
+        no_action_call = 2 if first_invalid else 1
+        if sent == no_action_call:
+            project.last_gateway_error = {
+                "code": "model_no_action_timeout",
+                "message": "safe",
+                "call_id": f"call-{sent}",
+                "turn_id": "turn",
+                "elapsed_ms": 120_000,
+                "chunk_count": 20,
+            }
+
+    oc.send_prompt = send_with_no_action
+
+    events = list(orch.build_stream("build me a trades dashboard"))
+
+    assert _of(events, "done")[0]["decision"] == decision
+    assert len(oc.sessions) == 2
+    assert len(oc.prompts) == 2
+    assert not _of(events, "plan-proposed")
 
 
 def test_the_toggle_off_leaves_the_approve_path_untouched(tmp_path: Path):

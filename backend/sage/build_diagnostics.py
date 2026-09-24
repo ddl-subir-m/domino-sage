@@ -309,6 +309,23 @@ def _implementation_session(value) -> dict | None:
             "dispatchStarted": value["dispatchStarted"]}
 
 
+def _planning_recovery(value) -> dict | None:
+    """Copy only the fixed, content-free planning-recovery decision."""
+    if not isinstance(value, dict):
+        return None
+    if value.get("attempt") not in {"initial", "recovery"}:
+        return None
+    if value.get("trigger") not in {"model_no_action", "invalid_execution_plan"}:
+        return None
+    if value.get("action") not in {"recover", "stop"}:
+        return None
+    return {
+        "attempt": value["attempt"],
+        "trigger": value["trigger"],
+        "action": value["action"],
+    }
+
+
 def _pre_edit_guard(value) -> dict | None:
     """Copy only the exact content-free pre-edit guard schema."""
     if (not isinstance(value, dict) or value.get("policyVersion") != 1
@@ -445,6 +462,9 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
     implementation_session = _implementation_session(raw.get("implementationSession"))
     if implementation_session is not None:
         record["implementationSession"] = implementation_session
+    planning_recovery = _planning_recovery(raw.get("planningRecovery"))
+    if planning_recovery is not None:
+        record["planningRecovery"] = planning_recovery
     pre_edit_guard = _pre_edit_guard(raw.get("preEditGuard"))
     if pre_edit_guard is not None:
         record["preEditGuard"] = pre_edit_guard

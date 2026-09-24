@@ -4859,8 +4859,8 @@ class ActiveModelCall:
 
 
 @dataclass(slots=True)
-class PlanNoActionRecovery:
-    """One bounded clean retry shared by every Sage planning door."""
+class PlanRecoveryBudget:
+    """One bounded clean retry shared by every failure in a planning attempt."""
 
     limit: int
     recoveries: int = 0
@@ -5257,6 +5257,13 @@ def _warn_if_shapeless(where: str, plan_md: str) -> None:
 
 def _execution_contract_error(check: PlanContractCheck) -> str:
     """A fixed-vocabulary reason. It can be shown and logged without copying private plan text."""
+    problems = list(_execution_contract_problems(check))
+    detail = "; ".join(problems) or "the executable plan contract"
+    return "The plan is missing or has invalid " + detail + "."
+
+
+def _execution_contract_problems(check: PlanContractCheck) -> tuple[str, ...]:
+    """Return only fixed validator categories, never text copied from the plan."""
     problems = []
     if check.missing_sections:
         problems.append("required product sections: " + ", ".join(check.missing_sections))
@@ -5268,8 +5275,19 @@ def _execution_contract_error(check: PlanContractCheck) -> str:
         problems.append("file lists that do not also name the same file under Don't touch")
     if not check.step_count:
         problems.append("at least one numbered execution step")
-    detail = "; ".join(problems) or "the executable plan contract"
-    return "The plan is missing or has invalid " + detail + "."
+    return tuple(problems)
+
+
+def _execution_contract_recovery_prompt(check: PlanContractCheck) -> str:
+    """Tell a clean planner why it is retrying without copying the rejected answer."""
+    problems = "; ".join(_execution_contract_problems(check))
+    return (
+        "The previous planning attempt did not satisfy the required execution-plan structure. "
+        "Write a complete replacement plan from the original request and references above. Do not "
+        "discuss or reconstruct the rejected answer. The local validator requires: "
+        f"{problems or 'the complete executable plan contract'}. Return the full plan, including "
+        "all required product sections and numbered execution steps."
+    )
 
 
 def _record_execution_contract(check: PlanContractCheck, source_request_count: int,
@@ -7603,6 +7621,7 @@ class Orchestrator:
         *,
         reason: str = "approved_plan",
         persist: bool = True,
+        record_implementation: bool = True,
     ) -> str:
         """Create and publish a clean session as one decision with Stop."""
         with self._stop_control_lock:
@@ -7620,16 +7639,18 @@ class Orchestrator:
                 except Exception:
                     log.exception("build session: unused session interrupt failed")
                 raise BuildSessionCreationCancelled()
-            timing.implementation_session(
-                fresh=True, reason=reason, created=True,
-                persisted=False, dispatch_started=False,
-            )
-            if persist:
-                project.record.write_session_id(new_id, conversation, app.app_id)
+            if record_implementation:
                 timing.implementation_session(
                     fresh=True, reason=reason, created=True,
-                    persisted=True, dispatch_started=False,
+                    persisted=False, dispatch_started=False,
                 )
+            if persist:
+                project.record.write_session_id(new_id, conversation, app.app_id)
+                if record_implementation:
+                    timing.implementation_session(
+                        fresh=True, reason=reason, created=True,
+                        persisted=True, dispatch_started=False,
+                    )
                 project.session_id = new_id
             # Published under the same lock Stop uses to choose which session to interrupt.
             project.active_session_id = new_id
@@ -10404,7 +10425,9 @@ class Orchestrator:
             # so dropping it on the floor here leaves it standing for that turn.
             session_id, _ = self._ensure_thread_session(store, thread_id, project, client)
             original_session_id = session_id
-            plan_md, session_id = self._run_sage_plan(project, prompt, session_id)
+            plan_md, session_id = self._run_sage_execution_plan(
+                project, prompt, session_id, where="chat handoff",
+                source_request_count=len(source_request_messages))
             if session_id != original_session_id:
                 record = store.read_session(thread_id) or {}
                 store.write_session_id(
@@ -10438,24 +10461,6 @@ class Orchestrator:
                 "Planning didn't produce a plan this time. Try again, or say a bit more in the "
                 "conversation about what the app should show and what someone should be able to "
                 "do with it.")
-        try:
-            plan_md, repaired_session_id = self._repair_plan_heading(
-                project, plan_md, session_id, "chat handoff")
-            if repaired_session_id != session_id:
-                record = store.read_session(thread_id) or {}
-                store.write_session_id(
-                    thread_id, repaired_session_id,
-                    directory=getattr(client, "_dirs", {})[repaired_session_id],
-                    rebuild_pending=bool(record.get("rebuild_pending")))
-        except ValueError as e:
-            self._record_plan_refusal(store, thread_id, project, str(e), offer=False)
-            raise
-        contract = validate_execution_contract(plan_md)
-        _record_execution_contract(contract, len(source_request_messages))
-        if not contract.valid:
-            reason = _execution_contract_error(contract)
-            self._record_plan_refusal(store, thread_id, project, reason, offer=False)
-            raise ValueError(reason)
         # Same document the gate creates, and it records its Thread the same way. No `app_id`: the
         # app does not exist until the handoff is confirmed, and that is what stamps it.
         _warn_if_shapeless("chat handoff", plan_md)
@@ -10478,13 +10483,14 @@ class Orchestrator:
         self._flush_chat_save("plan", holding_turn=True)
         return self._handoff_sheet_payload(store, thread_id, project, plan_md, handoff)
 
-    def _run_sage_plan(self, project: Project, prompt: str,
-                       session_id: str) -> tuple[str, str]:
-        """Run one bounded read-only planning request, with one clean no-action retry."""
+    def _run_sage_plan(self, project: Project, prompt: str, session_id: str, *,
+                       recovery: PlanRecoveryBudget | None = None) -> tuple[str, str]:
+        """Run one bounded planner with one shared clean recovery budget."""
         client = self._ensure_opencode()
         sid = session_id
         original_prompt = prompt
-        recovery = PlanNoActionRecovery(self._build_policy.plan_no_action_recovery_limit)
+        recovery = recovery or PlanRecoveryBudget(
+            self._build_policy.plan_no_action_recovery_limit)
         token = project.control.arm_read_only("plan")
         try:
             while True:
@@ -10513,6 +10519,8 @@ class Orchestrator:
                     attempt, action = recovery.choose()
                     timing.model_no_action_recovery(
                         error.get("call_id"), attempt, action, record=timing.current())
+                    timing.planning_recovery(
+                        "model_no_action", attempt, action, record=timing.current())
                     log.warning(
                         "model no-action terminal: turn_id=%s call_id=%s elapsed_seconds=%.1f "
                         "chunks=%s action=%s attempt=%s",
@@ -10545,8 +10553,66 @@ class Orchestrator:
             project.control.disarm_read_only(token)
             project.active_session_id = None
 
+    def _run_sage_execution_plan(
+        self,
+        project: Project,
+        prompt: str,
+        session_id: str,
+        *,
+        where: str,
+        source_request_count: int,
+    ) -> tuple[str, str]:
+        """Produce one validated plan with one budget across generation and title repair."""
+        client = self._ensure_opencode()
+        sid = session_id
+        original_prompt = prompt
+        current_prompt = original_prompt
+        recovery = PlanRecoveryBudget(self._build_policy.plan_no_action_recovery_limit)
+        while True:
+            plan_md, sid = self._run_sage_plan(
+                project, current_prompt, sid, recovery=recovery)
+            if not plan_md:
+                return plan_md, sid
+            plan_md, sid = self._repair_plan_heading(
+                project, plan_md, sid, where, recovery=recovery)
+            contract = validate_execution_contract(plan_md)
+            _record_execution_contract(contract, source_request_count)
+            if contract.valid:
+                return plan_md, sid
+            attempt, action = recovery.choose()
+            timing.planning_recovery(
+                "invalid_execution_plan", attempt, action,
+                record=timing.current())
+            problems = _execution_contract_problems(contract)
+            log.warning(
+                "planning recovery: turn_id=%s trigger=invalid_execution_plan "
+                "attempt=%s action=%s failures=%s",
+                timing.current().turn_id if timing.current() is not None else "",
+                attempt, action, ",".join(problems))
+            if action == "stop":
+                raise ValueError(
+                    _execution_contract_error(contract)
+                    + " The clean planning retry was also invalid. Try the request again.")
+            if project.stop_requested:
+                raise ValueError("Planning was stopped.")
+            if not self._stop_wedged_session(
+                    client, sid,
+                    grace_seconds=self._build_policy.stop_grace_seconds):
+                raise ValueError(
+                    "Planning could not stop the invalid-plan session safely. Restart Sage "
+                    "before trying again.")
+            directory = getattr(client, "_dirs", {}).get(sid)
+            if not directory:
+                raise ValueError(
+                    "Planning could not locate its session directory for a clean retry.")
+            sid = client.create_session(directory=directory)
+            current_prompt = (
+                original_prompt + "\n\n" +
+                _execution_contract_recovery_prompt(contract))
+
     def _repair_plan_heading(self, project: Project, plan_md: str, session_id: str,
-                             where: str) -> tuple[str, str]:
+                             where: str, *,
+                             recovery: PlanRecoveryBudget | None = None) -> tuple[str, str]:
         """Ask the planner for the missing app-name heading, once."""
         if chat_handoff.plan_heading(plan_md):
             return plan_md, session_id
@@ -10555,6 +10621,7 @@ class Orchestrator:
                 project,
                 _PLAN_HEADING_REPAIR_PROMPT.replace("{plan}", plan_md),
                 session_id,
+                recovery=recovery,
             )
         except ValueError as e:
             log.warning("%s: plan heading repair failed: %s", where, e)
@@ -17927,6 +17994,52 @@ class Orchestrator:
             tap.close()
             raise TurnWedged()
 
+        def restart_planning_session(*, correction: str, reason: str):
+            """Replace one failed planner without carrying its answer or tool history."""
+            nonlocal sid, seen, current, mention_files, resource_note, chat_note
+            nonlocal unusable_note, ambiguous_note, source_note, broken_retry_note
+            if project.stop_requested:
+                yield handle_stop()
+                return False
+            stopped = self._stop_wedged_session(
+                client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
+            if not stopped:
+                if owns_turn:
+                    self._turn_gave_up = True
+                yield from refused_to_stop(in_tool=False, quiet_for=0.0)
+            try:
+                sid = self._replace_build_session(
+                    project, client, project.build_conversation,
+                    reason="pre_edit_recovery", persist=owns_turn,
+                    record_implementation=False)
+            except BuildSessionCreationCancelled:
+                yield handle_stop()
+                return False
+            except Exception:
+                if owns_turn:
+                    self._turn_gave_up = True
+                restore_mode()
+                yield persist({
+                    "type": "error",
+                    "message": "Sage could not start the clean planning session. Try again.",
+                })
+                yield persist({
+                    "type": "done", "ok": False,
+                    "decision": "planning session unavailable",
+                })
+                return False
+            project.last_gateway_error = None
+            current = initial_current + (("\n\n" + correction) if correction else "")
+            (mention_files, resource_note, chat_note, unusable_note,
+             ambiguous_note, source_note) = first_send_extras
+            broken_retry_note = ""
+            plan_text_parts.clear()
+            emitted_text.clear()
+            seen = self._seen_baseline(
+                client, sid, limit=self._build_policy.poll_message_limit)
+            yield {"type": "iterate", "reason": reason}
+            return True
+
         def stalled_offer(quiet_for: float, *, in_tool: bool, looped: str = "",
                           decision: str = "repeat_brake"):
             """The transcript's half of giving up on a wedged turn (#39).
@@ -18252,7 +18365,7 @@ class Orchestrator:
             elif project.active_build_intent.kind != "phase":
                 current = _BUILD_CONTROL_PROMPT
         initial_current = current
-        plan_no_action = PlanNoActionRecovery(
+        plan_recovery = PlanRecoveryBudget(
             self._build_policy.plan_no_action_recovery_limit)
         if fresh_session:
             if project.stop_requested:
@@ -19181,10 +19294,12 @@ class Orchestrator:
                 {"message": _error_raw(turn_failure)} if turn_failure is not None else None)
             if err is not None:
                 if err.get("code") == "model_no_action_timeout" and gate:
-                    attempt, action = plan_no_action.choose()
+                    attempt, action = plan_recovery.choose()
                     record = timing.current()
                     timing.model_no_action_recovery(
                         err.get("call_id"), attempt, action, record=record)
+                    timing.planning_recovery(
+                        "model_no_action", attempt, action, record=record)
                     log.warning(
                         "model no-action terminal: turn_id=%s call_id=%s elapsed_seconds=%.1f "
                         "chunks=%s action=%s attempt=%s",
@@ -19193,27 +19308,15 @@ class Orchestrator:
                         err.get("chunk_count", 0), action, attempt)
                     yield {"type": "model-active", "active": False}
                     if action == "recover":
-                        stopped = self._stop_wedged_session(
-                            client, sid,
-                            grace_seconds=self._build_policy.stop_grace_seconds)
-                        if not stopped:
-                            if owns_turn:
-                                self._turn_gave_up = True
-                            yield from refused_to_stop(in_tool=False, quiet_for=0.0)
-                        sid = self._replace_build_session(
-                            project, client, project.build_conversation,
-                            reason="pre_edit_recovery", persist=owns_turn)
-                        project.last_gateway_error = None
-                        current = initial_current
-                        (mention_files, resource_note, chat_note, unusable_note,
-                         ambiguous_note, source_note) = first_send_extras
-                        broken_retry_note = ""
-                        seen = self._seen_baseline(
-                            client, sid, limit=self._build_policy.poll_message_limit)
-                        yield {"type": "iterate", "reason": (
-                            "the planner produced no action — restarting once in a clean session")}
-                        iterate_reason = "planning no-action recovery"
-                        continue
+                        restarted = yield from restart_planning_session(
+                            correction="",
+                            reason=("the planner produced no action — restarting once in a "
+                                    "clean session"),
+                        )
+                        if restarted:
+                            iterate_reason = "planning no-action recovery"
+                            continue
+                        return
                     if owns_turn:
                         self._turn_gave_up = True
                     restore_mode()
@@ -19486,7 +19589,6 @@ class Orchestrator:
             # violation check below and is reverted.
             if gate and not agent_wrote():
                 plan_md = _tidy_plan("\n".join(plan_text_parts))
-                restore_mode()
                 # A weak planner can finish this read-only turn without emitting any plan text,
                 # leaving nothing to approve. Don't persist a blank plan or present an approve card
                 # that would build from an empty plan; report it as a failed planning turn, with the
@@ -19495,6 +19597,23 @@ class Orchestrator:
                 if not plan_md:
                     log.warning("%s gate produced no text (model_calls=%d) — reporting empty plan",
                                 "architecture" if arch else "plan", project.model_calls)
+                    if not arch and plan_recovery.recoveries:
+                        attempt, action = plan_recovery.choose()
+                        timing.planning_recovery(
+                            "invalid_execution_plan", attempt, action,
+                            record=timing.current())
+                        log.warning(
+                            "planning recovery: turn_id=%s trigger=invalid_execution_plan "
+                            "attempt=%s action=%s failures=empty_recovery",
+                            active_turn_id, attempt, action)
+                        restore_mode()
+                        yield persist({"type": "error", "message": (
+                            "The clean planning retry did not return a complete plan. "
+                            "Try the request again.")})
+                        yield persist({"type": "done", "ok": False,
+                                       "decision": "invalid execution plan"})
+                        return
+                    restore_mode()
                     yield persist({"type": "error", "message": (
                         "Describing the architecture didn't produce anything this time. Send the "
                         "request again — naming the parts you care about can help."
@@ -19513,6 +19632,7 @@ class Orchestrator:
                 refusal = None if arch else _refuses_to_plan(plan_md)
                 if refusal is not None:
                     log.info("plan gate: no app in the request — %s", refusal or "no reason given")
+                    restore_mode()
                     yield persist({"type": "error", "message": (
                         (refusal + " " if refusal else "")
                         + "Say what the app should show or let someone do, then send the request "
@@ -19522,8 +19642,9 @@ class Orchestrator:
                 if not arch:
                     try:
                         plan_md, sid = self._repair_plan_heading(
-                            project, plan_md, sid, "plan gate")
+                            project, plan_md, sid, "plan gate", recovery=plan_recovery)
                     except ValueError as e:
+                        restore_mode()
                         yield persist({"type": "error", "message": str(e)})
                         yield persist({"type": "done", "ok": False,
                                        "decision": "plan title repair failed"})
@@ -19532,13 +19653,34 @@ class Orchestrator:
                     contract = validate_execution_contract(plan_md)
                     _record_execution_contract(contract, len(source_request_messages))
                     if not contract.valid:
+                        attempt, action = plan_recovery.choose()
+                        problems = _execution_contract_problems(contract)
+                        timing.planning_recovery(
+                            "invalid_execution_plan", attempt, action,
+                            record=timing.current())
+                        log.warning(
+                            "planning recovery: turn_id=%s trigger=invalid_execution_plan "
+                            "attempt=%s action=%s failures=%s",
+                            active_turn_id, attempt, action, ",".join(problems))
+                        if action == "recover":
+                            restarted = yield from restart_planning_session(
+                                correction=_execution_contract_recovery_prompt(contract),
+                                reason=("the first plan was incomplete — retrying once with the "
+                                        "required plan structure"),
+                            )
+                            if restarted:
+                                iterate_reason = "planning invalid-contract recovery"
+                                continue
+                            return
+                        restore_mode()
                         yield persist({"type": "error", "message": (
                             _execution_contract_error(contract)
-                            + " Send the request again so Sage can write a complete plan."
+                            + " The clean planning retry was also invalid. Try the request again."
                         )})
                         yield persist({"type": "done", "ok": False,
                                        "decision": "invalid execution plan"})
                         return
+                restore_mode()
                 # An architecture is a reference document, not the one-shot plan→implement handoff, so
                 # it goes to its own file: .sage/plan.md is archived the moment a build consumes it
                 # (see archive_plan), and a design the user wants to keep reading must not vanish
