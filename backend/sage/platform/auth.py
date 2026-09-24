@@ -121,6 +121,8 @@ class TokenSource:
             self._me = UserRef(
                 id=str(u.get("id") or ""),
                 name=str(u.get("userName") or u.get("loginId") or u.get("id") or ""),
+                full_name=str(u.get("fullName") or ""),
+                email=str(u.get("email") or ""),
             )
             return self._me
 

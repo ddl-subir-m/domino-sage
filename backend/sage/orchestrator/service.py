@@ -7089,6 +7089,23 @@ class Orchestrator:
                 log.warning("_viewer_id: whoami() failed, falling back to 'me'", exc_info=True)
         return "me"
 
+    def _git_identity(self) -> tuple[str, str] | None:
+        """Who Sage's own git saves are authored as — the real, authenticated Domino user
+        (`whoami()`'s `full_name`/`email`) when a `TokenSource` is configured, else `None` so
+        `workspace.git._identity_args`'s own ambient-config-or-`agent` fallback decides. Mirrors
+        `_viewer_id`'s safe pattern: an identity-API hiccup must never break a save."""
+        if self._token_source is None:
+            return None
+        try:
+            who = self._token_source.whoami()
+        except Exception:
+            log.warning("_git_identity: whoami() failed, falling back to the repo's own identity",
+                        exc_info=True)
+            return None
+        if not who.full_name and not who.email:
+            return None
+        return (who.full_name or who.name, who.email)
+
     def _hydrate_untitled(self, record: ProjectRecord) -> None:
         """First boot of a scratch project: set untitled so the chip can lie. Once settings
         already has the key (true or false), never flip it from the Domino slug."""
@@ -18581,7 +18598,7 @@ class Orchestrator:
         # Hard backstop: never stage attached-data copies, even if the agent ignored the fix nudge.
         leaked = self._kept_out_of_the_commit(project)
         try:
-            committed = git.commit_all(path, message, exclude=leaked)
+            committed = git.commit_all(path, message, exclude=leaked, identity=self._git_identity())
             # Integrate any incoming changes before pushing, or the push is rejected as non-ff and
             # the build's work silently never reaches the repo.
             synced = self._integrate_remote(project)
@@ -18625,7 +18642,7 @@ class Orchestrator:
         path = project.record.path
         if not git.has_remote(path):
             return None
-        result = git.pull(path)
+        result = git.pull(path, identity=self._git_identity())
         if result.status == "conflict":
             result = self._resolve_conflicts(project, result.conflicts)
         # The pull already fetched, so this is a local re-read. Whatever it merged has stopped being
@@ -18684,7 +18701,7 @@ class Orchestrator:
         # subject is what `git.resolved_merge` finds the undo offer by, and its body carries the
         # files below — which is the only place they can live, because `conflicts` is a local
         # variable and the case this has to survive is a restart. See `git.merge_message`.
-        git.finalize_merge(path, git.merge_message(conflicts))
+        git.finalize_merge(path, git.merge_message(conflicts), identity=self._git_identity())
         return git.SyncResult("merged", conflicts, "merged the incoming changes (conflicts resolved)")
 
     def sync(self) -> dict:
@@ -18715,7 +18732,8 @@ class Orchestrator:
             raise TurnBusy(self._turn_wedged, "pull the latest changes")
         try:
             git.commit_all(path, "build: save before pull",
-                           exclude=self._kept_out_of_the_commit(project))
+                           exclude=self._kept_out_of_the_commit(project),
+                           identity=self._git_identity())
             result = self._integrate_remote(project)
             if result is None or result.status in ("conflict-unresolved", "error"):
                 detail = result.detail if result else "no remote to pull from"
@@ -18780,7 +18798,7 @@ class Orchestrator:
                 # since then" and making "nothing here has changed" false in the same breath. Left
                 # alone, an edit to a file the revert touches makes git refuse, which is the true
                 # answer, and the edit survives.
-                reverted = git.undo_merge(path, found.sha)
+                reverted = git.undo_merge(path, found.sha, identity=self._git_identity())
             except Exception as e:
                 log.exception("undo merge failed")
                 return {"ok": False, "sha": found.sha, "pushed": False, "rejected": False,

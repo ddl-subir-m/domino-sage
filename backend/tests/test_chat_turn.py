@@ -92,12 +92,12 @@ def _orch(tmp: Path, turns: list[Turn] | None = None, gateway=None, project_id: 
 
 
 class _FakeTokenSource:
-    """Just enough of `TokenSource` for `_hydrate_untitled`/`_viewer_id`: a fixed `whoami()`
-    answer, no network."""
+    """Just enough of `TokenSource` for `_hydrate_untitled`/`_viewer_id`/`_git_identity`: a fixed
+    `whoami()` answer, no network."""
 
-    def __init__(self, user_id: str, name: str):
+    def __init__(self, user_id: str, name: str, full_name: str = "", email: str = ""):
         from sage.provision.domino import UserRef
-        self._who = UserRef(id=user_id, name=name)
+        self._who = UserRef(id=user_id, name=name, full_name=full_name, email=email)
 
     def whoami(self):
         return self._who
@@ -2225,6 +2225,36 @@ def test_a_plan_docs_author_falls_back_to_me_when_whoami_fails(tmp_path: Path):
     orch, _ = _orch(tmp_path, token_source=_BrokenTokenSource())
     doc = orch.create_plan_doc({"title": "A plan"})
     assert doc["author"] == "me"
+
+
+def test_git_identity_is_the_token_sources_full_name_and_email(tmp_path: Path):
+    """`_git_identity()`: Sage's own git saves are authored as the real, authenticated Domino user
+    when one is configured, not just their user id (`_viewer_id`'s own concern)."""
+    orch, _ = _orch(tmp_path, token_source=_FakeTokenSource(
+        "u-1", "alice", full_name="Alice Anderson", email="alice@example.com",
+    ))
+    assert orch._git_identity() == ("Alice Anderson", "alice@example.com")
+
+
+def test_git_identity_is_none_with_no_token_source(tmp_path: Path):
+    orch, _ = _orch(tmp_path)
+    assert orch._git_identity() is None
+
+
+def test_git_identity_is_none_when_whoami_carries_no_name_or_email(tmp_path: Path):
+    # A whoami() answer built for _viewer_id's id/name only, e.g. an older fixture or a real
+    # response that never fetched fullName/email — falls back to workspace.git's own default.
+    orch, _ = _orch(tmp_path, token_source=_FakeTokenSource("u-1", "alice"))
+    assert orch._git_identity() is None
+
+
+def test_git_identity_falls_back_to_none_when_whoami_fails(tmp_path: Path):
+    class _BrokenTokenSource:
+        def whoami(self):
+            raise RuntimeError("network hiccup")
+
+    orch, _ = _orch(tmp_path, token_source=_BrokenTokenSource())
+    assert orch._git_identity() is None
 
 
 def test_named_project_does_not_hydrate_untitled(tmp_path: Path):

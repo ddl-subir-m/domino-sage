@@ -112,10 +112,16 @@ class ProjectRef:
 @dataclass(frozen=True)
 class UserRef:
     """Who the control-plane token acts as. On the Workbench App that is the viewer (Domino's
-    extended identity puts them behind the sidecar token); in a builder it is whoever started it."""
+    extended identity puts them behind the sidecar token); in a builder it is whoever started it.
+
+    `full_name`/`email` are "" when the caller never asked `/api/users/v1/self` for them (most
+    `UserRef`s are built for `id`/`name` alone) — never treat an empty string as "this person has
+    no name", only as "this reader didn't fetch one"."""
 
     id: str
     name: str
+    full_name: str = ""
+    email: str = ""
 
 
 @dataclass(frozen=True)
@@ -751,6 +757,8 @@ class DominoControlPlane:
             self._me = UserRef(
                 id=str(u.get("id") or ""),
                 name=str(u.get("userName") or u.get("loginId") or u.get("id") or ""),
+                full_name=str(u.get("fullName") or ""),
+                email=str(u.get("email") or ""),
             )
             self._me_for = token
         return self._me

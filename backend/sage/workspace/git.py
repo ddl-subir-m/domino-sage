@@ -143,17 +143,33 @@ def _without_dot_git(text: str) -> str:
     return trimmed.removesuffix(".git")
 
 
-def _identity_args(path: Path) -> list[str]:
-    """Use the repo's configured identity (the platform sets it) when present; otherwise fall back to
-    a neutral one so an unconfigured environment still commits cleanly rather than erroring.
+Identity = tuple[str, str]  # (name, email)
 
-    De-branded once, not per-pack: this is the author line of every save in a repo the partner's own
-    customer can read, and git history is immutable, so a name written here can never be re-branded
-    later without falsifying a record already committed. ADR-0014's third arm, the same call as
-    `build: ` one field over. `agent` because that is what wrote the commit, and the address claims
-    no domain at all.
+
+def _identity_args(path: Path, identity: Identity | None = None) -> list[str]:
+    """The real, authenticated person when the caller has one (`identity`, from `whoami()`) — this
+    always wins, since a Domino-provisioned checkout has no ambient identity of its own for that
+    person's own name to lose out to. Otherwise, use the repo's configured identity (the platform
+    sets it) when present; otherwise fall back to a neutral one so an unconfigured environment still
+    commits cleanly rather than erroring.
+
+    The neutral fallback is de-branded once, not per-pack: this is the author line of every save in
+    a repo the partner's own customer can read, and git history is immutable, so a name written here
+    can never be re-branded later without falsifying a record already committed. ADR-0014's third
+    arm, the same call as `build: ` one field over. `agent` because that is what wrote the commit,
+    and the address claims no domain at all — this is ONLY reached when neither a real identity nor
+    an ambient one is known.
     """
-    args: list[str] = []
+    if identity is not None:
+        name, email = identity
+        if name or email:
+            # Always both halves, one filling in for the other with the neutral default when
+            # `whoami()` only answered one — git's own email-guessing (`$(whoami)@$(hostname)`)
+            # fails outright in a container with no matching passwd entry, so a bare `user.name=`
+            # with nothing for email is not a safe partial identity to hand git.
+            return ["-c", f"user.email={email or 'agent@localhost'}",
+                    "-c", f"user.name={name or 'agent'}"]
+    args = []
     if not _git(path, "config", "user.email", check=False).stdout.strip():
         args += ["-c", "user.email=agent@localhost"]
     if not _git(path, "config", "user.name", check=False).stdout.strip():
@@ -161,17 +177,19 @@ def _identity_args(path: Path) -> list[str]:
     return args
 
 
-def commit_all(path: Path, message: str, exclude: list[str] | None = None) -> bool:
+def commit_all(
+    path: Path, message: str, exclude: list[str] | None = None, identity: Identity | None = None,
+) -> bool:
     """Stage everything and commit. Returns False (not an error) when there's nothing to commit.
     `exclude` unstages the given workspace-relative paths after staging, so bytes that must never be
     committed (attached-data copies leaked into src/) are kept out of the commit — they stay on disk,
-    just untracked."""
+    just untracked. `identity`, when given, is who the commit is authored as (see `_identity_args`)."""
     _git(path, "add", "-A")
     if exclude:
         _git(path, "reset", "-q", "--", *exclude, check=False)
     if _git(path, "diff", "--cached", "--quiet", check=False).returncode == 0:
         return False
-    _git(path, *_identity_args(path), "commit", "-m", message)
+    _git(path, *_identity_args(path, identity), "commit", "-m", message)
     return True
 
 
@@ -219,11 +237,11 @@ def push(path: Path) -> SaveResult:
     return SaveResult(pushed=True, detail="pushed")
 
 
-def commit_and_push(path: Path, message: str) -> SaveResult:
+def commit_and_push(path: Path, message: str, identity: Identity | None = None) -> SaveResult:
     """Stage everything, commit, and push. Returns pushed=False (not an error) when there's nothing
     to commit or no remote; raises only on an unexpected git failure (the caller treats that as a
     non-fatal saved:ok=false)."""
-    if not commit_all(path, message):
+    if not commit_all(path, message, identity=identity):
         return SaveResult(pushed=False, detail="no changes to commit")
     return push(path)
 
@@ -232,7 +250,7 @@ def current_branch(path: Path) -> str:
     return _git(path, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip() or "main"
 
 
-def pull(path: Path) -> SyncResult:
+def pull(path: Path, identity: Identity | None = None) -> SyncResult:
     """Fetch the remote and merge the current branch's upstream into the working tree. On conflict
     the tree is left with markers and SyncResult.conflicts lists the files, for the caller (the
     agent) to resolve and then finalize_merge(). Never pushes. Assumes a clean tree (commit first)."""
@@ -245,7 +263,7 @@ def pull(path: Path) -> SyncResult:
     # No upstream branch yet (nothing pushed) -> nothing to pull.
     if _git(path, "rev-parse", "--verify", "--quiet", ref, check=False).returncode != 0:
         return SyncResult("up-to-date", [], "no upstream branch")
-    merge = _git(path, *_identity_args(path), "merge", "--no-edit", ref, check=False)
+    merge = _git(path, *_identity_args(path, identity), "merge", "--no-edit", ref, check=False)
     if merge.returncode == 0:
         if "up to date" in merge.stdout.lower():
             return SyncResult("up-to-date", [], "already up to date")
@@ -281,10 +299,10 @@ def files_with_conflict_markers(path: Path, files: list[str]) -> list[str]:
     return out
 
 
-def finalize_merge(path: Path, message: str) -> None:
+def finalize_merge(path: Path, message: str, identity: Identity | None = None) -> None:
     """Stage the resolved files and commit the in-progress merge."""
     _git(path, "add", "-A")
-    _git(path, *_identity_args(path), "commit", "--no-edit", "-m", message)
+    _git(path, *_identity_args(path, identity), "commit", "--no-edit", "-m", message)
 
 
 def abort_merge(path: Path) -> None:
@@ -375,7 +393,7 @@ def _resolved_files(body: str) -> list[str]:
     return []
 
 
-def undo_merge(path: Path, sha: str) -> bool:
+def undo_merge(path: Path, sha: str, identity: Identity | None = None) -> bool:
     """Revert the merge `sha` and commit it under a subject naming what it undid.
 
     Returns False, with the tree as it found it, when the revert does not apply — which is what a
@@ -406,7 +424,7 @@ def undo_merge(path: Path, sha: str) -> bool:
         # has to keep matching what git says.
         _git(path, "revert", "--quit", check=False)
         return False
-    done = _git(path, *_identity_args(path), "commit", "-m", f"{_UNDO_PREFIX}{_short(sha)}",
+    done = _git(path, *_identity_args(path, identity), "commit", "-m", f"{_UNDO_PREFIX}{_short(sha)}",
                 check=False)
     if done.returncode != 0:
         _git(path, "revert", "--abort", check=False)

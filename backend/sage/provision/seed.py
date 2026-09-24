@@ -25,6 +25,19 @@ from ..workspace.manager import _IGNORE, _SEED_SKIP
 # reason. Kept in step with it by `test_the_commit_author_names_nobody`.
 _AGENT_IDENTITY = ["-c", "user.email=agent@localhost", "-c", "user.name=agent"]
 
+
+def _seed_identity_args(identity: tuple[str, str] | None) -> list[str]:
+    """`identity` (`name, email` from `whoami()`) when the caller has one, else `_AGENT_IDENTITY`.
+    No ambient-config check here, unlike `workspace.git._identity_args`: this repo was just
+    `git init`'d into an empty temp dir or a brand-new project directory, so there is never an
+    ambient identity for a real one to defer to or an unconfigured one to fall back past."""
+    if identity is not None:
+        name, email = identity
+        if name or email:
+            return ["-c", f"user.email={email or 'agent@localhost'}",
+                    "-c", f"user.name={name or 'agent'}"]
+    return list(_AGENT_IDENTITY)
+
 # One-shot credential helper: on a `get`, prints creds from $SAGE_PUSH_TOKEN. The token itself never
 # appears here — only the env var name does — so it stays out of argv and any process listing.
 _PUSH_TOKEN_ENV = "SAGE_PUSH_TOKEN"
@@ -66,6 +79,7 @@ def seed_and_push(
     token_provider: Callable[[], str] | None = None,
     settings: dict | None = None,
     dest: Path | None = None,
+    identity: tuple[str, str] | None = None,
 ) -> None:
     """Materialize the template into a repo and push it to `clone_url` on `branch`.
 
@@ -83,6 +97,11 @@ def seed_and_push(
     directory rather than a throwaway clone (ONE-APP-PLAN.md §2.2's `registry.create`: "the seeded
     dir becomes the project dir; no second clone"). Left out (the door's own `create_app`), behavior
     is unchanged: a temp dir that is discarded once pushed.
+
+    `identity`, when given, is `(name, email)` for the initial commit's author — the real,
+    authenticated person from `whoami()` (mirrors `workspace.git._identity_args`'s own rule: a real
+    identity always wins, since a brand-new repo has no ambient git config to defer to). Left out,
+    the neutral `_AGENT_IDENTITY` fallback is used, same as before this parameter existed.
     """
     import json
 
@@ -112,7 +131,7 @@ def seed_and_push(
         _git(repo, "init", "-q")
         _git(repo, "checkout", "-q", "-b", branch)
         _git(repo, "add", "-A")
-        _git(repo, *_AGENT_IDENTITY, "commit", "-q", "-m", message)
+        _git(repo, *_seed_identity_args(identity), "commit", "-q", "-m", message)
         _git(repo, "remote", "add", "origin", clone_url)
         _git(repo, *push_prefix, "push", "-q", "-u", "origin", branch, env=push_env)
 

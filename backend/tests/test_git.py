@@ -98,6 +98,38 @@ def test_commits_when_identity_unset(tmp_path: Path):
     result = git.commit_and_push(work, "sage: first")
     assert result.pushed is False  # no remote
     assert _run(work, "log", "--oneline").strip()  # a commit exists
+    assert _run(work, "log", "-1", "--format=%an <%ae>").strip() == "agent <agent@localhost>"
+
+
+def test_an_identity_overrides_the_repos_own_configured_one(tmp_path: Path):
+    """The real, authenticated person from `whoami()` always wins over ambient config — a
+    Domino-provisioned checkout has no real ambient identity of its own for this to lose to, and a
+    laptop's checkout committing as "agent" while the real person is known would be a step back."""
+    work = _work_repo(tmp_path, with_remote=False)  # ambient identity: Dev <dev@example.com>
+    (work / "App.tsx").write_text("x")
+    git.commit_all(work, "sage: first", identity=("Etan Lightstone", "etan@example.com"))
+    assert _run(work, "log", "-1", "--format=%an <%ae>").strip() == "Etan Lightstone <etan@example.com>"
+
+
+def test_an_identity_is_used_even_with_no_ambient_config_at_all(tmp_path: Path):
+    work = tmp_path / "work"
+    work.mkdir()
+    _run(work, "init", "-q")
+    (work / "App.tsx").write_text("x")
+    git.commit_all(work, "sage: first", identity=("Etan Lightstone", "etan@example.com"))
+    assert _run(work, "log", "-1", "--format=%an <%ae>").strip() == "Etan Lightstone <etan@example.com>"
+
+
+def test_a_name_with_no_email_still_commits_under_that_name(tmp_path: Path):
+    """A `whoami()` answer missing one half (e.g. no email field) still authors under the half it
+    has — filling the other half with the neutral default rather than leaving it to git's own
+    email-guessing, which fails outright in a container with no matching passwd entry."""
+    work = tmp_path / "work"
+    work.mkdir()
+    _run(work, "init", "-q")
+    (work / "App.tsx").write_text("x")
+    git.commit_all(work, "sage: first", identity=("Etan Lightstone", ""))
+    assert _run(work, "log", "-1", "--format=%an <%ae>").strip() == "Etan Lightstone <agent@localhost>"
 
 
 def _second_clone(tmp_path: Path, work: Path) -> Path:
@@ -154,6 +186,42 @@ def test_pull_leaves_conflict_markers_for_resolution(tmp_path: Path):
     git.finalize_merge(work, "sage: merge remote changes")
     assert git.push(work).pushed is True
     assert (work / "seed.txt").read_text() == "reconciled"
+
+
+def test_finalize_merge_honors_an_explicit_identity(tmp_path: Path):
+    work = _work_repo(tmp_path)  # ambient identity: Dev <dev@example.com>
+    other = _second_clone(tmp_path, work)
+    (other / "seed.txt").write_text("teammate version")
+    _run(other, "add", "-A")
+    _run(other, "commit", "-q", "-m", "mate: edit seed")
+    _run(other, "push", "-q")
+    (work / "seed.txt").write_text("builder version")
+    git.commit_all(work, "sage: edit seed")
+    assert git.pull(work).status == "conflict"
+
+    (work / "seed.txt").write_text("reconciled")
+    git.finalize_merge(work, "build: merge remote changes",
+                       identity=("Etan Lightstone", "etan@example.com"))
+    assert _run(work, "log", "-1", "--format=%an <%ae>").strip() == "Etan Lightstone <etan@example.com>"
+
+
+def test_undo_merge_honors_an_explicit_identity(tmp_path: Path):
+    work = _work_repo(tmp_path)
+    other = _second_clone(tmp_path, work)
+    (other / "seed.txt").write_text("teammate version")
+    _run(other, "add", "-A")
+    _run(other, "commit", "-q", "-m", "mate: edit seed")
+    _run(other, "push", "-q")
+    (work / "seed.txt").write_text("builder version")
+    git.commit_all(work, "sage: edit seed")
+    git.pull(work)
+    (work / "seed.txt").write_text("reconciled")
+    git.finalize_merge(work, git.merge_message(["seed.txt"]))
+    found = git.resolved_merge(work)
+    assert found is not None
+
+    assert git.undo_merge(work, found.sha, identity=("Etan Lightstone", "etan@example.com")) is True
+    assert _run(work, "log", "-1", "--format=%an <%ae>").strip() == "Etan Lightstone <etan@example.com>"
 
 
 def test_abort_merge_restores_pre_pull_state(tmp_path: Path):

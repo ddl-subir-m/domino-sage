@@ -1714,7 +1714,8 @@ reasoned decision, not an oversight — it needs the product owner's call, not a
 
 ## Next session should
 
-1. Get the git-identity conflict above resolved with the user before touching `workspace/git.py`.
+1. ~~Get the git-identity conflict above resolved with the user before touching `workspace/git.py`.~~
+   **Resolved this session — see the update immediately below.**
 2. Do the actual Phase 3 step 3 deletion (`door.py`, `door.html`, `/api/door*`, the workspace-lifecycle
    `ControlPlane` methods and their `FakeControlPlane` counterparts,
    `Orchestrator.stop()`/`/api/stop`/`_resolve_workspace_id`, `environment/pluggable-tools.yaml`,
@@ -1727,3 +1728,102 @@ reasoned decision, not an oversight — it needs the product owner's call, not a
    file's Phase 1/2 updates already applied to their own new capabilities.
 4. The two long-standing, non-blocking coverage gaps from earlier sessions (`test_sage_domino_relay.py`,
    `test_feedback.py`'s weakened drift guard) remain open, untouched this session.
+
+## UPDATE 2026-09-24 (same session, continued): git-identity conflict resolved — Sage's commits are now authored as the real Domino user, not `agent <agent@localhost>`
+
+The user answered the conflict flagged above directly: commits should be attributed to the real
+Domino person, plain name/email, no "via Sage"-style marker (asked via `AskUserQuestion`: "Plain
+name/email" over "Name + agent marker"). Before writing any code, checked this sandbox live (a real
+Domino workspace) rather than assume:
+
+- `git config --global user.name/email` here: empty. `git config user.name/email` (repo-local, this
+  checkout): "Etan Lightstone" / "etan.lightstone@dominodatalab.com" — almost certainly this
+  person's own manual git setup on this specific checkout, not something Domino auto-injects into
+  every fresh git-based Project (there is no evidence for the latter, and `_identity_args`'s existing
+  "agent" fallback exists precisely because *some* environments have no ambient identity at all).
+- `GET /api/users/v1/self`, hit for real with this sandbox's own credentials: returns `fullName` and
+  `email` fields (`"fullName": "Etan Lightstone", "email": "etan.lightstone@dominodatalab.com"`) —
+  confirmed live, not assumed. So `whoami()` already has everything needed once threaded through.
+- Re-read `workspace/git.py`'s existing docstring carefully: its "de-branding" reasoning is about not
+  hardcoding a re-brandable PRODUCT name (`Sage`/`Ada`) as the git author, never about hiding the
+  PERSON — so the user's ask doesn't actually conflict with the original reasoning, only with the
+  current literal behavior (which had no real-identity path to prefer at all).
+
+**What was built:**
+
+1. `sage/provision/domino.py`: `UserRef` gained `full_name: str = ""` and `email: str = ""` (both
+   default `""` — an empty string means "this reader didn't fetch one", never "this person has no
+   name"). `DominoControlPlane.whoami()` now populates them from the same `/api/users/v1/self` call
+   it already makes.
+2. `sage/platform/auth.py`: `TokenSource.whoami()` populates the same two fields from the same API
+   response shape.
+3. `sage/workspace/git.py`: `_identity_args(path, identity=None)` — an explicit `identity: (name,
+   email)` ALWAYS wins over ambient git config now (a Domino-provisioned checkout has no real
+   ambient identity of its own to lose to), falling back to today's "ambient config, else neutral
+   `agent`" only when no identity is known. When only one half of `identity` is known, the OTHER half
+   is filled with the neutral default (`agent@localhost`/`agent`) rather than left to git's own
+   email-guessing — live-verified that git's guess (`$(whoami)@$(hostname)`) fails outright (exit
+   128) in this sandbox's container, so a bare `user.name=` with no email is not a safe partial
+   identity to hand git. `commit_all`, `commit_and_push`, `pull`, `finalize_merge`, `undo_merge` all
+   gained the same optional `identity` parameter, threaded to `_identity_args`.
+4. `sage/orchestrator/service.py`: new `Orchestrator._git_identity() -> tuple[str, str] | None`,
+   mirroring `_viewer_id()`'s exact safe pattern (try `self._token_source.whoami()`, log+fall back to
+   `None` on any failure — an identity-API hiccup must never block a save). Wired into all 5 call
+   sites that author a commit: `_save_to_git`'s `commit_all`, `_integrate_remote`'s `pull`,
+   `_resolve_conflicts`'s `finalize_merge`, `sync`'s `commit_all`, `undo_merge`'s `undo_merge`.
+   Grepped every other `from ..workspace import git` import site in the file first (6 total) to
+   confirm the other one imports for read-only calls (`Incoming`, `has_remote`) that need no
+   identity — not guessed.
+5. `sage/provision/seed.py`: `seed_and_push()` gained `identity`, threaded to a new
+   `_seed_identity_args()` helper (same "identity wins, fill the missing half with the neutral
+   default" logic as `workspace/git.py`'s, kept as a **second, independent implementation** rather
+   than a shared import — matching this file's own established precedent
+   (`test_the_commit_author_names_nobody` already keeps the two fallback constants in step by
+   harvesting source rather than by sharing code, and the module's own comment says so).
+6. `sage/provision/service.py`: new `ProvisionService._committer_identity()` (same safe
+   try/except-and-log pattern, resolving `self._cp.whoami()`), wired into `provision_project`'s
+   `seed_and_push(..., identity=self._committer_identity())` call — so BOTH the door's legacy
+   `create_app` path and the new `registry.create()` path get the real identity on their initial
+   commit, from the one call site both already share.
+
+**Tests added, 16 total, all passing:**
+- `tests/test_token_source.py` (+2): `whoami()` carries `full_name`/`email` when the API has them,
+  blank when it doesn't.
+- `tests/test_git.py` (+5, plus one existing test's assertion strengthened): an explicit identity
+  overrides the repo's own ambient config; an identity is used even with zero ambient config;
+  a name with no email still commits, under the neutral fallback email; `finalize_merge` and
+  `undo_merge` each honor an explicit identity (built against a REAL pull-conflict-resolve-undo
+  scenario, not a simulated one, matching this file's own established pattern for those functions).
+- `tests/test_chat_turn.py` (+4): `_git_identity()`'s four paths — a configured identity, no
+  `TokenSource`, a `TokenSource` whose `whoami()` carries no name/email at all (the id/name-only
+  shape older fixtures and some real answers have), and `whoami()` raising.
+- `tests/test_provision_service.py` (+3): the initial commit is authored as the real control-plane
+  identity; falls back to `None` with no `full_name`/`email` (the `FakeControlPlane` default shape);
+  survives a `whoami()` failure.
+- `tests/test_provision_seed.py` (+2): `seed_and_push(identity=...)` authors the initial commit as
+  that person; with no `identity`, the neutral `agent <agent@localhost>` default is unchanged.
+
+**Verification:**
+- Every touched/new test file green individually (`test_git.py`, `test_token_source.py`,
+  `test_provision_service.py`, `test_provision_seed.py`, `test_create_project.py`,
+  `test_project_registry.py`, `test_provision_credentials.py`, `test_door.py`,
+  `test_the_control_plane_routes_speak_the_packs_words.py`,
+  `test_the_door_waits_for_the_builder_to_answer.py`, `test_settings_api.py`) except the same
+  well-established dogfood-safety class hit every session (confirmed: identical two test names —
+  `test_creating_a_project_off_the_platform_names_the_pack`,
+  `test_opening_another_project_off_the_platform_names_the_pack` — in this run and in the
+  Phase-3-close full-suite run before this session touched anything).
+- Grepped every `UserRef(` construction site across `tests/` and `sage/` to confirm the two new
+  defaulted fields break no positional or equality-sensitive construction — all existing sites use
+  `id=`/`name=` keywords only.
+- `make lint` (repo-wide): clean.
+- Full suite, reconciled: **7896 collected == 100 failed + 7786 passed + 10 skipped** — collected is
+  exactly 16 more than the Phase-3-close baseline (7880), matching the 16 new tests above by count,
+  not assumed. Failed count and the full 20-file failure-name list are BYTE-IDENTICAL to the
+  Phase-3-close baseline's own list — zero new regressions, zero new test files appearing anywhere
+  in the failure list.
+
+**What this does NOT touch, on purpose:** the git identity used for a **published Built App's own**
+runtime git operations (none exist today — apps don't commit) and any workspace-era (pre-pivot,
+soon-to-be-deleted) code paths are unaffected; this is scoped to the Orchestrator's own per-turn
+saves and the provisioning seed commit, the only two places this codebase ever authors a commit.

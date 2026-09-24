@@ -14,7 +14,8 @@ import pytest
 from sage.platform.auth import TokenSource, build_token_source, gateway_bearer
 
 USERS = {
-    "static-key-1": {"id": "u-1", "userName": "alice"},
+    "static-key-1": {"id": "u-1", "userName": "alice", "fullName": "Alice Anderson",
+                     "email": "alice@example.com"},
     "sidecar-jwt-1": {"id": "u-2", "userName": "bob"},
 }
 
@@ -50,6 +51,24 @@ def test_a_sidecar_source_authenticates_with_bearer():
     assert who.name == "bob"
     assert calls[0]["authorization"] == "Bearer sidecar-jwt-1"
     assert "x-domino-api-key" not in calls[0]
+
+
+def test_whoami_carries_the_full_name_and_email_when_the_api_has_them():
+    """The git-identity resolver (`Orchestrator._git_identity`) needs a real name/email, not just
+    the username `.name` already carried — confirmed live against a real Domino cluster (see
+    `platform/auth.py`'s module docstring)."""
+    source = TokenSource.static("static-key-1", "https://d.example", transport=_transport([]))
+    who = source.whoami()
+    assert who.full_name == "Alice Anderson"
+    assert who.email == "alice@example.com"
+
+
+def test_whoami_full_name_and_email_are_blank_when_the_api_omits_them():
+    source = TokenSource("sidecar", lambda: "sidecar-jwt-1", "https://d.example",
+                          transport=_transport([]))
+    who = source.whoami()
+    assert who.full_name == ""
+    assert who.email == ""
 
 
 def test_whoami_is_cached_forever_not_keyed_on_the_token_value():

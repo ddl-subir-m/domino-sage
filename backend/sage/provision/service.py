@@ -308,12 +308,26 @@ class ProvisionService:
                 token_provider=self._push_token_provider,
                 settings={"displayName": display_name},
                 dest=dest,
+                identity=self._committer_identity(),
             )
             project = self._create_project(repo_name, repo.clone_url, display_name)
         except Exception:
             self._rollback_repo(repo)
             raise
         return project, repo
+
+    def _committer_identity(self) -> tuple[str, str] | None:
+        """The real, authenticated person the initial commit is authored as — `whoami()`'s
+        `full_name`/`email`, or `None` to fall back to the neutral `agent` identity (`seed.py`'s own
+        `_seed_identity_args`). Never raises: an identity-API hiccup must not block provisioning."""
+        try:
+            who = self._cp.whoami()
+        except Exception:
+            log.warning("couldn't resolve a committer identity for the initial commit", exc_info=True)
+            return None
+        if not who.full_name and not who.email:
+            return None
+        return (who.full_name or who.name, who.email)
 
     def create_app(self, display_name: str, *, name: str | None = None) -> AppCreated:
         """Provision a Project (git half, above) and launch this caller's Sage Builder in it."""

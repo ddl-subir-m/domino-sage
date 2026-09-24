@@ -44,6 +44,36 @@ def test_create_app_returns_an_open_url_for_the_new_builder(tmp_path, no_network
     assert created.open_url == f"/tester/sage-my-app/notebookSession/run-{created.project.id}/"
 
 
+def test_the_initial_commit_is_authored_as_the_real_control_plane_identity(tmp_path, no_network_seed):
+    """`_committer_identity()`: the seed step's initial commit is attributed to the real,
+    authenticated person `whoami()` names, not left to git's own neutral fallback."""
+    from sage.provision.domino import UserRef
+
+    cp = FakeControlPlane(user=UserRef(id="u-1", name="etan_lightstone",
+                                       full_name="Etan Lightstone", email="etan@example.com"))
+    _service(tmp_path, cp, seed_calls=no_network_seed).create_app("My App")
+
+    assert no_network_seed[0][1]["identity"] == ("Etan Lightstone", "etan@example.com")
+
+
+def test_the_initial_commit_falls_back_to_none_with_no_full_name_or_email(tmp_path, no_network_seed):
+    # FakeControlPlane's default user has an id/name but no full_name/email — the shape a
+    # whoami() built for id/name alone (older fixtures, or a real answer that never fetched them).
+    _service(tmp_path, seed_calls=no_network_seed).create_app("My App")
+
+    assert no_network_seed[0][1]["identity"] is None
+
+
+def test_the_initial_commit_identity_survives_a_whoami_failure(tmp_path, no_network_seed):
+    class _BrokenControlPlane(FakeControlPlane):
+        def whoami(self):
+            raise RuntimeError("network hiccup")
+
+    _service(tmp_path, _BrokenControlPlane(), seed_calls=no_network_seed).create_app("My App")
+
+    assert no_network_seed[0][1]["identity"] is None
+
+
 def test_create_app_resolves_repo_name_collision(tmp_path, no_network_seed):
     repo = FakeRepoProvider()
     repo.create_repo("sage-my-app")  # occupy the base name

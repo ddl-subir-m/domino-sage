@@ -69,6 +69,45 @@ def test_git_failure_surfaces_stderr_not_token(tmp_path, monkeypatch):
         raise AssertionError("expected RuntimeError on push failure")
 
 
+# --- identity (git-identity resolution) ------------------------------------------------------
+
+
+def test_seed_and_push_with_identity_authors_the_initial_commit_as_that_person(tmp_path):
+    import subprocess
+
+    template = _template(tmp_path)
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+
+    seed.seed_and_push(str(bare), template, identity=("Etan Lightstone", "etan@example.com"))
+
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", str(bare), str(checkout)], check=True)
+    author = subprocess.run(
+        ["git", "log", "-1", "--format=%an <%ae>"], cwd=str(checkout),
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert author == "Etan Lightstone <etan@example.com>"
+
+
+def test_seed_and_push_with_no_identity_falls_back_to_the_neutral_default(tmp_path):
+    import subprocess
+
+    template = _template(tmp_path)
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+
+    seed.seed_and_push(str(bare), template)
+
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", str(bare), str(checkout)], check=True)
+    author = subprocess.run(
+        ["git", "log", "-1", "--format=%an <%ae>"], cwd=str(checkout),
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert author == "agent <agent@localhost>"
+
+
 # --- dest (registry.create, Phase 3 step 1) -------------------------------------------------
 
 
