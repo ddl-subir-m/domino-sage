@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from sage import build_diagnostics as diagnostics
+from sage.build_policy import BuildPolicy
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator import service as svc
 from sage.orchestrator.service import (
@@ -31,6 +32,9 @@ from sage.orchestrator.service import (
 from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
+
+POLICY = BuildPolicy()
+TEST_POLICY = _replace(POLICY, stop_grace_seconds=1.0)
 
 # ---- the counter ------------------------------------------------------------------------------
 
@@ -220,7 +224,7 @@ def test_the_sentence_names_the_call_and_its_answer():
     assert "bash (ls -R uploads)" in said
     assert "no such directory" in said
     # The number the brake actually uses, not a word that drifts away from it.
-    assert str(svc._REPEAT_LIMIT) in said
+    assert str(POLICY.exact_repeat_limit) in said
     assert "stopped making progress" not in said
     bare = _repeat_message("bash (ls -R uploads)", "")
     assert "bash (ls -R uploads)" in bare
@@ -251,12 +255,15 @@ def _template(tmp: Path) -> Path:
     return t
 
 
-def _orch(tmp: Path, oc: FakeOpenCode, verdict: str) -> Orchestrator:
+def _orch(tmp: Path, oc: FakeOpenCode, verdict: str, *,
+          no_edit_nudge_limit: int = POLICY.no_edit_nudge_limit) -> Orchestrator:
     orch = Orchestrator(workspace_dir=oc.workspace, template=_template(tmp),
                         gateway=ScriptedGateway(verdict),
                         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s",
                                              sovereign_ask="s", plan="p", implement="i", ask="a"),
-                        project_id="Sage", feedback=OkFeedback(), opencode_client=oc)
+                        project_id="Sage", feedback=OkFeedback(), opencode_client=oc,
+                        build_policy=_replace(TEST_POLICY,
+                                              no_edit_nudge_limit=no_edit_nudge_limit))
     orch.project(start_preview=False).record.write_settings({"skip_planning": True})
     return orch
 
@@ -320,10 +327,9 @@ def _no_waiting(monkeypatch):
     import time
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
-    # A second of grace rather than thirty. `time.sleep` is a no-op above, so the stop's wait for
-    # an idle reading spins on the real clock — the rule under test is whether a stop that never
+    # The helper injects one second of stop grace. `time.sleep` is a no-op above, so the stop's wait
+    # for an idle reading spins on the real clock. The rule under test is whether a stop that never
     # confirms releases the tree, and that is the same rule at either scale.
-    monkeypatch.setattr(svc, "_BUILD_STOP_GRACE_S", 1.0)
 
 
 def test_a_build_turn_that_repeats_one_call_is_stopped_and_told_what_repeated(tmp_path: Path):
@@ -341,7 +347,7 @@ def test_a_build_turn_that_repeats_one_call_is_stopped_and_told_what_repeated(tm
     # The session is stopped rather than left running against the working tree.
     assert oc.interrupted == 1
     # It braked on the third, not after twenty.
-    assert oc.emitted <= svc._REPEAT_LIMIT + 1
+    assert oc.emitted <= POLICY.exact_repeat_limit + 1
     project = orch.project(start_preview=False)
     user = next(row for row in project.workspace.read_history() if row["type"] == "user")
     diagnostic = diagnostics.Store(project.record.path).get(
@@ -405,7 +411,7 @@ def test_a_build_marker_metadata_cycle_stops_before_a_fourth_true_call(tmp_path:
     events = list(orch.build_stream("chart the uploads"))
 
     assert next(e for e in events if e.get("type") == "done")["decision"] == "repeat_brake"
-    assert oc.emitted == svc._REPEAT_LIMIT
+    assert oc.emitted == POLICY.exact_repeat_limit
     assert oc.interrupted == 1
 
 
@@ -727,12 +733,12 @@ def test_a_build_turn_that_runs_forty_different_shell_calls_and_changes_nothing_
     card = _shell_cap_fired(events)
     assert len(card) == 1
     # The number is the finding — it is the one thing the person could not see.
-    assert str(svc._BASH_CALLS_MAX) in card[0]["message"]
+    assert str(POLICY.bash_call_limit) in card[0]["message"]
     # Its own word on the status line: nothing repeated, so "Stopped — repeated" would be false.
     assert next(e for e in events if e.get("type") == "done")["decision"] == "looped"
     assert oc.interrupted == 1
     # Stopped in the poll that reached the cap, not some polls later.
-    assert svc._BASH_CALLS_MAX <= oc.calls < svc._BASH_CALLS_MAX + _ECHOES_IN_ONE_BATCH
+    assert POLICY.bash_call_limit <= oc.calls < POLICY.bash_call_limit + _ECHOES_IN_ONE_BATCH
     assert orch._turn_gave_up is True
 
 
@@ -743,16 +749,15 @@ def test_a_build_turn_one_short_of_the_shell_cap_is_not_stopped_for_it(tmp_path:
     # A turn that ends with no edit is nudged to implement, and each nudge against a session
     # with nothing left to say costs the poll loop's never-appeared deadline. Not what this
     # plant is about, so no nudges — the same switch test_phased_build.py throws.
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     oc = CountingOpenCode(tmp_path / "mnt" / "code", [Turn(text="looking")],
-                          stop_after=svc._BASH_CALLS_MAX - 1)
-    orch = _orch(tmp_path, oc, "BUILD")
+                          stop_after=POLICY.bash_call_limit - 1)
+    orch = _orch(tmp_path, oc, "BUILD", no_edit_nudge_limit=0)
 
     events = list(orch.build_stream("chart them"))
 
     assert _shell_cap_fired(events) == []
     assert next(e for e in events if e.get("type") == "done")["decision"] != "looped"
-    assert oc.calls == svc._BASH_CALLS_MAX - 1
+    assert oc.calls == POLICY.bash_call_limit - 1
 
 
 def test_a_build_turn_whose_app_has_changed_is_not_stopped_for_its_shell_calls(tmp_path: Path):
@@ -762,7 +767,7 @@ def test_a_build_turn_whose_app_has_changed_is_not_stopped_for_its_shell_calls(t
     and a cap keyed on the edit tools alone would have stopped it."""
     oc = CountingOpenCode(tmp_path / "mnt" / "code",
                           [Turn(text="done", writes={"src/chart.tsx": "chart\n"})],
-                          stop_after=svc._BASH_CALLS_MAX + 5)
+                          stop_after=POLICY.bash_call_limit + 5)
     orch = _orch(tmp_path, oc, "BUILD")
 
     events = list(orch.build_stream("chart them"))
@@ -770,7 +775,7 @@ def test_a_build_turn_whose_app_has_changed_is_not_stopped_for_its_shell_calls(t
     assert _shell_cap_fired(events) == []
     assert [e for e in events if e.get("type") == "build-stalled"] == []
     assert next(e for e in events if e.get("type") == "done")["ok"] is True
-    assert oc.calls == svc._BASH_CALLS_MAX + 5       # it really did go past the cap
+    assert oc.calls == POLICY.bash_call_limit + 5       # it really did go past the cap
 
 
 def test_a_chat_turn_with_no_stream_is_braked_off_the_transcript(tmp_path: Path, monkeypatch):
@@ -1056,14 +1061,14 @@ def _one_model_orch(tmp: Path, oc: FakeOpenCode) -> Orchestrator:
 
 def test_a_build_turn_whose_edits_keep_being_refused_is_stopped(tmp_path: Path):
     oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
-                               refused=svc._FAILED_WRITES_MAX)
+                               refused=POLICY.failed_write_limit)
     orch = _orch(tmp_path, oc, "BUILD")
 
     events = list(orch.build_stream("chart them"))
 
     card = _write_cap_fired(events)
     assert len(card) == 1
-    assert str(svc._FAILED_WRITES_MAX) in card[0]["message"]
+    assert str(POLICY.failed_write_limit) in card[0]["message"]
     # Never the refusal itself: a tool's error text is not this sentence's to quote, same rule as
     # the brake's — and `apply_patch` is not on `_REPEAT_ANSWER_TOOLS` anyway.
     assert "Begin/End markers" not in card[0]["message"]
@@ -1074,10 +1079,9 @@ def test_a_build_turn_whose_edits_keep_being_refused_is_stopped(tmp_path: Path):
 
 def test_a_turn_one_refusal_short_of_the_cap_is_not_stopped_for_it(tmp_path: Path, monkeypatch):
     """Nine refusals is the same turn as ten, one part earlier. Only the count separates them."""
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
-                               refused=svc._FAILED_WRITES_MAX - 1)
-    orch = _orch(tmp_path, oc, "BUILD")
+                               refused=POLICY.failed_write_limit - 1)
+    orch = _orch(tmp_path, oc, "BUILD", no_edit_nudge_limit=0)
 
     events = list(orch.build_stream("chart them"))
 
@@ -1094,10 +1098,10 @@ def test_a_turn_that_refuses_and_lands_in_turns_is_left_alone(tmp_path: Path, mo
     than landed` was the wrong key: the measured loop lost more than three for every one it landed
     (25 against 7), and the bar is now twice.
     """
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
-                               refused=svc._FAILED_WRITES_MAX, landed=svc._FAILED_WRITES_MAX + 2)
-    orch = _orch(tmp_path, oc, "BUILD")
+                               refused=POLICY.failed_write_limit,
+                               landed=POLICY.failed_write_limit + 2)
+    orch = _orch(tmp_path, oc, "BUILD", no_edit_nudge_limit=0)
 
     events = list(orch.build_stream("chart them"))
 
@@ -1109,7 +1113,7 @@ def test_a_turn_losing_more_than_twice_what_it_lands_is_stopped(tmp_path: Path):
     """The other side of the same bar: the measured shape, scaled down. Four landed against ten
     refused is not a build fixing its own mistakes."""
     oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
-                               refused=svc._FAILED_WRITES_MAX, landed=4)
+                               refused=POLICY.failed_write_limit, landed=4)
     orch = _orch(tmp_path, oc, "BUILD")
 
     events = list(orch.build_stream("chart them"))
@@ -1120,7 +1124,7 @@ def test_a_turn_losing_more_than_twice_what_it_lands_is_stopped(tmp_path: Path):
 def test_the_sentence_names_the_model_when_both_slots_hold_it(tmp_path: Path):
     """#494's own case, and the only one where the person has something specific to change."""
     oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
-                               refused=svc._FAILED_WRITES_MAX)
+                               refused=POLICY.failed_write_limit)
     orch = _one_model_orch(tmp_path, oc)
 
     events = list(orch.build_stream("chart them"))
@@ -1132,7 +1136,7 @@ def test_the_sentence_names_the_model_when_both_slots_hold_it(tmp_path: Path):
 
 def test_the_sentence_invents_nothing_when_the_slots_hold_two_models(tmp_path: Path):
     oc = PatchRefusingOpenCode(tmp_path / "mnt" / "code", [Turn(text="patching")],
-                               refused=svc._FAILED_WRITES_MAX)
+                               refused=POLICY.failed_write_limit)
     orch = _orch(tmp_path, oc, "BUILD")   # plan="p", implement="i"
 
     events = list(orch.build_stream("chart them"))
@@ -1179,9 +1183,8 @@ class _EditOnce(FakeOpenCode):
 
 def test_a_turn_whose_only_edit_was_refused_did_not_write(tmp_path: Path, monkeypatch):
     """No nudges, so the turn's verdict is the one thing under test rather than the retry loop."""
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     oc = _EditOnce(tmp_path / "mnt" / "code", status="error")
-    orch = _orch(tmp_path, oc, "BUILD")
+    orch = _orch(tmp_path, oc, "BUILD", no_edit_nudge_limit=0)
 
     events = list(orch.build_stream("chart them"))
 
@@ -1198,9 +1201,8 @@ def test_a_turn_whose_edit_landed_still_wrote(tmp_path: Path, monkeypatch):
 
     Nothing reaches the disk here, so the tree hash cannot answer this one — only the tool part can.
     """
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     oc = _EditOnce(tmp_path / "mnt" / "code", status="completed")
-    orch = _orch(tmp_path, oc, "BUILD")
+    orch = _orch(tmp_path, oc, "BUILD", no_edit_nudge_limit=0)
 
     events = list(orch.build_stream("chart them"))
 
@@ -1209,9 +1211,8 @@ def test_a_turn_whose_edit_landed_still_wrote(tmp_path: Path, monkeypatch):
 
 def test_the_working_tree_answers_for_a_write_no_tool_reported(tmp_path: Path, monkeypatch):
     """The refused edit says no and the disk says yes, so `agent_wrote()` must still say yes."""
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     oc = _EditOnce(tmp_path / "mnt" / "code", status="error", heredoc=True)
-    orch = _orch(tmp_path, oc, "BUILD")
+    orch = _orch(tmp_path, oc, "BUILD", no_edit_nudge_limit=0)
 
     events = list(orch.build_stream("chart them"))
 

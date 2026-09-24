@@ -11,10 +11,12 @@ test here while delivering none of the benefit.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from sage.build_policy import BuildPolicy
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode, ModelCatalog
@@ -84,7 +86,8 @@ def _no_waiting(monkeypatch):
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
 
 
-def _build(tmp: Path, turns: list[Turn], *, phased: bool = True):
+def _build(tmp: Path, turns: list[Turn], *, phased: bool = True,
+           no_edit_nudge_limit: int = 3):
     template = tmp / "template"
     (template / "src").mkdir(parents=True, exist_ok=True)
     (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
@@ -94,7 +97,9 @@ def _build(tmp: Path, turns: list[Turn], *, phased: bool = True):
     oc = FakeOpenCode(ws, turns)
     orch = Orchestrator(workspace_dir=ws, template=template, gateway=ScriptedGateway(),
                         catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
-                        opencode_client=oc)
+                        opencode_client=oc,
+                        build_policy=replace(BuildPolicy(),
+                                             no_edit_nudge_limit=no_edit_nudge_limit))
     project = orch.project(start_preview=False)
     if phased:
         project.record.write_settings({"phased_build": True})
@@ -195,10 +200,9 @@ def test_phases_run_as_implement_not_plan(tmp_path: Path):
 
 def test_a_failed_phase_aborts_the_build_but_keeps_finished_work(tmp_path: Path, monkeypatch):
     # No nudges, so "the agent wrote nothing" fails the phase immediately instead of looping.
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     turns = [Turn(text=PHASED_PLAN), _writes("src/data.ts"),
              Turn(text="I looked around."), Turn(text="Still stuck.")]  # phase 2 both attempts
-    orch, oc, project = _build(tmp_path, turns)
+    orch, oc, project = _build(tmp_path, turns, no_edit_nudge_limit=0)
     list(orch.build_stream("build me a trades dashboard"))
     events = list(orch.approve_stream())
 
@@ -222,10 +226,9 @@ def test_a_failed_phase_still_reports_which_app_it_changed(tmp_path: Path, monke
     """The finished phases are kept on purpose (above), so the app IS changed — and the change is
     owed a receipt (#56). Without one the transcript says the build failed and nothing says where
     the work that survived it landed, which is the "go and find it yourself" the card closes."""
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     turns = [Turn(text=PHASED_PLAN), _writes("src/data.ts"),
              Turn(text="I looked around."), Turn(text="Still stuck.")]  # phase 2 both attempts
-    orch, _oc, project = _build(tmp_path, turns)
+    orch, _oc, project = _build(tmp_path, turns, no_edit_nudge_limit=0)
     list(orch.build_stream("build me a trades dashboard"))
 
     events = list(orch.approve_stream())
@@ -236,10 +239,9 @@ def test_a_failed_phase_still_reports_which_app_it_changed(tmp_path: Path, monke
 def test_a_phased_build_that_wrote_nothing_reports_no_change(tmp_path: Path, monkeypatch):
     """The working tree rather than the phase count: a phase can finish without writing, and a card
     for a build that changed nothing is a receipt for work nobody did."""
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     turns = [Turn(text=PHASED_PLAN),
              Turn(text="I looked around."), Turn(text="Still stuck.")]  # phase 1 both attempts
-    orch, _oc, _project = _build(tmp_path, turns)
+    orch, _oc, _project = _build(tmp_path, turns, no_edit_nudge_limit=0)
     list(orch.build_stream("build me a trades dashboard"))
 
     events = list(orch.approve_stream())
@@ -249,10 +251,9 @@ def test_a_phased_build_that_wrote_nothing_reports_no_change(tmp_path: Path, mon
 
 
 def test_a_failed_phase_retries_once_in_another_session(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     turns = [Turn(text=PHASED_PLAN), Turn(text="stuck"), _writes("src/data.ts"),
              _writes("src/Table.tsx"), _writes("src/Filter.tsx")]
-    orch, oc, _project = _build(tmp_path, turns)
+    orch, oc, _project = _build(tmp_path, turns, no_edit_nudge_limit=0)
     list(orch.build_stream("build me a trades dashboard"))
     events = list(orch.approve_stream())
 
@@ -264,10 +265,9 @@ def test_a_failed_phase_retries_once_in_another_session(tmp_path: Path, monkeypa
 
 
 def test_the_retry_escalates_to_the_strong_model(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     turns = [Turn(text=PHASED_PLAN), Turn(text="stuck"), _writes("src/data.ts"),
              _writes("src/Table.tsx"), _writes("src/Filter.tsx")]
-    orch, _oc, project = _build(tmp_path, turns)
+    orch, _oc, project = _build(tmp_path, turns, no_edit_nudge_limit=0)
     list(orch.build_stream("build me a trades dashboard"))
     events = list(orch.approve_stream())
 
@@ -289,10 +289,9 @@ def test_the_retry_gives_the_persons_own_pick_back_with_its_level(tmp_path: Path
     The level and the model are asserted together on purpose. Restoring the model alone leaves the
     chip reading exactly right.
     """
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "0")
     turns = [Turn(text=PHASED_PLAN), Turn(text="stuck"), _writes("src/data.ts"),
              _writes("src/Table.tsx"), _writes("src/Filter.tsx")]
-    orch, _oc, project = _build(tmp_path, turns)
+    orch, _oc, project = _build(tmp_path, turns, no_edit_nudge_limit=0)
     project.control.pick("gemini-3.7-flash", "high")
 
     list(orch.build_stream("build me a trades dashboard"))

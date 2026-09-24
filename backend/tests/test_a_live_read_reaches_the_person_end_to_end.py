@@ -12,12 +12,15 @@ import re
 from pathlib import Path
 from typing import ClassVar
 
+from sage.build_policy import BuildPolicy
 from sage.orchestrator import brand
-from sage.orchestrator.service import _LIVE_READS_MAX, Orchestrator
+from sage.orchestrator.service import Orchestrator
 from sage.resources.provider import DataSource, FakeResourceProvider, SampleRows
 from sage.workspace.threads import ThreadStore
 
 from .fake_opencode import FakeOpenCode, Turn
+
+LIVE_READ_LIMIT = BuildPolicy().live_read_limit
 from .test_chat_turn import OkFeedback, ScriptedGateway, _catalog
 
 
@@ -154,12 +157,12 @@ def test_the_cap_refuses_loudly_rather_than_letting_a_loop_of_reads_spend_the_tu
     the refusal names the number, so an agent can tell a cap from a store with nothing to say."""
     orch, oc, _tid, resources = _granted(tmp_path)
 
-    for _ in range(_LIVE_READS_MAX):
+    for _ in range(LIVE_READ_LIMIT):
         assert "Columns: ID, TITLE" in _read(orch, oc)
     over = _read(orch, oc)
 
-    assert len(resources.asked) == _LIVE_READS_MAX, "the store is not touched past the cap"
-    assert f"already made {_LIVE_READS_MAX} live reads" in over
+    assert len(resources.asked) == LIVE_READ_LIMIT, "the store is not touched past the cap"
+    assert f"already made {LIVE_READ_LIMIT} live reads" in over
     assert "finish with what you have" in over
     assert "Columns:" not in over, "and it is a refusal, not a read"
 
@@ -168,21 +171,21 @@ def test_the_next_turn_starts_the_read_count_over(tmp_path: Path):
     """The count is per TURN, reset when the next turn's token is minted. A turn that died holding
     a count would otherwise hand the next question a cap it never spent."""
     orch, oc, tid, resources = _granted(tmp_path)
-    for _ in range(_LIVE_READS_MAX):
+    for _ in range(LIVE_READ_LIMIT):
         _read(orch, oc)
     assert "already made" in _read(orch, oc)
 
     list(orch.chat_stream(tid, "and another row"))
 
     assert "Columns: ID, TITLE" in _read(orch, oc)
-    assert len(resources.asked) == _LIVE_READS_MAX + 1
+    assert len(resources.asked) == LIVE_READ_LIMIT + 1
 
 
 def test_the_turn_is_told_its_read_budget_before_it_spends_it(tmp_path: Path):
     """The refusal arrives at read 26. The number belongs in the prompt too, beside the token, so
     the agent plans the few reads it needs rather than learning the limit by hitting it."""
     _, oc, _, _ = _granted(tmp_path)
-    assert f"Up to {_LIVE_READS_MAX} reads per turn" in oc.prompts[-1]["text"]
+    assert f"Up to {LIVE_READ_LIMIT} reads per turn" in oc.prompts[-1]["text"]
 
 
 def test_the_tools_are_offered_over_the_wire(tmp_path: Path):
@@ -330,7 +333,7 @@ def test_a_build_turn_mints_a_token_and_the_card_rides_its_done(tmp_path: Path):
     events = list(orch.build_stream("show me 1 sample conversation", conversation=tid))
 
     assert "Read token: lrt_" in oc.prompts[-1]["text"], "a Build turn mints one too"
-    assert f"Up to {_LIVE_READS_MAX} reads per turn" in oc.prompts[-1]["text"], (
+    assert f"Up to {LIVE_READ_LIMIT} reads per turn" in oc.prompts[-1]["text"], (
         "and is told its budget beside it — the loop measured 2026-09-21 was a Build turn")
     done = [e for e in events if e.get("type") == "done"][-1]
     paths = [a["path"] for a in (done.get("artifacts") or [])]

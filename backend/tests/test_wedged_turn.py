@@ -18,17 +18,22 @@ reads, so a poll costs a second of the turn's time and none of the suite's.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
 import pytest
 
+from sage.build_policy import BuildPolicy
 from sage.feedback.runner import FeedbackReport
-from sage.orchestrator import service as svc
 from sage.orchestrator.service import Orchestrator, ResetBusy, TurnBusy
 from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
+
+SHORT_BUILD_POLICY = replace(
+    BuildPolicy(), quiet_timeout_seconds=5.0, open_tool_quiet_timeout_seconds=20.0,
+    stop_grace_seconds=5.0)
 
 
 class OkFeedback:
@@ -142,20 +147,6 @@ def _scripted_clock(monkeypatch):
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
 
 
-@pytest.fixture(autouse=True)
-def _short_windows(monkeypatch):
-    """Five polls of silence rather than five minutes of it. The rule under test is which polls
-    reset the clock, and that is the same rule at either scale.
-
-    Both windows, at the same ratio as the real pair (#98): the shorter one for a turn with
-    nothing outstanding, the longer one while a tool call is still open. Patching only the first
-    would leave the tool window at its real ten minutes, and every test below that waits one out
-    would sit there for six hundred scripted polls before reporting anything."""
-    monkeypatch.setattr(svc, "_BUILD_QUIET_TIMEOUT_S", 5.0)
-    monkeypatch.setattr(svc, "_BUILD_TOOL_QUIET_TIMEOUT_S", 20.0)
-    monkeypatch.setattr(svc, "_BUILD_STOP_GRACE_S", 5.0)
-
-
 def _template(tmp: Path) -> Path:
     t = tmp / "template"
     (t / "src").mkdir(parents=True, exist_ok=True)
@@ -170,7 +161,8 @@ def _orch(tmp: Path, oc: FakeOpenCode) -> Orchestrator:
     orch = Orchestrator(workspace_dir=oc.workspace, template=_template(tmp), gateway=ScriptedGateway(),
                         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s",
                                              sovereign_ask="s", plan="p", implement="i", ask="a"),
-                        project_id="Sage", feedback=OkFeedback(), opencode_client=oc)
+                        project_id="Sage", feedback=OkFeedback(), opencode_client=oc,
+                        build_policy=SHORT_BUILD_POLICY)
     orch.project(start_preview=False).record.write_settings({"skip_planning": True})
     return orch
 
@@ -499,7 +491,7 @@ def test_a_slow_interrupt_does_not_spend_the_whole_grace_window(tmp_path: Path):
 
     def slow(session_id: str) -> None:
         oc.interrupted += 1
-        time.sleep(svc._BUILD_STOP_GRACE_S)     # the scripted clock: burns the whole window
+        time.sleep(SHORT_BUILD_POLICY.stop_grace_seconds)  # burns the whole scripted window
 
     def settling(session_id: str) -> bool:
         oc.polls += 1
@@ -670,7 +662,7 @@ def test_a_stop_pressed_while_sage_was_stopping_does_not_answer_the_next_turn(tm
 
     The window is narrow and specific. A Stop pressed during the five-minute wait is consumed by the
     poll loop's own first statement — it interrupts, runs `handle_stop`, and the turn ends as
-    "stopped" rather than stalling. But `_stop_wedged_session` then spends up to `_BUILD_STOP_GRACE_S`
+    "stopped" rather than stalling. But `_stop_wedged_session` then spends up to the policy grace
     asking the session to stop, and inside it there is no poll loop running: the lock is still held,
     so `turn_busy()` is true and `stop_build` still accepts, and nothing is left to consume what it
     sets. #97 found this window from the reset side; this is the same window seen from the next turn.

@@ -28,12 +28,13 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from sage.build_policy import BuildPolicy
 from sage.feedback.runner import FeedbackReport
-from sage.orchestrator import service as svc
 from sage.orchestrator.service import Orchestrator, ResetBusy, TurnBusy
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
@@ -104,13 +105,15 @@ def _template(tmp: Path) -> Path:
     return t
 
 
-def _orch(tmp: Path, oc: FakeOpenCode, *, verdict: str = "BUILD") -> Orchestrator:
+def _orch(tmp: Path, oc: FakeOpenCode, *, verdict: str = "BUILD",
+          build_policy: BuildPolicy | None = None) -> Orchestrator:
     """An orchestrator on the fake agent, with the plan gate off so a prompt reaches the build path."""
     orch = Orchestrator(workspace_dir=oc.workspace, template=_template(tmp),
                         gateway=ScriptedGateway(verdict),
                         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s",
                                              sovereign_ask="s", plan="p", implement="i", ask="a"),
-                        project_id="Sage", feedback=OkFeedback(), opencode_client=oc)
+                        project_id="Sage", feedback=OkFeedback(), opencode_client=oc,
+                        build_policy=build_policy)
     orch.project(start_preview=False).record.write_settings({"skip_planning": True})
     return orch
 
@@ -436,10 +439,6 @@ def test_a_wedge_fails_every_turn_waiting_behind_it(tmp_path: Path, monkeypatch)
     """The lock the queue is waiting on is never coming back, so waiting is the one thing these
     turns must not be left doing. Each is failed where it stands, loudly, with the restart
     sentence — a held connection and a spinner is the failure this replaces."""
-    monkeypatch.setattr(svc, "_BUILD_QUIET_TIMEOUT_S", 0.5)
-    monkeypatch.setattr(svc, "_BUILD_TOOL_QUIET_TIMEOUT_S", 0.5)
-    monkeypatch.setattr(svc, "_BUILD_STOP_GRACE_S", 0.5)
-
     queued: dict = {}
 
     def queue_one_behind_it() -> None:
@@ -450,7 +449,9 @@ def test_a_wedge_fails_every_turn_waiting_behind_it(tmp_path: Path, monkeypatch)
         _pending(events)
 
     oc = WedgesOpenCode(tmp_path / "mnt" / "code", on_poll=queue_one_behind_it)
-    orch = _orch(tmp_path, oc)
+    policy = replace(BuildPolicy(), quiet_timeout_seconds=0.5,
+                     open_tool_quiet_timeout_seconds=0.5, stop_grace_seconds=0.5)
+    orch = _orch(tmp_path, oc, build_policy=policy)
 
     wedging = list(orch.build_stream("add a chart"))
 
