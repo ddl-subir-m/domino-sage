@@ -154,15 +154,14 @@ def test_the_busy_helper_is_shared_rather_than_copied_a_fourth_time():
     (ADR-0022) is the seventh and did the same, the investigation offer (#386) is the eighth, and
     the door onto the lane that can compute (#411) is the ninth — it reuses the investigation
     card's accept action as well as this helper, so only its one server-side button is counted.
-    Continue, the way back into a turn the ceiling stopped (#454), is the tenth, and it is the
-    cheapest of the ten to have written by hand: one button, one act, and nothing to say if the
-    replay throws — which is exactly the shape that got copied three times before this helper
-    existed."""
+    Continue, the way back into a turn the pre-edit ceiling stopped (#454), is the tenth. The
+    context-limit continuation is the eleventh and uses the same helper for the same one-button
+    lifecycle."""
     assert "useBusyAct() {" in UTIL
     assert "const [busy, run] = SW.util.useBusyAct();" in UI
     blocks = (WB / "js" / "components" / "message-blocks.js").read_text()
     assert "function useBusyAct() {" not in blocks
-    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 10
+    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 11
     # And the first caller outside a card: the bar that closes an investigation (#386). It is here
     # because it is the one that nearly did write its own — a hand-rolled `busy` flag with no
     # `catch`, on the control whose whole job is taking a capability back.

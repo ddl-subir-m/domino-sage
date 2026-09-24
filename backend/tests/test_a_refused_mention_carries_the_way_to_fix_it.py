@@ -203,19 +203,20 @@ def test_only_the_frame_that_arrived_this_session_carries_buttons():
     """The invariant the three offers beside it keep. A replayed refusal draws the status line it
     always drew, so a reloaded transcript reads exactly as it did before this shipped."""
     store = _js("store.js")
-    assert "|| ev.type === 'build-stalled' || ev.type === 'mentions-unresolved'" in store
-    # The same list, joined by the two candidate cards (#183, #185) and the Dataset card (#196),
-    # which keep the rule for the sharpest reason of the five: their buttons write a record — a
-    # Binding, or an Attachment — and start a build.
-    assert "|| ev.type === 'table-candidates' || ev.type === 'source-candidates'" in store
-    # And the guardrail search's answer (ADR-0022), which keeps the rule for the same reason: its
-    # button writes a row that changes what every later turn sends, and re-runs the failed turn.
-    assert "|| ev.type === 'dataset-files' || ev.type === 'withhold-found') {" in store
-    assert "ev.live = true;" in store
+    start = store.index("if (ev.type === 'reset-offer'")
+    live_group = store[start:store.index("appendBuildRow(ev);", start)]
+    # Every card whose button can change state or start work gets its `live` mark in this one branch.
+    # `build-context-limit` belongs here because its Continue button starts a new Build turn.
+    for event_type in (
+            "reset-offer", "incoming-changes", "build-stalled", "mentions-unresolved",
+            "table-candidates", "source-candidates", "dataset-files", "withhold-found",
+            "build-context-limit"):
+        assert f"ev.type === '{event_type}'" in live_group
+    assert live_group.count("ev.live = true;") == 1
     # Stamped on the row AND remembered past it (#209). The row is replaced by the server's copy on
     # the next transcript read, which carries no flag, so the mark alone survived until the next poll
     # — and a poll landing before the person clicked took the buttons off a card they watched arrive.
-    assert "rememberLiveCard(ev);" in store
+    assert "rememberLiveCard(ev);" in live_group
 
     blocks = _js("components", "message-blocks.js")
     assert "const fixes = block.live" in blocks

@@ -605,7 +605,7 @@ class _TurnTicket:
     in the same call."""
 
     __slots__ = ("admitted", "app", "claimed", "conversation", "epoch", "granted", "id",
-                 "kind", "outcome", "queued", "sequence", "snapshot")
+                 "kind", "outcome", "queued", "sequence", "snapshot", "timing_record")
 
     def __init__(self, ticket_id: str) -> None:
         self.id = ticket_id
@@ -625,6 +625,7 @@ class _TurnTicket:
         # at a build you stopped being able to see the moment you switched apps. Empty for Chat,
         # which writes Artifacts under the Thread rather than into an app.
         self.app = ""
+        self.timing_record = None
 
 
 # How often `_acquire_for_door` re-reads `_chat_saving` while waiting out a save. Matches
@@ -7529,15 +7530,38 @@ class Orchestrator:
         follow-up turns with context. Requires gateway access."""
         # Serialize with the streaming turns: only one turn may run at a time (see _turn_lock). Refuse
         # rather than overlap another turn on the shared control + working tree.
-        if not self._turn_lock.acquire(blocking=False):
+        timing_started = (time.time(), time.monotonic())
+        ticket, state = self.prepare_stream_turn(
+            new_id("turn"), kind="build", conversation=str(conversation or ""), app=True)
+        if state != "running":
+            if state == "pending":
+                self.release_stream_turn(ticket)
             # Answers in a dict rather than by raising, but from the same two sentences: a wedged
             # workspace refuses everything the same way, whatever shape the caller reads (#97).
             return {"ok": False, "error_count": 0,
                     "decision": "wedged" if self._turn_wedged else "busy",
                     "message": turn_busy_message(self._turn_wedged)}
+        list(self._acquire_turn(
+            ticket, kind="build", conversation=conversation, prompt=prompt, app=True))
+        if not ticket.granted:
+            return {"ok": False, "error_count": 0, "decision": "busy",
+                    "message": turn_busy_message(self._turn_wedged)}
+        acquired_at = time.monotonic()
+        ticket.timing_record = timing.start_turn(
+            "build", prompt, turn_id=ticket.id, conversation_id=conversation,
+            started=timing_started)
+        timing.record_span(
+            ticket.timing_record, "turn.acquire", timing_started[1], acquired_at)
         try:
             project = self._ensure_seeded()
             self._pin_turn_app(project)
+            timing.bind_context(
+                ticket.id, app_id=project.app_for_turn().app_id,
+                conversation_id=conversation, record=ticket.timing_record)
+            build_diagnostics.begin(
+                project.record.path, turn_id=ticket.id,
+                app_id=project.app_for_turn().app_id,
+                conversation_id=str(conversation or ""), kind="build")
             project.context_continuations.invalidate_available()
             self._adopt_legacy_build_history(project.app_for_turn(), project.record)
         # Same reason as the streaming turns: neither the archive nor the Artifacts link is
@@ -7688,7 +7712,11 @@ class Orchestrator:
         finally:
             if not self._turn_wedged:
                 self._clear_turn_baseline()
-                self._release_turn()
+            try:
+                build_diagnostics.finish(timing.finish_turn(record=ticket.timing_record))
+            finally:
+                if not self._turn_wedged and self._turns.running() is ticket:
+                    self._release_turn()
 
     def _descriptor(self, project: Project, entry: dict, *, want_detail: bool = False) -> dict:
         """Typed shape summary (kind/summary/detail/size) for one attachment, cached in the manifest.
@@ -8271,19 +8299,21 @@ class Orchestrator:
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
         ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
-        timing.start_turn("build", prompt, turn_id=ticket.id, conversation_id=conversation)
-        with timing.span("turn.acquire"):
-            yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
-                                          prompt=prompt, app=True)
+        timing_started = (time.time(), time.monotonic())
+        yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
+                                      prompt=prompt, app=True)
         if not ticket.granted:
-            timing.finish_turn(decision="not granted")
             return
-        # A warm OpenCode can call /v1 outside a turn (compaction, the classifiers), so the stamp
-        # this turn's quiet window reads has to start empty (#466). The `>= start` guard at the read
-        # is the other half of the same rule, and it is here rather than in `_acquire_turn` so that
-        # each reader clears what it reads.
-        self.project().last_stream_chunk_at = 0.0
+        acquired_at = time.monotonic()
+        ticket.timing_record = timing.start_turn(
+            "build", prompt, turn_id=ticket.id, conversation_id=conversation,
+            started=timing_started)
+        timing.record_span(
+            ticket.timing_record, "turn.acquire", timing_started[1], acquired_at)
         try:
+            # A warm OpenCode can call /v1 outside a turn (compaction, the classifiers), so the
+            # stamp this turn's quiet window reads has to start empty (#466).
+            self.project().last_stream_chunk_at = 0.0
             self._turn_gave_up = False
             self._begin_conversation(conversation)
             project = self.project()
@@ -8317,8 +8347,9 @@ class Orchestrator:
                 yield {"type": "conversation_named", "conversation": conversation, "title": named}
             self._pin_turn_app(project)
             project.context_continuations.invalidate_available()
-            timing.bind_context(ticket.id, app_id=project.app_for_turn().app_id,
-                                conversation_id=project.build_conversation)
+            timing.bind_context(
+                ticket.id, app_id=project.app_for_turn().app_id,
+                conversation_id=project.build_conversation, record=ticket.timing_record)
             build_diagnostics.begin(project.record.path, turn_id=ticket.id,
                                     app_id=project.app_for_turn().app_id,
                                     conversation_id=project.build_conversation, kind="build")
@@ -8523,16 +8554,24 @@ class Orchestrator:
             # Read off the orchestrator rather than a local, so it holds however this generator
             # unwinds — a caller that walks away mid-stream raises GeneratorExit here, not
             # TurnWedged, and that must not hand the lock back either.
-            if not self._turn_wedged:
-                with timing.span("after.restore_attachments"):
-                    self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
-                with timing.span("after.data_scan"):
-                    self._recheck_app_data()
-                with timing.span("after.resource_usage"):
-                    self._record_resource_usage()
-                self._clear_turn_baseline()
-                self._release_turn()
-            build_diagnostics.finish(timing.finish_turn())
+            try:
+                if not self._turn_wedged:
+                    with timing.span("after.restore_attachments"):
+                        self._restore_attachments()
+                    with timing.span("after.data_scan"):
+                        self._recheck_app_data()
+                    with timing.span("after.resource_usage"):
+                        self._record_resource_usage()
+            finally:
+                try:
+                    build_diagnostics.finish(timing.finish_turn(record=ticket.timing_record))
+                finally:
+                    if not self._turn_wedged:
+                        try:
+                            self._clear_turn_baseline()
+                        finally:
+                            if self._turns.running() is ticket:
+                                self._release_turn()
 
     def claim_context_continuation(
         self, continuation_id: str, conversation: str, app_id: str,
@@ -8554,18 +8593,20 @@ class Orchestrator:
         *, turn_ticket: _TurnTicket,
     ):
         """Run one claimed Continue as a new top-level implementation Build."""
-        timing.start_turn(
-            "build", turn_id=turn_ticket.id,
-            conversation_id=continuation.conversation)
-        with timing.span("turn.acquire"):
-            yield from self._acquire_turn(
-                turn_ticket, kind="build", conversation=continuation.conversation,
-                prompt="", app=True)
+        timing_started = (time.time(), time.monotonic())
+        yield from self._acquire_turn(
+            turn_ticket, kind="build", conversation=continuation.conversation,
+            prompt="", app=True)
         if not turn_ticket.granted:
             self.release_context_continuation(
                 continuation.continuation_id, claim_token)
-            timing.finish_turn(decision="not granted")
             return
+        acquired_at = time.monotonic()
+        turn_ticket.timing_record = timing.start_turn(
+            "build", turn_id=turn_ticket.id,
+            conversation_id=continuation.conversation, started=timing_started)
+        timing.record_span(
+            turn_ticket.timing_record, "turn.acquire", timing_started[1], acquired_at)
         try:
             self._turn_gave_up = False
             self._begin_conversation(continuation.conversation)
@@ -8577,7 +8618,8 @@ class Orchestrator:
                 return
             timing.bind_context(
                 turn_ticket.id, app_id=continuation.app_id,
-                conversation_id=continuation.conversation)
+                conversation_id=continuation.conversation,
+                record=turn_ticket.timing_record)
             build_diagnostics.begin(
                 project.record.path, turn_id=turn_ticket.id,
                 app_id=continuation.app_id,
@@ -8676,8 +8718,11 @@ class Orchestrator:
                 with timing.span("after.resource_usage"):
                     self._record_resource_usage()
                 self._clear_turn_baseline()
-                self._release_turn()
-            build_diagnostics.finish(timing.finish_turn())
+            try:
+                build_diagnostics.finish(timing.finish_turn(record=turn_ticket.timing_record))
+            finally:
+                if not self._turn_wedged and self._turns.running() is turn_ticket:
+                    self._release_turn()
 
     def create_thread(self) -> dict:
         """A new Chat Thread in this project, holding the Project's pinned leaves. No Domino project.
@@ -9441,19 +9486,25 @@ class Orchestrator:
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
         # was written against.
         ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
-        timing.start_turn("chat", prompt, turn_id=ticket.id, conversation_id=thread_id)
+        timing_started = (time.time(), time.monotonic())
         if _already_granted:
             self._begin_model_record()
         else:
-            with timing.span("turn.acquire"):
-                yield from self._acquire_turn(
-                    ticket, kind="chat", conversation=thread_id, prompt=prompt, app=False)
+            yield from self._acquire_turn(
+                ticket, kind="chat", conversation=thread_id, prompt=prompt, app=False)
         if not ticket.granted:
-            timing.finish_turn(decision="not granted")
             return
-        # Empty at the start of this turn, for the reason build_stream gives at its own grant (#466).
-        self.project().last_stream_chunk_at = 0.0
-        # The same rule, one line down, for both counters the shim's stream wrapper fills. Each is
+        acquired_at = time.monotonic()
+        ticket.timing_record = timing.start_turn(
+            "chat", prompt, turn_id=ticket.id, conversation_id=thread_id,
+            started=timing_started)
+        timing.record_span(
+            ticket.timing_record, "turn.acquire", timing_started[1], acquired_at)
+        holding = True
+        try:
+            # Empty at the start of this turn, for the reason build_stream gives at its own grant.
+            self.project().last_stream_chunk_at = 0.0
+            # The same rule, one line down, for both counters the shim's stream wrapper fills. Each is
         # cumulative until something zeroes it, and until #471 only the Build loop ever did — so a
         # Chat turn inherited whatever the last turn left.
         #
@@ -9487,21 +9538,10 @@ class Orchestrator:
         # answer "inferences in the whole turn" and flatten the three-way failure split it exists
         # for. What the number should mean on a phased build is a separate decision, not a detail of
         # this one.
-        self.project().model_calls = 0
-        self.project().tool_call_responses = 0
-        # The lock goes at `done`, not at the end of this generator. What comes after `done` is
-        # aftercare — classify the turn for a Build offer, compact the session, commit and push —
-        # and it used to run with the lock still held, so the next question was refused as busy for
-        # as long as the aftercare took. The answer is on screen by then, which is exactly when
-        # someone types again: the wait they felt was the previous turn tidying up.
-        #
-        # Not "the aftercare is safe to race". Each piece that touches something the next turn also
-        # touches takes the lock back for itself — _maybe_compact_chat, because it rewrites the
-        # OpenCode session the next prompt runs in, and _flush_chat_save, because it commits the
-        # working tree. The classifier needs neither: it calls the gateway directly and writes only
-        # this Thread's handoff.json, so it runs off the lock as it is.
-        holding = True
-        try:
+            self.project().model_calls = 0
+            self.project().tool_call_responses = 0
+            # Keep ownership through aftercare. Its spans belong to this record, and a successor
+            # cannot become the process-wide timing target until these writes are complete.
             for ev in self._chat_stream(thread_id, prompt, timeout_s=timeout_s,
                                         already_asked=already_asked,
                                         skip_table_gate=skip_table_gate,
@@ -9517,19 +9557,17 @@ class Orchestrator:
                     # record used to carry no decision at all: eight sites is eight chances to add
                     # a ninth and forget. Build does the same thing at its own event seam.
                     timing.decide(ev.get("ok"), str(ev.get("decision") or ""))
-                if holding and ev.get("type") == "done":
-                    # Released before the yield rather than after, so a client that hangs up on
-                    # `done` still frees it here. Baseline first: it means "no turn running", and a
-                    # turn that started after the release would have set its own for us to wipe.
-                    self._clear_turn_baseline()
-                    self._release_turn()
-                    holding = False
                 yield ev
         finally:
-            timing.finish_turn()
-            if holding:
-                self._clear_turn_baseline()
-                self._release_turn()
+            try:
+                timing.finish_turn(record=ticket.timing_record)
+            finally:
+                if holding:
+                    try:
+                        self._clear_turn_baseline()
+                    finally:
+                        if self._turns.running() is ticket:
+                            self._release_turn()
 
     def flush_chat_save(self) -> dict | None:
         """Push dirty Chat files now (leaving Chat, switching Thread). No-op if nothing is dirty."""
@@ -19510,21 +19548,26 @@ class Orchestrator:
         # approve IS a build turn and a Workbench that queued one and refused the other is a rule
         # people would have to learn instead of guess.
         ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
-        timing.start_turn("approve", turn_id=ticket.id, conversation_id=conversation)
-        with timing.span("turn.acquire"):
-            yield from self._acquire_turn(ticket, kind="build", conversation=conversation, prompt="",
-                                          app=True)
+        timing_started = (time.time(), time.monotonic())
+        yield from self._acquire_turn(
+            ticket, kind="build", conversation=conversation, prompt="", app=True)
         if not ticket.granted:
-            timing.finish_turn(decision="not granted")
             return
+        acquired_at = time.monotonic()
+        ticket.timing_record = timing.start_turn(
+            "approve", turn_id=ticket.id, conversation_id=conversation,
+            started=timing_started)
+        timing.record_span(
+            ticket.timing_record, "turn.acquire", timing_started[1], acquired_at)
         try:
             self._turn_gave_up = False
             self._begin_conversation(conversation)
             project = self.project()
             self._pin_turn_app(project)
             project.context_continuations.invalidate_available()
-            timing.bind_context(ticket.id, app_id=project.app_for_turn().app_id,
-                                conversation_id=project.build_conversation)
+            timing.bind_context(
+                ticket.id, app_id=project.app_for_turn().app_id,
+                conversation_id=project.build_conversation, record=ticket.timing_record)
             build_diagnostics.begin(project.record.path, turn_id=ticket.id,
                                     app_id=project.app_for_turn().app_id,
                                     conversation_id=project.build_conversation, kind="approve")
@@ -19556,8 +19599,11 @@ class Orchestrator:
                 with timing.span("after.resource_usage"):
                     self._record_resource_usage()
                 self._clear_turn_baseline()
-                self._release_turn()
-            build_diagnostics.finish(timing.finish_turn())
+            try:
+                build_diagnostics.finish(timing.finish_turn(record=ticket.timing_record))
+            finally:
+                if not self._turn_wedged and self._turns.running() is ticket:
+                    self._release_turn()
 
     def _approve_locked(self, answers: str = "", plan_edits: str | None = None,
                         user_text: str | None = None, plan_id: str = "",

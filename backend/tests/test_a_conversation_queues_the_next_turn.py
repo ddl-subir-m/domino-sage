@@ -30,12 +30,16 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from sage import timing
 from sage.build_policy import BuildPolicy
+from sage.context_rollover import ContextRolloverState
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator, ResetBusy, TurnBusy
+from sage.pre_edit_guard import PreEditGuard
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
@@ -415,6 +419,171 @@ def test_a_pending_turn_nobody_is_reading_any_more_gives_up_its_place(tmp_path: 
     orch._cancel_chat_idle_save()
 
 
+@pytest.mark.parametrize("lane", ["build", "chat", "approve", "continue"])
+def test_a_queued_top_level_turn_cannot_take_the_running_turns_telemetry(
+        tmp_path: Path, lane: str):
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="not reached")])
+    orch = _orch(tmp_path, oc, verdict="CHAT")
+    tid = orch.create_thread()["id"]
+    assert orch._turn_lock.acquire(blocking=False)
+    running = timing.start_turn("build", turn_id="running-owner")
+    ticket, state = orch.prepare_stream_turn(
+        f"queued-{lane}", kind="chat" if lane == "chat" else "build",
+        conversation=tid, app=lane != "chat")
+    assert state == "pending"
+    if lane == "build":
+        stream = orch.build_stream("queued build", conversation=tid, turn_ticket=ticket)
+    elif lane == "chat":
+        stream = orch.chat_stream(tid, "queued chat", turn_ticket=ticket)
+    elif lane == "approve":
+        stream = orch.approve_stream(conversation=tid, turn_ticket=ticket)
+    else:
+        stream = orch.continue_build_stream(
+            SimpleNamespace(conversation=tid), "claim", turn_ticket=ticket)
+    assert next(stream)["type"] == "pending"
+    assert ticket.timing_record is None
+    assert timing.current() is running
+
+    with timing.span("running.after_queue"):
+        timing.count("running.counter")
+        timing.tool_observer().event(
+            "ses_running", {"call_id": "call_running", "tool": "read",
+                            "status": "completed", "input": {"path": "src/App.tsx"}})
+    timing.decide(True, "running complete")
+    guard = PreEditGuard(BuildPolicy(), "baseline", lambda: "baseline")
+    rollover = ContextRolloverState(BuildPolicy(), "baseline")
+
+    stream.close()
+    assert timing.current() is running
+    assert ticket.timing_record is None
+    assert running.decision == "running complete"
+    assert running.counters["running.counter"] == 1
+    assert [span.name for span in running.spans] == ["running.after_queue"]
+    assert [tool["tool"] for tool in running.tools] == ["read"]
+    assert running.pre_edit_guard == guard.diagnostic()
+    assert running.context_rollover == rollover.diagnostic()
+    timing.finish_turn(record=running)
+    orch._release_turn()
+
+
+def test_a_queued_turn_activates_its_own_timing_record_only_after_handoff(tmp_path: Path):
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [Turn(text="built")])
+    orch = _orch(tmp_path, oc)
+    assert orch._turn_lock.acquire(blocking=False)
+    running = timing.start_turn("build", turn_id="running-owner")
+    ticket, state = orch.prepare_stream_turn(
+        "queued-next", kind="build", conversation="", app=True)
+    assert state == "pending"
+    stream = orch.build_stream("queued build", turn_ticket=ticket)
+    assert next(stream)["type"] == "pending"
+    assert ticket.timing_record is None and timing.current() is running
+
+    timing.finish_turn(record=running)
+    orch._release_turn()
+    assert next(stream)["type"] == "running"
+    first_real_event = next(stream)
+    assert first_real_event["type"] != "pending"
+    assert ticket.timing_record is timing.current()
+    assert ticket.timing_record.turn_id == ticket.id
+    stream.close()
+
+
+def test_synchronous_busy_cleanup_releases_a_ticket_promoted_during_the_refusal(
+        tmp_path: Path, monkeypatch):
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [])
+    orch = _orch(tmp_path, oc)
+    owner, state = orch.prepare_stream_turn(
+        "current-owner", kind="build", conversation="", app=True)
+    assert state == "running"
+    prepare = orch.prepare_stream_turn
+
+    def promote_before_cleanup(*args, **kwargs):
+        ticket, queued_state = prepare(*args, **kwargs)
+        assert queued_state == "pending"
+        orch.release_stream_turn(owner)
+        assert orch._turns.running() is ticket
+        return ticket, queued_state
+
+    monkeypatch.setattr(orch, "prepare_stream_turn", promote_before_cleanup)
+    result = orch.build("busy request")
+
+    assert result["decision"] == "busy"
+    assert orch._turns.running() is None
+    assert orch._turn_lock.acquire(blocking=False)
+    orch._turn_lock.release()
+
+
+def test_chat_keeps_timing_and_ticket_ownership_through_aftercare(
+        tmp_path: Path, monkeypatch):
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [])
+    orch = _orch(tmp_path, oc, verdict="CHAT")
+    tid = orch.create_thread()["id"]
+    after_done = threading.Event()
+    resume_aftercare = threading.Event()
+
+    def chat_stream(*_args, **_kwargs):
+        yield {"type": "done", "ok": True, "decision": "answered"}
+        after_done.set()
+        assert resume_aftercare.wait(20)
+        with timing.span("after.test"):
+            pass
+
+    monkeypatch.setattr(orch, "_chat_stream", chat_stream)
+    first, state = orch.prepare_stream_turn(
+        "first-chat", kind="chat", conversation=tid)
+    assert state == "running"
+    events, finished = _stream(orch.chat_stream(tid, "first", turn_ticket=first))
+    assert after_done.wait(20)
+    second, state = orch.prepare_stream_turn(
+        "second-chat", kind="chat", conversation=tid)
+    assert state == "pending"
+    assert orch._turns.running() is first
+    assert second.timing_record is None
+
+    resume_aftercare.set()
+    assert finished.wait(20)
+    assert events[0]["type"] == "done"
+    assert first.timing_record.t1 is not None
+    assert "after.test" in [span.name for span in first.timing_record.spans]
+    assert orch._turns.running() is second
+    assert second.timing_record is None
+    orch.release_stream_turn(second)
+
+
+@pytest.mark.parametrize("lane", ["build", "chat"])
+def test_early_setup_failure_closes_timing_and_releases_the_claimed_ticket(
+        tmp_path: Path, monkeypatch, lane: str):
+    oc = FakeOpenCode(tmp_path / "mnt" / "code", [])
+    orch = _orch(tmp_path, oc, verdict="CHAT")
+    tid = orch.create_thread()["id"]
+    ticket, state = orch.prepare_stream_turn(
+        f"early-{lane}", kind=lane, conversation=tid, app=lane == "build")
+    assert state == "running"
+    original_project = orch.project
+    failed = False
+
+    def fail_first_read_after_activation(*args, **kwargs):
+        nonlocal failed
+        if ticket.timing_record is not None and not failed:
+            failed = True
+            raise RuntimeError("early setup failed")
+        return original_project(*args, **kwargs)
+
+    monkeypatch.setattr(orch, "project", fail_first_read_after_activation)
+    stream = (orch.build_stream("build", conversation=tid, turn_ticket=ticket)
+              if lane == "build" else
+              orch.chat_stream(tid, "chat", turn_ticket=ticket))
+    with pytest.raises(RuntimeError, match="early setup failed"):
+        list(stream)
+
+    assert failed is True
+    assert ticket.timing_record is not None and ticket.timing_record.t1 is not None
+    assert timing.current() is None
+    assert orch._turns.running() is None
+    assert orch._turn_lock.acquire(blocking=False)
+    orch._turn_lock.release()
+
+
 def test_a_wedged_workspace_refuses_a_new_turn_instead_of_queueing_it(tmp_path: Path):
     """A wedge holds the lock for the life of the process by design (#39), so a turn queued behind
     one is a spinner that never resolves. Refused at the door, naming the only thing that clears it.
@@ -478,21 +647,21 @@ def test_the_turn_state_route_reports_a_wedge_and_the_queue_depth(tmp_path: Path
 
     assert client.get("/api/project/build/state").json() == {
         "running": False, "wedged": False, "turn_epoch": orch._turn_epoch,
-        "pending": 0, "running_turn": None}
+        "pending": 0, "context_continuation": None, "running_turn": None}
 
     assert orch._turn_lock.acquire(blocking=False)
     events, finished = _stream(orch.chat_stream(tid, "anything at all"))
     _pending(events)
     assert client.get("/api/project/build/state").json() == {
         "running": True, "wedged": False, "turn_epoch": orch._turn_epoch,
-        "pending": 1, "running_turn": None}
+        "pending": 1, "context_continuation": None, "running_turn": None}
 
     orch._turn_wedged = True
     orch._turns.fail_pending()
     assert finished.wait(20) is True
     assert client.get("/api/project/build/state").json() == {
         "running": False, "wedged": True, "turn_epoch": orch._turn_epoch,
-        "pending": 0, "running_turn": None}
+        "pending": 0, "context_continuation": None, "running_turn": None}
 
 
 # ---- Stop, and Cancel, which are not the same control -------------------------------------------
