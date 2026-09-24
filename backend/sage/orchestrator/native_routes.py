@@ -49,6 +49,16 @@ _CONTEXT_CONTINUE_REQUIRED = "Sage stopped this request because the Build reache
 _CONTEXT_MEASUREMENT_ERROR = "Sage could not measure the final model request safely."
 _TURN_SCOPE_CHANGED = "Sage stopped this request because its Build turn ended before it was ready."
 _MODEL_OUTPUT_LIMIT_ERRORS = frozenset({"length", "max_tokens", "max_output_tokens"})
+_MODEL_NO_ACTION_MESSAGE = (
+    "The model kept streaming without producing text or starting a tool call. "
+    "Sage stopped this attempt safely."
+)
+
+
+class _ModelNoActionTimeout(Exception):
+    def __init__(self, snapshot: dict) -> None:
+        super().__init__(_MODEL_NO_ACTION_MESSAGE)
+        self.snapshot = snapshot
 
 
 def _record_build_intent(call, intent, check, failure_stage):
@@ -342,12 +352,32 @@ def install(app, get_orchestrator):
         if effort_decision is not None:
             call.route(protocol.value, effort_decision)
         project.model_calls += 1
+        call_id = call.call_id or uuid4().hex
+        build_watchdog = bool(
+            diagnostic_record is not None and diagnostic_record.kind in {"build", "approve"}
+            or project.control.snapshot().read_only_reason == "plan")
+        policy = orchestrator._build_policy
+        terminal_logged = False
+        if build_watchdog:
+            project.begin_active_model_call(call_id, running_ticket.id, time.monotonic())
         upstream = project.shim.gateway.route(outbound, labels, protocol=protocol, cancel=cancel)
+
+        def log_no_action_terminal(active, action):
+            nonlocal terminal_logged
+            if active is None or not active["noticeSent"] or terminal_logged:
+                return
+            log.warning(
+                "model no-action terminal: turn_id=%s call_id=%s elapsed_seconds=%.1f "
+                "chunks=%d action=%s",
+                running_ticket.id, call_id, active["elapsedSeconds"],
+                active["chunkCount"], action)
+            terminal_logged = True
 
         def validated():
             nonlocal received
             try:
                 for chunk in upstream:
+                    # A scoped Stop or ended turn always owns the result of this frame.
                     if cancel.event.is_set():
                         break
                     call.first_byte()
@@ -358,11 +388,48 @@ def install(app, get_orchestrator):
                     finally:
                         call.stream_metadata(events)
                     project.last_stream_chunk_at = time.monotonic()
+                    active = None
+                    if build_watchdog:
+                        active = project.observe_active_model_call(
+                            call_id, time.monotonic(),
+                            first_action_kind=events.first_action_kind,
+                            reasoning_only_chunks=events.reasoning_only_chunks)
+                    # Provider terminal failures, including output limits, own the frame on which
+                    # they arrive. A text or tool announcement on the same frame is then action.
                     if events.error:
                         raise ValueError("The model stream failed: " + events.error)
+                    if build_watchdog:
+                        if active is not None and active["firstActionKind"] is not None:
+                            log_no_action_terminal(active, active["firstActionKind"])
+                        elif active is not None:
+                            elapsed = active["elapsedSeconds"]
+                            if (elapsed >= policy.model_no_action_notice_seconds
+                                    and project.mark_active_model_notice(call_id)):
+                                call.no_action_notice()
+                                log.warning(
+                                    "model no-action notice: turn_id=%s call_id=%s "
+                                    "elapsed_seconds=%.1f chunks=%d action=pending",
+                                    running_ticket.id, call_id, elapsed,
+                                    active["chunkCount"])
+                            if elapsed >= policy.model_no_action_timeout_seconds:
+                                project.mark_active_model_timeout(call_id)
+                                call.no_action_timeout()
+                                raise _ModelNoActionTimeout(active)
                     yield from frames
                 if not cancel.event.is_set():
                     events.finish()
+                    if build_watchdog:
+                        log_no_action_terminal(
+                            project.active_model_snapshot(),
+                            events.first_action_kind or "completed_no_action")
+            except _ModelNoActionTimeout:
+                raise
+            except Exception:
+                if build_watchdog:
+                    log_no_action_terminal(
+                        project.active_model_snapshot(),
+                        events.error or "stream_error")
+                raise
             finally:
                 upstream.close()
 
@@ -413,6 +480,8 @@ def install(app, get_orchestrator):
                 # describing a file finished a minute ago, which is the defect this fixes wearing
                 # the other face.
                 project.tool_input_lines = {}
+                if build_watchdog:
+                    project.clear_active_model_call(call_id)
                 gen.close()
 
         started = time.monotonic()
@@ -423,7 +492,9 @@ def install(app, get_orchestrator):
 
         def failure(error):
             # Provider error bodies can contain reasoning or a signature. Do not log or echo them.
-            if isinstance(error, GatewayUpstreamError):
+            if isinstance(error, _ModelNoActionTimeout):
+                message = _MODEL_NO_ACTION_MESSAGE
+            elif isinstance(error, GatewayUpstreamError):
                 message = f"The model gateway refused this request (HTTP {error.status})."
                 if "guardrail_blocked" in error.body:
                     message = "The model gateway refused content under its guardrail policy (guardrail_blocked)."
@@ -432,6 +503,15 @@ def install(app, get_orchestrator):
             else:
                 message = f"The model gateway stream stopped ({type(error).__name__}). Retry the turn."
             project.last_gateway_error = {"message": message}
+            if isinstance(error, _ModelNoActionTimeout):
+                snapshot = error.snapshot
+                project.last_gateway_error.update({
+                    "code": "model_no_action_timeout",
+                    "call_id": call_id,
+                    "turn_id": running_ticket.id,
+                    "elapsed_ms": round(snapshot["elapsedSeconds"] * 1000),
+                    "chunk_count": snapshot["chunkCount"],
+                })
             if isinstance(error, GatewayUpstreamError):
                 project.last_gateway_error["upstream_status"] = error.status
             outcome = "error"
@@ -447,6 +527,8 @@ def install(app, get_orchestrator):
                     "finish_reason": events.error,
                 })
                 outcome = "model_output_limit"
+            elif isinstance(error, _ModelNoActionTimeout):
+                outcome = "no_action_timeout"
             call.done(ok=False, error=message, outcome=outcome)
             return message
 

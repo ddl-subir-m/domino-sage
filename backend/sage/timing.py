@@ -95,6 +95,13 @@ class ModelCall:
     root_session_id: str | None = None
     first_text: float | None = None
     first_tool_argument: float | None = None
+    first_action: float | None = None
+    first_action_kind: str | None = None
+    no_action_notice: float | None = None
+    no_action_timeout: float | None = None
+    reasoning_only_chunks: int | None = None
+    no_action_recovery_attempt: str | None = None
+    no_action_recovery_action: str | None = None
     last_chunk: float | None = None
     max_chunk_gap: float = 0.0
     outcome: str = "running"
@@ -522,6 +529,10 @@ class _CallHandle:
     def __init__(self, call: ModelCall | None) -> None:
         self._call = call
 
+    @property
+    def call_id(self) -> str | None:
+        return self._call.call_id if self._call is not None else None
+
     @contextmanager
     def _active(self):
         # The handle owns one call, never the process's next turn. Finish and updates use the
@@ -582,6 +593,10 @@ class _CallHandle:
                 c.first_text = now
             if events.saw_tool_argument and c.first_tool_argument is None:
                 c.first_tool_argument = now
+            if events.first_action_kind is not None and c.first_action is None:
+                c.first_action = now
+                c.first_action_kind = events.first_action_kind
+            c.reasoning_only_chunks = events.reasoning_only_chunks
             c.tool_invocations = [dict(t) for t in events.tool_invocations]
             c.tools = [t["name"] or "?" for t in c.tool_invocations]
             c.tools_truncated = events.tools_truncated
@@ -595,6 +610,16 @@ class _CallHandle:
             # an identity already trusted from routing or the final outbound request.
             if isinstance(reported, str) and reported in {c.model, c.requested_alias}:
                 c.response_reported_model = reported
+
+    def no_action_notice(self) -> None:
+        with self._active() as c:
+            if c is not None and c.no_action_notice is None:
+                c.no_action_notice = time.monotonic()
+
+    def no_action_timeout(self) -> None:
+        with self._active() as c:
+            if c is not None and c.no_action_timeout is None:
+                c.no_action_timeout = time.monotonic()
 
     def chunk(self) -> None:
         with self._active() as c:
@@ -667,6 +692,21 @@ def model_call(model: str = "", phase: str = "", *, record=_CURRENT_RECORD,
     except Exception:
         log.debug("timing: model_call failed", exc_info=True)
         return _CallHandle(None)
+
+
+def model_no_action_recovery(call_id: str | None, attempt: str, action: str,
+                             *, record=_CURRENT_RECORD) -> None:
+    """Attach the bounded recovery choice after the model call has closed."""
+    if attempt not in {"initial", "recovery"} or action not in {"recover", "stop", "keep_edits"}:
+        return
+    rec = _current if record is _CURRENT_RECORD else record
+    if rec is None or not call_id:
+        return
+    with _lock:
+        call = next((item for item in rec.calls if item.call_id == call_id), None)
+        if call is not None:
+            call.no_action_recovery_attempt = attempt
+            call.no_action_recovery_action = action
 
 
 def tool_observer() -> ToolObserver:
@@ -773,6 +813,13 @@ def as_dict(rec: TurnRecord) -> dict:
                    "sessionId": c.session_id, "rootSessionId": c.root_session_id,
                    "firstTextMs": _offset(c.first_text, c.t0),
                    "firstToolArgumentMs": _offset(c.first_tool_argument, c.t0),
+                   "firstActionMs": _offset(c.first_action, c.t0),
+                   "firstActionKind": c.first_action_kind,
+                   "noActionNoticeMs": _offset(c.no_action_notice, c.t0),
+                   "noActionTimeoutMs": _offset(c.no_action_timeout, c.t0),
+                   "reasoningOnlyChunks": c.reasoning_only_chunks,
+                   "noActionRecoveryAttempt": c.no_action_recovery_attempt,
+                   "noActionRecoveryAction": c.no_action_recovery_action,
                    "lastChunkMs": _offset(c.last_chunk, c.t0),
                    "maxChunkGapMs": round(c.max_chunk_gap * 1000),
                    "outcome": c.outcome, "forwardedReqBytes": c.forwarded_request_bytes,

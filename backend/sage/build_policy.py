@@ -29,6 +29,9 @@ pre_edit_request_non_media_max_bytes
 pre_edit_original_tool_result_max_bytes
                                  SAGE_BUILD_PRE_EDIT_ORIGINAL_TOOL_RESULT_MAX_BYTES 196608
 pre_edit_clean_recovery_limit    SAGE_BUILD_PRE_EDIT_CLEAN_RECOVERY_LIMIT          1
+model_no_action_notice_seconds  SAGE_BUILD_MODEL_NO_ACTION_NOTICE_SECONDS         30
+model_no_action_timeout_seconds SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS        120
+plan_no_action_recovery_limit   SAGE_BUILD_PLAN_NO_ACTION_RECOVERY_LIMIT          1
 build_context_non_media_max_bytes
                                  SAGE_BUILD_CONTEXT_NON_MEDIA_MAX_BYTES            786432
 build_context_automatic_rollover_limit
@@ -85,11 +88,28 @@ class BuildPolicy:
     pre_edit_request_non_media_max_bytes: int = 524_288
     pre_edit_original_tool_result_max_bytes: int = 196_608
     pre_edit_clean_recovery_limit: int = 1
+    model_no_action_notice_seconds: float = 30.0
+    model_no_action_timeout_seconds: float = 120.0
+    plan_no_action_recovery_limit: int = 1
     build_context_non_media_max_bytes: int = 786_432
     build_context_automatic_rollover_limit: int = 1
     build_context_continuation_reference_max_count: int = 100
     plan_reasoning_effort: str = "high"
     implement_reasoning_effort: str = "low"
+
+    def __post_init__(self) -> None:
+        for name in ("model_no_action_notice_seconds", "model_no_action_timeout_seconds"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"Invalid BuildPolicy {name}")
+        value = self.plan_no_action_recovery_limit
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError("Invalid BuildPolicy plan_no_action_recovery_limit")
+        if self.model_no_action_notice_seconds >= self.model_no_action_timeout_seconds:
+            raise ValueError(
+                "BuildPolicy model_no_action_notice_seconds must be less than "
+                "model_no_action_timeout_seconds")
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +147,12 @@ _SETTINGS = (
     _Setting("pre_edit_original_tool_result_max_bytes",
              "SAGE_BUILD_PRE_EDIT_ORIGINAL_TOOL_RESULT_MAX_BYTES"),
     _Setting("pre_edit_clean_recovery_limit", "SAGE_BUILD_PRE_EDIT_CLEAN_RECOVERY_LIMIT"),
+    _Setting("model_no_action_notice_seconds",
+             "SAGE_BUILD_MODEL_NO_ACTION_NOTICE_SECONDS", "duration"),
+    _Setting("model_no_action_timeout_seconds",
+             "SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS", "duration"),
+    _Setting("plan_no_action_recovery_limit",
+             "SAGE_BUILD_PLAN_NO_ACTION_RECOVERY_LIMIT"),
     _Setting("build_context_non_media_max_bytes",
              "SAGE_BUILD_CONTEXT_NON_MEDIA_MAX_BYTES"),
     _Setting("build_context_automatic_rollover_limit",
@@ -187,4 +213,8 @@ def load_build_policy(environ: Mapping[str, str] | None = None) -> BuildPolicy:
         selected = setting.key if new_present else setting.alias if alias_present else None
         if selected is not None:
             values[setting.field] = _value(setting, selected, source[selected])
+    if values["model_no_action_notice_seconds"] >= values["model_no_action_timeout_seconds"]:
+        raise ValueError(
+            "Invalid settings SAGE_BUILD_MODEL_NO_ACTION_NOTICE_SECONDS and "
+            "SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS")
     return BuildPolicy(**values)

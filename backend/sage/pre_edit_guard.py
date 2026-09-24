@@ -30,6 +30,7 @@ class PreEditTrigger(str, Enum):
     TOOL_RESULT_BYTES = "tool_result_bytes"
     NO_EDIT_COMPLETION = "no_edit_completion"
     MODEL_OUTPUT_LIMIT = "model_output_limit"
+    MODEL_NO_ACTION = "model_no_action"
     REQUEST_MEASUREMENT_UNAVAILABLE = "request_measurement_unavailable"
     TREE_WITNESS_UNAVAILABLE = "tree_witness_unavailable"
     SESSION_ABORT_UNCONFIRMED = "session_abort_unconfirmed"
@@ -247,6 +248,10 @@ class PreEditGuard:
     def model_output_limit(self) -> PreEditDecision:
         """Handle a provider output cap before the authoritative first app edit."""
         return self._completion_without_edit(PreEditTrigger.MODEL_OUTPUT_LIMIT)
+
+    def model_no_action(self) -> PreEditDecision:
+        """Handle a bounded model call that produced no text or tool announcement."""
+        return self._completion_without_edit(PreEditTrigger.MODEL_NO_ACTION)
 
     def _completion_without_edit(self, trigger: PreEditTrigger) -> PreEditDecision:
         with self._lock:

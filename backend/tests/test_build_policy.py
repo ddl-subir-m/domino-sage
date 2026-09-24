@@ -33,6 +33,9 @@ EXPECTED = {
     "pre_edit_request_non_media_max_bytes": 524_288,
     "pre_edit_original_tool_result_max_bytes": 196_608,
     "pre_edit_clean_recovery_limit": 1,
+    "model_no_action_notice_seconds": 30.0,
+    "model_no_action_timeout_seconds": 120.0,
+    "plan_no_action_recovery_limit": 1,
     "build_context_non_media_max_bytes": 786_432,
     "build_context_automatic_rollover_limit": 1,
     "build_context_continuation_reference_max_count": 100,
@@ -64,6 +67,9 @@ ENVIRONMENT = {
     "pre_edit_original_tool_result_max_bytes":
         "SAGE_BUILD_PRE_EDIT_ORIGINAL_TOOL_RESULT_MAX_BYTES",
     "pre_edit_clean_recovery_limit": "SAGE_BUILD_PRE_EDIT_CLEAN_RECOVERY_LIMIT",
+    "model_no_action_notice_seconds": "SAGE_BUILD_MODEL_NO_ACTION_NOTICE_SECONDS",
+    "model_no_action_timeout_seconds": "SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS",
+    "plan_no_action_recovery_limit": "SAGE_BUILD_PLAN_NO_ACTION_RECOVERY_LIMIT",
     "build_context_non_media_max_bytes": "SAGE_BUILD_CONTEXT_NON_MEDIA_MAX_BYTES",
     "build_context_automatic_rollover_limit":
         "SAGE_BUILD_CONTEXT_AUTOMATIC_ROLLOVER_LIMIT",
@@ -87,6 +93,8 @@ def test_each_new_environment_key_changes_exactly_one_field(field: str, key: str
     before = load_build_policy({})
     raw = ("0.5" if field == "tool_result_head_fraction" else
            "max" if field.endswith("reasoning_effort") else "7")
+    if field == "model_no_action_timeout_seconds":
+        raw = "240"
 
     after = load_build_policy({key: raw})
 
@@ -133,6 +141,28 @@ def test_invalid_duration_fails_and_names_only_the_setting(raw: str):
 
     with pytest.raises(ValueError, match=f"^Invalid setting {key}$"):
         load_build_policy({key: raw})
+
+
+def test_model_no_action_policy_requires_positive_ordered_values():
+    with pytest.raises(ValueError, match="model_no_action_notice_seconds"):
+        replace(BuildPolicy(), model_no_action_notice_seconds=0)
+    with pytest.raises(ValueError, match="plan_no_action_recovery_limit"):
+        replace(BuildPolicy(), plan_no_action_recovery_limit=0)
+    with pytest.raises(ValueError, match="must be less"):
+        replace(BuildPolicy(), model_no_action_notice_seconds=2,
+                model_no_action_timeout_seconds=2)
+    policy = replace(BuildPolicy(), model_no_action_notice_seconds=0.1,
+                     model_no_action_timeout_seconds=0.2)
+    assert policy.model_no_action_timeout_seconds == 0.2
+
+    with pytest.raises(
+            ValueError,
+            match=("SAGE_BUILD_MODEL_NO_ACTION_NOTICE_SECONDS and "
+                   "SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS")):
+        load_build_policy({
+            "SAGE_BUILD_MODEL_NO_ACTION_NOTICE_SECONDS": "10",
+            "SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS": "10",
+        })
 
 
 @pytest.mark.parametrize("raw", ["0", "1", "-0.1", "NaN", "inf", "true"])
@@ -184,7 +214,8 @@ def test_an_invalid_environment_value_fails_when_the_service_starts(tmp_path: Pa
 
 def test_every_active_build_limit_is_read_from_the_policy_at_its_call_site():
     """Plant: replace one policy read below with a literal and this source contract turns red."""
-    source = Path(service.__file__).read_text()
+    source = (Path(service.__file__).read_text()
+              + (Path(service.__file__).parent / "native_routes.py").read_text())
     active_fields = set(EXPECTED) - {
         "tool_result_max_bytes",
         "tool_result_aggregate_max_bytes",
@@ -198,8 +229,11 @@ def test_every_active_build_limit_is_read_from_the_policy_at_its_call_site():
         "build_context_continuation_reference_max_count",
         "plan_reasoning_effort",
         "implement_reasoning_effort",
+        # Native stream enforcement reads this from the same injected policy.
+        "model_no_action_timeout_seconds",
     }
 
     assert all(f"self._build_policy.{field}" in source for field in active_fields)
+    assert "policy.model_no_action_timeout_seconds" in source
     assert "SAGE_MAX_NUDGES" not in source
     assert "SAGE_PHASED_MAX_SECONDS" not in source
