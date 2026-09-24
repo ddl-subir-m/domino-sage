@@ -423,7 +423,8 @@ def test_red_approval_keeps_plan_request_attachment_and_control_context(
 
     assert oc.prompts[0]["attachments"][0]["path"] == attached["path"]
     assert first["attachments"] is retry["attachments"] is None
-    assert retry["session"] == first["session"] == oc.prompts[0]["session"]
+    assert retry["session"] == first["session"]
+    assert first["session"] != oc.prompts[0]["session"]
     assert "Build a sales dashboard with a region filter." in oc.prompts[0]["text"]
     assert all("Show the selected sales data with a region filter." not in p["text"]
                for p in (first, retry))

@@ -16444,14 +16444,13 @@ class Orchestrator:
         if not answer_only:
             with timing.span("setup.attachments"):
                 mentions, missing_inputs = self._prepare_build_attachments(project, mentions)
-        if project.stop_requested:
+        if fresh_session and project.stop_requested:
             # Stop can land while attachment paths are being resolved. There is no active session,
             # transcript row, or filesystem baseline yet, so consume it here before the missing-input
             # exit can leave the flag for the next turn. The fresh preflight marker keeps Stop from
             # interrupting the planning session while resolution runs.
             project.stop_requested = False
-            if fresh_session:
-                self._turn_gave_up = True
+            self._turn_gave_up = True
             build_diagnostics.observe({"type": "stopped"})
             yield {"type": "stopped"}
             return
@@ -17450,9 +17449,8 @@ class Orchestrator:
                 )
                 plan_reference_records = [live_reference.plan_record(item)
                                           for item in prepared_references]
-            if project.stop_requested:
-                if fresh_session:
-                    self._turn_gave_up = True
+            if fresh_session and project.stop_requested:
+                self._turn_gave_up = True
                 yield handle_stop()
                 return
             failed_references = [item for item in prepared_references
