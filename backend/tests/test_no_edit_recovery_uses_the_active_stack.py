@@ -58,16 +58,19 @@ def test_recovery_dispatch_and_bound(tmp_path: Path, stack_name: str, mode: Mode
         tmp_path, stack_name, mode, edits=edits)
     first, *retries = oc.prompts[1:]
     assert len(retries) == (1 if edits else 3)
+    assert oc.prompts[0]["attachments"][0]["path"] == attached["path"]
+    # The user did not name a structured reference, so approval and its retries keep the
+    # active session context without resending the broad planning attachment list.
+    assert first["attachments"] is None
     for retry in retries:
         assert f"start with {STACKS[stack_name].entry_file}" in retry["text"]
         assert retry["agent"] == "sage-implement"
-        # OpenCode retains the original request, approved plan, and attachments in this session.
+        # OpenCode retains the original request and approved plan in this session.
         assert retry["session"] == first["session"] == oc.prompts[0]["session"]
         assert retry["attachments"] is None
     assert "Build a sales dashboard with a region filter." in oc.prompts[0]["text"]
     assert "Show the selected sales data with a region filter." in first["text"]
     assert "Keep the North region visible." in first["text"]
-    assert first["attachments"][0]["path"] == attached["path"]
     assert all(state.mode is Mode.IMPLEMENT for state in states)
     assert states[0].picked_model == "a"
     assert all(state.picked_model == "p" for state in states[1:])
