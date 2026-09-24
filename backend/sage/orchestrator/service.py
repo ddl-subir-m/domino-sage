@@ -47,8 +47,8 @@ from ..assets.provider import (
     FakeAssetProvider,
     FileListing,
 )
-from ..build_policy import BuildPolicy, load_build_policy
 from ..build_intent import BuildIntent
+from ..build_policy import BuildPolicy, load_build_policy
 from ..delegated import call as delegated
 from ..delegated import mcp as delegated_mcp
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
