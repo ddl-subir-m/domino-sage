@@ -121,7 +121,7 @@ def _request_composition(value) -> dict | None:
     categories = mapping(value.get("categories"))
     roles = mapping(value.get("messagesByRole"))
     rewrites = mapping(value.get("rewrites"))
-    return {
+    out = {
         "version": 1, "boundary": boundary, "status": status,
         "totalBytes": number(value.get("totalBytes")),
         "categories": {key: number(categories.get(key)) for key in category_keys},
@@ -136,6 +136,15 @@ def _request_composition(value) -> dict | None:
         "rewrites": {key: number(rewrites.get(key)) for key in rewrite_keys},
         "limitReason": reason,
     }
+    window = value.get("toolResultWindow")
+    if isinstance(window, dict):
+        window_keys = (
+            "policyVersion", "perResultLimitBytes", "aggregateLimitBytes", "resultCount",
+            "originalModelFacingBytes", "forwardedModelFacingBytes", "perResultShortenedCount",
+            "aggregateCompactedCount", "emptyFallbackCount",
+        )
+        out["toolResultWindow"] = {key: number(window.get(key)) for key in window_keys}
+    return out
 
 
 @lru_cache(maxsize=1)

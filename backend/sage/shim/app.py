@@ -32,6 +32,7 @@ from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
+from ..build_policy import load_build_policy
 from ..gateway.client import GatewayUpstreamError
 from ..gateway.factory import build_gateway
 from ..preview.prefix import domino_project_label
@@ -57,8 +58,10 @@ _catalog = ModelCatalog(
     ask=os.environ.get("SAGE_MODEL_ASK", "sonnet"),
 )
 _control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+_build_policy = load_build_policy()
 _shim = EnforcementShim(_control, _catalog, _gateway,
-                        project_name=domino_project_label(fallback="unknown"))
+                        project_name=domino_project_label(fallback="unknown"),
+                        build_policy=_build_policy)
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):

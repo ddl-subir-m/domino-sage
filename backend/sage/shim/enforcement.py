@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
 
+from ..build_policy import BuildPolicy
 from ..gateway.capabilities import legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..router import llm_router
@@ -23,6 +24,7 @@ from ..router.model_control import ModelControl
 from ..router.models import (
     Mode,
     ModelCatalog,
+    Phase,
     Reason,
     is_bedrock,
     supports_vision,
@@ -36,6 +38,7 @@ from ..router.phase_classifier import (
     WEB_TOOLS,
     assess,
 )
+from ..tool_result_window import apply_tool_result_window
 from . import keepalive as ka
 from .chat_paths import apply_withheld, strip_denied_writes
 
@@ -293,6 +296,7 @@ class EnforcementShim:
         gateway: GatewayClient,
         component: str = "builder",
         project_name: str | None = None,
+        build_policy: BuildPolicy | None = None,
     ) -> None:
         self._control = control
         self._catalog = catalog
@@ -306,6 +310,7 @@ class EnforcementShim:
         # "<owner>/<project>" (see preview/prefix.py domino_project_label). It's what makes a build
         # findable in the gateway's usage dashboard; without it every Sage install shares one bucket.
         self._project_name = project_name
+        self._build_policy = build_policy
         # The last (Conversation, Live read tools offered) pair logged, so the line below says
         # something on the turn it changes and nothing on the dozen requests inside one turn.
         self._live_read_offered: tuple[str, tuple[str, ...]] | None = None
@@ -845,4 +850,25 @@ class EnforcementShim:
         )
         request, used = self.data_use.prepare(
             request, withheld=state.withheld, rewrite_counts=rewrite_counts)
+        if (self._build_policy is not None
+                and state.chat_thread_id is None
+                and (state.mode is Mode.IMPLEMENT
+                     or state.mode is Mode.AUTO and state.phase is Phase.IMPLEMENT)
+                and not state.read_only_turn):
+            request, window = apply_tool_result_window(request, self._build_policy)
+            if rewrite_counts is not None:
+                rewrite_counts["toolResultWindow"] = window
+            if (window["perResultShortenedCount"] or window["aggregateCompactedCount"]
+                    or window["emptyFallbackCount"]):
+                log.info(
+                    "tool result window: project=%s session=%s policy_version=%d "
+                    "results=%d original_bytes=%d forwarded_bytes=%d per_result_shortened=%d "
+                    "aggregate_compacted=%d empty_fallback=%d per_result_limit=%d "
+                    "aggregate_limit=%d",
+                    project, session, window["policyVersion"], window["resultCount"],
+                    window["originalModelFacingBytes"], window["forwardedModelFacingBytes"],
+                    window["perResultShortenedCount"], window["aggregateCompactedCount"],
+                    window["emptyFallbackCount"], window["perResultLimitBytes"],
+                    window["aggregateLimitBytes"],
+                )
         return request, labels, used, capability
