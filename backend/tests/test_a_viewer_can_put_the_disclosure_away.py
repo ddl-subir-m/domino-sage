@@ -130,20 +130,20 @@ def test_every_block_type_the_dispatcher_draws_has_a_row():
     # The count is not the claim — the two emptinesses above are — but it pins the order of
     # magnitude, so a switch that collapsed to three cases could not pass by matching a table that
     # collapsed with it.
-    assert len(result["rows"]) == 35
+    assert len(result["rows"]) == 36
     # Every `case` keyword in the dispatcher yielded a label this scanner could read. The labels are
     # matched with a pattern, and a pattern bounds the population it can see: a narrow one hid
     # `case 'chartV2':` from the comparison entirely, so the type was neither counted against the
     # table nor reported missing from it. Counting the keyword needs no pattern, so a label shape
     # the scanner cannot parse reds here rather than passing as a clean sheet.
-    assert result["keywords"] == len(result["cases"]) == 35
+    assert result["keywords"] == len(result["cases"]) == 36
 
 
 @needs_node
 def test_the_preference_governs_exactly_two_things():
     """ADR-0062: it governs `data_used` and the investigation line, and "It governs nothing else."
 
-    Derived from the real table, not read off it. Thirty-three rows spell "nothing else" by sharing
+    Derived from the real table, not read off it. Thirty-four rows spell "nothing else" by sharing
     one `shown` constant, which means flipping any of them to hide was a one-word edit that took a
     viewer's table receipts, charts or withhold notices away and reddened nothing — the forbidden
     outcome was not unreachable, only untested.

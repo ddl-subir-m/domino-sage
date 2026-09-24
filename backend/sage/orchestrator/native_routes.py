@@ -47,6 +47,7 @@ _PRE_EDIT_WITNESS_ERROR = (
 _CONTEXT_ROLLOVER_REQUIRED = "Sage stopped this request so the Build can continue in a clean context."
 _CONTEXT_CONTINUE_REQUIRED = "Sage stopped this request because the Build reached its context limit."
 _CONTEXT_MEASUREMENT_ERROR = "Sage could not measure the final model request safely."
+_TURN_SCOPE_CHANGED = "Sage stopped this request because its Build turn ended before it was ready."
 
 
 def _record_build_intent(call, intent, check, failure_stage):
@@ -131,12 +132,29 @@ def install(app, get_orchestrator):
         installed = None
         original_results = ()
         try:
-            project, session = _scope(get_orchestrator(), request)
+            orchestrator = get_orchestrator()
+            project, session = _scope(orchestrator, request)
             record = timing.current()
             root_session = project.active_session_id
+            raw = await request.body()
+            # Reading a body can yield long enough for its Build turn to finish and another one to
+            # start. Check only the ownership captured above before reading any mutable successor
+            # state. A late request must not install its intent, advance a guard, or reach a gateway
+            # under the new turn.
+            same_owner = (
+                orchestrator._project is project
+                and orchestrator._turn_lock.locked()
+                and project.active_session_id == root_session
+                and request.headers.get("x-session-id") == session
+                and timing.current() is record
+            )
+            if not same_owner:
+                return _native_local_error(
+                    protocol, _TURN_SCOPE_CHANGED, "sage_turn_scope_changed")
             call = timing.model_call(
                 record=record, session_id=session, root_session_id=root_session,
-                app_id=project.app_for_turn().app_id if record is not None and record.kind != "chat" else None,
+                app_id=(project.app_for_turn().app_id
+                        if record is not None and record.kind != "chat" else None),
                 conversation_id=project.build_conversation)
             context_state = project.context_rollover
             client = getattr(get_orchestrator(), "_oc_client", None)
@@ -147,7 +165,6 @@ def install(app, get_orchestrator):
                           outcome="context_rollover_required")
                 return _native_local_error(
                     protocol, _CONTEXT_ROLLOVER_REQUIRED, "sage_context_rollover_required")
-            raw = await request.body()
             body = json.loads(raw)
             if body.get("stream") is not True:
                 return _error("This scoped harness endpoint requires streaming. Other calls keep their existing gateway path.")

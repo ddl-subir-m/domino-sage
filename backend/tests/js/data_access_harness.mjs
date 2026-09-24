@@ -7,7 +7,7 @@
 // a row, with no default, and the point of that shape is that the population cannot go quietly
 // short. So this reads the case labels out of the REAL dispatcher — `SW.MessageBlock.toString()`,
 // the running function's own source, which cannot drift from the function that runs — and holds
-// them against the table both ways. A 34th type added to the switch without a row reds here; a row
+// them against the table both ways. A new type added to the switch without a row reds here; a row
 // for a type the switch no longer has reds here too.
 //
 // Reading labels out of source can pick up a mention in a comment or a string, so each one is then
@@ -157,9 +157,9 @@ if (table) {
     }
   });
   // What the preference actually does to a lone block of each type, asked of the REAL table rather
-  // than read off it. The table says two types are governed and thirty-one are not, and "it governs
+  // than read off it. The table says two types are governed and thirty-four are not, and "it governs
   // nothing else" is the ADR's claim — so the governed set is derived here and the test asserts it
-  // equals exactly those two. Twenty-nine rows were previously pinned by nothing but sharing a
+  // equals exactly those two. The other rows were previously pinned by nothing but sharing a
   // constant, and flipping any of them to hide silently cost a viewer their table receipts.
   //
   // Asked with the preference OFF, which is the only state in which a row can hide anything.

@@ -7,6 +7,9 @@ import pytest
 
 from sage import build_diagnostics as diagnostics
 from sage import timing
+from sage.build_intent import BuildIntent
+from sage.build_policy import BuildPolicy
+from sage.context_rollover import ContextRolloverState
 from sage.gateway.protocol import Protocol
 
 from .test_native_model_controls import active, dispatch
@@ -387,10 +390,72 @@ def test_request_body_arriving_after_turn_close_cannot_record_in_the_next_turn(r
         request = SimpleNamespace(headers={k.lower(): v for k, v in headers.items()}, body=body,
                                   url=SimpleNamespace(path="/v1/sage/chat/completions"))
         response = await endpoint(request)
-        async for _ in response.body_iterator:
-            pass
+        if hasattr(response, "body_iterator"):
+            async for _ in response.body_iterator:
+                pass
+        return response
     with active(orch) as headers:
-        asyncio.run(consume(headers))
+        response = asyncio.run(consume(headers))
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"]["code"] == "sage_turn_scope_changed"
+    assert gateway.seen == []
     assert original.calls == []
     later = timing.finish_turn()
     assert later.turn_id == "later" and later.calls == []
+
+
+def test_late_native_body_cannot_read_or_mutate_successor_turn_state(running, monkeypatch):
+    import asyncio
+
+    from sage.orchestrator import app as appmod
+
+    from .test_native_model_controls import request_body
+
+    client, orch, gateway = running
+    client.post("/api/project/model", json={"pick": "GLM 5.3 OR", "mode": "plan"})
+    monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT))
+    project = orch._project
+    successor_intent = BuildIntent.for_direct("successor request")
+    successor_context = ContextRolloverState(BuildPolicy(), "successor-baseline")
+    timing.start_turn("build", turn_id="original")
+    original = timing.current()
+
+    async def body():
+        timing.finish_turn()
+        timing.start_turn("build", turn_id="successor")
+        project.active_session_id = "ses_successor"
+        project.active_build_intent = successor_intent
+        project.context_rollover = successor_context
+        return json.dumps(request_body(Protocol.CHAT, "GLM 5.3 OR")).encode()
+
+    endpoint = next(
+        route.endpoint for route in appmod.control_app.routes
+        if route.path == "/v1/sage/chat/completions")
+    request = SimpleNamespace(
+        headers={"x-session-id": "ses_native"}, body=body,
+        url=SimpleNamespace(path="/v1/sage/chat/completions"))
+    model_calls_before = project.model_calls
+    with active(orch):
+        response = asyncio.run(endpoint(request))
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"]["code"] == "sage_turn_scope_changed"
+    assert gateway.seen == []
+    assert project.active_build_intent is successor_intent
+    assert successor_context.diagnostic()["action"] == "route"
+    assert project.model_calls == model_calls_before
+    assert original.calls == []
+    successor = timing.finish_turn()
+    assert successor.turn_id == "successor" and successor.calls == []
+
+
+def test_native_body_with_the_same_owner_still_routes_and_records(running, monkeypatch):
+    client, orch, gateway = running
+    client.post("/api/project/model", json={"pick": "GLM 5.3 OR", "mode": "plan"})
+    monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT))
+    timing.start_turn("build", turn_id="same-owner")
+    with active(orch) as headers:
+        response = dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR")
+    record = timing.finish_turn()
+    assert response.status_code == 200
+    assert len(gateway.seen) == 1
+    assert len(record.calls) == 1 and record.calls[0].outcome == "success"

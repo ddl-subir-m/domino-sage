@@ -1286,6 +1286,47 @@ def test_native_retry_from_retired_session_stays_local(native_env):
     assert calls[0]["rootSessionId"] == "fresh-session"
 
 
+@pytest.mark.parametrize("protocol", [
+    Protocol.CHAT, Protocol.MESSAGES, Protocol.RESPONSES,
+])
+def test_retired_native_session_rejects_invalid_body_before_decoding(native_env, protocol):
+    client, orch, gateway = native_env
+    project = orch._project
+    state = _state(limit=1)
+    _cross_once(state, total=2)
+    project.context_rollover = state
+    project.active_build_intent = BuildIntent.for_direct("build")
+    project.active_session_id = "fresh-session"
+    orch._turn_lock.acquire()
+    timing.start_turn("build", turn_id="retired-invalid-body")
+    path = {
+        Protocol.CHAT: "chat/completions",
+        Protocol.MESSAGES: "anthropic/messages",
+        Protocol.RESPONSES: "responses",
+    }[protocol]
+    try:
+        response = client.post(
+            f"/v1/sage/{path}", headers={"X-Session-Id": "old-session"}, content=b"{")
+        record = timing.finish_turn(decision="context_rollover_required")
+    finally:
+        orch._turn_lock.release()
+    error = {
+        "type": "invalid_request_error",
+        "message": native_routes._CONTEXT_ROLLOVER_REQUIRED,
+    }
+    expected = (
+        {"type": "error", "error": error}
+        if protocol is Protocol.MESSAGES else
+        {"error": {**error, "code": "sage_context_rollover_required", "param": None}}
+    )
+    assert response.status_code == 400
+    assert response.json() == expected
+    assert gateway.seen == []
+    calls = timing.as_dict(record)["calls"]
+    assert len(calls) == 1
+    assert calls[0]["outcome"] == "context_rollover_required"
+
+
 def test_pre_edit_guard_wins_before_whole_context_limit(native_env):
     client, orch, gateway = native_env
     client.post("/api/project/model", json={"pick": "GLM 5.3 OR", "mode": "implement"})

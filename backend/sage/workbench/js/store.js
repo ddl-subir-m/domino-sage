@@ -1999,6 +1999,7 @@ window.SW = window.SW || {};
     investigation_offer: shown,
     other_lane_offer: shown,
     continue_offer: shown,
+    build_context_limit: shown,
     build_stalled: shown,
     plan_suggestion: shown,
     withhold: shown,
