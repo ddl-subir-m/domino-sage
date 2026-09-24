@@ -4727,11 +4727,33 @@ def _preview_queries():
     return orchestrator._project.queries if orchestrator._project is not None else None
 
 
+def _apply_static_platform_override(module, token_source: TokenSource | None) -> None:
+    """A laptop's preview has no sidecar at `localhost:8899` for `sage_domino.py`'s `token()`/
+    `platform_host()` (plain `os.environ` reads, by design — the same file also runs unmodified
+    inside a published app's own process, ONE-APP-PLAN.md §2.4) to ask. This call runs IN THIS
+    PROCESS (`domino_module` execs the file here): the preview proxy answers `/api/domino/*` itself
+    before a request ever reaches the spawned preview child, so patching THIS loaded module object
+    is enough — no-op for `None`/a `sidecar` source (a real workspace/App already has one, ambient).
+
+    Patched on the module object, never written to `os.environ`: a real process-wide env var would
+    be inherited by every OTHER child this orchestrator spawns too — including OpenCode's own server
+    (`driver/server.py`'s `_env()` copies `os.environ` wholesale) — which is exactly the
+    token-in-the-agent's-shell shape ONE-APP-PLAN.md §2.8 rules out ("the agent never holds a Domino
+    token"). It was tried and reverted: nothing here may touch `os.environ`.
+    """
+    if module is None or token_source is None or token_source.kind != "static":
+        return
+    module.token = token_source.bearer
+    module.platform_host = lambda: token_source.api_host
+
+
 # The previewed app's platform reads (#489): the template's own `sage_domino.py`, called by the proxy
 # so a page that reads the platform works before it is published. Loaded once per template; None
 # for a template that ships no relay, which the proxy reads as "let Vite 404 it".
 def _preview_platform():
-    return domino_module(orchestrator._wm.template)
+    module = domino_module(orchestrator._wm.template)
+    _apply_static_platform_override(module, _TOKEN_SOURCE)
+    return module
 
 
 # The previewed app's own model calls (#7). A published app calls the gateway straight from the

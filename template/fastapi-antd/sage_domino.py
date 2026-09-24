@@ -108,20 +108,11 @@ def platform_host() -> str:
 
 
 def token() -> str:
-    """A fresh token from the sidecar, or `SAGE_DOMINO_TOKEN` where there is no sidecar to ask.
-
-    A laptop preview has no sidecar at `localhost:8899` at all (ONE-APP-PLAN.md §2.4): Sage's own
-    `UvicornSupervisor` sets `SAGE_DOMINO_TOKEN` in this process's environment from its own
-    `TokenSource` before spawning it, for exactly this case, and checking it first costs nothing on
-    a real workspace/App, which never sets it. Read fresh every call regardless — cheap either way,
-    and the sidecar branch below is minted short-lived on purpose.
+    """A fresh token from the sidecar. Per call, never cached: it is minted short-lived on purpose.
 
     The sidecar answers `Bearer <jwt>` on some deployments and the bare JWT on others; the header
     built from it must not read `Bearer Bearer`.
     """
-    override = os.environ.get("SAGE_DOMINO_TOKEN", "").strip()
-    if override:
-        return override.removeprefix("Bearer ")
     with urllib.request.urlopen(sq.sidecar_url(), timeout=5) as resp:
         tok = resp.read().decode("utf-8").strip()
     return tok.removeprefix("Bearer ")

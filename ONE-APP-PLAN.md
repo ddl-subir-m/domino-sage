@@ -214,7 +214,25 @@ prior research, not by running a live OpenCode server (no network in this sandbo
 
 ### 2.4 Preview
 
-`UvicornSupervisor` only; `ViteSupervisor`, `preview_port()`, `_clear_stale_port` and the `lsof` reaper go. Port is `_free_port()`, `--strictPort` semantics by construction. Mount base is `""` (uvicorn serves at root), so `/p/<slug>/preview/<path>` → `http://127.0.0.1:<port>/<path>`. The page's `sage_serve.py` shim writes `<base href>` from the received path, and every helper uses `sage.url()` — so under `/apps/<uuid>/p/<slug>/preview/` nothing in the served HTML needs rewriting. `PreviewQueries` (the app's own `sage_queries.py` on loopback) stays per project. Supervisors start on a background thread per orchestrator (the #500 rule), never on the request path. The supervisor passes the child `DOMINO_API_HOST` and, on a laptop, `SAGE_DOMINO_TOKEN`, so `sage_queries.py`'s Flight executor and `sage_domino.py` can authenticate without a sidecar (template change in Phase 5).
+`UvicornSupervisor` only; `ViteSupervisor`, `preview_port()`, `_clear_stale_port` and the `lsof` reaper go. Port is `_free_port()`, `--strictPort` semantics by construction. Mount base is `""` (uvicorn serves at root), so `/p/<slug>/preview/<path>` → `http://127.0.0.1:<port>/<path>`. The page's `sage_serve.py` shim writes `<base href>` from the received path, and every helper uses `sage.url()` — so under `/apps/<uuid>/p/<slug>/preview/` nothing in the served HTML needs rewriting. `PreviewQueries` (the app's own `sage_queries.py` on loopback) stays per project. Supervisors start on a background thread per orchestrator (the #500 rule), never on the request path. ~~The supervisor passes the child `DOMINO_API_HOST` and, on a laptop, `SAGE_DOMINO_TOKEN`, so `sage_queries.py`'s Flight executor and `sage_domino.py` can authenticate without a sidecar (template change in Phase 5).~~
+
+**Correction (Phase 4, 2026-09-24, ONE-APP-STATUS.md's `## CORRECTION` section under Phase 4 has the
+full trace) — the sentence above is wrong for this codebase's actual proxy shape and was reverted
+before landing, not after:** the preview proxy answers `/api/domino/*` and `/api/queries/*` itself,
+in the ORCHESTRATOR's own process (`domino_module`/`serve_module`, `resources/builtapp.py`), before a
+request ever reaches the spawned preview child — so an env var set only in the child's spawn
+environment is never read by anything real. Worse, setting it there is a security hole regardless of
+whether it's ever read: that child runs the agent's own generated Python (`app:app --reload`), so any
+env var there is directly readable by that code, which is exactly what §2.8 rules out ("the agent
+never holds a Domino token"). Setting it on the ORCHESTRATOR's own `os.environ` instead is *also*
+unsafe, for the same rule via a different door: `driver/server.py`'s `OpenCodeServer._env()` copies
+`os.environ` wholesale into OpenCode's own spawn env, so a process-wide var reaches the agent's shell
+just as surely. **The actual fix**: patch the loaded `sage_domino` MODULE OBJECT's own `token`/
+`platform_host` attributes in-process (`_apply_static_platform_override` in `orchestrator/app.py`),
+never touching `os.environ` anywhere. Phase 5's own reference below to `sage_queries.py`/
+`sage_domino.py`'s `token()` "honour[ing] `SAGE_DOMINO_TOKEN`" carries the identical risk — read this
+note before implementing that step, and use the same module-attribute technique instead of an env var
+if the code path it serves also runs in the orchestrator's own process.
 
 ### 2.5 Resources without mounts
 
@@ -340,7 +358,7 @@ Removes Vite, which is what makes multi-preview and the App proxy hard, and shri
 
 ### Phase 5 — Resources without mounts
 
-Steps as §2.5, in this order: (1) `assets/provider.py` mount removal + SDK-from-token + REST fallback; (2) `attach_file` copy-only, `attach_folder` bounded download; (3) uploads → committed `uploaded_files/` at the project root and in the app on attach, remove the Dataset write paths and the `writable` UI; (4) Chat dataset chip → download to `data/<dataset-slug>/` and a one-line path in the prompt; live-read file head via the same download; the `DatasetClient()` prompt lines (`service.py:3855-3891`) deleted; (4b) new `dataset_fetch` custom tool beside `backend/sage/liveread/tools/`, served from `/mcp/live-read` (or a sibling route) with the same per-conversation token, and its two sentences in `template/chat/AGENTS.md` and the build AGENTS.md; (5) delete the path-stripping and symlink rules; (6) `rehydrate_data.py` step 1 removed, `sage_domino.py`/`sage_queries.py` `token()` honours `SAGE_DOMINO_TOKEN` before the sidecar; (7) ADR-0023 revision + CONTEXT.md Dataset entry ("mounted into the project container" → "reached over the platform API").
+Steps as §2.5, in this order: (1) `assets/provider.py` mount removal + SDK-from-token + REST fallback; (2) `attach_file` copy-only, `attach_folder` bounded download; (3) uploads → committed `uploaded_files/` at the project root and in the app on attach, remove the Dataset write paths and the `writable` UI; (4) Chat dataset chip → download to `data/<dataset-slug>/` and a one-line path in the prompt; live-read file head via the same download; the `DatasetClient()` prompt lines (`service.py:3855-3891`) deleted; (4b) new `dataset_fetch` custom tool beside `backend/sage/liveread/tools/`, served from `/mcp/live-read` (or a sibling route) with the same per-conversation token, and its two sentences in `template/chat/AGENTS.md` and the build AGENTS.md; (5) delete the path-stripping and symlink rules; (6) `rehydrate_data.py` step 1 removed, `sage_domino.py`/`sage_queries.py` `token()` honours `SAGE_DOMINO_TOKEN` before the sidecar **— read §2.4's Phase 4 correction above first: an env var is the wrong mechanism wherever the reading code runs in the orchestrator's own process, for the same reason it was reverted there**; (7) ADR-0023 revision + CONTEXT.md Dataset entry ("mounted into the project container" → "reached over the platform API").
 → verify: drag a CSV into Chat, ask about it, hand off to Build, attach it — it sits at `apps/<appId>/uploaded_files/` and is in `git status`, and the agent reads it by the path `LESSONS_LEARNED.md` §0 names; attach a file from a Dataset in another project — a copy appears under `public/data/<slug>/`, is gitignored, and `rehydrate_data.py` restores it from an empty dir; in Chat, ask about a Dataset in the working set with no file picked and the model calls `dataset_fetch` and reads the returned path; `env | grep -i domino` from a `sage-chat` bash call shows no token; sensitivity lock still narrows models for a tagged Dataset.
 
 ### Phase 6 — Publish from the container

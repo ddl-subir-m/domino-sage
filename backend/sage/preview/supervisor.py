@@ -20,10 +20,6 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ..platform.auth import TokenSource
 
 log = logging.getLogger("sage.preview.supervisor")
 
@@ -63,14 +59,10 @@ class UvicornSupervisor:
     def mount_base(self) -> str:
         return ""
 
-    def __init__(self, workspace: Path, base_prefix: str = "", max_restarts: int = 3,
-                 token_source: TokenSource | None = None) -> None:
+    def __init__(self, workspace: Path, base_prefix: str = "", max_restarts: int = 3) -> None:
         self._workspace = Path(workspace)
         self._base_prefix = base_prefix  # unused by this stack; kept for the proxy's uniform call
         self._max_restarts = max_restarts
-        # For the child's own `sage_domino.py`/`sage_queries.py` to reach the platform without a
-        # sidecar (ONE-APP-PLAN.md §2.4) — a laptop preview has no sidecar at localhost:8899 at all.
-        self._token_source = token_source
         self._proc: subprocess.Popen | None = None
         self._upstream: str | None = None
         self._ready = threading.Event()
@@ -118,28 +110,9 @@ class UvicornSupervisor:
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
-            env={**os.environ, "SAGE_PREVIEW": "1", **self._platform_env()},
+            env={**os.environ, "SAGE_PREVIEW": "1"},
         )
         threading.Thread(target=self._read_output, args=(self._proc,), daemon=True).start()
-
-    def _platform_env(self) -> dict[str, str]:
-        """What this project's `sage_domino.py`/`sage_queries.py` need to reach the platform.
-
-        `DOMINO_API_HOST` is set explicitly rather than left to `**os.environ` above so a laptop
-        (which has no such variable in its own shell) gets it too — `TokenSource` already resolved
-        it from Settings or the injected env, so this is the same host either way. `SAGE_DOMINO_TOKEN`
-        is only set for a `static` source: a `sidecar` source means a real sidecar is reachable at
-        localhost:8899 inside this same container, which is what the app already reads by default.
-        """
-        ts = self._token_source
-        if ts is None:
-            return {}
-        env: dict[str, str] = {}
-        if ts.api_host:
-            env["DOMINO_API_HOST"] = ts.api_host
-        if ts.kind == "static":
-            env["SAGE_DOMINO_TOKEN"] = ts.bearer()
-        return env
 
     def _read_output(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None

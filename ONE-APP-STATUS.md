@@ -12,12 +12,15 @@ session can resume without re-deriving the mirror map or the design calls below.
 **This file is long and grows chronologically — read to the LAST `## UPDATE` block before trusting
 any earlier `## Next session should` list.** Several of those are now stale (e.g. the one just below
 the 2026-09-23 mirror-map section still names Phase 3 step 3 as the next thing to do — it was
-finished in the 2026-09-24 update at the bottom of this file). As of 2026-09-24: Phases 0-2 and
-**Phase 3 is complete, and the product owner has smoke-tested it on a real laptop** (2026-09-24,
-`make orchestrator` against cloud-dogfood, with a PAT). **Start from the last section of this file,
-"Where things stand — start here (end of 2026-09-24)",** which gives the current state, what's
-verified, the open items, and the next phase. Everything is committed and pushed (tip `9ca83398`)
-by the user directly; agent sessions don't commit on this branch unless asked.
+finished in a 2026-09-24 update well before the end of this file). As of 2026-09-24: Phases 0-3 are
+complete (product-owner-smoke-tested on a real laptop) and **Phase 4 (preview per project) is also
+complete**, verified by tests and a full-suite reconciliation but not yet live. **Start from the LAST
+section of this file, "Where things stand — start here (end of 2026-09-24, Phase 4)"** — there are
+now two sections with a "Where things stand — start here" heading on the same date; the Phase 4 one,
+at the very bottom, supersedes the Phase 3 one above it. **The working tree may not be clean or
+pushed** — that section says so explicitly and gives the reason; run `git status --short` before
+assuming `git log`'s tip reflects everything described here. Agent sessions don't commit on this
+branch unless asked (CLAUDE.md); the user commits and pushes directly.
 
 **Scope per session:** one phase at a time (Phase 0 alone is already sized ~1-2 PRs per the plan's
 own table). Update this file's checklist as you go, and the "Design calls" section whenever you make
@@ -2389,24 +2392,72 @@ particular call path. Fixed: both call sites wrapped in `run_in_threadpool`.
   `_free_port()` already picks a fresh OS-assigned ephemeral port every spawn, so the collision they
   guarded against is now negligible, and keeping them would have meant two conflicting "which port"
   stories in one class.
-- `UvicornSupervisor` gained an optional `token_source: TokenSource | None` and a `_platform_env()`
-  method: `DOMINO_API_HOST` is set explicitly (not left to `**os.environ`) so a laptop shell — which
-  never has it — gets it too, from the same `TokenSource` every other Domino call in this process
-  already uses; `SAGE_DOMINO_TOKEN` is set only for a `static` source (a laptop PAT/key), never for a
-  `sidecar` one (a real workspace/App already has a reachable sidecar in the same container, and
-  should keep using it — a minted-once env value would go stale against its whole reason for being
-  short-lived). `Orchestrator.project()`/`_bind_app()` now pass `self._token_source` through
-  `_supervisor_for`.
 - `TokenSource` (`platform/auth.py`) gained a public `api_host` property — it already stored this
-  privately; the supervisor needs it as a plain string, not just baked into `.headers()`.
-- `template/fastapi-antd/sage_domino.py`'s `token()` now reads `SAGE_DOMINO_TOKEN` first (stripped of
-  a `Bearer ` prefix the same way the sidecar's own answer already is) and only falls back to the
-  sidecar when it is unset — this is the actual "reader" that Phase 0 explicitly deferred this exact
-  passthrough for ("Skipped, deliberately... Revisit in Phase 4/5 when there's a reader for it").
-  **That deferred item was about `environment/app.sh`, the PUBLISH entrypoint** (a real sidecar is
-  always present there) — this session's reader is for the PREVIEW child `UvicornSupervisor` spawns
-  from inside the orchestrator process, a completely separate code path. `app.sh` still needs nothing
-  and was not touched.
+  privately; a plain string reader needs it for something other than baking it into `.headers()`.
+
+## CORRECTION (same session, before this all landed): the plan's literal wording for `DOMINO_API_HOST`/`SAGE_DOMINO_TOKEN` passthrough was wrong for THIS codebase's actual proxy shape, and a first attempt at it was a real security hole — caught and fixed before landing, not after
+
+Plan §2.4 says "The supervisor passes the child `DOMINO_API_HOST` and, on a laptop, `SAGE_DOMINO_TOKEN`,
+so `sage_queries.py`'s Flight executor and `sage_domino.py` can authenticate without a sidecar." The
+first version of this update implemented exactly that — `UvicornSupervisor` gained a `token_source`
+param and set both env vars in the spawned preview child's environment, and
+`template/fastapi-antd/sage_domino.py`'s `token()` was changed to read `SAGE_DOMINO_TOKEN` first.
+**Both are reverted. Neither survived to what's actually in the tree now.**
+
+Found while answering the user's own question about how to test the relay — tracing the actual code
+path, not assuming the plan's prose matched this codebase's proxy design:
+
+1. **It would not have worked.** `preview/proxy.py`'s `http_proxy` intercepts `_QUERY_PREFIX`/
+   `_LLM_PREFIX`/`_PLATFORM_PREFIX` (`/api/queries/*`, `/api/llm/*`, `/api/domino/*`) and answers them
+   itself — via `_relay_platform`/`_answer_query` calling `sage_domino.py`/`sage_queries.py` **loaded
+   and executed IN THE ORCHESTRATOR PROCESS** (`domino_module`/`serve_module` in
+   `resources/builtapp.py`, `exec_module` against the template file) — **before ever forwarding to
+   the spawned preview child**. `PreviewQueries.start()` confirms the same shape for queries: "bound
+   to loopback and run in a thread" inside the orchestrator process, not the child. So the CHILD's own
+   copies of these two files, and any env var set only in the child's spawn environment, are never
+   reached by a single real preview request — dead plumbing, not working plumbing.
+2. **The env var version was also a security hole, not just ineffective.** The preview CHILD process
+   runs `uvicorn app:app --reload` — literally the agent's own generated Python. Any env var set on
+   that child's spawn is directly readable by that code (`os.environ`), no interception possible,
+   because it isn't about which HTTP path gets intercepted — it's about what's readable from inside
+   that process's own Python runtime. Putting a real Domino credential there is precisely what
+   ONE-APP-PLAN.md §2.8 rules out: "The agent never holds a Domino token." A second version of the
+   fix tried setting the same two vars on the ORCHESTRATOR's own `os.environ` instead (reasoning: the
+   in-process relay call needed them there, which is true) — also reverted, because `driver/server.py`'s
+   `OpenCodeServer._env()` copies `os.environ` wholesale into OpenCode's own spawn env, so a
+   process-wide env var would have reached the AGENT's shell just as surely, through a different door.
+3. **The actual, safe fix**: `orchestrator/app.py` gained `_apply_static_platform_override(module,
+   token_source)`, called from `_preview_platform()` right after `domino_module()` loads the template's
+   `sage_domino.py` in-process. For a `static` `TokenSource` (a laptop PAT/key) it replaces that loaded
+   module OBJECT's own `token`/`platform_host` attributes with closures over the real `TokenSource` —
+   Python resolves an unqualified `token()` call inside `sage_domino.py`'s own `relay()`/`get()`
+   through the module's `__dict__` at call time, so this reaches them without needing `sage_domino.py`
+   itself to change at all. **Nothing is written to `os.environ` anywhere** — the override lives only
+   in this one loaded module object, in this one process, reached only by the in-process relay call.
+   A `sidecar` source (real workspace/App, already has a reachable sidecar) or `None` is a no-op.
+   `sage_domino.py` itself is back to byte-identical with what shipped before this session — it never
+   needed to change; the fix belongs entirely on Sage's own side of the fence.
+4. `UvicornSupervisor` is back to taking no `token_source` at all — the child's spawn env carries only
+   `SAGE_PREVIEW=1` plus whatever it inherits from `**os.environ`, exactly as before this session's
+   Phase 4 work started. `_supervisor_for`/`Orchestrator.project()`/`_bind_app()` calls are back to
+   two positional args.
+5. **The Data Source `FlightExecutor`/`DataSourceClient()` path is unaffected by any of this, and
+   still cannot authenticate on a laptop** — same as risk #1/#4 always said. `PreviewQueries`'s own
+   docstring explains why it was never going to be touched here: "No credential is passed, and that
+   is the point rather than an omission... this container is the creator's build session" — a
+   deliberate design choice (a preview query runs as the creator, so it must fail the same way
+   publish would rather than answer under someone else's grants), not a gap this session's token
+   wiring was ever going to close by threading a token through. Still open, still Phase 5/6's to solve
+   if it's solved at all.
+
+**Tests changed to match:** the two `token_source`-passthrough tests in `test_supervisor_parse.py`
+are gone (that file is back to one test, unchanged in substance from before this session except for
+the `SAGE_PREVIEW_PORT` deletion above); `test_sage_domino_token_reads_the_supervisor_override.py`
+(the file testing the reverted `sage_domino.py` change) is deleted outright; a new
+`test_preview_platform_static_token_override.py` (5 tests) pins `_apply_static_platform_override`'s
+actual behavior — static overrides both functions, sidecar/None are no-ops, a `None` module doesn't
+crash, and (the regression this whole correction exists to prevent) **`os.environ` is provably
+untouched by the call**, asserted directly rather than trusted.
 
 **Deliberately NOT done, named rather than silently skipped:**
 1. **`SAGE_PROXY_MODE` / `preview/prefix.py` deletion** — plan step 3 literally bundles this with
@@ -2429,40 +2480,97 @@ particular call path. Fixed: both call sites wrapped in `run_in_threadpool`.
    and a full-suite run, never by opening two real projects in two real tabs and watching their
    previews run side by side. Same caveat every phase's own status entry in this file has carried;
    the plan's own Phase 4 verify line ("two projects open in two tabs... `/p/a/preview/` and
-   `/p/b/preview/` serve different apps") is still only unit-proven, not live-proven.
-3. **`FlightExecutor`/`DataSourceClient(token=...)` on a laptop** — still untouched and still listed
-   as open item 4 in the "Where things stand" section above ("A PAT passed to `domino_data` as
-   `token=` ... has never been run"). This session's `SAGE_DOMINO_TOKEN` plumbing only reaches
-   `sage_domino.py`'s relay (Dataset/Governance/Users reads via plain `urllib`), not the Data Source
-   Flight executor, which constructs `DataSourceClient()` with no token argument at all and still
-   only works where a real sidecar is present. Out of scope here; risk #1/#4 in the plan stand as
-   they were.
+   `/p/b/preview/` serve different apps") is still only unit-proven, not live-proven. **The most
+   direct live check for the relay specifically**: `curl http://localhost:8080/p/<slug>/preview/api/domino/api/users/v1/self`
+   against a real laptop run with a saved PAT — this requires no Build turn and no agent involvement
+   at all, since the relay answers before either would matter; it should come back with the real
+   Domino identity JSON.
+3. **`FlightExecutor`/`DataSourceClient(token=...)` on a laptop** — untouched, and per point 5 above,
+   was never actually in scope for this session's fix despite the plan's wording suggesting otherwise.
+   Risk #1/#4 in the plan stand exactly as they were.
 4. Risk #13 (shared vs. per-project `OpenCode` server) is untouched and still open — it concerns the
    AGENT session server (`opencode serve`, one child per project today), which is architecturally
    separate from the preview `UvicornSupervisor` this update is about. Nothing here required
    resolving it, and nothing here makes it easier or harder to resolve later.
 
-**Verification:**
-- Every new/changed test green individually as written: `test_supervisor_parse.py` (rewritten: the
-  `SAGE_PREVIEW_PORT`/`_clear_stale_port` tests are gone, replaced with two tests proving the
-  `static`/`sidecar` env-passthrough split), `test_token_source.py` (+1, `api_host`),
-  `test_sage_domino_token_reads_the_supervisor_override.py` (new, 4 tests, loads the real shipped
-  `template/fastapi-antd/sage_domino.py` by path the way `test_a_no_build_app_serves_from_static_files.py`
-  already does), `test_preview_proxy_does_not_block_the_event_loop.py` (new, 1 test, see above).
-- `make lint` (repo-wide `cd backend && ruff check ..`): clean (one `UP037` quoted-annotation finding
-  caught and fixed along the way — `from __future__ import annotations` was already active in
-  `supervisor.py`, so the quotes around the new `TokenSource` type hint were needless).
-- **Full suite, reconciled**: `cd backend && uv run --extra dev pytest -q -n auto` →
-  `97 failed, 7745 passed, 10 skipped` (7852 collected, both runs). The first run's captured output
-  was silently truncated to the last 79 of 96(→97) `FAILED` lines by this session's own tool
-  plumbing — caught by counting rather than trusting the file, and fixed by redirecting to an
-  explicit file on a second run rather than trusting a background-task capture for a report this
-  size. All 97 failing test names, from 17 files, diffed against a `git stash`-restored baseline run
-  of exactly those 17 files (none overlap this session's changed files) — **byte-for-byte identical
-  failing test names, zero new failures, same collected count**. `git stash`/`git stash pop` verified
-  restored via `git status --short` immediately after.
+**Verification (post-correction):**
+- Every new/changed test green individually as written: `test_supervisor_parse.py` (back to one
+  test, `SAGE_PREVIEW_PORT`/`_clear_stale_port` cases removed), `test_token_source.py` (+1,
+  `api_host`), `test_preview_platform_static_token_override.py` (new, 5 tests, see above),
+  `test_preview_proxy_does_not_block_the_event_loop.py` (new, 1 test, the event-loop fix).
+- `make lint` (repo-wide `cd backend && ruff check ..`): clean.
+- **Full suite, reconciled, run a second time after the correction**: see the number recorded
+  immediately below in the final "Where things stand" section — reconciled the same way as the first
+  run (byte-for-byte diff against a `git stash`-restored baseline on the exact files that showed red),
+  redirected to an explicit file from the start this time rather than trusting a background-task
+  capture (the first run's capture was silently truncated — see below).
 
-**Where things stand now**: Phase 4 is done as scoped above, live verification still owed (item 2),
-and item 1 (`SAGE_PROXY_MODE`) is Phase 7's to actually resolve, not Phase 4's. Next phase per the
-plan's own dependency table is Phase 5 (resources without mounts) or Phase 6 (publish); either can
-start from a clean, green tree.
+## Where things stand — start here (end of 2026-09-24, Phase 4)
+
+This section supersedes every earlier "Next session should" and "Where things stand" block,
+including the one above dated the same day (that one stopped at Phase 3).
+
+**IMPORTANT — the working tree is NOT clean and NOT pushed right now.** Every prior "Where things
+stand" in this file could say "everything is committed and pushed by the user directly" truthfully;
+this one cannot. This session's entire Phase 4 diff (`ONE-APP-STATUS.md` plus the six files listed
+under "Completed the rest of plan §2.4" above, plus two new test files) is sitting **uncommitted** in
+the working tree, per this repo's CLAUDE.md ("NEVER commit changes unless the user explicitly asks")
+and this branch's own established practice (the user commits directly). Run `git status --short`
+before doing anything else — a fresh session, or a landing session, must not assume `git log`'s tip
+(`9ffb38c5` as of this update) is the real state of the tree.
+
+**Done, verified by tests + a full-suite reconciliation, NOT yet verified live:**
+- Phases 0–3, as the section above this one already recorded (product-owner-verified on a laptop).
+- Phase 4 (preview per project, ONE-APP-PLAN.md §2.4) in full, as detailed in the update immediately
+  above this section: the event-loop-blocking bug found and fixed in `preview/proxy.py`; the
+  `SAGE_PREVIEW_PORT`/reaper deletion; the `/api/domino/*` relay's laptop auth fix, done as an
+  in-process module-attribute override (`_apply_static_platform_override`) — **not** as an env var
+  passthrough into `UvicornSupervisor`'s spawned child, which was tried, found both ineffective and a
+  real security hole (a real Domino credential reachable from the agent's own generated code, or from
+  OpenCode's own process via `os.environ` inheritance), and reverted before landing. See the
+  `## CORRECTION` section above for the full trace — read it before touching this area again, since
+  the plan's own §2.4 wording describes the reverted, wrong shape. Full suite, run twice (once before
+  this correction, once after): `97 failed, 7744 passed, 10 skipped` (7851 collected), both runs
+  diffed byte-for-byte identical against a `git stash`-restored baseline on the exact files that
+  showed red. `make lint` clean both times.
+
+**Open, not blocking, recorded so nobody has to rediscover them:**
+1. **Nothing in Phase 4 has been exercised against a real Domino sandbox or a real laptop** — same
+   caveat every phase has carried. The plan's own verify line for this phase ("two projects open in
+   two tabs... `/p/a/preview/` and `/p/b/preview/` serve different apps") is unit-proven, not
+   live-proven. Before trusting this in production: (a) open two real projects and watch their
+   previews run side by side, specifically trying to reproduce the OLD event-loop bug's shape (open
+   project A, let its preview cold-start, and confirm project B's Chat/Build stays responsive during
+   that wait); (b) on a laptop with a saved PAT, `curl http://localhost:8080/p/<slug>/preview/api/domino/api/users/v1/self`
+   should answer with the real Domino identity JSON — the most direct check of the relay fix, needing
+   no Build turn and no agent involvement, since the relay answers before either would matter.
+2. `SAGE_PROXY_MODE`/`preview/prefix.py` deletion is explicitly NOT done — still load-bearing for
+   App-vs-laptop detection (`publish_available()`, prefix derivation). Belongs to Phase 7 packaging.
+3. `FlightExecutor`/`DataSourceClient(token=...)` on a laptop is still untested and, per the
+   correction above, was never actually going to be reached by this session's fix regardless — it
+   answers with no credential at all, by deliberate design (`PreviewQueries`'s own docstring: a
+   preview query runs as the creator, and must fail rather than answer under someone else's grants).
+   Risk #1/#4 in the plan stand exactly as they were.
+4. Risk #13 (shared vs. per-project `OpenCode` server) is untouched and still genuinely open.
+5. Everything the 2026-09-24 Phase 3 update above already flagged as open (manual GitHub/Domino
+   cleanup of test repos, `test_sage_domino_relay.py` never written, `test_feedback.py`'s weakened
+   drift guard, ADR-0004 needing a successor) is unchanged by this session.
+
+**Test baseline in this sandbox, updated**: 97 failures (was ~96 before this session — see the full
+suite entries above for why the count moved and how it was reconciled twice), all pre-existing and
+environmental (`publish_available()` dogfood class + `test_native_gateway_transport.py`'s Node ESM
+failure). Diff any new red against `git stash` before assuming it's yours — and note, per the tool
+mishap recorded above, that a background-task-captured pytest run can be silently truncated; redirect
+to an explicit file (`pytest ... > /path/to/file.txt 2>&1`) before trusting a large failure count.
+
+**Next up**: Phase 5 (resources without mounts) or Phase 6 (publish) per the plan's dependency table
+— either can start from this tree once the Phase 4 diff above is committed. Decide risk #13 first if
+Phase 7 (packaging, process-count-sensitive) is what's next instead.
+
+**A pattern worth naming for whoever reads this next**: this session's Phase 4 work went through
+three different shapes for the same small piece of plumbing before landing on a safe one, and the
+plan document itself (§2.4) still describes the FIRST, wrong shape in its prose. When a plan's literal
+wording asks for something ("the supervisor passes the child X"), tracing where X is actually consumed
+before implementing it is what caught both the ineffectiveness and the security hole — implementing
+the literal words first and checking later would have shipped a credential leak. Read a plan's "why"
+as a requirement and its "how" as one candidate implementation, not as a spec to transcribe.
