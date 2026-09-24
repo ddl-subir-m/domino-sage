@@ -23,7 +23,7 @@ from sage.orchestrator.service import _CHAT_CONTEXT_PREAMBLE, Orchestrator
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -174,7 +174,7 @@ def test_the_summary_is_rebuilt_on_every_turn(tmp_path: Path):
 def test_a_conversation_with_no_chat_turns_adds_no_section(tmp_path: Path):
     """Typed straight into Build. There is nothing to say, so nothing is said — an empty heading
     would be one more thing for the agent to read and account for."""
-    orch, oc = _orch(tmp_path, [Turn(text="# Revenue Dashboard\n\n## Plan\n1. Add a table")])
+    orch, oc = _orch(tmp_path, [Turn(text=execution_plan("Revenue Dashboard"))])
     thread = _thread(orch)
 
     _build(orch, "build me a dashboard", conversation=thread)
