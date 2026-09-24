@@ -9,18 +9,18 @@ last updated: 2026-09-24
 Read `ONE-APP-PLAN.md` first. This file tracks what's actually landed, phase by phase, so a fresh
 session can resume without re-deriving the mirror map or the design calls below.
 
-**This file is long and grows chronologically — read to the LAST `## UPDATE` block before trusting
-any earlier `## Next session should` list.** Several of those are now stale (e.g. the one just below
-the 2026-09-23 mirror-map section still names Phase 3 step 3 as the next thing to do — it was
-finished in a 2026-09-24 update well before the end of this file). As of 2026-09-24: Phases 0-3 are
-complete (product-owner-smoke-tested on a real laptop) and **Phase 4 (preview per project) is also
-complete**, verified by tests and a full-suite reconciliation but not yet live. **Start from the LAST
-section of this file, "Where things stand — start here (end of 2026-09-24, Phase 4)"** — there are
-now two sections with a "Where things stand — start here" heading on the same date; the Phase 4 one,
-at the very bottom, supersedes the Phase 3 one above it. **The working tree may not be clean or
-pushed** — that section says so explicitly and gives the reason; run `git status --short` before
-assuming `git log`'s tip reflects everything described here. Agent sessions don't commit on this
-branch unless asked (CLAUDE.md); the user commits and pushes directly.
+**This file is long and grows chronologically — read to the LAST `## UPDATE` block and the LAST
+"Where things stand — start here" section before trusting anything earlier.** There are now THREE
+sections with that heading, all dated 2026-09-24, each superseding the one before it (Phase 3, then
+Phase 4, then Phase 4 + a concurrency fix found live the same day) — always read the one closest to
+the end of the file. As of this writing: **Phases 0-4 are complete, including a real concurrency bug
+found and fixed live the same day Phase 4 landed** (a missing lock on preview startup that Phase 4's
+own event-loop fix made reachable — see `CONCURRENT-PROJECT-PREVIEW-BUG.md` for the full
+investigation). The working tree is clean and everything is pushed as of the last section — but that
+has not always been true earlier in this file's history, so still run `git status --short` rather than
+assume it from this sentence. Agent sessions don't commit on this branch unless asked (CLAUDE.md); the
+user commits and pushes directly, sometimes mid-session — treat that as normal, not as something to
+flag or pause on.
 
 **Scope per session:** one phase at a time (Phase 0 alone is already sized ~1-2 PRs per the plan's
 own table). Update this file's checklist as you go, and the "Design calls" section whenever you make
@@ -2630,3 +2630,65 @@ baseline is 5, not the dogfood/CI "97" quoted above — different environment. Z
 `200`. Leaked/orphaned/duplicate `uvicorn` servers from the pre-fix run were swept in the restart;
 final state is one orchestrator on 8080 and one supervisor for the one project touched, no `ppid=1`
 orphans.
+
+## Where things stand — start here (end of 2026-09-24, Phase 4 + the concurrency fix)
+
+This section supersedes every earlier "Where things stand" block, including the Phase-4-only one
+above (which itself superseded a Phase-3-only one before it — same pattern, same reason: an update
+landed after that section without a fresh pointer, caught and fixed the same way each time. If a
+THIRD "Where things stand" appears above this one someday without this one being marked superseded,
+trust the LAST one in the file, not this sentence's own claim to be it).
+
+**Working tree state, independently re-checked**: clean (`git status --short` empty) as of the commits
+`72075990`/`ee797e7e` on top of `cda6e5ff` — the Phase 4 diff (`9a621c80`) and the concurrency fix
+above are both committed and pushed, per the user's own standing practice on this branch (they commit
+directly; a session finding this should not assume the tree is dirty the way the Phase-4-only section
+above had to warn about — that warning no longer applies).
+
+**Done, independently re-verified by a different session (this one) after landing:**
+- Phases 0–3 (product-owner-verified on a laptop) and Phase 4 in full (event-loop fix, port-reaper
+  removal, the relay's safe module-attribute token override — see the `## CORRECTION` section, still
+  essential reading before touching this area) — as the section above already recorded.
+- **The concurrent-preview-start race** (`## UPDATE` immediately above this section,
+  `CONCURRENT-PROJECT-PREVIEW-BUG.md` for the full investigation trail): a missing lock on
+  `Orchestrator.project()`/`_ensure_preview_running()` that Phase 4's own `run_in_threadpool` change
+  made reachable — concurrent first-preview requests to one cold project each built a `Project` and
+  spawned a `uvicorn --reload`, orphaning all but the last (measured live: 6 requests, 6 servers, 1
+  tracked). Fixed with a per-`Orchestrator` `threading.RLock` taken only on the cold path.
+  **Independently re-verified in this session, not just trusted from the report**: read the actual
+  diff (`sage/orchestrator/service.py`), read the new test
+  (`test_concurrent_preview_starts_are_single_flighted.py`), and separately confirmed the test
+  actually discriminates by monkeypatching the OLD lock-free `_ensure_preview_running` back in and
+  watching it fail (`8 == 1` assertion error) before confirming it passes against the real fix. Ran
+  the full suite fresh: `97 failed, 7746 passed, 10 skipped` (7853 collected — the +2 over the
+  previous 7851 is exactly the two new concurrency tests), identical failing-file list to every prior
+  run this session (the same 17-file `publish_available()`-dogfood-safety + Node-ESM class), including
+  `test_orchestrator.py`'s own 7 failures being the exact same `test_publish_*` names as before —
+  confirming the lock change itself broke nothing there. `make lint`: clean.
+
+**Open, not blocking, recorded so nobody has to rediscover them (carried forward, mostly unchanged):**
+1. `SAGE_PROXY_MODE`/`preview/prefix.py` deletion — still not done, still Phase 7's.
+2. `FlightExecutor`/`DataSourceClient(token=...)` on a laptop — still untested, still risk #1/#4.
+3. Risk #13 (shared vs. per-project `OpenCode` server) — still untouched, still genuinely open.
+4. **New**: the `ppid=1` orphan preview servers left by a HARD-KILLED prior orchestrator process
+   (not the race this update fixed — a separate, named, smaller gap). `shutdown()`/the SIGINT/SIGTERM
+   handler already sweep gracefully; nothing survives a `SIGKILL` of the orchestrator itself, and
+   nothing currently sweeps those survivors on the NEXT boot either. Connects to the earlier session's
+   H4 (the removed `_clear_stale_port` reaper): that reaper's original job — cleaning up a stale
+   process squatting on a port — has no replacement now that ports are ephemeral. Worth a small,
+   separate fix (sweep on boot, or accept it as a known laptop-only cost) before Phase 7 packaging,
+   not urgent before Phase 5/6.
+5. Everything the earlier Phase 3/4 updates already flagged as open (manual GitHub/Domino cleanup of
+   test repos, `test_sage_domino_relay.py` never written, `test_feedback.py`'s weakened drift guard,
+   ADR-0004 needing a successor, the live-check items in the Phase 4 section above) is unchanged.
+
+**Test baseline, both environments now on record — do not conflate them**: this sandbox (dogfood,
+`/mnt/code` is Sage's own repo) sits at **97** pre-existing failures; the product owner's own laptop
+sits at **5** (different failures, because it depends on that machine's own local project clones and
+git identity — see the `## UPDATE` above). Diff any new red against a `git stash`-restored baseline on
+whichever environment you're actually running in, never against the other one's number.
+
+**Next up, unblocked**: Phase 5 (resources without mounts) or Phase 6 (publish) per the plan's
+dependency table — either can start from this tree right now, no outstanding uncommitted work, no
+known regression. Phase 7 (packaging) still wants risk #13 decided first, and item 4 above is worth a
+short look before or during it.
