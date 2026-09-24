@@ -16661,6 +16661,7 @@ class Orchestrator:
         # `done`s. The next early exit that persists one would raise UnboundLocalError instead —
         # inside an error path, which is the worst place to find out.
         read_only = ""
+        image_reference_operations: list[str] = []
 
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
@@ -16708,9 +16709,9 @@ class Orchestrator:
             # which is a worse trade than one stale transcript: the plan those old rows point at is
             # long since built or replaced, and the person is one new turn away from a card that is
             # right.
-            if owns_turn and ev["type"] == "done":
+            if ev["type"] == "done":
                 project.shim.data_use.finish_image_delivery(
-                    self._data_use_turns.get(project.build_conversation, "")
+                    operation_ids=tuple(image_reference_operations)
                 )
             if ev["type"] == "done":
                 data_used = project.shim.data_use.events(
@@ -17112,6 +17113,9 @@ class Orchestrator:
 
         def handle_stop() -> dict:
             project.stop_requested = False
+            project.shim.data_use.finish_image_delivery(
+                operation_ids=tuple(image_reference_operations)
+            )
             # The transcript is rolled back below, but the bounded diagnostic record must retain
             # the terminal reason. It is a separate lifecycle record, not private transcript data.
             build_diagnostics.observe({"type": "stopped"})
@@ -17475,6 +17479,8 @@ class Orchestrator:
                 event, reply = live_reference.data_use(
                     prepared, purpose="Use an explicitly referenced attachment for this Build turn"
                 )
+                if prepared.source_type == "image":
+                    image_reference_operations.append(event["operation_id"])
                 attachment["detail"] = prepared.prompt_block(
                     operation_id=event["operation_id"] if prepared.source_type == "image" else ""
                 )
@@ -17566,17 +17572,24 @@ class Orchestrator:
             # the connection asks for, so a mismatched value connects, stays open, carries nothing,
             # and leaves a turn exactly as slow as it was with no error anywhere to say why.
             tap = _EventTap(client, sid, directory=str(project.app_for_turn().path))
-            client.send_prompt(sid,
-                               # `live_read_note` leads rather than trails. Everything after
-                               # `current` is a block ABOUT this request, and the tail is load-
-                               # bearing: the forks below wrap `current` in their own preamble and
-                               # a turn with no notes must still end on the person's own sentence.
-                               # The token is a standing fact about the turn, so it goes in front.
-                               "\n\n".join(p for p in (live_read_note, source_note, current, chat_note,
-                                                       resource_note,
-                                                       unusable_note, ambiguous_note,
-                                                       broken_retry_note) if p),
-                               agent=agent, attachments=mention_files)
+            try:
+                client.send_prompt(sid,
+                                   # `live_read_note` leads rather than trails. Everything after
+                                   # `current` is a block ABOUT this request, and the tail is load-
+                                   # bearing: the forks below wrap `current` in their own preamble and
+                                   # a turn with no notes must still end on the person's own sentence.
+                                   # The token is a standing fact about the turn, so it goes in front.
+                                   "\n\n".join(p for p in (live_read_note, source_note, current, chat_note,
+                                                           resource_note,
+                                                           unusable_note, ambiguous_note,
+                                                           broken_retry_note) if p),
+                                   agent=agent, attachments=mention_files)
+            except Exception:
+                tap.close()
+                project.shim.data_use.finish_image_delivery(
+                    operation_ids=tuple(image_reference_operations)
+                )
+                raise
             # These ride the first (user) turn only, not the nudge/fix follow-ups: those carry
             # no new user reference, and a repeated block reads as a second request for the same
             # Resource. The Chat background goes with them — a nudge is Sage talking to itself
@@ -18819,10 +18832,6 @@ class Orchestrator:
             # the tag has one writer.
             if ev["type"] == "app_change":
                 self._tag_conversation(project, ev)
-            if ev["type"] == "done":
-                project.shim.data_use.finish_image_delivery(
-                    self._data_use_turns.get(project.build_conversation, "")
-                )
             # ADR-0045 over the phased build (#259). A phase runs `_build_stream` with `owns_turn`
             # False, so it never reaches the turn end that gates there — and this function owns the
             # commit those phases' writes go out on, so it owns the gate too. Both endings pass

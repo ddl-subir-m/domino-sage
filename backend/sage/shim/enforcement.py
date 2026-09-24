@@ -67,16 +67,6 @@ def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
     return out, dropped
 
 
-def _image_count(messages: list[Any]) -> int:
-    return sum(
-        1
-        for message in messages
-        if isinstance(message, dict) and isinstance(message.get("content"), list)
-        for part in message["content"]
-        if isinstance(part, dict) and part.get("type") == "image_url"
-    )
-
-
 def _capture_refusal(stream: Iterator[bytes], request: dict[str, Any], on_refused) -> Iterator[bytes]:
     """Hand the payload to `on_refused` if — and only if — a guardrail is what refused it.
 
@@ -111,6 +101,25 @@ def _capture_refusal(stream: Iterator[bytes], request: dict[str, Any], on_refuse
                 logging.getLogger("sage.shim").exception(
                     "shim: could not hand back the payload a guardrail refused")
         raise
+
+
+def _confirm_image_delivery(stream: Iterator[bytes], data_use, operation_ids: tuple[str, ...],
+                            model: str) -> Iterator[bytes]:
+    """Confirm a capable image carrier only after upstream produces response bytes."""
+    responded = False
+    try:
+        for chunk in stream:
+            if not responded and chunk:
+                data_use.confirm_image_delivery(operation_ids, model)
+                responded = True
+            yield chunk
+    except Exception:
+        if not responded:
+            data_use.fail_image_delivery(operation_ids, model, "gateway")
+        raise
+    else:
+        if not responded:
+            data_use.fail_image_delivery(operation_ids, model, "no_response")
 
 
 def split_parallel_tool_calls(messages: list[Any]) -> list[Any]:
@@ -242,13 +251,23 @@ class EnforcementShim:
                on_resolved=None, on_refused=None) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
         request, labels, used, capability = self.prepare(request, project, session, on_resolved)
+        image_delivery = self.data_use.begin_image_delivery(
+            request, request["model"], capable=supports_vision(request["model"])
+        )
         from ..gateway.protocol import Protocol
-        if capability.protocol is not Protocol.CHAT:
-            from .native import text_stream
-            stream = text_stream(self._gateway, request, labels, capability)
-        else:
-            stream = self._gateway.route(request, labels)
+        try:
+            if capability.protocol is not Protocol.CHAT:
+                from .native import text_stream
+                stream = text_stream(self._gateway, request, labels, capability)
+            else:
+                stream = self._gateway.route(request, labels)
+        except Exception:
+            self.data_use.fail_image_delivery(image_delivery, request["model"], "gateway")
+            raise
         stream = _capture_refusal(stream, request, on_refused)
+        stream = _confirm_image_delivery(
+            stream, self.data_use, image_delivery, request["model"]
+        )
         return self.data_use.observe(stream, request, used)
 
     def prepare(self, request: dict[str, Any], project: str, session: str | None = None,
@@ -609,18 +628,11 @@ class EnforcementShim:
         # through is worse: bedrock-qwen3-coder (the default implement model) hard-400s, killing
         # the turn.
         dropped = 0
-        image_parts = (_image_count(request["messages"])
-                       if isinstance(request.get("messages"), list) else 0)
         vision_capable = supports_vision(request["model"])
         if not vision_capable and isinstance(request.get("messages"), list):
             messages, dropped = _strip_images(request["messages"])
             if dropped:
                 request = {**request, "messages": messages}
-        self.data_use.resolve_image_delivery(
-            request, request["model"], capable=vision_capable,
-            sent_count=image_parts if vision_capable else 0,
-        )
-
         # Bedrock-served models only: serialise parallel tool calls the gateway's adapter can't group.
         # Same reasoning as the image strip above — the resolved model is the earliest point this is
         # decidable, and it must run after the override or a request routed TO Bedrock would slip past.

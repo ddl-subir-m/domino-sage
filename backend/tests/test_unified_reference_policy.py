@@ -104,8 +104,47 @@ def test_one_mixed_prompt_uses_typed_carriers_and_excludes_the_neighbor(tmp_path
                 if isinstance(part, dict) and part.get("type") == "tool"]
 
 
+def _recorded_image_event(orch: Orchestrator) -> dict:
+    events = [event for event, _reply, _persist
+              in orch.project(start_preview=False).shim.data_use.operations.values()
+              if event.get("operation") == "image_reference"]
+    assert len(events) == 1
+    return events[0]
+
+
+def test_stop_before_send_closes_the_image_without_changing_stop_semantics(tmp_path: Path):
+    orch, oc = _orch(tmp_path)
+    image = orch.upload_file("design.png", PNG)["path"]
+    orch.project(start_preview=False).stop_requested = True
+
+    events = list(orch.build_stream("Match this image", [image]))
+
+    assert any(event["type"] == "stopped" for event in events)
+    assert not oc.prompts
+    image_event = _recorded_image_event(orch)
+    assert image_event["delivery"] == "not_sent"
+    assert image_event["failure"] == "no_request"
+
+
+def test_synchronous_opencode_send_failure_closes_the_image(tmp_path: Path):
+    orch, oc = _orch(tmp_path)
+    image = orch.upload_file("design.png", PNG)["path"]
+
+    def fail_send(*_args, **_kwargs):
+        raise OSError("OpenCode send failed")
+
+    oc.send_prompt = fail_send
+
+    with pytest.raises(OSError, match="OpenCode send failed"):
+        list(orch.build_stream("Match this image", [image]))
+
+    image_event = _recorded_image_event(orch)
+    assert image_event["delivery"] == "not_sent"
+    assert image_event["failure"] == "no_request"
+
+
 def _record_image(shim, tmp_path: Path, *, turn_id: str = "turn-image") -> tuple[list[dict], str, str]:
-    tmp_path.mkdir(parents=True)
+    tmp_path.mkdir(parents=True, exist_ok=True)
     source = tmp_path / "design.png"
     source.write_bytes(PNG)
     authorized = reference.authorize(tmp_path, [{"path": source.name}], source.name)
@@ -153,14 +192,21 @@ def test_image_delivery_updates_only_the_operation_in_this_request(tmp_path: Pat
     shim = _vision_shim(
         ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT), FakeGatewayClient()
     )
-    old_journal, old_operation, _old_marker = _record_image(
+    old_journal, old_operation, old_marker = _record_image(
         shim, tmp_path / "old", turn_id="turn-old"
     )
     journal, operation, marker = _record_image(shim, tmp_path / "current", turn_id="turn-current")
-    messages = [{"role": "user", "content": [
-        {"type": "text", "text": "match this design\n" + marker},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-    ]}]
+    messages = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "old design\n" + old_marker},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,OLD"}},
+        ]},
+        {"role": "assistant", "content": "Earlier response"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "current design\n" + marker},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,CURRENT"}},
+        ]},
+    ]
 
     list(shim.handle({"messages": messages}, project="p"))
 
@@ -171,6 +217,70 @@ def test_image_delivery_updates_only_the_operation_in_this_request(tmp_path: Pat
     assert shim.data_use.operations[old_operation][0]["failure"] == "no_request"
     assert old_journal[-1]["dataUsed"][0]["failure"] == "no_request"
     assert journal[-1]["dataUsed"][0]["delivery"] == "sent"
+
+
+def test_image_carrier_count_mismatch_fails_every_current_operation_closed(tmp_path: Path):
+    shim = _vision_shim(
+        ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT), FakeGatewayClient()
+    )
+    _journal_a, operation_a, marker_a = _record_image(
+        shim, tmp_path / "a", turn_id="turn-current"
+    )
+    _journal_b, operation_b, marker_b = _record_image(
+        shim, tmp_path / "b", turn_id="turn-current"
+    )
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": marker_a + "\n" + marker_b},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,ONLY_ONE"}},
+    ]}]
+
+    list(shim.handle({"messages": messages}, project="p"))
+
+    for operation in (operation_a, operation_b):
+        event = shim.data_use.operations[operation][0]
+        assert event["delivery"] == "not_sent"
+        assert event["failure"] == "carrier"
+
+
+@pytest.mark.parametrize("failure_mode", ["synchronous", "lazy", "empty"])
+def test_vision_image_is_not_sent_until_upstream_responds(tmp_path: Path, failure_mode: str):
+    class FailingGateway:
+        def route(self, _request, _labels):
+            if failure_mode == "synchronous":
+                raise OSError("gateway failed before returning an iterator")
+            if failure_mode == "empty":
+                return iter(())
+
+            def lazy_failure():
+                raise OSError("gateway failed on first iteration")
+                yield b"unreachable"
+
+            return lazy_failure()
+
+    shim = _vision_shim(
+        ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT), FailingGateway()
+    )
+    journal, operation, marker = _record_image(shim, tmp_path)
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": marker},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]}]
+
+    if failure_mode == "synchronous":
+        with pytest.raises(OSError, match="before returning"):
+            shim.handle({"messages": messages}, project="p")
+    elif failure_mode == "lazy":
+        stream = shim.handle({"messages": messages}, project="p")
+        assert shim.data_use.operations[operation][0]["delivery"] == "pending"
+        with pytest.raises(OSError, match="first iteration"):
+            list(stream)
+    else:
+        list(shim.handle({"messages": messages}, project="p"))
+
+    event = shim.data_use.operations[operation][0]
+    assert event["delivery"] == "not_sent"
+    assert event["failure"] == ("no_response" if failure_mode == "empty" else "gateway")
+    assert all(row["dataUsed"][0]["delivery"] != "sent" for row in journal)
 
 
 def test_table_and_image_plan_records_reauthorize_and_malformed_records_fail_closed(tmp_path: Path):
@@ -215,16 +325,23 @@ def test_data_use_restore_accepts_document_table_and_image_shapes():
         {"operation_id": "image", "turn_id": "turn", "operation": "image_reference",
          "source": "design.png", "delivery": "not_sent", "failure": "capability",
          "coverage": {}, "requests": []},
+        {"operation_id": "pending-image", "turn_id": "old-turn",
+         "operation": "image_reference", "source": "old-design.png",
+         "delivery": "pending", "failure": None, "coverage": {}, "requests": []},
     ]
     data_use = DataUse()
+    corrected: list[dict] = []
 
-    data_use.restore([{"dataUsed": events}], lambda _event: None)
+    data_use.restore([{"dataUsed": events}], corrected.append)
 
     assert [event["operation"] for event in data_use.events("turn")] == [
         "document_reference", "table_reference", "image_reference",
     ]
     assert data_use.operations["table"][1]["selected_fields"] == []
     assert "result_rows" not in data_use.operations["image"][1]
+    restored = data_use.operations["pending-image"][0]
+    assert restored["delivery"] == "not_sent" and restored["failure"] == "no_request"
+    assert corrected == [{"type": "data_used", "dataUsed": [restored]}]
 
 
 def test_approval_restart_reprepares_the_exact_table_and_image_references(tmp_path: Path):

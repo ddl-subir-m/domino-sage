@@ -105,6 +105,14 @@ class DataUse:
             for oid, event in latest.items():
                 if oid in self.operations:
                     continue
+                event = copy.deepcopy(event)
+                if (event.get("operation") == "image_reference"
+                        and event.get("delivery") == "pending"):
+                    # A pending row belonged to a request in the process that died. Its carrier
+                    # cannot resume after restart, and a later turn must not claim it as its own.
+                    event["delivery"] = "not_sent"
+                    event["failure"] = "no_request"
+                    persist({"type": "data_used", "dataUsed": [copy.deepcopy(event)]})
                 reply = {"data_use": oid, "coverage": event.get("coverage") or {},
                          "selected_fields": []}
                 if "columns" in event:
@@ -113,7 +121,7 @@ class DataUse:
                     reply["result_rows"] = event.get("result_rows")
                 if event.get("artifact"):
                     reply["local_reference"] = event["artifact"]
-                self.operations[oid] = (copy.deepcopy(event), reply, persist)
+                self.operations[oid] = (event, reply, persist)
                 self._remember_sources([_source_from_event(event)])
 
     def events(self, turn_id):
@@ -121,44 +129,80 @@ class DataUse:
             return [copy.deepcopy(event) for event, _, _ in self.operations.values()
                     if event["turn_id"] == turn_id]
 
-    def resolve_image_delivery(self, request: dict, model: str, *, capable: bool,
-                               sent_count: int) -> None:
-        """Finish pending image-reference audit rows from the actual routed request.
+    def begin_image_delivery(self, request: dict, model: str, *, capable: bool) -> tuple[str, ...]:
+        """Select exact current-turn image operations and validate their carrier count.
 
         The router decision exists only in the shim, after OpenCode has made the request. Reference
-        preparation therefore records `pending`, and this method replaces it once with the truth
-        about the request that was sent. Image bytes and data URIs are never retained here.
+        preparation therefore records `pending`. A capable route stays pending until response bytes
+        prove that upstream started. Image bytes and data URIs are never retained here.
         """
         messages = request.get("messages")
         if not isinstance(messages, list):
-            return
+            return ()
+        current = next((message for message in reversed(messages)
+                        if isinstance(message, dict) and message.get("role") == "user"), None)
+        if current is None:
+            return ()
         with self.lock:
-            used = {
-                oid
-                for message in messages
-                if isinstance(message, dict)
-                for oid, _event, _reply in self._selected_operation_args(
-                    content_text(message.get("content"))
+            marked = {
+                oid for oid, _event, _reply in self._selected_operation_args(
+                    content_text(current.get("content"))
                 )
             }
-            pending = [entry for oid, entry in self.operations.items()
-                       if oid in used
-                       and entry[0].get("operation") == "image_reference"
-                       and entry[0].get("delivery") == "pending"]
-            for index, (event, _reply, persist) in enumerate(pending):
-                sent = capable and index < sent_count
-                event["delivery"] = "sent" if sent else "not_sent"
-                event["failure"] = None if sent else ("capability" if not capable else "carrier")
+            pending = tuple(
+                oid for oid, entry in self.operations.items()
+                if oid in marked
+                and entry[0].get("operation") == "image_reference"
+                and entry[0].get("delivery") == "pending"
+            )
+            if not pending:
+                return ()
+            if not capable:
+                self._set_image_delivery(pending, model, failure="capability")
+                return ()
+            carrier_count = sum(
+                1 for part in current.get("content", [])
+                if isinstance(part, dict) and part.get("type") == "image_url"
+            ) if isinstance(current.get("content"), list) else 0
+            if carrier_count != len(pending):
+                self._set_image_delivery(pending, model, failure="carrier")
+                return ()
+            return pending
+
+    def confirm_image_delivery(self, operation_ids: tuple[str, ...], model: str) -> None:
+        """Record successful delivery after upstream yields its first response bytes."""
+        self._set_image_delivery(operation_ids, model, failure=None)
+
+    def fail_image_delivery(self, operation_ids: tuple[str, ...], model: str,
+                            failure: str) -> None:
+        """Record a request that never produced upstream response bytes."""
+        self._set_image_delivery(operation_ids, model, failure=failure)
+
+    def _set_image_delivery(self, operation_ids: tuple[str, ...], model: str,
+                            *, failure: str | None) -> None:
+        with self.lock:
+            for oid in operation_ids:
+                entry = self.operations.get(oid)
+                if entry is None:
+                    continue
+                event, _reply, persist = entry
+                if (event.get("operation") != "image_reference"
+                        or event.get("delivery") != "pending"):
+                    continue
+                event["delivery"] = "sent" if failure is None else "not_sent"
+                event["failure"] = failure
                 event["serving_model"] = model
                 persist({"type": "data_used", "dataUsed": [copy.deepcopy(event)]})
 
-    def finish_image_delivery(self, turn_id: str) -> None:
+    def finish_image_delivery(self, turn_id: str = "", *,
+                              operation_ids: tuple[str, ...] = ()) -> None:
         """Close image audit rows when a turn ended before a model request used them."""
-        if not turn_id:
+        if not turn_id and not operation_ids:
             return
         with self.lock:
-            pending = [entry for entry in self.operations.values()
-                       if entry[0].get("turn_id") == turn_id
+            selected = set(operation_ids)
+            pending = [entry for oid, entry in self.operations.items()
+                       if (oid in selected if selected else entry[0].get("turn_id") == turn_id)
                        and entry[0].get("operation") == "image_reference"
                        and entry[0].get("delivery") == "pending"]
             for event, _reply, persist in pending:
