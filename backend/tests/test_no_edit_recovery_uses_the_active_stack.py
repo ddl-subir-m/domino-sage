@@ -22,7 +22,6 @@ def _no_waiting(monkeypatch):
 
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "3")
     monkeypatch.setenv("SAGE_IMPLEMENT_STRONG_FALLBACK", "1")
 
 

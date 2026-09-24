@@ -30,6 +30,7 @@ from pathlib import Path
 
 import pytest
 
+from sage.build_policy import BuildPolicy
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator import native_routes
 from sage.orchestrator.service import Orchestrator
@@ -91,7 +92,7 @@ def _no_waiting(monkeypatch):
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
 
 
-def _build(tmp: Path, turns: list[Turn]):
+def _build(tmp: Path, turns: list[Turn], *, build_policy: BuildPolicy | None = None):
     template = tmp / "template"
     (template / "src").mkdir(parents=True, exist_ok=True)
     (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
@@ -103,7 +104,8 @@ def _build(tmp: Path, turns: list[Turn]):
         workspace_dir=ws, template=template, gateway=ScriptedGateway(),
         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s", sovereign_ask="s",
                              plan="p", implement="i", ask="a"),
-        project_id="Sage", feedback=OkFeedback(), opencode_client=oc)
+        project_id="Sage", feedback=OkFeedback(), opencode_client=oc,
+        build_policy=build_policy)
     return orch, oc
 
 
@@ -219,12 +221,10 @@ def test_planning_and_ask_dispatch_with_no_build_intent(tmp_path: Path):
     assert project.active_build_intent is None
 
 
-def test_ten_no_edit_sends_reuse_one_intent_without_storing_the_request(
-        tmp_path: Path, monkeypatch):
+def test_ten_no_edit_sends_reuse_one_intent_without_storing_the_request(tmp_path: Path):
     request = "Build the one canonical dashboard."
-    monkeypatch.setenv("SAGE_MAX_NUDGES", "9")
     turns = [Turn(text="I will think about it.") for _ in range(9)] + [BUILD]
-    orch, oc = _build(tmp_path, turns)
+    orch, oc = _build(tmp_path, turns, build_policy=BuildPolicy(no_edit_nudge_limit=9))
     project = orch.project(start_preview=False)
     project.record.write_settings({"skip_planning": True})
     project.control.set_mode(Mode.IMPLEMENT)
