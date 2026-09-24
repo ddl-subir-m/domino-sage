@@ -44,7 +44,12 @@ _TOKEN = re.compile(r"[\w.:/@+-]{1,160}\Z", re.ASCII)
 _MODEL_NAME = re.compile(r"[^\x00-\x1f\x7f]{1,160}\Z")
 
 # No catch-all copy: new recorder fields are private until this contract admits them.
-CALL_FIELDS = ["n", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort", "effortStatus", "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
+EFFORT_FIELDS = ("configuredEffort", "effectiveEffort", "effortSource", "effortStatus",
+                 "requestedEffort")
+EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "max", "xhigh"})
+EFFORT_SOURCES = frozenset({"user", "stage_default", "provider_default"})
+EFFORT_STATUSES = frozenset({"applied", "provider_default", "unsupported"})
+CALL_FIELDS = ["n", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", *EFFORT_FIELDS, "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
 TOOL_FIELDS = ["sessionId", "harnessCallId", "partId", "identitySource", "tool", "firstObservedMs", "lastObservedMs", "completedObservedMs", "observationSource", "startUnixMs", "endUnixMs", "startSource", "endSource", "executionMs", "completionLagMs", "targetFingerprint", "queryFingerprint", "targetMetadataFinal", "editSincePreviousRead", "opaqueOperationSincePreviousRead", "targetState", "status", "observedMs", "startAtMs", "endAtMs", "clockPlacement"]
 INVOKE_FIELDS = ["name", "providerId", "protocolIndex", "identityStatus", "metadataTruncated"]
 SPAN_FIELDS = ["name", "depth", "atMs", "ms", "open", "no_edit_attempt", "wrote_code", "retry_exhausted"]
@@ -59,8 +64,8 @@ COUNTERS = {"poll.iterations", "tools.unidentified_events", "attachments.request
             *{"attachments.repair_failed." + name for name in
               ("ValueError", "OSError", "FileNotFoundError", "LookupError", "ResourceUnavailable")}}
 OBSERVATIONS = {"attachments.resolution_ms", "emit.lag_ms", "poll.read_ms", "poll.sleep_ms"}
-TEXT_FIELDS = {"appId", "conversationId", "kind", "name", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", "requestedEffort",
-               "effortStatus", "sessionId", "rootSessionId", "outcome", "providerId", "identityStatus",
+TEXT_FIELDS = {"appId", "conversationId", "kind", "name", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", *EFFORT_FIELDS,
+               "sessionId", "rootSessionId", "outcome", "providerId", "identityStatus",
                "harnessCallId", "partId", "identitySource", "tool", "observationSource", "startSource",
                "endSource", "targetFingerprint", "queryFingerprint", "targetState", "status",
                "clockPlacement", "inputFingerprint"}
@@ -89,6 +94,33 @@ def _metadata(row, keys):
         if valid:
             out[key] = value
     return out
+
+
+def _effort_metadata(row) -> dict | None:
+    """Admit the complete fixed effort record, or none of it."""
+    if not isinstance(row, dict) or any(key not in row for key in EFFORT_FIELDS):
+        return None
+    configured = row["configuredEffort"]
+    effective = row["effectiveEffort"]
+    requested = row["requestedEffort"]
+    source = row["effortSource"]
+    status = row["effortStatus"]
+    if any(value is not None and value not in EFFORT_LEVELS
+           for value in (configured, effective, requested)):
+        return None
+    if source not in EFFORT_SOURCES or status not in EFFORT_STATUSES or requested != effective:
+        return None
+    valid_shape = (
+        status == "applied" and source in {"user", "stage_default"}
+        and configured is not None and effective == configured
+        or status == "provider_default" and source == "provider_default"
+        and configured is None and effective is None
+        or status == "unsupported" and source in {"user", "stage_default"}
+        and configured is not None and effective is None
+    )
+    if not valid_shape:
+        return None
+    return {key: row[key] for key in EFFORT_FIELDS}
 
 
 def _encode(value) -> bytes:
@@ -430,6 +462,11 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
             remaining -= 1
             entry = _metadata(row, keys)
             if section == "calls":
+                for key in EFFORT_FIELDS:
+                    entry.pop(key, None)
+                effort = _effort_metadata(row)
+                if effort is not None:
+                    entry.update(effort)
                 invocations = row.get("toolInvocations", [])
                 entry["toolInvocations"] = [_metadata(item, INVOKE_FIELDS)
                                             for item in invocations[:min(40, remaining)]]

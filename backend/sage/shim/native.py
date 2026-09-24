@@ -9,9 +9,11 @@ import copy
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..gateway.protocol import Protocol
+from ..router.models import EffortDecision
 
 
 class NativePolicyError(ValueError):
@@ -21,6 +23,30 @@ class NativePolicyError(ValueError):
 class NativeCheckpointRequired(NativePolicyError):
     def __init__(self):
         super().__init__("Session policy changed. Use Clear recall before continuing.")
+
+
+@dataclass(frozen=True)
+class NativePreparation:
+    """The existing five provider values plus Sage's typed, local effort decision.
+
+    Iteration intentionally keeps the historic five-value contract for callers that only render the
+    provider request. The production native route reads ``effort_decision`` by name, so it cannot be
+    confused with a provider payload field.
+    """
+
+    result: object
+    labels: object
+    used: object
+    request: object
+    capability: object
+    effort_decision: EffortDecision
+
+    def __iter__(self):
+        yield self.result
+        yield self.labels
+        yield self.used
+        yield self.request
+        yield self.capability
 
 
 def _parts(content):
@@ -327,9 +353,9 @@ def prepare_native(shim, body, protocol, project, session, on_resolved=None, *, 
         session_policy(policy_directory, session, state, opaque=view.opaque)
     elif view.opaque and state.withheld:
         raise NativeCheckpointRequired()
-    request, labels, used, capability = shim.prepare(view.request, project, session,
-                                                   on_resolved, native=True,
-                                                   rewrite_counts=rewrite_counts)
+    request, labels, used, capability, effort_decision = shim.prepare(
+        view.request, project, session, on_resolved, native=True,
+        rewrite_counts=rewrite_counts)
     if body.get("model") != request["model"] or protocol is not capability.protocol:
         raise NativePolicyError("The resolved model route changed. Resolve the route again before sending.")
     result = view.render(request)
@@ -348,7 +374,7 @@ def prepare_native(shim, body, protocol, project, session, on_resolved=None, *, 
     if protocol is Protocol.RESPONSES:
         result["store"] = False
         result["include"] = sorted(set(result.get("include", [])) | {"reasoning.encrypted_content"})
-    return result, labels, used, request, capability
+    return NativePreparation(result, labels, used, request, capability, effort_decision)
 
 
 def text_stream(gateway, request, labels, capability):

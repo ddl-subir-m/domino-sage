@@ -36,6 +36,8 @@ EXPECTED = {
     "build_context_non_media_max_bytes": 786_432,
     "build_context_automatic_rollover_limit": 1,
     "build_context_continuation_reference_max_count": 100,
+    "plan_reasoning_effort": "high",
+    "implement_reasoning_effort": "low",
 }
 
 ENVIRONMENT = {
@@ -67,6 +69,8 @@ ENVIRONMENT = {
         "SAGE_BUILD_CONTEXT_AUTOMATIC_ROLLOVER_LIMIT",
     "build_context_continuation_reference_max_count":
         "SAGE_BUILD_CONTEXT_CONTINUATION_REFERENCE_MAX_COUNT",
+    "plan_reasoning_effort": "SAGE_BUILD_PLAN_REASONING_EFFORT",
+    "implement_reasoning_effort": "SAGE_BUILD_IMPLEMENT_REASONING_EFFORT",
 }
 
 
@@ -81,7 +85,8 @@ def test_defaults_are_the_production_build_limits_and_the_policy_is_immutable():
 @pytest.mark.parametrize(("field", "key"), ENVIRONMENT.items())
 def test_each_new_environment_key_changes_exactly_one_field(field: str, key: str):
     before = load_build_policy({})
-    raw = "0.5" if field == "tool_result_head_fraction" else "7"
+    raw = ("0.5" if field == "tool_result_head_fraction" else
+           "max" if field.endswith("reasoning_effort") else "7")
 
     after = load_build_policy({key: raw})
 
@@ -138,6 +143,22 @@ def test_invalid_head_fraction_fails_and_names_only_the_setting(raw: str):
         load_build_policy({key: raw})
 
 
+@pytest.mark.parametrize("key", ["SAGE_BUILD_PLAN_REASONING_EFFORT",
+                                  "SAGE_BUILD_IMPLEMENT_REASONING_EFFORT"])
+@pytest.mark.parametrize("raw", ["none", "minimal", "low", "medium", "high", "max", "xhigh"])
+def test_each_legal_reasoning_effort_is_accepted(key: str, raw: str):
+    field = "plan_reasoning_effort" if "PLAN" in key else "implement_reasoning_effort"
+    assert getattr(load_build_policy({key: raw}), field) == raw
+
+
+@pytest.mark.parametrize("key", ["SAGE_BUILD_PLAN_REASONING_EFFORT",
+                                  "SAGE_BUILD_IMPLEMENT_REASONING_EFFORT"])
+@pytest.mark.parametrize("raw", ["", "default", "HIGH", " high", "high ", "extreme", "1"])
+def test_invalid_reasoning_effort_names_only_the_environment_key(key: str, raw: str):
+    with pytest.raises(ValueError, match=f"^Invalid setting {key}$"):
+        load_build_policy({key: raw})
+
+
 def test_each_service_keeps_its_injected_policy_without_global_leakage(tmp_path: Path):
     first_policy = replace(BuildPolicy(), exact_repeat_limit=2)
     second_policy = replace(BuildPolicy(), exact_repeat_limit=8)
@@ -175,6 +196,8 @@ def test_every_active_build_limit_is_read_from_the_policy_at_its_call_site():
         "build_context_non_media_max_bytes",
         "build_context_automatic_rollover_limit",
         "build_context_continuation_reference_max_count",
+        "plan_reasoning_effort",
+        "implement_reasoning_effort",
     }
 
     assert all(f"self._build_policy.{field}" in source for field in active_fields)

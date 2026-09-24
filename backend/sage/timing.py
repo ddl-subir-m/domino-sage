@@ -38,6 +38,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+from .router.models import EffortDecision
 from .tool_timing import ToolObserver, tool_readout
 
 log = logging.getLogger(__name__)
@@ -86,6 +87,9 @@ class ModelCall:
     turn_id: str = ""
     protocol: str | None = None
     requested_effort: str | None = None
+    configured_effort: str | None = None
+    effective_effort: str | None = None
+    effort_source: str = "unknown"
     effort_status: str = "unknown"
     session_id: str | None = None
     root_session_id: str | None = None
@@ -608,12 +612,15 @@ class _CallHandle:
                 c.phase = phase or c.phase
                 c.reason = reason or c.reason
 
-    def route(self, protocol: str, effort: str | None) -> None:
+    def route(self, protocol: str, effort: EffortDecision) -> None:
         with self._active() as c:
             if c is not None:
                 c.protocol = protocol
-                c.requested_effort = effort
-                c.effort_status = "provider_default" if effort is None else "explicit"
+                c.configured_effort = effort.configured_effort
+                c.effective_effort = effort.effective_effort
+                c.requested_effort = effort.effective_effort
+                c.effort_source = effort.source.value
+                c.effort_status = effort.status.value
 
     def request(self, n_bytes: int) -> None:
         with self._active() as c:
@@ -759,6 +766,9 @@ def as_dict(rec: TurnRecord) -> dict:
                    "ms": round(s.ms), "open": s.t1 is None, **s.fields} for s in rec.spans],
         "calls": [{"n": c.n, "model": c.model, "phase": c.phase, "reason": c.reason,
                    "callId": c.call_id, "turnId": c.turn_id, "protocol": c.protocol,
+                   "configuredEffort": c.configured_effort,
+                   "effectiveEffort": c.effective_effort,
+                   "effortSource": c.effort_source,
                    "requestedEffort": c.requested_effort, "effortStatus": c.effort_status,
                    "sessionId": c.session_id, "rootSessionId": c.root_session_id,
                    "firstTextMs": _offset(c.first_text, c.t0),

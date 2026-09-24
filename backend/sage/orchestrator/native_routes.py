@@ -115,7 +115,8 @@ def install(app, get_orchestrator):
             project, session = _scope(get_orchestrator(), request)
             body = await request.json()
             view = sdk_view(body.get("prompt", []), body.get("tools", []))
-            prepared, _, _, capability = project.shim.prepare(view, project.id, session, native=True)
+            prepared, _, _, capability, _effort = project.shim.prepare(
+                view, project.id, session, native=True)
             return {"model": prepared["model"], "protocol": capability.protocol.value,
                     "effort": prepared.get("reasoning_effort"), "native": capability.native}
         except (ValueError, KeyError, TypeError) as error:
@@ -202,6 +203,7 @@ def install(app, get_orchestrator):
                 original_results = completed_tool_results(body, protocol)
 
             resolution = None
+            effort_decision = None
             rewrite_counts = {}
             def resolved(model, phase, reason):
                 nonlocal resolution
@@ -211,20 +213,23 @@ def install(app, get_orchestrator):
                 opaque = any(call.get("extra_content", {}).get("google", {}).get("thought_signature")
                              for message in body.get("messages", []) for call in message.get("tool_calls", []))
                 session_policy(project.record.path, session, project.control.snapshot(), opaque=bool(opaque))
-                outbound, labels, used, capability = project.shim.prepare(body, project.id, session,
-                                                                         resolved, native=True,
-                                                                         rewrite_counts=rewrite_counts)
+                outbound, labels, used, capability, effort_decision = project.shim.prepare(
+                    body, project.id, session, resolved, native=True,
+                    rewrite_counts=rewrite_counts)
                 if outbound["model"] != body.get("model") or capability.protocol is not protocol:
                     raise NativePolicyError("The resolved model route changed. Retry this turn.")
                 view = outbound
             else:
-                outbound, labels, used, view, capability = prepare_native(
+                native_preparation = prepare_native(
                     project.shim, body, protocol, project.id, session, resolved,
                     policy_directory=project.record.path,
                     rewrite_counts=rewrite_counts)
+                outbound, labels, used, view, capability = native_preparation
+                effort_decision = native_preparation.effort_decision
             if resolution is not None:
                 project.note_resolved(*resolution, protocol=protocol.value,
-                                      effort=view.get("reasoning_effort"), native=capability.native)
+                                      effort=effort_decision.effective_effort,
+                                      native=capability.native)
                 call.model(*resolution)
         except NativeCheckpointRequired as error:
             if intent is not None and installed is not None:
@@ -328,7 +333,8 @@ def install(app, get_orchestrator):
                 project.last_gateway_error = {"message": message}
                 call.done(ok=False, error=message, outcome=outcome)
                 return _native_local_error(protocol, message, code)
-        call.route(protocol.value, view.get("reasoning_effort"))
+        if effort_decision is not None:
+            call.route(protocol.value, effort_decision)
         project.model_calls += 1
         upstream = project.shim.gateway.route(outbound, labels, protocol=protocol, cancel=cancel)
 

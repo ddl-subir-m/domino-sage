@@ -46,6 +46,11 @@ class ModelControl:
         # takes effect on the next turn, rather than half-applying to this one. See arm_turn_mode().
         self._turn_mode: Mode | None = None
         self._turn_mode_token: object | None = None
+        # Saved assignment-row presence is read once by the orchestrator at the Build turn boundary.
+        # It is token-scoped so the provider request path never reads project settings and a stale
+        # turn cannot clear the rows a newer turn armed.
+        self._saved_effort_slots: frozenset[str] = frozenset()
+        self._saved_effort_slots_token: object | None = None
         # Content this Conversation has stopped sending, because the gateway's guardrail refuses it
         # (ADR-0022). Same token discipline as the rest, and it earns it: unkeyed, the set would
         # outlive its turn and withhold another Conversation's content — and a withhold that reaches
@@ -239,6 +244,17 @@ class ModelControl:
             self._turn_mode = None
             self._sync_phase(self._mode)
 
+    def arm_saved_effort_slots(self, slots: frozenset[str] | set[str]) -> object:
+        token = object()
+        self._saved_effort_slots = frozenset(slots)
+        self._saved_effort_slots_token = token
+        return token
+
+    def disarm_saved_effort_slots(self, token: object) -> None:
+        if self._saved_effort_slots_token is token:
+            self._saved_effort_slots_token = None
+            self._saved_effort_slots = frozenset()
+
     @property
     def selected_mode(self) -> Mode:
         """The user's standing choice from the picker — what the NEXT turn runs as. Differs from
@@ -263,4 +279,9 @@ class ModelControl:
                 self._approved_models if self._sensitivity_token is not None else None
             ),
             approved_order=self._approved_order if self._sensitivity_token is not None else (),
+            saved_effort_slots=(
+                self._saved_effort_slots if self._saved_effort_slots_token is not None
+                else frozenset()
+            ),
+            effort_rows_armed=self._saved_effort_slots_token is not None,
         )

@@ -23,6 +23,9 @@ from ..implementation_request import apply_instruction_profile, assemble_for_rou
 from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import (
+    EffortDecision,
+    EffortSource,
+    EffortStatus,
     Mode,
     ModelCatalog,
     Phase,
@@ -356,7 +359,8 @@ class EnforcementShim:
     def handle(self, request: dict[str, Any], project: str, session: str | None = None,
                on_resolved=None, on_refused=None) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
-        request, labels, used, capability = self.prepare(request, project, session, on_resolved)
+        request, labels, used, capability, _effort = self.prepare(
+            request, project, session, on_resolved)
         image_delivery, strip_current_images = self.data_use.begin_image_delivery(
             request, request["model"], capable=supports_vision(request["model"])
         )
@@ -676,9 +680,26 @@ class EnforcementShim:
         if "reasoning_effort" in request:
             request = {k: v for k, v in request.items() if k != "reasoning_effort"}
 
-        effort = decision.effort
+        source = decision.effort_source
+        configured = decision.effort
+        # A missing BuildPolicy is the legacy/test seam. Production always injects the one loaded
+        # policy. Keeping this seam on provider default avoids silently changing standalone shim
+        # callers that do not represent an armed Build turn.
+        if source is EffortSource.STAGE_DEFAULT:
+            if self._build_policy is None:
+                source = EffortSource.PROVIDER_DEFAULT
+                configured = None
+            elif state.phase is Phase.PLAN:
+                configured = self._build_policy.plan_reasoning_effort
+            else:
+                configured = self._build_policy.implement_reasoning_effort
+
+        effort = configured
+        status = (EffortStatus.PROVIDER_DEFAULT
+                  if source is EffortSource.PROVIDER_DEFAULT
+                  else EffortStatus.APPLIED)
         if effort is not None and effort not in accepted:
-            if native or capability.identity:
+            if source is not EffortSource.STAGE_DEFAULT and (native or capability.identity):
                 raise ValueError(f"{request['model']} cannot use the saved reasoning setting {effort!r}. "
                                  "Choose Model default or a supported setting. " + capability.reason)
             # Said out loud. A dropped effort is a silent bill — the turn runs at the alias's own
@@ -689,7 +710,8 @@ class EnforcementShim:
             # Deduped like the Live read line above, and for the same reason: an unacceptable stored
             # level is a STANDING fact, so an unkeyed line repeats on every inference of every turn
             # for the life of the assignment and buries the turn it first appeared on.
-            if self._effort_dropped != (request["model"], effort, tool_call):
+            if (source is not EffortSource.STAGE_DEFAULT
+                    and self._effort_dropped != (request["model"], effort, tool_call)):
                 self._effort_dropped = (request["model"], effort, tool_call)
                 log.info(
                     "model policy: dropping reasoning_effort=%s — %s accepts %s%s",
@@ -697,10 +719,22 @@ class EnforcementShim:
                     " on a request carrying tools" if tool_call else "",
                 )
             effort = None
+            status = EffortStatus.UNSUPPORTED
         # Model default means no override, in Chat and Build alike. A hidden Low
         # fallback would contradict both the picker and the saved assignment.
         if effort is not None:
             request = {**request, "reasoning_effort": effort}
+        effort_decision = EffortDecision(
+            configured_effort=configured,
+            source=source,
+            effective_effort=effort,
+            status=status,
+        )
+        log.info(
+            "model effort: model=%s phase=%s configured=%s effective=%s source=%s status=%s",
+            request["model"], state.phase.value, configured, effort,
+            source.value, status.value,
+        )
         # Handoff note. A rescued step lands on a different model mid-turn with the transcript but
         # no account of why it was called in — so it re-attempts the edit that just failed. Appended
         # as `system`, NOT `user`: _current_turn() treats a user message as a turn boundary, so
@@ -902,4 +936,4 @@ class EnforcementShim:
                     window["emptyFallbackCount"], window["perResultLimitBytes"],
                     window["aggregateLimitBytes"],
                 )
-        return request, labels, used, capability
+        return request, labels, used, capability, effort_decision

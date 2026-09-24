@@ -43,6 +43,18 @@ class ReasoningEffortContext(str, Enum):
     WITH_TOOLS = "with-tools"
 
 
+class EffortSource(str, Enum):
+    USER = "user"
+    STAGE_DEFAULT = "stage_default"
+    PROVIDER_DEFAULT = "provider_default"
+
+
+class EffortStatus(str, Enum):
+    APPLIED = "applied"
+    PROVIDER_DEFAULT = "provider_default"
+    UNSUPPORTED = "unsupported"
+
+
 # Which gateway models accept OpenAI image_url content parts. Empirical, not advertised: verified by
 # sending a test image through the live Domino gateway on 2026-07-30 — sonnet/gpt-5.4/opus/
 # etan-opus-4.6 described it, bedrock-qwen3-coder returned HTTP 400 ("This model doesn't support the
@@ -305,6 +317,11 @@ class SessionState:
     approved_order: tuple[ModelId, ...] = ()
     # A bounded data Artifact turn keeps reads and the scoped artifact writer only.
     chat_artifact_turn: bool = False
+    # Saved assignment rows present when this Build turn started. Presence is separate from the
+    # row's effort value: a row carrying `effort: null` is an explicit Model default choice, while
+    # an absent row is eligible for the automatic Build-stage default (#532).
+    saved_effort_slots: frozenset[str] = frozenset()
+    effort_rows_armed: bool = False
 
 
 @dataclass(frozen=True)
@@ -327,3 +344,14 @@ class ModelDecision:
     # slot ran then, and the deployment default can move under it afterwards; the send path re-checks
     # against the measured table and drops rather than letting the turn 400.
     effort: str | None = None
+    effort_source: EffortSource = EffortSource.PROVIDER_DEFAULT
+
+
+@dataclass(frozen=True)
+class EffortDecision:
+    """One provider-bound reasoning decision, after final-model capability validation."""
+
+    configured_effort: str | None
+    source: EffortSource
+    effective_effort: str | None
+    status: EffortStatus
