@@ -40,6 +40,8 @@
         },
         "gpt-5.4": {
           "name": "GPT-5.4",
+          "attachment": true,
+          "modalities": {"input": ["text", "image"], "output": ["text"]},
           "limit": {
             "context": 922000,
             "output": 128000
@@ -47,6 +49,8 @@
         },
         "sonnet": {
           "name": "Claude Sonnet 4.6",
+          "attachment": true,
+          "modalities": {"input": ["text", "image"], "output": ["text"]},
           "limit": {
             "context": 1000000,
             "output": 128000
@@ -61,6 +65,8 @@
         },
         "gemini-3.7-flash": {
           "name": "Gemini 3.7 Flash",
+          "attachment": true,
+          "modalities": {"input": ["text", "image"], "output": ["text"]},
           "limit": {
             "context": 1048576,
             "output": 65536
@@ -68,6 +74,8 @@
         },
         "opus": {
           "name": "Claude Opus 4.6",
+          "attachment": true,
+          "modalities": {"input": ["text", "image"], "output": ["text"]},
           "limit": {
             "context": 1000000,
             "output": 128000
@@ -75,6 +83,8 @@
         },
         "etan-opus-4.6": {
           "name": "Claude Opus 4.6 (etan)",
+          "attachment": true,
+          "modalities": {"input": ["text", "image"], "output": ["text"]},
           "limit": {
             "context": 1000000,
             "output": 128000

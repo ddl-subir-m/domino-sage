@@ -2219,6 +2219,9 @@ window.SW = window.SW || {};
         const coverage = event.coverage || {};
         const textOperation = event.operation === 'text_analysis';
         const documentOperation = event.operation === 'document_reference';
+        const tableReference = event.operation === 'table_reference';
+        const imageReference = event.operation === 'image_reference';
+        const tablePrepared = tableReference && (!event.status || event.status === 'prepared');
         const documentPrepared = documentOperation && (!event.status || event.status === 'prepared');
         const selectedPages = Array.isArray(coverage.selected_pages) ? coverage.selected_pages : [];
         const processedPages = Array.isArray(coverage.processed_pages) ? coverage.processed_pages : [];
@@ -2250,11 +2253,32 @@ window.SW = window.SW || {};
         })[event.status] || 'Document preparation failed. No document text was prepared.';
         const source = String(event.source || 'unknown source');
         return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
-          h('p', null, documentPrepared ? 'Prepared through the LLM Gateway from '
+          h('p', null, imageReference && event.delivery === 'sent'
+            ? 'Sent through the model image carrier from '
+            : imageReference ? 'Image reference was not sent from '
+            : tablePrepared ? 'Prepared bounded table structure from '
+            : tableReference ? 'Table reference preparation failed for '
+            : documentPrepared ? 'Prepared through the LLM Gateway from '
             : documentOperation ? 'Document preparation did not transfer content from '
             : textOperation ? 'Analyzed through the LLM Gateway from ' : 'Calculated in Domino from ',
             h(Tag, { 'aria-label': `Source file: ${source}` }, source.split('/').pop()), '.'),
-          documentPrepared
+          imageReference
+            ? h('p', null, event.delivery === 'sent'
+              ? 'The routed model received the image.'
+              : event.failure === 'capability'
+                ? 'The routed model cannot process images. Delivery: not sent.'
+                : event.failure === 'no_request'
+                  ? 'No model request was made. Delivery: not sent.'
+                  : event.delivery === 'pending'
+                    ? 'No model request has reached the image carrier yet.'
+                : 'The image carrier was unavailable. Delivery: not sent.')
+            : tablePrepared
+              ? h('p', null, `${coverage.processed || 0} rows described; ` +
+                `${(event.selected_fields || []).length} columns prepared. ` +
+                'Rows were not copied into the prompt.')
+              : tableReference
+                ? h('p', null, 'No table structure or rows were sent.')
+            : documentPrepared
             ? h('p', null,
               `${coverage.sent_characters || 0} of ${coverage.selected_characters || 0} characters prepared. `,
               pdfPageCoverage || (processedPages.length
@@ -2268,7 +2292,7 @@ window.SW = window.SW || {};
               ? h('p', null, documentFailure)
             : h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +
               `${coverage.excluded} excluded; ${coverage.failed} failed; ${coverage.unfinished} unfinished.`),
-          !documentOperation && h('p', null,
+          !documentOperation && !imageReference && h('p', null,
             `Selected fields: ${(event.selected_fields || []).join(', ') || 'Structure only'}.`),
           event.artifact && h('p', null, 'Artifact: ',
             h(Tag, { 'aria-label': `Artifact: ${event.artifact}` }, event.artifact.split('/').pop())),

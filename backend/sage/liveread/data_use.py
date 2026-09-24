@@ -105,6 +105,14 @@ class DataUse:
             for oid, event in latest.items():
                 if oid in self.operations:
                     continue
+                event = copy.deepcopy(event)
+                if (event.get("operation") == "image_reference"
+                        and event.get("delivery") == "pending"):
+                    # A pending row belonged to a request in the process that died. Its carrier
+                    # cannot resume after restart, and a later turn must not claim it as its own.
+                    event["delivery"] = "not_sent"
+                    event["failure"] = "no_request"
+                    persist({"type": "data_used", "dataUsed": [copy.deepcopy(event)]})
                 reply = {"data_use": oid, "coverage": event.get("coverage") or {},
                          "selected_fields": []}
                 if "columns" in event:
@@ -113,13 +121,109 @@ class DataUse:
                     reply["result_rows"] = event.get("result_rows")
                 if event.get("artifact"):
                     reply["local_reference"] = event["artifact"]
-                self.operations[oid] = (copy.deepcopy(event), reply, persist)
+                self.operations[oid] = (event, reply, persist)
                 self._remember_sources([_source_from_event(event)])
 
     def events(self, turn_id):
         with self.lock:
             return [copy.deepcopy(event) for event, _, _ in self.operations.values()
                     if event["turn_id"] == turn_id]
+
+    def current_image_operations(self, request: dict) -> tuple[str, ...]:
+        """Image operation markers from only the request's last user message."""
+        messages = request.get("messages")
+        if not isinstance(messages, list):
+            return ()
+        current = next((message for message in reversed(messages)
+                        if isinstance(message, dict) and message.get("role") == "user"), None)
+        if current is None:
+            return ()
+        with self.lock:
+            return tuple(
+                oid for oid, event, _reply in self._selected_operation_args(
+                    content_text(current.get("content"))
+                )
+                if event.get("operation") == "image_reference"
+            )
+
+    def begin_image_delivery(self, request: dict, model: str, *, capable: bool
+                             ) -> tuple[tuple[str, ...], bool]:
+        """Select exact current-turn image operations and validate their carrier count.
+
+        The router decision exists only in the shim, after OpenCode has made the request. Reference
+        preparation therefore records `pending`. A capable route stays pending until a parsed
+        response frame proves that upstream responded. Image bytes and data URIs are never retained
+        here.
+        """
+        messages = request.get("messages")
+        if not isinstance(messages, list):
+            return (), False
+        current = next((message for message in reversed(messages)
+                        if isinstance(message, dict) and message.get("role") == "user"), None)
+        if current is None:
+            return (), False
+        with self.lock:
+            marked = set(self.current_image_operations(request))
+            pending = tuple(
+                oid for oid, entry in self.operations.items()
+                if oid in marked
+                and entry[0].get("operation") == "image_reference"
+                and entry[0].get("delivery") == "pending"
+            )
+            if not pending:
+                return (), False
+            if not capable:
+                self._set_image_delivery(pending, model, failure="capability")
+                return (), False
+            carrier_count = sum(
+                1 for part in current.get("content", [])
+                if isinstance(part, dict) and part.get("type") == "image_url"
+            ) if isinstance(current.get("content"), list) else 0
+            if carrier_count != len(pending):
+                self._set_image_delivery(pending, model, failure="carrier")
+                return (), True
+            return pending, False
+
+    def confirm_image_delivery(self, operation_ids: tuple[str, ...], model: str) -> None:
+        """Record successful delivery after upstream yields a non-error response frame."""
+        self._set_image_delivery(operation_ids, model, failure=None)
+
+    def fail_image_delivery(self, operation_ids: tuple[str, ...], model: str,
+                            failure: str) -> None:
+        """Record a request that never produced upstream response bytes."""
+        self._set_image_delivery(operation_ids, model, failure=failure)
+
+    def _set_image_delivery(self, operation_ids: tuple[str, ...], model: str,
+                            *, failure: str | None) -> None:
+        with self.lock:
+            for oid in operation_ids:
+                entry = self.operations.get(oid)
+                if entry is None:
+                    continue
+                event, _reply, persist = entry
+                if (event.get("operation") != "image_reference"
+                        or event.get("delivery") != "pending"):
+                    continue
+                event["delivery"] = "sent" if failure is None else "not_sent"
+                event["failure"] = failure
+                event["serving_model"] = model
+                persist({"type": "data_used", "dataUsed": [copy.deepcopy(event)]})
+
+    def finish_image_delivery(self, turn_id: str = "", *,
+                              operation_ids: tuple[str, ...] = ()) -> None:
+        """Close image audit rows when a turn ended before a model request used them."""
+        if not turn_id and not operation_ids:
+            return
+        with self.lock:
+            selected = set(operation_ids)
+            pending = [entry for oid, entry in self.operations.items()
+                       if (oid in selected if selected else entry[0].get("turn_id") == turn_id)
+                       and entry[0].get("operation") == "image_reference"
+                       and entry[0].get("delivery") == "pending"]
+            for event, _reply, persist in pending:
+                event["delivery"] = "not_sent"
+                event["failure"] = "no_request"
+                persist({"type": "data_used", "dataUsed": [copy.deepcopy(event)]})
 
     def apply_restrictions(self, request, withheld=None, rewrite_counts=None):
         if not isinstance(request.get("messages"), list):
@@ -145,6 +249,12 @@ class DataUse:
         """
         if not isinstance(request.get("messages"), list):
             return request, set()
+        current_image_operations = set(self.current_image_operations(request))
+        with self.lock:
+            image_operations = {
+                oid for oid, (event, _reply, _persist) in self.operations.items()
+                if event.get("operation") == "image_reference"
+            }
         sources = _sources_from_messages(request["messages"])
         with self.lock:
             self._remember_sources(sources)
@@ -279,6 +389,10 @@ class DataUse:
                             "turn_id=%s model_call_ordinal=%d new_marker_echoes=1 "
                             "observed_marker_echoes=%d; tool execution already occurred",
                             turn_id, ordinal, observed)
+        # Image references ride the current user attachment carrier. Historical markers remain in
+        # model history, but they do not make an old operation part of this request's evidence.
+        used.difference_update(image_operations)
+        used.update(current_image_operations)
         return {**request, "messages": messages}, used
 
     def _remember_sources(self, sources):
@@ -337,7 +451,7 @@ class DataUse:
                             continue
                         if body.get("error"):
                             evidence["state"] = "failed"
-                            evidence["failure"] = _failure_kind(body.get("error"))
+                            evidence["failure"] = gateway_failure_kind(body.get("error"))
                             reason = _safe_refusal_reason(body.get("error"))
                             if reason:
                                 evidence["refusal_reason"] = reason
@@ -351,7 +465,7 @@ class DataUse:
                 yield chunk
         except Exception as exc:
             evidence["state"] = "failed"
-            evidence["failure"] = _failure_kind(exc)
+            evidence["failure"] = gateway_failure_kind(exc)
             raise
         finally:
             if evidence["state"] != "failed":
@@ -447,7 +561,7 @@ def _word(value) -> str:
     return str(value)
 
 
-def _failure_kind(error) -> str:
+def gateway_failure_kind(error) -> str:
     status = getattr(error, "status", None)
     body = getattr(error, "body", "")
     if isinstance(error, dict):

@@ -7650,7 +7650,10 @@ class Orchestrator:
             # of the committed file (#237). `_mention_block` is what keeps them out of the prompt.
             d = self._descriptor(project, entry, want_detail=True)
             item = {"path": m, "name": PurePosix(m).name,
-                    "summary": d["summary"], "detail": _mention_block(d)}
+                    "summary": d["summary"], "detail": _mention_block(d),
+                    # The shared reference policy validates the handler against the descriptor's
+                    # sniffed kind. This stays in memory and is not rendered by the driver.
+                    "reference_kind": d["kind"]}
             if collapsed_folder:
                 item["asked"] = collapsed_folder
             if d["kind"] == "image":
@@ -16658,6 +16661,7 @@ class Orchestrator:
         # `done`s. The next early exit that persists one would raise UnboundLocalError instead —
         # inside an error path, which is the worst place to find out.
         read_only = ""
+        image_reference_operations: list[str] = []
 
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
@@ -16705,6 +16709,10 @@ class Orchestrator:
             # which is a worse trade than one stale transcript: the plan those old rows point at is
             # long since built or replaced, and the person is one new turn away from a card that is
             # right.
+            if ev["type"] == "done":
+                project.shim.data_use.finish_image_delivery(
+                    operation_ids=tuple(image_reference_operations)
+                )
             if ev["type"] == "done":
                 data_used = project.shim.data_use.events(
                     self._data_use_turns.get(project.build_conversation, ""))
@@ -17105,6 +17113,9 @@ class Orchestrator:
 
         def handle_stop() -> dict:
             project.stop_requested = False
+            project.shim.data_use.finish_image_delivery(
+                operation_ids=tuple(image_reference_operations)
+            )
             # The transcript is rolled back below, but the bounded diagnostic record must retain
             # the terminal reason. It is a separate lifecycle record, not private transcript data.
             build_diagnostics.observe({"type": "stopped"})
@@ -17395,6 +17406,7 @@ class Orchestrator:
             mention_files = list(mention_files or [])
             attachment_manifest = project.attachments_for_turn()
             root = project.app_for_turn().path
+            descriptors = {str(item.get("path") or ""): item for item in mention_files}
             if is_approval:
                 saved = live_reference.plan_records(explicit_references)
                 explicit_paths = {record["source"] for record in saved}
@@ -17404,6 +17416,7 @@ class Orchestrator:
                     saved,
                     withheld=project.control.snapshot().withheld,
                     target_for=lambda row: self._reference_attachment_target(project, row),
+                    descriptors=descriptors,
                 )
             else:
                 direct_sources = [str(source) for source in (mentions or [])]
@@ -17420,6 +17433,7 @@ class Orchestrator:
                     prompt=prompt,
                     withheld=project.control.snapshot().withheld,
                     target_for=lambda row: self._reference_attachment_target(project, row),
+                    descriptors=descriptors,
                 )
                 plan_reference_records = [live_reference.plan_record(item)
                                           for item in prepared_references]
@@ -17434,6 +17448,7 @@ class Orchestrator:
                             "name": PurePosix(source).name,
                             "summary": "Saved plan reference",
                             "detail": prepared.prompt_block(),
+                            "reference_kind": prepared.source_type,
                         })
             for attachment in mention_files:
                 source = str(attachment.get("path") or "")
@@ -17441,11 +17456,11 @@ class Orchestrator:
                     if attachment.get("asked") and not is_approval and live_reference.source_type(source):
                         attachment["detail"] = (
                             "This folder mention stays a bounded description. It does not transfer "
-                            "the text of files inside the folder."
+                            "the content of files inside the folder."
                         )
                     elif live_reference.source_type(source):
                         attachment["detail"] = (
-                            "This document attachment was not prepared because this turn does not carry "
+                            "This attachment was not prepared because this turn does not carry "
                             "an explicit structured reference."
                         )
                     continue
@@ -17453,13 +17468,21 @@ class Orchestrator:
                 if prepared is None:
                     if live_reference.source_type(source):
                         attachment["detail"] = (
-                            "This document attachment was not prepared because its exact attachment "
+                            "This attachment was not prepared because its exact attachment "
                             "identity or storage target could not be authorized."
                         )
                     continue
-                attachment["detail"] = prepared.prompt_block()
+                if prepared.source_type == "image" and prepared.status != "prepared":
+                    # A failed image preparation has no pixel carrier. Removing it here keeps the
+                    # driver, audit event and actual outgoing request on one answer.
+                    attachment.pop("image_uri", None)
                 event, reply = live_reference.data_use(
                     prepared, purpose="Use an explicitly referenced attachment for this Build turn"
+                )
+                if prepared.source_type == "image":
+                    image_reference_operations.append(event["operation_id"])
+                attachment["detail"] = prepared.prompt_block(
+                    operation_id=event["operation_id"] if prepared.source_type == "image" else ""
                 )
                 project.shim.data_use.record(
                     event, reply, persist,
@@ -17549,17 +17572,24 @@ class Orchestrator:
             # the connection asks for, so a mismatched value connects, stays open, carries nothing,
             # and leaves a turn exactly as slow as it was with no error anywhere to say why.
             tap = _EventTap(client, sid, directory=str(project.app_for_turn().path))
-            client.send_prompt(sid,
-                               # `live_read_note` leads rather than trails. Everything after
-                               # `current` is a block ABOUT this request, and the tail is load-
-                               # bearing: the forks below wrap `current` in their own preamble and
-                               # a turn with no notes must still end on the person's own sentence.
-                               # The token is a standing fact about the turn, so it goes in front.
-                               "\n\n".join(p for p in (live_read_note, source_note, current, chat_note,
-                                                       resource_note,
-                                                       unusable_note, ambiguous_note,
-                                                       broken_retry_note) if p),
-                               agent=agent, attachments=mention_files)
+            try:
+                client.send_prompt(sid,
+                                   # `live_read_note` leads rather than trails. Everything after
+                                   # `current` is a block ABOUT this request, and the tail is load-
+                                   # bearing: the forks below wrap `current` in their own preamble and
+                                   # a turn with no notes must still end on the person's own sentence.
+                                   # The token is a standing fact about the turn, so it goes in front.
+                                   "\n\n".join(p for p in (live_read_note, source_note, current, chat_note,
+                                                           resource_note,
+                                                           unusable_note, ambiguous_note,
+                                                           broken_retry_note) if p),
+                                   agent=agent, attachments=mention_files)
+            except Exception:
+                tap.close()
+                project.shim.data_use.finish_image_delivery(
+                    operation_ids=tuple(image_reference_operations)
+                )
+                raise
             # These ride the first (user) turn only, not the nudge/fix follow-ups: those carry
             # no new user reference, and a repeated block reads as a second request for the same
             # Resource. The Chat background goes with them — a nudge is Sage talking to itself

@@ -9,6 +9,7 @@ this code — this shim only guarantees the *policy* half (right model + tagging
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Iterator
@@ -42,6 +43,7 @@ from .chat_paths import apply_withheld, strip_denied_writes
 # attached — a silently dropped part reads as "the user sent nothing", and the agent then invents
 # what it thinks the screenshot showed instead of asking.
 IMAGE_OMITTED = "[image omitted: the active model cannot process images]"
+IMAGE_AMBIGUOUS = "[image omitted: reference markers did not match image carriers]"
 
 
 def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
@@ -65,6 +67,25 @@ def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
         dropped += sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
         out.append({**m, "content": parts})
     return out, dropped
+
+
+def _strip_current_images(messages: list[Any]) -> list[Any]:
+    """Remove ambiguous carriers from only the request's last user message."""
+    out = list(messages)
+    index = next((i for i in range(len(out) - 1, -1, -1)
+                  if isinstance(out[i], dict) and out[i].get("role") == "user"), None)
+    if index is None:
+        return out
+    message = out[index]
+    content = message.get("content")
+    if not isinstance(content, list):
+        return out
+    out[index] = {**message, "content": [
+        {"type": "text", "text": IMAGE_AMBIGUOUS}
+        if isinstance(part, dict) and part.get("type") == "image_url" else part
+        for part in content
+    ]}
+    return out
 
 
 def _capture_refusal(stream: Iterator[bytes], request: dict[str, Any], on_refused) -> Iterator[bytes]:
@@ -101,6 +122,95 @@ def _capture_refusal(stream: Iterator[bytes], request: dict[str, Any], on_refuse
                 logging.getLogger("sage.shim").exception(
                     "shim: could not hand back the payload a guardrail refused")
         raise
+
+
+def _frame_outcome(line: str) -> tuple[str, str | None] | None:
+    payload = line.strip()
+    if payload.startswith("data:"):
+        payload = payload[5:].strip()
+    if not payload or payload == "[DONE]" or payload.startswith("event:"):
+        return None
+    try:
+        body = json.loads(payload)
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    if body.get("error"):
+        from ..liveread.data_use import gateway_failure_kind
+        return "failed", gateway_failure_kind(body["error"])
+    if body.get("type") in ("response.failed", "response.incomplete"):
+        return "failed", "incomplete"
+    if body.get("type") in ("response.created", "response.in_progress", "message_start"):
+        return None
+    return "responded", None
+
+
+def _track_image_delivery(stream: Iterator[bytes], data_use, operation_ids: tuple[str, ...],
+                          model: str) -> Iterator[bytes]:
+    """Settle image delivery from parsed upstream response frames."""
+    buffer = ""
+    settled = False
+
+    def inspect(line: str) -> None:
+        nonlocal settled
+        if settled:
+            return
+        outcome = _frame_outcome(line)
+        if outcome is None:
+            return
+        state, kind = outcome
+        if state == "failed":
+            data_use.fail_image_delivery(operation_ids, model, kind or "gateway_error")
+        else:
+            data_use.confirm_image_delivery(operation_ids, model)
+        settled = True
+
+    try:
+        for chunk in stream:
+            buffer += chunk.decode("utf-8", errors="replace")
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                inspect(line)
+            yield chunk
+    except Exception:
+        if not settled:
+            data_use.fail_image_delivery(operation_ids, model, "gateway")
+            settled = True
+        raise
+    finally:
+        # A caller can close the generator after a setup-only frame. That is still a terminal exit:
+        # do not leave the audit row pending until some later turn or process restart closes it.
+        inspect(buffer)
+        if not settled:
+            data_use.fail_image_delivery(operation_ids, model, "no_response")
+
+
+class _CloseAwareImageDelivery:
+    """Close a delivery row even when the wrapped generator was never started."""
+
+    def __init__(self, stream: Iterator[bytes], data_use, operation_ids: tuple[str, ...],
+                 model: str):
+        self.stream = stream
+        self.data_use = data_use
+        self.operation_ids = operation_ids
+        self.model = model
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> bytes:
+        return next(self.stream)
+
+    def close(self) -> None:
+        try:
+            close = getattr(self.stream, "close", None)
+            if close is not None:
+                close()
+        finally:
+            # Closing an unstarted generator does not enter its body or run its finally block.
+            # This outer boundary is therefore the only place that can settle a zero-pull exit.
+            self.data_use.fail_image_delivery(self.operation_ids, self.model, "no_response")
 
 
 def split_parallel_tool_calls(messages: list[Any]) -> list[Any]:
@@ -232,14 +342,29 @@ class EnforcementShim:
                on_resolved=None, on_refused=None) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
         request, labels, used, capability = self.prepare(request, project, session, on_resolved)
+        image_delivery, strip_current_images = self.data_use.begin_image_delivery(
+            request, request["model"], capable=supports_vision(request["model"])
+        )
+        if strip_current_images and isinstance(request.get("messages"), list):
+            request = {**request, "messages": _strip_current_images(request["messages"])}
         from ..gateway.protocol import Protocol
-        if capability.protocol is not Protocol.CHAT:
-            from .native import text_stream
-            stream = text_stream(self._gateway, request, labels, capability)
-        else:
-            stream = self._gateway.route(request, labels)
+        try:
+            if capability.protocol is not Protocol.CHAT:
+                from .native import text_stream
+                stream = text_stream(self._gateway, request, labels, capability)
+            else:
+                stream = self._gateway.route(request, labels)
+        except Exception:
+            self.data_use.fail_image_delivery(image_delivery, request["model"], "gateway")
+            raise
         stream = _capture_refusal(stream, request, on_refused)
-        return self.data_use.observe(stream, request, used)
+        stream = _track_image_delivery(
+            stream, self.data_use, image_delivery, request["model"]
+        )
+        observed = self.data_use.observe(stream, request, used)
+        return _CloseAwareImageDelivery(
+            observed, self.data_use, image_delivery, request["model"]
+        )
 
     def prepare(self, request: dict[str, Any], project: str, session: str | None = None,
                 on_resolved=None, *, native: bool = False, rewrite_counts=None):
@@ -599,11 +724,11 @@ class EnforcementShim:
         # through is worse: bedrock-qwen3-coder (the default implement model) hard-400s, killing
         # the turn.
         dropped = 0
-        if not supports_vision(request["model"]) and isinstance(request.get("messages"), list):
+        vision_capable = supports_vision(request["model"])
+        if not vision_capable and isinstance(request.get("messages"), list):
             messages, dropped = _strip_images(request["messages"])
             if dropped:
                 request = {**request, "messages": messages}
-
         # Bedrock-served models only: serialise parallel tool calls the gateway's adapter can't group.
         # Same reasoning as the image strip above — the resolved model is the earliest point this is
         # decidable, and it must run after the override or a request routed TO Bedrock would slip past.

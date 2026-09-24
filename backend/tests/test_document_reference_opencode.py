@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import threading
@@ -13,16 +14,16 @@ import pytest
 from sage.assets.provider import FakeAssetProvider
 from sage.driver.opencode import OpenCodeClient
 from sage.orchestrator.service import Orchestrator
-from sage.router.models import Mode
+from sage.router.models import Mode, ModelCatalog
 
 from .opencode_server import BINARY, _opencode_server
-from .test_chat_turn import OkFeedback, _catalog
+from .test_chat_turn import OkFeedback
 
 REPO = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")
-def test_real_opencode_first_build_request_contains_only_the_explicit_document(tmp_path: Path):
+def test_real_opencode_first_build_request_contains_typed_mixed_carriers_only(tmp_path: Path):
     calls: list[dict] = []
     failures: list[str] = []
     state: dict = {}
@@ -103,7 +104,10 @@ def test_real_opencode_first_build_request_contains_only_the_explicit_document(t
             assets = FakeAssetProvider()
             orch = Orchestrator(
                 workspace_dir=tmp_path / "mnt" / "code", template=template,
-                gateway=Gateway(), catalog=_catalog(), project_id="Sage",
+                gateway=Gateway(), catalog=ModelCatalog(
+                    sovereign_plan="sonnet", sovereign_implement="sonnet", sovereign_ask="sonnet",
+                    plan="sonnet", implement="sonnet", ask="sonnet",
+                ), project_id="Sage",
                 feedback=OkFeedback(), opencode_client=OpenCodeClient(url), assets=assets,
             )
             project = orch.project(start_preview=False)
@@ -112,14 +116,26 @@ def test_real_opencode_first_build_request_contains_only_the_explicit_document(t
             shell = orch.upload_file(
                 "requirements.md", b"# Rules\nUNIQUE REAL OPENCODE RULE\n"
             )["path"]
+            table = orch.upload_file(
+                "shape.csv", b"subject,arm\n01,A\n02,B\n03,C\n04,D\n05,E\n06,F\n07,G\n"
+                b"08,H\n09,I\n10,J\n11,K\n12,L\n13,M\n"
+            )["path"]
+            image_bytes = base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            )
+            image = orch.upload_file("design.png", image_bytes)["path"]
             orch.upload_file("private.csv", b"id,value\n1,PRIVATE REAL CSV SENTINEL\n")
 
-            list(orch.build_stream("Follow the attached requirements", [shell]))
+            list(orch.build_stream("Follow the attached requirements, table shape, and image",
+                                   [shell, table, image]))
 
             assert not failures, failures
             assert calls
             first_messages = json.dumps(calls[0].get("messages", []))
             assert "UNIQUE REAL OPENCODE RULE" in first_messages
+            assert "BEGIN PREPARED TABLE STRUCTURE" in first_messages
+            assert "subject: digits" in first_messages
+            assert "image_url" in first_messages
             assert "PRIVATE REAL CSV SENTINEL" not in first_messages
             assert not any(message.get("role") in {"assistant", "tool"}
                            for message in calls[0].get("messages", []))
