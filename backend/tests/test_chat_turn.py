@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from sage import timing
 from sage.orchestrator import chat_intent, handoff, recall
 from sage.orchestrator.service import ChartFontsMissing, Orchestrator, _chat_save_landed
 from sage.router.models import ModelCatalog
@@ -2815,6 +2816,29 @@ def test_the_lock_is_free_before_the_turn_finishes_tidying_up(tmp_path: Path):
     # The classifier is the slow one — up to handoff.TIMEOUT_S of gateway call, every turn that
     # has not been offered Build yet — and it needs nothing the next turn needs.
     assert while_classifying == [False]
+
+
+def test_closing_the_stream_at_done_leaves_no_turn_or_timing_owner(tmp_path: Path):
+    orch, _ = _orch(tmp_path, [Turn(text="Rates is the largest desk.")])
+    tid = orch.create_thread()["id"]
+    ticket, state = orch.prepare_stream_turn("chat-close", kind="chat", conversation=tid)
+    assert state == "running"
+    stream = orch.chat_stream(tid, "what's our gross exposure by desk?", turn_ticket=ticket)
+
+    for event in stream:
+        if event["type"] == "done":
+            break
+
+    assert not orch.turn_busy()
+    assert orch._turns.running() is None
+    assert ticket.timing_record is not None and ticket.timing_record.t1 is None
+    assert timing.current() is None
+
+    stream.close()
+
+    assert ticket.timing_record.t1 is not None
+    assert timing.current() is None
+    assert orch._turns.running() is None
 
 
 def test_a_commit_waits_for_the_turn_that_beat_it_to_the_lock(tmp_path: Path):

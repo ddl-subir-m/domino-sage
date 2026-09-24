@@ -661,6 +661,9 @@ class _TurnQueue:
         self._cond = threading.Condition()
         self._waiting: deque[_TurnTicket] = deque()
         self._last_sequence = 0
+        # Counts turns that actually acquired the lock. Admission order cannot answer that question:
+        # a queued successor already has a sequence before the running Chat yields its terminal row.
+        self._running_generation = 0
         # The ticket holding the lock, or None. Not on the deque — `_take` pops it — so without
         # this the running turn is the one turn nobody can name (#126). None is a real answer and
         # not a gap: publish, reset and the other raw-lock callers never queue, so a busy Project
@@ -748,6 +751,7 @@ class _TurnQueue:
             return False
         self._waiting.popleft()
         self._running = ticket
+        self._running_generation += 1
         ticket.outcome = "ready"
         return True
 
@@ -809,6 +813,11 @@ class _TurnQueue:
         """The ticket that holds the lock, or None when whatever holds it never queued (#126)."""
         with self._cond:
             return self._running
+
+    def generation(self) -> int:
+        """Number of queued turns that have actually taken the turn lock."""
+        with self._cond:
+            return self._running_generation
 
     def depth(self) -> int:
         with self._cond:
@@ -9498,8 +9507,10 @@ class Orchestrator:
         ticket.timing_record = timing.start_turn(
             "chat", prompt, turn_id=ticket.id, conversation_id=thread_id,
             started=timing_started)
+        timing_record = ticket.timing_record
         timing.record_span(
-            ticket.timing_record, "turn.acquire", timing_started[1], acquired_at)
+            timing_record, "turn.acquire", timing_started[1], acquired_at)
+        turn_generation = self._turns.generation()
         holding = True
         try:
             # Empty at the start of this turn, for the reason build_stream gives at its own grant.
@@ -9540,8 +9551,6 @@ class Orchestrator:
         # this one.
             self.project().model_calls = 0
             self.project().tool_call_responses = 0
-            # Keep ownership through aftercare. Its spans belong to this record, and a successor
-            # cannot become the process-wide timing target until these writes are complete.
             for ev in self._chat_stream(thread_id, prompt, timeout_s=timeout_s,
                                         already_asked=already_asked,
                                         skip_table_gate=skip_table_gate,
@@ -9549,7 +9558,9 @@ class Orchestrator:
                                         dismissed_dataset=dismissed_dataset,
                                         skip_investigation_gate=skip_investigation_gate,
                                         declined=declined,
-                                        other_lane_grant=other_lane_grant):
+                                        other_lane_grant=other_lane_grant,
+                                        timing_record=timing_record,
+                                        turn_generation=turn_generation):
                 if ev.get("type") == "done":
                     # Every way this turn can end passes through a `done`, and there are eight of
                     # them — the gates, the handoff short-circuit, the caps, a failed step, an
@@ -9557,10 +9568,21 @@ class Orchestrator:
                     # record used to carry no decision at all: eight sites is eight chances to add
                     # a ninth and forget. Build does the same thing at its own event seam.
                     timing.decide(ev.get("ok"), str(ev.get("decision") or ""))
+                    # `done` is the public end of the turn. Free the lock before yielding it, so a
+                    # reader that sends the next question immediately does not see a busy Project.
+                    # The record stays open for record-bound aftercare below, but implicit telemetry
+                    # must stop before a successor can make itself current.
+                    timing.detach_turn(timing_record)
+                    try:
+                        self._clear_turn_baseline()
+                    finally:
+                        if self._turns.running() is ticket:
+                            self._release_turn()
+                        holding = False
                 yield ev
         finally:
             try:
-                timing.finish_turn(record=ticket.timing_record)
+                timing.finish_turn(record=timing_record)
             finally:
                 if holding:
                     try:
@@ -9923,7 +9945,8 @@ class Orchestrator:
 
     def _maybe_suggest_handoff(self, store: ThreadStore, project: Project,
                                thread_id: str, prompt: str,
-                               *, already_classified: bool = False) -> dict | None:
+                               *, already_classified: bool = False,
+                               timing_record=None) -> dict | None:
         """Detect once: persist handoff.json and emit a callout, or stay silent. Never raises.
 
         `already_classified` is the pre-turn intent classifier's `build_app` verdict handed down
@@ -9961,6 +9984,7 @@ class Orchestrator:
                 sensitivity=lambda c: self._classify_lock(project, c),
                 session=project.session_id,
                 version=project.shim.version,
+                timing_record=timing_record,
             )
             if not hit:
                 return None
@@ -13066,7 +13090,8 @@ class Orchestrator:
                      already_asked: bool = False, skip_table_gate: bool = False,
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                      skip_investigation_gate: bool = False, declined: bool = False,
-                     other_lane_grant: str = ""):
+                     other_lane_grant: str = "", timing_record=None,
+                     turn_generation: int = 0):
         import time
 
         project = self._chat_project()
@@ -14059,7 +14084,9 @@ class Orchestrator:
                     # the turn the person most needs the nudge on is the one that never reaches the
                     # end of this loop. Without it the timeout is a dead end they retype into.
                     suggestion = (None if bounded_intent else
-                                  self._maybe_suggest_handoff(store, project, thread_id, prompt))
+                                  self._maybe_suggest_handoff(
+                                      store, project, thread_id, prompt,
+                                      timing_record=timing_record))
                     # Whether the arm below is the ceiling's (#454). Set by that arm and read by
                     # the Continue card, rather than re-derived from the conditions the chain
                     # tests: a second copy of "none of the four above fired" is a copy that can
@@ -14578,15 +14605,17 @@ class Orchestrator:
                 done["artifacts"] = artifacts
             finish(done)
             yield done
-            with timing.span("after.handoff"):
+            with timing.span("after.handoff", record=timing_record):
                 suggestion = (None if bounded_intent else
                               self._maybe_suggest_handoff(store, project, thread_id, prompt,
-                                                          already_classified=build_app_intent))
+                                                          already_classified=build_app_intent,
+                                                          timing_record=timing_record))
             if suggestion:
                 store.append_history(thread_id, suggestion)
                 yield suggestion
-            with timing.span("after.compact"):
-                self._maybe_compact_chat(client, sid, project)
+            with timing.span("after.compact", record=timing_record):
+                self._maybe_compact_chat(
+                    client, sid, project, turn_generation=turn_generation)
         except Exception:
             if tables is None or artifacts_finished:
                 raise
@@ -14624,10 +14653,11 @@ class Orchestrator:
             # Reads ~0ms now, and that is the honest number: what it measures is the person
             # waiting, and the commit it queues is no longer something they wait for. The git
             # work's own duration is in the `chat save (…)` log line.
-            with timing.span("after.save"):
+            with timing.span("after.save", record=timing_record):
                 self._after_chat_turn(thread_id, immediate=immediate)
 
-    def _maybe_compact_chat(self, client, sid: str, project: Project) -> None:
+    def _maybe_compact_chat(self, client, sid: str, project: Project, *,
+                            turn_generation: int) -> None:
         """After a Chat turn, compact the OpenCode session if it has grown too large.
 
         Sage `history.jsonl` is the UI replay and is left alone. Compact only what the next
@@ -14643,10 +14673,16 @@ class Orchestrator:
         # rather than race it, and read the arming inside it — outside, the thread_id and the Chat
         # model could be the next turn's. Skipping is safe: the trigger is a context size, so the
         # turn that beat us here ends over the threshold too.
+        if self._turns.generation() != turn_generation:
+            log.info("chat compact: another turn started — leaving it to that one")
+            return
         if not self._turn_lock.acquire(blocking=False):
             log.info("chat compact: another turn started — leaving it to that one")
             return
         try:
+            if self._turns.generation() != turn_generation:
+                log.info("chat compact: another turn started — leaving it to that one")
+                return
             state = project.control.snapshot()
             if not state.chat_thread_id:
                 return
