@@ -19791,8 +19791,13 @@ class Orchestrator:
                         return
 
             yield {"type": "typecheck-start"}
-            with timing.span("typecheck"):
+            with timing.span("typecheck") as check_span:
                 report = self._feedback.check(project.app_for_turn().path)
+                # What sent the turn back, for the diagnostics download (#534): codes and a count,
+                # never a path or a message — those are the app's own text.
+                if check_span is not None:
+                    check_span.fields.update(errors=len(report.errors),
+                                             error_codes=sorted({e.code for e in report.errors}))
             yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()})
             if project.stop_requested:
                 yield handle_stop()

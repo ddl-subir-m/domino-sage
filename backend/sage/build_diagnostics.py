@@ -50,10 +50,11 @@ EFFORT_FIELDS = ("configuredEffort", "effectiveEffort", "effortSource", "effortS
 EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "max", "xhigh"})
 EFFORT_SOURCES = frozenset({"user", "stage_default", "provider_default"})
 EFFORT_STATUSES = frozenset({"applied", "provider_default", "unsupported"})
-CALL_FIELDS = ["n", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", *EFFORT_FIELDS, "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "firstActionMs", "firstActionKind", "noActionNoticeMs", "noActionTimeoutMs", "reasoningOnlyChunks", "noActionRecoveryAttempt", "noActionRecoveryAction", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
+CALL_FIELDS = ["n", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", "routeVerified", *EFFORT_FIELDS, "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "firstActionMs", "firstActionKind", "noActionNoticeMs", "noActionTimeoutMs", "reasoningOnlyChunks", "noActionRecoveryAttempt", "noActionRecoveryAction", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
 TOOL_FIELDS = ["sessionId", "harnessCallId", "partId", "identitySource", "tool", "firstObservedMs", "lastObservedMs", "completedObservedMs", "observationSource", "startUnixMs", "endUnixMs", "startSource", "endSource", "executionMs", "completionLagMs", "targetFingerprint", "queryFingerprint", "targetMetadataFinal", "editSincePreviousRead", "opaqueOperationSincePreviousRead", "targetState", "status", "observedMs", "startAtMs", "endAtMs", "clockPlacement"]
 INVOKE_FIELDS = ["name", "providerId", "protocolIndex", "identityStatus", "metadataTruncated"]
-SPAN_FIELDS = ["name", "depth", "atMs", "ms", "open", "no_edit_attempt", "wrote_code", "retry_exhausted"]
+SPAN_FIELDS = ["name", "depth", "atMs", "ms", "open", "no_edit_attempt", "wrote_code", "retry_exhausted",
+               "errors"]
 INTERVAL_FIELDS = ["name", "atMs", "ms", "ok", "running"]
 BRAKE_FIELDS = ["sessionId", "harnessCallId", "tool", "inputFingerprint", "consecutive", "limit",
                 "stopped", "atMs", "argumentKeysTruncated", "executableVariant",
@@ -71,7 +72,7 @@ TEXT_FIELDS = {"appId", "conversationId", "kind", "name", "model", "requestedAli
                "harnessCallId", "partId", "identitySource", "tool", "observationSource", "startSource",
                "endSource", "targetFingerprint", "queryFingerprint", "targetState", "status",
                "clockPlacement", "inputFingerprint"}
-BOOL_FIELDS = {"ok", "running", "open", "toolsTruncated", "metadataTruncated", "targetMetadataFinal",
+BOOL_FIELDS = {"ok", "running", "open", "toolsTruncated", "routeVerified", "metadataTruncated", "targetMetadataFinal",
                "editSincePreviousRead", "opaqueOperationSincePreviousRead", "stopped", "wrote_code",
                "retry_exhausted", "argumentKeysTruncated", "unknownArgumentKeysTruncated"}
 
@@ -96,6 +97,17 @@ def _metadata(row, keys):
         if valid:
             out[key] = value
     return out
+
+
+_CHECK_CODE = re.compile(r"[A-Za-z][A-Za-z0-9]{0,39}\Z", re.ASCII)
+
+
+def _check_codes(row) -> list[str]:
+    """The stack check's error codes (`TS2304`, `SyntaxError`, `SAGE001`), and nothing else."""
+    codes = row.get("error_codes") if isinstance(row, dict) else None
+    if not isinstance(codes, list):
+        return []
+    return [c for c in codes[:10] if isinstance(c, str) and _CHECK_CODE.fullmatch(c)]
 
 
 def _effort_metadata(row) -> dict | None:
@@ -527,6 +539,8 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
                     elif re.fullmatch(r"(?:planned but wrote no code — switching to Implement|wrote no code — retrying)(?: with the strong model)?", why):
                         category = "no_edit"
                     entry["retryCategory"] = category
+                if "error_codes" in row:
+                    entry["errorCodes"] = _check_codes(row)
                 if row.get("stack") in STACKS:
                     entry["stack"] = row["stack"]
                 if row.get("retry_reason") in {

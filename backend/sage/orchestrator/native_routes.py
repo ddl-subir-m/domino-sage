@@ -350,7 +350,8 @@ def install(app, get_orchestrator):
                 call.done(ok=False, error=message, outcome=outcome)
                 return _native_local_error(protocol, message, code)
         if effort_decision is not None:
-            call.route(protocol.value, effort_decision)
+            call.route(protocol.value, effort_decision,
+                       capability.verified if capability.identity else None)
         project.model_calls += 1
         call_id = call.call_id or uuid4().hex
         build_watchdog = bool(

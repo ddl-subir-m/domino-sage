@@ -144,8 +144,10 @@ Build the user's app by editing `src/`. There is no install or build step to run
 - **Send one edit at a time to a given file.** Several edits to the same file go out in parallel,
   so every one after the first is applied against a file that already changed under it and comes
   back rejected; you then re-read, re-edit, and race yourself again, and the turn makes no
-  progress. Change a file, let that change land, then make the next one. Editing *different*
-  files at once is fine and still worth doing.
+  progress. One edit can still carry everything a file needs: with `apply_patch`, put all of that
+  file's hunks, each opening with a bare `@@`, in ONE call, and add new files in that same call.
+  Write a new file whole the first time rather than growing it patch by patch; every extra edit is
+  another round trip to the model. Editing *different* files at once is fine and still worth doing.
 - **`.sage/` is {assistantName} metadata, not your spec.** Never read anything under `.sage/` (plan.md, plan-docs, history, settings) as the current app spec or state — the code in `src/` is the source of truth. The one exception is `.sage/queries.json`, which you write when this app reads a {dataSource}: it holds the app's SQL, and there is a section below about it whenever there is a {dataSource} to write it for.
 - **Never delete anything under `.sage/` or `public/data/`, whatever the request.** These are not
   yours and they are not "what you built": `.sage/` is {assistantName}'s own record of the project,

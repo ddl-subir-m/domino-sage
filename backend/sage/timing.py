@@ -86,6 +86,10 @@ class ModelCall:
     call_id: str = field(default_factory=lambda: uuid4().hex)
     turn_id: str = ""
     protocol: str | None = None
+    # Did a measured route proof match this call's alias (#534)? None: no gateway identity at all
+    # (the fake/development contract). False: the route fell back to CHAT because nothing matched,
+    # which a CHAT call MEASURED to be chat cannot be told apart from without this field.
+    route_verified: bool | None = None
     requested_effort: str | None = None
     configured_effort: str | None = None
     effective_effort: str | None = None
@@ -638,10 +642,11 @@ class _CallHandle:
                 c.phase = phase or c.phase
                 c.reason = reason or c.reason
 
-    def route(self, protocol: str, effort: EffortDecision) -> None:
+    def route(self, protocol: str, effort: EffortDecision, verified: bool | None = None) -> None:
         with self._active() as c:
             if c is not None:
                 c.protocol = protocol
+                c.route_verified = verified
                 c.configured_effort = effort.configured_effort
                 c.effective_effort = effort.effective_effort
                 c.requested_effort = effort.effective_effort
@@ -825,7 +830,7 @@ def as_dict(rec: TurnRecord) -> dict:
         "spans": [{"name": s.name, "depth": s.depth, "atMs": round((s.t0 - rec.t0) * 1000),
                    "ms": round(s.ms), "open": s.t1 is None, **s.fields} for s in rec.spans],
         "calls": [{"n": c.n, "model": c.model, "phase": c.phase, "reason": c.reason,
-                   "callId": c.call_id, "turnId": c.turn_id, "protocol": c.protocol,
+                   "callId": c.call_id, "turnId": c.turn_id, "protocol": c.protocol, "routeVerified": c.route_verified,
                    "configuredEffort": c.configured_effort,
                    "effectiveEffort": c.effective_effort,
                    "effortSource": c.effort_source,

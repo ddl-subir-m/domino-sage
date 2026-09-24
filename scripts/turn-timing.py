@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import sys
 import time
 import urllib.request
@@ -46,6 +47,15 @@ def fetch_text(url: str, n: int, cookie: str = "") -> str:
         req.add_header("Cookie", cookie)
     with urllib.request.urlopen(req, timeout=20) as r:
         return r.read().decode()
+
+
+def load(path: str) -> dict:
+    """A downloaded Build diagnostics file (`build-<turnId>.json`) as the shape `report` reads."""
+    doc = json.loads(pathlib.Path(path).read_text())
+    turn = doc.get("turn", {})
+    return {**doc["timing"], "kind": turn.get("phase") or turn.get("kind") or "?",
+            "startedAt": turn.get("startedAt", 0), "prompt": "",
+            "decision": doc.get("buildOutcome", {}).get("status"), "running": doc["timing"].get("running", False)}
 
 
 def split(rec: dict) -> dict:
@@ -145,6 +155,18 @@ def report(rec: dict) -> dict:
             ttfb = f"  ttfb p50 {sorted(ttfbs)[len(ttfbs) // 2] / 1000:.1f}s" if ttfbs else ""
             print(f"    {k:<28} n={len(xs):<3} {sum(xs) / 1000:6.1f}s summed work (may overlap){ttfb}")
 
+    if b["calls"]:
+        # One line per call. A slow Build is CALLS x the wait before each call's first action
+        # (#534), so the per-call wait and the tools each call bought are the two columns that
+        # name the cause. `lane` says whether the route was measured (`chat?` = fell back).
+        waited = sum(c["firstActionMs"] or c["ms"] or 0 for c in rec["calls"])
+        print(f"    before first action, summed: {waited / 1000:.1f}s "
+              f"of {sum(c['ms'] or 0 for c in rec['calls']) / 1000:.1f}s")
+        for c in rec["calls"]:
+            lane = f"{c.get('protocol') or '?'}{'?' if c.get('routeVerified') is False else ''}"
+            print(f"    #{c['n']:<3} {(c['ms'] or 0) / 1000:5.1f}s  waited {(c['firstActionMs'] or c['ms'] or 0) / 1000:5.1f}s"
+                  f"  {(c.get('forwardedReqBytes') or 0) // 1024:4d}KB  {lane:<10} {','.join(c.get('tools') or []) or '-'}")
+
     if b["no_inference"]:
         print("\n  NOTE: no inference reached the shim; unmeasured time remains in other.")
 
@@ -196,6 +218,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default="http://127.0.0.1:8080")
+    ap.add_argument("--file", nargs="+", metavar="PATH",
+                    help="read downloaded Build diagnostics files instead of --url")
     ap.add_argument("-n", type=int, default=3, help="how many turns to read (default 3)")
     ap.add_argument("--cookie", default="", help="Cookie header for a deployed Builder")
     ap.add_argument("--raw", action="store_true", help="the server's own waterfall, unsummarised")
@@ -210,7 +234,7 @@ def main() -> int:
                 print(fetch_text(a.url, a.n, a.cookie))
                 median_pre = worst = 0.0
             else:
-                recs = fetch(a.url, a.n, a.cookie)
+                recs = [load(p) for p in a.file] if a.file else fetch(a.url, a.n, a.cookie)
                 if not recs:
                     print("(no turns recorded yet — run a build, then read this again)")
                     return 0

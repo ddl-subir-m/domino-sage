@@ -24,6 +24,46 @@
     "reason": ""
   },
   {
+    "id": "1f86f7e86ede46fdb1ca881869192d85",
+    "name": "bedrock-qwen3-coder",
+    "provider_id": "3714e10a4d88430b8b4ae155801e72b5",
+    "provider_type": "bedrock",
+    "provider_model": "qwen.qwen3-coder-30b-a3b-v1:0",
+    "updated_at": "2026-06-04T19:11:26.298238",
+    "fallback_chain": [],
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "chat",
+    "native": false,
+    "efforts": [],
+    "efforts_with_tools": [],
+    "reason": ""
+  },
+  {
+    "id": "dac19742ae684964a38d0775414ab71b",
+    "name": "domino/gemini-3.7-flash",
+    "provider_id": "aecdf6c966b64c3e9f979f2342a7eb0c",
+    "provider_type": "vertex",
+    "provider_model": "gemini-3.7-flash",
+    "updated_at": "2026-08-21T23:14:30.521699",
+    "fallback_chain": [],
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "chat",
+    "native": false,
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "efforts_with_tools": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "reason": ""
+  },
+  {
     "id": "ec204801566445f7a35e18c649f9125f",
     "name": "etan-opus-4.6",
     "provider_id": "74b32449a27a4d3ca873f5da37791c6b",
@@ -99,6 +139,37 @@
     "reason": ""
   },
   {
+    "id": "6eb9c2105bde4dc5b10c19990ebb6d31",
+    "name": "mimo-v2.6-pro",
+    "provider_id": "80aa432430da47b09ef3965cb372cb0b",
+    "provider_type": "openai",
+    "provider_model": "xiaomi/mimo-v2.6-pro",
+    "updated_at": "2026-09-24T13:31:26.031687",
+    "fallback_chain": [],
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "responses",
+    "native": true,
+    "efforts": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "efforts_with_tools": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "reason": ""
+  },
+  {
     "id": "63f4f2866f6743af8e3bc7a7150a1c03",
     "name": "opus",
     "provider_id": "74b32449a27a4d3ca873f5da37791c6b",
@@ -126,12 +197,32 @@
     "reason": ""
   },
   {
+    "id": "50840d140ec646b69cdf6ff6b0fc2ac0",
+    "name": "qwen-2-5",
+    "provider_id": "c822f06e44cc40b4867ad204c6365fa7",
+    "provider_type": "domino_platform",
+    "provider_model": "qwen-2-5",
+    "updated_at": "2026-06-18T03:06:40.747815",
+    "fallback_chain": [],
+    "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
+    "protocol": "chat",
+    "native": false,
+    "efforts": [
+      "none",
+      "low",
+      "medium",
+      "high"
+    ],
+    "efforts_with_tools": [],
+    "reason": ""
+  },
+  {
     "id": "49227371d8aa4a4a9f3e8c9c91dd2c66",
     "name": "sonnet",
     "provider_id": "74b32449a27a4d3ca873f5da37791c6b",
     "provider_type": "anthropic",
-    "provider_model": "claude-sonnet-4-6",
-    "updated_at": "2026-09-21T01:45:55.442611",
+    "provider_model": "claude-sonnet-5",
+    "updated_at": "2026-09-22T18:52:18.434256",
     "fallback_chain": [],
     "gateway": "https://apps.cloud-dogfood.domino.tech/apps/llm_gateway",
     "protocol": "messages",
@@ -141,6 +232,7 @@
       "low",
       "medium",
       "high",
+      "xhigh",
       "max"
     ],
     "efforts_with_tools": [
@@ -148,6 +240,7 @@
       "low",
       "medium",
       "high",
+      "xhigh",
       "max"
     ],
     "reason": ""
