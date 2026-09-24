@@ -337,9 +337,19 @@ def test_a_stamp_from_before_the_turn_does_not_resurrect_a_wedge(tmp_path: Path)
     project = orch.project(start_preview=False)
     oc.project = project
 
+    started = time.monotonic()
     events = list(orch.chat_stream(tid, "fit a regression on the event table"))
 
-    assert project.last_stream_chunk_at > 0.0, "the fake never planted a stale stamp"
+    # Not `> 0.0`. `time.monotonic()` counts from an arbitrary origin, and on Linux that origin is
+    # the boot, so the plant — `monotonic() - 3600` — is NEGATIVE on any machine up for under an
+    # hour. A GitHub runner is a VM minutes old, so `> 0.0` was reading the runner's UPTIME and
+    # calling it a stamp: red on every CI run from 2026-09-20, green on every developer laptop.
+    # What the plant has to be is non-default and OLDER than this turn, and neither is a clock
+    # reading in absolute terms.
+    assert project.last_stream_chunk_at != 0.0, "the fake never planted a stale stamp"
+    assert project.last_stream_chunk_at < started, (
+        "the plant must predate the turn, which is the whole condition: stamped "
+        f"{started - project.last_stream_chunk_at:.0f}s before the turn began")
     assert "stopped making progress" in _of(events, "error")[0]["message"]
     assert _of(events, "done")[0]["ok"] is False
 
