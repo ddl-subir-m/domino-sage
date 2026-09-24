@@ -210,7 +210,7 @@ def prepare_explicit(root: Path, manifest: Iterable[dict], sources: Iterable[str
 
 def plan_record(prepared: Prepared) -> dict:
     """The content-free identity needed to prepare this exact reference again."""
-    return {
+    record = {
         "source": prepared.source,
         "handler": prepared.source_type,
         # A failed selection has no selected selector. The attempted selector is what makes approval
@@ -219,6 +219,9 @@ def plan_record(prepared: Prepared) -> dict:
         "sha256": prepared.source_sha256,
         "status": prepared.status,
     }
+    if prepared.source_type == "pdf":
+        record["pages"] = list(prepared.selected_pages)
+    return record
 
 
 def plan_records(value: object) -> list[dict]:
@@ -246,14 +249,35 @@ def plan_records(value: object) -> list[dict]:
         # when they have the complete digest that revision promised. Missing or malformed evidence
         # becomes a visible bounded failure, never permission to use today's bytes.
         status = raw_status or ("prepared" if valid_digest else "saved_record_invalid")
+        pages: list[int] = []
+        pages_invalid = False
+        if kind == "pdf":
+            raw_pages = raw.get("pages")
+            if (not isinstance(raw_pages, list)
+                    or any(not isinstance(page, int) or isinstance(page, bool) or page < 1
+                           for page in raw_pages)):
+                pages_invalid = True
+            else:
+                pages = list(raw_pages)
+                pages_invalid = (
+                    len(pages) > MAX_PDF_PAGES
+                    or pages != sorted(set(pages))
+                    or (status == "prepared" and not pages)
+                )
+        elif "pages" in raw and raw.get("pages") not in (None, []):
+            pages_invalid = True
         if (handler != kind or len(selector) > MAX_SELECTOR_CHARS
                 or (digest and not valid_digest)
                 or (status == "prepared" and not valid_digest)
+                or pages_invalid
                 or status not in _PLANNING_FAILURES | {"prepared"}):
             status = "saved_record_invalid"
-        out.append({"source": source, "handler": kind,
-                    "selector": selector if len(selector) <= MAX_SELECTOR_CHARS else "",
-                    "sha256": digest if valid_digest else "", "status": status})
+        record = {"source": source, "handler": kind,
+                  "selector": selector if len(selector) <= MAX_SELECTOR_CHARS else "",
+                  "sha256": digest if valid_digest else "", "status": status}
+        if kind == "pdf":
+            record["pages"] = pages if not pages_invalid else []
+        out.append(record)
         seen.add(source)
     return out
 
@@ -268,6 +292,7 @@ def prepare_plan_records(root: Path, manifest: Iterable[dict], records: object, 
         source = record["source"]
         kind = record["handler"]
         selector = record["selector"]
+        pages = record.get("pages") if kind == "pdf" else None
         authorized = _resolve(root, rows, source, target_for=target_for)
         if authorized is None:
             out.append(_failure(source, kind, "not_authorized", selector))
@@ -278,7 +303,7 @@ def prepare_plan_records(root: Path, manifest: Iterable[dict], records: object, 
         if record["status"] != "prepared":
             out.append(_failure(source, kind, record["status"], selector))
             continue
-        prepared = prepare(authorized, selector=selector)
+        prepared = prepare(authorized, selector=selector, pages=pages)
         if prepared is None:
             out.append(_failure(source, kind, "handler_changed", selector))
             continue

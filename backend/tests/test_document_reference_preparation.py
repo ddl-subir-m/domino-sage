@@ -190,6 +190,44 @@ def test_pdf_selection_is_one_based_deduplicated_sorted_and_content_free(tmp_pat
     assert "UNIQUE PAGE" not in json.dumps(event)
 
 
+def test_pdf_plan_record_replays_only_the_selected_pages(tmp_path: Path):
+    path = _pdf(tmp_path, ["PAGE ONE SECRET", "PAGE TWO SECRET", "PAGE THREE RULE"])
+    manifest = [{"path": path.name}]
+    authorized = reference.authorize(tmp_path, manifest, path.name)
+    assert authorized is not None
+    planned = reference.prepare(authorized, pages=[3])
+    assert planned is not None and planned.status == "prepared"
+
+    saved = reference.plan_record(planned)
+    replayed = reference.prepare_plan_records(tmp_path, manifest, [saved])
+
+    assert saved["pages"] == [3]
+    assert len(replayed) == 1 and replayed[0].processed_pages == (3,)
+    assert "PAGE THREE RULE" in replayed[0].text
+    assert "PAGE ONE SECRET" not in replayed[0].text
+    assert "PAGE TWO SECRET" not in replayed[0].text
+
+
+def test_malformed_saved_pdf_pages_fail_closed(tmp_path: Path):
+    path = _pdf(tmp_path, ["PRIVATE PAGE ONE", "PRIVATE PAGE TWO"])
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+    prepared = reference.prepare(authorized)
+    assert prepared is not None
+    digest = prepared.source_sha256
+    base = {"source": path.name, "handler": "pdf", "selector": "",
+            "sha256": digest, "status": "prepared"}
+    malformed = [None, [], [0], [1, 1], [2, 1], [True], list(range(1, 22))]
+
+    for pages in malformed:
+        replayed = reference.prepare_plan_records(
+            tmp_path, [{"path": path.name}], [{**base, "pages": pages}]
+        )
+        assert len(replayed) == 1
+        assert replayed[0].status == "saved_record_invalid"
+        assert "PRIVATE PAGE" not in replayed[0].prompt_block()
+
+
 def test_pdf_default_stops_at_twenty_pages_and_eight_thousand_characters(tmp_path: Path):
     texts = [(f"PAGE {number} " + "x" * 500) for number in range(1, 26)]
     path = _pdf(tmp_path, texts)

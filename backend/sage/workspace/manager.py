@@ -567,12 +567,20 @@ class ProjectRecord:
         # nothing". A string either way, so one comparison answers both.
         previous = meta.get("previousPlanId")
         references = meta.get("explicitReferences")
+        reference_metadata_declared = (
+            "explicitReferencesVersion" in meta or "explicitReferences" in meta
+        )
+        reference_metadata_valid = (
+            type(meta.get("explicitReferencesVersion")) is int
+            and meta.get("explicitReferencesVersion") == 1
+            and isinstance(references, list)
+        )
         return {**meta, "archived": bool(meta.get("archived")),
                 "previousPlanId": previous.strip() if isinstance(previous, str) else "",
                 "explicitReferencesVersion": (
-                    1 if meta.get("explicitReferencesVersion") == 1 else 0
+                    1 if reference_metadata_valid else (-1 if reference_metadata_declared else 0)
                 ),
-                "explicitReferences": references if isinstance(references, list) else [],
+                "explicitReferences": references if reference_metadata_valid else [],
                 "summary": parsed["summary"], "sections": parsed["sections"],
                 "markdown": markdown}
 

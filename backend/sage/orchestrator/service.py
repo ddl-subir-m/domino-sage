@@ -18607,6 +18607,13 @@ class Orchestrator:
         # plan marks one. What approval MEANS stays the review flow's own rule: named reviewers who
         # have not signed off keep the plan in review, because building was never their sign-off.
         approved_doc = self._approved_plan_doc(project, plan_id) if live_plan.strip() else None
+        if approved_doc and approved_doc.get("explicitReferencesVersion") == -1:
+            yield {"type": "error", "message": brand.text(
+                "This plan has unsupported or invalid reference metadata. "
+                "Create a new plan before you approve it.")}
+            yield {"type": "done", "ok": False,
+                   "decision": "invalid plan reference metadata"}
+            return
         # A version, not an overwrite, for the same reason a document edit makes one: the draft
         # people commented on has to survive the edit that built over it.
         #
