@@ -115,7 +115,37 @@ def _workspace(orch: Orchestrator):
     return orch.project(start_preview=False).workspace
 
 
-PLAN = Turn(text="# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data")
+PLAN = Turn(text="""# Consumption Dashboard
+
+A dashboard for reviewing consumption.
+
+## Problem & outcome
+Consumption is hard to review; the app makes it visible.
+
+## Who uses this
+The operations analyst.
+
+## What it does
+- Shows consumption in a table
+
+## Screens
+- **Consumption table** — Shows the usage rows.
+
+## Done when
+- The preview shows the consumption table.
+
+## Plan
+### 1. Consumption table
+- Files — src/App.tsx
+- Do — Add the consumption table and wire up its data.
+- Done when — The preview shows the consumption table.
+""")
+CHART_PLAN = Turn(text=PLAN.text.replace("Consumption", "Chart").replace(
+    "consumption", "chart"
+))
+RISK_PLAN = Turn(text=PLAN.text.replace("Consumption Dashboard", "Risk Heatmap").replace(
+    "Consumption", "Risk"
+).replace("consumption", "risk heatmap"))
 
 
 def test_a_build_that_hits_a_gateway_error_keeps_the_plan_it_never_built(tmp_path: Path):
@@ -130,7 +160,7 @@ def test_a_build_that_hits_a_gateway_error_keeps_the_plan_it_never_built(tmp_pat
     # Nothing was built from it, so the plan is still the app's live one rather than an archive
     # entry — and it is marked as a plan that is owed its build.
     ws = _workspace(orch)
-    assert "Add the table" in (ws.read_plan() or "")
+    assert "Add the consumption table" in (ws.read_plan() or "")
     assert ws.read_plan_retry_step() == 1
     # And the row that stopped the person says how to get out of it. A kept plan nobody can see is
     # a dead end: the card's Approve button was spent when this turn started.
@@ -171,7 +201,7 @@ def test_try_again_builds_the_approved_plan_instead_of_proposing_a_second_one(tm
     # It ran the plan, not the sentence: the approve prompt carries the approved plan, and the
     # agent that got it is the builder rather than the read-only planner.
     assert oc.prompts[-1]["agent"] != "sage-plan"
-    assert "Add the table" in oc.prompts[-1]["text"]
+    assert "Add the consumption table" in oc.prompts[-1]["text"]
     # The build consumed the plan this time, so nothing is left owing a retry.
     ws = _workspace(orch)
     assert ws.read_plan() is None
@@ -203,14 +233,14 @@ def test_try_again_at_a_plan_awaiting_approval_still_plans(tmp_path: Path):
     phrase alone: a plan nobody approved has nothing to retry, so "try again" asks for a new one."""
     orch, _oc = _build(tmp_path, [
         PLAN,
-        Turn(text="# Chart Dashboard\n\n## Plan\n1. Add a chart\n2. Wire up the data"),
+        CHART_PLAN,
     ])
 
     list(orch.build_stream("build me a consumption dashboard"))
     events = list(orch.build_stream("try again"))
 
     plan = next(e for e in events if e["type"] == "plan-proposed")
-    assert "Add a chart" in plan["plan"]
+    assert "Add the chart table" in plan["plan"]
     assert _done(events)["decision"] == "awaiting approval"
 
 
@@ -225,7 +255,7 @@ def test_a_clean_build_still_archives_its_plan(tmp_path: Path):
     assert _done(events)["ok"] is True
     ws = _workspace(orch)
     assert ws.read_plan() is None
-    assert "Add the table" in (ws.read_archived_plan() or "")
+    assert "Add the consumption table" in (ws.read_archived_plan() or "")
     assert ws.read_plan_retry_step() == 0
 
 
@@ -244,7 +274,7 @@ def test_a_retry_typed_in_implement_mode_still_builds_the_approved_plan(tmp_path
     events = list(orch.build_stream("try again"))
 
     assert "plan-proposed" not in _kinds(events)
-    assert "Add the table" in oc.prompts[-1]["text"]
+    assert "Add the consumption table" in oc.prompts[-1]["text"]
 
 
 # --- phased builds ---------------------------------------------------------------------------
@@ -258,6 +288,21 @@ def test_a_retry_typed_in_implement_mode_still_builds_the_approved_plan(tmp_path
 PHASED_PLAN = """# Trades Dashboard
 
 A dashboard for exploring trades.
+
+## Problem & outcome
+Trades are hard to review; the app makes them visible.
+
+## Who uses this
+The trading operations analyst.
+
+## What it does
+- Shows and filters trades
+
+## Screens
+- **Trade table** — Shows the active trades and filter.
+
+## Done when
+- The preview shows a sortable, filterable trade table.
 
 ## Plan
 
@@ -375,7 +420,7 @@ def _phased_run_replaced_by_a_new_request(tmp_path: Path):
         _writes("src/data.ts"),              # 2. phase 1 — lands
         _writes("src/Table.tsx"),            # 3. phase 2, first attempt — gateway dies
         _writes("src/Table.tsx"),            # 4. phase 2, _run_step's own retry — dies too
-        Turn(text="# Risk Heatmap\n\n## Plan\n1. A risk heatmap\n2. Wire up data"),
+        RISK_PLAN,
     ], break_on={3, 4}, phased=True)
 
 

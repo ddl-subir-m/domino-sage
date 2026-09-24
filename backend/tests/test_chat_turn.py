@@ -1959,11 +1959,29 @@ def test_not_now_suppresses_and_classifier_does_not_run_again(tmp_path: Path):
 
 _PLAN = (
     "# Desk exposure\n\n"
+    "A dashboard for reviewing notional by desk.\n\n"
+    "## Problem & outcome\n"
+    "Desk exposure is hard to review; the app makes it visible.\n\n"
+    "## Who uses this\n"
+    "The desk risk analyst.\n\n"
+    "## What it does\n"
+    "- Shows notional by desk\n"
+    "- Charts the daily move\n\n"
+    "## Screens\n"
+    "- **Desk overview** — Shows the table and chart.\n\n"
+    "## Done when\n"
+    "- The preview shows the desk table and chart.\n\n"
     "## Plan\n"
-    "1. **Desk table** — Show notional by desk.\n"
-    "2. **Chart** — Use the example PNG.\n\n"
+    "### 1. Desk table\n"
+    "- Files — src/App.tsx\n"
+    "- Do — Show notional by desk.\n"
+    "- Done when — The preview shows the desk table.\n\n"
+    "### 2. Move chart\n"
+    "- Files — src/App.tsx\n"
+    "- Do — Add the daily move chart from the example PNG.\n"
+    "- Done when — The preview shows the chart.\n\n"
     "## Open questions\n"
-    "None — ready to build.\n"
+    "- Which desks count as rates?\n"
 )
 
 
@@ -1983,7 +2001,13 @@ def test_write_a_plan_runs_sage_plan_and_opens_sheet_payload(tmp_path: Path):
     # The plan lives in the document, which is the Project's. `.sage/plan.md` and `.sage/handoff.md`
     # are the BUILDER's copies and the builder has no app yet — the confirm writes them (ADR-0008).
     project = orch.project(start_preview=False)
-    assert project.record.read_plan_doc("001")["markdown"].startswith("# Desk exposure")
+    saved = project.record.read_plan_doc("001")
+    assert saved["markdown"].startswith("# Desk exposure")
+    assert saved["executionContractVersion"] == 1
+    assert saved["sourceRequestMessagesVersion"] == 1
+    assert saved["sourceRequestMessages"] == [
+        "put this on a dashboard colleagues can open"
+    ]
     assert project.workspace.read_plan() is None
     assert not (project.workspace.path / ".sage" / "handoff.md").exists()
     assert project.workspace.read_history() == []
@@ -2114,6 +2138,19 @@ def test_empty_plan_does_not_mark_planned(tmp_path: Path):
     list(orch.chat_stream(tid, "which desk is largest?"))
     with pytest.raises(ValueError, match="didn't produce a plan"):
         orch.draft_handoff_plan(tid)
+    assert (orch.get_thread(tid)["handoff"] or {}).get("status") != "planned"
+
+
+def test_a_handoff_plan_without_execution_details_is_not_persisted(tmp_path: Path):
+    malformed = "# Desk exposure\n\nA dashboard.\n\n## Plan\n1. Add the table.\n"
+    orch, _ = _orch(tmp_path, [Turn(text="Rates."), Turn(text=malformed)])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
+
+    with pytest.raises(ValueError, match="required product sections"):
+        orch.draft_handoff_plan(tid)
+
+    assert orch.project(start_preview=False).record.list_plan_docs() == []
     assert (orch.get_thread(tid)["handoff"] or {}).get("status") != "planned"
 
 

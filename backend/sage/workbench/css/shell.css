@@ -1275,6 +1275,19 @@ a.sw-topnav-link {
   margin-bottom: var(--s3);
 }
 .sw-plan-card-actions { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.sw-plan-original-request {
+  margin-top: var(--s3);
+  color: var(--gray-600);
+}
+.sw-plan-original-request summary { cursor: pointer; font-weight: 600; }
+.sw-plan-original-request-body {
+  margin-top: var(--s2);
+  padding-left: var(--s3);
+  border-left: 2px solid var(--gray-300);
+  white-space: pre-wrap;
+}
+.sw-plan-original-request-body p { margin: 0 0 var(--s2); }
+.sw-plan-original-request-body p:last-child { margin-bottom: 0; }
 
 /* The folded plan row's own two rules live in `chat.css`, beside the Build run row they share a
    selector with: the fold is Chat's (#50), and one rule for both rows is what stops them drifting

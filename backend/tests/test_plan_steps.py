@@ -4,7 +4,14 @@ Pure functions, no fakes: this is the one part of a phased build that can be pin
 leniency (models drift on shape) and the strictness (a step without acceptance criteria isn't a
 brief) are both asserted here rather than discovered in a live build.
 """
-from sage.orchestrator.plan_steps import is_phasable, parse_steps, step_index
+import pytest
+
+from sage.orchestrator.plan_steps import (
+    is_phasable,
+    parse_steps,
+    step_index,
+    validate_execution_contract,
+)
 
 WELL_FORMED = """A dashboard for exploring trade data.
 
@@ -28,6 +35,33 @@ WELL_FORMED = """A dashboard for exploring trade data.
 
 ## Open questions
 - Should amounts show in USD or the trade's own currency?
+"""
+
+EXECUTION_PLAN = """# Trade Explorer
+
+A dashboard for exploring trade data.
+
+## Problem & outcome
+Analysts cannot inspect trades quickly; the app makes the active book visible.
+
+## Who uses this
+The trading operations analyst.
+
+## What it does
+- Shows trades in a table
+
+## Screens
+- **Trade table** — Shows the active book.
+
+## Done when
+- The preview shows the trade table.
+
+## Plan
+
+### 1. Trade table
+- Files — src/App.tsx
+- Do — Render the active trades in a table.
+- Done when — The preview shows the table.
 """
 
 
@@ -148,6 +182,95 @@ def test_step_index_places_the_current_step():
 def test_empty_plan_is_safe():
     assert parse_steps("") == []
     assert not is_phasable("")
+
+
+def test_one_step_execution_plan_is_valid_but_does_not_phase():
+    check = validate_execution_contract(EXECUTION_PLAN)
+    assert check.valid
+    assert check.step_count == 1
+    assert not is_phasable(EXECUTION_PLAN)
+
+
+def test_six_step_execution_plan_is_valid_and_phases():
+    steps = "\n\n".join(
+        f"### {n}. Step {n}\n"
+        f"- Files — src/step{n}.ts\n"
+        f"- Do — Implement step {n}.\n"
+        f"- Done when — Step {n} is visible."
+        for n in range(1, 7)
+    )
+    plan = EXECUTION_PLAN[:EXECUTION_PLAN.index("### 1.")] + steps + "\n"
+    check = validate_execution_contract(plan)
+    assert check.valid
+    assert check.step_count == 6
+    assert is_phasable(plan)
+
+
+def test_execution_contract_requires_every_product_section():
+    check = validate_execution_contract(EXECUTION_PLAN.replace(
+        "## Screens\n- **Trade table** — Shows the active book.\n\n", ""
+    ))
+    assert not check.valid
+    assert check.missing_sections == ("screens",)
+
+
+def test_execution_contract_requires_one_summary_sentence():
+    check = validate_execution_contract(EXECUTION_PLAN.replace(
+        "A dashboard for exploring trade data.",
+        "A dashboard for exploring trade data. It also exports reports.",
+    ))
+    assert not check.valid
+    assert "summary" in check.missing_sections
+
+
+@pytest.mark.parametrize("field", ["Files", "Do", "Done when"])
+def test_execution_contract_rejects_a_missing_step_field(field):
+    line = next(line for line in EXECUTION_PLAN.splitlines() if line.startswith(f"- {field} —"))
+    check = validate_execution_contract(EXECUTION_PLAN.replace(line + "\n", ""))
+    assert not check.valid
+    if field == "Files":
+        assert check.invalid_file_fields == 1
+    else:
+        assert check.malformed_steps == 1
+
+
+@pytest.mark.parametrize("path", ["/tmp/App.tsx", "src/../secret.ts", "../secret.ts"])
+def test_execution_contract_rejects_non_workspace_file_paths(path):
+    check = validate_execution_contract(EXECUTION_PLAN.replace("src/App.tsx", path))
+    assert not check.valid
+    assert check.invalid_file_fields == 1
+
+
+def test_execution_contract_rejects_duplicate_labels_and_contradictory_files():
+    duplicate = EXECUTION_PLAN.replace(
+        "### 1. Trade table",
+        "### 1. Trade table\n- Files — src/App.tsx\n- Do — Render the table.\n"
+        "- Done when — The table appears.\n\n### 2. Trade table",
+    )
+    assert not validate_execution_contract(duplicate).valid
+
+    contradictory = EXECUTION_PLAN.replace(
+        "- Done when — The preview shows the table.",
+        "- Done when — The preview shows the table.\n- Don't touch — src/App.tsx",
+    )
+    check = validate_execution_contract(contradictory)
+    assert not check.valid
+    assert check.contradictory_file_fields == 1
+
+
+def test_execution_contract_counts_a_malformed_middle_step_before_accepting_the_rest():
+    """Negative plant: ignoring candidate headings makes this pass incorrectly."""
+    plan = EXECUTION_PLAN.replace(
+        "### 1. Trade table",
+        "### 1. Data module\n- Files — src/data.ts\n- Do — Export rows.\n"
+        "- Done when — The module exports rows.\n\n"
+        "### 2. Broken table\n- Files — src/Table.tsx\n\n"
+        "### 3. Trade table",
+    )
+    check = validate_execution_contract(plan)
+    assert not check.valid
+    assert check.step_count == 2
+    assert check.malformed_steps == 1
 
 
 def test_a_file_in_both_files_and_dont_touch_is_not_fenced_off():

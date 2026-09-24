@@ -91,8 +91,38 @@ def _only_plan_id(orch: Orchestrator) -> str:
 # Conversation it was written in, and "Build this again" runs its rebuild in that one.
 CONVERSATION = "conv_desk"
 
-PLAN = Turn(text="# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data")
-EDITED = "# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data\n3. Sort it by date\n"
+_PLAN_TEXT = """# Consumption Dashboard
+
+A dashboard for reviewing consumption.
+
+## Problem & outcome
+Consumption is hard to review; the app makes it visible.
+
+## Who uses this
+The operations analyst.
+
+## What it does
+- Shows consumption in a table
+
+## Screens
+- **Consumption table** — Shows the usage rows.
+
+## Done when
+- The preview shows the consumption table.
+
+## Plan
+### 1. Consumption table
+- Files — src/App.tsx
+- Do — Add the consumption table and wire up its data.
+- Done when — The preview shows the consumption table.
+"""
+PLAN = Turn(text=_PLAN_TEXT)
+EDITED = _PLAN_TEXT + """
+### 2. Date sorting
+- Files — src/App.tsx
+- Do — Sort the table by date.
+- Done when — The newest row appears first.
+"""
 
 
 def _built_once(tmp_path: Path, extra: list[Turn] | None = None):
@@ -121,11 +151,11 @@ def test_build_this_again_builds_the_edited_plan(tmp_path: Path):
     # It built the person's own words, and through the builder rather than the read-only planner:
     # the whole point is that nothing re-plans from scratch.
     assert oc.prompts[-1]["agent"] != "sage-plan"
-    assert "Sort it by date" in oc.prompts[-1]["text"]
+    assert "Sort the table by date" in oc.prompts[-1]["text"]
     assert "// the sorted table" in (_workspace(orch).path / "src" / "App.tsx").read_text()
     # And the edit is on record as a version of the same document, not a second document.
     doc = orch.read_plan_doc(plan_id)
-    assert "Sort it by date" in doc["markdown"]
+    assert "Sort the table by date" in doc["markdown"]
     assert doc["version"] == 2
     assert len(orch.list_plan_docs()) == 1
 
@@ -142,7 +172,7 @@ def test_build_this_again_leaves_no_live_plan_behind(tmp_path: Path):
     assert ws.read_plan() is None
     assert ws.read_plan_retry_step() == 0
     # The app is now built from the edited text, which is what the rail's pin reads.
-    assert "Sort it by date" in (ws.read_archived_plan() or "")
+    assert "Sort the table by date" in (ws.read_archived_plan() or "")
 
 
 def test_build_this_again_says_so_in_the_conversation(tmp_path: Path):
@@ -199,7 +229,7 @@ def test_the_edit_survives_a_build_that_fails(tmp_path: Path):
     list(orch.approve_stream(conversation=CONVERSATION, plan_edits=EDITED,
                                       plan_id=plan_id, build_again=True))
 
-    assert "Sort it by date" in orch.read_plan_doc(plan_id)["markdown"]
+    assert "Sort the table by date" in orch.read_plan_doc(plan_id)["markdown"]
 
 
 # --- a turn that never ran ---------------------------------------------------------------------
@@ -238,7 +268,7 @@ def test_a_refused_rebuild_keeps_the_approvals_it_would_have_cleared(tmp_path: P
     assert doc["status"] == "approved"
     assert len(doc["approvals"]) == 1
     # The words are still kept, though: a refusal must not cost a person their typing either.
-    assert "Sort it by date" in doc["markdown"]
+    assert "Sort the table by date" in doc["markdown"]
 
 
 def test_a_refused_rebuild_leaves_no_live_plan_on_a_built_app(tmp_path: Path, monkeypatch):
@@ -255,7 +285,7 @@ def test_a_refused_rebuild_leaves_no_live_plan_on_a_built_app(tmp_path: Path, mo
     assert ws.read_plan() is None
     assert ws.read_plan_retry_step() == 0
     # Cancelled, not consumed: the pin must not go on to describe the app as built from these words.
-    assert "Sort it by date" not in (ws.read_archived_plan() or "")
+    assert "Sort the table by date" not in (ws.read_archived_plan() or "")
 
 
 def test_a_refused_first_approve_still_keeps_its_plan_for_another_try(tmp_path: Path, monkeypatch):
@@ -267,7 +297,7 @@ def test_a_refused_first_approve_still_keeps_its_plan_for_another_try(tmp_path: 
 
     list(orch.approve_stream(conversation=CONVERSATION))
 
-    assert "Add the table" in (_workspace(orch).read_plan() or "")
+    assert "Add the consumption table" in (_workspace(orch).read_plan() or "")
 
 
 # --- when it stops being offered --------------------------------------------------------------
@@ -598,7 +628,7 @@ def test_a_plan_stuck_live_names_the_deleted_conversation_not_the_approve_card(t
     "Awaiting approval" sends them to an Approve card in a Conversation that is gone; "the
     conversation was deleted" tells them the truth — that door is closed, start a new one."""
     orch, thread_id = _in_a_real_conversation(
-        tmp_path, [Turn(text="# Consumption Dashboard\n\n## Plan\n1. Sort it by date")])
+        tmp_path, [Turn(text=EDITED)])
     # Plan mode, because the automatic gate only fires before the first build — this app has had
     # one, and an ordinary BUILD turn here would write code instead of proposing a plan.
     orch.project(start_preview=False).control.set_mode(Mode.PLAN)
@@ -636,6 +666,21 @@ def test_the_conversation_that_produced_an_archived_plan_still_shows_its_card(tm
 PHASED_PLAN = """# Trades Dashboard
 
 A dashboard for exploring trades.
+
+## Problem & outcome
+Trades are hard to review; the app makes them visible.
+
+## Who uses this
+The trading operations analyst.
+
+## What it does
+- Shows and filters trades
+
+## Screens
+- **Trade table** — Shows the active trades and filter.
+
+## Done when
+- The preview shows a sortable, filterable trade table.
 
 ## Plan
 

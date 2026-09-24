@@ -204,7 +204,15 @@ from ..workspace.threads import (
 from . import attachment_repair, brand, chat_compact, chat_intent, recall, scope, table_rank, withhold
 from . import handoff as chat_handoff
 from .describe import describe, fit_image
-from .plan_steps import MIN_STEPS, PlanStep, is_phasable, parse_steps, step_index
+from .plan_steps import (
+    MIN_STEPS,
+    PlanContractCheck,
+    PlanStep,
+    is_phasable,
+    parse_steps,
+    step_index,
+    validate_execution_contract,
+)
 
 # The one reader of a gateway answer, shared rather than written again here. `chat_intent`,
 # `handoff` and `table_rank` all import it from `scope` for the same reason: a second copy is a
@@ -5209,6 +5217,45 @@ def _warn_if_shapeless(where: str, plan_md: str) -> None:
                     where)
 
 
+def _execution_contract_error(check: PlanContractCheck) -> str:
+    """A fixed-vocabulary reason. It can be shown and logged without copying private plan text."""
+    problems = []
+    if check.missing_sections:
+        problems.append("required product sections: " + ", ".join(check.missing_sections))
+    if check.malformed_steps:
+        problems.append("steps with unique labels and nonempty Files, Do, and Done when fields")
+    if check.invalid_file_fields:
+        problems.append("nonempty Files fields with workspace-relative file paths")
+    if check.contradictory_file_fields:
+        problems.append("file lists that do not also name the same file under Don't touch")
+    if not check.step_count:
+        problems.append("at least one numbered execution step")
+    detail = "; ".join(problems) or "the executable plan contract"
+    return "The plan is missing or has invalid " + detail + "."
+
+
+def _record_execution_contract(check: PlanContractCheck, source_request_count: int,
+                               *, execution_version: int = 1,
+                               source_version: int = 1) -> None:
+    build_diagnostics.record_plan_contract(
+        execution_contract_version=execution_version,
+        source_request_messages_version=source_version,
+        source_request_count=source_request_count,
+        valid=check.valid,
+        step_count=check.step_count,
+        malformed_step_count=check.malformed_steps,
+        invalid_file_count=check.invalid_file_fields,
+        missing_sections=check.missing_sections,
+    )
+    log.info(
+        "plan contract: version=%d source_version=%d source_count=%d valid=%s steps=%d "
+        "malformed=%d invalid_files=%d missing=%s",
+        execution_version, source_version, source_request_count, check.valid, check.step_count,
+        check.malformed_steps, check.invalid_file_fields,
+        ",".join(check.missing_sections) or "none",
+    )
+
+
 _PLAN_HEADING_REPAIR_FAILED = (
     "Planning wrote a plan without an app name, and the repair couldn't name it. Send the "
     "request again — adding the app name you want can help."
@@ -5291,23 +5338,22 @@ _PLAN_DOC_SECTIONS = (
     "- Then a '## Not doing' heading and short bullets naming what is deliberately out of "
     "scope. Leave the heading out entirely if nothing is.\n"
     "- Then a '## Done when' heading and short bullets, each one an observable result "
-    "someone can check without reading the code.\n")
-_PLAN_SHAPE = (_PLAN_OPENER + _PLAN_DOC_SECTIONS +
-               "- Then a '## Plan' heading and a numbered list. Each step is a single line: "
-               "a bolded 2-4 word label, then ' — ', then one sentence. No paragraph steps, "
-               "no sub-lists, no code.\n"
-               "- Then, ONLY if something genuinely needs the user to decide, an '## Open "
-               "questions' heading and short bullets. Nothing to ask: leave the heading out "
-               "entirely rather than writing 'None'.\n"
-               "Never repeat a sentence or restate a step you've already written.")
+    "someone can check without reading the code.\n"
+    "Normalize the request into these sections. Do not copy or quote the user's request "
+    "verbatim; the plan document saves that original separately.\n")
+# Every execution plan uses the self-contained handoff shape below. Phased execution is still a
+# separate runtime decision: the preference and MIN_STEPS decide whether several fresh sessions
+# repay their overhead. A one-step plan carries the same durable contract and runs in one context.
+#
+# `_PLAN_SHAPE_PHASED` stays as a public name for callers and tests written before the contract was
+# unified.
 # The phased variant. Same plan, but each step becomes a self-contained handoff brief,
 # because in a phased build the model that executes step 4 is a BRAND-NEW session: it never
 # read this plan, never saw steps 1-3, and can't ask. Every field below exists because a cold
 # executor fails without it — `Files` so its first act isn't a whole-tree grep that refills
 # the context the fresh session just bought us, `Done when` so verification travels with the
 # work instead of being inferred, `Don't touch` so a later step doesn't rewrite an earlier
-# one's output it has never seen. Kept separate from _PLAN_SHAPE rather than replacing it:
-# the single-context shape is what every non-phased build still uses.
+# one's output it has never seen. Single-context builds use the same durable document shape.
 _PLAN_SHAPE_PHASED = (
     _PLAN_OPENER + _PLAN_DOC_SECTIONS +
     "- Then a '## Plan' heading.\n"
@@ -5336,6 +5382,7 @@ _PLAN_SHAPE_PHASED = (
     "heading and short bullets. Nothing to ask: leave the heading out entirely rather than "
     "writing 'None'.\n"
     "Write no code blocks. Never repeat a sentence or restate a step you've already written.")
+_PLAN_SHAPE = _PLAN_SHAPE_PHASED
 
 # The planner's one way out of writing a plan (#150). Without it there was none: the gated turn's
 # only branch was "write the plan", so `run: env | grep -i canary` on a first turn came back as
@@ -9813,6 +9860,7 @@ class Orchestrator:
         thread = store.get(thread_id) or {}
         history = store.read_history(thread_id)
         _warn_if_history_lossy(history, "_draft_handoff_plan")
+        source_request_messages = tuple(chat_handoff.user_texts(history))
         # Non-strict, deliberately: this digest rides into a prompt for a DRAFT the person still
         # reviews and can edit, not a file. The strict read that guards the real record is the one
         # in `_write_crossing`, at confirm time.
@@ -9820,7 +9868,7 @@ class Orchestrator:
         artifacts = _artifacts_present(project.record.path, store.read_artifacts(thread_id))
         digest = chat_handoff.draft_digest(
             title=thread.get("title") or "",
-            asked=chat_handoff.user_texts(history),
+            asked=list(source_request_messages),
             context=context,
             artifacts=artifacts,
         )
@@ -9882,6 +9930,12 @@ class Orchestrator:
         except ValueError as e:
             self._record_plan_refusal(store, thread_id, project, str(e), offer=False)
             raise
+        contract = validate_execution_contract(plan_md)
+        _record_execution_contract(contract, len(source_request_messages))
+        if not contract.valid:
+            reason = _execution_contract_error(contract)
+            self._record_plan_refusal(store, thread_id, project, reason, offer=False)
+            raise ValueError(reason)
         # Same document the gate creates, and it records its Thread the same way. No `app_id`: the
         # app does not exist until the handoff is confirmed, and that is what stamps it.
         _warn_if_shapeless("chat handoff", plan_md)
@@ -9896,6 +9950,9 @@ class Orchestrator:
             title=chat_handoff.plan_heading(plan_md),
             author=_viewer_id(),
             origin_thread_id=thread_id,
+            execution_contract_version=1,
+            source_request_messages_version=1,
+            source_request_messages=source_request_messages,
         )["id"]
         handoff = store.mark_handoff_planned(thread_id, plan_id)
         self._flush_chat_save("plan", holding_turn=True)
@@ -16909,9 +16966,8 @@ class Orchestrator:
                        "brief, then write the document.\n\n" + _ARCH_SHAPE
                        + "\n\nThe request:\n" + current)
         elif gate:
-            # Phased builds need the heavier per-step shape; everything else keeps today's prose plan.
-            # Only in Auto: Plan/Implement are explicit user modes, and a phased build silently
-            # changing what "Plan" produces there would be a surprise, not a feature.
+            # Both names now carry the same durable contract. The preference still controls only
+            # execution, below: it does not change what a plan document contains.
             shape = _PLAN_SHAPE_PHASED if (phased_build and mode_at_start is Mode.AUTO) else _PLAN_SHAPE
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
@@ -18238,6 +18294,17 @@ class Orchestrator:
                         yield persist({"type": "done", "ok": False,
                                        "decision": "plan title repair failed"})
                         return
+                    source_request_messages = (prompt,)
+                    contract = validate_execution_contract(plan_md)
+                    _record_execution_contract(contract, len(source_request_messages))
+                    if not contract.valid:
+                        yield persist({"type": "error", "message": (
+                            _execution_contract_error(contract)
+                            + " Send the request again so Sage can write a complete plan."
+                        )})
+                        yield persist({"type": "done", "ok": False,
+                                       "decision": "invalid execution plan"})
+                        return
                 # An architecture is a reference document, not the one-shot plan→implement handoff, so
                 # it goes to its own file: .sage/plan.md is archived the moment a build consumes it
                 # (see archive_plan), and a design the user wants to keep reading must not vanish
@@ -18281,6 +18348,9 @@ class Orchestrator:
                         # app was never finished from.
                         previous_plan_id=project.app_for_turn().read_archived_plan_doc_id(),
                         explicit_references=plan_reference_records,
+                        execution_contract_version=1,
+                        source_request_messages_version=1,
+                        source_request_messages=source_request_messages,
                     )["id"]
                     # A plan another Conversation left awaiting approval in this same app steps
                     # aside rather than being written over (#59).
@@ -18657,6 +18727,20 @@ class Orchestrator:
             yield {"type": "done", "ok": False,
                    "decision": "invalid plan reference metadata"}
             return
+        if approved_doc and approved_doc.get("executionContractVersion") == -1:
+            yield {"type": "error", "message": brand.text(
+                "This plan has an unsupported or invalid execution contract version. "
+                "Create a new plan before you approve it.")}
+            yield {"type": "done", "ok": False,
+                   "decision": "invalid execution contract metadata"}
+            return
+        if approved_doc and approved_doc.get("sourceRequestMessagesVersion") == -1:
+            yield {"type": "error", "message": brand.text(
+                "This plan has unsupported or invalid original-request metadata. "
+                "Create a new plan before you approve it.")}
+            yield {"type": "done", "ok": False,
+                   "decision": "invalid source request metadata"}
+            return
         # A version, not an overwrite, for the same reason a document edit makes one: the draft
         # people commented on has to survive the edit that built over it.
         #
@@ -18665,6 +18749,22 @@ class Orchestrator:
         # to a turn that was refused, and nothing on record may be destroyed by one.
         if approved_doc and live_plan.strip() != (approved_doc.get("markdown") or "").strip():
             project.record.write_plan_doc_version(approved_doc["id"], live_plan)
+        if approved_doc and approved_doc.get("executionContractVersion") == 1:
+            contract = validate_execution_contract(plan_md)
+            source_messages = approved_doc.get("sourceRequestMessages") or []
+            _record_execution_contract(
+                contract,
+                len(source_messages),
+                execution_version=approved_doc.get("executionContractVersion", 0),
+                source_version=approved_doc.get("sourceRequestMessagesVersion", 0),
+            )
+            if not contract.valid:
+                yield {"type": "error", "message": brand.text(
+                    _execution_contract_error(contract)
+                    + " Edit the plan to restore those fields, then approve it again.")}
+                yield {"type": "done", "ok": False,
+                       "decision": "invalid edited execution plan"}
+                return
         prior_mode = project.control.snapshot().mode
         # Approval means "build it now", so an approve turn RUNS as Implement whatever mode it was
         # approved from — pinned to this turn only (see arm_turn_mode), never written to the user's

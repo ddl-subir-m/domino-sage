@@ -19,7 +19,31 @@ from sage.workspace.manager import ProjectRecord
 from .fake_opencode import FakeOpenCode, Turn
 from .test_a_dropped_mention_reaches_the_agents_prompt import OkFeedback, ScriptedGateway
 
-PLAN = "# Requirements App\n\n## Plan\n1. Build the required table\n"
+PLAN = """# Requirements App
+
+An app that follows the saved requirements.
+
+## Problem & outcome
+The requirements are hard to use; the app makes them visible.
+
+## Who uses this
+The requirements analyst.
+
+## What it does
+- Shows the required table
+
+## Screens
+- **Requirements table** — Shows the required fields.
+
+## Done when
+- The preview shows the required table.
+
+## Plan
+### 1. Requirements table
+- Files — src/App.tsx
+- Do — Build the required table from the saved reference.
+- Done when — The preview shows the required table.
+"""
 RULE = "UNIQUE PLAN REFERENCE RULE"
 NEIGHBOR = "PRIVATE NEIGHBOR SENTINEL"
 
@@ -85,6 +109,33 @@ def _outgoing(client: FakeOpenCode) -> str:
     return with_attachment_listing(prompt["text"], prompt["attachments"])
 
 
+def test_a_malformed_generated_build_plan_creates_no_document_or_card(tmp_path: Path):
+    assets = FakeAssetProvider()
+    malformed = "# Table App\n\nA small table.\n\n## Plan\n1. Build the table.\n"
+    orch, _ = _orchestrator(tmp_path, assets, [Turn(text=malformed)])
+    private = "PRIVATE SOURCE REQUEST SENTINEL"
+
+    events = list(orch.build_stream(f"Build a table. {private}"))
+
+    assert not any(event.get("type") == "plan-proposed" for event in events)
+    record = orch.project(start_preview=False).record
+    assert record.list_plan_docs() == []
+    assert any(event.get("decision") == "invalid execution plan" for event in events)
+    diagnostics = json.loads((record.path / ".sage" / "build-diagnostics.json").read_text())
+    contract = diagnostics["records"][-1]["planContract"]
+    assert contract == {
+        "executionContractVersion": 1,
+        "sourceRequestMessagesVersion": 1,
+        "sourceRequestCount": 1,
+        "valid": False,
+        "stepCount": 0,
+        "malformedStepCount": 0,
+        "invalidFileCount": 0,
+        "missingSections": ["problem", "users", "outcomes", "screens", "acceptance"],
+    }
+    assert private not in json.dumps(diagnostics)
+
+
 def _pdf(path: Path, texts: list[str]) -> None:
     from pypdf import PdfWriter
     from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -121,6 +172,12 @@ def test_plan_restart_approve_reprepares_only_the_saved_reference(tmp_path: Path
         ).hexdigest(),
         "status": "prepared",
     }]
+    assert doc["executionContractVersion"] == 1
+    assert doc["sourceRequestMessagesVersion"] == 1
+    assert doc["sourceRequestMessages"] == [
+        "Build the table. Follow the Programming Notes in the attached document."
+    ]
+    assert doc["sourceRequestMessages"][0] not in doc["markdown"]
 
     persisted = json.dumps(doc["explicitReferences"])
     assert RULE not in persisted and NEIGHBOR not in persisted
@@ -147,6 +204,124 @@ def test_plan_restart_approve_reprepares_only_the_saved_reference(tmp_path: Path
                        if event.get("operation") == "document_reference"]
     assert len(document_events) == 1
     assert RULE not in json.dumps(document_events)
+
+
+def test_an_invalid_edit_to_a_v1_plan_stops_before_a_model_call(tmp_path: Path):
+    assets = FakeAssetProvider()
+    orch, builder = _orchestrator(tmp_path, assets, [Turn()])
+    project = orch.project(start_preview=False)
+    doc = project.record.create_plan_doc(
+        PLAN,
+        title="Requirements App",
+        app_id=project.workspace.app_id,
+        execution_contract_version=1,
+        source_request_messages_version=1,
+        source_request_messages=("Build the requirements app.",),
+        explicit_references=[],
+    )
+    project.workspace.write_plan(PLAN, doc["id"])
+    invalid = PLAN.replace("- Files — src/App.tsx\n", "")
+
+    events = list(orch.approve_stream(plan_id=doc["id"], plan_edits=invalid))
+
+    assert builder.prompts == []
+    assert any("Files fields" in event.get("message", "") for event in events)
+    assert project.workspace.read_plan() == invalid
+    saved = project.record.read_plan_doc(doc["id"])
+    assert saved["version"] == 2
+    assert saved["markdown"] == invalid
+
+
+def test_fixing_an_invalid_v1_plan_allows_the_build(tmp_path: Path):
+    assets = FakeAssetProvider()
+    orch, builder = _orchestrator(
+        tmp_path, assets, [Turn(writes={"src/App.tsx": "export default () => null\n"})]
+    )
+    project = orch.project(start_preview=False)
+    doc = project.record.create_plan_doc(
+        PLAN.replace("- Files — src/App.tsx\n", ""),
+        title="Requirements App",
+        app_id=project.workspace.app_id,
+        execution_contract_version=1,
+        source_request_messages_version=1,
+        source_request_messages=("Build the requirements app.",),
+        explicit_references=[],
+    )
+    project.workspace.write_plan(doc["markdown"], doc["id"])
+
+    list(orch.approve_stream(plan_id=doc["id"], plan_edits=PLAN))
+
+    assert len(builder.prompts) == 1
+
+
+def test_malformed_source_request_metadata_stops_before_approval(tmp_path: Path):
+    assets = FakeAssetProvider()
+    orch, builder = _orchestrator(tmp_path, assets, [Turn()])
+    project = orch.project(start_preview=False)
+    doc = project.record.create_plan_doc(
+        PLAN,
+        title="Requirements App",
+        app_id=project.workspace.app_id,
+        execution_contract_version=1,
+        source_request_messages_version=1,
+        source_request_messages=("Build it.",),
+    )
+    project.workspace.write_plan(PLAN, doc["id"])
+    meta_path = project.record.plan_docs_dir / doc["id"] / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["sourceRequestMessages"] = ["Build it.", 7]
+    meta_path.write_text(json.dumps(meta))
+
+    events = list(orch.approve_stream(plan_id=doc["id"]))
+
+    assert builder.prompts == []
+    assert any("original-request metadata" in event.get("message", "") for event in events)
+    assert project.workspace.read_plan() == PLAN
+
+
+def test_an_unknown_execution_contract_version_fails_closed(tmp_path: Path):
+    assets = FakeAssetProvider()
+    orch, builder = _orchestrator(tmp_path, assets, [Turn()])
+    project = orch.project(start_preview=False)
+    doc = project.record.create_plan_doc(
+        PLAN,
+        title="Requirements App",
+        app_id=project.workspace.app_id,
+        execution_contract_version=1,
+        source_request_messages_version=1,
+        source_request_messages=("Build it.",),
+    )
+    project.workspace.write_plan(PLAN, doc["id"])
+    meta_path = project.record.plan_docs_dir / doc["id"] / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["executionContractVersion"] = 2
+    meta_path.write_text(json.dumps(meta))
+
+    events = list(orch.approve_stream(plan_id=doc["id"]))
+
+    assert builder.prompts == []
+    assert any("execution contract version" in event.get("message", "") for event in events)
+
+
+def test_a_legacy_plan_approves_with_no_invented_source_request(tmp_path: Path):
+    assets = FakeAssetProvider()
+    orch, builder = _orchestrator(
+        tmp_path, assets, [Turn(writes={"src/App.tsx": "export default () => null\n"})]
+    )
+    project = orch.project(start_preview=False)
+    legacy = project.record.create_plan_doc(
+        "# Legacy\n\n## Plan\n1. Add the table.\n",
+        title="Legacy",
+        app_id=project.workspace.app_id,
+    )
+    project.workspace.write_plan(legacy["markdown"], legacy["id"])
+
+    list(orch.approve_stream(plan_id=legacy["id"]))
+
+    assert len(builder.prompts) == 1
+    assert legacy["executionContractVersion"] == 0
+    assert legacy["sourceRequestMessagesVersion"] == 0
+    assert legacy["sourceRequestMessages"] == []
 
 
 def test_changed_reference_hash_fails_closed_without_sending_new_text(tmp_path: Path):

@@ -25,6 +25,22 @@ PHASED_PLAN = """# Trades Dashboard
 
 A dashboard for exploring trades.
 
+## Problem & outcome
+Trades are hard to review; the app makes them visible.
+
+## Who uses this
+The trading operations analyst.
+
+## What it does
+- Shows trades in a table
+- Filters trades by currency
+
+## Screens
+- **Trade table** — Shows the active trades and filter.
+
+## Done when
+- The preview shows a sortable, filterable trade table.
+
 ## Plan
 
 ### 1. Data module
@@ -325,16 +341,12 @@ def test_stop_mid_build_reverts_every_phase(tmp_path: Path):
 
 # --- degrade + regression -------------------------------------------------------------------------
 
-def test_an_unparseable_plan_builds_the_ordinary_way(tmp_path: Path):
-    # Half-phasing is worse than not phasing, so a plan the parser can't read falls back rather than
-    # running whatever steps it managed to find.
-    orch, oc, _project, plan_events = _plan_then_phases(tmp_path, plan=PROSE_PLAN)
-    assert _of(plan_events, "plan-proposed")[0]["steps"] == 0
+def test_an_unparseable_new_plan_is_not_offered_for_approval(tmp_path: Path):
+    _orch, _oc, project, plan_events = _plan_then_phases(tmp_path, plan=PROSE_PLAN)
 
-    events = list(orch.approve_stream())
-    assert not _of(events, "build-plan")
-    assert len([s for s in oc.sessions if s["id"] != "fake-session"]) == 0
-    assert _of(events, "done")[0]["ok"] is True
+    assert not _of(plan_events, "plan-proposed")
+    assert _of(plan_events, "done")[0]["decision"] == "invalid execution plan"
+    assert project.record.list_plan_docs() == []
 
 
 def test_the_toggle_off_leaves_the_approve_path_untouched(tmp_path: Path):

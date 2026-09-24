@@ -27,10 +27,16 @@ from sage.router.models import ModelCatalog
 from .fake_opencode import FakeOpenCode, Turn
 
 # The live shape of a plan drafted before the shape asked for a heading: a sentence on line one.
-UNNAMED = ("A desk exposure dashboard for exploring notional by desk, book and trader.\n\n"
-           "## Plan\n1. **A desk table** — Show notional by desk.\n")
-NAMED = ("# Desk Exposure\n\nA desk exposure dashboard.\n\n"
-         "## Plan\n1. **A desk table** — Show notional by desk.\n")
+_BODY = ("A desk exposure dashboard for exploring notional by desk, book and trader.\n\n"
+         "## Problem & outcome\nExposure is hard to review; the app makes it visible.\n\n"
+         "## Who uses this\nThe desk risk analyst.\n\n"
+         "## What it does\n- Shows notional by desk\n\n"
+         "## Screens\n- **Desk table** — Shows notional by desk.\n\n"
+         "## Done when\n- The preview shows the desk table.\n\n"
+         "## Plan\n### 1. Desk table\n- Files — src/App.tsx\n"
+         "- Do — Show notional by desk.\n- Done when — The preview shows the table.\n")
+UNNAMED = _BODY
+NAMED = "# Desk Exposure\n\n" + _BODY
 NOTHING_EXTRA = {"resources": False, "artifacts": False, "transcript": False}
 CONVERSATION = "conv_build"
 
@@ -291,17 +297,17 @@ def test_a_failed_repair_call_reports_a_planning_error(tmp_path: Path, monkeypat
     assert orch.list_plan_docs() == []
 
 
-def test_a_plan_that_opens_on_a_section_is_captioned_the_way_the_plan_pin_captions_it(tmp_path):
-    """The shape drift `_warn_if_shapeless` exists for, and the one input where reading the summary
-    and reading the markdown disagree — a plan opening on `## ` leaves the summary empty, and a
-    caption read off that says "App" while the plan pin, which reads the markdown, says otherwise.
-    One document, two surfaces, and `refreshProjectPlan` sets them in one call so they cannot
-    differ."""
+def test_a_plan_that_opens_on_a_section_is_not_offered_for_approval(tmp_path):
     shapeless = "## Problem & outcome\n\nNo desk sees its exposure.\n\n## Plan\n1. **A table** — Show it.\n"
-    orch, _plan_md, plan_id = _gated(tmp_path, shapeless, repair="Desk Exposure")
+    orch, gateway, _root = _orch(tmp_path, [Turn(text=shapeless), Turn(text="Desk Exposure")])
+    gateway.word = "BUILD"
 
-    assert orch.read_plan_doc(plan_id)["caption"] == "Desk Exposure"
-    assert orch.list_plan_docs()[0]["caption"] == "Desk Exposure"
+    events = list(orch.build_stream(
+        "build me a desk exposure dashboard", conversation=CONVERSATION
+    ))
+
+    assert orch.list_plan_docs() == []
+    assert any(event.get("decision") == "invalid execution plan" for event in events)
 
 
 def test_a_repaired_plan_archives_with_the_app_heading(tmp_path: Path):

@@ -52,10 +52,17 @@ class ScriptedGateway:
 def _plan(title: str, step: str, *, name: str) -> str:
     return (f"# {name}\n\n"
             f"{title}\n\n"
+            "## Problem & outcome\nThe current view is missing; the app makes it visible.\n\n"
+            "## Who uses this\nThe operations analyst.\n\n"
+            "## What it does\n- Shows the requested view\n\n"
+            "## Screens\n"
+            f"- **{step}** — Shows the requested view.\n\n"
+            "## Done when\n- The preview shows the requested view.\n\n"
             "## Plan\n"
-            f"1. **{step}** — Show it.\n\n"
-            "## Open questions\n"
-            "- None, ready to build.\n")
+            f"### 1. {step}\n"
+            "- Files — src/App.tsx\n"
+            "- Do — Show the requested view.\n"
+            "- Done when — The preview shows the requested view.\n")
 
 
 _DESK = _plan("A desk exposure dashboard.", "Desk table", name="Desk Exposure Dashboard")
