@@ -115,17 +115,10 @@ def test_breaker_time_budget():
     assert b.record("b", resolved=False).action == "stop"
 
 
-def test_implement_prompt_names_the_config_the_gate_checks():
-    """The agent's own typecheck has to check what Sage checks (#41).
-
-    The template's root `tsconfig.json` is a references-only stub with no inputs of its own, so
-    `tsc -p tsconfig.json` compiles zero files and exits 0 however broken the app is. The implement
-    prompt tells the agent to verify its edits; left without a config name the agent reaches for
-    that root file, believes a vacuous pass, and ends the turn on code the gate then rejects —
-    costing the extra turn `run_feedback_loop` spends feeding the errors back.
-
-    Pinned to `FeedbackRunner`'s own default so the two cannot drift apart again.
-    """
+def test_implement_prompt_leaves_the_final_check_to_sage():
+    """The model does not spend a tool turn duplicating Sage's final check (#531)."""
     config = json.loads((Path(__file__).resolve().parents[2] / "opencode.json").read_text())
     prompt = config["agent"]["sage-implement"]["prompt"]
-    assert FeedbackRunner()._tsconfig in prompt
+
+    assert "Sage runs the stack's final check after your turn" in prompt
+    assert FeedbackRunner()._tsconfig not in prompt
