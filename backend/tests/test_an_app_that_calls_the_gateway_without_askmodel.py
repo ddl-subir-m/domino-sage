@@ -45,7 +45,7 @@ HELPER_PATH = TEMPLATE.llm_path
 from sage.resources.provider import FakeResourceProvider, LlmAlias
 from sage.router.models import Mode, ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 BASE = "https://apps.example.com/apps/llm_gateway/v1"
 OWNED = frozenset({HELPER_PATH, CONFIG_PATH})
@@ -285,7 +285,8 @@ def _plan_then(writes: dict[str, str], repeats: int = 0) -> list[Turn]:
     end-of-turn scans at all, because the loop takes the "you planned but wrote no code" branch
     above them instead.
     """
-    return ([Turn(text="# Model Chat\n\nA chat box.\n\n## Plan\n1. **Box** — Ask the model.\n"),
+    return ([Turn(text=execution_plan("Model Chat", "A chat box.", "Box",
+                                      work="Add a box that asks the model.")),
              Turn(text="Built it.", writes=writes)]
             + [Turn(text="Trying again.", writes={f"src/note{i}.ts": f"export const n = {i};\n"})
                for i in range(repeats)])

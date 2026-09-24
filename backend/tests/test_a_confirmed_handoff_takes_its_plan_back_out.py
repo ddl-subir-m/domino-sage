@@ -25,7 +25,7 @@ from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator, PlanArchiveRefused
 from sage.router.models import ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -42,11 +42,7 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-_DESK = ("# Desk Exposure Dashboard\n\nA desk exposure dashboard.\n\n"
-         "## Plan\n"
-         "1. **A desk table** — Show it.\n\n"
-         "## Open questions\n"
-         "- None, ready to build.\n")
+_DESK = execution_plan("Desk Exposure Dashboard", "A desk exposure dashboard.", "A desk table")
 _NOTHING_EXTRA = {"resources": False, "artifacts": False, "transcript": False}
 
 

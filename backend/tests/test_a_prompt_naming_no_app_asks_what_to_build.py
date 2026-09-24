@@ -34,7 +34,7 @@ from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import _PLAN_REFUSAL, _PLAN_SHAPE, Orchestrator, _refuses_to_plan, _tidy_plan
 from sage.router.models import Mode, ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -138,9 +138,10 @@ def test_nothing_durable_is_written_for_a_refused_plan(tmp_path: Path):
 def test_a_real_first_build_still_gets_its_plan_card(tmp_path: Path):
     """The half of this that must not move. The refusal instruction rides every gated build turn,
     so the ordinary path is what it is most likely to break."""
-    orch, _oc = _build(tmp_path, [Turn(text=(
-        "A desk dashboard.\n\n## Problem & outcome\nRisk cannot see notional by desk.\n\n"
-        "## Plan\n1. **Desk table** — Show notional by desk.\n")),
+    orch, _oc = _build(tmp_path, [Turn(text=execution_plan(
+        "Desk Dashboard", "A desk dashboard.", "Desk table",
+        work="Show notional by desk.", include_title=False,
+    )),
         Turn(text="Desk Dashboard")])
 
     events = _run(orch, "build me a dashboard of notional by desk")
@@ -185,10 +186,12 @@ def test_a_built_app_is_not_offered_the_way_out(tmp_path: Path):
     copy written for an empty project — "say what the app should show" to someone whose app already
     shows something. The filler plan this issue is about needs a blank template to happen."""
     orch, oc = _build(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=execution_plan("Desk Dashboard", "A dashboard.", "Table",
+                                 include_title=False)),
         Turn(text="Desk Dashboard"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
-        Turn(text="A fix.\n\n## Plan\n1. **Guard rows** — Handle the undefined case.\n"),
+        Turn(text=execution_plan("Rows Fix", "A fix for missing rows.", "Guard rows",
+                                 work="Handle the undefined case.", include_title=False)),
         Turn(text="Rows Fix"),
     ])
     list(orch.build_stream("build me a dashboard"))
@@ -418,7 +421,8 @@ def test_a_gated_turn_that_does_plan_still_replaces_the_earlier_card(tmp_path: P
     """What must survive dropping `plan-stale`: the old card still has to stop offering to build.
     `plan-proposed` is what does it, and it did all along."""
     orch, _oc = _build(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=execution_plan("Desk Dashboard", "A dashboard.", "Table",
+                                 include_title=False)),
         Turn(text="Desk Dashboard"),
     ])
 
@@ -429,7 +433,8 @@ def test_a_build_turn_that_changes_the_app_still_marks_the_plan_stale(tmp_path: 
     """The case `plan-stale` exists for, and the one the fix must not widen into. Here nothing else
     clears the card and the app really did change under the plan, so the note is true."""
     orch, _oc = _build(tmp_path, [
-        Turn(text="A dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=execution_plan("Desk Dashboard", "A dashboard.", "Table",
+                                 include_title=False)),
         Turn(text="Desk Dashboard"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Done.", writes={"src/App.tsx": "// v2, sortable\n"}),

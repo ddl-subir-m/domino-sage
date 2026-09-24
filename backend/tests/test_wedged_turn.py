@@ -28,7 +28,7 @@ from sage.orchestrator import service as svc
 from sage.orchestrator.service import Orchestrator, ResetBusy, TurnBusy
 from sage.router.models import ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -706,7 +706,9 @@ def test_a_stalled_approve_leaves_the_plan_to_be_approved_again(tmp_path: Path):
     just been moved out from under them.
     """
     ws = tmp_path / "mnt" / "code"
-    oc = WedgedOpenCode(ws, [Turn(text="# Trades Dashboard\n\n## Plan\n1. Add a table\n2. Wire up the data"),
+    oc = WedgedOpenCode(ws, [Turn(text=execution_plan(
+                                "Trades Dashboard", "A trades dashboard.", "Add a table",
+                                work="Add a table and wire up its data.")),
                             Turn(text="building")])
     orch = _orch(tmp_path, oc)
     oc.orch = orch
@@ -730,6 +732,21 @@ def test_a_stalled_approve_leaves_the_plan_to_be_approved_again(tmp_path: Path):
 PHASED_PLAN = """# Trades Dashboard
 
 A dashboard for exploring trades.
+
+## Problem & outcome
+Users need the requested view; the app makes it available.
+
+## Who uses this
+The app user.
+
+## What it does
+- Shows the requested data.
+
+## Screens
+- **Dashboard** — Shows the requested data.
+
+## Done when
+- The preview shows the requested workflow.
 
 ## Plan
 

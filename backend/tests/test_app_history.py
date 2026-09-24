@@ -22,7 +22,7 @@ from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 from sage.workspace.manager import Workspace
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -41,11 +41,7 @@ class ScriptedGateway:
 
 
 def _plan(title: str, step: str, *, name: str) -> str:
-    return (f"# {name}\n\n{title}\n\n"
-            "## Plan\n"
-            f"1. **{step}** — Show it.\n\n"
-            "## Open questions\n"
-            "None — ready to build.\n")
+    return execution_plan(name, title, step)
 
 
 _DESK = _plan("A desk exposure dashboard.", "Desk table", name="Desk Exposure Dashboard")

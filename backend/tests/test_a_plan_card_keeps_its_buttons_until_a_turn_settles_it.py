@@ -63,7 +63,7 @@ from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode, ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -281,7 +281,7 @@ def test_a_build_turn_that_can_write_carries_no_read_only_mark(tmp_path: Path):
     gated turn is read-only: without that the change request comes back `gate violated` and the mark
     it carries is the honest one."""
     orch, _oc = _build(tmp_path, [
-        Turn(text="# Desk Dashboard\n\nA dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=execution_plan("Desk Dashboard", "A dashboard.", "Table")),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Done.", writes={"src/App.tsx": "// v2, sortable\n"}),
     ])

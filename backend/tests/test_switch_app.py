@@ -381,6 +381,21 @@ _PHASED_PLAN = """# Daily P&L Report
 
 A daily P&L report.
 
+## Problem & outcome
+Users need the requested view; the app makes it available.
+
+## Who uses this
+The app user.
+
+## What it does
+- Shows the requested data.
+
+## Screens
+- **Dashboard** — Shows the requested data.
+
+## Done when
+- The preview shows the requested workflow.
+
 ## Plan
 
 ### 1. Data module

@@ -30,17 +30,12 @@ from sage.resources.bindings import KIND_DATA_SOURCE
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 PROMPT = "chart me the daily gong calls from Snowflake"
 
-_PLAN = (
-    "# Gong Call Dashboard\n\nA gong call dashboard.\n\n"
-    "## Plan\n"
-    "1. **Daily calls** — Count calls by day.\n\n"
-    "## Open questions\n"
-    "None — ready to build.\n"
-)
+_PLAN = execution_plan("Gong Call Dashboard", "A gong call dashboard.", "Daily calls",
+                       work="Count calls by day.")
 
 
 class OkFeedback:

@@ -24,7 +24,7 @@ from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode, ModelCatalog
 from sage.workspace.threads import ThreadStore
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 # The rail itself, for the one claim at the foot of this file. It is about the source rather than
 # about a run, because what the tags are FOR is drawn in the browser and asserted there.
@@ -51,11 +51,7 @@ class ScriptedGateway:
 def _plan(name: str, step: str) -> str:
     """Opening on a `# ` heading, which is the only thing that names the app it is built into
     (#216) and what the plan shape asks the planner for."""
-    return (f"# {name}\n\n"
-            "## Plan\n"
-            f"1. **{step}** — Show it.\n\n"
-            "## Open questions\n"
-            "None — ready to build.\n")
+    return execution_plan(name, f"A {name.lower()} app.", step)
 
 
 _DESK = _plan("Desk exposure", "Desk table")

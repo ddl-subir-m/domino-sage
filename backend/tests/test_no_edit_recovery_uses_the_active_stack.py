@@ -11,7 +11,7 @@ from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode
 from sage.workspace.stack import STACKS
 
-from .fake_opencode import Turn
+from .fake_opencode import Turn, execution_plan
 from .ledger import last_turn, needs_ledger
 from .test_turn_path import _build
 
@@ -121,7 +121,7 @@ CASES = (
 
 def _turns(case: DecisionCase, entry_file: str) -> list[Turn]:
     turns = [
-        Turn(text="# Seed\n\n## Plan\n1. Seed the app."),
+        Turn(text=execution_plan("Seed", "A seeded app.", "Seed the app")),
         Turn(text="Seeded.", writes={entry_file: "// seeded app\n"}),
     ]
     for n, effect in enumerate(case.effects):
@@ -319,7 +319,7 @@ def test_stop_after_red_no_edit_check_preempts_both_recovery_paths(
     stack = STACKS[stack_name]
     feedback = StopAfterRedCheck(["clean", "starter"])
     orch, oc, _gateway = _build(tmp_path, [
-        Turn(text="# Seed\n\n## Plan\n1. Seed the app."),
+        Turn(text=execution_plan("Seed", "A seeded app.", "Seed the app")),
         Turn(writes={stack.entry_file: "// seeded app\n"}),
         Turn(text="I would plan this change."),
     ])
@@ -349,7 +349,10 @@ def test_stop_after_red_no_edit_check_preempts_both_recovery_paths(
 
 def _approve(tmp_path: Path, stack_name: str, mode: Mode):
     stack = STACKS[stack_name]
-    plan = "# Dashboard\n\n## Plan\n1. Show the selected sales data with a region filter."
+    plan = execution_plan(
+        "Dashboard", "A sales dashboard with a region filter.", "Show sales by region",
+        work="Show the selected sales data with a region filter.",
+    )
     turns = [
         Turn(text=plan),
         Turn(text="I will add a table and a region filter."),
@@ -410,7 +413,10 @@ def test_red_approval_exhaustion_keeps_the_plan_for_try_again(
     tmp_path: Path, stack_name: str, mode: Mode
 ):
     stack = STACKS[stack_name]
-    plan = "# Dashboard\n\n## Plan\n1. Show the selected sales data with a region filter."
+    plan = execution_plan(
+        "Dashboard", "A sales dashboard with a region filter.", "Show sales by region",
+        work="Show the selected sales data with a region filter.",
+    )
     orch, oc, gateway = _build(tmp_path, [
         Turn(text=plan),
         *[Turn(text="I would plan this change.") for _ in range(4)],

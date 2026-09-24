@@ -31,7 +31,7 @@ from sage.orchestrator.service import Orchestrator
 from sage.resources.bindings import KIND_DATA_SOURCE, Binding
 from sage.router.models import ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -64,7 +64,9 @@ def _orch(tmp: Path):
     (template / "package.json").write_text("{}")
 
     ws = tmp / "mnt" / "code"
-    oc = FakeOpenCode(ws, [Turn(text="# Warehouse Dashboard\n\n## Plan\n1. Add the table")])
+    oc = FakeOpenCode(ws, [Turn(text=execution_plan(
+        "Warehouse Dashboard", "A warehouse dashboard.", "Add the table",
+    ))])
     orch = Orchestrator(
         workspace_dir=ws, template=template, gateway=ScriptedGateway(),
         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s", sovereign_ask="s",

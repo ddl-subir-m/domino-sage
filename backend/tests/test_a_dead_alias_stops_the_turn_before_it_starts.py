@@ -35,7 +35,7 @@ from sage.resources.provider import (
 )
 from sage.router.models import Mode, ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 # Two vendor aliases and one Domino-hosted, which is the shape cloud-dogfood has: most aliases have
 # nothing on Domino behind them, so only `hosted` can ever be judged on an endpoint.
@@ -163,7 +163,8 @@ def _error(events: list[dict]) -> str:
     return next(e["message"] for e in events if e["type"] == "error")
 
 
-PLAN = Turn(text="# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data")
+PLAN = Turn(text=execution_plan("Consumption Dashboard", "A consumption dashboard.",
+                                "Add the table", work="Add the table and wire up its data."))
 BUILD = Turn(writes={"src/App.tsx": "// the table\n"})
 
 
