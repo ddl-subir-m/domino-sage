@@ -190,6 +190,15 @@ def test_plan_restart_approve_reprepares_only_the_saved_reference(tmp_path: Path
     restarted, builder = _orchestrator(
         tmp_path, assets, [Turn(writes={"src/App.tsx": "export default () => null\n"})]
     )
+    project = restarted.project(start_preview=False)
+    intents = []
+    send_prompt = builder.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    builder.send_prompt = capture
     events = list(restarted.approve_stream(plan_id=plan_id))
     outgoing = _outgoing(builder)
 
@@ -204,6 +213,10 @@ def test_plan_restart_approve_reprepares_only_the_saved_reference(tmp_path: Path
                        if event.get("operation") == "document_reference"]
     assert len(document_events) == 1
     assert RULE not in json.dumps(document_events)
+    assert intents[0].source_requests == (
+        "Build the table. Follow the Programming Notes in the attached document.",
+    )
+    assert intents[0].authoritative_plan == doc["markdown"]
 
 
 def test_an_invalid_edit_to_a_v1_plan_stops_before_a_model_call(tmp_path: Path):
@@ -248,10 +261,21 @@ def test_fixing_an_invalid_v1_plan_allows_the_build(tmp_path: Path):
         explicit_references=[],
     )
     project.workspace.write_plan(doc["markdown"], doc["id"])
+    intents = []
+    send_prompt = builder.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    builder.send_prompt = capture
 
     list(orch.approve_stream(plan_id=doc["id"], plan_edits=PLAN))
 
     assert len(builder.prompts) == 1
+    assert intents[0].authoritative_plan == PLAN
+    assert intents[0].source_requests == ("Build the requirements app.",)
+    assert "- Files — src/App.tsx" in intents[0].authoritative_plan
 
 
 def test_malformed_source_request_metadata_stops_before_approval(tmp_path: Path):
@@ -315,6 +339,14 @@ def test_a_legacy_plan_approves_with_no_invented_source_request(tmp_path: Path):
         app_id=project.workspace.app_id,
     )
     project.workspace.write_plan(legacy["markdown"], legacy["id"])
+    intents = []
+    send_prompt = builder.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    builder.send_prompt = capture
 
     list(orch.approve_stream(plan_id=legacy["id"]))
 
@@ -322,6 +354,8 @@ def test_a_legacy_plan_approves_with_no_invented_source_request(tmp_path: Path):
     assert legacy["executionContractVersion"] == 0
     assert legacy["sourceRequestMessagesVersion"] == 0
     assert legacy["sourceRequestMessages"] == []
+    assert intents[0].source_requests == ()
+    assert intents[0].authoritative_plan == legacy["markdown"]
 
 
 def test_changed_reference_hash_fails_closed_without_sending_new_text(tmp_path: Path):

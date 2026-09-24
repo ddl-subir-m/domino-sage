@@ -119,9 +119,37 @@ CASES = (
 )
 
 
+def _valid_plan(title: str, action: str, entry_file: str) -> str:
+    return f"""# {title}
+
+An app that completes the requested change.
+
+## Problem & outcome
+The current app is incomplete; this change makes it useful.
+
+## Who uses this
+The app user.
+
+## What it does
+- Completes the requested change.
+
+## Screens
+- **Main screen** — Shows the completed change.
+
+## Done when
+- The preview shows the completed change.
+
+## Plan
+### 1. {title}
+- Files — {entry_file}
+- Do — {action}
+- Done when — The preview shows the completed change.
+"""
+
+
 def _turns(case: DecisionCase, entry_file: str) -> list[Turn]:
     turns = [
-        Turn(text="# Seed\n\n## Plan\n1. Seed the app."),
+        Turn(text=_valid_plan("Seed", "Seed the app.", entry_file)),
         Turn(text="Seeded.", writes={entry_file: "// seeded app\n"}),
     ]
     for n, effect in enumerate(case.effects):
@@ -174,6 +202,7 @@ def _run_case(tmp_path: Path, stack_name: str, mode: Mode, case: DecisionCase):
     before = project.control.snapshot()
     scenario_start = len(oc.prompts)
     states = []
+    intents = []
     send = oc.send_prompt
 
     def dispatch(session_id, text, model=None, agent=None, attachments=None, chat=False):
@@ -185,6 +214,7 @@ def _run_case(tmp_path: Path, stack_name: str, mode: Mode, case: DecisionCase):
             current = Path(oc._session_dir(session_id)) / stack.entry_file
             oc.turns[oc._next].writes[stack.entry_file] = current.read_text()
         states.append(project.control.snapshot())
+        intents.append(project.active_build_intent)
         send(session_id, text, model, agent, attachments, chat)
         if effect == "opaque":
             # A shell/heredoc write has no edit/write part. Only the turn-start tree hash sees it.
@@ -196,7 +226,7 @@ def _run_case(tmp_path: Path, stack_name: str, mode: Mode, case: DecisionCase):
         "Add a region filter using the attached sales data.", [attached["path"]]
     ))
     prompts = oc.prompts[scenario_start:]
-    return orch, gateway, feedback, before, states, events, prompts, attached
+    return orch, gateway, feedback, before, states, intents, events, prompts, attached
 
 
 @needs_ledger
@@ -206,11 +236,13 @@ def _run_case(tmp_path: Path, stack_name: str, mode: Mode, case: DecisionCase):
 def test_no_edit_and_typecheck_repair_decision_matrix(
     tmp_path: Path, stack_name: str, mode: Mode, case: DecisionCase
 ):
-    orch, gateway, feedback, before, states, events, prompts, attached = _run_case(
+    orch, gateway, feedback, before, states, intents, events, prompts, attached = _run_case(
         tmp_path, stack_name, mode, case
     )
 
     assert len(prompts) == len(case.effects)
+    assert all(intent is intents[0] for intent in intents)
+    assert orch.project(start_preview=False).active_build_intent is None
     assert [_prompt_kind(prompt["text"]) for prompt in prompts] == list(case.prompt_kinds)
     assert len([event for event in events if event["type"] == "typecheck"]) == len(case.effects)
     done = next(event for event in events if event["type"] == "done")
@@ -319,7 +351,7 @@ def test_stop_after_red_no_edit_check_preempts_both_recovery_paths(
     stack = STACKS[stack_name]
     feedback = StopAfterRedCheck(["clean", "starter"])
     orch, oc, _gateway = _build(tmp_path, [
-        Turn(text="# Seed\n\n## Plan\n1. Seed the app."),
+        Turn(text=_valid_plan("Seed", "Seed the app.", stack.entry_file)),
         Turn(writes={stack.entry_file: "// seeded app\n"}),
         Turn(text="I would plan this change."),
     ])
@@ -349,7 +381,8 @@ def test_stop_after_red_no_edit_check_preempts_both_recovery_paths(
 
 def _approve(tmp_path: Path, stack_name: str, mode: Mode):
     stack = STACKS[stack_name]
-    plan = "# Dashboard\n\n## Plan\n1. Show the selected sales data with a region filter."
+    plan = _valid_plan(
+        "Dashboard", "Show the selected sales data with a region filter.", stack.entry_file)
     turns = [
         Turn(text=plan),
         Turn(text="I will add a table and a region filter."),
@@ -367,15 +400,17 @@ def _approve(tmp_path: Path, stack_name: str, mode: Mode):
     project.control.pick("a", "low")
     before = project.control.snapshot()
     states = []
+    intents = []
     send = oc.send_prompt
 
     def record_dispatch(*args, **kwargs):
         states.append(project.control.snapshot())
+        intents.append(project.active_build_intent)
         return send(*args, **kwargs)
 
     oc.send_prompt = record_dispatch
     events = list(orch.approve_stream(answers="Keep the North region visible."))
-    return orch, oc, gateway, before, states, events, attached
+    return orch, oc, gateway, before, states, intents, events, attached
 
 
 @pytest.mark.parametrize("stack_name", STACKS)
@@ -383,15 +418,20 @@ def _approve(tmp_path: Path, stack_name: str, mode: Mode):
 def test_red_approval_keeps_plan_request_attachment_and_control_context(
     tmp_path: Path, stack_name: str, mode: Mode
 ):
-    orch, oc, gateway, before, states, events, attached = _approve(tmp_path, stack_name, mode)
+    orch, oc, gateway, before, states, intents, events, attached = _approve(
+        tmp_path, stack_name, mode)
     first, retry = oc.prompts[1:]
 
     assert oc.prompts[0]["attachments"][0]["path"] == attached["path"]
     assert first["attachments"] is retry["attachments"] is None
     assert retry["session"] == first["session"] == oc.prompts[0]["session"]
     assert "Build a sales dashboard with a region filter." in oc.prompts[0]["text"]
-    assert "Show the selected sales data with a region filter." in first["text"]
-    assert "Keep the North region visible." in first["text"]
+    assert all("Show the selected sales data with a region filter." not in p["text"]
+               for p in (first, retry))
+    assert all("Keep the North region visible." not in p["text"] for p in (first, retry))
+    assert intents[0] is intents[1]
+    assert "Show the selected sales data with a region filter." in intents[0].authoritative_plan
+    assert intents[0].answers == "Keep the North region visible."
     assert f"start with {STACKS[stack_name].entry_file}" in retry["text"]
     assert retry["agent"] == "sage-implement"
     assert all(state.mode is Mode.IMPLEMENT for state in states)
@@ -410,7 +450,8 @@ def test_red_approval_exhaustion_keeps_the_plan_for_try_again(
     tmp_path: Path, stack_name: str, mode: Mode
 ):
     stack = STACKS[stack_name]
-    plan = "# Dashboard\n\n## Plan\n1. Show the selected sales data with a region filter."
+    plan = _valid_plan(
+        "Dashboard", "Show the selected sales data with a region filter.", stack.entry_file)
     orch, oc, gateway = _build(tmp_path, [
         Turn(text=plan),
         *[Turn(text="I would plan this change.") for _ in range(4)],
@@ -427,10 +468,12 @@ def test_red_approval_exhaustion_keeps_the_plan_for_try_again(
     project.control.pick("a", "low")
     before = project.control.snapshot()
     states = []
+    intents = []
     send = oc.send_prompt
 
     def record_dispatch(*args, **kwargs):
         states.append(project.control.snapshot())
+        intents.append(project.active_build_intent)
         return send(*args, **kwargs)
 
     oc.send_prompt = record_dispatch
@@ -445,8 +488,13 @@ def test_red_approval_exhaustion_keeps_the_plan_for_try_again(
     assert all(prompt["session"] == approval_prompts[0]["session"] for prompt in approval_prompts)
     assert approval_prompts[0]["attachments"] is None
     assert all(prompt["attachments"] is None for prompt in approval_prompts[1:])
-    assert "Show the selected sales data with a region filter." in approval_prompts[0]["text"]
-    assert "Keep the North region visible." in approval_prompts[0]["text"]
+    assert all("Show the selected sales data with a region filter." not in prompt["text"]
+               for prompt in approval_prompts)
+    assert all("Keep the North region visible." not in prompt["text"]
+               for prompt in approval_prompts)
+    assert all(intent is intents[0] for intent in intents)
+    assert "Show the selected sales data with a region filter." in intents[0].authoritative_plan
+    assert intents[0].answers == "Keep the North region visible."
     assert all(f"start with {stack.entry_file}" in prompt["text"]
                for prompt in approval_prompts[1:])
     assert all(prompt["agent"] == "sage-implement" for prompt in approval_prompts)
@@ -460,7 +508,7 @@ def test_red_approval_exhaustion_keeps_the_plan_for_try_again(
         "ok": False,
         "decision": "the model replied but didn't change any files — try rephrasing or a smaller step",
     }
-    assert app.read_plan() == plan
+    assert app.read_plan() == plan.strip()
     assert app.read_plan_retry_step() == 1
     assert app.has_built() is False
     assert project.attachments_for_turn()[0]["path"] == attached["path"]

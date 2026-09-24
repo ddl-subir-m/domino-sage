@@ -571,7 +571,6 @@ def test_await_runtime_error_only_returns_errors_after_since(tmp_path: Path):
 
 # --- P6: first-build plan gate (grill + sign-off) --------------------------------------------
 from sage.orchestrator.service import (
-    _approve_prompt,
     _asks_about_a_change,
     _is_answer_only,
     _looks_like_approval,
@@ -746,29 +745,6 @@ def test_a_filler_opener_does_not_hide_a_plan_or_architecture_request():
     assert _wants_plan("ok plan this first") is True
     assert _wants_plan("so, show me a step-by-step plan to add auth") is True
     assert _wants_architecture("ok what's the architecture to add a real time queue") is True
-
-
-def test_approve_prompt_includes_plan_and_answers():
-    p = _approve_prompt("## Plan\n1. do it", "cols: id, amount")
-    assert "## Approved plan" in p and "1. do it" in p
-    assert "cols: id, amount" in p and "## Answers to the open questions" in p
-
-
-def test_approve_prompt_omits_answers_section_when_blank():
-    assert "Open questions" not in _approve_prompt("## Plan\n1. do it", "   ")
-
-
-def test_approve_prompt_names_chat_handoff_as_background():
-    p = _approve_prompt("## Plan\n1. do it", "", handoff_note=(
-        "A Chat Thread produced the files under `examples/` and the digest in "
-        "`.sage/handoff.md`. The plan is what to build. The digest is background."
-    ))
-    assert "The plan is what to build" in p
-    assert "digest is background" in p
-
-
-def test_approve_prompt_omits_handoff_when_blank():
-    assert "handoff.md" not in _approve_prompt("## Plan\n1. do it", "")
 
 
 def test_archive_plan_moves_plan_out_of_live_view(tmp_path: Path):

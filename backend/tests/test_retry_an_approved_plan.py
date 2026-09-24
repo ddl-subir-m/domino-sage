@@ -58,10 +58,13 @@ class BreakingOpenCode(FakeOpenCode):
         super().__init__(workspace, turns)
         self.orch: Orchestrator | None = None
         self.break_on = set(break_on or ())
+        self.intents = []
 
     def send_prompt(self, session_id: str, text: str, model: dict | None = None,
                     agent: str | None = None, attachments: list[dict] | None = None,
                     chat: bool = False) -> None:
+        if self.orch is not None:
+            self.intents.append(self.orch.project(start_preview=False).active_build_intent)
         super().send_prompt(session_id, text, model, agent, attachments, chat)
         if self._next in self.break_on and self.orch is not None:
             self.orch.project(start_preview=False).last_gateway_error = {
@@ -198,10 +201,11 @@ def test_try_again_builds_the_approved_plan_instead_of_proposing_a_second_one(tm
     assert "plan-proposed" not in _kinds(events)
     assert _done(events)["ok"] is True
     assert _workspace(orch).has_built() is True
-    # It ran the plan, not the sentence: the approve prompt carries the approved plan, and the
-    # agent that got it is the builder rather than the read-only planner.
+    # It ran the plan, not the sentence: the canonical intent carries the approved plan, and the
+    # agent that got the fixed control prompt is the builder rather than the read-only planner.
     assert oc.prompts[-1]["agent"] != "sage-plan"
-    assert "Add the consumption table" in oc.prompts[-1]["text"]
+    assert "Add the consumption table" in oc.intents[-1].authoritative_plan
+    assert "Add the consumption table" not in oc.prompts[-1]["text"]
     # The build consumed the plan this time, so nothing is left owing a retry.
     ws = _workspace(orch)
     assert ws.read_plan() is None
@@ -274,7 +278,8 @@ def test_a_retry_typed_in_implement_mode_still_builds_the_approved_plan(tmp_path
     events = list(orch.build_stream("try again"))
 
     assert "plan-proposed" not in _kinds(events)
-    assert "Add the consumption table" in oc.prompts[-1]["text"]
+    assert "Add the consumption table" in oc.intents[-1].authoritative_plan
+    assert "Add the consumption table" not in oc.prompts[-1]["text"]
 
 
 # --- phased builds ---------------------------------------------------------------------------
@@ -370,7 +375,9 @@ def test_try_again_resumes_a_phased_build_at_the_phase_that_broke(tmp_path: Path
     kept = [e for e in events if e["type"] == "step-done" and e.get("kept")]
     assert [e["n"] for e in kept] == [1]
     # And it really did not re-run: phase 1's brief was written once, by the first attempt.
-    assert sum("You are executing step 1 of 3" in p["text"] for p in oc.prompts) == 1
+    assert sum(intent is not None and intent.kind == "phase"
+               and "Export two hundred sample trade rows." in intent.phase_brief
+               for intent in oc.intents) == 1
     # A finished build consumes its plan like any other.
     ws = _workspace(orch)
     assert ws.read_plan() is None

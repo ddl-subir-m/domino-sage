@@ -179,22 +179,31 @@ def test_the_checklist_is_announced_before_any_work(tmp_path: Path):
 
 
 def test_a_phase_sees_its_own_brief_and_not_the_others(tmp_path: Path):
-    orch, oc, _project, _ = _plan_then_phases(tmp_path)
+    orch, oc, project, _ = _plan_then_phases(tmp_path)
+    intents = []
+    send_prompt = oc.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    oc.send_prompt = capture
     list(orch.approve_stream())
 
-    phase_prompts = [p["text"] for p in oc.prompts if "You are executing step" in p["text"]]
-    assert len(phase_prompts) == 3
-    second = phase_prompts[1]
+    phases = [intent for intent in intents if intent and intent.kind == "phase"]
+    assert len(phases) == 3
+    second = phases[1]
     # Its own work, in full.
-    assert "Render the rows in a sortable table." in second
-    assert "Don't touch — src/data.ts" in second
+    assert "Render the rows in a sortable table." in second.phase_brief
+    assert "Don't touch — src/data.ts" in second.phase_brief
     # Not the other steps' instructions — that context is exactly what a fresh session bought.
-    assert "Add a currency dropdown above the table." not in second
-    assert "Export two hundred sample trade rows." not in second
+    assert "Add a currency dropdown above the table." not in second.phase_brief
+    assert "Export two hundred sample trade rows." not in second.phase_brief
     # But it knows where it is, so it doesn't rebuild step 1 or start step 3.
-    assert "1. Data module (done)" in second
-    assert "2. Trades table (this step)" in second
-    assert "3. Currency filter (later)" in second
+    assert "1. Data module (done)" in second.phase_index
+    assert "2. Trades table (this step)" in second.phase_index
+    assert "3. Currency filter (later)" in second.phase_index
+    assert all("Render the rows in a sortable table." not in p["text"] for p in oc.prompts)
 
 
 def test_phases_run_as_implement_not_plan(tmp_path: Path):
@@ -203,7 +212,7 @@ def test_phases_run_as_implement_not_plan(tmp_path: Path):
     orch, oc, _project, _ = _plan_then_phases(tmp_path)
     list(orch.approve_stream())
 
-    phase_agents = [p["agent"] for p in oc.prompts if "You are executing step" in p["text"]]
+    phase_agents = [p["agent"] for p in oc.prompts if p["agent"] == "sage-implement"]
     assert phase_agents == ["sage-implement"] * 3
 
 
@@ -216,6 +225,14 @@ def test_a_failed_phase_aborts_the_build_but_keeps_finished_work(tmp_path: Path,
              Turn(text="I looked around."), Turn(text="Still stuck.")]  # phase 2 both attempts
     orch, oc, project = _build(tmp_path, turns)
     list(orch.build_stream("build me a trades dashboard"))
+    intents = []
+    send_prompt = oc.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    oc.send_prompt = capture
     events = list(orch.approve_stream())
 
     done = _of(events, "done")
@@ -231,7 +248,12 @@ def test_a_failed_phase_aborts_the_build_but_keeps_finished_work(tmp_path: Path,
     # Which makes the NEXT turn plan first, via the existing failure-replan gate.
     assert project.workspace.read_last_turn_failed()
     # Phase 3 was never attempted — its brief assumed phase 2's "Done when" held.
-    assert not any("Add a currency dropdown" in p["text"] for p in oc.prompts)
+    assert len([p for p in oc.prompts if p["agent"] == "sage-implement"]) == 3
+    phase_intents = [intent for intent in intents if intent and intent.kind == "phase"]
+    assert len(phase_intents) == 3
+    assert phase_intents[1] is phase_intents[2]
+    assert phase_intents[0] is not phase_intents[1]
+    assert project.active_build_intent is None
 
 
 def test_a_failed_phase_still_reports_which_app_it_changed(tmp_path: Path, monkeypatch):
@@ -371,11 +393,10 @@ def test_the_first_phase_is_not_told_earlier_work_exists(tmp_path: Path):
     orch, oc, _project, _ = _plan_then_phases(tmp_path)
     list(orch.approve_stream())
 
-    first, second = [p["text"] for p in oc.prompts if "You are executing step" in p["text"]][:2]
+    first, second = [p["text"] for p in oc.prompts if p["agent"] == "sage-implement"][:2]
 
     assert "already done" not in first
-    assert "starter template" in first
-    assert "already done" in second      # ...and from step 2 on it IS true, so it must still be said
+    assert "already done" not in second
 
 
 def test_a_phase_is_told_files_outranks_dont_touch(tmp_path: Path):
@@ -387,10 +408,9 @@ def test_a_phase_is_told_files_outranks_dont_touch(tmp_path: Path):
     orch, oc, _project, _ = _plan_then_phases(tmp_path)
     list(orch.approve_stream())
 
-    for prompt in [p["text"] for p in oc.prompts if "You are executing step" in p["text"]]:
-        assert "Files is your allowlist" in prompt
+    for prompt in [p["text"] for p in oc.prompts if p["agent"] == "sage-implement"]:
+        assert "edit allowlist" in prompt
         assert "Files wins" in prompt
-        assert "Never abandon the step" in prompt
 
 
 def test_each_phase_hands_its_summary_to_the_ones_after_it(tmp_path: Path):
@@ -406,17 +426,25 @@ def test_each_phase_hands_its_summary_to_the_ones_after_it(tmp_path: Path):
              text="Created src/Table.tsx exporting `Table`, which takes a `rows` prop."),
         Turn(writes={"src/Filter.tsx": "export const Filter = () => null;\n"}, text="Added the filter."),
     ]
-    orch, oc, _project = _build(tmp_path, turns)
+    orch, oc, project = _build(tmp_path, turns)
     list(orch.build_stream("build me a trades dashboard"))
+    intents = []
+    send_prompt = oc.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    oc.send_prompt = capture
     list(orch.approve_stream())
 
-    first, second, third = [p["text"] for p in oc.prompts if "You are executing step" in p["text"]]
+    first, second, third = [intent for intent in intents if intent and intent.kind == "phase"]
 
-    assert "What earlier steps built" not in first          # nothing has been built yet
-    assert "exporting `rows: Trade[]`" in second            # phase 2 is told what phase 1 left it
-    assert "1. Data module —" in second
-    assert "takes a `rows` prop" in third                   # ...and phase 3 gets both
-    assert "exporting `rows: Trade[]`" in third
+    assert first.prior_phase_notes == ()                     # nothing has been built yet
+    assert "exporting `rows: Trade[]`" in second.prior_phase_notes[0]
+    assert "1. Data module —" in second.prior_phase_notes[0]
+    assert any("takes a `rows` prop" in note for note in third.prior_phase_notes)
+    assert any("exporting `rows: Trade[]`" in note for note in third.prior_phase_notes)
 
 
 def test_phases_are_told_not_to_run_the_build_themselves(tmp_path: Path):
@@ -425,5 +453,5 @@ def test_phases_are_told_not_to_run_the_build_themselves(tmp_path: Path):
     orch, oc, _project, _ = _plan_then_phases(tmp_path)
     list(orch.approve_stream())
 
-    prompt = next(p["text"] for p in oc.prompts if "You are executing step" in p["text"])
+    prompt = next(p["text"] for p in oc.prompts if p["agent"] == "sage-implement")
     assert "Don't run the build or the typechecker yourself" in prompt

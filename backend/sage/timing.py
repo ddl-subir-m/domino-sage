@@ -98,6 +98,7 @@ class ModelCall:
     requested_alias: str | None = None
     response_reported_model: str | None = None
     request_composition: dict | None = None
+    build_intent: dict | None = None
     tool_invocations: list[dict] = field(default_factory=list)
     tools_truncated: bool = False
     output_tokens: int | None = None
@@ -372,6 +373,27 @@ class _CallHandle:
                 c.requested_alias = _model_name(requested_alias)
                 c.request_composition = request_composition
 
+    def intent(self, *, kind: str, status: str, carrier_count: int, carrier_bytes: int,
+               source_request_count: int, plan_present: bool, failure_stage: str) -> None:
+        """Keep only the bounded Build-intent result. No carrier content or identity enters timing."""
+        if kind not in {"direct_build", "approved_plan", "phase"}:
+            return
+        if status not in {"ok", "missing", "changed", "duplicate", "unsupported"}:
+            return
+        if failure_stage not in {"none", "install", "prepare", "final_check"}:
+            return
+        with self._active() as c:
+            if c is not None:
+                c.build_intent = {
+                    "kind": kind,
+                    "status": status,
+                    "carrierCount": max(0, int(carrier_count)),
+                    "carrierBytes": max(0, int(carrier_bytes)),
+                    "sourceRequestCount": max(0, int(source_request_count)),
+                    "planPresent": bool(plan_present),
+                    "failureStage": failure_stage,
+                }
+
     def tool(self, names: list[str]) -> None:
         """Legacy non-native readers supply newly announced names, not cumulative sets."""
         with self._active() as c:
@@ -578,6 +600,7 @@ def as_dict(rec: TurnRecord) -> dict:
                    "requestedAlias": c.requested_alias,
                    "responseReportedModel": c.response_reported_model,
                    "requestComposition": c.request_composition,
+                   "buildIntent": c.build_intent,
                    "toolInvocations": [dict(t) for t in c.tool_invocations],
                    "toolsTruncated": c.tools_truncated,
                    "outTokens": c.output_tokens, "reasoningTokens": c.reasoning_tokens,

@@ -138,6 +138,35 @@ def _request_composition(value) -> dict | None:
     }
 
 
+def _build_intent(value) -> dict | None:
+    """Copy only the fixed, content-free Build-intent schema into a persisted capture."""
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("kind")
+    status = value.get("status")
+    stage = value.get("failureStage")
+    if kind not in {"direct_build", "approved_plan", "phase"}:
+        return None
+    if status not in {"ok", "missing", "changed", "duplicate", "unsupported"}:
+        return None
+    if stage not in {"none", "install", "prepare", "final_check"}:
+        return None
+
+    def count(key):
+        number = value.get(key)
+        return number if isinstance(number, int) and not isinstance(number, bool) and number >= 0 else 0
+
+    return {
+        "kind": kind,
+        "status": status,
+        "carrierCount": count("carrierCount"),
+        "carrierBytes": count("carrierBytes"),
+        "sourceRequestCount": count("sourceRequestCount"),
+        "planPresent": bool(value.get("planPresent")),
+        "failureStage": stage,
+    }
+
+
 @lru_cache(maxsize=1)
 def source_revision() -> str | None:
     home = os.environ.get("SAGE_APP_HOME") or str(Path(__file__).resolve().parents[2])
@@ -219,6 +248,9 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
                 composition = _request_composition(row.get("requestComposition"))
                 if composition is not None:
                     entry["requestComposition"] = composition
+                intent = _build_intent(row.get("buildIntent"))
+                if intent is not None:
+                    entry["buildIntent"] = intent
                 reported = row.get("responseReportedModel")
                 if (isinstance(reported, str)
                         and reported in {entry.get("model"), entry.get("requestedAlias")}):

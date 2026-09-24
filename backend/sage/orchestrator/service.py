@@ -47,6 +47,7 @@ from ..assets.provider import (
     FakeAssetProvider,
     FileListing,
 )
+from ..build_intent import BuildIntent
 from ..delegated import call as delegated
 from ..delegated import mcp as delegated_mcp
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
@@ -4411,16 +4412,10 @@ def _thread_plan_id(record: ProjectRecord, thread_id: str) -> str:
     return ""
 
 
-def _approve_prompt(plan_md: str, answers: str, *, handoff_note: str = "") -> str:
-    """The Implement-turn prompt built from an approved plan (SPEC P6): the plan is fed in as
-    context so the build turn constructs exactly what the user signed off on."""
-    parts = ["The user approved this plan. Build the app it describes now — implement it, don't re-plan.",
-             "", "## Approved plan", plan_md]
-    if answers.strip():
-        parts += ["", "## Answers to the open questions", answers.strip()]
-    if handoff_note.strip():
-        parts += ["", handoff_note.strip()]
-    return "\n".join(parts)
+_BUILD_CONTROL_PROMPT = (
+    "Implement the canonical Build task supplied with this request. Use tools, edit files, and "
+    "verify the result."
+)
 
 
 def _phase_note(text: str, limit: int = 400) -> str:
@@ -4431,55 +4426,13 @@ def _phase_note(text: str, limit: int = 400) -> str:
 def _phase_prompt(step: PlanStep, steps: list[PlanStep], answers: str,
                   notes: list[str] | None = None, retry_errors: str = "",
                   entry_file: str = "src/App.tsx") -> str:
-    """The prompt for ONE phase of a phased build, sent into a brand-new session.
-
-    Deliberately NOT the whole plan: carrying it would re-pay the context a fresh session just
-    bought us, which is the entire economics of building in phases. What goes in instead is the
-    step's own brief plus a one-line-per-step index — about fifteen tokens a step, and the cheapest
-    defence against a cold model reinventing something an earlier phase already built.
-    """
-    # Step 1 must NOT be told earlier work exists. It doesn't: the workspace is still the starter
-    # template, so an agent sent looking for it finds a placeholder App.tsx and files later steps
-    # haven't created yet, and burns the turn trying to reconcile that with its brief instead of
-    # building. Observed live on 2026-08-06 ("App.tsx seems to be unreadable or may not exist in the
-    # expected format... let me also look at the types file").
-    prior = (
-        "The workspace is the untouched starter template — nothing from this plan has been built yet, "
-        f"so treat the placeholder {Path(entry_file).name} as yours to replace."
-        if step.n == 1 else
-        "The earlier steps are already done and their code is in the workspace — read it if you need "
-        "it, but do not redo it."
-    )
+    """A stored-session control prompt; the phase instruction is in ``BuildIntent`` only."""
     parts = [
-        (f"You are executing step {step.n} of {len(steps)} of a plan the user already approved. "
-         f"Do THIS step and nothing else. {prior} Later steps are someone else's job; "
-         "do not start them."),
-        "", "## The other steps, for context only", step_index(steps, step.n),
+        ("Implement only the assigned phase in the canonical Build task supplied with this request. "
+         "Use the workspace as it is now. Do not redo earlier phases or start later phases."),
+        ("Files in the assigned phase are the edit allowlist. If a file is in both Files and Don't "
+         "touch, Files wins. Wire the phase into existing code with the smallest needed edit."),
     ]
-    if notes:
-        # What the finished phases said they built. The filesystem already carries their code, but not
-        # what's IN it — so without this a cold phase rediscovers the codebase by reading, which is
-        # both the bootstrap tax and the amnesia risk. Observed live 2026-08-06: a drawer step read
-        # types.ts, App.tsx and ReviewTable.tsx purely to learn what existed, and still got the props
-        # wrong. These are the agents' own closing summaries, so they cost nothing extra to produce —
-        # a few hundred tokens against the file reads they save.
-        parts += ["", "## What earlier steps built, in their own words", *notes]
-    parts += [
-        "", "## Your step", step.raw,
-        "",
-        # Precedence, spelled out, because a plan can contradict itself and the agent then stops
-        # rather than builds. Observed live 2026-08-06: a drawer step had ReviewTable.tsx under
-        # "Don't touch" but needed a row-click handler in it, and the phase was spent deliberating
-        # ("we're not supposed to modify existing components... let me think differently") before
-        # shipping a drawer nothing could open. Also rescues plans written by an older Sage.
-        ("Files is your allowlist: create or edit anything in it, including files an earlier step "
-         "wrote — wiring your work into what already exists is part of your step, not a violation. "
-         "Don't touch covers everything else, and if a file somehow appears in both, Files wins. "
-         "Never abandon the step because a file looked off limits: make the edit, keep it as small "
-         "as the wiring requires, and say what you touched in your summary."),
-    ]
-    if answers.strip():
-        parts += ["", "## Answers to the open questions", answers.strip()]
     if retry_errors.strip():
         parts += ["", "## Your previous attempt at this step failed", retry_errors.strip()]
     parts += [
@@ -4948,6 +4901,9 @@ class Project:
     # spend into one bucket — which is exactly the per-phase breakdown a phased build exists to be
     # judged on). None between turns.
     active_session_id: str | None = None
+    # The one immutable Build task projected into every provider request in the active turn. It is
+    # never persisted in OpenCode or the Project record.
+    active_build_intent: BuildIntent | None = None
     # The Build conversation the current turn belongs to. Build used to be one session and one
     # transcript per project; it is now per conversation, the way Chat already was, so that "New
     # conversation" in the rail means something (see docs/workbench/handoff.md). Set at the top of
@@ -14614,6 +14570,7 @@ class Orchestrator:
                 return
             self._project.turn_tree_baseline = ""
             self._project.active_session_id = None
+            self._project.active_build_intent = None
             self._project.turn_app = None
             self._project.turn_attached = None
             self._project.turn_attachment_failures.clear()
@@ -16489,7 +16446,8 @@ class Orchestrator:
                       resources: list[dict] | None = None, *, is_approval: bool = False,
                       user_text: str | None = None, mode: Mode | None = None,
                       session_id: str | None = None, brief: PlanStep | None = None,
-                      explicit_references: list[dict] | None = None):
+                      explicit_references: list[dict] | None = None,
+                      build_intent: BuildIntent | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -16512,6 +16470,7 @@ class Orchestrator:
         tool_observer = timing.tool_observer()
         with timing.span("setup.seed"):
             project = self._ensure_seeded()
+        project.active_build_intent = None
         mode_at_start = mode or project.control.snapshot().mode
         is_question = _looks_like_question(prompt)
         arch = not is_approval and _wants_architecture(prompt)
@@ -17561,6 +17520,10 @@ class Orchestrator:
         # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
         # it re-sends the same turn into a session that heard none of this — so it puts them back.
         first_send_extras = (mention_files, resource_note, chat_note, unusable_note, ambiguous_note, source_note)
+        if not gate and not answer_only and not arch:
+            project.active_build_intent = build_intent or BuildIntent.for_direct(prompt)
+            if project.active_build_intent.kind != "phase":
+                current = _BUILD_CONTROL_PROMPT
         # (b) Retry budget, measured. One pass of this loop is one send_prompt and everything the
         # agent does before Sage decides whether to nudge it again, so the spans it opens ARE the
         # answer to "how many model turns does a build spend, and where do they go". Named by what
@@ -18810,6 +18773,9 @@ class Orchestrator:
                 project.record.patch_plan_doc_meta(approved_doc["id"], status="draft", approvals=[])
             else:
                 self.review_plan_doc(approved_doc["id"], {"action": "approve"})
+        source_requests = tuple(
+            (approved_doc or {}).get("sourceRequestMessages") or ()
+        ) if (approved_doc or {}).get("sourceRequestMessagesVersion") == 1 else ()
         explicit_references = live_reference.plan_records(
             (approved_doc or {}).get("explicitReferences")
         )
@@ -18842,7 +18808,8 @@ class Orchestrator:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
                                                 start_step=resume_from, mentions=mentions,
-                                                explicit_references=explicit_references)
+                                                explicit_references=explicit_references,
+                                                source_requests=source_requests)
             else:
                 # The bubble is what the person did, not what we sent. Approving from the card passes
                 # no `user_text`, and _build_stream's fallback is the prompt itself — so the whole
@@ -18850,11 +18817,13 @@ class Orchestrator:
                 # if the user had typed it. _phased_approve has always written "Approved the plan."
                 # here; this is the same sentence on the path that runs when phasing is off.
                 yield from self._build_stream(
-                    _approve_prompt(plan_md, answers,
-                                   handoff_note=chat_handoff.implement_note(project.app_for_turn().path)),
+                    _BUILD_CONTROL_PROMPT,
                     mentions, is_approval=True, mode=run_as,
                     user_text=user_text if user_text is not None else "Approved the plan.",
-                    explicit_references=explicit_references)
+                    explicit_references=explicit_references,
+                    build_intent=BuildIntent.for_approved(
+                        source_requests, plan_md, answers,
+                        chat_handoff.implement_note(project.app_for_turn().path)))
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs
@@ -18901,7 +18870,8 @@ class Orchestrator:
 
     def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None,
                         start_step: int = 0, mentions: list[str] | None = None,
-                        explicit_references: list[dict] | None = None):
+                        explicit_references: list[dict] | None = None,
+                        source_requests: tuple[str, ...] = ()):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.
 
         The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
@@ -19009,7 +18979,7 @@ class Orchestrator:
             yield persist({"type": "step-start", "n": step.n, "total": len(steps),
                            "label": step.label, "files": step.files})
             outcome = yield from self._run_step(project, client, step, steps, answers, notes,
-                                                mentions, explicit_references)
+                                                mentions, explicit_references, source_requests)
             if outcome == "stopped":
                 # The user rejected the whole build, so leaving three of six phases on disk would
                 # leave a state they never asked for and can't describe. Same semantics as Stop on a
@@ -19079,7 +19049,8 @@ class Orchestrator:
     def _run_step(self, project: Project, client: OpenCodeClient, step: PlanStep,
                   steps: list[PlanStep], answers: str, notes: list[str] | None = None,
                   mentions: list[str] | None = None,
-                  explicit_references: list[dict] | None = None):
+                  explicit_references: list[dict] | None = None,
+                  source_requests: tuple[str, ...] = ()):
         """Run one phase, retrying once in another fresh session if it fails. Returns True, the
         string "stopped", or a failure reason; swallows the phase's own terminal `done` so the build
         emits exactly one."""
@@ -19093,6 +19064,8 @@ class Orchestrator:
         escalated = False
         errors = ""
         reason = "the step did not complete"
+        phase_intent = BuildIntent.for_phase(
+            source_requests, step.raw, step_index(steps, step.n), answers, notes or ())
 
         outcome: dict | None = None
         try:
@@ -19120,7 +19093,8 @@ class Orchestrator:
                                                            project.workspace.stack.entry_file),
                                              mentions, is_approval=True, mode=Mode.IMPLEMENT,
                                              session_id=sid, brief=step,
-                                             explicit_references=explicit_references):
+                                             explicit_references=explicit_references,
+                                             build_intent=phase_intent):
                     if ev["type"] == "stopped":
                         return "stopped"
                     if ev["type"] == "done":
@@ -19149,6 +19123,7 @@ class Orchestrator:
                 yield outcome
             raise
         finally:
+            project.active_build_intent = None
             if escalated:
                 project.control.pick(original_pick, original_effort)
         return reason

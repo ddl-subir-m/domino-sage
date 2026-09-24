@@ -95,6 +95,15 @@ def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
     """
     orch, oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"}, broken_write=True),
                                 Turn(text="Added the dashboard.", writes={"src/App.tsx": "app\n"})])
+    project = orch.project(start_preview=False)
+    intents = []
+    send_prompt = oc.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    oc.send_prompt = capture
 
     events = list(orch.build_stream("build me a dashboard"))
 
@@ -106,11 +115,13 @@ def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
     # into every later request, so re-sending there risks a turn that cannot start at all.
     assert len(oc.sessions) == 2
     assert oc.prompts[1]["session"] != oc.prompts[0]["session"]
-    # It is the same request, not a nudge. The blocks that ride the first send only — the user's
-    # attachments and the Resource/Chat notes — are cleared after it, and a fresh session heard
-    # none of them, so the retry has to carry them again.
+    # It is the same canonical request, not a new task. The new session reuses the in-memory intent.
+    assert len(intents) == 2 and intents[0] is intents[1]
+    assert intents[0].source_requests == ("build me a dashboard",)
+    # The blocks that ride the first send only — attachments and support notes — are restored for
+    # the fresh session. The exact task stays outside OpenCode's stored prompt.
     first, retry = oc.prompts[0]["text"], oc.prompts[1]["text"]
-    assert "build me a dashboard" in retry, "the person's own sentence is re-sent"
+    assert "build me a dashboard" not in first and "build me a dashboard" not in retry
     assert "Existing source paths (JSON array" in retry, "so is the source listing"
     # This used to be `retry.startswith(first)`, and it stopped being true on purpose (#496). One
     # of those blocks is not something the person said — it is a fact about the disk, and the disk
@@ -125,9 +136,6 @@ def test_a_broken_call_is_sent_again_before_anybody_is_told(tmp_path: Path):
     # does not support — see test_a_cut_stream_is_named_for_what_cut_it.py, which pins that half.
     assert "write call arrived with arguments that did not parse" in retry
     assert "read it before you change it" in retry
-    # The retry note is last, after the person's sentence, which is the ordering the prompt's own
-    # join promises: whatever Sage adds never gets between the person and the end of the message.
-    assert retry.index("build me a dashboard") < retry.index("read it before you change it")
 
 
 def test_the_retry_note_rides_the_retry_only(tmp_path: Path):
