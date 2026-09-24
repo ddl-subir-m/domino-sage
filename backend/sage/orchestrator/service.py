@@ -13,6 +13,7 @@ import base64
 import concurrent.futures
 import contextlib
 import filecmp
+import functools
 import hashlib
 import json
 import logging
@@ -61,6 +62,11 @@ from ..liveread import mcp as live_mcp
 from ..liveread import reference as live_reference
 from ..liveread import result as live_result
 from ..liveread import run as live_read
+from ..pre_edit_guard import (
+    PreEditAction,
+    PreEditDecision,
+    PreEditGuard,
+)
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
 from ..preview.supervisor import UvicornSupervisor, ViteSupervisor
@@ -442,7 +448,7 @@ _PERSISTED_EVENTS = frozenset({
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
     "mentions-ambiguous",
     "app_change", "build-stalled", "gateway-call", "gateway-alias-unbound",
-    "data-source-unasked", "data-source-failed",
+    "data-source-unasked", "data-source-failed", "build-recovery", "build-pre-edit-limit",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -544,6 +550,10 @@ class TurnWedged(Exception):
     from the fix instead of from the bug — a wedged workspace someone can restart beats a corrupted
     working tree nobody can detect. The turn has already said so in its own stream before this is
     raised, so nothing above needs to report it a second time."""
+
+
+class BuildSessionCreationCancelled(Exception):
+    """Stop won before a fresh implementation session became active."""
 
 
 def turn_pending_message(ahead: int) -> str:
@@ -4830,6 +4840,12 @@ class Project:
     # The one immutable Build task projected into every provider request in the active turn. It is
     # never persisted in OpenCode or the Project record.
     active_build_intent: BuildIntent | None = None
+    # One guard for the full user-started implementation Build. Phases and transport replacement
+    # change sessions, but they do not change this attempt budget or its first-edit witness.
+    pre_edit_guard: PreEditGuard | None = None
+    # Serializes user-side app writes and rebaseline with every authoritative pre-edit tree check.
+    # The lock order is always this lock, then PreEditGuard's private lock.
+    pre_edit_tree_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     # The Build conversation the current turn belongs to. Build used to be one session and one
     # transcript per project; it is now per conversation, the way Chat already was, so that "New
     # conversation" in the rail means something (see docs/workbench/handoff.md). Set at the top of
@@ -5505,6 +5521,19 @@ def _ambiguous_mentions(resolved: list[dict] | None, prompt: str) -> str:
         lines.append(f"{token} matches {len(paths)} files, so all of them were included: "
                      f"{', '.join(paths)}. Pick one from the @ menu to use just that file.")
     return " ".join(lines)
+
+
+def _coordinate_user_tree_change(method):
+    """Serialize a user-side app write with the pre-edit witness and rebaseline it on exit."""
+    @functools.wraps(method)
+    def coordinated(self, *args, **kwargs):
+        project = self.project()
+        with project.pre_edit_tree_lock:
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                self._rebaseline_turn(project)
+    return coordinated
 
 
 class Orchestrator:
@@ -6986,17 +7015,22 @@ class Orchestrator:
             project.queries.stop()
             project.supervisor = _supervisor_for(workspace.path, domino_base_prefix())
             project.queries = PreviewQueries(workspace.path, self._wm.template)
-        project.workspace = workspace
-        project.session_id = None
-        # A NEW list rather than a clear: a turn in flight pinned the one it started with, and
-        # emptying that one under it would leave its end-of-turn repairs with nothing to restore
-        # from (see Project.turn_attached and _restore_attachments).
-        project.attached = []
-        if self._prepare_app_files():
-            self._restart_preview_for_config_change(project)
-        self._voice_agents_md(project)   # the app being bound to may have been seeded just now
-        self._splice_instructions(project)
-        self._rehydrate_attached(project)
+        with project.pre_edit_tree_lock:
+            project.workspace = workspace
+            project.session_id = None
+            # A NEW list rather than a clear: a turn in flight pinned the one it started with, and
+            # emptying that one under it would leave its end-of-turn repairs with nothing to restore
+            # from (see Project.turn_attached and _restore_attachments).
+            project.attached = []
+            if self._prepare_app_files():
+                self._restart_preview_for_config_change(project)
+            self._voice_agents_md(project)   # the app being bound to may have been seeded just now
+            self._splice_instructions(project)
+            self._rehydrate_attached(project)
+            # A switch to another app must not move the Build's pinned baseline. Switching back can
+            # repair that pinned app, so include those user-side writes before releasing the witness.
+            if workspace.path == project.app_for_turn().path:
+                self._rebaseline_turn(project)
         return project
 
     @staticmethod
@@ -7388,20 +7422,39 @@ class Orchestrator:
         project: Project,
         client: OpenCodeClient,
         conversation: str | None,
+        *,
+        reason: str = "approved_plan",
+        persist: bool = True,
     ) -> str:
-        """Create and commit the clean session selected for an approved Build."""
-        app = project.app_for_turn()
+        """Create and publish a clean session as one decision with Stop."""
+        with self._stop_control_lock:
+            if project.stop_requested:
+                raise BuildSessionCreationCancelled()
+            app = project.app_for_turn()
         new_id = client.create_session(directory=str(app.path))
-        timing.implementation_session(
-            fresh=True, reason="approved_plan", created=True,
-            persisted=False, dispatch_started=False,
-        )
-        project.record.write_session_id(new_id, conversation, app.app_id)
-        timing.implementation_session(
-            fresh=True, reason="approved_plan", created=True,
-            persisted=True, dispatch_started=False,
-        )
-        project.session_id = new_id
+        with self._stop_control_lock:
+            if project.stop_requested:
+                # Stop may have won while the network request was creating the session. It has
+                # no prompt and is not persisted or published; interrupt it so it cannot become
+                # a second writer if the server started work during session setup.
+                try:
+                    client.interrupt(new_id)
+                except Exception:
+                    log.exception("build session: unused session interrupt failed")
+                raise BuildSessionCreationCancelled()
+            timing.implementation_session(
+                fresh=True, reason=reason, created=True,
+                persisted=False, dispatch_started=False,
+            )
+            if persist:
+                project.record.write_session_id(new_id, conversation, app.app_id)
+                timing.implementation_session(
+                    fresh=True, reason=reason, created=True,
+                    persisted=True, dispatch_started=False,
+                )
+                project.session_id = new_id
+            # Published under the same lock Stop uses to choose which session to interrupt.
+            project.active_session_id = new_id
         return new_id
 
     @staticmethod
@@ -14527,6 +14580,7 @@ class Orchestrator:
             self._project.turn_tree_baseline = ""
             self._project.active_session_id = None
             self._project.active_build_intent = None
+            self._project.pre_edit_guard = None
             self._project.fresh_session_preflight = False
             self._project.turn_app = None
             self._project.turn_attached = None
@@ -16400,6 +16454,32 @@ class Orchestrator:
                        "the request touches, in ONE message. "
                        "Search only if the needed path is not listed.")
 
+    @classmethod
+    def _pre_edit_recovery_packet(
+        cls, project: Project, intent: BuildIntent, baseline: str,
+    ) -> str:
+        """Build the content-free recovery orientation around the unchanged BuildIntent."""
+        objective = intent.phase_brief.strip()
+        if not objective and intent.authoritative_plan:
+            steps = parse_steps(intent.authoritative_plan)
+            objective = steps[0].raw if steps else intent.authoritative_plan.strip()
+        if not objective:
+            objective = next((item.strip() for item in intent.source_requests if item.strip()), "")
+        changed = project.snapshot.changed_paths(baseline, project.snapshot.working_tree_hash())
+        parts = [
+            ("The previous attempt made no app edit. This is the only clean recovery. "
+             "Implement the same Build intent now."),
+            cls._build_source_note(project.app_for_turn().path),
+        ]
+        if changed:
+            parts.append(
+                "App-relative paths changed since this Build started (JSON array):\n"
+                + json.dumps(changed)
+            )
+        if objective:
+            parts.append("First unfinished implementation objective:\n" + objective)
+        return "\n\n".join(part for part in parts if part)
+
     def _build_stream(self, prompt: str, mentions: list[str] | None = None,
                       resources: list[dict] | None = None, *, is_approval: bool = False,
                       user_text: str | None = None, mode: Mode | None = None,
@@ -16801,6 +16881,14 @@ class Orchestrator:
         with timing.span("gate.commit_before_turn"):
             project.snapshot.commit_before_turn()
         history_baseline = project.app_for_turn().history_len()
+        if not gate and not answer_only and not arch and project.pre_edit_guard is None:
+            with project.pre_edit_tree_lock:
+                baseline = project.snapshot.working_tree_hash()
+                project.pre_edit_guard = PreEditGuard(
+                    self._build_policy,
+                    baseline,
+                    project.snapshot.working_tree_hash,
+                )
 
         # Pin the mode for the whole turn before anything reads it (token-scoped, exactly like the
         # read-only guarantee armed further down). The shim consults control.snapshot() on every
@@ -17132,6 +17220,8 @@ class Orchestrator:
             )
 
         def handle_stop() -> dict:
+            if project.pre_edit_guard is not None:
+                project.pre_edit_guard.claim_cancellation()
             project.stop_requested = False
             project.shim.data_use.finish_image_delivery(
                 operation_ids=tuple(image_reference_operations)
@@ -17543,6 +17633,10 @@ class Orchestrator:
                 with timing.span("setup.fresh_session"):
                     sid = self._replace_build_session(
                         project, client, project.build_conversation)
+            except BuildSessionCreationCancelled:
+                self._turn_gave_up = True
+                yield handle_stop()
+                return
             except Exception:
                 log.error("approved build: clean implementation session setup failed")
                 self._turn_gave_up = True
@@ -17572,6 +17666,134 @@ class Orchestrator:
         # nudge/fix iterations of the loop below, so we never re-emit our own earlier parts either.
         seen: set[tuple[str, object]] = self._seen_baseline(
             client, sid, limit=self._build_policy.poll_message_limit)
+
+        def apply_pre_edit_decision(decision: PreEditDecision):
+            """Apply the atomic guard winner and return its resulting action."""
+            nonlocal sid, seen, current, mention_files, resource_note, chat_note
+            nonlocal unusable_note, ambiguous_note, source_note, broken_retry_note
+            nonlocal implementation_session_reason, implementation_session_created
+            nonlocal implementation_session_persisted
+            guard = project.pre_edit_guard
+            if guard is None or decision.action in {PreEditAction.ROUTE, PreEditAction.DISARM}:
+                return decision.action
+            if decision.action is PreEditAction.FAIL:
+                if owns_turn:
+                    self._turn_gave_up = True
+                restore_mode()
+                message = (
+                    "Sage could not verify the app working tree before the clean retry. Try again."
+                    if decision.trigger.value == "tree_witness_unavailable"
+                    else "Sage could not measure the model request before routing it. Try again."
+                )
+                yield persist({"type": "error", "message": message})
+                yield persist({
+                    "type": "done", "ok": False,
+                    "decision": decision.trigger.value,
+                })
+                return PreEditAction.FAIL
+            if decision.action is PreEditAction.STOP:
+                if owns_turn:
+                    self._turn_gave_up = True
+                restore_mode()
+                yield persist({
+                    "type": "build-pre-edit-limit",
+                    "message": ("Sage stopped before changing the app because the clean retry "
+                                "also reached the pre-edit work limit."),
+                    "trigger": decision.trigger.value,
+                    "kept": False,
+                })
+                yield persist({"type": "done", "ok": False, "decision": "pre_edit_limit"})
+                return PreEditAction.STOP
+
+            stopped = self._stop_wedged_session(
+                client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
+            if not stopped:
+                guard.fail_session_abort()
+                if owns_turn:
+                    self._turn_gave_up = True
+                yield from refused_to_stop(in_tool=False, quiet_for=0.0)
+            if project.stop_requested:
+                guard.claim_cancellation()
+                yield handle_stop()
+                return PreEditAction.STOP
+            try:
+                # User-side writes, the second authoritative witness, recovery ownership, and the
+                # fresh session form one tree decision. Stop is serialized inside the replacement.
+                with project.pre_edit_tree_lock:
+                    granted = guard.begin_recovery()
+                    if granted.action is PreEditAction.RECOVER:
+                        sid = self._replace_build_session(
+                            project,
+                            client,
+                            project.build_conversation,
+                            reason="pre_edit_recovery",
+                            persist=owns_turn,
+                        )
+                        # Session publication and guard activation are one decision with Stop.
+                        # Stop may win after the network create returns but before this point.
+                        with self._stop_control_lock:
+                            if project.stop_requested or not guard.start_recovery():
+                                raise BuildSessionCreationCancelled()
+                        current = self._pre_edit_recovery_packet(
+                            project, project.active_build_intent, guard.baseline)
+            except BuildSessionCreationCancelled:
+                guard.claim_cancellation()
+                yield handle_stop()
+                return PreEditAction.STOP
+            except Exception:
+                guard.fail_recovery_start()
+                if owns_turn:
+                    self._turn_gave_up = True
+                restore_mode()
+                yield persist({
+                    "type": "error",
+                    "message": "Sage could not start the clean recovery session. Try this Build again.",
+                })
+                yield persist({
+                    "type": "done", "ok": False,
+                    "decision": "implementation session unavailable",
+                })
+                return PreEditAction.FAIL
+            if granted.action is PreEditAction.DISARM:
+                return PreEditAction.DISARM
+            if granted.action is PreEditAction.FAIL:
+                guard.consume_pending()
+                yield persist({
+                    "type": "error",
+                    "message": ("Sage could not verify the app working tree before the "
+                                "clean retry. Try again."),
+                })
+                yield persist({
+                    "type": "done", "ok": False,
+                    "decision": "tree_witness_unavailable",
+                })
+                return PreEditAction.FAIL
+            if granted.action is not PreEditAction.RECOVER:
+                yield handle_stop()
+                return PreEditAction.STOP
+            implementation_session_reason = "pre_edit_recovery"
+            implementation_session_created = True
+            implementation_session_persisted = owns_turn
+            # Publish only after the final tree witness, Stop arbitration, and fresh-session setup
+            # have all granted recovery. A late edit or Stop must not leave a false restart row.
+            yield persist({
+                "type": "build-recovery",
+                "reason": "pre_edit_limit",
+                "attempt": 1,
+                "message": "No app edit was made. Sage is restarting once with a clean context.",
+            })
+            # Restore only user-approved carriers. Do not replay assistant/tool/protocol text, chat
+            # context, the old implementation nudge, or a broken-call repair note.
+            mention_files = first_send_extras[0]
+            resource_note = first_send_extras[1]
+            chat_note = ""
+            unusable_note = ""
+            ambiguous_note = ""
+            source_note = ""
+            broken_retry_note = ""
+            seen = self._seen_baseline(
+                client, sid, limit=self._build_policy.poll_message_limit)
+            return PreEditAction.RECOVER
         # (b) Retry budget, measured. One pass of this loop is one send_prompt and everything the
         # agent does before Sage decides whether to nudge it again, so the spans it opens ARE the
         # answer to "how many model turns does a build spend, and where do they go". Named by what
@@ -17991,6 +18213,11 @@ class Orchestrator:
                 # finished, told it was looping. A turn that is still running is the only one
                 # there is anything left to stop. Chat draws the same line for the same reason.
                 if looped:
+                    if (project.pre_edit_guard is not None
+                            and not project.pre_edit_guard.claim_existing_terminal()):
+                        # A threshold/no-edit transition already owns the atomic terminal choice.
+                        # Leave the poll loop so orchestration consumes that one pending decision.
+                        break
                     if shell_capped:
                         log.warning("build: the turn ran %d shell calls and changed nothing — "
                                     "stopping", bash_calls)
@@ -18051,6 +18278,9 @@ class Orchestrator:
                 chunk_at = project.last_stream_chunk_at
                 alive = max(last_event, chunk_at if chunk_at >= start else 0.0)
                 if appeared and time.monotonic() - alive >= quiet_limit:
+                    if (project.pre_edit_guard is not None
+                            and not project.pre_edit_guard.claim_existing_terminal()):
+                        break
                     quiet_for = time.monotonic() - alive
                     log.error("build turn wedged: no OpenCode output for %.0fs (%s) — giving up",
                               quiet_for, "a call was still open" if tool_open else "nothing open")
@@ -18113,6 +18343,22 @@ class Orchestrator:
                             "blind. Check the session directory.", sid)
             tap.close()
 
+            guard = project.pre_edit_guard
+            pending_pre_edit = guard.consume_pending() if guard is not None else None
+            if pending_pre_edit is not None:
+                resumed = yield from apply_pre_edit_decision(pending_pre_edit)
+                if resumed is PreEditAction.RECOVER:
+                    iterate_reason = "clean pre-edit recovery"
+                    continue
+                if resumed is not PreEditAction.DISARM:
+                    return
+                # The abort was ours, after a late authoritative edit cancelled recovery. Do not
+                # report that controlled abort as an upstream model failure.
+                turn_failure = None
+            if project.stop_requested:
+                yield handle_stop()
+                return
+
             # Either witness, one branch. The wording, the recall key, the kept plan and the
             # `_turn_gave_up` flag are all right for both — what differs is only who noticed, and a
             # person reading the transcript is owed the same sentence either way. The shim's witness
@@ -18121,6 +18367,17 @@ class Orchestrator:
             err = project.last_gateway_error or (
                 {"message": _error_raw(turn_failure)} if turn_failure is not None else None)
             if err is not None:
+                if (project.pre_edit_guard is not None
+                        and not project.pre_edit_guard.claim_existing_terminal()):
+                    winner = project.pre_edit_guard.consume_pending()
+                    if winner is not None:
+                        resumed = yield from apply_pre_edit_decision(winner)
+                        if resumed is PreEditAction.RECOVER:
+                            iterate_reason = "clean pre-edit recovery"
+                            continue
+                    if project.stop_requested:
+                        yield handle_stop()
+                    return
                 # This turn gave up, exactly as a wedged one does: the gateway never answered, so
                 # whatever the turn was asked to do did not happen. Said here so an approve turn's
                 # `finally` keeps the plan instead of archiving one it never built from — otherwise
@@ -18201,6 +18458,8 @@ class Orchestrator:
                 # both. Same directory as `_ensure_session` uses — the Built App, not the
                 # workspace root (ADR-0008).
                 broken_retries += 1
+                if project.pre_edit_guard is not None:
+                    project.pre_edit_guard.note_session_replacement()
                 # The evidence, not just the tool name. A tail that closes cleanly means a bad escape,
                 # which no cap change would fix. A tail that is an unclosed string means the answer
                 # stopped mid-arguments, and the line shim/keepalive.py logged a moment earlier in
@@ -18242,6 +18501,17 @@ class Orchestrator:
                 continue
 
             if broken_call is not None:
+                if (project.pre_edit_guard is not None
+                        and not project.pre_edit_guard.claim_existing_terminal()):
+                    winner = project.pre_edit_guard.consume_pending()
+                    if winner is not None:
+                        resumed = yield from apply_pre_edit_decision(winner)
+                        if resumed is PreEditAction.RECOVER:
+                            iterate_reason = "clean pre-edit recovery"
+                            continue
+                    if project.stop_requested:
+                        yield handle_stop()
+                    return
                 # The retry above broke the same way, so this is a give-up, exactly as the gateway
                 # case is. It has to be said out loud, because the shape it leaves behind is quiet —
                 # the files written before the break are usually orphans nothing imports yet, so the
@@ -18426,9 +18696,35 @@ class Orchestrator:
             # ordering also means a gated turn resolved its plan above before we got here, so a
             # marker on a plan turn is stripped from the card and otherwise ignored.
             if nothing_to_build and not agent_wrote():
+                if (project.pre_edit_guard is not None
+                        and not project.pre_edit_guard.claim_existing_terminal()):
+                    winner = project.pre_edit_guard.consume_pending()
+                    if winner is not None:
+                        resumed = yield from apply_pre_edit_decision(winner)
+                        if resumed is PreEditAction.RECOVER:
+                            iterate_reason = "clean pre-edit recovery"
+                            continue
+                    if project.stop_requested:
+                        yield handle_stop()
+                    return
                 restore_mode()
                 yield persist({"type": "done", "ok": True, "decision": "nothing to build"})
                 return
+
+            if project.pre_edit_guard is not None:
+                with project.pre_edit_tree_lock:
+                    pre_edit_completion = project.pre_edit_guard.no_edit_completion()
+                if pre_edit_completion.action in {
+                        PreEditAction.RECOVER, PreEditAction.STOP, PreEditAction.FAIL}:
+                    project.pre_edit_guard.consume_pending()
+                    resumed = yield from apply_pre_edit_decision(pre_edit_completion)
+                    if resumed is PreEditAction.RECOVER:
+                        iterate_reason = "clean pre-edit recovery"
+                        continue
+                    if resumed is PreEditAction.DISARM:
+                        pass
+                    else:
+                        return
 
             yield {"type": "typecheck-start"}
             with timing.span("typecheck"):
@@ -19022,6 +19318,12 @@ class Orchestrator:
         # What the app's code looked like before any phase ran, so a build that dies halfway can
         # still say whether it changed anything — see the failure path below (#56).
         tree_before = project.snapshot.working_tree_hash()
+        with project.pre_edit_tree_lock:
+            project.pre_edit_guard = PreEditGuard(
+                self._build_policy,
+                tree_before,
+                project.snapshot.working_tree_hash,
+            )
         # And what `examples/` held before any phase ran, for the Kept rows pass in persist(). One
         # snapshot for the whole build rather than one per phase: `before` means "this turn's
         # writes", and the phases are one turn — a per-phase baseline would also let phase 2 re-decide
@@ -19080,6 +19382,12 @@ class Orchestrator:
                 project.app_for_turn().set_plan_retry_step(0)
                 build_diagnostics.observe({"type": "stopped"})
                 yield {"type": "stopped"}
+                return
+            if outcome == "pre_edit_limit":
+                project.app_for_turn().set_last_turn_failed(True)
+                yield persist({"type": "step-done", "n": step.n, "total": len(steps),
+                               "ok": False, "decision": "pre_edit_limit"})
+                yield persist({"type": "done", "ok": False, "decision": "pre_edit_limit"})
                 return
             if outcome is not True:
                 failed = (step, str(outcome))
@@ -19162,6 +19470,8 @@ class Orchestrator:
                            "detail": f"phase {step.n} failed — retrying on {project.shim.catalog.plan}"}
                 # A brand-new session even on the retry: the first attempt's failure is now sitting in
                 # that session's context, and it's the most misleading thing a retry could read.
+                if project.pre_edit_guard is not None and project.active_session_id is not None:
+                    project.pre_edit_guard.note_session_replacement()
                 sid = client.create_session(directory=str(project.app_for_turn().path))
                 # Every phase is pinned to Implement, never the user's mode. A phase begins with a
                 # fresh user message, so the per-inference classifier would read PLAN and route the
@@ -19193,6 +19503,8 @@ class Orchestrator:
                     return True
                 if outcome is not None:
                     reason = str(outcome.get("decision") or reason)
+                    if reason == "pre_edit_limit":
+                        return reason
         except TurnWedged:
             # A phase's `done` is swallowed above so one build ends once, not once per phase — but a
             # wedge never reaches the ending in _phased_approve that would emit the build's own, so
@@ -20174,6 +20486,8 @@ class Orchestrator:
                     return False
             project = self.project()
             project.stop_requested = True
+            if project.pre_edit_guard is not None:
+                project.pre_edit_guard.claim_cancellation()
             # Capture the LIVE session under the decision lock. The interrupt is a network call and
             # must not hold up an unrelated decline commit.
             sid = project.active_session_id
@@ -21890,6 +22204,7 @@ class Orchestrator:
         return self._labelled_bindings(
             [b.to_dict() for b in parse_bindings(self.project().workspace.read_bindings())])
 
+    @_coordinate_user_tree_change
     def bind_llm_alias(self, alias_id: str) -> list[dict]:
         """Record that this app uses one LLM Alias, and return the new Binding list.
 
@@ -21909,6 +22224,7 @@ class Orchestrator:
             {k: alias.get(k) for k in ("description", "capabilities", "reasoning_efforts",
                                        "reasoning_efforts_with_tools", "reasoning_note")})
 
+    @_coordinate_user_tree_change
     def bind_model_api(self, model_api_id: str) -> list[dict]:
         """Record that this app uses one Model API, and return the new Binding list (#9).
 
@@ -21952,6 +22268,7 @@ class Orchestrator:
             Binding(KIND_MODEL_API, model_api_id, name, name),
             {"description": found.description, "project": found.project_name} if found else {})
 
+    @_coordinate_user_tree_change
     def bind_dataset(self, dataset_id: str) -> list[dict]:
         """Record that this app uses one Dataset, and return the new Binding list (#141).
 
@@ -21975,6 +22292,7 @@ class Orchestrator:
             Binding(KIND_DATASET, asset["id"], name, name),
             {"project": asset.get("project"), "path": asset.get("mount_path")})
 
+    @_coordinate_user_tree_change
     def bind_data_source(
         self, source_id: str, database: str = "", schema: str = "", table: str = "",
     ) -> list[dict]:
@@ -22340,6 +22658,7 @@ class Orchestrator:
             "sources": sources,
         }
 
+    @_coordinate_user_tree_change
     def share_sample_rows(self, source_id: str, tables: list[str],
                           limit: int = 5) -> dict:
         """Show the agent a few real rows from the tables the creator picked (#16).
@@ -22378,6 +22697,7 @@ class Orchestrator:
         return {"shared": [s.rows.table for s in fresh],
                 "rows": sum(len(s.rows.rows) for s in fresh)}
 
+    @_coordinate_user_tree_change
     def clear_sample_rows(self, source_id: str = "") -> dict:
         """Stop showing the agent rows from one Data Source, or from all of them.
 
@@ -22555,6 +22875,7 @@ class Orchestrator:
             # the disk refused must not fail the bind the creator asked for.
             log.warning("membership: could not record %s in the project", rid, exc_info=True)
 
+    @_coordinate_user_tree_change
     def unbind(self, kind: str, resource_id: str) -> dict:
         """Drop one Binding. Removing a record that is already gone is not an error: the creator
         wanted it gone, and it is.
@@ -23052,6 +23373,7 @@ class Orchestrator:
                 _prune_empty_dirs(dest.parent, prune_root)
         return size
 
+    @_coordinate_user_tree_change
     def attach_file(self, dataset_id: str, file_path: str, *,
                     local_source: Path | None = None, added_by: str | None = None,
                     conversation_id: str | None = None) -> dict:
@@ -23114,6 +23436,7 @@ class Orchestrator:
                 "descriptor": entry.get("descriptor"),
                 "status": project.status()}
 
+    @_coordinate_user_tree_change
     def attach_folder(self, dataset_id: str, folder: str) -> dict:
         """Attach every file below one Dataset folder, at any depth including the root (ADR-0029).
 
@@ -23275,6 +23598,7 @@ class Orchestrator:
             size = self._download_attachment(asset, file_path, dest, _copied_bytes(root), root)
         return {"path": rel, "dataset": asset.name, "size": size}
 
+    @_coordinate_user_tree_change
     def detach_file(self, path: str) -> dict:
         """Remove attachments without racing a recovery publication."""
         with self._attachment_lock:
@@ -23335,6 +23659,7 @@ class Orchestrator:
                 "kept_copies": sorted(set(kept) - set(removed)), "refs": still_used,
                 "kept_fetch": kept_fetch, "status": project.status()}
 
+    @_coordinate_user_tree_change
     def detach_folder(self, dataset_id: str, folder: str) -> dict:
         """Remove attachments without racing a recovery publication."""
         with self._attachment_lock:
@@ -23539,6 +23864,7 @@ class Orchestrator:
                 "removed_copies": sorted(set(removed)), "kept_copies": sorted(set(kept) - set(removed)),
                 "status": project.status()}
 
+    @_coordinate_user_tree_change
     def upload_file(self, filename: str, data: bytes, dataset_id: str | None = None) -> dict:
         """Write an uploaded file into a writable dataset mount (persisted, and outside git), then
         attach it under public/data/ like any dataset file.
@@ -23702,6 +24028,7 @@ class Orchestrator:
                     return a
         return writable[0] if writable else None
 
+    @_coordinate_user_tree_change
     def delete_file(self, path: str) -> dict:
         """Remove attachments without racing a recovery publication."""
         with self._attachment_lock:
@@ -24757,11 +25084,15 @@ class Orchestrator:
         discard_changes() that deletes the file the user just uploaded. No-op when no turn is
         running. Best-effort: if the hash can't be taken we leave the old baseline, which fails the
         safe way (a false write report, never a missed one)."""
-        if not project.turn_tree_baseline:
+        if not project.turn_tree_baseline and project.pre_edit_guard is None:
             return
-        new = project.snapshot.working_tree_hash()
-        if new:
-            project.turn_tree_baseline = new
+        with project.pre_edit_tree_lock:
+            new = project.snapshot.working_tree_hash()
+            if new:
+                if project.turn_tree_baseline:
+                    project.turn_tree_baseline = new
+                if project.pre_edit_guard is not None:
+                    project.pre_edit_guard.rebaseline(new)
 
     _INSTR_BEGIN = "<!-- sage:instructions:begin -->"
     _INSTR_END = "<!-- sage:instructions:end -->"
@@ -24781,8 +25112,20 @@ class Orchestrator:
 
     def write_instructions(self, project: Project, content: str) -> None:
         """Record the user's project instructions, and render them where the agent reads them."""
-        project.record.write_instructions(content)
-        self._splice_instructions(project, strict=True)
+        with project.pre_edit_tree_lock:
+            try:
+                project.record.write_instructions(content)
+                self._splice_instructions(project, strict=True)
+            finally:
+                self._rebaseline_turn(project)
+
+    def write_project_file(self, project: Project, target: Path, content: str) -> None:
+        """Save one existing app file as a user-side edit coordinated with the Build witness."""
+        with project.pre_edit_tree_lock:
+            try:
+                target.write_text(content)
+            finally:
+                self._rebaseline_turn(project)
 
     def _voice_agents_md(self, project: Project) -> None:
         """Resolve the template's brand tokens in a freshly seeded AGENTS.md (#114).

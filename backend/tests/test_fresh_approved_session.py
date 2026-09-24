@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import httpx
@@ -12,6 +13,7 @@ from sage.build_policy import BuildPolicy
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
+from sage.pre_edit_guard import PreEditAction, PreEditGuard, PreEditState
 from sage.router.models import Mode, ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
@@ -99,6 +101,7 @@ def _build(
     turns: list[Turn],
     *,
     build_policy: BuildPolicy | None = None,
+    opencode_type: type[RecordingOpenCode] = RecordingOpenCode,
 ) -> tuple[Orchestrator, RecordingOpenCode]:
     template = tmp / "template"
     (template / "src").mkdir(parents=True)
@@ -107,7 +110,7 @@ def _build(
     (template / "package.json").write_text("{}")
     (template / "AGENTS.md").write_text("# Build this app\n")
     workspace = tmp / "mnt" / "code"
-    opencode = RecordingOpenCode(workspace, turns)
+    opencode = opencode_type(workspace, turns)
     orch = Orchestrator(
         workspace_dir=workspace, template=template, gateway=ScriptedGateway(),
         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s", sovereign_ask="s",
@@ -119,6 +122,38 @@ def _build(
     return orch, opencode
 
 
+class _RepeatingApprovalOpenCode(RecordingOpenCode):
+    """Keep the approved turn live and add one identical call per poll."""
+
+    def __init__(self, workspace: Path, turns: list[Turn]) -> None:
+        super().__init__(workspace, turns)
+        self.repeat_during_approval = False
+        self.repeats = 0
+
+    def is_running(self, session_id: str) -> bool:
+        if self.repeat_during_approval:
+            return True
+        return super().is_running(session_id)
+
+    def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
+        if self.repeat_during_approval and self._next > 1:
+            self.repeats += 1
+            self._by_session.setdefault(session_id, []).append({
+                "id": f"repeat-m{self.repeats}",
+                "type": "assistant",
+                "content": [{
+                    "id": f"repeat-t{self.repeats}",
+                    "type": "tool",
+                    "tool": "read",
+                    "state": {
+                        "status": "completed",
+                        "input": {"filePath": "src/App.tsx"},
+                    },
+                }],
+            })
+        return super().messages(session_id, limit=limit)
+
+
 def _plan(orch: Orchestrator) -> None:
     list(orch.build_stream(REQUEST, conversation=CONVERSATION))
 
@@ -127,7 +162,7 @@ def _done(events: list[dict]) -> dict:
     return next(event for event in reversed(events) if event["type"] == "done")
 
 
-def test_approval_replaces_planning_once_and_reuses_the_new_session_for_recovery_and_followup(
+def test_approval_and_one_clean_recovery_use_fresh_sessions_then_reuse_the_recovery_for_followup(
         tmp_path: Path):
     orch, opencode = _build(tmp_path, [
         Turn(text=DRAFT),
@@ -144,15 +179,25 @@ def test_approval_replaces_planning_once_and_reuses_the_new_session_for_recovery
 
     assert _done(events)["ok"] is True
     implementation_session = opencode.sessions[-1]["id"]
-    assert implementation_session != planning_session
-    assert len(opencode.sessions) == 2
+    first_implementation_session = opencode.sessions[-2]["id"]
+    assert implementation_session not in {planning_session, first_implementation_session}
+    assert len(opencode.sessions) == 3
     approval_prompts = opencode.prompts[1:3]
-    assert {prompt["session"] for prompt in approval_prompts} == {implementation_session}
+    assert [prompt["session"] for prompt in approval_prompts] == [
+        first_implementation_session, implementation_session,
+    ]
     assert planning_session not in {prompt["session"] for prompt in approval_prompts}
-    assert opencode.active_at_dispatch[1:3] == [implementation_session, implementation_session]
+    assert opencode.active_at_dispatch[1:3] == [
+        first_implementation_session, implementation_session,
+    ]
     assert project.session_id == implementation_session
     assert project.record.read_session_id(
         CONVERSATION, project.workspace.app_id) == implementation_session
+    assert {session["directory"] for session in opencode.sessions[-2:]} == {
+        str(project.workspace.path)
+    }
+    assert "I only inspected the app." not in approval_prompts[1]["text"]
+    assert "IMPLEMENT_NUDGE" not in approval_prompts[1]["text"]
     first_intent = opencode.intents[1]
     assert first_intent is opencode.intents[2]
     assert first_intent.source_requests == (REQUEST,)
@@ -162,13 +207,16 @@ def test_approval_replaces_planning_once_and_reuses_the_new_session_for_recovery
 
     project.control.set_mode(Mode.IMPLEMENT)
     list(orch.build_stream("Add a direct follow-up.", conversation=CONVERSATION))
-    assert len(opencode.sessions) == 2
+    assert len(opencode.sessions) == 3
     assert opencode.prompts[-1]["session"] == implementation_session
+    assert project.pre_edit_guard is None
 
 
 def test_retry_of_a_live_approved_plan_gets_another_clean_session(tmp_path: Path):
     orch, opencode = _build(tmp_path, [
         Turn(text=DRAFT), Turn(text="No edit."),
+        Turn(text="Still no edit."),
+        Turn(text="The later Build also made no edit."),
         Turn(writes={"src/App.tsx": "// retry succeeded\n"}),
     ], build_policy=BuildPolicy(no_edit_nudge_limit=0))
     _plan(orch)
@@ -180,8 +228,11 @@ def test_retry_of_a_live_approved_plan_gets_another_clean_session(tmp_path: Path
     second = list(orch.build_stream("try again", conversation=CONVERSATION))
 
     assert _done(second)["ok"] is True
-    assert len(opencode.sessions) == 3
+    assert [event["type"] for event in first].count("build-recovery") == 1
+    assert [event["type"] for event in second].count("build-recovery") == 1
+    assert len(opencode.sessions) == 5
     assert opencode.prompts[-1]["session"] not in {opencode.prompts[0]["session"], first_clean}
+    assert orch.project(start_preview=False).pre_edit_guard is None
 
 
 def test_confirmed_chat_handoff_approval_starts_one_clean_build_session(tmp_path: Path):
@@ -241,6 +292,7 @@ def test_session_setup_failure_sends_nothing_keeps_the_old_selection_and_plan(
     assert project.session_id == old_id
     assert project.record.read_session_id(CONVERSATION, project.workspace.app_id) == old_id
     assert project.workspace.read_plan()
+    assert project.pre_edit_guard is None
     assert _done(events) == {"type": "done", "ok": False,
                              "decision": "implementation session unavailable"}
     errors = [event for event in events if event["type"] == "error"]
@@ -269,6 +321,426 @@ def test_disconnect_after_persistence_keeps_the_new_selection_and_live_plan(tmp_
     assert project.active_session_id is None
     assert project.record.read_session_id(CONVERSATION, project.workspace.app_id) == new_id
     assert project.workspace.read_plan()
+
+
+def test_user_side_write_and_rebaseline_are_atomic_before_first_dispatch(
+        tmp_path: Path, monkeypatch):
+    """Reviewer case 1: a native witness cannot see an attachment write before rebaseline."""
+    orch, _opencode = _build(tmp_path, [])
+    project = orch.project(start_preview=False)
+    baseline = project.snapshot.working_tree_hash()
+    guard = PreEditGuard(BuildPolicy(), baseline, project.snapshot.working_tree_hash)
+    project.pre_edit_guard = guard
+    project.turn_tree_baseline = ""  # the pre-dispatch window from the review
+    wrote = threading.Event()
+    release = threading.Event()
+    decided = threading.Event()
+    result = {}
+
+    def delayed_user_write(active_project):
+        path = active_project.workspace.path / "src" / "App.tsx"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("// user-side attachment metadata change\n")
+        wrote.set()
+        assert release.wait(2)
+
+    monkeypatch.setattr(orch, "_write_app_data", delayed_user_write)
+    writer = threading.Thread(target=orch.clear_sample_rows)
+    writer.start()
+    assert wrote.wait(2)
+
+    def decide():
+        with project.pre_edit_tree_lock:
+            result["decision"] = guard.decide_request((), 1)
+        decided.set()
+
+    checker = threading.Thread(target=decide)
+    checker.start()
+    assert decided.wait(0.05) is False
+    release.set()
+    writer.join(2)
+    checker.join(2)
+
+    assert result["decision"].action is PreEditAction.ROUTE
+    assert guard.state is PreEditState.INITIAL_ARMED
+    assert guard.baseline == project.snapshot.working_tree_hash()
+
+
+def test_instruction_write_and_rebaseline_are_atomic_before_native_witness(
+        tmp_path: Path, monkeypatch):
+    """A concurrent instructions save cannot look like the agent's first edit."""
+    orch, _opencode = _build(tmp_path, [])
+    project = orch.project(start_preview=False)
+    baseline = project.snapshot.working_tree_hash()
+    guard = PreEditGuard(BuildPolicy(), baseline, project.snapshot.working_tree_hash)
+    project.pre_edit_guard = guard
+    project.turn_tree_baseline = ""
+    wrote = threading.Event()
+    release = threading.Event()
+    decided = threading.Event()
+    result = {}
+
+    def delayed_splice(active_project, *, strict=False):
+        agents = active_project.workspace.path / "AGENTS.md"
+        agents.write_text("# User instructions changed during Build\n")
+        wrote.set()
+        assert release.wait(2)
+
+    monkeypatch.setattr(orch, "_splice_instructions", delayed_splice)
+    writer = threading.Thread(
+        target=lambda: orch.write_instructions(project, "Use compact tables."))
+    writer.start()
+    assert wrote.wait(2)
+
+    def decide():
+        with project.pre_edit_tree_lock:
+            result["decision"] = guard.decide_request((), 1)
+        decided.set()
+
+    checker = threading.Thread(target=decide)
+    checker.start()
+    assert decided.wait(0.05) is False
+    release.set()
+    writer.join(2)
+    checker.join(2)
+
+    assert result["decision"].action is PreEditAction.ROUTE
+    assert guard.state is PreEditState.INITIAL_ARMED
+    assert guard.baseline == project.snapshot.working_tree_hash()
+    assert project.record.read_instructions() == "Use compact tables."
+
+
+def test_direct_editor_write_and_rebaseline_are_atomic_before_native_witness(
+        tmp_path: Path, monkeypatch):
+    """The source editor PUT uses the same user-write arbitration as attachments."""
+    orch, _opencode = _build(tmp_path, [])
+    project = orch.project(start_preview=False)
+    target = project.workspace.path / "src" / "App.tsx"
+    guard = PreEditGuard(
+        BuildPolicy(), project.snapshot.working_tree_hash,
+        project.snapshot.working_tree_hash,
+    )
+    project.pre_edit_guard = guard
+    project.turn_tree_baseline = ""
+    wrote = threading.Event()
+    release = threading.Event()
+    decided = threading.Event()
+    result = {}
+    original_write = Path.write_text
+
+    def delayed_write(path, content, *args, **kwargs):
+        written = original_write(path, content, *args, **kwargs)
+        if path == target:
+            wrote.set()
+            assert release.wait(2)
+        return written
+
+    monkeypatch.setattr(Path, "write_text", delayed_write)
+    writer = threading.Thread(
+        target=lambda: orch.write_project_file(project, target, "// direct user edit\n"))
+    writer.start()
+    assert wrote.wait(2)
+
+    def decide():
+        with project.pre_edit_tree_lock:
+            result["decision"] = guard.decide_request((), 1)
+        decided.set()
+
+    checker = threading.Thread(target=decide)
+    checker.start()
+    assert decided.wait(0.05) is False
+    release.set()
+    writer.join(2)
+    checker.join(2)
+
+    assert result["decision"].action is PreEditAction.ROUTE
+    assert guard.state is PreEditState.INITIAL_ARMED
+    assert guard.baseline == project.snapshot.working_tree_hash()
+
+
+class _UnconfirmedAbortOpenCode(RecordingOpenCode):
+    def __init__(self, workspace: Path, turns: list[Turn]) -> None:
+        super().__init__(workspace, turns)
+        self.refused: set[str] = set()
+
+    def interrupt(self, session_id: str) -> None:
+        self.interrupted_sessions.append(session_id)
+        self.refused.add(session_id)
+
+    def is_running(self, session_id: str) -> bool:
+        return True if session_id in self.refused else super().is_running(session_id)
+
+
+def test_recovery_requires_confirmed_old_session_abort(tmp_path: Path):
+    """Reviewer case 6: an unconfirmed abort creates no second writer or recovery session."""
+    orch, base = _build(tmp_path, [Turn(text=DRAFT), Turn(text="No edit.")],
+                        build_policy=BuildPolicy(stop_grace_seconds=0))
+    blocked = _UnconfirmedAbortOpenCode(base.workspace, base.turns)
+    blocked.orch = orch
+    orch._oc_client = blocked
+    _plan(orch)
+
+    events = list(orch.approve_stream(conversation=CONVERSATION))
+
+    assert [event["type"] for event in events].count("build-recovery") == 0
+    assert any(event["type"] == "build-stalled" for event in events)
+    assert _done(events)["decision"] == "wedged"
+    assert len(blocked.sessions) == 2  # planning plus initial implementation; no recovery
+    assert blocked.prompts[-1]["session"] == blocked.sessions[-1]["id"]
+
+
+class _BlockedRecoveryCreateOpenCode(RecordingOpenCode):
+    def __init__(self, workspace: Path, turns: list[Turn]) -> None:
+        super().__init__(workspace, turns)
+        self.creating_recovery = threading.Event()
+        self.release_recovery = threading.Event()
+
+    def create_session(self, directory: str, model: dict | None = None) -> str:
+        # Planning and initial implementation are sessions 1 and 2. Block session 3.
+        if len(self.sessions) == 2:
+            self.creating_recovery.set()
+            assert self.release_recovery.wait(2)
+        return super().create_session(directory, model)
+
+
+def test_stop_during_recovery_session_create_targets_the_new_session(tmp_path: Path):
+    """Reviewer case 4: Stop and fresh-session publication are one serialized decision."""
+    orch, base = _build(tmp_path, [Turn(text=DRAFT), Turn(text="No edit."), Turn(text="unused")])
+    blocked = _BlockedRecoveryCreateOpenCode(base.workspace, base.turns)
+    blocked.orch = orch
+    orch._oc_client = blocked
+    _plan(orch)
+    project = orch.project(start_preview=False)
+    events = []
+
+    build = threading.Thread(
+        target=lambda: events.extend(orch.approve_stream(conversation=CONVERSATION)))
+    build.start()
+    assert blocked.creating_recovery.wait(2)
+    stopped = {}
+    stopper = threading.Thread(target=lambda: stopped.setdefault("value", orch.stop_build()))
+    stopper.start()
+    blocked.release_recovery.set()
+    build.join(3)
+    stopper.join(3)
+
+    recovery_id = blocked.sessions[-1]["id"]
+    assert stopped["value"] is True
+    assert recovery_id in blocked.interrupted_sessions
+    assert all(prompt["session"] != recovery_id for prompt in blocked.prompts)
+    assert project.session_id != recovery_id
+    assert project.active_session_id != recovery_id
+    assert project.record.read_session_id(CONVERSATION, project.app_for_turn().app_id) != recovery_id
+    assert not any(event["type"] == "build-recovery" for event in events)
+    assert any(event["type"] == "stopped" for event in events)
+
+
+def test_stop_after_recovery_session_replacement_prevents_activation_and_event(
+        tmp_path: Path, monkeypatch):
+    """Stop can win after fresh-session publication but before guard activation."""
+    orch, opencode = _build(tmp_path, [
+        Turn(text=DRAFT), Turn(text="No edit."), Turn(text="unused"),
+    ])
+    _plan(orch)
+    replaced = threading.Event()
+    release = threading.Event()
+    original_replace = orch._replace_build_session
+
+    def paused_replace(*args, **kwargs):
+        session_id = original_replace(*args, **kwargs)
+        if kwargs.get("reason") == "pre_edit_recovery":
+            replaced.set()
+            assert release.wait(2)
+        return session_id
+
+    monkeypatch.setattr(orch, "_replace_build_session", paused_replace)
+    events = []
+    build = threading.Thread(
+        target=lambda: events.extend(orch.approve_stream(conversation=CONVERSATION)))
+    build.start()
+    assert replaced.wait(2)
+
+    recovery_id = opencode.sessions[-1]["id"]
+    assert orch.stop_build() is True
+    release.set()
+    build.join(3)
+
+    assert recovery_id in opencode.interrupted_sessions
+    assert all(prompt["session"] != recovery_id for prompt in opencode.prompts)
+    assert not any(event["type"] == "build-recovery" for event in events)
+    assert [event["type"] for event in events].count("stopped") == 1
+
+
+class _LateEditOnAbortOpenCode(RecordingOpenCode):
+    def interrupt(self, session_id: str) -> None:
+        super().interrupt(session_id)
+        (self._session_dir(session_id) / "src" / "App.tsx").write_text("// late shell edit\n")
+
+
+def test_late_edit_before_begin_recovery_disarms_without_a_recovery_event(tmp_path: Path):
+    """The progress row is published only after the second tree witness grants recovery."""
+    orch, base = _build(tmp_path, [Turn(text=DRAFT), Turn(text="No edit.")])
+    opencode = _LateEditOnAbortOpenCode(base.workspace, base.turns)
+    opencode.orch = orch
+    orch._oc_client = opencode
+    _plan(orch)
+
+    events = list(orch.approve_stream(conversation=CONVERSATION))
+
+    assert not any(event["type"] == "build-recovery" for event in events)
+    assert len(opencode.sessions) == 2  # planning and initial implementation only
+    assert orch.project(start_preview=False).workspace.path.joinpath(
+        "src", "App.tsx").read_text() == "// late shell edit\n"
+    assert _done(events)["ok"] is True
+
+
+class _UserInstructionsOnAbortOpenCode(RecordingOpenCode):
+    def interrupt(self, session_id: str) -> None:
+        super().interrupt(session_id)
+        assert self.orch is not None
+        project = self.orch.project(start_preview=False)
+        self.orch.write_instructions(project, "Use the user's compact table format.")
+
+
+def test_user_write_during_recovery_start_rebaselines_and_keeps_pending_recovery(
+        tmp_path: Path):
+    """A coordinated user edit after the threshold is not mistaken for a late agent edit."""
+    orch, base = _build(tmp_path, [
+        Turn(text=DRAFT), Turn(text="No edit."),
+        Turn(writes={"src/App.tsx": "// recovery edit\n"}),
+    ])
+    opencode = _UserInstructionsOnAbortOpenCode(base.workspace, base.turns)
+    opencode.orch = orch
+    orch._oc_client = opencode
+    _plan(orch)
+
+    events = list(orch.approve_stream(conversation=CONVERSATION))
+
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert len(opencode.sessions) == 3
+    assert _done(events)["ok"] is True
+    assert "compact table format" in (
+        orch.project(start_preview=False).workspace.path / "AGENTS.md").read_text()
+
+
+@pytest.mark.parametrize(
+    ("branch", "implementation_turns"),
+    [
+        ("gateway_error", [
+            Turn(error={"name": "Error", "data": {"message": "gateway unavailable"}}),
+        ]),
+        ("broken_call", [Turn(broken_write=True), Turn(broken_write=True)]),
+        ("nothing_to_build", [Turn(text="The requested input is absent.\nNOTHING_TO_BUILD")]),
+    ],
+)
+def test_guard_recovery_wins_race_with_late_existing_terminal_branches(
+        tmp_path: Path, monkeypatch, branch: str, implementation_turns: list[Turn]):
+    """Gateway, broken-call, and nothing-to-build exits must honor a guard winner."""
+    turns = [Turn(text=DRAFT), *implementation_turns,
+             Turn(writes={"src/App.tsx": f"// recovered after {branch}\n"})]
+    orch, _opencode = _build(
+        tmp_path,
+        turns,
+        build_policy=BuildPolicy(pre_edit_model_call_limit=0, no_edit_nudge_limit=0),
+    )
+    original_claim = PreEditGuard.claim_existing_terminal
+    raced = []
+
+    def threshold_wins_before_claim(guard):
+        if guard.state is PreEditState.INITIAL_ARMED:
+            raced.append(branch)
+            assert guard.decide_request((), 1).action is PreEditAction.RECOVER
+        return original_claim(guard)
+
+    monkeypatch.setattr(PreEditGuard, "claim_existing_terminal", threshold_wins_before_claim)
+    _plan(orch)
+
+    events = list(orch.approve_stream(conversation=CONVERSATION))
+
+    assert raced == [branch]
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert _done(events)["ok"] is True
+    assert orch.project(start_preview=False).workspace.path.joinpath("src", "App.tsx").read_text() == (
+        f"// recovered after {branch}\n")
+    assert not any(
+        event.get("decision") in {"gateway error", "nothing to build", "broken tool call"}
+        for event in events
+    )
+
+
+@pytest.mark.parametrize(
+    ("branch", "implementation_turns", "quiet"),
+    [
+        ("gateway_error", [
+            Turn(error={"name": "Error", "data": {"message": "gateway unavailable"}}),
+        ], False),
+        ("broken_call", [Turn(broken_write=True), Turn(broken_write=True)], False),
+        ("nothing_to_build", [
+            Turn(text="The requested input is absent.\nNOTHING_TO_BUILD"),
+        ], False),
+        ("repeat", [Turn(text="Still inspecting.")], False),
+        ("quiet", [Turn()], True),
+    ],
+)
+def test_user_cancellation_wins_race_with_every_existing_terminal_branch(
+        tmp_path: Path, monkeypatch, branch: str,
+        implementation_turns: list[Turn], quiet: bool):
+    """A false terminal claim with no pending decision is Stop, not a guard limit result."""
+    policy = BuildPolicy(no_edit_nudge_limit=0)
+    opencode_type = _RepeatingApprovalOpenCode if branch == "repeat" else RecordingOpenCode
+    orch, opencode = _build(
+        tmp_path,
+        [Turn(text=DRAFT), *implementation_turns],
+        build_policy=policy,
+        opencode_type=opencode_type,
+    )
+    _plan(orch)
+    if quiet:
+        orch._build_policy = BuildPolicy(
+            no_edit_nudge_limit=0,
+            quiet_timeout_seconds=0,
+            open_tool_quiet_timeout_seconds=0,
+        )
+    if branch == "repeat":
+        assert isinstance(opencode, _RepeatingApprovalOpenCode)
+    project = orch.project(start_preview=False)
+    guard_at_dispatch = []
+    send_prompt = opencode.send_prompt
+
+    def record_guard_at_dispatch(*args, **kwargs):
+        guard_at_dispatch.append(project.pre_edit_guard)
+        sent = send_prompt(*args, **kwargs)
+        if quiet:
+            opencode.stay_running = True
+        if branch == "repeat":
+            assert isinstance(opencode, _RepeatingApprovalOpenCode)
+            opencode.repeat_during_approval = True
+        return sent
+
+    opencode.send_prompt = record_guard_at_dispatch
+    original_claim = PreEditGuard.claim_existing_terminal
+    raced = []
+
+    def cancellation_wins_before_claim(guard):
+        if not raced:
+            raced.append((branch, guard.state))
+            project.stop_requested = True
+            assert guard.claim_cancellation() is True
+        return original_claim(guard)
+
+    monkeypatch.setattr(PreEditGuard, "claim_existing_terminal", cancellation_wins_before_claim)
+
+    events = list(orch.approve_stream(conversation=CONVERSATION))
+
+    assert guard_at_dispatch and guard_at_dispatch[0] is not None
+    assert [item[0] for item in raced] == [branch]
+    assert [event["type"] for event in events].count("stopped") == 1
+    assert not any(event["type"] in {"build-recovery", "build-pre-edit-limit"}
+                   for event in events)
+    assert not any(event.get("decision") in {
+        "gateway error", "nothing to build", "repeat_brake", "pre_edit_limit",
+    } for event in events)
+    assert project.pre_edit_guard is None
 
 
 def test_restart_recovers_the_clean_session_for_a_direct_followup(tmp_path: Path):

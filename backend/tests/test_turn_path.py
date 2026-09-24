@@ -435,9 +435,7 @@ def test_a_request_that_cannot_be_acted_on_ends_the_turn_instead_of_writing_the_
 
 
 def test_a_turn_that_writes_nothing_without_the_marker_is_still_a_failure(tmp_path: Path):
-    """The rule the marker is an exception to has to stay closed. An agent that stalls at a plan
-    looks identical from outside — no edits, some prose — and must still be nudged and then reported,
-    or #29's fix quietly re-opens the failure AGENTS.md's src/ rule was written against."""
+    """The marker exception stays closed across the one clean pre-edit recovery."""
     orch, _oc, _gw = _build(tmp_path, [
         Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
@@ -448,7 +446,10 @@ def test_a_turn_that_writes_nothing_without_the_marker_is_still_a_failure(tmp_pa
     events = _run(orch, "add a severity filter")
 
     assert _done(events)["ok"] is False
-    assert "iterate" in _kinds(events)
+    assert _done(events)["decision"] == "pre_edit_limit"
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert [event["type"] for event in events].count("build-pre-edit-limit") == 1
+    assert "iterate" not in _kinds(events)
 
 
 def test_the_marker_cannot_unmake_edits(tmp_path: Path):
@@ -506,9 +507,8 @@ def test_a_mentioned_resource_reaches_the_agent_as_a_binding_not_a_word(tmp_path
     assert sent.index("@sonnet to summarise") < sent.index("LLM Alias")
 
 
-def test_a_mention_rides_the_user_turn_only(tmp_path: Path):
-    """Same rule the attached-file listing follows. A nudge carries no new user reference, and the
-    block repeated on one reads as a second request for the same Resource."""
+def test_a_mention_is_reprepared_for_the_clean_recovery_session(tmp_path: Path):
+    """A fresh recovery session receives the same typed user reference as the first attempt."""
     orch, oc, _gw = _build(tmp_path, [
         Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
@@ -520,9 +520,10 @@ def test_a_mention_rides_the_user_turn_only(tmp_path: Path):
 
     _run(orch, "wire @sonnet into the header", resources=[{"kind": "llm_alias", "id": "f-sonnet"}])
 
-    user_turn, nudge = oc.prompts[2]["text"], oc.prompts[3]["text"]
+    user_turn, recovery = oc.prompts[2]["text"], oc.prompts[3]["text"]
     assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in user_turn
-    assert "LLM Alias" not in nudge
+    assert "LLM Alias **Claude Sonnet 4.6 (`sonnet`)**" in recovery
+    assert oc.prompts[2]["session"] != oc.prompts[3]["session"]
 
 
 def test_an_approved_plan_builds_even_when_the_classifier_would_gate(tmp_path: Path):

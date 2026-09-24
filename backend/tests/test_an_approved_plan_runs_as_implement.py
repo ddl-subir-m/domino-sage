@@ -221,9 +221,9 @@ def test_planning_and_ask_dispatch_with_no_build_intent(tmp_path: Path):
     assert project.active_build_intent is None
 
 
-def test_ten_no_edit_sends_reuse_one_intent_without_storing_the_request(tmp_path: Path):
+def test_two_no_edit_attempts_reuse_one_intent_then_stop_without_storing_the_request(tmp_path: Path):
     request = "Build the one canonical dashboard."
-    turns = [Turn(text="I will think about it.") for _ in range(9)] + [BUILD]
+    turns = [Turn(text="I will think about it."), Turn(text="Still only thinking.")]
     orch, oc = _build(tmp_path, turns, build_policy=BuildPolicy(no_edit_nudge_limit=9))
     project = orch.project(start_preview=False)
     project.record.write_settings({"skip_planning": True})
@@ -238,10 +238,11 @@ def test_ten_no_edit_sends_reuse_one_intent_without_storing_the_request(tmp_path
     oc.send_prompt = capture
     list(orch.build_stream(request))
 
-    assert len(intents) == 10
+    assert len(intents) == 2
     assert all(intent is intents[0] for intent in intents)
     assert intents[0].source_requests == (request,)
-    assert all(request not in prompt["text"] for prompt in oc.prompts)
+    assert request not in oc.prompts[0]["text"]
+    assert request in oc.prompts[1]["text"]
     assert project.active_build_intent is None
 
 

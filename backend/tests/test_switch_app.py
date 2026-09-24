@@ -15,13 +15,16 @@ appeared under it while it was working.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
+from sage.build_policy import BuildPolicy
 from sage.orchestrator import service as svc
 from sage.orchestrator.service import Orchestrator
+from sage.pre_edit_guard import PreEditAction, PreEditGuard, PreEditState
 from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
@@ -242,6 +245,58 @@ def test_switching_app_is_not_refused_while_a_build_is_running(tmp_path: Path):
 
     assert outcome["out"]["switched"]["id"] == first
     assert orch.project(start_preview=False).workspace.app_id == first
+
+
+def test_switch_away_and_back_rebaseline_is_atomic_with_native_witness(
+        tmp_path: Path, monkeypatch):
+    """Repairs made when the rail returns to the pinned app are user-side changes."""
+    orch, _oc, _root, first, second = _two_apps(tmp_path)
+    project = orch.project(start_preview=False)
+    building = orch._wm.app_workspace("Sage", second)
+    project.turn_app = building
+    baseline = project.snapshot.working_tree_hash()
+    guard = PreEditGuard(BuildPolicy(), baseline, project.snapshot.working_tree_hash)
+    project.pre_edit_guard = guard
+    project.turn_tree_baseline = baseline
+
+    orch.select_app(first)
+    assert guard.baseline == baseline
+
+    wrote = threading.Event()
+    release = threading.Event()
+    decided = threading.Event()
+    result = {}
+    prepare = orch._prepare_app_files
+
+    def delayed_prepare():
+        changed = prepare()
+        if project.workspace.app_id == second:
+            (project.workspace.path / "AGENTS.md").write_text("# repaired on switch back\n")
+            wrote.set()
+            assert release.wait(2)
+            return True
+        return changed
+
+    monkeypatch.setattr(orch, "_prepare_app_files", delayed_prepare)
+    switcher = threading.Thread(target=lambda: orch.select_app(second))
+    switcher.start()
+    assert wrote.wait(2)
+
+    def decide():
+        with project.pre_edit_tree_lock:
+            result["decision"] = guard.decide_request((), 1)
+        decided.set()
+
+    checker = threading.Thread(target=decide)
+    checker.start()
+    assert decided.wait(0.05) is False
+    release.set()
+    switcher.join(2)
+    checker.join(2)
+
+    assert result["decision"].action is PreEditAction.ROUTE
+    assert guard.state is PreEditState.INITIAL_ARMED
+    assert guard.baseline == project.snapshot.working_tree_hash()
 
 
 def test_a_build_that_is_running_keeps_writing_into_the_app_it_started_in(tmp_path: Path):

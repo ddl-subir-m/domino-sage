@@ -158,6 +158,7 @@ class TurnRecord:
     repeat_brake: list[dict] = field(default_factory=list)
     repeat_brake_truncated: bool = False
     implementation_session: dict = field(default_factory=dict)
+    pre_edit_guard: dict = field(default_factory=dict)
     counters: dict[str, float] = field(default_factory=dict)
     observations: dict[str, list[float]] = field(default_factory=dict)
     t1: float | None = None
@@ -303,7 +304,9 @@ def implementation_session(*, fresh: bool, reason: str, created: bool,
     ``reused`` even when validation replaces a stale ID; ``fresh``, ``created``, and ``persisted``
     record that lifecycle outcome.
     """
-    if reason not in {"approved_plan", "phase", "broken_call_recovery", "reused"}:
+    if reason not in {
+        "approved_plan", "phase", "broken_call_recovery", "pre_edit_recovery", "reused",
+    }:
         return
     rec = _current
     if rec is None:
@@ -319,6 +322,50 @@ def implementation_session(*, fresh: bool, reason: str, created: bool,
             }
     except Exception:
         log.debug("timing: implementation session update failed", exc_info=True)
+
+
+def pre_edit_guard(value: dict) -> None:
+    """Record the guard's fixed, content-free state."""
+    rec = _current
+    if rec is None:
+        return
+    try:
+        safe: dict[str, object] = {}
+        integer_fields = {
+            "policyVersion", "sessionGeneration", "modelCalls", "modelCallLimit",
+            "originalUniqueToolResultBytes", "toolResultLimitBytes",
+            "maxForwardedNonMediaRequestBytes", "requestLimitBytes",
+        }
+        enum_fields = {
+            "attempt": {"initial", "recovery"},
+            "state": {"armed", "recovering", "disarmed", "terminal"},
+            "trigger": {
+                "none", "model_calls", "request_bytes", "tool_result_bytes",
+                "no_edit_completion", "request_measurement_unavailable",
+                "tree_witness_unavailable", "session_abort_unconfirmed",
+            },
+            "action": {"route", "recover", "stop", "disarm", "fail"},
+        }
+        for key in integer_fields:
+            item = value.get(key)
+            if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+                return
+            safe[key] = item
+        if safe["policyVersion"] != 1:
+            return
+        first_edit = value.get("firstEditObserved")
+        if not isinstance(first_edit, bool):
+            return
+        safe["firstEditObserved"] = first_edit
+        for key, allowed in enum_fields.items():
+            item = value.get(key)
+            if item not in allowed:
+                return
+            safe[key] = item
+        with _lock:
+            rec.pre_edit_guard = safe
+    except Exception:
+        log.debug("timing: pre-edit guard update failed", exc_info=True)
 
 
 @contextmanager
@@ -614,6 +661,7 @@ def as_dict(rec: TurnRecord) -> dict:
         "decision": rec.decision,
         "running": rec.t1 is None,
         "implementationSession": dict(rec.implementation_session),
+        "preEditGuard": dict(rec.pre_edit_guard),
         "spans": [{"name": s.name, "depth": s.depth, "atMs": round((s.t0 - rec.t0) * 1000),
                    "ms": round(s.ms), "open": s.t1 is None, **s.fields} for s in rec.spans],
         "calls": [{"n": c.n, "model": c.model, "phase": c.phase, "reason": c.reason,

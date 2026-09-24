@@ -2419,7 +2419,7 @@ async def write_file(request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": "invalid path"})
     if not target.exists() or not target.is_file():
         return JSONResponse(status_code=404, content={"error": "file not found"})
-    target.write_text(content)
+    orchestrator.write_project_file(project, target, content)
     return JSONResponse(content={"path": path, "saved": True})
 
 

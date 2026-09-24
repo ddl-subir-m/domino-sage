@@ -79,3 +79,14 @@ class TurnSnapshot:
         self._ensure_repo()
         self._run("add", "-A")
         return self._run("write-tree").stdout.strip()
+
+    def changed_paths(self, before: str, after: str, *, limit: int = 60) -> list[str]:
+        """Return bounded app-relative paths changed between two tree identities."""
+        if not before or not after or before == after:
+            return []
+        result = self._run("diff", "--name-only", "--no-renames", before, after, "--")
+        if result.returncode != 0:
+            return []
+        return [line for line in result.stdout.splitlines() if line and not line.startswith("../")][
+            :max(0, limit)
+        ]

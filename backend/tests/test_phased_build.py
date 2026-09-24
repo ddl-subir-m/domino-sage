@@ -284,25 +284,27 @@ def test_a_phased_build_that_wrote_nothing_reports_no_change(tmp_path: Path, mon
 
     events = list(orch.approve_stream())
 
-    assert "phase 1 of 3" in _of(events, "done")[0]["decision"]
+    assert _of(events, "done")[0]["decision"] == "pre_edit_limit"
+    assert len(_of(events, "build-recovery")) == 1
+    assert len(_of(events, "build-pre-edit-limit")) == 1
     assert _of(events, "app_change") == []
 
 
-def test_a_failed_phase_retries_once_in_another_session(tmp_path: Path, monkeypatch):
+def test_the_full_phased_build_uses_one_clean_pre_edit_recovery(tmp_path: Path, monkeypatch):
     turns = [Turn(text=PHASED_PLAN), Turn(text="stuck"), _writes("src/data.ts"),
              _writes("src/Table.tsx"), _writes("src/Filter.tsx")]
     orch, oc, _project = _build(tmp_path, turns, no_edit_nudge_limit=0)
     list(orch.build_stream("build me a trades dashboard"))
     events = list(orch.approve_stream())
 
-    # Phase 1 failed, retried in a NEW session (the failed attempt is poison in the old one) and
-    # succeeded, so the build completes: 3 phases + 1 retry = 4 phase sessions.
+    # The one full-Build guard restarts phase 1 in a clean session, then disarms on its first edit.
     assert len([s for s in oc.sessions if s["id"] != "fake-session"]) == 4
+    assert len(_of(events, "build-recovery")) == 1
     assert _of(events, "done")[0]["ok"] is True
     assert [e["n"] for e in _of(events, "step-done")] == [1, 2, 3]
 
 
-def test_the_retry_escalates_to_the_strong_model(tmp_path: Path, monkeypatch):
+def test_the_clean_pre_edit_recovery_does_not_escalate_the_model(tmp_path: Path, monkeypatch):
     turns = [Turn(text=PHASED_PLAN), Turn(text="stuck"), _writes("src/data.ts"),
              _writes("src/Table.tsx"), _writes("src/Filter.tsx")]
     orch, _oc, project = _build(tmp_path, turns, no_edit_nudge_limit=0)
@@ -310,9 +312,8 @@ def test_the_retry_escalates_to_the_strong_model(tmp_path: Path, monkeypatch):
     events = list(orch.approve_stream())
 
     retries = [e for e in events if e.get("type") == "active" and e.get("tool") == "retry"]
-    assert len(retries) == 1
-    assert "strong-model" in retries[0]["detail"]
-    # And the escalation lasts exactly one phase — it must not silently upgrade the rest of the build.
+    assert retries == []
+    assert len(_of(events, "build-recovery")) == 1
     assert project.control.snapshot().picked_model != "strong-model"
 
 

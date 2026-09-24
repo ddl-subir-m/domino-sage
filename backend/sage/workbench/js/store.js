@@ -2585,6 +2585,9 @@ window.SW = window.SW || {};
     // had broken, `KEEPS_THE_PLAN_CARD` took the Approve button off a plan the turn never touched,
     // and `ASKED_FOR` bought an ADR-0027 preflight listing to explain a question.
     'dataset files': true,
+    // The server already wrote one precise local-policy card. Keep an approved plan actionable and
+    // suppress the generic duplicate terminal chip from the following `done` row.
+    pre_edit_limit: true,
   };
 
   // Every ending that was ASKED FOR, which is every ending `endedBadly` above must not treat as a
@@ -2631,7 +2634,8 @@ window.SW = window.SW || {};
   // This withdraws the PLATFORM flag and nothing else. The `error` frame still goes up, the
   // person still reads which table failed, and `done.ok` is untouched.
   const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true,
-                              'table generation failed': true, timeout: true };
+                              'table generation failed': true, timeout: true,
+                              pre_edit_limit: true };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
   // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
@@ -3051,6 +3055,16 @@ window.SW = window.SW || {};
           type: 'status',
           ok: ev.ok,
           value: ev.ok ? 'Typecheck passed' : `Typecheck: ${ev.errors} error(s)`,
+        });
+      } else if (ev.type === 'build-recovery') {
+        ensureAssistant().blocks.push({
+          type: 'status', ok: true,
+          value: ev.message || 'No app edit was made. Sage is restarting once with a clean context.',
+        });
+      } else if (ev.type === 'build-pre-edit-limit') {
+        ensureAssistant().blocks.push({
+          type: 'status', ok: false,
+          value: ev.message || 'Sage stopped before changing the app.',
         });
       } else if (ev.type === 'done') {
         // A turn is over, so nothing is still reading a warehouse (#186). The search takes its own
@@ -4129,6 +4143,10 @@ window.SW = window.SW || {};
       state.buildTyping = 'Typechecking…';
     } else if (ev.type === 'iterate') {
       state.buildTyping = ev.reason || 'Fixing errors…';
+    } else if (ev.type === 'build-recovery') {
+      state.buildTyping = ev.message || 'Restarting once with a clean context…';
+    } else if (ev.type === 'build-pre-edit-limit') {
+      state.buildTyping = null;
     } else if (ev.type === 'agent' && ev.kind === 'text') {
       state.buildTyping = null;
     } else if (ev.type === 'plan-proposed' || ev.type === 'done' || ev.type === 'error' || ev.type === 'stopped') {
