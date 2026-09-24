@@ -6317,6 +6317,8 @@ class Orchestrator:
                 # `_is_the_live_plan` is False for a document naming no app, so there is one here.
                 self._wm.app_workspace(
                     self._project_id, str(doc.get("appId") or "")).archive_plan(cancelled=True)
+                project.context_continuations.invalidate_plan(
+                    str(doc.get("appId") or ""), plan_id)
             finally:
                 if held:
                     self._turn_lock.release()
@@ -6344,41 +6346,52 @@ class Orchestrator:
         if current is None:
             return None
         body = body or {}
-        if "sections" not in body and "summary" not in body:
+        changes_app = (
+            "appId" in body
+            and str(body.get("appId") or "") != str(current.get("appId") or "")
+        )
+        if "sections" not in body and "summary" not in body and not changes_app:
             # Nothing about the body changed — a rename is metadata, not a new draft.
             return project.record.patch_plan_doc_meta(
                 plan_id, **{k: v for k, v in body.items() if k in ("title", "status", "appId")})
-        summary = body.get("summary", current.get("summary", ""))
-        sections = {**current.get("sections", {}), **(body.get("sections") or {})}
-        meta = {k: v for k, v in body.items() if k in ("title", "status", "appId")}
-        # The document's own name, from the rename if this edit carries one and from the document
-        # otherwise — an edit to Screens must not cost the plan its title.
-        doc = project.record.write_plan_doc_version(
-            plan_id,
-            plan_doc.render(summary, sections, meta.get("title") or current.get("title", "")),
-            **meta)
+        editing_live = self._is_the_live_plan(current)
+        held = self._turn_lock.acquire(blocking=False) if editing_live else False
+        if editing_live and not held:
+            raise PlanArchiveRefused("busy")
+        try:
+            if changes_app and "sections" not in body and "summary" not in body:
+                doc = project.record.patch_plan_doc_meta(
+                    plan_id,
+                    **{k: v for k, v in body.items() if k in ("title", "status", "appId")},
+                )
+                if editing_live:
+                    project.context_continuations.invalidate_plan(
+                        str(current.get("appId") or ""), plan_id)
+                return doc
 
-        # An edit to the document that a live plan.md was copied from has to reach that copy, or the
-        # build runs the plan as it was before the edit — and the rail's pin goes on counting the old
-        # steps. Only while a handoff is actually live, and only from the document it belongs to:
-        # editing an older plan after its build must not resurrect it as the thing being built.
-        # The document is the Project's and the copy is the app's, so this is the one place the two
-        # surfaces meet — deliberately, because copying between them is what it is for.
-        # "The document it belongs to" is `_is_the_live_plan`, which reads `live_plan_doc_id` off the
-        # app, and not "the newest document for this app" — a different question with a different
-        # answer (#177, see `Workspace.write_plan`). The two diverge whenever a plan becomes live
-        # after a newer one was written into the same app, which is every confirmed Chat handoff
-        # that outlived a Build conversation. Asked this way the copy, the archive guard and "Build
-        # this again" all agree about which plan is live (ADR-0024).
-        if doc and self._is_the_live_plan(doc):
-            # The DOCUMENT's app, not the selected one: the Plan page opens any plan in the Project,
-            # including another app's, and `_is_the_live_plan` has just answered about that app.
-            app = self._wm.app_workspace(self._project_id, str(doc.get("appId") or ""))
-            # `live_plan_doc_id` can outlive the `plan.md` it names, so the file has to be there:
-            # writing one back from an edit would resurrect a handoff a build already archived.
-            if app.read_plan() is not None:
-                app.write_plan(doc["markdown"], plan_id)
-        return doc
+            summary = body.get("summary", current.get("summary", ""))
+            sections = {**current.get("sections", {}), **(body.get("sections") or {})}
+            meta = {k: v for k, v in body.items() if k in ("title", "status", "appId")}
+            # The document's own name, from the rename if this edit carries one and from the document
+            # otherwise — an edit to Screens must not cost the plan its title.
+            doc = project.record.write_plan_doc_version(
+                plan_id,
+                plan_doc.render(summary, sections, meta.get("title") or current.get("title", "")),
+                **meta)
+
+            # Editing the document and its live plan copy is one atomic operation against Build,
+            # the same ownership rule archive_plan_doc uses for the same files.
+            if doc and editing_live:
+                original_app_id = str(current.get("appId") or "")
+                if not changes_app:
+                    app = self._wm.app_workspace(self._project_id, original_app_id)
+                    if app.read_plan() is not None:
+                        app.write_plan(doc["markdown"], plan_id)
+                project.context_continuations.invalidate_plan(original_app_id, plan_id)
+            return doc
+        finally:
+            if held:
+                self._turn_lock.release()
 
     def review_plan_doc(self, plan_id: str, body: dict) -> dict | None:
         """Reviewers, comments and approvals. None of it touches the body, so none of it makes a
@@ -8577,6 +8590,68 @@ class Orchestrator:
                 project, continuation.intent, continuation.baseline_digest,
                 continuation.repair_objective)
             project.active_plan_record_id = continuation.approved_plan_record_id
+            if continuation.intent.kind == "phase":
+                approved = project.record.read_plan_doc(
+                    continuation.approved_plan_record_id)
+                plan_md = str((approved or {}).get("markdown") or "")
+                steps = parse_steps(plan_md)
+                current = next(
+                    (step for step in steps
+                     if step_index(steps, step.n) == continuation.phase_id),
+                    None,
+                )
+                def approved_plan_is_current() -> bool:
+                    latest = project.record.read_plan_doc(
+                        continuation.approved_plan_record_id)
+                    latest_markdown = str((latest or {}).get("markdown") or "")
+                    return bool(
+                        latest
+                        and not latest.get("archived")
+                        and str(latest.get("appId") or "") == continuation.app_id
+                        and project.app_for_turn().live_plan_doc_id()
+                        == continuation.approved_plan_record_id
+                        and project.app_for_turn().read_plan() == plan_md == latest_markdown
+                        and type(latest.get("version")) is int
+                        and latest["version"] == continuation.approved_plan_version
+                        and continuation.approved_plan_digest
+                        and hashlib.sha256(latest_markdown.encode()).hexdigest()
+                        == continuation.approved_plan_digest
+                    )
+
+                exact_plan = bool(
+                    approved_plan_is_current()
+                    and current is not None
+                    and current.raw.strip() == continuation.intent.phase_brief.strip()
+                    and project.app_for_turn().read_plan_retry_step() == current.n)
+                if not exact_plan:
+                    project.context_continuations.invalidate_claimed(
+                        continuation.continuation_id, claim_token)
+                    yield {"type": "error", "message": (
+                        "The approved phased plan for this continuation is unavailable."
+                    )}
+                    yield {"type": "done", "ok": False,
+                           "decision": "invalid phased continuation"}
+                    return
+                disposition = yield from self._phased_approve(
+                    project, plan_md, continuation.intent.answers,
+                    "Continued the approved plan.", start_step=current.n,
+                    mentions=mentions or None,
+                    explicit_references=explicit_references,
+                    source_requests=continuation.intent.source_requests,
+                    continuation_note=continuation_note,
+                    initial_repair_objective=continuation.repair_objective,
+                    resumed_phase_intent=continuation.intent,
+                    completion_guard=approved_plan_is_current,
+                )
+                # _approve_locked normally owns this archive decision. Continue enters through its
+                # own scoped door, so it makes the same decision after the shared phase runner.
+                plan_still_current = approved_plan_is_current()
+                if not plan_still_current:
+                    project.context_continuations.invalidate_claimed(
+                        continuation.continuation_id, claim_token)
+                if disposition in {"success", "stopped"} and plan_still_current:
+                    project.app_for_turn().archive_plan()
+                return
             yield from self._build_stream(
                 _BUILD_CONTROL_PROMPT,
                 mentions or None,
@@ -18218,11 +18293,22 @@ class Orchestrator:
             kept = bool(state.baseline and current_tree and current_tree != state.baseline)
             source_note_now = self._build_source_note(project.app_for_turn().path)
             turn_record = timing.current()
+            approved_plan = (
+                project.record.read_plan_doc(project.active_plan_record_id)
+                if project.active_plan_record_id else None)
+            approved_version = (
+                approved_plan.get("version") if isinstance(approved_plan, dict) else 0)
+            approved_version = approved_version if type(approved_version) is int else 0
+            approved_markdown = str((approved_plan or {}).get("markdown") or "")
             continuation = project.context_continuations.offer(
                 conversation=str(project.build_conversation or ""),
                 app_id=project.app_for_turn().app_id,
                 intent=project.active_build_intent,
                 approved_plan_record_id=project.active_plan_record_id,
+                approved_plan_version=approved_version,
+                approved_plan_digest=(
+                    hashlib.sha256(approved_markdown.encode()).hexdigest()
+                    if approved_markdown else ""),
                 phase_id=project.active_build_intent.phase_index,
                 repair_objective=active_repair_objective,
                 source_map_digest=hashlib.sha256(source_note_now.encode()).hexdigest(),
@@ -19720,7 +19806,11 @@ class Orchestrator:
     def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None,
                         start_step: int = 0, mentions: list[str] | None = None,
                         explicit_references: list[dict] | None = None,
-                        source_requests: tuple[str, ...] = ()):
+                        source_requests: tuple[str, ...] = (),
+                        continuation_note: str = "",
+                        initial_repair_objective: str = "implementation",
+                        resumed_phase_intent: BuildIntent | None = None,
+                        completion_guard: Callable[[], bool] | None = None):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.
 
         The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
@@ -19834,8 +19924,16 @@ class Orchestrator:
             project.app_for_turn().set_plan_retry_step(step.n)
             yield persist({"type": "step-start", "n": step.n, "total": len(steps),
                            "label": step.label, "files": step.files})
+            resumed = step.n == start_step and bool(continuation_note)
             outcome = yield from self._run_step(project, client, step, steps, answers, notes,
-                                                mentions, explicit_references, source_requests)
+                                                mentions, explicit_references, source_requests,
+                                                continuation_note=(
+                                                    continuation_note if resumed else ""),
+                                                initial_repair_objective=(
+                                                    initial_repair_objective if resumed
+                                                    else "implementation"),
+                                                retained_phase_intent=(
+                                                    resumed_phase_intent if resumed else None))
             if outcome == "stopped":
                 # The user rejected the whole build, so leaving three of six phases on disk would
                 # leave a state they never asked for and can't describe. Same semantics as Stop on a
@@ -19856,19 +19954,19 @@ class Orchestrator:
                 project.app_for_turn().set_plan_retry_step(0)
                 build_diagnostics.observe({"type": "stopped"})
                 yield {"type": "stopped"}
-                return
+                return "stopped"
             if outcome == "pre_edit_limit":
                 project.app_for_turn().set_last_turn_failed(True)
                 yield persist({"type": "step-done", "n": step.n, "total": len(steps),
                                "ok": False, "decision": "pre_edit_limit"})
                 yield persist({"type": "done", "ok": False, "decision": "pre_edit_limit"})
-                return
+                return "failed"
             if outcome == "context_limit":
                 project.app_for_turn().set_last_turn_failed(True)
                 yield persist({"type": "step-done", "n": step.n, "total": len(steps),
                                "ok": False, "decision": "context_limit"})
                 yield persist({"type": "done", "ok": False, "decision": "context_limit"})
-                return
+                return "failed"
             if outcome is not True:
                 failed = (step, str(outcome))
                 yield persist({"type": "step-done", "n": step.n, "total": len(steps),
@@ -19899,7 +19997,15 @@ class Orchestrator:
                 yield persist(_app_change_event(project.app_for_turn()))
             yield persist({"type": "done", "ok": False,
                            "decision": f"phase {step.n} of {len(steps)}, {step.label}, failed — {why}"})
-            return
+            return "failed"
+
+        if completion_guard is not None and not completion_guard():
+            project.app_for_turn().set_last_turn_failed(True)
+            if project.snapshot.working_tree_hash() != tree_before:
+                yield persist(_app_change_event(project.app_for_turn()))
+            yield persist({"type": "done", "ok": False,
+                           "decision": "invalid phased continuation"})
+            return "invalid"
 
         project.app_for_turn().set_last_turn_failed(False)
         # Every phase ran, so the plan owes nothing and _approve_locked archives it as usual.
@@ -19913,12 +20019,16 @@ class Orchestrator:
             saved = self._save_to_git(project, f"build plan ({len(steps)} phases)")
         if saved is not None:
             yield persist(saved)
+        return "success"
 
     def _run_step(self, project: Project, client: OpenCodeClient, step: PlanStep,
                   steps: list[PlanStep], answers: str, notes: list[str] | None = None,
                   mentions: list[str] | None = None,
                   explicit_references: list[dict] | None = None,
-                  source_requests: tuple[str, ...] = ()):
+                  source_requests: tuple[str, ...] = (),
+                  continuation_note: str = "",
+                  initial_repair_objective: str = "implementation",
+                  retained_phase_intent: BuildIntent | None = None):
         """Run one phase, retrying once in another fresh session if it fails. Returns True, the
         string "stopped", or a failure reason; swallows the phase's own terminal `done` so the build
         emits exactly one."""
@@ -19932,7 +20042,7 @@ class Orchestrator:
         escalated = False
         errors = ""
         reason = "the step did not complete"
-        phase_intent = BuildIntent.for_phase(
+        phase_intent = retained_phase_intent or BuildIntent.for_phase(
             source_requests, step.raw, step_index(steps, step.n), answers, notes or ())
 
         outcome: dict | None = None
@@ -19964,7 +20074,12 @@ class Orchestrator:
                                              mentions, is_approval=True, mode=Mode.IMPLEMENT,
                                              session_id=sid, brief=step,
                                              explicit_references=explicit_references,
-                                             build_intent=phase_intent):
+                                             build_intent=phase_intent,
+                                             continuation_note=(
+                                                 continuation_note if attempt == 1 else ""),
+                                             initial_repair_objective=(
+                                                 initial_repair_objective if attempt == 1
+                                                 else "implementation")):
                     if ev["type"] == "stopped":
                         return "stopped"
                     if ev["type"] == "done":

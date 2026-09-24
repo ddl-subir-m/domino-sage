@@ -4169,7 +4169,10 @@ def get_plan(plan_id: str) -> JSONResponse:
 def patch_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
     """Edit the plan. Sections are rendered back to markdown and kept as a new version, so the file
     stays the source of truth and the draft a reviewer commented on is still there."""
-    doc = orchestrator.patch_plan_doc(plan_id, body or {})
+    try:
+        doc = orchestrator.patch_plan_doc(plan_id, body or {})
+    except PlanArchiveRefused as error:
+        return JSONResponse(status_code=409, content={"error": error.reason})
     if doc is None:
         return JSONResponse({"error": "unknown plan"}, status_code=404)
     return JSONResponse(content=doc)

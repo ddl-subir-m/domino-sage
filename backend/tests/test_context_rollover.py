@@ -31,7 +31,12 @@ from sage.tool_result_window import apply_tool_result_window
 from .fake_opencode import FakeOpenCode, Turn
 from .test_native_model_controls import active, dispatch, request_body
 from .test_native_model_controls import running as _running
-from .test_phased_build import _plan_then_phases
+from .test_phased_build import (
+    PHASED_PLAN,
+    _plan_then_phases,
+    _writes,
+)
+from .test_phased_build import _build as _phased_build
 from .test_turn_path import _build
 
 _PY_NODE = "tests/test_context_rollover.py::"
@@ -56,7 +61,7 @@ ACCEPTANCE_MATRIX = {
     16: _PY_NODE + "test_native_retry_from_retired_session_stays_local",
     17: _PY_NODE + "test_stream_lifecycle_rolls_once_keeps_disk_and_offers_one_continue",
     18: _PY_NODE + "test_stream_lifecycle_rolls_once_keeps_disk_and_offers_one_continue",
-    19: _PY_NODE + "test_stream_lifecycle_rolls_once_keeps_disk_and_offers_one_continue",
+    19: _PY_NODE + "test_phased_continue_resumes_interrupted_phase_and_finishes_later_phases",
     20: _PY_NODE + "test_stream_lifecycle_rolls_once_keeps_disk_and_offers_one_continue",
     21: _PY_NODE + "test_stream_lifecycle_rolls_once_keeps_disk_and_offers_one_continue",
     22: _PY_NODE + "test_automatic_rollover_request_has_canonical_intent_and_disk_packet_without_private_history",
@@ -460,6 +465,356 @@ def test_phased_build_shares_one_rollover_allowance_and_stops_the_active_phase(
     assert continuation is not None and continuation.phase_id.startswith("1. Data module")
     assert continuation.approved_plan_record_id
     assert project.context_rollover is None
+
+
+def _phase_two_context_offer(
+        tmp_path, monkeypatch, *, plan=PHASED_PLAN,
+        phase_two_marker="2. Trades table (this step)",
+        phase_one_label="Data module"):
+    monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *_args, **_kwargs: None)
+    phase_one = _writes("src/data.ts")
+    phase_one.text = "The data module is complete."
+    turns = [
+        Turn(text=plan),
+        phase_one,
+        Turn(text="first local context refusal"),
+        Turn(text="second local context refusal"),
+        _writes("src/Table.tsx"),
+        _writes("src/Filter.tsx"),
+    ]
+    orch, oc, project = _phased_build(tmp_path, turns)
+    list(orch.build_stream("build me a trades dashboard", conversation="conv"))
+    original_send = oc.send_prompt
+
+    def cross_only_phase_two(session_id, text, *args, **kwargs):
+        intent = project.active_build_intent
+        original_send(session_id, text, *args, **kwargs)
+        if intent is not None and phase_two_marker in intent.phase_index:
+            project.context_rollover.decide(
+                total_wire_bytes=786_433, media_bytes=0,
+                measurement_status="complete")
+
+    oc.send_prompt = cross_only_phase_two
+    events = list(orch.approve_stream(conversation="conv"))
+    oc.send_prompt = original_send
+    continuation = project.context_continuations.latest()
+    assert continuation is not None
+    assert [event["type"] for event in events].count("build-rollover") == 1
+    assert [event["type"] for event in events].count("build-context-limit") == 1
+    assert phase_two_marker in continuation.phase_id
+    assert continuation.intent.prior_phase_notes == (
+        f"1. {phase_one_label} — The data module is complete.",)
+    assert continuation.approved_plan_version > 0
+    assert len(continuation.approved_plan_digest) == 64
+    assert project.workspace.read_plan_retry_step() == 2
+    return orch, oc, project, continuation
+
+
+def test_phased_continue_resumes_interrupted_phase_and_finishes_later_phases(
+        tmp_path, monkeypatch):
+    orch, oc, project, continuation = _phase_two_context_offer(tmp_path, monkeypatch)
+    original_send = oc.send_prompt
+    continued_generations = []
+    continued_intents = []
+
+    def inspect_continued_phase_two(session_id, text, *args, **kwargs):
+        intent = project.active_build_intent
+        original_send(session_id, text, *args, **kwargs)
+        if intent is not None and "2. Trades table (this step)" in intent.phase_index:
+            continued_generations.append(
+                project.context_rollover.diagnostic()["sessionGeneration"])
+            continued_intents.append(intent)
+
+    oc.send_prompt = inspect_continued_phase_two
+    save_calls = []
+    mark_calls = []
+    workspace_type = type(project.workspace)
+    original_mark = workspace_type.mark_built
+
+    def save_once(_project, prompt):
+        save_calls.append(prompt)
+
+    def mark_once(workspace):
+        mark_calls.append(True)
+        return original_mark(workspace)
+
+    monkeypatch.setattr(orch, "_save_to_git", save_once)
+    monkeypatch.setattr(workspace_type, "mark_built", mark_once)
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    response = TestClient(appmod.control_app).post("/api/project/build/continue", json={
+        "continuationId": continuation.continuation_id,
+        "conversation": continuation.conversation,
+        "appId": continuation.app_id,
+    })
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    assert response.status_code == 200, response.text
+    assert [event["n"] for event in events if event["type"] == "step-start"] == [2, 3]
+    assert [event["n"] for event in events if event["type"] == "step-done"] == [1, 2, 3]
+    assert len([event for event in events if event["type"] == "done"]) == 1
+    assert next(event for event in events if event["type"] == "done")["ok"] is True
+    assert continued_generations[0] == 0
+    assert continued_intents[0] is continuation.intent
+    assert continued_intents[0].intent_id == continuation.intent_id
+    assert continued_intents[0].prior_phase_notes == continuation.intent.prior_phase_notes
+    assert (project.workspace.path / "src/Table.tsx").exists()
+    assert (project.workspace.path / "src/Filter.tsx").exists()
+    assert project.workspace.read_plan_retry_step() == 0
+    assert project.workspace.has_built()
+    assert mark_calls == [True]
+    assert save_calls == ["build plan (3 phases)"]
+    assert project.workspace.read_plan() is None
+    assert project.workspace.read_archived_plan_doc_id() == continuation.approved_plan_record_id
+
+
+DUPLICATE_PHASE_PLAN = PHASED_PLAN.replace(
+    "### 1. Data module\n"
+    "- Files — src/data.ts\n"
+    "- Do — Export two hundred sample trade rows.\n"
+    "- Done when — src/data.ts exports rows and the app compiles.\n\n"
+    "### 2. Trades table\n"
+    "- Files — src/Table.tsx\n"
+    "- Do — Render the rows in a sortable table.\n"
+    "- Done when — The preview shows a sortable table.\n"
+    "- Don't touch — src/data.ts",
+    "### 1. Repeated phase A\n"
+    "- Files — src/Repeated.tsx\n"
+    "- Do — Render the repeated content.\n"
+    "- Done when — The repeated content is visible.\n\n"
+    "### 2. Repeated phase B\n"
+    "- Files — src/Repeated.tsx\n"
+    "- Do — Render the repeated content.\n"
+    "- Done when — The repeated content is visible.",
+)
+
+
+def test_phased_continue_resolves_duplicate_phase_text_by_recorded_index(
+        tmp_path, monkeypatch):
+    orch, _oc, _project, continuation = _phase_two_context_offer(
+        tmp_path, monkeypatch, plan=DUPLICATE_PHASE_PLAN,
+        phase_two_marker="2. Repeated phase B (this step)",
+        phase_one_label="Repeated phase A")
+    assert continuation.intent.phase_brief.startswith("### 2. Repeated phase B")
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    response = TestClient(appmod.control_app).post("/api/project/build/continue", json={
+        "continuationId": continuation.continuation_id,
+        "conversation": continuation.conversation,
+        "appId": continuation.app_id,
+    })
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    assert response.status_code == 200, response.text
+    assert [event["n"] for event in events if event["type"] == "step-start"] == [2, 3]
+    assert [event["n"] for event in events if event["type"] == "step-done"] == [1, 2, 3]
+    assert next(event for event in events if event["type"] == "done")["ok"] is True
+
+
+def test_phased_continue_rechecks_plan_changed_during_execution_before_completion(
+        tmp_path, monkeypatch):
+    orch, oc, project, continuation = _phase_two_context_offer(tmp_path, monkeypatch)
+    original_send = oc.send_prompt
+    changed_markdown = []
+
+    def mutate_phase_three_after_send(session_id, text, *args, **kwargs):
+        intent = project.active_build_intent
+        original_send(session_id, text, *args, **kwargs)
+        if intent is None or "3. Currency filter (this step)" not in intent.phase_index:
+            return
+        approved = project.record.read_plan_doc(continuation.approved_plan_record_id)
+        changed = approved["markdown"].replace(
+            "Add a currency dropdown above the table.",
+            "Add an unapproved region dropdown above the table.",
+        )
+        assert changed != approved["markdown"]
+        project.record.write_plan_doc_version(
+            continuation.approved_plan_record_id, changed)
+        project.workspace.write_plan(changed, continuation.approved_plan_record_id)
+        changed_markdown.append(changed)
+
+    oc.send_prompt = mutate_phase_three_after_send
+    save_calls = []
+    mark_calls = []
+    monkeypatch.setattr(orch, "_save_to_git", lambda *_args: save_calls.append(True))
+    monkeypatch.setattr(
+        type(project.workspace), "mark_built",
+        lambda *_args: mark_calls.append(True))
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    response = TestClient(appmod.control_app).post("/api/project/build/continue", json={
+        "continuationId": continuation.continuation_id,
+        "conversation": continuation.conversation,
+        "appId": continuation.app_id,
+    })
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    assert response.status_code == 200, response.text
+    assert changed_markdown
+    assert [event["type"] for event in events].count("done") == 1
+    assert next(event for event in events if event["type"] == "done") == {
+        "type": "done", "ok": False, "decision": "invalid phased continuation"}
+    assert mark_calls == []
+    assert save_calls == []
+    assert project.workspace.read_plan() == changed_markdown[0]
+    assert project.workspace.read_archived_plan_doc_id() != continuation.approved_plan_record_id
+    # Installing the changed live plan clears the old plan version's retry marker.
+    assert project.workspace.read_plan_retry_step() == 0
+    assert project.context_continuations.claim(
+        continuation.continuation_id, continuation.conversation,
+        continuation.app_id)[0] == "invalid"
+
+
+def test_stopping_phased_continue_retires_the_current_approved_plan(
+        tmp_path, monkeypatch):
+    orch, _oc, project, continuation = _phase_two_context_offer(tmp_path, monkeypatch)
+    status, claimed, claim_token = project.context_continuations.claim(
+        continuation.continuation_id, continuation.conversation, continuation.app_id)
+    assert status == "claimed"
+    ticket, _ = orch.prepare_stream_turn(
+        "continued-stop", kind="build", conversation=continuation.conversation, app=True)
+    events = []
+    for event in orch.continue_build_stream(claimed, claim_token, turn_ticket=ticket):
+        events.append(event)
+        if event.get("type") == "step-start" and event.get("n") == 2:
+            project.stop_requested = True
+    assert [event["type"] for event in events].count("stopped") == 1
+    assert not [event for event in events if event["type"] == "done"]
+    assert project.workspace.read_plan_retry_step() == 0
+    assert project.workspace.read_plan() is None
+    assert project.workspace.read_archived_plan_doc_id() == continuation.approved_plan_record_id
+
+
+@pytest.mark.parametrize("mutation", ["edit", "archive", "app_id"])
+def test_live_plan_edit_or_archive_removes_available_continue_from_turn_state(
+        tmp_path, monkeypatch, mutation):
+    orch, oc, project, continuation = _phase_two_context_offer(tmp_path, monkeypatch)
+    if mutation == "edit":
+        approved = project.record.read_plan_doc(continuation.approved_plan_record_id)
+        sections = dict(approved["sections"])
+        sections["plan"] = sections["plan"].replace(
+            "Add a currency dropdown above the table.",
+            "Add an unapproved region dropdown above the table.",
+        )
+        orch.patch_plan_doc(continuation.approved_plan_record_id, {"sections": sections})
+    elif mutation == "app_id":
+        orch.patch_plan_doc(
+            continuation.approved_plan_record_id, {"appId": "app_moved"})
+    else:
+        orch.archive_plan_doc(continuation.approved_plan_record_id, True)
+    assert orch.turn_state()["context_continuation"] is None
+    prompts_before = len(oc.prompts)
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    response = TestClient(appmod.control_app).post("/api/project/build/continue", json={
+        "continuationId": continuation.continuation_id,
+        "conversation": continuation.conversation,
+        "appId": continuation.app_id,
+    })
+    assert response.status_code == 409
+    assert response.json() == {"error": "continuation unavailable"}
+    assert len(oc.prompts) == prompts_before
+
+
+def test_live_plan_app_change_is_refused_while_phased_continue_holds_turn_lock(
+        tmp_path, monkeypatch):
+    orch, oc, project, continuation = _phase_two_context_offer(tmp_path, monkeypatch)
+    original_send = oc.send_prompt
+    phase_started = threading.Event()
+    release_phase = threading.Event()
+
+    def block_resumed_phase(session_id, text, *args, **kwargs):
+        intent = project.active_build_intent
+        original_send(session_id, text, *args, **kwargs)
+        if intent is not None and "2. Trades table (this step)" in intent.phase_index:
+            phase_started.set()
+            assert release_phase.wait(10)
+
+    oc.send_prompt = block_resumed_phase
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    result = {}
+
+    def run_continue():
+        result["response"] = TestClient(appmod.control_app).post(
+            "/api/project/build/continue", json={
+                "continuationId": continuation.continuation_id,
+                "conversation": continuation.conversation,
+                "appId": continuation.app_id,
+            })
+
+    thread = threading.Thread(target=run_continue)
+    thread.start()
+    try:
+        assert phase_started.wait(10)
+        response = TestClient(appmod.control_app).patch(
+            f"/api/plans/{continuation.approved_plan_record_id}",
+            json={"appId": "app_moved"},
+        )
+        assert response.status_code == 409
+        assert response.json() == {"error": "busy"}
+        current = project.record.read_plan_doc(continuation.approved_plan_record_id)
+        assert current["appId"] == continuation.app_id
+        assert current["version"] == continuation.approved_plan_version
+    finally:
+        release_phase.set()
+        thread.join(10)
+    assert not thread.is_alive()
+    assert result["response"].status_code == 200
+    continued_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in result["response"].text.splitlines()
+        if line.startswith("data: {")
+    ]
+    assert next(event for event in continued_events if event["type"] == "done")["ok"] is True
+
+
+@pytest.mark.parametrize("mutation", ["edit_phase_three", "archive"])
+def test_phased_continue_rejects_a_changed_or_retired_approved_plan(
+        tmp_path, monkeypatch, mutation):
+    orch, oc, project, continuation = _phase_two_context_offer(tmp_path, monkeypatch)
+    if mutation == "edit_phase_three":
+        approved = project.record.read_plan_doc(continuation.approved_plan_record_id)
+        changed = approved["markdown"].replace(
+            "Add a currency dropdown above the table.",
+            "Add an unapproved region dropdown above the table.",
+        )
+        assert changed != approved["markdown"]
+        project.record.write_plan_doc_version(
+            continuation.approved_plan_record_id, changed)
+        project.workspace.write_plan(changed, continuation.approved_plan_record_id)
+    else:
+        project.workspace.archive_plan(cancelled=True)
+    prompts_before = len(oc.prompts)
+    archives_before = len(list((project.workspace.path / ".sage" / "plans").glob("*.md")))
+    monkeypatch.setattr(appmod, "orchestrator", orch)
+    response = TestClient(appmod.control_app).post("/api/project/build/continue", json={
+        "continuationId": continuation.continuation_id,
+        "conversation": continuation.conversation,
+        "appId": continuation.app_id,
+    })
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    assert response.status_code == 200, response.text
+    assert [event["type"] for event in events] == ["error", "done"]
+    assert events[-1] == {
+        "type": "done", "ok": False, "decision": "invalid phased continuation"}
+    assert len(oc.prompts) == prompts_before
+    assert not (project.workspace.path / "src/Table.tsx").exists()
+    assert not (project.workspace.path / "src/Filter.tsx").exists()
+    assert len(list((project.workspace.path / ".sage" / "plans").glob("*.md"))) == archives_before
+    assert project.context_continuations.claim(
+        continuation.continuation_id, continuation.conversation,
+        continuation.app_id)[0] == "invalid"
+    if mutation == "edit_phase_three":
+        assert project.workspace.read_plan() is not None
 
 
 def test_continue_turn_starts_with_a_fresh_rollover_allowance(tmp_path):

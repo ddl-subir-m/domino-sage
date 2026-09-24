@@ -204,6 +204,8 @@ class ContextContinuation:
     intent: BuildIntent
     intent_id: str
     approved_plan_record_id: str
+    approved_plan_version: int
+    approved_plan_digest: str
     phase_id: str
     repair_objective: str
     source_map_digest: str
@@ -291,7 +293,8 @@ class ContextContinuationRegistry:
         return tuple(out)
 
     def offer(self, *, conversation: str, app_id: str, intent: BuildIntent,
-              approved_plan_record_id: str = "", phase_id: str = "",
+              approved_plan_record_id: str = "", approved_plan_version: int = 0,
+              approved_plan_digest: str = "", phase_id: str = "",
               repair_objective: str = "implementation", source_map_digest: str = "",
               baseline_digest: str = "", current_digest: str = "",
               parent_turn_id: str = "", file_references=(),
@@ -309,6 +312,8 @@ class ContextContinuationRegistry:
             intent=intent,
             intent_id=intent.intent_id,
             approved_plan_record_id=approved_plan_record_id,
+            approved_plan_version=approved_plan_version,
+            approved_plan_digest=approved_plan_digest,
             phase_id=phase_id,
             repair_objective=repair_objective,
             source_map_digest=source_map_digest,
@@ -333,6 +338,18 @@ class ContextContinuationRegistry:
             if self._record is not None and self._record.state == "available":
                 self._record = replace(self._record, state="invalidated")
                 self._claim_token = None
+
+    def invalidate_plan(self, app_id: str, plan_id: str) -> bool:
+        """Atomically retire an available capability for one exact app and approved plan."""
+        with self._lock:
+            record = self._record
+            if (record is None or record.state != "available"
+                    or record.app_id != app_id
+                    or record.approved_plan_record_id != plan_id):
+                return False
+            self._record = replace(record, state="invalidated")
+            self._claim_token = None
+            return True
 
     def claim(self, continuation_id: str, conversation: str,
               app_id: str) -> tuple[str, ContextContinuation | None, str | None]:
@@ -360,5 +377,16 @@ class ContextContinuationRegistry:
                     or record.state != "claimed" or token != self._claim_token):
                 return False
             self._record = replace(record, state="available")
+            self._claim_token = None
+            return True
+
+    def invalidate_claimed(self, continuation_id: str, token: str) -> bool:
+        """Invalidate only the claimed capability still owned by this exact caller."""
+        with self._lock:
+            record = self._record
+            if (record is None or record.continuation_id != continuation_id
+                    or record.state != "claimed" or token != self._claim_token):
+                return False
+            self._record = replace(record, state="invalidated")
             self._claim_token = None
             return True

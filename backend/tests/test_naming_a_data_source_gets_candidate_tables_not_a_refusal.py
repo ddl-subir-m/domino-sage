@@ -714,10 +714,18 @@ def test_a_table_named_outright_is_asked_about_even_where_the_name_scores_nothin
     orch._resources.tree["ds-dwh"] = {"DWH": {"MARTS": ["T1", "OTHER"]}}
     client = _client(orch, monkeypatch)
     _bind(client)
+    agent_prompts = []
+
+    def build_reached(prompt, *_args, **_kwargs):
+        agent_prompts.append(prompt)
+        yield {"type": "done", "ok": True, "decision": "typecheck clean"}
+
+    orch._build_stream = build_reached  # type: ignore[method-assign]
 
     client.post("/api/project/build/stream", json={"prompt": "build a chart from DWH.MARTS.T1"})
 
     assert [(s["id"], s.get("table")) for s in _sources(client)] == [("ds-dwh", "T1")]
+    assert agent_prompts == ["build a chart from DWH.MARTS.T1"]
 
     other = _orch(tmp_path / "control")
     other._resources.tree["ds-dwh"] = {"DWH": {"MARTS": ["T1", "OTHER"]}}
