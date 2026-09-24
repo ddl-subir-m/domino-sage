@@ -59,7 +59,7 @@ window.SW = window.SW || {};
           if (record) used.add(turnId);
           return {
             id: message.id,
-            at: sortTime((record && record.turn.startedAt) || block.at,
+            at: sortTimeSeconds((record && record.turn.startedAt) || block.at,
               index - transcriptMessages.length),
             block: { ...block, diagnosticTurns: record ? [record]
               : (block.diagnostics ? [{ turn: block.diagnostics, identityOnly: true }] : []) },
@@ -72,7 +72,7 @@ window.SW = window.SW || {};
         .filter((record) => !used.has(record.turn.turnId))
         .map((record) => ({
           id: `diagnostic_${record.turn.turnId}`,
-          at: sortTime(record.turn.startedAt, 0),
+          at: sortTimeSeconds(record.turn.startedAt, 0),
           block: {
             prompt: `${phaseLabel(record)} turn`,
             at: record.turn.startedAt,
@@ -165,11 +165,22 @@ window.SW = window.SW || {};
     );
   };
 
-  function sortTime(value, fallback) {
+  // Build timestamps have one unit on disk and over the API: Unix seconds. Keep sorting in that
+  // unit too. ISO strings are the older transcript shape and cross into seconds here.
+  function sortTimeSeconds(value, fallback) {
     const numeric = Number(value);
     if (Number.isFinite(numeric) && numeric > 0) return numeric;
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed / 1000 : fallback;
+  }
+
+  // JavaScript Date takes milliseconds. Numeric Build timestamps are Unix seconds, so this is the
+  // only conversion boundary for every row the drawer renders. ISO strings remain accepted for
+  // older transcript rows. Missing and invalid values keep the row's existing no-time fallback.
+  function buildDate(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
   }
 
   function phaseLabel(record) {
@@ -208,6 +219,7 @@ window.SW = window.SW || {};
     };
     const turns = block.messages || [];
     const diagnosticTurns = block.diagnosticTurns || [];
+    const at = buildDate(block.at);
 
     return h(
       'div',
@@ -227,7 +239,7 @@ window.SW = window.SW || {};
         ),
         // A row written before Sage stamped the clock has no time, and no time is what it shows.
         // Deriving one from its neighbours would be a number nobody wrote down.
-        block.at && h('div', { className: 'sw-bh-run-at' }, SW.util.relativeTime(block.at))
+        at && h('div', { className: 'sw-bh-run-at' }, SW.util.relativeTime(at))
       ),
       diagnosticTurns.length === 0 && h(Button, { size: 'small', disabled: true,
         title: 'Diagnostics were not captured for this older turn.' }, 'Download diagnostics'),

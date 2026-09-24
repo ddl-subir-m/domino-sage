@@ -183,6 +183,46 @@ def test_a_build_with_no_stamp_shows_no_time():
     assert step["drawer"]["times"][0].endswith("ago")
 
 
+@needs_node
+def test_build_dates_convert_unix_seconds_once_at_the_renderer_boundary():
+    """The fixed diagnostic capture from #522 is Unix seconds. Every kind of Build-history row
+    reaches the same renderer: transcript-only, matched implementation, matched planning, and a
+    retained diagnostic with no transcript. They must all show the local September 2026 date."""
+    step = _run([{
+        "history": "thr_many", "select": "app_a", "dateFixture": True,
+    }])[-1]
+
+    expected = step["expectedBuildDate"]
+    assert expected.startswith("September ") and expected.endswith(", 2026")
+    assert step["unconvertedBuildDate"].startswith("January ")
+    # Five valid rows cross one conversion boundary. The two invalid/missing diagnostic rows have
+    # no time element, which is the old safe fallback rather than an exception or "Invalid Date".
+    assert step["drawer"]["runs"] == 7
+    assert step["drawer"]["times"] == [expected] * 5
+    assert "Invalid Date" not in " ".join(step["drawer"]["words"])
+    assert "Implementation · Succeeded" in " ".join(step["drawer"]["words"])
+    assert "Planning · Succeeded" in " ".join(step["drawer"]["words"])
+
+
+@needs_node
+def test_build_dates_sort_iso_and_seconds_in_the_same_seconds_unit():
+    """The ISO and numeric rows at 1790220211.8069158 stay together between a row ten seconds
+    later and one ten seconds earlier. JavaScript dates keep milliseconds, so the numeric value's
+    smaller fraction may order just ahead of the ISO value while both remain at the same instant
+    for this display."""
+    step = _run([{
+        "history": "thr_many", "select": "app_a", "dateFixture": True,
+    }])[-1]
+
+    assert step["drawer"]["prompts"][:5] == [
+        "Later planning",
+        "Implementation at captured instant",
+        "Build turn",
+        "ISO at captured instant",
+        "Earlier transcript",
+    ]
+
+
 # ---- criterion 2, and the late response that will not show up by clicking around ----------------
 
 
