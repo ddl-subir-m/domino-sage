@@ -110,10 +110,10 @@ CASES = (
         True,
     ),
     DecisionCase(
-        "no-op-write-is-no-edit",
+        "completed-no-op-write-remains-an-edit-signal",
         ("noop", "write"),
         ("starter", "clean"),
-        ("request", "no_edit"),
+        ("request", "typecheck_repair"),
         True,
     ),
 )
@@ -144,7 +144,7 @@ def _prompt_kind(text: str) -> str:
 
 
 def _wrote(effect: str) -> bool:
-    return effect in {"write", "opaque"}
+    return effect in {"write", "opaque", "noop"}
 
 
 def _standing(state):
@@ -180,8 +180,8 @@ def _run_case(tmp_path: Path, stack_name: str, mode: Mode, case: DecisionCase):
         scenario_index = len(oc.prompts) - scenario_start
         effect = case.effects[scenario_index]
         if effect == "noop":
-            # Emit a completed write tool but put the same bytes back. The tree hash, not the tool
-            # name, must decide that this turn made no real change.
+            # Emit a completed write tool but put the same bytes back. The completed tool remains
+            # an edit witness even without a net tree delta; existing adapters can report this shape.
             current = Path(oc._session_dir(session_id)) / stack.entry_file
             oc.turns[oc._next].writes[stack.entry_file] = current.read_text()
         states.append(project.control.snapshot())

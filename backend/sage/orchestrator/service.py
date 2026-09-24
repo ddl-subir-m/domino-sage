@@ -17052,18 +17052,17 @@ class Orchestrator:
         web_token = project.control.arm_web() if _wants_web(prompt) else None
 
         def agent_wrote() -> bool:
-            """Did the AGENT change the app this turn? The working tree is ground truth for both
-            opaque shell writes and completed tools that changed no bytes. Edit-tool calls are the
-            fallback when git cannot hash the tree. The baseline moves when a concurrent upload
-            writes into the workspace, so that upload is not mistaken for the agent."""
+            """Did the AGENT write this turn? A completed edit/write tool is a direct witness, and
+            the working-tree hash catches opaque shell writes that have no such tool event. The
+            baseline moves when a concurrent upload writes into the workspace, so that upload is
+            not mistaken for the agent."""
             current_tree = project.snapshot.working_tree_hash()
-            # The tree is authoritative when git produced both hashes: a completed edit can write
-            # identical bytes (or restore the original bytes), while an opaque shell call can change
-            # the tree without an edit/write part. Fall back to the tool witness only when hashing
-            # failed, which working_tree_hash reports as an empty string.
-            if current_tree and project.turn_tree_baseline:
-                return current_tree != project.turn_tree_baseline
-            return made_edits
+            # Keep both witnesses. A test double and some tools can report a completed write without
+            # leaving a net tree delta; an opaque shell call can do the reverse.
+            return made_edits or bool(
+                current_tree and project.turn_tree_baseline
+                and current_tree != project.turn_tree_baseline
+            )
 
         # Declared before `restore_mode` closes over it: the refusal path below calls that function
         # before anything is armed, and a closure reading an unassigned local would raise there.
