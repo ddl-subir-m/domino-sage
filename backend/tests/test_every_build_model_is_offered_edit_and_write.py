@@ -149,8 +149,14 @@ def test_a_chat_turn_reads_its_own_pick_not_the_build_slots():
     assert _handle(project) == "sage-model"
 
 
+def test_every_spelling_of_a_gpt_alias_gets_the_gpt_handle():
+    """The gateway names aliases both ways: `gpt-5.4` and `GLM 5.3 OR` (live /v1/models)."""
+    for model in ("gpt-5.5", "gpt-5.6-sol", "openai/gpt-5.4", "GPT-5.4", "GPT 5.5 OR", "gpt_5.5"):
+        assert _handle(_project(_catalog(plan=model, implement=model))) == "gpt-5.4", model
+
+
 def test_the_ids_opencode_itself_leaves_on_edit_get_the_neutral_handle():
-    for model in ("gpt-oss-120b", "gpt-4o", "sonnet", "GLM 5.3 OR"):
+    for model in ("gpt-oss-120b", "GPT OSS 120B", "gpt-4o", "GPT 4o", "sonnet", "GLM 5.3 OR"):
         assert _handle(_project(_catalog(plan=model, implement=model))) == "sage-model", model
 
 

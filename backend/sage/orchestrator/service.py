@@ -2231,7 +2231,12 @@ def _agent_for_mode(mode: Mode) -> str | None:
 
 
 def _gives_patch(model: str) -> bool:
-    """OpenCode 1.18.4's own test (`ToolRegistry.tools`): `apply_patch` in place of `edit`/`write`."""
+    """OpenCode 1.18.4's own test (`ToolRegistry.tools`): `apply_patch` in place of `edit`/`write`.
+
+    Applied to the gateway's alias, which OpenCode never sees, so it is read loosely: aliases are
+    also named like `GLM 5.3 OR` (live /v1/models, 2026-09-24), and `GPT 5.5 OR` is GPT too.
+    """
+    model = re.sub(r"[\s_]+", "-", model.lower())
     return "gpt-" in model and "oss" not in model and "gpt-4" not in model
 
 
