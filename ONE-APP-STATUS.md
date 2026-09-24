@@ -2617,4 +2617,16 @@ to H4/the removed `_clear_stale_port` reaper — nothing sweeps these orphans no
 **Files**: `sage/orchestrator/service.py` (the lock + `_build_project` extraction + guarded
 `_ensure_preview_running`), `tests/test_concurrent_preview_starts_are_single_flighted.py` (new),
 `CONCURRENT-PROJECT-PREVIEW-BUG.md` (marked resolved). Not pushed, not merged — landing is the landing
-session's call. Full suite re-run + reconciliation against the 97-failure baseline: see the run below.
+session's call.
+
+**Suite (this laptop, `-n auto`)**: `5 failed, 7844 passed, 4 skipped` in 224s. All 5 are
+pre-existing/environmental — the identical failing set appears with the fix `git stash`ed, and they
+depend on this developer home's real state (local projects on disk — one asserts `{'items': []}` and
+sees the on-disk clones; git identity unset; publish wanting `app.sh`/dogfood). Note this laptop's
+baseline is 5, not the dogfood/CI "97" quoted above — different environment. Zero new failures.
+
+**Live-verified after restarting the orchestrator on the fixed tree** (dogfood): 6 concurrent
+`GET /p/<slug>/preview/` at a cold project → **exactly 1 supervisor** (was 6 pre-fix), all six requests
+`200`. Leaked/orphaned/duplicate `uvicorn` servers from the pre-fix run were swept in the restart;
+final state is one orchestrator on 8080 and one supervisor for the one project touched, no `ppid=1`
+orphans.

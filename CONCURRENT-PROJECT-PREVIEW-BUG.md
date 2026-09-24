@@ -124,10 +124,20 @@ The lock is per-`Orchestrator` (one per project), so project B's cold start neve
 threads at `_ensure_preview_running` and at `project()`, asserts one `start()` and one supervisor.
 Verified to fail without the fix (N starts / `FileExistsError`) and pass with it.
 
-**Not fixed here (named, not silently skipped)**: the `ppid=1` orphan servers from *previous*
-orchestrator processes are a distinct leak-on-exit gap — the orchestrator's shutdown stops only
-`self._project.supervisor`, and a hard kill leaves the `uvicorn --reload` group behind. Separate from
-the reported symptom; left for its own change.
+**Live re-verified after the fix (2026-09-24):** restarted the orchestrator on the fixed tree, then
+re-ran the same 6-concurrent probe at a cold project — **exactly 1 supervisor spawned** (was 6),
+all six requests `200`. Full suite `-n auto`: `5 failed, 7844 passed, 4 skipped` in 224s; the same 5
+fail with the fix `git stash`ed (environmental/publish, none in this path), so zero new failures.
+
+**Not fixed here (named, not silently skipped)**: the `ppid=1` orphan servers came from *ungraceful*
+kills of *previous* orchestrator runs, not from a missing teardown. Graceful exit is handled — both
+`_lifespan` and `run()`'s own SIGINT/SIGTERM handler loop `for orch in _REGISTRY.all_open():
+orch.shutdown()`, and each `shutdown()` `killpg`s that project's whole preview group (spawned
+`start_new_session=True`, so the `--reload` parent + worker die together). A `SIGKILL`/hard kill can't
+run any of that, so those children reparent to init — inherent to SIGKILL, not a design gap. The one
+real, *acknowledged* gap is `registry.close(slug)`, whose own docstring calls itself "not yet the real
+per-project preview lifecycle Phase 4 builds" (it only stops `orch._project.supervisor`, and only if a
+turn started one). Separate from the reported symptom; left for its own change.
 
 # Step 2: Hypotheses, ranked, each with how to falsify it
 
