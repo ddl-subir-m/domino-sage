@@ -439,10 +439,20 @@ def test_a_plan_kept_by_a_refused_approve_builds_once_the_model_is_changed(tmp_p
     list(orch.approve_stream())
 
     orch.set_catalog(implement="implement-model")
+    project = orch.project(start_preview=False)
+    intents = []
+    send_prompt = oc.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    oc.send_prompt = capture
     events = list(orch.approve_stream())
 
     assert _done(events)["ok"] is True
-    assert "Add the table" in oc.prompts[-1]["text"]
+    assert intents and "Add the table" in intents[-1].authoritative_plan
+    assert "Add the table" not in oc.prompts[-1]["text"]
 
 
 # ---- what must NOT change -------------------------------------------------------------------------

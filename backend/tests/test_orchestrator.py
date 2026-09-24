@@ -1266,9 +1266,11 @@ def test_approve_falls_back_to_the_architecture_when_no_plan_is_live(tmp_path: P
     project = orch.project(start_preview=False)
     project.workspace.write_architecture("## Components\n- **Queue** — holds jobs.")
     seen = []
-    orch._build_stream = lambda p, *a, **k: (seen.append(p), iter([]))[1]  # type: ignore[method-assign]
+    orch._build_stream = lambda p, *a, **k: (  # type: ignore[method-assign]
+        seen.append((p, k["build_intent"])), iter([]))[1]
     list(orch.approve_stream())
-    assert seen and "Queue" in seen[0]  # the design reached the build, not an empty plan
+    assert seen and "Queue" in seen[0][1].authoritative_plan
+    assert "Queue" not in seen[0][0]
 
 
 def test_a_question_in_implement_mode_answers_instead_of_building(tmp_path: Path):
