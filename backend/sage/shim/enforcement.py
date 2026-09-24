@@ -176,8 +176,11 @@ def _track_image_delivery(stream: Iterator[bytes], data_use, operation_ids: tupl
     except Exception:
         if not settled:
             data_use.fail_image_delivery(operation_ids, model, "gateway")
+            settled = True
         raise
-    else:
+    finally:
+        # A caller can close the generator after a setup-only frame. That is still a terminal exit:
+        # do not leave the audit row pending until some later turn or process restart closes it.
         inspect(buffer)
         if not settled:
             data_use.fail_image_delivery(operation_ids, model, "no_response")

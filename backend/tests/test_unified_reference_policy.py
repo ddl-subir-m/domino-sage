@@ -164,6 +164,8 @@ _IMAGE_MATRIX = [
      "carriers": 1, "history": "none", "upstream": "delta-close"},
     {"id": "close-after-error", "kind": "shim", "capable": True, "markers": 1,
      "carriers": 1, "history": "none", "upstream": "error-close"},
+    {"id": "close-after-setup", "kind": "shim", "capable": True, "markers": 1,
+     "carriers": 1, "history": "none", "upstream": "setup-close"},
     {"id": "opencode-send-raise", "kind": "orchestrator", "exit": "send"},
     {"id": "stop-before-send", "kind": "orchestrator", "exit": "stop"},
     {"id": "terminal-done", "kind": "orchestrator", "exit": "done"},
@@ -249,6 +251,7 @@ def test_image_delivery_state_matrix(tmp_path: Path, case: dict):
                 "incomplete": [{"type": "response.incomplete"}],
                 "delta": [{"choices": [{"delta": {"content": "ok"}}]}],
                 "delta-close": [{"choices": [{"delta": {"content": "ok"}}]}],
+                "setup-close": [{"type": "response.created", "response": {"id": "r1"}}],
                 "complete": [{"choices": [{"finish_reason": "stop"}]}],
             }[upstream]
             return iter([("data: " + json.dumps(frame) + "\n\n").encode()
@@ -326,6 +329,8 @@ def test_image_delivery_state_matrix(tmp_path: Path, case: dict):
     elif case["upstream"] in ("sync", "lazy"):
         expected = ("not_sent", "gateway")
     elif case["upstream"] == "empty":
+        expected = ("not_sent", "no_response")
+    elif case["upstream"] == "setup-close":
         expected = ("not_sent", "no_response")
     elif case["upstream"] in ("error", "error-close"):
         expected = ("not_sent", "provider")
