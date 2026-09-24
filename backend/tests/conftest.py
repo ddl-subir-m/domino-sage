@@ -1,4 +1,5 @@
 import collections
+import subprocess
 import sys
 import time
 import weakref
@@ -8,6 +9,7 @@ import pytest
 
 from sage import timing
 from sage.build_policy import BuildPolicy
+from sage.driver.server import OpenCodeServer
 from sage.orchestrator import service
 from sage.orchestrator.service import Orchestrator
 
@@ -230,3 +232,48 @@ def _turn_lock_is_handed_back(request):
         time.sleep(0.05)
     pytest.fail(f"{request.node.nodeid} left {len(leaked)} turn lock(s) held. A turn lock is "
                 f"released in a `finally`, or handed back with `_release_turn()`.")
+
+
+# The OpenCode servers THIS test started, cleared at the start of each one (#536).
+_SERVERS_STARTED_BY_THIS_TEST: list = []
+# Taken at import: the driver tests replace `subprocess.Popen` itself with a fake while they run.
+_POPEN = subprocess.Popen
+
+
+def _remember_start(start):
+    def wrapped(self, *args, **kwargs):
+        _SERVERS_STARTED_BY_THIS_TEST.append(self)
+        return start(self, *args, **kwargs)
+    wrapped._remembers = True
+    return wrapped
+
+
+# Guarded for the same reason as `_remember` above: this module is reachable under two names.
+if not getattr(OpenCodeServer.start, "_remembers", False):
+    OpenCodeServer.start = _remember_start(OpenCodeServer.start)
+
+
+@pytest.fixture(autouse=True)
+def _opencode_server_is_stopped(request):
+    """Stop a real `opencode serve` the test left running, and fail THAT test (#536).
+
+    `OpenCodeServer.start` gives OpenCode a session of its own, so the server does not die with the
+    test process: only `stop()` ends it. A test whose `Orchestrator` has no fake OpenCode reaches a
+    real one on its first turn and, with no `shutdown()`, leaves it running under `launchd` for
+    good — three of them ran for two days from a draft test on 2026-09-22.
+
+    Unlike a turn lock, stopping it here is safe: the process belongs to this test and nobody
+    else can be holding it. Only a real `subprocess.Popen` counts; the driver tests' fakes stand
+    in for one without being a process.
+    """
+    _SERVERS_STARTED_BY_THIS_TEST.clear()
+    yield
+    left = [s for s in _SERVERS_STARTED_BY_THIS_TEST
+            if isinstance(s._proc, _POPEN) and s._proc.poll() is None]
+    _SERVERS_STARTED_BY_THIS_TEST.clear()
+    for server in left:
+        server.stop()
+    if left:
+        pytest.fail(f"{request.node.nodeid} left {len(left)} OpenCode server(s) running. A test "
+                    f"that starts one calls `stop()` (or `Orchestrator.shutdown()`), or injects "
+                    f"`opencode_client=` so no real server starts.")
