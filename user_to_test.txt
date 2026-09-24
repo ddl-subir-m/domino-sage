@@ -1,0 +1,33 @@
+
+
+# ===== Phase 3 manual checks (Projects home / create / clone) =====
+
+# 1. CLONE path (the half not yet clicked). Use a second, empty SAGE_HOME so nothing gets deleted:
+#      SAGE_HOME=/tmp/sage2 make orchestrator
+#    -> home should show the Connection form ONLY (first-run gate). Save host + PAT, restart the
+#       same command. Your existing project should now be listed as "Not cloned to this machine yet"
+#       with a Clone button. Clone -> should land in /p/<slug>/ with your earlier work present.
+
+# 2. Git: per-turn commits carry your real name/email and reach GitHub.
+#      cd ~/.sage/projects/<slug> && git log --format='%an <%ae>  %s' | head
+#    Then check the repo on github.com has the same commits (push uses your git credential helper,
+#    or the Settings git token as a fallback).
+
+# 3. Two projects: create a second one. Inside a project, open the scope chip (top left):
+#    - switching to the other project navigates to /p/<other>/
+#    - "New project" goes back to the home page
+#    - reload keeps you in the same project (the slug is in the URL)
+#    - optional: start a Chat turn in each tab at once; neither should block the other
+
+# 4. Publish from the laptop should REFUSE cleanly (no env/tier configured yet, Phase 6):
+#    expect "Publish is only available when this builder runs on Domino", not a raw API error.
+
+# 5. Preview of a built app at /p/<slug>/preview/ — per-project preview is Phase 4, so note
+#    whatever you see rather than expecting it to be solid.
+
+# 6. Naming edge cases: create with a name starting "sage-" (known cosmetic bug: sage-sage-...),
+#    and create the same name twice (second should get a -2 suffix on both repo and project).
+
+# 7. In Domino's own UI: the new project exists, is git-based, and points at the GitHub repo.
+
+# Cleanup afterwards: test repos on GitHub and projects in Domino have to be deleted by hand.

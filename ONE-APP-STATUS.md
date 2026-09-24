@@ -13,12 +13,11 @@ session can resume without re-deriving the mirror map or the design calls below.
 any earlier `## Next session should` list.** Several of those are now stale (e.g. the one just below
 the 2026-09-23 mirror-map section still names Phase 3 step 3 as the next thing to do — it was
 finished in the 2026-09-24 update at the bottom of this file). As of 2026-09-24: Phases 0-2 and
-Phase 3 steps 1-4 are done and verified; Phase 3 step 3 (door/workspace-lifecycle deletion, the
-Projects home page, wiring `create`/`clone` to real HTTP routes) is ALSO now done — see the final
-`## UPDATE` block. **Committed and pushed** at `79f9a5a9` ("ph impl") on `one-app-pivot-Etan`,
-working tree clean — the commit was made and pushed by the user directly, not by an agent session.
-None of it has been live-smoke-tested in a real browser yet (see that update's own verification
-section for exactly what has and hasn't been checked).
+**Phase 3 is complete, and the product owner has smoke-tested it on a real laptop** (2026-09-24,
+`make orchestrator` against cloud-dogfood, with a PAT). **Start from the last section of this file,
+"Where things stand — start here (end of 2026-09-24)",** which gives the current state, what's
+verified, the open items, and the next phase. Everything is committed and pushed (tip `9ca83398`)
+by the user directly; agent sessions don't commit on this branch unless asked.
 
 **Scope per session:** one phase at a time (Phase 0 alone is already sized ~1-2 PRs per the plan's
 own table). Update this file's checklist as you go, and the "Design calls" section whenever you make
@@ -2278,3 +2277,57 @@ probe tries Bearer first to match it.
 
 **Not verified**: a PAT passed to `DatasetClient(token=...)`. It's the same shape the sidecar JWT
 uses, but nobody has run it.
+
+## Where things stand — start here (end of 2026-09-24)
+
+This section supersedes every earlier "Next session should" and "Where things stand" block.
+
+**Done, and verified by the product owner on a real laptop** (`make orchestrator`, PAT against
+cloud-dogfood):
+- Phases 0–2: one stack (fastapi-antd), Settings plus one `TokenSource`, and the registry with
+  per-project `/p/<slug>/` routing.
+- Phase 3 in full: `registry.create()`/`clone()` wired to `POST /api/projects` and
+  `/api/projects/clone`; the root-scope Projects home (`workbench/home.html`), including the
+  first-run Connection-only view; the door and all workspace-lifecycle code deleted; git commits
+  authored as the real Domino user.
+- Laptop smoke test passed: first-run Connection form; list, create and clone a project; open it;
+  build an app in it; scope-chip switching and "New project"; commits reaching GitHub; the
+  resources panel listing Datasets; a clean Publish refusal on the laptop.
+- Three bugs found only by that laptop test and fixed (see the three UPDATE blocks above):
+  1. The control plane required the publish env/tier just to exist, and used a sidecar-only token.
+  2. Token fields weren't trimmed before saving.
+  3. A PAT is a Bearer credential, not an `X-Domino-Api-Key` one. `TokenSource.scheme()` now
+     probes which header a static credential needs.
+
+**Open, not blocking, recorded so nobody has to rediscover them:**
+1. **Next phase is Phase 4, preview per project** (plan §2.4). A supervisor per orchestrator on a
+   background thread with `_free_port()`, `/p/<slug>/preview/*`, and delete `SAGE_PREVIEW_PORT`,
+   the reaper and `SAGE_PROXY_MODE`. Decide risk #13 first (plan §2.2): today each open project
+   runs its own `opencode serve`, and whether one shared server isolates projects under
+   concurrent load is still unverified.
+2. `home.html`'s create/clone/settings errors are plain text. They don't get the ADR-0014
+   quotation treatment (`sw-passthrough`, the `ours`/`retryable` markers the old `/api/door` had).
+3. A name typed with a leading `sage-` becomes `sage-sage-…` (`naming.repo_base` adds the prefix
+   again).
+4. A PAT passed to `domino_data` as `token=` (`DatasetClient`, `DataSourceClient`) has never been
+   run. Reading a Dataset file's *contents* from a laptop is the test for it; listing is a
+   different API and already works.
+5. Settings changes still need a process restart (`_control_plane`, `_provision` and
+   `_TOKEN_SOURCE` are built once at import). The UI says so. Hot reload was never in scope.
+6. Publish from a laptop needs the env/tier picker (Phase 6). Until then it refuses cleanly
+   through `publish_configured`.
+7. Dead code, noted but left alone: `DominoControlPlane.archive_project` and `available_tools`
+   have no callers.
+8. Coverage gaps: `test_sage_domino_relay.py` was never written, and `test_feedback.py`'s drift
+   guard is weakened.
+9. Docs: ADR-0004 needs superseding (Phase 8). `environment/README.md`, `app.sh` and the
+   Dockerfile still describe the retired two-container shape (Phase 7).
+10. Manual cleanup: the test repos on GitHub and the matching Domino projects (`sage-sales-N`,
+    `sage-live-verify-registry-delete-me*`, and whatever laptop testing created).
+11. `user_to_test.txt` at the repo root is the product owner's scratch file of manual checks. It
+    is untracked on purpose, so don't commit it.
+
+**Test baseline in this sandbox:** about 96 failures, all pre-existing and environmental. They are
+the `publish_available()` dogfood check (`/mnt/code` is Sage's own repo here) plus
+`test_native_gateway_transport.py`'s Node ESM failure. Diff any new red against `git stash`
+before assuming it's yours.
