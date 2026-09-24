@@ -1937,3 +1937,48 @@ audited exhaustively. The 23 pre-existing orphaned `sage-sales-N` repos and the 
 `sage-live-verify-registry-delete-me` (this session's own path-bug artifact) are both still real and
 still need manual deletion — nothing here cleans those up, only stops new ones from this specific
 source.
+
+## Where things stand, consolidated (2026-09-24, end of this session)
+
+Everything below is committed on `one-app-pivot-Etan` (tip `6c3f2957`), working tree clean, `make
+lint` clean. This branch is not headed for a `main` merge (the user's own words, recorded near the
+top of this file and in the assistant's memory) — don't spend a future session reconciling the
+ongoing `main`-line divergence.
+
+**Done and verified:**
+- Phases 0-2 (one stack, config/TokenSource, the registry+dispatcher+per-project routing) — closed
+  out in earlier sessions, unchanged this session.
+- Phase 3 steps 1, 2, and half of 4: `registry.create()`/`registry.clone()` (repo + Domino project,
+  no workspace) and the generalized git-credential resolver (`$SAGE_HOME` + `settings.git.token`
+  fallback) — built, unit-tested, and **live-verified end to end against this real Domino sandbox**
+  (a real repo+project created, seeded, cloned into an independent second `$SAGE_HOME`, byte-identical
+  content confirmed).
+- The git-identity conflict flagged mid-session — resolved with the user's decision (plain real
+  name/email, no agent marker): every commit Sage's Orchestrator or provisioning makes now attributes
+  to the real, authenticated Domino person via `whoami()`, confirmed live in the same verification
+  pass (`Etan Lightstone <etan.lightstone@dominodatalab.com>` on the initial commit).
+- Fixed 5 tests that were silently making real Domino/GitHub calls in this sandbox (found while doing
+  the live verification above) — verified via the GitHub API that the side effect actually stopped,
+  not just that the test's own assertion now passes.
+
+**Not done, deliberately, and named for whoever picks this up next:**
+1. **Phase 3 step 3** — deleting `door.py`/`door.html`/`/api/door*`, the workspace-lifecycle
+   `ControlPlane` methods (`create_workspace`/`stop_workspace`/`resume_workspace`/`delete_workspace`/
+   `workspace_http_ready`/`save_workspace_work`) and their `FakeControlPlane` counterparts,
+   `Orchestrator.stop()`/`/api/stop`/`_resolve_workspace_id`, `environment/pluggable-tools.yaml`,
+   `SAGE_BUILDER_TOOL` — together with building the Projects home page, repointing `/`, and wiring
+   `registry.create()`/`registry.clone()` to real HTTP routes (replacing the door-era
+   `POST /api/projects`/`/api/projects/{id}/open`/`/api/projects/status`). One coordinated change,
+   per the reasoning recorded when the home page was first deferred (Phase 2's own update).
+   `registry.create()`/`clone()` themselves need no further work to be wired — they're ready.
+2. **Real, external cleanup only you can do**: delete the GitHub repos
+   `etanlightstone/sage-live-verify-registry-delete-me` and `-2`, the Domino project
+   `sage-live-verify-registry-delete-me-2` (id `6ab489f94fd92a76b2895e6a`), and — separately, much
+   older — the 23 `sage-sales`/`sage-sales-2`...`sage-sales-23` repos/any matching Domino projects
+   from before this session's fix.
+3. Two long-standing, non-blocking coverage gaps, untouched across every session so far:
+   `test_sage_domino_relay.py` (never written — `sage_domino.py`'s relay/fence lost coverage when
+   `test_builtapp_serve.py` was deleted in Phase 0) and `test_feedback.py`'s weakened
+   prompt/runner-drift guard.
+4. The broader (unaudited) question of whether any of the remaining ~16 dogfood-class test files
+   have the same unenforced-assumption shape as the 5 just fixed, beyond the specific ones checked.
