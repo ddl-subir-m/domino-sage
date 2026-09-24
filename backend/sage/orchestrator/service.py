@@ -14421,7 +14421,7 @@ class Orchestrator:
         """Select only this app's inputs; an explicit mention list narrows that selection."""
         started = time.monotonic()
         attached = project.attachments_for_turn()
-        selected = mentions or [entry["path"] for entry in attached]
+        selected = mentions if mentions is not None else [entry["path"] for entry in attached]
         known = {entry["path"]: entry for entry in attached}
         groups = _by_folder(attached)
         eligible: dict[str, dict] = {}
@@ -16426,7 +16426,8 @@ class Orchestrator:
     def _build_stream(self, prompt: str, mentions: list[str] | None = None,
                       resources: list[dict] | None = None, *, is_approval: bool = False,
                       user_text: str | None = None, mode: Mode | None = None,
-                      session_id: str | None = None, brief: PlanStep | None = None):
+                      session_id: str | None = None, brief: PlanStep | None = None,
+                      explicit_references: list[dict] | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -17383,47 +17384,67 @@ class Orchestrator:
         # where to read. This is orientation, not file contents; the agent must still read before
         # editing. Only the current app's src/ is listed, never attached data or sibling apps.
         source_note = self._build_source_note(project.app_for_turn().path)
+        plan_reference_records: list[dict] = []
         # Explicit text/Markdown references take their typed path before the model can try a local
         # read. This is deliberately after the user row and after history-derived withholding is
         # armed, but before the first normal model request. The content rides only in the in-memory
         # attachment rendering; the event persisted below contains hashes and coverage, never text.
-        if mention_files and is_approval:
-            # Approval supplies every app attachment as a convenience list. It does not preserve
-            # which attachments the person explicitly referenced in the approved request. Until
-            # #517 records that exact set, a text descriptor must stay content-free: `_resolve_mentions`
-            # may otherwise put its 1,200-character preview into the first model request.
-            for attachment in mention_files:
-                if live_reference.source_type(str(attachment.get("path") or "")):
-                    attachment["detail"] = (
-                        "This text attachment was not prepared because this approval does not carry "
-                        "an explicit structured reference."
-                    )
-        elif mention_files:
+        if mention_files or (is_approval and explicit_references):
+            mention_files = list(mention_files or [])
             attachment_manifest = project.attachments_for_turn()
             root = project.app_for_turn().path
-            direct_sources = [str(source) for source in (mentions or [])]
-            direct_mentions = set(direct_sources)
-            explicit_paths = {
-                str(entry.get("path") or "") for entry in attachment_manifest
-                if str(entry.get("path") or "") in direct_mentions
-                or str(root / str(entry.get("path") or "")) in direct_mentions
-            }
-            prepared_references = live_reference.prepare_explicit(
-                root,
-                attachment_manifest,
-                direct_sources,
-                prompt=prompt,
-                withheld=project.control.snapshot().withheld,
-                target_for=lambda row: self._reference_attachment_target(project, row),
-            )
+            if is_approval:
+                saved = live_reference.plan_records(explicit_references)
+                explicit_paths = {record["source"] for record in saved}
+                prepared_references = live_reference.prepare_plan_records(
+                    root,
+                    attachment_manifest,
+                    saved,
+                    withheld=project.control.snapshot().withheld,
+                    target_for=lambda row: self._reference_attachment_target(project, row),
+                )
+            else:
+                direct_sources = [str(source) for source in (mentions or [])]
+                direct_mentions = set(direct_sources)
+                explicit_paths = {
+                    str(entry.get("path") or "") for entry in attachment_manifest
+                    if str(entry.get("path") or "") in direct_mentions
+                    or str(root / str(entry.get("path") or "")) in direct_mentions
+                }
+                prepared_references = live_reference.prepare_explicit(
+                    root,
+                    attachment_manifest,
+                    direct_sources,
+                    prompt=prompt,
+                    withheld=project.control.snapshot().withheld,
+                    target_for=lambda row: self._reference_attachment_target(project, row),
+                )
+                plan_reference_records = [live_reference.plan_record(item)
+                                          for item in prepared_references]
             prepared_by_source = {item.source: item for item in prepared_references}
+            if is_approval:
+                listed = {str(item.get("path") or "") for item in mention_files}
+                for source in explicit_paths - listed:
+                    prepared = prepared_by_source.get(source)
+                    if prepared is not None:
+                        mention_files.append({
+                            "path": source,
+                            "name": PurePosix(source).name,
+                            "summary": "Saved plan reference",
+                            "detail": prepared.prompt_block(),
+                        })
             for attachment in mention_files:
                 source = str(attachment.get("path") or "")
                 if source not in explicit_paths:
-                    if attachment.get("asked") and live_reference.source_type(source):
+                    if attachment.get("asked") and not is_approval and live_reference.source_type(source):
                         attachment["detail"] = (
                             "This folder mention stays a bounded description. It does not transfer "
                             "the text of files inside the folder."
+                        )
+                    elif live_reference.source_type(source):
+                        attachment["detail"] = (
+                            "This text attachment was not prepared because this turn does not carry "
+                            "an explicit structured reference."
                         )
                     continue
                 prepared = prepared_by_source.get(source)
@@ -18221,6 +18242,7 @@ class Orchestrator:
                         # it here too would record one event twice and point the chain at a plan the
                         # app was never finished from.
                         previous_plan_id=project.app_for_turn().read_archived_plan_doc_id(),
+                        explicit_references=plan_reference_records,
                     )["id"]
                     # A plan another Conversation left awaiting approval in this same app steps
                     # aside rather than being written over (#59).
@@ -18636,6 +18658,12 @@ class Orchestrator:
                 project.record.patch_plan_doc_meta(approved_doc["id"], status="draft", approvals=[])
             else:
                 self.review_plan_doc(approved_doc["id"], {"action": "approve"})
+        explicit_references = live_reference.plan_records(
+            (approved_doc or {}).get("explicitReferences")
+        )
+        has_reference_metadata = (
+            (approved_doc or {}).get("explicitReferencesVersion") == 1
+        )
         # Phased only when the toggle is on AND the plan actually parsed into briefs. A plan written
         # before the toggle (or by a planner that ignored the format) builds the ordinary way rather
         # than half-phasing, which would be worse than not phasing at all.
@@ -18655,11 +18683,14 @@ class Orchestrator:
         # files already attached to this app are exactly what the build may need to read, and
         # without this the model finds them itself via glob/find and can land on the absolute
         # mount path _resolve_mentions exists to avoid (OpenCode hangs forever on those).
-        mentions = [e["path"] for e in project.attachments_for_turn()] or None
+        mentions = ([record["source"] for record in explicit_references]
+                    if has_reference_metadata else
+                    ([e["path"] for e in project.attachments_for_turn()] or None))
         try:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
-                                                start_step=resume_from, mentions=mentions)
+                                                start_step=resume_from, mentions=mentions,
+                                                explicit_references=explicit_references)
             else:
                 # The bubble is what the person did, not what we sent. Approving from the card passes
                 # no `user_text`, and _build_stream's fallback is the prompt itself — so the whole
@@ -18670,7 +18701,8 @@ class Orchestrator:
                     _approve_prompt(plan_md, answers,
                                    handoff_note=chat_handoff.implement_note(project.app_for_turn().path)),
                     mentions, is_approval=True, mode=run_as,
-                    user_text=user_text if user_text is not None else "Approved the plan.")
+                    user_text=user_text if user_text is not None else "Approved the plan.",
+                    explicit_references=explicit_references)
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs
@@ -18716,7 +18748,8 @@ class Orchestrator:
         return docs[0] if docs else None
 
     def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None,
-                        start_step: int = 0, mentions: list[str] | None = None):
+                        start_step: int = 0, mentions: list[str] | None = None,
+                        explicit_references: list[dict] | None = None):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.
 
         The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
@@ -18824,7 +18857,7 @@ class Orchestrator:
             yield persist({"type": "step-start", "n": step.n, "total": len(steps),
                            "label": step.label, "files": step.files})
             outcome = yield from self._run_step(project, client, step, steps, answers, notes,
-                                                mentions)
+                                                mentions, explicit_references)
             if outcome == "stopped":
                 # The user rejected the whole build, so leaving three of six phases on disk would
                 # leave a state they never asked for and can't describe. Same semantics as Stop on a
@@ -18893,7 +18926,8 @@ class Orchestrator:
 
     def _run_step(self, project: Project, client: OpenCodeClient, step: PlanStep,
                   steps: list[PlanStep], answers: str, notes: list[str] | None = None,
-                  mentions: list[str] | None = None):
+                  mentions: list[str] | None = None,
+                  explicit_references: list[dict] | None = None):
         """Run one phase, retrying once in another fresh session if it fails. Returns True, the
         string "stopped", or a failure reason; swallows the phase's own terminal `done` so the build
         emits exactly one."""
@@ -18933,7 +18967,8 @@ class Orchestrator:
                 for ev in self._build_stream(_phase_prompt(step, steps, answers, notes, errors,
                                                            project.workspace.stack.entry_file),
                                              mentions, is_approval=True, mode=Mode.IMPLEMENT,
-                                             session_id=sid, brief=step):
+                                             session_id=sid, brief=step,
+                                             explicit_references=explicit_references):
                     if ev["type"] == "stopped":
                         return "stopped"
                     if ev["type"] == "done":
