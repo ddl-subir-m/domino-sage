@@ -55,7 +55,7 @@ def _blank(total: int, rewrites: dict | None, *, status="complete", reason=None)
         value = (rewrites or {}).get(key, 0)
         return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
-    return {
+    result = {
         "version": 1,
         "boundary": "final_forwarded_json",
         "status": status,
@@ -68,6 +68,19 @@ def _blank(total: int, rewrites: dict | None, *, status="complete", reason=None)
         "rewrites": {key: count(key) for key in _REWRITES},
         "limitReason": reason,
     }
+    window = (rewrites or {}).get("toolResultWindow")
+    if isinstance(window, dict):
+        keys = (
+            "policyVersion", "perResultLimitBytes", "aggregateLimitBytes", "resultCount",
+            "originalModelFacingBytes", "forwardedModelFacingBytes", "perResultShortenedCount",
+            "aggregateCompactedCount", "emptyFallbackCount",
+        )
+        result["toolResultWindow"] = {
+            key: (window[key] if isinstance(window.get(key), int)
+                  and not isinstance(window.get(key), bool) and window[key] >= 0 else 0)
+            for key in keys
+        }
+    return result
 
 
 def _role(value) -> str:

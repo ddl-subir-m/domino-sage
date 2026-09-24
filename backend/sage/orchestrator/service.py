@@ -6379,7 +6379,8 @@ class Orchestrator:
             self._prepare_app_files()
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
         shim = EnforcementShim(control, self._effective_catalog(record), self._gateway,
-                               project_name=self._cost_project_label)
+                               project_name=self._cost_project_label,
+                               build_policy=self._build_policy)
         shim.resolve_capability = self.route_capability
         supervisor = _supervisor_for(workspace.path, domino_base_prefix())
         queries = PreviewQueries(workspace.path, self._wm.template)
