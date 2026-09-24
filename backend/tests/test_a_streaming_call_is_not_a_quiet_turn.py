@@ -28,16 +28,22 @@ import json
 import logging
 import time
 import types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from sage.build_policy import BuildPolicy
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator import service as svc
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
+
+SHORT_BUILD_POLICY = replace(
+    BuildPolicy(), quiet_timeout_seconds=5.0, open_tool_quiet_timeout_seconds=20.0,
+    stop_grace_seconds=5.0)
 
 
 class OkFeedback:
@@ -172,9 +178,6 @@ def _short_windows(monkeypatch):
     under test is which polls reset the clock, and that is the same rule at either scale."""
     monkeypatch.setattr(svc, "_CHAT_QUIET_TIMEOUT_S", 5.0)
     monkeypatch.setattr(svc, "_CHAT_TOOL_QUIET_TIMEOUT_S", 20.0)
-    monkeypatch.setattr(svc, "_BUILD_QUIET_TIMEOUT_S", 5.0)
-    monkeypatch.setattr(svc, "_BUILD_TOOL_QUIET_TIMEOUT_S", 20.0)
-    monkeypatch.setattr(svc, "_BUILD_STOP_GRACE_S", 5.0)
 
 
 class StreamingOpenCode(FakeOpenCode):
@@ -257,7 +260,8 @@ def _orch(tmp: Path, oc: FakeOpenCode) -> Orchestrator:
                         gateway=ScriptedGateway(),
                         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s",
                                              sovereign_ask="s", plan="p", implement="i", ask="a"),
-                        project_id="Sage", feedback=OkFeedback(), opencode_client=oc)
+                        project_id="Sage", feedback=OkFeedback(), opencode_client=oc,
+                        build_policy=SHORT_BUILD_POLICY)
     orch.project(start_preview=False).record.write_settings({"skip_planning": True})
     if hasattr(oc, "project"):
         oc.project = orch.project(start_preview=False)
