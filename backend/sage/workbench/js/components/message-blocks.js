@@ -1484,6 +1484,29 @@ window.SW = window.SW || {};
     );
   }
 
+  function BuildContextLimit({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        block.live && block.continuationId
+          ? h('div', { style: { marginTop: 8 } }, h(Button, {
+              type: 'primary',
+              size: 'small',
+              loading: busy === 'continue',
+              disabled: !!busy,
+              onClick: run('continue', () => SW.store.continueContextBuild(block)),
+            }, 'Continue'))
+          : null
+      )
+    );
+  }
+
   // The turn asked to start over (#36). The gate stops before any inference and hands the decision
   // back, so this card is the decision: it says what a reset does and does not take, and gives the
   // one-click way to do it. "Reset and build this" exists because "clear everything and build X from
@@ -2399,6 +2422,8 @@ window.SW = window.SW || {};
         return h(OtherLaneOffer, { block });
       case 'continue_offer':
         return h(ContinueAfterTheCeiling, { block });
+      case 'build_context_limit':
+        return h(BuildContextLimit, { block });
       case 'build_stalled':
         return h(BuildStalled, { block });
       case 'plan_suggestion':

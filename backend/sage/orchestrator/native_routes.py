@@ -13,6 +13,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import build_intent, timing
+from ..context_rollover import ContextAction
 from ..gateway.client import GatewayUpstreamError, StreamCancellation
 from ..gateway.events import StreamEvents
 from ..gateway.protocol import Protocol
@@ -43,6 +44,9 @@ _PRE_EDIT_MEASUREMENT_ERROR = (
 _PRE_EDIT_WITNESS_ERROR = (
     "Sage could not verify the app working tree under the active pre-edit Build policy."
 )
+_CONTEXT_ROLLOVER_REQUIRED = "Sage stopped this request so the Build can continue in a clean context."
+_CONTEXT_CONTINUE_REQUIRED = "Sage stopped this request because the Build reached its context limit."
+_CONTEXT_MEASUREMENT_ERROR = "Sage could not measure the final model request safely."
 
 
 def _record_build_intent(call, intent, check, failure_stage):
@@ -62,9 +66,14 @@ def _scope(orchestrator, request):
     session = request.headers.get("x-session-id")
     active = project.active_session_id if project is not None else None
     allowed = bool(active and session == active)
+    retired = False
+    context_state = project.context_rollover if project is not None else None
+    client = getattr(orchestrator, "_oc_client", None)
+    belongs = getattr(client, "session_belongs_to", None)
+    if context_state is not None and session:
+        retired = context_state.rejects_session(session, belongs)
+        allowed = allowed or retired
     if active and session and not allowed and orchestrator._turn_lock.locked():
-        client = getattr(orchestrator, "_oc_client", None)
-        belongs = getattr(client, "session_belongs_to", None)
         allowed = bool(belongs and belongs(session, active))
     if (project is None or not orchestrator._turn_lock.locked() or not allowed
             or project.active_session_id != active):
@@ -74,6 +83,19 @@ def _scope(orchestrator, request):
 
 def _error(message, status=400):
     return JSONResponse(status_code=status, content={"error": {"message": message}})
+
+
+def _native_local_error(protocol: Protocol, message: str, code: str) -> JSONResponse:
+    """Return one fixed, protocol-shaped local refusal. No request data enters it."""
+    if protocol is Protocol.MESSAGES:
+        body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    elif protocol is Protocol.RESPONSES:
+        body = {"error": {"type": "invalid_request_error", "code": code,
+                          "message": message, "param": None}}
+    else:
+        body = {"error": {"message": message, "type": "invalid_request_error",
+                          "param": None, "code": code}}
+    return JSONResponse(status_code=400, content=body)
 
 
 def _error_event(protocol, message):
@@ -112,14 +134,23 @@ def install(app, get_orchestrator):
             project, session = _scope(get_orchestrator(), request)
             record = timing.current()
             root_session = project.active_session_id
-            raw = await request.body()
-            body = json.loads(raw)
-            if body.get("stream") is not True:
-                return _error("This scoped harness endpoint requires streaming. Other calls keep their existing gateway path.")
             call = timing.model_call(
                 record=record, session_id=session, root_session_id=root_session,
                 app_id=project.app_for_turn().app_id if record is not None and record.kind != "chat" else None,
                 conversation_id=project.build_conversation)
+            context_state = project.context_rollover
+            client = getattr(get_orchestrator(), "_oc_client", None)
+            belongs = getattr(client, "session_belongs_to", None)
+            if (context_state is not None
+                    and context_state.rejects_session(session, belongs)):
+                call.done(ok=False, error=_CONTEXT_ROLLOVER_REQUIRED,
+                          outcome="context_rollover_required")
+                return _native_local_error(
+                    protocol, _CONTEXT_ROLLOVER_REQUIRED, "sage_context_rollover_required")
+            raw = await request.body()
+            body = json.loads(raw)
+            if body.get("stream") is not True:
+                return _error("This scoped harness endpoint requires streaming. Other calls keep their existing gateway path.")
             call.request(len(raw))
 
             intent = project.active_build_intent
@@ -243,6 +274,34 @@ def install(app, get_orchestrator):
                 )
                 call.done(ok=False, error=message, outcome="pre_edit_policy")
                 return _error(message, 409)
+        context_state = project.context_rollover
+        if context_state is not None:
+            categories = composition.get("categories") if isinstance(composition, dict) else None
+            raw_media = categories.get("mediaBytes") if isinstance(categories, dict) else None
+            status = composition.get("status") if isinstance(composition, dict) else "unavailable"
+            media_bytes = (raw_media if isinstance(raw_media, int)
+                           and not isinstance(raw_media, bool) and raw_media >= 0 else -1)
+            decision = context_state.decide(
+                total_wire_bytes=forwarded_bytes if forwarded_bytes is not None else -1,
+                media_bytes=media_bytes,
+                measurement_status=status if isinstance(status, str) else "unavailable",
+            )
+            if decision.action is not ContextAction.ROUTE:
+                if decision.action is ContextAction.ROLLOVER:
+                    message = _CONTEXT_ROLLOVER_REQUIRED
+                    code = "sage_context_rollover_required"
+                    outcome = "context_rollover_required"
+                elif decision.action is ContextAction.OFFER_CONTINUE:
+                    message = _CONTEXT_CONTINUE_REQUIRED
+                    code = "sage_context_continue_required"
+                    outcome = "context_continue_required"
+                else:
+                    message = _CONTEXT_MEASUREMENT_ERROR
+                    code = "sage_context_measurement_unavailable"
+                    outcome = "context_measurement_unavailable"
+                project.last_gateway_error = {"message": message}
+                call.done(ok=False, error=message, outcome=outcome)
+                return _native_local_error(protocol, message, code)
         call.route(protocol.value, view.get("reasoning_effort"))
         project.model_calls += 1
         upstream = project.shim.gateway.route(outbound, labels, protocol=protocol, cancel=cancel)

@@ -3387,6 +3387,47 @@ def build_stream(body: dict) -> StreamingResponse:
         background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 
+@control_app.post("/api/project/build/continue")
+def continue_build(body: dict):
+    """Claim one scoped context-limit continuation and stream its new Build turn."""
+    sent = body or {}
+    if not isinstance(sent, dict) or set(sent) != {"continuationId", "conversation", "appId"}:
+        return JSONResponse(status_code=400, content={"error": "invalid continuation request"})
+    continuation_id = str(sent.get("continuationId") or "")
+    conversation = str(sent.get("conversation") or "")
+    app_id = str(sent.get("appId") or "")
+    try:
+        safe_id(conversation, "conversation id")
+        safe_id(app_id, "app id")
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid continuation scope"})
+    if not continuation_id:
+        return JSONResponse(status_code=400, content={"error": "continuationId required"})
+    status, continuation, claim_token = orchestrator.claim_context_continuation(
+        continuation_id, conversation, app_id)
+    if status == "already_claimed":
+        return JSONResponse(content={"status": "already_claimed"})
+    if status != "claimed" or continuation is None or claim_token is None:
+        return JSONResponse(status_code=409, content={"error": "continuation unavailable"})
+
+    turn_id = new_id("turn")
+    turn_ticket, turn_state = orchestrator.prepare_stream_turn(
+        turn_id, kind="build", conversation=conversation, app=True)
+    if turn_state == "refused":
+        orchestrator.release_context_continuation(continuation_id, claim_token)
+        orchestrator.release_stream_turn(turn_ticket)
+        return JSONResponse(status_code=409, content={"error": "workspace unavailable"})
+    events = orchestrator.continue_build_stream(
+        continuation, claim_token, turn_ticket=turn_ticket)
+    return StreamingResponse(
+        _turn_sse(events, "continue_build_stream"),
+        media_type="text/event-stream",
+        headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence),
+                 "X-Sage-Turn-Epoch": turn_ticket.epoch},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
+
+
 # The Build rail's list, as the Chat rail's is /api/threads. Two lists, one per mode: a Project
 # holds many Built Apps and many Threads, and neither is the other (ADR-0008).
 @control_app.get("/api/apps")
@@ -4128,7 +4169,10 @@ def get_plan(plan_id: str) -> JSONResponse:
 def patch_plan(plan_id: str, body: dict | None = None) -> JSONResponse:
     """Edit the plan. Sections are rendered back to markdown and kept as a new version, so the file
     stays the source of truth and the draft a reviewer commented on is still there."""
-    doc = orchestrator.patch_plan_doc(plan_id, body or {})
+    try:
+        doc = orchestrator.patch_plan_doc(plan_id, body or {})
+    except PlanArchiveRefused as error:
+        return JSONResponse(status_code=409, content={"error": error.reason})
     if doc is None:
         return JSONResponse({"error": "unknown plan"}, status_code=404)
     return JSONResponse(content=doc)

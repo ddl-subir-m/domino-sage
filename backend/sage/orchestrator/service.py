@@ -50,6 +50,13 @@ from ..assets.provider import (
 )
 from ..build_intent import BuildIntent
 from ..build_policy import BuildPolicy, load_build_policy
+from ..context_rollover import (
+    ContextAction,
+    ContextContinuation,
+    ContextContinuationRegistry,
+    ContextDecision,
+    ContextRolloverState,
+)
 from ..delegated import call as delegated
 from ..delegated import mcp as delegated_mcp
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
@@ -447,7 +454,8 @@ _PERSISTED_EVENTS = frozenset({
     "build-plan", "step-start", "step-done", "attachments-restored",
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
     "mentions-ambiguous",
-    "app_change", "build-stalled", "gateway-call", "gateway-alias-unbound",
+    "app_change", "build-stalled", "build-rollover", "build-context-limit",
+    "gateway-call", "gateway-alias-unbound",
     "data-source-unasked", "data-source-failed", "build-recovery", "build-pre-edit-limit",
 })
 
@@ -4840,9 +4848,17 @@ class Project:
     # The one immutable Build task projected into every provider request in the active turn. It is
     # never persisted in OpenCode or the Project record.
     active_build_intent: BuildIntent | None = None
+    # Durable approved-plan identity for the active Build. Continuations keep only this record ID;
+    # the canonical plan text remains in BuildIntent.
+    active_plan_record_id: str = ""
     # One guard for the full user-started implementation Build. Phases and transport replacement
     # change sessions, but they do not change this attempt budget or its first-edit witness.
     pre_edit_guard: PreEditGuard | None = None
+    # One whole-request state for the full top-level Build. Session replacements and phases share it.
+    context_rollover: ContextRolloverState | None = None
+    # One bounded process-local Continue capability. Restart makes historical cards display-only.
+    context_continuations: ContextContinuationRegistry = field(
+        default_factory=ContextContinuationRegistry, repr=False)
     # Serializes user-side app writes and rebaseline with every authoritative pre-edit tree check.
     # The lock order is always this lock, then PreEditGuard's private lock.
     pre_edit_tree_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -5866,9 +5882,14 @@ class Orchestrator:
         which has its own sentence naming the restart, and a raw-lock caller like publish or reset,
         which never queued and has no ticket."""
         running = self._turns.running()
+        continuation = None
+        if self._project is not None:
+            latest = self._project.context_continuations.latest()
+            continuation = latest.public() if latest is not None else None
         return {"running": self.turn_busy(), "wedged": self._turn_wedged,
                 "turn_epoch": self._turn_epoch,
                 "pending": self._turns.depth(),
+                "context_continuation": continuation,
                 "running_turn": None if (self._turn_wedged or running is None) else
                                 {"kind": running.kind, "conversation": running.conversation,
                                  "app": running.app, "turnId": running.id,
@@ -6296,6 +6317,8 @@ class Orchestrator:
                 # `_is_the_live_plan` is False for a document naming no app, so there is one here.
                 self._wm.app_workspace(
                     self._project_id, str(doc.get("appId") or "")).archive_plan(cancelled=True)
+                project.context_continuations.invalidate_plan(
+                    str(doc.get("appId") or ""), plan_id)
             finally:
                 if held:
                     self._turn_lock.release()
@@ -6323,41 +6346,52 @@ class Orchestrator:
         if current is None:
             return None
         body = body or {}
-        if "sections" not in body and "summary" not in body:
+        changes_app = (
+            "appId" in body
+            and str(body.get("appId") or "") != str(current.get("appId") or "")
+        )
+        if "sections" not in body and "summary" not in body and not changes_app:
             # Nothing about the body changed — a rename is metadata, not a new draft.
             return project.record.patch_plan_doc_meta(
                 plan_id, **{k: v for k, v in body.items() if k in ("title", "status", "appId")})
-        summary = body.get("summary", current.get("summary", ""))
-        sections = {**current.get("sections", {}), **(body.get("sections") or {})}
-        meta = {k: v for k, v in body.items() if k in ("title", "status", "appId")}
-        # The document's own name, from the rename if this edit carries one and from the document
-        # otherwise — an edit to Screens must not cost the plan its title.
-        doc = project.record.write_plan_doc_version(
-            plan_id,
-            plan_doc.render(summary, sections, meta.get("title") or current.get("title", "")),
-            **meta)
+        editing_live = self._is_the_live_plan(current)
+        held = self._turn_lock.acquire(blocking=False) if editing_live else False
+        if editing_live and not held:
+            raise PlanArchiveRefused("busy")
+        try:
+            if changes_app and "sections" not in body and "summary" not in body:
+                doc = project.record.patch_plan_doc_meta(
+                    plan_id,
+                    **{k: v for k, v in body.items() if k in ("title", "status", "appId")},
+                )
+                if editing_live:
+                    project.context_continuations.invalidate_plan(
+                        str(current.get("appId") or ""), plan_id)
+                return doc
 
-        # An edit to the document that a live plan.md was copied from has to reach that copy, or the
-        # build runs the plan as it was before the edit — and the rail's pin goes on counting the old
-        # steps. Only while a handoff is actually live, and only from the document it belongs to:
-        # editing an older plan after its build must not resurrect it as the thing being built.
-        # The document is the Project's and the copy is the app's, so this is the one place the two
-        # surfaces meet — deliberately, because copying between them is what it is for.
-        # "The document it belongs to" is `_is_the_live_plan`, which reads `live_plan_doc_id` off the
-        # app, and not "the newest document for this app" — a different question with a different
-        # answer (#177, see `Workspace.write_plan`). The two diverge whenever a plan becomes live
-        # after a newer one was written into the same app, which is every confirmed Chat handoff
-        # that outlived a Build conversation. Asked this way the copy, the archive guard and "Build
-        # this again" all agree about which plan is live (ADR-0024).
-        if doc and self._is_the_live_plan(doc):
-            # The DOCUMENT's app, not the selected one: the Plan page opens any plan in the Project,
-            # including another app's, and `_is_the_live_plan` has just answered about that app.
-            app = self._wm.app_workspace(self._project_id, str(doc.get("appId") or ""))
-            # `live_plan_doc_id` can outlive the `plan.md` it names, so the file has to be there:
-            # writing one back from an edit would resurrect a handoff a build already archived.
-            if app.read_plan() is not None:
-                app.write_plan(doc["markdown"], plan_id)
-        return doc
+            summary = body.get("summary", current.get("summary", ""))
+            sections = {**current.get("sections", {}), **(body.get("sections") or {})}
+            meta = {k: v for k, v in body.items() if k in ("title", "status", "appId")}
+            # The document's own name, from the rename if this edit carries one and from the document
+            # otherwise — an edit to Screens must not cost the plan its title.
+            doc = project.record.write_plan_doc_version(
+                plan_id,
+                plan_doc.render(summary, sections, meta.get("title") or current.get("title", "")),
+                **meta)
+
+            # Editing the document and its live plan copy is one atomic operation against Build,
+            # the same ownership rule archive_plan_doc uses for the same files.
+            if doc and editing_live:
+                original_app_id = str(current.get("appId") or "")
+                if not changes_app:
+                    app = self._wm.app_workspace(self._project_id, original_app_id)
+                    if app.read_plan() is not None:
+                        app.write_plan(doc["markdown"], plan_id)
+                project.context_continuations.invalidate_plan(original_app_id, plan_id)
+            return doc
+        finally:
+            if held:
+                self._turn_lock.release()
 
     def review_plan_doc(self, plan_id: str, body: dict) -> dict | None:
         """Reviewers, comments and approvals. None of it touches the body, so none of it makes a
@@ -6437,6 +6471,7 @@ class Orchestrator:
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None,
                                 manage_url=self._manage_url)
+        self._project.context_continuations = ContextContinuationRegistry(self._build_policy)
         if start_preview:
             # Separately, because the dev server and the data-preview server fail for unrelated
             # reasons and one failing is no evidence about the other. Neither is fatal: the preview
@@ -7503,6 +7538,7 @@ class Orchestrator:
         try:
             project = self._ensure_seeded()
             self._pin_turn_app(project)
+            project.context_continuations.invalidate_available()
             self._adopt_legacy_build_history(project.app_for_turn(), project.record)
         # Same reason as the streaming turns: neither the archive nor the Artifacts link is
         # committed, so a fresh clone reaching the agent through this route would hand it
@@ -7511,26 +7547,148 @@ class Orchestrator:
             self._switch_conversation(project, conversation)
             self._refresh_agent_inputs(project)
             sid = self._ensure_session(project, conversation)
+            baseline = project.snapshot.working_tree_hash()
+            with project.pre_edit_tree_lock:
+                project.pre_edit_guard = PreEditGuard(
+                    self._build_policy, baseline, project.snapshot.working_tree_hash)
+                project.context_rollover = ContextRolloverState(self._build_policy, baseline)
+            project.active_build_intent = BuildIntent.for_direct(prompt)
+            with self._stop_control_lock:
+                project.active_session_id = sid
+
+            class _ContextTerminal(Exception):
+                pass
+
+            terminal_context: dict | None = None
 
             def send_and_wait(text: str) -> None:
-                project.last_gateway_error = None
-                agent = _agent_for_mode(project.control.snapshot().mode)
-                client.send_prompt(sid, text, agent=agent)
-                client.wait_for_idle(sid)
-                if project.last_gateway_error is not None:
-                    err = project.last_gateway_error
-                    raise RuntimeError(f"model call failed: {err['message']}")
+                nonlocal sid, terminal_context
+                while True:
+                    project.last_gateway_error = None
+                    agent = _agent_for_mode(project.control.snapshot().mode)
+                    client.send_prompt(sid, text, agent=agent)
+                    client.wait_for_idle(sid)
+                    guard = project.pre_edit_guard
+                    state = project.context_rollover
+                    pre_edit = guard.consume_pending() if guard is not None else None
+                    pending = state.consume_pending() if state is not None else None
+                    if pre_edit is None and pending is None and guard is not None:
+                        with project.pre_edit_tree_lock:
+                            if not guard.check_edit() and guard.is_armed:
+                                pre_edit = guard.no_edit_completion()
+                                guard.consume_pending()
+                    if pre_edit is not None:
+                        if pre_edit.action is PreEditAction.FAIL:
+                            terminal_context = {
+                                "ok": False, "error_count": 0,
+                                "decision": pre_edit.trigger.value,
+                                "message": "Sage could not verify the pre-edit Build safely.",
+                            }
+                            raise _ContextTerminal()
+                        if pre_edit.action is PreEditAction.STOP:
+                            terminal_context = {
+                                "ok": False, "error_count": 0,
+                                "decision": "pre_edit_limit",
+                                "message": "Sage stopped before changing the app.",
+                            }
+                            raise _ContextTerminal()
+                        if pre_edit.action is PreEditAction.RECOVER:
+                            if not self._stop_wedged_session(
+                                    client, sid,
+                                    grace_seconds=self._build_policy.stop_grace_seconds):
+                                guard.fail_session_abort()
+                                self._turn_gave_up = True
+                                self._mark_turn_wedged()
+                                raise TurnWedged()
+                            with project.pre_edit_tree_lock:
+                                granted = guard.begin_recovery()
+                                if granted.action is not PreEditAction.RECOVER:
+                                    terminal_context = {
+                                        "ok": False, "error_count": 0,
+                                        "decision": granted.trigger.value,
+                                        "message": "Sage could not start the clean recovery.",
+                                    }
+                                    raise _ContextTerminal()
+                                sid = self._replace_build_session(
+                                    project, client, conversation, reason="pre_edit_recovery")
+                                if not guard.start_recovery():
+                                    raise RuntimeError("pre-edit recovery state changed")
+                                text = self._pre_edit_recovery_packet(
+                                    project, project.active_build_intent, guard.baseline)
+                            continue
+                    if pending is None:
+                        if project.last_gateway_error is not None:
+                            err = project.last_gateway_error
+                            raise RuntimeError(f"model call failed: {err['message']}")
+                        return
+                    if pending.action is ContextAction.FAIL:
+                        terminal_context = {
+                            "ok": False, "error_count": 0,
+                            "decision": "context_measurement_unavailable",
+                            "message": "Sage could not measure the final model request safely.",
+                        }
+                        raise _ContextTerminal()
+                    if not self._stop_wedged_session(
+                            client, sid, grace_seconds=self._build_policy.stop_grace_seconds):
+                        if guard is not None:
+                            guard.fail_session_abort()
+                        self._turn_gave_up = True
+                        self._mark_turn_wedged()
+                        raise TurnWedged()
+                    if pending.action is ContextAction.ROLLOVER:
+                        old_sid = sid
+                        if state is None or not state.begin_rollover(old_sid):
+                            raise RuntimeError("context rollover state changed")
+                        sid = self._replace_build_session(
+                            project, client, conversation, reason="context_rollover")
+                        if guard is not None:
+                            guard.note_session_replacement()
+                        if not state.activate_rollover():
+                            raise RuntimeError("context rollover state changed")
+                        text = self._context_rollover_packet(
+                            project, project.active_build_intent, state.baseline,
+                            "implementation")
+                        continue
+                    current_tree = project.snapshot.working_tree_hash()
+                    continuation = project.context_continuations.offer(
+                        conversation=str(conversation or ""),
+                        app_id=project.app_for_turn().app_id,
+                        intent=project.active_build_intent,
+                        source_map_digest=hashlib.sha256(
+                            self._build_source_note(project.app_for_turn().path).encode()).hexdigest(),
+                        baseline_digest=state.baseline,
+                        current_digest=current_tree,
+                    )
+                    terminal_context = {
+                        "ok": False, "error_count": 0, "decision": "context_limit",
+                        "message": ("The build reached its context limit twice. Current app "
+                                    "changes are saved. Continue in a new clean session."),
+                        "continuationId": continuation.continuation_id,
+                    }
+                    raise _ContextTerminal()
 
-            report, decision = run_feedback_loop(
-                prompt,
-                send_and_wait=send_and_wait,
-                check=lambda: self._feedback.check(project.app_for_turn().path),
-                breaker=CircuitBreaker(),
-            )
+            try:
+                report, decision = run_feedback_loop(
+                    prompt,
+                    send_and_wait=send_and_wait,
+                    check=lambda: self._feedback.check(project.app_for_turn().path),
+                    breaker=CircuitBreaker(),
+                )
+            except _ContextTerminal:
+                return terminal_context or {
+                    "ok": False, "error_count": 0, "decision": "context_limit",
+                    "message": "The build reached its context limit.",
+                }
+            except TurnWedged:
+                return {
+                    "ok": False, "error_count": 0, "decision": "wedged",
+                    "message": turn_busy_message(True),
+                }
             return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
         finally:
-            self._clear_turn_baseline()
-            self._release_turn()
+            if not self._turn_wedged:
+                self._clear_turn_baseline()
+                self._release_turn()
 
     def _descriptor(self, project: Project, entry: dict, *, want_detail: bool = False) -> dict:
         """Typed shape summary (kind/summary/detail/size) for one attachment, cached in the manifest.
@@ -7783,6 +7941,37 @@ class Orchestrator:
             if table and table in in_schema.get(key[1], ()) and table not in tables[key]:
                 tables[key].append(table)
         return mention_note([Mention(known[k], tuple(tables[k])) for k in order], recorded)
+
+    def _continuation_resource_references(
+        self, project: Project, resources: list[dict] | None,
+    ) -> list[dict]:
+        """Keep only Resource handles the current app accepted for this Build."""
+        if not resources:
+            return []
+        known = {binding.key for binding in parse_bindings(
+            project.app_for_turn().read_bindings())}
+        in_schema = self._tables_in_schema(project)
+        out: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+        for raw in resources:
+            if not isinstance(raw, dict):
+                continue
+            kind = str(raw.get("kind") or "")
+            resource_id = str(raw.get("id") or "")
+            if (kind, resource_id) not in known:
+                continue
+            table = str(raw.get("table") or "")
+            if table and table not in in_schema.get(resource_id, ()):
+                continue
+            key = (kind, resource_id, table)
+            if key in seen:
+                continue
+            seen.add(key)
+            record = {"kind": kind, "id": resource_id}
+            if table:
+                record["table"] = table
+            out.append(record)
+        return out
 
     def _tables_in_schema(self, project: Project) -> dict[str, set[str]]:
         """Every table this app has columns for, per bound Data Source id.
@@ -8127,6 +8316,7 @@ class Orchestrator:
             if named:
                 yield {"type": "conversation_named", "conversation": conversation, "title": named}
             self._pin_turn_app(project)
+            project.context_continuations.invalidate_available()
             timing.bind_context(ticket.id, app_id=project.app_for_turn().app_id,
                                 conversation_id=project.build_conversation)
             build_diagnostics.begin(project.record.path, turn_id=ticket.id,
@@ -8336,6 +8526,151 @@ class Orchestrator:
             if not self._turn_wedged:
                 with timing.span("after.restore_attachments"):
                     self._restore_attachments()   # before _recheck_app_data: it reads the tree this heals
+                with timing.span("after.data_scan"):
+                    self._recheck_app_data()
+                with timing.span("after.resource_usage"):
+                    self._record_resource_usage()
+                self._clear_turn_baseline()
+                self._release_turn()
+            build_diagnostics.finish(timing.finish_turn())
+
+    def claim_context_continuation(
+        self, continuation_id: str, conversation: str, app_id: str,
+    ) -> tuple[str, ContextContinuation | None, str | None]:
+        """Claim the latest project-local Continue capability within its exact scope."""
+        project = self.project()
+        if project.workspace.app_id != app_id:
+            return "invalid", None, None
+        return project.context_continuations.claim(continuation_id, conversation, app_id)
+
+    def release_context_continuation(
+        self, continuation_id: str, claim_token: str,
+    ) -> bool:
+        project = self.project()
+        return project.context_continuations.release_refused(continuation_id, claim_token)
+
+    def continue_build_stream(
+        self, continuation: ContextContinuation, claim_token: str,
+        *, turn_ticket: _TurnTicket,
+    ):
+        """Run one claimed Continue as a new top-level implementation Build."""
+        timing.start_turn(
+            "build", turn_id=turn_ticket.id,
+            conversation_id=continuation.conversation)
+        with timing.span("turn.acquire"):
+            yield from self._acquire_turn(
+                turn_ticket, kind="build", conversation=continuation.conversation,
+                prompt="", app=True)
+        if not turn_ticket.granted:
+            self.release_context_continuation(
+                continuation.continuation_id, claim_token)
+            timing.finish_turn(decision="not granted")
+            return
+        try:
+            self._turn_gave_up = False
+            self._begin_conversation(continuation.conversation)
+            project = self.project()
+            self._pin_turn_app(project)
+            if project.app_for_turn().app_id != continuation.app_id:
+                yield {"type": "error", "message": "This continuation belongs to another app."}
+                yield {"type": "done", "ok": False, "decision": "invalid continuation"}
+                return
+            timing.bind_context(
+                turn_ticket.id, app_id=continuation.app_id,
+                conversation_id=continuation.conversation)
+            build_diagnostics.begin(
+                project.record.path, turn_id=turn_ticket.id,
+                app_id=continuation.app_id,
+                conversation_id=continuation.conversation, kind="build")
+            explicit_references = live_reference.plan_records(
+                continuation.file_references())
+            resources = continuation.resource_references()
+            mentions = [record["source"] for record in explicit_references]
+            continuation_note = self._context_rollover_packet(
+                project, continuation.intent, continuation.baseline_digest,
+                continuation.repair_objective)
+            project.active_plan_record_id = continuation.approved_plan_record_id
+            if continuation.intent.kind == "phase":
+                approved = project.record.read_plan_doc(
+                    continuation.approved_plan_record_id)
+                plan_md = str((approved or {}).get("markdown") or "")
+                steps = parse_steps(plan_md)
+                current = next(
+                    (step for step in steps
+                     if step_index(steps, step.n) == continuation.phase_id),
+                    None,
+                )
+                def approved_plan_is_current() -> bool:
+                    latest = project.record.read_plan_doc(
+                        continuation.approved_plan_record_id)
+                    latest_markdown = str((latest or {}).get("markdown") or "")
+                    return bool(
+                        latest
+                        and not latest.get("archived")
+                        and str(latest.get("appId") or "") == continuation.app_id
+                        and project.app_for_turn().live_plan_doc_id()
+                        == continuation.approved_plan_record_id
+                        and project.app_for_turn().read_plan() == plan_md == latest_markdown
+                        and type(latest.get("version")) is int
+                        and latest["version"] == continuation.approved_plan_version
+                        and continuation.approved_plan_digest
+                        and hashlib.sha256(latest_markdown.encode()).hexdigest()
+                        == continuation.approved_plan_digest
+                    )
+
+                exact_plan = bool(
+                    approved_plan_is_current()
+                    and current is not None
+                    and current.raw.strip() == continuation.intent.phase_brief.strip()
+                    and project.app_for_turn().read_plan_retry_step() == current.n)
+                if not exact_plan:
+                    project.context_continuations.invalidate_claimed(
+                        continuation.continuation_id, claim_token)
+                    yield {"type": "error", "message": (
+                        "The approved phased plan for this continuation is unavailable."
+                    )}
+                    yield {"type": "done", "ok": False,
+                           "decision": "invalid phased continuation"}
+                    return
+                disposition = yield from self._phased_approve(
+                    project, plan_md, continuation.intent.answers,
+                    "Continued the approved plan.", start_step=current.n,
+                    mentions=mentions or None,
+                    explicit_references=explicit_references,
+                    source_requests=continuation.intent.source_requests,
+                    continuation_note=continuation_note,
+                    initial_repair_objective=continuation.repair_objective,
+                    resumed_phase_intent=continuation.intent,
+                    completion_guard=approved_plan_is_current,
+                )
+                # _approve_locked normally owns this archive decision. Continue enters through its
+                # own scoped door, so it makes the same decision after the shared phase runner.
+                plan_still_current = approved_plan_is_current()
+                if not plan_still_current:
+                    project.context_continuations.invalidate_claimed(
+                        continuation.continuation_id, claim_token)
+                if disposition in {"success", "stopped"} and plan_still_current:
+                    project.app_for_turn().archive_plan()
+                return
+            yield from self._build_stream(
+                _BUILD_CONTROL_PROMPT,
+                mentions or None,
+                resources or None,
+                is_approval=True,
+                user_text="Continued the build.",
+                mode=Mode.IMPLEMENT,
+                explicit_references=explicit_references,
+                build_intent=continuation.intent,
+                fresh_session=True,
+                continuation_note=continuation_note,
+                initial_repair_objective=continuation.repair_objective,
+            )
+        except TurnWedged:
+            log.error("continued turn wedged and would not stop — keeping the turn lock; restart to clear")
+        finally:
+            if not self._turn_wedged:
+                with timing.span("after.restore_attachments"):
+                    self._restore_attachments()
                 with timing.span("after.data_scan"):
                     self._recheck_app_data()
                 with timing.span("after.resource_usage"):
@@ -14585,7 +14920,11 @@ class Orchestrator:
             self._project.turn_tree_baseline = ""
             self._project.active_session_id = None
             self._project.active_build_intent = None
+            self._project.active_plan_record_id = ""
             self._project.pre_edit_guard = None
+            if self._project.context_rollover is not None:
+                self._project.context_rollover.finish()
+            self._project.context_rollover = None
             self._project.fresh_session_preflight = False
             self._project.turn_app = None
             self._project.turn_attached = None
@@ -16336,6 +16675,13 @@ class Orchestrator:
                 return False
             time.sleep(1.0)
 
+    def _mark_turn_wedged(self) -> None:
+        """Keep ownership of the tree and release every queued caller with a refusal."""
+        self._turn_wedged = True
+        failed = self._turns.fail_pending()
+        if failed:
+            log.error("turn wedged: failed %d pending turn(s) — restart to clear", failed)
+
     def _seen_baseline(self, client, sid: str, *, limit: int | None = None) -> set[tuple[str, object]]:
         """Keys of every assistant part already in the session, so a turn only emits its OWN parts.
 
@@ -16485,13 +16831,56 @@ class Orchestrator:
             parts.append("First unfinished implementation objective:\n" + objective)
         return "\n\n".join(part for part in parts if part)
 
+    @staticmethod
+    def _context_repair_objective(iterate_reason: str, broken_retry_note: str = "") -> str:
+        """Reduce the active internal follow-up to the fixed continuation vocabulary."""
+        said = (iterate_reason or "").lower()
+        if broken_retry_note or "broken" in said or "arrived unparsed" in said:
+            return "broken_call_recovery"
+        if "runtime" in said or "crashed" in said:
+            return "runtime_repair"
+        if "attached data" in said or "leak" in said:
+            return "data_leak_repair"
+        if "gateway" in said or "askmodel" in said:
+            return "gateway_repair"
+        if "typecheck" in said or "error" in said:
+            return "typecheck_repair"
+        return "implementation"
+
+    @classmethod
+    def _context_rollover_packet(
+        cls, project: Project, intent: BuildIntent, baseline: str, repair_objective: str,
+    ) -> str:
+        """Orient a clean session from canonical intent plus current disk, never old history."""
+        objective = intent.phase_brief.strip()
+        changed = project.snapshot.changed_paths(
+            baseline, project.snapshot.working_tree_hash())
+        parts = [
+            ("Sage started a clean context because the previous model request reached the "
+             "Build context limit. Inspect the current files and continue from disk."),
+            cls._build_source_note(project.app_for_turn().path),
+        ]
+        if changed:
+            parts.append(
+                "App-relative paths changed since this Build started (JSON array):\n"
+                + json.dumps(changed)
+            )
+        parts.append(
+            "Current implementation objective:\n"
+            + (objective or "Continue the canonical Build intent from the current app state."))
+        if repair_objective != "implementation":
+            parts.append("Active repair objective: " + repair_objective)
+        return "\n\n".join(part for part in parts if part)
+
     def _build_stream(self, prompt: str, mentions: list[str] | None = None,
                       resources: list[dict] | None = None, *, is_approval: bool = False,
                       user_text: str | None = None, mode: Mode | None = None,
                       session_id: str | None = None, brief: PlanStep | None = None,
                       explicit_references: list[dict] | None = None,
                       build_intent: BuildIntent | None = None,
-                      fresh_session: bool = False):
+                      fresh_session: bool = False,
+                      continuation_note: str = "",
+                      initial_repair_objective: str = "implementation"):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -16894,6 +17283,12 @@ class Orchestrator:
                     baseline,
                     project.snapshot.working_tree_hash,
                 )
+        if not gate and not answer_only and not arch and project.context_rollover is None:
+            with project.pre_edit_tree_lock:
+                baseline = (project.pre_edit_guard.baseline
+                            if project.pre_edit_guard is not None
+                            else project.snapshot.working_tree_hash())
+                project.context_rollover = ContextRolloverState(self._build_policy, baseline)
 
         # Pin the mode for the whole turn before anything reads it (token-scoped, exactly like the
         # read-only guarantee armed further down). The shim consults control.snapshot() on every
@@ -17227,6 +17622,8 @@ class Orchestrator:
         def handle_stop() -> dict:
             if project.pre_edit_guard is not None:
                 project.pre_edit_guard.claim_cancellation()
+            if project.context_rollover is not None:
+                project.context_rollover.claim_cancellation()
             project.stop_requested = False
             project.shim.data_use.finish_image_delivery(
                 operation_ids=tuple(image_reference_operations)
@@ -17266,15 +17663,7 @@ class Orchestrator:
             # We cannot show that the session let go of the working tree, so the turn lock stays
             # held and this workspace takes no more turns until it is restarted. Saying that is the
             # whole of what is left to do for the person.
-            self._turn_wedged = True
-
-            # Everything queued behind this turn is waiting on a release that is never
-            # coming, so fail it here rather than leave held connections and spinners
-            # (#79). Loudly: each one answers with the restart sentence of its own.
-            failed = self._turns.fail_pending()
-            if failed:
-                log.error("turn wedged: failed %d pending turn(s) — restart to clear",
-                          failed)
+            self._mark_turn_wedged()
             # The same persisted card the clean give-up leaves, not an `error` frame.
             # Not because `error` would be lost — it is in _PERSISTED_EVENTS and has
             # been since that set was written, and the comment here said the opposite
@@ -17500,6 +17889,9 @@ class Orchestrator:
         # Set by that retry, cleared by the send that carries it, so it rides the retry only and no
         # later nudge in the same turn repeats it.
         broken_retry_note = ""
+        # The fixed repair class survives after its one-send note is spent. A context decision is
+        # published by native routing during that send and consumed only after polling ends.
+        active_repair_objective = initial_repair_objective
         # Source paths cost one local listing instead of a model round trip spent discovering
         # where to read. This is orientation, not file contents; the agent must still read before
         # editing. Only the current app's src/ is listed, never attached data or sibling apps.
@@ -17516,6 +17908,7 @@ class Orchestrator:
             descriptors = {str(item.get("path") or ""): item for item in mention_files}
             if is_approval:
                 saved = live_reference.plan_records(explicit_references)
+                plan_reference_records = saved
                 explicit_paths = {record["source"] for record in saved}
                 prepared_references = live_reference.prepare_plan_records(
                     root,
@@ -17627,7 +18020,9 @@ class Orchestrator:
         first_send_extras = (mention_files, resource_note, chat_note, unusable_note, ambiguous_note, source_note)
         if not gate and not answer_only and not arch:
             project.active_build_intent = build_intent or BuildIntent.for_direct(prompt)
-            if project.active_build_intent.kind != "phase":
+            if continuation_note:
+                current = continuation_note
+            elif project.active_build_intent.kind != "phase":
                 current = _BUILD_CONTROL_PROMPT
         if fresh_session:
             if project.stop_requested:
@@ -17799,6 +18194,150 @@ class Orchestrator:
             seen = self._seen_baseline(
                 client, sid, limit=self._build_policy.poll_message_limit)
             return PreEditAction.RECOVER
+
+        def apply_context_decision(decision: ContextDecision):
+            """Apply the whole-request winner once, outside native request handling."""
+            nonlocal sid, seen, current, mention_files, resource_note, chat_note
+            nonlocal unusable_note, ambiguous_note, source_note, broken_retry_note
+            nonlocal implementation_session_reason, implementation_session_created
+            nonlocal implementation_session_persisted
+            state = project.context_rollover
+            if state is None or decision.action is ContextAction.ROUTE:
+                return decision.action
+            if project.stop_requested:
+                state.claim_cancellation()
+                yield handle_stop()
+                return ContextAction.FAIL
+            if decision.action is ContextAction.FAIL:
+                if owns_turn:
+                    self._turn_gave_up = True
+                restore_mode()
+                yield persist({
+                    "type": "error",
+                    "message": "Sage could not measure the final model request safely. Try again.",
+                })
+                yield persist({
+                    "type": "done", "ok": False,
+                    "decision": "context_measurement_unavailable",
+                })
+                return ContextAction.FAIL
+
+            stopped = self._stop_wedged_session(
+                client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
+            if not stopped:
+                if owns_turn:
+                    self._turn_gave_up = True
+                yield from refused_to_stop(in_tool=False, quiet_for=0.0)
+            if project.stop_requested:
+                state.claim_cancellation()
+                yield handle_stop()
+                return ContextAction.FAIL
+
+            if decision.action is ContextAction.ROLLOVER:
+                old_sid = sid
+                try:
+                    with project.pre_edit_tree_lock:
+                        if not state.begin_rollover(old_sid):
+                            return ContextAction.FAIL
+                        if project.pre_edit_guard is not None:
+                            project.pre_edit_guard.note_session_replacement()
+                        sid = self._replace_build_session(
+                            project, client, project.build_conversation,
+                            reason="context_rollover", persist=owns_turn)
+                        with self._stop_control_lock:
+                            if project.stop_requested or not state.activate_rollover():
+                                raise BuildSessionCreationCancelled()
+                        current = self._context_rollover_packet(
+                            project, project.active_build_intent, state.baseline,
+                            active_repair_objective)
+                except BuildSessionCreationCancelled:
+                    state.claim_cancellation()
+                    yield handle_stop()
+                    return ContextAction.FAIL
+                except Exception:
+                    if owns_turn:
+                        self._turn_gave_up = True
+                    restore_mode()
+                    yield persist({
+                        "type": "error",
+                        "message": "Sage could not start the clean continuation session. Try again.",
+                    })
+                    yield persist({
+                        "type": "done", "ok": False,
+                        "decision": "implementation session unavailable",
+                    })
+                    return ContextAction.FAIL
+                implementation_session_reason = "context_rollover"
+                implementation_session_created = True
+                implementation_session_persisted = owns_turn
+                yield persist({
+                    "type": "build-rollover",
+                    "generation": state.generation,
+                    "message": ("The build context reached its safe size. Sage is continuing once "
+                                "in a clean session."),
+                })
+                # Restore approved carriers only. The canonical intent is installed at the native
+                # boundary; old assistant, tool, protocol, and rejected request data are absent.
+                mention_files = first_send_extras[0]
+                resource_note = first_send_extras[1]
+                chat_note = ""
+                unusable_note = ""
+                ambiguous_note = ""
+                source_note = ""
+                broken_retry_note = ""
+                seen = self._seen_baseline(
+                    client, sid, limit=self._build_policy.poll_message_limit)
+                return ContextAction.ROLLOVER
+
+            current_tree = project.snapshot.working_tree_hash()
+            kept = bool(state.baseline and current_tree and current_tree != state.baseline)
+            source_note_now = self._build_source_note(project.app_for_turn().path)
+            turn_record = timing.current()
+            approved_plan = (
+                project.record.read_plan_doc(project.active_plan_record_id)
+                if project.active_plan_record_id else None)
+            approved_version = (
+                approved_plan.get("version") if isinstance(approved_plan, dict) else 0)
+            approved_version = approved_version if type(approved_version) is int else 0
+            approved_markdown = str((approved_plan or {}).get("markdown") or "")
+            continuation = project.context_continuations.offer(
+                conversation=str(project.build_conversation or ""),
+                app_id=project.app_for_turn().app_id,
+                intent=project.active_build_intent,
+                approved_plan_record_id=project.active_plan_record_id,
+                approved_plan_version=approved_version,
+                approved_plan_digest=(
+                    hashlib.sha256(approved_markdown.encode()).hexdigest()
+                    if approved_markdown else ""),
+                phase_id=project.active_build_intent.phase_index,
+                repair_objective=active_repair_objective,
+                source_map_digest=hashlib.sha256(source_note_now.encode()).hexdigest(),
+                baseline_digest=state.baseline,
+                current_digest=current_tree,
+                parent_turn_id=turn_record.turn_id if turn_record is not None else "",
+                file_references=plan_reference_records,
+                resource_references=self._continuation_resource_references(
+                    project, resources),
+            )
+            if owns_turn:
+                self._turn_gave_up = True
+            restore_mode()
+            yield persist({
+                "type": "build-context-limit",
+                "message": (
+                    "The build reached its context limit twice. Current app changes are saved. "
+                    "Continue in a new clean session."
+                    if kept else
+                    "The build reached its context limit twice before changing the app. "
+                    "Continue in a new clean session."
+                ),
+                "kept": kept,
+                "continuationId": continuation.continuation_id,
+            })
+            if kept and owns_turn:
+                yield persist(_app_change_event(project.app_for_turn()))
+            yield persist({"type": "done", "ok": False, "decision": "context_limit"})
+            return ContextAction.OFFER_CONTINUE
         # (b) Retry budget, measured. One pass of this loop is one send_prompt and everything the
         # agent does before Sage decides whether to nudge it again, so the spans it opens ARE the
         # answer to "how many model turns does a build spend, and where do they go". Named by what
@@ -17808,6 +18347,11 @@ class Orchestrator:
         iterate_reason = "first send"
         while True:
             agent_turn += 1
+            if (iterate_reason != "clean context rollover"
+                    and not (agent_turn == 1
+                             and initial_repair_objective != "implementation")):
+                active_repair_objective = self._context_repair_objective(
+                    iterate_reason, broken_retry_note)
             timing.close_span(turn_span)
             diagnostic_reason = ("runtime repair" if iterate_reason.startswith("app crashed at runtime")
                                  else iterate_reason[:160])
@@ -18360,6 +18904,14 @@ class Orchestrator:
                 # The abort was ours, after a late authoritative edit cancelled recovery. Do not
                 # report that controlled abort as an upstream model failure.
                 turn_failure = None
+            context_state = project.context_rollover
+            pending_context = context_state.consume_pending() if context_state is not None else None
+            if pending_context is not None:
+                context_action = yield from apply_context_decision(pending_context)
+                if context_action is ContextAction.ROLLOVER:
+                    iterate_reason = "clean context rollover"
+                    continue
+                return
             if project.stop_requested:
                 yield handle_stop()
                 return
@@ -18970,6 +19522,7 @@ class Orchestrator:
             self._begin_conversation(conversation)
             project = self.project()
             self._pin_turn_app(project)
+            project.context_continuations.invalidate_available()
             timing.bind_context(ticket.id, app_id=project.app_for_turn().app_id,
                                 conversation_id=project.build_conversation)
             build_diagnostics.begin(project.record.path, turn_id=ticket.id,
@@ -19184,6 +19737,7 @@ class Orchestrator:
         mentions = ([record["source"] for record in explicit_references]
                     if has_reference_metadata else
                     ([e["path"] for e in project.attachments_for_turn()] or None))
+        project.active_plan_record_id = str((approved_doc or {}).get("id") or "")
         try:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
@@ -19252,7 +19806,11 @@ class Orchestrator:
     def _phased_approve(self, project: Project, plan_md: str, answers: str, user_text: str | None,
                         start_step: int = 0, mentions: list[str] | None = None,
                         explicit_references: list[dict] | None = None,
-                        source_requests: tuple[str, ...] = ()):
+                        source_requests: tuple[str, ...] = (),
+                        continuation_note: str = "",
+                        initial_repair_objective: str = "implementation",
+                        resumed_phase_intent: BuildIntent | None = None,
+                        completion_guard: Callable[[], bool] | None = None):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.
 
         The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
@@ -19329,6 +19887,7 @@ class Orchestrator:
                 tree_before,
                 project.snapshot.working_tree_hash,
             )
+            project.context_rollover = ContextRolloverState(self._build_policy, tree_before)
         # And what `examples/` held before any phase ran, for the Kept rows pass in persist(). One
         # snapshot for the whole build rather than one per phase: `before` means "this turn's
         # writes", and the phases are one turn — a per-phase baseline would also let phase 2 re-decide
@@ -19365,8 +19924,16 @@ class Orchestrator:
             project.app_for_turn().set_plan_retry_step(step.n)
             yield persist({"type": "step-start", "n": step.n, "total": len(steps),
                            "label": step.label, "files": step.files})
+            resumed = step.n == start_step and bool(continuation_note)
             outcome = yield from self._run_step(project, client, step, steps, answers, notes,
-                                                mentions, explicit_references, source_requests)
+                                                mentions, explicit_references, source_requests,
+                                                continuation_note=(
+                                                    continuation_note if resumed else ""),
+                                                initial_repair_objective=(
+                                                    initial_repair_objective if resumed
+                                                    else "implementation"),
+                                                retained_phase_intent=(
+                                                    resumed_phase_intent if resumed else None))
             if outcome == "stopped":
                 # The user rejected the whole build, so leaving three of six phases on disk would
                 # leave a state they never asked for and can't describe. Same semantics as Stop on a
@@ -19387,13 +19954,19 @@ class Orchestrator:
                 project.app_for_turn().set_plan_retry_step(0)
                 build_diagnostics.observe({"type": "stopped"})
                 yield {"type": "stopped"}
-                return
+                return "stopped"
             if outcome == "pre_edit_limit":
                 project.app_for_turn().set_last_turn_failed(True)
                 yield persist({"type": "step-done", "n": step.n, "total": len(steps),
                                "ok": False, "decision": "pre_edit_limit"})
                 yield persist({"type": "done", "ok": False, "decision": "pre_edit_limit"})
-                return
+                return "failed"
+            if outcome == "context_limit":
+                project.app_for_turn().set_last_turn_failed(True)
+                yield persist({"type": "step-done", "n": step.n, "total": len(steps),
+                               "ok": False, "decision": "context_limit"})
+                yield persist({"type": "done", "ok": False, "decision": "context_limit"})
+                return "failed"
             if outcome is not True:
                 failed = (step, str(outcome))
                 yield persist({"type": "step-done", "n": step.n, "total": len(steps),
@@ -19424,7 +19997,15 @@ class Orchestrator:
                 yield persist(_app_change_event(project.app_for_turn()))
             yield persist({"type": "done", "ok": False,
                            "decision": f"phase {step.n} of {len(steps)}, {step.label}, failed — {why}"})
-            return
+            return "failed"
+
+        if completion_guard is not None and not completion_guard():
+            project.app_for_turn().set_last_turn_failed(True)
+            if project.snapshot.working_tree_hash() != tree_before:
+                yield persist(_app_change_event(project.app_for_turn()))
+            yield persist({"type": "done", "ok": False,
+                           "decision": "invalid phased continuation"})
+            return "invalid"
 
         project.app_for_turn().set_last_turn_failed(False)
         # Every phase ran, so the plan owes nothing and _approve_locked archives it as usual.
@@ -19438,12 +20019,16 @@ class Orchestrator:
             saved = self._save_to_git(project, f"build plan ({len(steps)} phases)")
         if saved is not None:
             yield persist(saved)
+        return "success"
 
     def _run_step(self, project: Project, client: OpenCodeClient, step: PlanStep,
                   steps: list[PlanStep], answers: str, notes: list[str] | None = None,
                   mentions: list[str] | None = None,
                   explicit_references: list[dict] | None = None,
-                  source_requests: tuple[str, ...] = ()):
+                  source_requests: tuple[str, ...] = (),
+                  continuation_note: str = "",
+                  initial_repair_objective: str = "implementation",
+                  retained_phase_intent: BuildIntent | None = None):
         """Run one phase, retrying once in another fresh session if it fails. Returns True, the
         string "stopped", or a failure reason; swallows the phase's own terminal `done` so the build
         emits exactly one."""
@@ -19457,7 +20042,7 @@ class Orchestrator:
         escalated = False
         errors = ""
         reason = "the step did not complete"
-        phase_intent = BuildIntent.for_phase(
+        phase_intent = retained_phase_intent or BuildIntent.for_phase(
             source_requests, step.raw, step_index(steps, step.n), answers, notes or ())
 
         outcome: dict | None = None
@@ -19489,7 +20074,12 @@ class Orchestrator:
                                              mentions, is_approval=True, mode=Mode.IMPLEMENT,
                                              session_id=sid, brief=step,
                                              explicit_references=explicit_references,
-                                             build_intent=phase_intent):
+                                             build_intent=phase_intent,
+                                             continuation_note=(
+                                                 continuation_note if attempt == 1 else ""),
+                                             initial_repair_objective=(
+                                                 initial_repair_objective if attempt == 1
+                                                 else "implementation")):
                     if ev["type"] == "stopped":
                         return "stopped"
                     if ev["type"] == "done":
@@ -19508,7 +20098,7 @@ class Orchestrator:
                     return True
                 if outcome is not None:
                     reason = str(outcome.get("decision") or reason)
-                    if reason == "pre_edit_limit":
+                    if reason in {"pre_edit_limit", "context_limit"}:
                         return reason
         except TurnWedged:
             # A phase's `done` is swallowed above so one build ends once, not once per phase — but a

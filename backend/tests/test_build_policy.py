@@ -35,6 +35,7 @@ EXPECTED = {
     "pre_edit_clean_recovery_limit": 1,
     "build_context_non_media_max_bytes": 786_432,
     "build_context_automatic_rollover_limit": 1,
+    "build_context_continuation_reference_max_count": 100,
 }
 
 ENVIRONMENT = {
@@ -64,6 +65,8 @@ ENVIRONMENT = {
     "build_context_non_media_max_bytes": "SAGE_BUILD_CONTEXT_NON_MEDIA_MAX_BYTES",
     "build_context_automatic_rollover_limit":
         "SAGE_BUILD_CONTEXT_AUTOMATIC_ROLLOVER_LIMIT",
+    "build_context_continuation_reference_max_count":
+        "SAGE_BUILD_CONTEXT_CONTINUATION_REFERENCE_MAX_COUNT",
 }
 
 
@@ -171,6 +174,7 @@ def test_every_active_build_limit_is_read_from_the_policy_at_its_call_site():
         "pre_edit_clean_recovery_limit",
         "build_context_non_media_max_bytes",
         "build_context_automatic_rollover_limit",
+        "build_context_continuation_reference_max_count",
     }
 
     assert all(f"self._build_policy.{field}" in source for field in active_fields)

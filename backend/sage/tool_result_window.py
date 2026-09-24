@@ -94,7 +94,8 @@ def _json_bytes(value) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
-def _is_media(part) -> bool:
+def is_media_part(part) -> bool:
+    """Classify a native structured part as media for all request byte accounting."""
     if not isinstance(part, dict):
         return False
     kind = str(part.get("type") or "").lower()
@@ -119,7 +120,7 @@ def _content_bytes(content) -> int:
             return 0
         return len(content.encode("utf-8"))
     if isinstance(content, list):
-        non_media = [part for part in content if not _is_media(part)]
+        non_media = [part for part in content if not is_media_part(part)]
         return _json_bytes(non_media) if non_media else 0
     if content is None:
         return 0
@@ -164,7 +165,7 @@ def _plain_text(content) -> str | None:
         return None
     parts = []
     for part in content:
-        if _is_media(part):
+        if is_media_part(part):
             continue
         if (not isinstance(part, dict) or part.get("type") != "text"
                 or not isinstance(part.get("text"), str)):
@@ -180,7 +181,7 @@ def _replace_non_media(content, text: str):
     out = []
     inserted = False
     for part in content:
-        if _is_media(part):
+        if is_media_part(part):
             out.append(part)
         elif not inserted:
             if text:

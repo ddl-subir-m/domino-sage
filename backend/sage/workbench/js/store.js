@@ -336,6 +336,8 @@ window.SW = window.SW || {};
     buildTranscript: [],
     buildTyping: null,
     buildRunning: false,
+    // The only context-limit card the server still authorizes. Process restart clears it.
+    contextContinuation: null,
     bindings: [],
     // The selected app's own files, which is NOT `attachments` above: that list is the
     // Conversation's and must not follow the app (#84). This one is read off the app's own
@@ -3066,6 +3068,22 @@ window.SW = window.SW || {};
           type: 'status', ok: false,
           value: ev.message || 'Sage stopped before changing the app.',
         });
+      } else if (ev.type === 'build-rollover') {
+        ensureAssistant().blocks.push({
+          type: 'status', ok: true,
+          value: ev.message || 'The build is continuing once in a clean session.',
+        });
+      } else if (ev.type === 'build-context-limit') {
+        const live = state.contextContinuation;
+        ensureAssistant().blocks.push({
+          type: 'build_context_limit',
+          message: ev.message || 'The build reached its context limit.',
+          kept: !!ev.kept,
+          continuationId: ev.continuationId || '',
+          conversation: (live && live.conversation) || '',
+          appId: (live && live.appId) || '',
+          live: !!(live && live.continuationId === ev.continuationId),
+        });
       } else if (ev.type === 'done') {
         // A turn is over, so nothing is still reading a warehouse (#186). The search takes its own
         // card back when it ends, and this is the backstop for the ends it does not reach — a
@@ -4082,6 +4100,10 @@ window.SW = window.SW || {};
   // for a poll to land on it and blank a header that is about to fill straight back up.
   function applyTurnState(payload) {
     const turn = payload || {};
+    const priorContinuation = state.contextContinuation && state.contextContinuation.continuationId;
+    state.contextContinuation = turn.context_continuation || null;
+    const nextContinuation = state.contextContinuation && state.contextContinuation.continuationId;
+    if (priorContinuation !== nextContinuation && state.buildHistory) applyBuildTranscript();
     const reconstructing = liveBuildTurns === 0 && liveChatTurns === 0;
     state.turnWedged = !!turn.wedged;
     state.turnPending = turn.pending || 0;
@@ -4145,8 +4167,18 @@ window.SW = window.SW || {};
       state.buildTyping = ev.reason || 'Fixing errors…';
     } else if (ev.type === 'build-recovery') {
       state.buildTyping = ev.message || 'Restarting once with a clean context…';
+    } else if (ev.type === 'build-rollover') {
+      state.buildTyping = ev.message || 'Continuing once in a clean session…';
     } else if (ev.type === 'build-pre-edit-limit') {
       state.buildTyping = null;
+    } else if (ev.type === 'build-context-limit') {
+      state.buildTyping = null;
+      state.contextContinuation = {
+        continuationId: ev.continuationId || '',
+        conversation: (state.thread && state.thread.id) || '',
+        appId: (state.activeApp && state.activeApp.id) || '',
+        state: 'available',
+      };
     } else if (ev.type === 'agent' && ev.kind === 'text') {
       state.buildTyping = null;
     } else if (ev.type === 'plan-proposed' || ev.type === 'done' || ev.type === 'error' || ev.type === 'stopped') {
@@ -4188,7 +4220,8 @@ window.SW = window.SW || {};
     if (ev.type === 'reset-offer' || ev.type === 'incoming-changes'
         || ev.type === 'build-stalled' || ev.type === 'mentions-unresolved'
         || ev.type === 'table-candidates' || ev.type === 'source-candidates'
-        || ev.type === 'dataset-files' || ev.type === 'withhold-found') {
+        || ev.type === 'dataset-files' || ev.type === 'withhold-found'
+        || ev.type === 'build-context-limit') {
       ev.live = true;
       // And remembered past this row's own life (#209). The next transcript read replaces the row
       // with the server's copy of it, which carries no flag — so the mark on the row alone lasted
@@ -7590,6 +7623,97 @@ window.SW = window.SW || {};
         // question the server never recorded, and the text is back in the composer instead.
         if (movedOn() || unran) await store.loadBuild({ keepPreview: true });
         await Promise.all([probePreview(), refreshBindings()]);
+        notify();
+      }
+    },
+
+    // The Build context-limit action has its own server capability. It sends no prompt text and
+    // cannot be replayed as an ordinary composer turn.
+    async continueContextBuild(block) {
+      const live = state.contextContinuation;
+      if (!block || !live || !block.continuationId
+          || live.continuationId !== block.continuationId) return { status: 'unavailable' };
+      const conversation = live.conversation || '';
+      const appId = live.appId || '';
+      state.contextContinuation = null;
+      applyBuildTranscript();
+      liveBuildTurns += 1;
+      state.buildRunning = true;
+      state.buildTyping = 'Continuing in a clean session…';
+      notify();
+      let claim = null;
+      let ticket = '';
+      let detached = false;
+      const requestOrder = ++turnRequestOrder;
+      try {
+        const res = await fetch('./api/project/build/continue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            continuationId: block.continuationId,
+            conversation,
+            appId,
+          }),
+        });
+        const contentType = (res.headers && res.headers.get('content-type')) || '';
+        if (contentType.includes('application/json')) {
+          const payload = await res.json().catch(() => ({}));
+          if (res.ok && payload.status === 'already_claimed') return payload;
+          throw new Error(payload.error || payload.message || res.statusText);
+        }
+        if (!res.ok) throw new Error(res.statusText);
+        const exactTurnId = responseTurnId(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Id'));
+        const exactTurnSequence = responseTurnSequence(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Sequence'));
+        const exactTurnEpoch = responseTurnEpoch(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-Epoch'));
+        const turnState = responseTurnState(res.headers && res.headers.get
+          && res.headers.get('X-Sage-Turn-State'));
+        if (turnState === 'running') {
+          claim = claimRunningTurn(
+            'build', conversation, appId, exactTurnId, exactTurnSequence,
+            exactTurnEpoch, requestOrder);
+        }
+        let terminalSeen = false;
+        await readSSE(res, (ev) => {
+          if (!ev) return;
+          if (ev.type === 'pending') {
+            ticket = ev.ticket;
+            queueTurn(ev, 'build');
+            releaseRunningTurn(claim);
+            claim = null;
+            notify();
+            return;
+          }
+          if (ev.type === 'running') {
+            claim = claimRunningTurn(
+              'build', conversation, appId, ev.ticket, ev.sequence, ev.epoch, requestOrder);
+            dropQueuedTurn(ev.ticket);
+            notify();
+            return;
+          }
+          if (ev.type === 'done' || ev.type === 'stopped') terminalSeen = true;
+          applyBuildEvent(ev);
+          notify();
+        });
+        if (!terminalSeen) {
+          const running = await readAuthoritativeTurnState();
+          detached = !running || !!running.running;
+          if (running) applyTurnState(running);
+        }
+        return { status: 'started' };
+      } catch (err) {
+        applyBuildEvent({ type: 'error', message: String(err.message || err) });
+        throw err;
+      } finally {
+        liveBuildTurns -= 1;
+        dropQueuedTurn(ticket);
+        state.buildRunning = detached || liveBuildTurns > 0;
+        state.buildTyping = detached ? 'Connection lost — build is still running.'
+          : (state.buildRunning ? state.buildTyping : null);
+        if (!detached) releaseRunningTurn(claim);
+        await store.loadBuild({ keepPreview: true });
         notify();
       }
     },
