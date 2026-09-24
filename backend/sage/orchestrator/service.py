@@ -17052,11 +17052,18 @@ class Orchestrator:
         web_token = project.control.arm_web() if _wants_web(prompt) else None
 
         def agent_wrote() -> bool:
-            """Did the AGENT change the app this turn? Its own edit-tool calls, plus the working
-            tree as ground truth for writes no tool reported (the `printf > file` shell hole). The
-            tree baseline moves when a concurrent attach/upload writes into the workspace, so a user
-            uploading data mid-turn is not mistaken for the agent (see Project.turn_tree_baseline)."""
-            return made_edits or project.snapshot.working_tree_hash() != project.turn_tree_baseline
+            """Did the AGENT change the app this turn? The working tree is ground truth for both
+            opaque shell writes and completed tools that changed no bytes. Edit-tool calls are the
+            fallback when git cannot hash the tree. The baseline moves when a concurrent upload
+            writes into the workspace, so that upload is not mistaken for the agent."""
+            current_tree = project.snapshot.working_tree_hash()
+            # The tree is authoritative when git produced both hashes: a completed edit can write
+            # identical bytes (or restore the original bytes), while an opaque shell call can change
+            # the tree without an edit/write part. Fall back to the tool witness only when hashing
+            # failed, which working_tree_hash reports as an empty string.
+            if current_tree and project.turn_tree_baseline:
+                return current_tree != project.turn_tree_baseline
+            return made_edits
 
         # Declared before `restore_mode` closes over it: the refusal path below calls that function
         # before anything is armed, and a closure reading an unassigned local would raise there.
@@ -18319,83 +18326,90 @@ class Orchestrator:
             if project.stop_requested:
                 yield handle_stop()
                 return
-            decision = breaker.record(report.signature(), report.ok)
-            if decision.action == "stop":
-                # A clean typecheck with no edits means the agent only planned — don't call that a
-                # finished build. Nudge it to implement (once); if it still writes nothing, stop
-                # with an honest, actionable message rather than a false "done — clean".
-                # `made_edits` only trips on a COMPLETED tool literally named edit/write this turn; the agent may write
-                # via another (patch/str_replace/create). Confirm against the snapshot's ground truth
-                # so a real edit is never misread as "planned but wrote no code". Compare the tree hash
-                # to this turn's start (not the build-start baseline) so only edits made THIS turn count.
-                wrote_code = agent_wrote()
+            # Decide no-edit from this dispatch's start/end tree, before the typecheck breaker. A
+            # red starter is still unchanged when the agent only replies with prose, and feeding its
+            # old error into typecheck repair spends three model turns without ever asking for the
+            # requested implementation. The same tree witness catches opaque shell writes, so they
+            # remain real edits and take the repair path below.
+            wrote_code = agent_wrote()
+            if turn_span is not None:
+                turn_span.fields.update(stack=project.app_for_turn().stack.name,
+                                        no_edit_attempt=nudges, wrote_code=wrote_code)
+
+            # A gated turn that wrote code broke the guarantee it exists to provide. Keep this
+            # ahead of both recovery loops so a red checker cannot turn a read-only violation into
+            # an ordinary typecheck repair.
+            if (gate or answer_only) and wrote_code:
+                kind = "gated" if gate else "answer-only"
+                log.error("%s turn wrote code — reverting; read-only enforcement was bypassed", kind)
+                project.snapshot.discard_changes()
+                restore_mode()
+                msg = ("Planning was expected, but the agent edited files — nothing was applied. "
+                       "Send the request again, or switch to Implement to build directly." if gate else
+                       "That was a question, but the agent edited files — nothing was applied. Ask "
+                       "again, or switch to Implement to build directly.")
+                yield persist({"type": "error", "message": msg})
+                yield persist({"type": "done", "ok": False,
+                               "decision": "gate violated" if gate else "answer only — edits discarded"})
+                return
+
+            if not wrote_code:
                 if turn_span is not None:
-                    # The existing per-dispatch span records the bounded recovery's outcome,
-                    # without copying the request or attached data into diagnostic fields.
-                    turn_span.fields.update(stack=project.app_for_turn().stack.name,
-                                            no_edit_attempt=nudges, wrote_code=wrote_code)
-                    if report.ok and not wrote_code:
-                        turn_span.fields.update(retry_reason="no_edit",
-                                                retry_exhausted=nudges >= MAX_NUDGES)
-                # A gated turn that wrote code broke the guarantee it exists to provide: the user was
-                # promised a plan to approve and got an unreviewed build instead. Don't fall through
-                # to the ordinary build path (that's what silently swallowed the gate before the shim
-                # enforced read-only) — revert to the pre-turn tree and say so.
-                if (gate or answer_only) and wrote_code:
-                    kind = "gated" if gate else "answer-only"
-                    log.error("%s turn wrote code — reverting; read-only enforcement was bypassed", kind)
-                    project.snapshot.discard_changes()
-                    restore_mode()
-                    msg = ("Planning was expected, but the agent edited files — nothing was applied. "
-                           "Send the request again, or switch to Implement to build directly." if gate else
-                           "That was a question, but the agent edited files — nothing was applied. Ask "
-                           "again, or switch to Implement to build directly.")
-                    yield persist({"type": "error", "message": msg})
-                    yield persist({"type": "done", "ok": False,
-                                   "decision": "gate violated" if gate else "answer only — edits discarded"})
-                    return
-                if report.ok and not wrote_code:
-                    # Neither gated nor answer-only turns reach here — a no-edit plan turn resolved
-                    # its gate, and a no-edit Q&A finished, before the typecheck ran.
-                    if nudges < MAX_NUDGES:
-                        nudges += 1
-                        # The nudge is a fresh user turn, so the shim's per-step classifier resets to
-                        # PLAN (it biases plan until the first write) — in Auto the model can just plan
-                        # again and stall. Pin Implement for the retry so it actually writes: the "try
-                        # Implement mode" advice, applied automatically instead of shown as a dead end.
-                        mode_now = project.control.snapshot().mode
-                        if mode_now is Mode.AUTO:
-                            project.control.set_turn_mode(Mode.IMPLEMENT)
-                            reason = "planned but wrote no code — switching to Implement"
-                        else:
-                            reason = "wrote no code — retrying"
-                        # Whether we just switched out of Auto or the user is already in Implement,
-                        # resolve() routes to catalog.implement — the cheap coder that just wrote
-                        # nothing. With the fallback on, pin the strong plan-tier model for the retry
-                        # so a model capable of calling the edit tool drives it. Restored to the user's
-                        # own pick in restore_mode().
-                        if strong_fallback and not escalated_pick and mode_now in (Mode.AUTO, Mode.IMPLEMENT):
-                            # The plan slot's own effort rides along, because this escalation is the
-                            # act that chose the model and ADR-0049's table says the effort comes
-                            # from whatever chose it. Leaving it bare would run the plan model at
-                            # the alias default here and at the assigned level everywhere else.
-                            project.control.pick(project.shim.catalog.plan,
-                                                 project.shim.catalog.plan_effort)
-                            escalated_pick = True
-                            reason += " with the strong model"
-                        iterate_reason = reason
-                        yield {"type": "iterate", "reason": iterate_reason}
-                        current = IMPLEMENT_NUDGE
-                        continue
-                    restore_mode()
-                    # "couldn't get past planning" only makes sense when the user let us plan (Auto/
-                    # Plan). In explicit Implement mode the model simply replied without editing — say
-                    # that instead, so the message doesn't contradict the mode the user picked.
-                    stop_msg = ("the model replied but didn't change any files — try rephrasing or a smaller step"
-                                if mode_at_start is Mode.IMPLEMENT
-                                else "couldn't get past planning — try rephrasing or a smaller step")
-                    yield persist({"type": "done", "ok": False, "decision": stop_msg})
-                    return
+                    turn_span.fields.update(retry_reason="no_edit",
+                                            retry_exhausted=nudges >= MAX_NUDGES)
+                # Neither gated nor answer-only turns reach here — a no-edit plan turn resolved
+                # its gate, and a no-edit Q&A finished, before the typecheck ran.
+                if nudges < MAX_NUDGES:
+                    nudges += 1
+                    # The nudge is a fresh user turn, so the shim's per-step classifier resets to
+                    # PLAN (it biases plan until the first write) — in Auto the model can just plan
+                    # again and stall. Pin Implement for the retry so it actually writes: the "try
+                    # Implement mode" advice, applied automatically instead of shown as a dead end.
+                    mode_now = project.control.snapshot().mode
+                    if mode_now is Mode.AUTO:
+                        project.control.set_turn_mode(Mode.IMPLEMENT)
+                        reason = "planned but wrote no code — switching to Implement"
+                    else:
+                        reason = "wrote no code — retrying"
+                    # Whether we just switched out of Auto or the user is already in Implement,
+                    # resolve() routes to catalog.implement — the cheap coder that just wrote
+                    # nothing. With the fallback on, pin the strong plan-tier model for the retry
+                    # so a model capable of calling the edit tool drives it. Restored to the user's
+                    # own pick in restore_mode().
+                    if strong_fallback and not escalated_pick and mode_now in (Mode.AUTO, Mode.IMPLEMENT):
+                        # The plan slot's own effort rides along, because this escalation is the
+                        # act that chose the model and ADR-0049's table says the effort comes
+                        # from whatever chose it. Leaving it bare would run the plan model at
+                        # the alias default here and at the assigned level everywhere else.
+                        project.control.pick(project.shim.catalog.plan,
+                                             project.shim.catalog.plan_effort)
+                        escalated_pick = True
+                        reason += " with the strong model"
+                    iterate_reason = reason
+                    yield {"type": "iterate", "reason": iterate_reason}
+                    current = IMPLEMENT_NUDGE
+                    continue
+                if owns_turn:
+                    # An approved plan still owes its build. Tell _approve_locked's finally block
+                    # to keep that plan live and arm its existing "try again" path instead of
+                    # archiving intent that exhausted the bounded no-edit recovery without writing.
+                    # A phase owns its resume point separately in _phased_approve.
+                    self._turn_gave_up = True
+                restore_mode()
+                # "couldn't get past planning" only makes sense when the user let us plan (Auto/
+                # Plan). In explicit Implement mode the model simply replied without editing — say
+                # that instead, so the message doesn't contradict the mode the user picked.
+                stop_msg = ("the model replied but didn't change any files — try rephrasing or a smaller step"
+                            if mode_at_start is Mode.IMPLEMENT
+                            else "couldn't get past planning — try rephrasing or a smaller step")
+                yield persist({"type": "done", "ok": False, "decision": stop_msg})
+                return
+
+            decision = breaker.record(report.signature(), report.ok)
+            if turn_span is not None and not report.ok:
+                turn_span.fields.update(retry_reason="typecheck_repair",
+                                        retry_exhausted=decision.action == "stop")
+            if decision.action == "stop":
                 # Typecheck is clean and code was written — but tsc can't see a runtime crash that
                 # blanks the preview. Wait briefly for the open preview to report one; if it does,
                 # feed the error back so the agent fixes it before we call the build done.
