@@ -1,0 +1,41 @@
+{
+  "model": "GLM 5.3 OR",
+  "stream": true,
+  "messages": [
+    {
+      "role": "system",
+      "content": "OpenCode implementation instructions"
+    },
+    {
+      "role": "system",
+      "content": "Sage implementation safety instructions"
+    },
+    {
+      "role": "system",
+      "content": "OpenCode implementation instructions"
+    },
+    {
+      "role": "developer",
+      "content": "Typed references must use the approved data-use path."
+    },
+    {
+      "role": "user",
+      "content": "CANONICAL_BUILD_INTENT_PRIVATE_SENTINEL: build one small app. TYPED_REFERENCE_PRIVATE_SENTINEL: reference kind=table, selector=PRIVATE_SELECTOR, path=PRIVATE_PATH."
+    }
+  ],
+  "tools": [
+    {"type": "function", "function": {"name": "glob", "description": "List files", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "grep", "description": "Search files", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "read", "description": "Read a file", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "write", "description": "Write a file", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "edit", "description": "Edit a file", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "apply_patch", "description": "Apply a patch", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "bash", "description": "Run a bounded command", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "task", "description": "Run a task", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "todowrite", "description": "Track progress", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "sage-live-read_live_read_table", "description": "Read a typed table reference", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "read", "description": "Read a file", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "artifact_write", "description": "Write a Chat artifact", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "delegated_model_call", "description": "Delegate a Chat analysis", "parameters": {"type": "object"}}}
+  ]
+}

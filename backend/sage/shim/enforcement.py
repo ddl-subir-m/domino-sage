@@ -19,6 +19,7 @@ from typing import Any
 from ..build_policy import BuildPolicy
 from ..gateway.capabilities import legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
+from ..implementation_request import assemble_for_route
 from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import (
@@ -850,6 +851,11 @@ class EnforcementShim:
         )
         request, used = self.data_use.prepare(
             request, withheld=state.withheld, rewrite_counts=rewrite_counts)
+        request, assembly = assemble_for_route(
+            request, mode=state.mode.value, phase=state.phase.value,
+            chat_thread_id=state.chat_thread_id)
+        if assembly and rewrite_counts is not None:
+            rewrite_counts["implementationAssembly"] = assembly
         if (self._build_policy is not None
                 and state.chat_thread_id is None
                 and (state.mode is Mode.IMPLEMENT

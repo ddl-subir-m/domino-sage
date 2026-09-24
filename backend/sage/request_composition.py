@@ -8,6 +8,17 @@ from __future__ import annotations
 
 import json
 
+_DIAGNOSTIC_TOOL_NAMES = frozenset({
+    "apply_patch", "artifact_write", "bash", "delegated_model_call", "edit", "fetch", "glob",
+    "get_file", "grep", "list", "live_read_files", "live_read_query", "live_read_table", "ls",
+    "open", "patch", "question", "read", "read_file", "readfile", "replace",
+    "sage-delegated_delegated_model_call",
+    "sage-live-read_artifact_write", "sage-live-read_live_read_files",
+    "sage-live-read_live_read_query", "sage-live-read_live_read_table", "skill", "task", "todo_write",
+    "todo_read", "todoread", "todowrite", "view", "web_fetch", "web_search", "webfetch",
+    "websearch", "write", "write_file",
+})
+
 MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
 MAX_NODES = 100_000
 MAX_DEPTH = 64
@@ -19,6 +30,9 @@ _ROLES = ("system", "developer", "user", "assistant", "tool", "unknown")
 _REWRITES = (
     "redactedCalls", "localExecutionReceipts", "markerEchoCorrections",
     "externalImageReceipts", "withheldImageReceipts",
+)
+_INSTRUCTION_SOURCES = (
+    "topLevelInstructions", "topLevelSystem", "messageSystem", "messageDeveloper",
 )
 
 
@@ -66,6 +80,14 @@ def _blank(total: int, rewrites: dict | None, *, status="complete", reason=None)
         "toolCallCount": 0,
         "toolArgumentsBytes": 0,
         "rewrites": {key: count(key) for key in _REWRITES},
+        "systemInstructionsBySource": {
+            key: {"count": 0, "bytes": 0} for key in _INSTRUCTION_SOURCES
+        },
+        "toolSchemasByName": {},
+        "exactDuplicateInstructionBlocks": {"count": 0, "bytes": 0},
+        "buildBytes": {"fixedBytes": total, "dynamicBuildIntentBytes": 0,
+                       "toolResultBytes": 0, "mediaBytes": 0},
+        "implementationAssembly": _assembly(rewrites),
         "limitReason": reason,
     }
     window = (rewrites or {}).get("toolResultWindow")
@@ -81,6 +103,40 @@ def _blank(total: int, rewrites: dict | None, *, status="complete", reason=None)
             for key in keys
         }
     return result
+
+
+def _assembly(rewrites: dict | None) -> dict:
+    raw = (rewrites or {}).get("implementationAssembly")
+    if not isinstance(raw, dict):
+        return {}
+
+    def number(key):
+        value = raw.get(key, 0)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    by_name = raw.get("removedToolSchemasByName")
+    by_source = raw.get("duplicateInstructionBlocksRemovedBySource")
+    removed: dict[str, int] = {}
+    for name, value in (by_name.items() if isinstance(by_name, dict) else ()):
+        if isinstance(name, str) and isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            identifier = diagnostic_tool_name(name)
+            removed[identifier] = removed.get(identifier, 0) + value
+    return {
+        "beforeBytes": number("beforeBytes"),
+        "afterBytes": number("afterBytes"),
+        "removedBytes": number("removedBytes"),
+        "duplicateInstructionBlocksRemoved": number("duplicateInstructionBlocksRemoved"),
+        "duplicateInstructionBytesRemoved": number("duplicateInstructionBytesRemoved"),
+        "duplicateInstructionBlocksRemovedBySource": {
+            source: value for source, value in (
+                by_source.items() if isinstance(by_source, dict) else ())
+            if source in _INSTRUCTION_SOURCES and isinstance(value, int)
+            and not isinstance(value, bool) and value >= 0
+        },
+        "duplicateToolSchemasRemoved": number("duplicateToolSchemasRemoved"),
+        "unreachableToolSchemasRemoved": number("unreachableToolSchemasRemoved"),
+        "removedToolSchemasByName": removed,
+    }
 
 
 def _role(value) -> str:
@@ -101,13 +157,21 @@ def measure(payload: dict, total_bytes: int, rewrites: dict | None = None) -> di
         if isinstance(tools, list):
             categories["toolSchemasBytes"] += wire_bytes(tools)
             result["toolSchemaCount"] = len(tools)
+            for tool in tools:
+                name = _tool_name(tool)
+                bucket = result["toolSchemasByName"].setdefault(
+                    name, {"count": 0, "bytes": 0})
+                bucket["count"] += 1
+                bucket["bytes"] += wire_bytes(tool)
 
         if "instructions" in payload:
             categories["instructionsBytes"] += _instruction_bytes(payload["instructions"])
+            _attribute_instructions(payload["instructions"], "topLevelInstructions", result)
             roles["system"]["count"] += 1
             roles["system"]["bytes"] += wire_bytes(payload["instructions"])
         if "system" in payload:
             categories["instructionsBytes"] += _instruction_bytes(payload["system"])
+            _attribute_instructions(payload["system"], "topLevelSystem", result)
             roles["system"]["count"] += 1
             roles["system"]["bytes"] += wire_bytes(payload["system"])
 
@@ -128,6 +192,16 @@ def measure(payload: dict, total_bytes: int, rewrites: dict | None = None) -> di
         if classified > total_bytes:
             return _blank(total_bytes, rewrites, status="limited", reason="classification_overlap")
         categories["unclassifiedBytes"] = total_bytes - classified
+        dynamic = (categories["ordinaryTextBytes"] + categories["toolCallsBytes"]
+                   + categories["opaqueStateBytes"])
+        result["buildBytes"] = {
+            "fixedBytes": total_bytes - dynamic - categories["toolResultsBytes"]
+                          - categories["mediaBytes"],
+            "dynamicBuildIntentBytes": dynamic,
+            "toolResultBytes": categories["toolResultsBytes"],
+            "mediaBytes": categories["mediaBytes"],
+        }
+        result.pop("_instructionFingerprints", None)
         return result
     except _Limit as error:
         return _blank(total_bytes, rewrites, status="limited", reason=error.reason)
@@ -156,6 +230,8 @@ def _measure_row(row, categories, roles, result) -> None:
         content = row.get("content")
         if role in ("system", "developer"):
             categories["instructionsBytes"] += _instruction_bytes(content)
+            _attribute_instructions(
+                content, "messageSystem" if role == "system" else "messageDeveloper", result)
         elif role == "tool":
             categories["toolResultsBytes"] += wire_bytes(content)
         else:
@@ -172,6 +248,45 @@ def _measure_row(row, categories, roles, result) -> None:
     bucket = roles[_role(role)]
     bucket["count"] += 1
     bucket["bytes"] += wire_bytes(row)
+
+
+def _tool_name(tool) -> str:
+    if not isinstance(tool, dict):
+        return "unknown"
+    function = tool.get("function")
+    value = function.get("name") if isinstance(function, dict) else tool.get("name")
+    return diagnostic_tool_name(value)
+
+
+def diagnostic_tool_name(value: object) -> str:
+    """Return a fixed public tool identifier, never a request-supplied unknown name."""
+    return value if isinstance(value, str) and value in _DIAGNOSTIC_TOOL_NAMES else "unknown"
+
+
+def _instruction_blocks(content):
+    if isinstance(content, str):
+        yield content, wire_bytes(content)
+    elif isinstance(content, list):
+        for part in content:
+            if (isinstance(part, dict)
+                    and part.get("type") in ("text", "input_text", "output_text")):
+                yield part, wire_bytes(part.get("text", ""))
+
+
+def _attribute_instructions(content, source: str, result: dict) -> None:
+    bucket = result["systemInstructionsBySource"][source]
+    seen = result.setdefault("_instructionFingerprints", set())
+    duplicates = result["exactDuplicateInstructionBlocks"]
+    for block, size in _instruction_blocks(content):
+        bucket["count"] += 1
+        bucket["bytes"] += size
+        fingerprint = json.dumps(block, ensure_ascii=False, sort_keys=True,
+                                 separators=(",", ":"), allow_nan=False)
+        if fingerprint in seen:
+            duplicates["count"] += 1
+            duplicates["bytes"] += size
+        else:
+            seen.add(fingerprint)
 
 
 def _measure_content(content, categories, result) -> None:
