@@ -278,8 +278,8 @@ A dashboard for exploring trades.
 """
 
 
-def _writes(rel: str) -> Turn:
-    return Turn(writes={rel: f"// {rel}\nexport const x = 1;\n"})
+def _writes(rel: str, version: int = 1) -> Turn:
+    return Turn(writes={rel: f"// {rel}\nexport const x = {version};\n"})
 
 
 def _phased_run_that_dies_in_phase_two(tmp_path: Path):
@@ -290,7 +290,7 @@ def _phased_run_that_dies_in_phase_two(tmp_path: Path):
         _writes("src/data.ts"),      # 2. phase 1 — lands
         _writes("src/Table.tsx"),    # 3. phase 2, first attempt — gateway dies
         _writes("src/Table.tsx"),    # 4. phase 2, _run_step's own retry — dies too
-        _writes("src/Table.tsx"),    # 5. the resumed build's phase 2
+        _writes("src/Table.tsx", 2), # 5. the resumed build's phase 2 — a real follow-up edit
         _writes("src/Filter.tsx"),   # 6. and its phase 3
     ], break_on={3, 4}, phased=True)
 
@@ -434,7 +434,7 @@ def _zero_numbered_run_that_dies_in_its_first_phase(tmp_path: Path):
         Turn(text=ZERO_NUMBERED_PLAN),
         _writes("src/data.ts"),               # 2. first phase, first attempt — gateway dies
         _writes("src/data.ts"),               # 3. first phase, _run_step's own retry — dies too
-        _writes("src/data.ts"),               # 4. resumed build's first phase
+        _writes("src/data.ts", 2),            # 4. resumed first phase — a real follow-up edit
         _writes("src/Table.tsx"),             # 5. second phase
         _writes("src/Filter.tsx"),            # 6. third phase
     ], break_on={2, 3}, phased=True)
@@ -484,8 +484,8 @@ def _phased_run_with_a_resume_point_from_another_parse(tmp_path: Path):
         _writes("src/data.ts"),               # 2. phase 1 — lands
         _writes("src/Table.tsx"),             # 3. phase 2, first attempt — gateway dies
         _writes("src/Table.tsx"),             # 4. phase 2, _run_step's own retry — dies too
-        _writes("src/data.ts"),               # 5. resumed phase 1
-        _writes("src/Table.tsx"),             # 6. resumed phase 2
+        _writes("src/data.ts", 2),            # 5. resumed phase 1 — a real follow-up edit
+        _writes("src/Table.tsx", 2),          # 6. resumed phase 2 — a real follow-up edit
         _writes("src/Filter.tsx"),            # 7. resumed phase 3
     ], break_on={3, 4}, phased=True)
 

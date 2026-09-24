@@ -22,6 +22,7 @@ from pathlib import Path
 
 from . import timing
 from .tool_timing import argument_keys_for_tool
+from .workspace.stack import STACKS
 
 log = logging.getLogger("sage.diagnostics")
 SCHEMA_VERSION = 1
@@ -232,9 +233,11 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
                     elif re.fullmatch(r"(?:planned but wrote no code — switching to Implement|wrote no code — retrying)(?: with the strong model)?", why):
                         category = "no_edit"
                     entry["retryCategory"] = category
-                if row.get("stack") in {"react-vite", "fastapi-static"}:
+                if row.get("stack") in STACKS:
                     entry["stack"] = row["stack"]
-                if row.get("retry_reason") in {"no_edit", "no_edit_exhausted"}:
+                if row.get("retry_reason") in {
+                    "no_edit", "no_edit_exhausted", "typecheck_repair"
+                }:
                     entry["retry_reason"] = row["retry_reason"]
             if section == "tools":
                 entry["range"] = _metadata(row.get("range", {}), ["offset", "limit", "startLine", "endLine"])

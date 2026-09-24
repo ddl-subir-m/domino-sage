@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from sage import build_diagnostics as diagnostics
 from sage import timing
+from sage.workspace.stack import STACKS
 
 from .ledger import needs_ledger, own_ledger
 from .test_a_dropped_mention_reaches_the_agents_prompt import _orch
@@ -131,7 +132,7 @@ def test_private_payloads_and_unknown_fields_never_reach_the_export(tmp_path):
     rec.prompt = rec.decision = private
     rec.spans = [timing.Span("agent-turn.1", 0, rec.t0, rec.t1,
                             {"why": private, "error": private, "code": private,
-                             "stack": "fastapi-static", "no_edit_attempt": 1,
+                             "stack": "fastapi-antd", "no_edit_attempt": 1,
                              "wrote_code": False, "retry_reason": "no_edit", "retry_exhausted": True})]
     call = timing.ModelCall(1, rec.t0, model="GLM", phase="implement", t1=rec.t1, error=private)
     call.tool_invocations = [{"name": "read", "providerId": "call_a", "arguments": private,
@@ -209,6 +210,24 @@ def test_nested_events_and_bytes_are_capped_and_reported(monkeypatch):
     row = diagnostics.snapshot(rec, identity(), terminal=True)
     assert len(diagnostics._encode(row)) <= 2000
     assert row["capture"]["droppedEvents"]["calls"] > 0
+
+
+@pytest.mark.parametrize("stack", STACKS)
+@pytest.mark.parametrize("retry_reason", ["no_edit", "typecheck_repair"])
+def test_registered_stack_and_recovery_reason_survive_the_export(stack, retry_reason):
+    rec = record()
+    rec.spans = [timing.Span(
+        "agent-turn.1", 0, rec.t0, rec.t1,
+        {"why": "first send", "stack": stack, "no_edit_attempt": 0,
+         "wrote_code": retry_reason == "typecheck_repair",
+         "retry_reason": retry_reason, "retry_exhausted": False},
+    )]
+
+    row = diagnostics.snapshot(rec, identity(), terminal=True)
+
+    span = row["timing"]["spans"][0]
+    assert span["stack"] == stack
+    assert span["retry_reason"] == retry_reason
 
 
 def test_upstream_truncation_stays_visible():
