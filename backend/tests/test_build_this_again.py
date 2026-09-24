@@ -143,6 +143,16 @@ def _built_once(tmp_path: Path, extra: list[Turn] | None = None):
 def test_build_this_again_builds_the_edited_plan(tmp_path: Path):
     orch, oc = _built_once(tmp_path, [Turn(writes={"src/App.tsx": "// the sorted table\n"})])
     plan_id = _only_plan_id(orch)
+    project = orch.project(start_preview=False)
+    intents = []
+    send_prompt = oc.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    oc.send_prompt = capture
+    sessions_before = len(oc.sessions)
 
     events = list(orch.approve_stream(conversation=CONVERSATION, plan_edits=EDITED,
                                       plan_id=plan_id, build_again=True))
@@ -151,7 +161,9 @@ def test_build_this_again_builds_the_edited_plan(tmp_path: Path):
     # It built the person's own words, and through the builder rather than the read-only planner:
     # the whole point is that nothing re-plans from scratch.
     assert oc.prompts[-1]["agent"] != "sage-plan"
-    assert "Sort the table by date" in oc.prompts[-1]["text"]
+    assert "Sort the table by date" in intents[-1].authoritative_plan
+    assert len(oc.sessions) == sessions_before + 1
+    assert oc.prompts[-1]["session"] == oc.sessions[-1]["id"]
     assert "// the sorted table" in (_workspace(orch).path / "src" / "App.tsx").read_text()
     # And the edit is on record as a version of the same document, not a second document.
     doc = orch.read_plan_doc(plan_id)

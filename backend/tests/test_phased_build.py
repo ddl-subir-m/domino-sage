@@ -381,8 +381,10 @@ def test_the_toggle_off_leaves_the_approve_path_untouched(tmp_path: Path):
     assert "step-start" not in _kinds(events)
     assert len(_of(events, "done")) == 1
     assert _of(events, "done")[0]["ok"] is True
-    # One session for the whole project, as before.
-    assert [s["id"] for s in oc.sessions] == ["fake-session"]
+    # Phasing is off, so approval creates one clean implementation session for the whole build.
+    # It does not take the per-phase path or create one session per step.
+    assert [s["id"] for s in oc.sessions] == ["fake-session", "fake-session-2"]
+    assert {prompt["session"] for prompt in oc.prompts[1:]} == {"fake-session-2"}
 
 
 def test_the_first_phase_is_not_told_earlier_work_exists(tmp_path: Path):

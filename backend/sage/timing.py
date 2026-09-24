@@ -157,6 +157,7 @@ class TurnRecord:
     intervals_truncated: bool = False
     repeat_brake: list[dict] = field(default_factory=list)
     repeat_brake_truncated: bool = False
+    implementation_session: dict = field(default_factory=dict)
     counters: dict[str, float] = field(default_factory=dict)
     observations: dict[str, list[float]] = field(default_factory=dict)
     t1: float | None = None
@@ -292,6 +293,27 @@ def decide(ok: bool | None, decision: str) -> None:
     if rec is not None:
         rec.ok = ok
         rec.decision = decision or rec.decision
+
+
+def implementation_session(*, fresh: bool, reason: str, created: bool,
+                           persisted: bool, dispatch_started: bool) -> None:
+    """Record only the safe state transitions of the session selected for implementation."""
+    if reason not in {"approved_plan", "phase", "broken_call_recovery", "reused"}:
+        return
+    rec = _current
+    if rec is None:
+        return
+    try:
+        with _lock:
+            rec.implementation_session = {
+                "fresh": bool(fresh),
+                "reason": reason,
+                "created": bool(created),
+                "persisted": bool(persisted),
+                "dispatchStarted": bool(dispatch_started),
+            }
+    except Exception:
+        log.debug("timing: implementation session update failed", exc_info=True)
 
 
 @contextmanager
@@ -586,6 +608,7 @@ def as_dict(rec: TurnRecord) -> dict:
         "ok": rec.ok,
         "decision": rec.decision,
         "running": rec.t1 is None,
+        "implementationSession": dict(rec.implementation_session),
         "spans": [{"name": s.name, "depth": s.depth, "atMs": round((s.t0 - rec.t0) * 1000),
                    "ms": round(s.ms), "open": s.t1 is None, **s.fields} for s in rec.spans],
         "calls": [{"n": c.n, "model": c.model, "phase": c.phase, "reason": c.reason,

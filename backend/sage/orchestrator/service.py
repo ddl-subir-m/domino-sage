@@ -7452,6 +7452,27 @@ class Orchestrator:
             project.record.write_session_id(project.session_id, conversation, app_id)
         return project.session_id
 
+    def _replace_build_session(
+        self,
+        project: Project,
+        client: OpenCodeClient,
+        conversation: str | None,
+    ) -> str:
+        """Create and commit the clean session selected for an approved Build."""
+        app = project.app_for_turn()
+        new_id = client.create_session(directory=str(app.path))
+        timing.implementation_session(
+            fresh=True, reason="approved_plan", created=True,
+            persisted=False, dispatch_started=False,
+        )
+        project.record.write_session_id(new_id, conversation, app.app_id)
+        timing.implementation_session(
+            fresh=True, reason="approved_plan", created=True,
+            persisted=True, dispatch_started=False,
+        )
+        project.session_id = new_id
+        return new_id
+
     @staticmethod
     def _recover_session(record: ProjectRecord, client: OpenCodeClient,
                          conversation: str | None = None, app_id: str = "") -> str | None:
@@ -16447,7 +16468,8 @@ class Orchestrator:
                       user_text: str | None = None, mode: Mode | None = None,
                       session_id: str | None = None, brief: PlanStep | None = None,
                       explicit_references: list[dict] | None = None,
-                      build_intent: BuildIntent | None = None):
+                      build_intent: BuildIntent | None = None,
+                      fresh_session: bool = False):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -16520,9 +16542,37 @@ class Orchestrator:
         # Built after history-derived withholding is armed below. Besides ordering the token's
         # Data-use identity correctly, this keeps the note beside the grant it names.
         live_read_note = ""
+        implementation_session_reason = "reused"
+        implementation_session_created = False
+        implementation_session_persisted = False
         with timing.span("setup.session"):
-            sid = session_id or self._ensure_session(project, project.build_conversation)
-        project.active_session_id = sid
+            if session_id is not None:
+                sid = session_id
+                implementation_session_reason = "phase"
+                implementation_session_created = True
+                timing.implementation_session(
+                    fresh=True, reason="phase", created=True,
+                    persisted=False, dispatch_started=False,
+                )
+            elif fresh_session:
+                # Reference preflight below must finish before the approved Build creates anything.
+                sid = project.session_id or ""
+                timing.implementation_session(
+                    fresh=True, reason="approved_plan", created=False,
+                    persisted=False, dispatch_started=False,
+                )
+            else:
+                selected_before = project.session_id is not None or project.record.read_session_id(
+                    project.build_conversation, project.app_for_turn().app_id) is not None
+                sid = self._ensure_session(project, project.build_conversation)
+                implementation_session_created = not selected_before
+                implementation_session_persisted = not selected_before
+                timing.implementation_session(
+                    fresh=False, reason="reused", created=not selected_before,
+                    persisted=not selected_before, dispatch_started=False,
+                )
+        if not fresh_session:
+            project.active_session_id = sid
         # The plan gate's whole decision, taken here rather than beside the first line that reads it.
         # Every input to it is a local read but one: the scope classifier is a gateway round trip, and
         # it was 0.4-1.3s of serial wall clock in front of every Auto turn on a built app (measured
@@ -17306,14 +17356,6 @@ class Orchestrator:
             yield persist({"type": "done", "ok": False,
                            "decision": decision if looped else "stalled"})
 
-        # client.messages(sid) returns the ENTIRE session's messages on every poll, and `seen` starts
-        # empty for each user turn (this is a fresh _build_stream call). So without a baseline, this
-        # turn's first poll re-walks the PREVIOUS turn's already-completed assistant parts and re-emits
-        # them — the prior turn's summary reappearing at the top of the new turn (the "ordering" echo).
-        # Pre-seed `seen` with every part that already exists before we send this turn's prompt, so
-        # only parts produced by THIS turn are emitted. Within the turn `seen` also persists across the
-        # nudge/fix iterations of the loop below, so we never re-emit our own earlier parts either.
-        seen: set[tuple[str, object]] = self._seen_baseline(client, sid, limit=_BUILD_POLL_MESSAGES)
         # Text already shown this turn, so a repeat is dropped rather than printed twice. Scoped to the
         # turn (not the session): a later turn restating something is usually answering a new question.
         emitted_text: set[str] = set()
@@ -17524,6 +17566,35 @@ class Orchestrator:
             project.active_build_intent = build_intent or BuildIntent.for_direct(prompt)
             if project.active_build_intent.kind != "phase":
                 current = _BUILD_CONTROL_PROMPT
+        if fresh_session:
+            try:
+                with timing.span("setup.fresh_session"):
+                    sid = self._replace_build_session(
+                        project, client, project.build_conversation)
+            except Exception:
+                log.error("approved build: clean implementation session setup failed")
+                self._turn_gave_up = True
+                restore_mode()
+                message = ("Sage could not start a clean implementation session. "
+                           "The approved plan is still here. Try again.")
+                yield persist({"type": "error", "message": message})
+                yield persist({"type": "done", "ok": False,
+                               "decision": "implementation session unavailable"})
+                return
+            project.active_session_id = sid
+            implementation_session_reason = "approved_plan"
+            implementation_session_created = True
+            implementation_session_persisted = True
+            # Until the first dispatch returns, a disconnect or exception has not consumed the plan.
+            self._turn_gave_up = True
+        # client.messages(sid) returns the ENTIRE session's messages on every poll, and `seen` starts
+        # empty for each user turn (this is a fresh _build_stream call). So without a baseline, this
+        # turn's first poll re-walks the PREVIOUS turn's already-completed assistant parts and re-emits
+        # them — the prior turn's summary reappearing at the top of the new turn (the "ordering" echo).
+        # Pre-seed `seen` with every part that already exists before we send this turn's prompt, so
+        # only parts produced by THIS turn are emitted. Within the turn `seen` also persists across the
+        # nudge/fix iterations of the loop below, so we never re-emit our own earlier parts either.
+        seen: set[tuple[str, object]] = self._seen_baseline(client, sid, limit=_BUILD_POLL_MESSAGES)
         # (b) Retry budget, measured. One pass of this loop is one send_prompt and everything the
         # agent does before Sage decides whether to nudge it again, so the spans it opens ARE the
         # answer to "how many model turns does a build spend, and where do they go". Named by what
@@ -17598,6 +17669,13 @@ class Orchestrator:
             # and leaves a turn exactly as slow as it was with no error anywhere to say why.
             tap = _EventTap(client, sid, directory=str(project.app_for_turn().path))
             try:
+                timing.implementation_session(
+                    fresh=implementation_session_reason != "reused",
+                    reason=implementation_session_reason,
+                    created=implementation_session_created,
+                    persisted=implementation_session_persisted,
+                    dispatch_started=True,
+                )
                 client.send_prompt(sid,
                                    # `live_read_note` leads rather than trails. Everything after
                                    # `current` is a block ABOUT this request, and the tail is load-
@@ -17609,6 +17687,8 @@ class Orchestrator:
                                                            unusable_note, ambiguous_note,
                                                            broken_retry_note) if p),
                                    agent=agent, attachments=mention_files)
+                if fresh_session:
+                    self._turn_gave_up = False
             except Exception:
                 tap.close()
                 project.shim.data_use.finish_image_delivery(
@@ -18145,11 +18225,23 @@ class Orchestrator:
                 log.warning("turn: a %s call arrived unparsed (%s) — re-sending the turn in a "
                             "new session", broken_call, broken_evidence or "no arguments captured")
                 sid = client.create_session(directory=str(project.app_for_turn().path))
+                implementation_session_reason = "broken_call_recovery"
+                implementation_session_created = True
+                implementation_session_persisted = False
+                timing.implementation_session(
+                    fresh=True, reason="broken_call_recovery", created=True,
+                    persisted=False, dispatch_started=False,
+                )
                 project.active_session_id = sid
                 if owns_turn:
                     project.session_id = sid
                     project.record.write_session_id(sid, project.build_conversation,
                                                     project.app_for_turn().app_id)
+                    timing.implementation_session(
+                        fresh=True, reason="broken_call_recovery", created=True,
+                        persisted=True, dispatch_started=False,
+                    )
+                    implementation_session_persisted = True
                 mention_files, resource_note, chat_note, unusable_note, ambiguous_note, _ = first_send_extras
                 # Every other extra is what the PERSON said, and is restored as it was said. The
                 # source map is a fact about the disk, and the disk has moved: the call that broke
@@ -18823,7 +18915,8 @@ class Orchestrator:
                     explicit_references=explicit_references,
                     build_intent=BuildIntent.for_approved(
                         source_requests, plan_md, answers,
-                        chat_handoff.implement_note(project.app_for_turn().path)))
+                        chat_handoff.implement_note(project.app_for_turn().path)),
+                    fresh_session=True)
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs

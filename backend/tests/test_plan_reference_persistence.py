@@ -202,6 +202,8 @@ def test_plan_restart_approve_reprepares_only_the_saved_reference(tmp_path: Path
     events = list(restarted.approve_stream(plan_id=plan_id))
     outgoing = _outgoing(builder)
 
+    assert len(builder.sessions) == 1
+    assert builder.prompts[0]["session"] == builder.sessions[0]["id"]
     assert RULE in outgoing
     assert NEIGHBOR not in outgoing
     assert shell in outgoing and neighbor not in outgoing
@@ -299,6 +301,7 @@ def test_malformed_source_request_metadata_stops_before_approval(tmp_path: Path)
     events = list(orch.approve_stream(plan_id=doc["id"]))
 
     assert builder.prompts == []
+    assert builder.sessions == []
     assert any("original-request metadata" in event.get("message", "") for event in events)
     assert project.workspace.read_plan() == PLAN
 
@@ -324,6 +327,7 @@ def test_an_unknown_execution_contract_version_fails_closed(tmp_path: Path):
     events = list(orch.approve_stream(plan_id=doc["id"]))
 
     assert builder.prompts == []
+    assert builder.sessions == []
     assert any("execution contract version" in event.get("message", "") for event in events)
 
 
@@ -472,6 +476,7 @@ def test_deleted_reference_stops_before_the_implementation_request(tmp_path: Pat
     events = list(restarted.approve_stream(plan_id=plan_id))
 
     assert builder.prompts == []
+    assert builder.sessions == []
     assert any(event.get("type") == "mentions-unresolved" for event in events)
     assert next(event for event in events if event.get("type") == "done")["ok"] is False
 
@@ -555,5 +560,6 @@ def test_declared_unsupported_reference_metadata_stops_approval(
     events = list(restarted.approve_stream(plan_id=plan_id))
 
     assert builder.prompts == []
+    assert builder.sessions == []
     assert any(event.get("decision") == "invalid plan reference metadata" for event in events)
     assert next(event for event in events if event.get("type") == "done")["ok"] is False
