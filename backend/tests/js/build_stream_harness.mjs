@@ -19,9 +19,10 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { history = [], events = [] } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { history = [], events = [], turnState = {} } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 let healthCalls = 0;
+const typings = [];
 
 const json = (body) => ({
   ok: true, status: 200,
@@ -54,6 +55,7 @@ function serve(url) {
   if (path.includes('health')) { healthCalls += 1; return json({ problems: [] }); }
   if (path.startsWith('/project/build/stream')) return sseResponse(events);
   if (path.startsWith('/project/history')) return json({ history });
+  if (path.includes('/build/state')) return json(turnState);
   if (path.startsWith('/apps')) return json({ items: [] });
   if (path.startsWith('/bindings')) return json({ bindings: [] });
   return json({});
@@ -62,7 +64,9 @@ function serve(url) {
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
   Error, Blob, ArrayBuffer, Uint8Array, TextEncoder, TextDecoder,
-  setTimeout: unrefTimeout, clearTimeout, setInterval, clearInterval,
+  setTimeout: unrefTimeout, clearTimeout,
+  setInterval: (fn, ms) => { const timer = setInterval(fn, ms); timer.unref(); return timer; },
+  clearInterval,
   encodeURIComponent, decodeURIComponent, URLSearchParams,
   requestAnimationFrame: (fn) => fn(),
   localStorage: (() => {
@@ -95,6 +99,10 @@ for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
+SW.store.subscribe((state) => {
+  const current = state.buildTyping || null;
+  if (typings.at(-1) !== current) typings.push(current);
+});
 
 async function settle() {
   for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 0));
@@ -122,4 +130,5 @@ console.log(JSON.stringify({
   values: blocks.filter((b) => b.type === 'status').map((b) => b.value),
   plans: blocks.filter((b) => b.type === 'build_plan')
     .map((b) => ({ pending: !!b.pending, cancelled: !!b.cancelled })),
+  typings,
 }));

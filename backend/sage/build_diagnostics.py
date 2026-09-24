@@ -30,6 +30,7 @@ SCHEMA_VERSION = 1
 OUTCOMES = frozenset({
     "repeat_brake", "user_stop", "gateway_refusal", "pre_edit_limit", "context_limit",
     "context_measurement_unavailable", "error", "success",
+    "no_action_timeout",
 })
 PHASES = frozenset({"planning", "implementation"})
 CAPTURE_STATUSES = frozenset({"running", "finished", "interrupted"})
@@ -49,7 +50,7 @@ EFFORT_FIELDS = ("configuredEffort", "effectiveEffort", "effortSource", "effortS
 EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "max", "xhigh"})
 EFFORT_SOURCES = frozenset({"user", "stage_default", "provider_default"})
 EFFORT_STATUSES = frozenset({"applied", "provider_default", "unsupported"})
-CALL_FIELDS = ["n", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", *EFFORT_FIELDS, "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
+CALL_FIELDS = ["n", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", *EFFORT_FIELDS, "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs", "firstActionMs", "firstActionKind", "noActionNoticeMs", "noActionTimeoutMs", "reasoningOnlyChunks", "noActionRecoveryAttempt", "noActionRecoveryAction", "lastChunkMs", "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens", "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens", "cachedTokens", "ok"]
 TOOL_FIELDS = ["sessionId", "harnessCallId", "partId", "identitySource", "tool", "firstObservedMs", "lastObservedMs", "completedObservedMs", "observationSource", "startUnixMs", "endUnixMs", "startSource", "endSource", "executionMs", "completionLagMs", "targetFingerprint", "queryFingerprint", "targetMetadataFinal", "editSincePreviousRead", "opaqueOperationSincePreviousRead", "targetState", "status", "observedMs", "startAtMs", "endAtMs", "clockPlacement"]
 INVOKE_FIELDS = ["name", "providerId", "protocolIndex", "identityStatus", "metadataTruncated"]
 SPAN_FIELDS = ["name", "depth", "atMs", "ms", "open", "no_edit_attempt", "wrote_code", "retry_exhausted"]
@@ -65,7 +66,8 @@ COUNTERS = {"poll.iterations", "tools.unidentified_events", "attachments.request
               ("ValueError", "OSError", "FileNotFoundError", "LookupError", "ResourceUnavailable")}}
 OBSERVATIONS = {"attachments.resolution_ms", "emit.lag_ms", "poll.read_ms", "poll.sleep_ms"}
 TEXT_FIELDS = {"appId", "conversationId", "kind", "name", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol", *EFFORT_FIELDS,
-               "sessionId", "rootSessionId", "outcome", "providerId", "identityStatus",
+               "sessionId", "rootSessionId", "outcome", "firstActionKind",
+               "noActionRecoveryAttempt", "noActionRecoveryAction", "providerId", "identityStatus",
                "harnessCallId", "partId", "identitySource", "tool", "observationSource", "startSource",
                "endSource", "targetFingerprint", "queryFingerprint", "targetState", "status",
                "clockPlacement", "inputFingerprint"}
@@ -318,7 +320,8 @@ def _pre_edit_guard(value) -> dict | None:
         return None
     if value.get("trigger") not in {
             "none", "model_calls", "request_bytes", "tool_result_bytes",
-            "no_edit_completion", "model_output_limit", "request_measurement_unavailable",
+            "no_edit_completion", "model_output_limit", "model_no_action",
+            "request_measurement_unavailable",
             "tree_witness_unavailable", "session_abort_unconfirmed"}:
         return None
     if value.get("action") not in {"route", "recover", "stop", "disarm", "fail"}:
@@ -462,6 +465,13 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
             remaining -= 1
             entry = _metadata(row, keys)
             if section == "calls":
+                for key, allowed in (
+                    ("firstActionKind", {"text", "tool"}),
+                    ("noActionRecoveryAttempt", {"initial", "recovery"}),
+                    ("noActionRecoveryAction", {"recover", "stop", "keep_edits"}),
+                ):
+                    if entry.get(key) not in allowed:
+                        entry.pop(key, None)
                 for key in EFFORT_FIELDS:
                     entry.pop(key, None)
                 effort = _effort_metadata(row)

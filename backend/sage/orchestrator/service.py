@@ -4828,6 +4828,66 @@ class ResolvedModel:
     native: bool | None = None
 
 
+@dataclass(slots=True)
+class ActiveModelCall:
+    """Bounded process-local state for one active Build model stream."""
+
+    call_id: str
+    turn_id: str
+    started_at: float
+    chunk_count: int = 0
+    last_chunk_at: float | None = None
+    first_action_kind: str | None = None
+    first_action_at: float | None = None
+    reasoning_only_chunks: int = 0
+    notice_sent: bool = False
+    timeout_sent: bool = False
+
+    def public(self, now: float) -> dict:
+        return {
+            "callId": self.call_id,
+            "turnId": self.turn_id,
+            "elapsedSeconds": max(0.0, now - self.started_at),
+            "chunkCount": self.chunk_count,
+            "lastChunkAt": self.last_chunk_at,
+            "firstActionKind": self.first_action_kind,
+            "firstActionAt": self.first_action_at,
+            "reasoningOnlyChunks": self.reasoning_only_chunks,
+            "noticeSent": self.notice_sent,
+            "timeoutSent": self.timeout_sent,
+        }
+
+
+@dataclass(slots=True)
+class PlanNoActionRecovery:
+    """One bounded clean retry shared by every Sage planning door."""
+
+    limit: int
+    recoveries: int = 0
+
+    def choose(self) -> tuple[str, str]:
+        attempt = "initial" if self.recoveries == 0 else "recovery"
+        if self.recoveries < self.limit:
+            self.recoveries += 1
+            return attempt, "recover"
+        return attempt, "stop"
+
+
+_MODEL_ACTIVE_BUCKET_SECONDS = 30
+
+
+def _model_active_status(elapsed_seconds: float) -> tuple[int, str]:
+    """Return the one display bucket and its content-free live status."""
+    bucket = max(
+        _MODEL_ACTIVE_BUCKET_SECONDS,
+        int(max(0.0, elapsed_seconds) // _MODEL_ACTIVE_BUCKET_SECONDS)
+        * _MODEL_ACTIVE_BUCKET_SECONDS,
+    )
+    return bucket, (
+        "The model is working but has not returned text or a tool yet — "
+        f"{bucket} s")
+
+
 @dataclass
 class Project:
     id: str
@@ -4889,6 +4949,8 @@ class Project:
     # failed turn is reported as an error instead of silently falling through to "typecheck clean"
     # on an unmodified workspace (the turn never touched any files).
     last_gateway_error: dict | None = None
+    active_model_call: ActiveModelCall | None = None
+    active_model_call_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     # The payload a guardrail refused, as (alias, messages), handed over by the shim at the one
     # moment the refusal and the request are both in hand. In memory only, one slot, never written
     # to a transcript and never serialized to a client: it holds the content a policy has just
@@ -4995,6 +5057,55 @@ class Project:
     # scratch, and the Threads and plan documents beside them. Everything else a caller names is
     # the app's, and resolves inside `apps/<appId>/`.
     _PROJECT_PREFIXES = ("examples/", _SCRATCH_PREFIX, ".sage/threads/", ".sage/plan-docs/")
+
+    def begin_active_model_call(self, call_id: str, turn_id: str, now: float) -> None:
+        with self.active_model_call_lock:
+            self.active_model_call = ActiveModelCall(call_id, turn_id, now)
+
+    def observe_active_model_call(self, call_id: str, now: float, *,
+                                  first_action_kind: str | None,
+                                  reasoning_only_chunks: int) -> dict | None:
+        with self.active_model_call_lock:
+            active = self.active_model_call
+            if active is None or active.call_id != call_id:
+                return None
+            active.chunk_count += 1
+            active.last_chunk_at = now
+            active.reasoning_only_chunks = max(0, reasoning_only_chunks)
+            if active.first_action_kind is None and first_action_kind in {"text", "tool"}:
+                active.first_action_kind = first_action_kind
+                active.first_action_at = now
+            return active.public(now)
+
+    def mark_active_model_notice(self, call_id: str) -> bool:
+        with self.active_model_call_lock:
+            active = self.active_model_call
+            if active is None or active.call_id != call_id or active.notice_sent:
+                return False
+            active.notice_sent = True
+            return True
+
+    def mark_active_model_timeout(self, call_id: str) -> bool:
+        with self.active_model_call_lock:
+            active = self.active_model_call
+            if active is None or active.call_id != call_id or active.timeout_sent:
+                return False
+            active.timeout_sent = True
+            return True
+
+    def active_model_snapshot(self, now: float | None = None) -> dict | None:
+        with self.active_model_call_lock:
+            active = self.active_model_call
+            return None if active is None else active.public(
+                time.monotonic() if now is None else now)
+
+    def clear_active_model_call(self, call_id: str | None) -> bool:
+        with self.active_model_call_lock:
+            if (self.active_model_call is None or not call_id
+                    or self.active_model_call.call_id != call_id):
+                return False
+            self.active_model_call = None
+            return True
 
     def note_resolved(self, model: str, phase: str, reason: str, *, protocol: str | None = None,
                       effort: str | None = None, native: bool | None = None) -> None:
@@ -5893,17 +6004,34 @@ class Orchestrator:
         which never queued and has no ticket."""
         running = self._turns.running()
         continuation = None
+        model_active = None
         if self._project is not None:
             latest = self._project.context_continuations.latest()
             continuation = latest.public() if latest is not None else None
-        return {"running": self.turn_busy(), "wedged": self._turn_wedged,
-                "turn_epoch": self._turn_epoch,
-                "pending": self._turns.depth(),
-                "context_continuation": continuation,
-                "running_turn": None if (self._turn_wedged or running is None) else
-                                {"kind": running.kind, "conversation": running.conversation,
-                                 "app": running.app, "turnId": running.id,
-                                 "sequence": running.sequence, "epoch": running.epoch}}
+            active = self._project.active_model_snapshot()
+            if (running is not None and running.kind in {"build", "approve"}
+                    and active is not None and active["turnId"] == running.id
+                    and active["chunkCount"] > 0 and active["firstActionKind"] is None
+                    and active["elapsedSeconds"] >=
+                    self._build_policy.model_no_action_notice_seconds):
+                _bucket, message = _model_active_status(active["elapsedSeconds"])
+                model_active = {
+                    "callId": active["callId"],
+                    "turnId": active["turnId"],
+                    "elapsedSeconds": active["elapsedSeconds"],
+                    "message": message,
+                }
+        state = {"running": self.turn_busy(), "wedged": self._turn_wedged,
+                 "turn_epoch": self._turn_epoch,
+                 "pending": self._turns.depth(),
+                 "context_continuation": continuation,
+                 "running_turn": None if (self._turn_wedged or running is None) else
+                                 {"kind": running.kind, "conversation": running.conversation,
+                                  "app": running.app, "turnId": running.id,
+                                  "sequence": running.sequence, "epoch": running.epoch}}
+        if model_active is not None:
+            state["model_active"] = model_active
+        return state
 
     def cancel_pending_turn(self, ticket_id: str) -> bool:
         """Drop a turn that is still waiting in line. False when there is no such turn (#79).
@@ -10275,7 +10403,14 @@ class Orchestrator:
             # session and answer out of the same emptiness as #427. The debt is in `session.json`,
             # so dropping it on the floor here leaves it standing for that turn.
             session_id, _ = self._ensure_thread_session(store, thread_id, project, client)
-            plan_md = self._run_sage_plan(project, prompt, session_id)
+            original_session_id = session_id
+            plan_md, session_id = self._run_sage_plan(project, prompt, session_id)
+            if session_id != original_session_id:
+                record = store.read_session(thread_id) or {}
+                store.write_session_id(
+                    thread_id, session_id,
+                    directory=getattr(client, "_dirs", {})[session_id],
+                    rebuild_pending=bool(record.get("rebuild_pending")))
         except ValueError as e:
             self._record_plan_refusal(store, thread_id, project, str(e))
             raise
@@ -10304,7 +10439,14 @@ class Orchestrator:
                 "conversation about what the app should show and what someone should be able to "
                 "do with it.")
         try:
-            plan_md = self._repair_plan_heading(project, plan_md, session_id, "chat handoff")
+            plan_md, repaired_session_id = self._repair_plan_heading(
+                project, plan_md, session_id, "chat handoff")
+            if repaired_session_id != session_id:
+                record = store.read_session(thread_id) or {}
+                store.write_session_id(
+                    thread_id, repaired_session_id,
+                    directory=getattr(client, "_dirs", {})[repaired_session_id],
+                    rebuild_pending=bool(record.get("rebuild_pending")))
         except ValueError as e:
             self._record_plan_refusal(store, thread_id, project, str(e), offer=False)
             raise
@@ -10336,91 +10478,80 @@ class Orchestrator:
         self._flush_chat_save("plan", holding_turn=True)
         return self._handoff_sheet_payload(store, thread_id, project, plan_md, handoff)
 
-    def _run_sage_plan(self, project: Project, prompt: str, session_id: str) -> str:
-        """sage-plan on a session the caller picked. No typecheck. Read-only arming so src/ stays put.
-
-        The session is the caller's because the two callers stand in different places: a gated build
-        turn plans in the app, and a Chat handoff plans in the Thread — before an app exists, which
-        is a directory OpenCode could not have opened.
-
-        A guardrail refusal here names no file, and this is the one path where that costs
-        something: no withhold search runs after it (`_withhold_search` has two callers, Chat's
-        turn and Build's), so nothing names a carrier later either. It used to hand the Thread's own
-        context down as suspects. That was a guess, and a guess is what `_guardrail_sentence` exists
-        not to make — silence beats sending someone to look in the wrong file.
-        """
+    def _run_sage_plan(self, project: Project, prompt: str,
+                       session_id: str) -> tuple[str, str]:
+        """Run one bounded read-only planning request, with one clean no-action retry."""
         client = self._ensure_opencode()
         sid = session_id
-        project.active_session_id = sid
+        original_prompt = prompt
+        recovery = PlanNoActionRecovery(self._build_policy.plan_no_action_recovery_limit)
         token = project.control.arm_read_only("plan")
-        # Both cleared here, at the start of the turn that will read them, so what is left
-        # afterwards belongs to this plan and not to some earlier turn's gateway. `model_calls` was
-        # not, and the read at the bottom of this method is the whole reason it has to be: this door
-        # passes through none of the three streaming lanes' resets (#473), so the count it logged was
-        # this plan's inferences ON TOP of whatever the last turn left. 0 — "no inference reached
-        # us", the one thing that line exists to separate from "the model answered with nothing" —
-        # was therefore unreachable once any turn had run in this process, and the line could never
-        # report half of what it is for.
-        #
-        # Here rather than in `_acquire_for_door`, which is the obvious move and the wrong one for
-        # the reason #471 gives one door over: that lock has ten call sites — create, delete, confirm,
-        # cross, clear, sync and others — and most of them run no inference at all, so a reset there
-        # would zero the counter on acts that never touch the model and an `/api/diag` read taken
-        # after one would report 0 for a turn that really ran inferences. It is reset where it is
-        # READ, by the thing that reads it, which also gives the second caller
-        # (`_repair_plan_heading`) its own count instead of the draft's on top of it.
-        project.last_gateway_error = None
-        project.model_calls = 0
         try:
-            seen = self._seen_baseline(client, sid)
-            client.send_prompt(sid, prompt, agent="sage-plan")
-            client.wait_for_idle(sid)
-            parts: list[str] = []
-            for m in client.messages(sid):
-                if m.get("type") != "assistant":
-                    continue
-                for i, part in enumerate(m.get("content", [])):
-                    if _part_key(m, i, part) in seen:
+            while True:
+                project.active_session_id = sid
+                project.last_gateway_error = None
+                project.model_calls = 0
+                seen = self._seen_baseline(client, sid)
+                client.send_prompt(sid, original_prompt, agent="sage-plan")
+                client.wait_for_idle(sid)
+                parts: list[str] = []
+                for message in client.messages(sid):
+                    if message.get("type") != "assistant":
                         continue
-                    if part.get("type") == "text" and part.get("text"):
-                        parts.append(part["text"])
-            plan_md = _tidy_plan("\n".join(parts))
-            if plan_md:
-                return plan_md
-            # A model call that failed leaves the turn with no assistant text, which is the same
-            # shape as a planner that wrote nothing — and the caller reported both as an empty plan,
-            # a sentence that names neither and offers no way out. The build turn has always read
-            # this field after its own wait (`send_and_wait`, `_build_stream`); this one never did,
-            # so every gateway fault on the Chat handoff arrived as "empty plan".
-            #
-            # Only when there is nothing to keep. A gateway error the shim recovered from is still
-            # recorded, and a plan that came back whole is worth more than the note of a call that
-            # went wrong on the way to it.
-            if project.last_gateway_error is not None:
-                raw = str(project.last_gateway_error["message"])
-                # A guardrail refusal, said the way Chat and Build already say it (ADR-0014). This
-                # path is the one a refused Conversation is MOST likely to reach next — the offer
-                # card is on screen when the turn under it fails — and it was the one path that
-                # still handed over the transport nest whole. Every other failure keeps the wording
-                # it had, because "404 model not found" is already a sentence.
-                raise ValueError(_guardrail_sentence(raw)
-                                 or f"model call failed: {raw}")
-            # The one number that separates "no inference reached us" from "the model answered with
-            # nothing" — the same diagnostic the gated turn logs, on the path that logged nothing.
-            log.warning("sage-plan produced no text (session=%s, model_calls=%d)",
-                        sid, project.model_calls)
-            return plan_md
+                    for index, part in enumerate(message.get("content", [])):
+                        if _part_key(message, index, part) in seen:
+                            continue
+                        if part.get("type") == "text" and part.get("text"):
+                            parts.append(part["text"])
+                plan_md = _tidy_plan("\n".join(parts))
+                if plan_md:
+                    return plan_md, sid
+                error = project.last_gateway_error
+                if error is not None and error.get("code") == "model_no_action_timeout":
+                    if project.stop_requested:
+                        raise ValueError("Planning was stopped.")
+                    attempt, action = recovery.choose()
+                    timing.model_no_action_recovery(
+                        error.get("call_id"), attempt, action, record=timing.current())
+                    log.warning(
+                        "model no-action terminal: turn_id=%s call_id=%s elapsed_seconds=%.1f "
+                        "chunks=%s action=%s attempt=%s",
+                        error.get("turn_id", ""), error.get("call_id", ""),
+                        error.get("elapsed_ms", 0) / 1000,
+                        error.get("chunk_count", 0), action, attempt)
+                    if action == "stop":
+                        raise ValueError(
+                            "Planning stopped because the clean retry also produced no text or "
+                            "tool call. Try the request again.")
+                    if not self._stop_wedged_session(
+                            client, sid,
+                            grace_seconds=self._build_policy.stop_grace_seconds):
+                        raise ValueError(
+                            "Planning could not stop the timed-out session safely. Restart Sage "
+                            "before trying again.")
+                    directory = getattr(client, "_dirs", {}).get(sid)
+                    if not directory:
+                        raise ValueError(
+                            "Planning could not locate its session directory for a clean retry.")
+                    sid = client.create_session(directory=directory)
+                    continue
+                if error is not None:
+                    raw = str(error["message"])
+                    raise ValueError(_guardrail_sentence(raw) or f"model call failed: {raw}")
+                log.warning("sage-plan produced no text (session=%s, model_calls=%d)",
+                            sid, project.model_calls)
+                return plan_md, sid
         finally:
             project.control.disarm_read_only(token)
             project.active_session_id = None
 
     def _repair_plan_heading(self, project: Project, plan_md: str, session_id: str,
-                             where: str) -> str:
+                             where: str) -> tuple[str, str]:
         """Ask the planner for the missing app-name heading, once."""
         if chat_handoff.plan_heading(plan_md):
-            return plan_md
+            return plan_md, session_id
         try:
-            answer = self._run_sage_plan(
+            answer, session_id = self._run_sage_plan(
                 project,
                 _PLAN_HEADING_REPAIR_PROMPT.replace("{plan}", plan_md),
                 session_id,
@@ -10433,7 +10564,7 @@ class Orchestrator:
             log.warning("%s: plan heading repair returned no valid app name: %r",
                         where, answer[:120])
             raise ValueError(_PLAN_HEADING_REPAIR_FAILED)
-        return repaired
+        return repaired, session_id
 
     def _confirm_handoff(self, thread_id: str, include: dict, target: dict) -> dict:
         # Read and refuse BEFORE anything is created: this is where a Built App is born (ADR-0008),
@@ -18120,6 +18251,9 @@ class Orchestrator:
                 current = continuation_note
             elif project.active_build_intent.kind != "phase":
                 current = _BUILD_CONTROL_PROMPT
+        initial_current = current
+        plan_no_action = PlanNoActionRecovery(
+            self._build_policy.plan_no_action_recovery_limit)
         if fresh_session:
             if project.stop_requested:
                 self._turn_gave_up = True
@@ -18556,6 +18690,8 @@ class Orchestrator:
             broken_retry_note = ""
             appeared = False
             start = time.monotonic()
+            active_turn = self._turns.running()
+            active_turn_id = active_turn.id if active_turn is not None else ""
             # When OpenCode last produced anything, and so what the quiet deadline below is measured
             # from (#39). Seeded at the send rather than at zero: a turn that says nothing at all from
             # the moment it is asked is as wedged as one that stops halfway.
@@ -18565,6 +18701,7 @@ class Orchestrator:
             # in the shim, not here, so it stays per-step and race-free.
             last_phase = project.control.snapshot().phase.value
             last_active: str | None = None  # last "active" label emitted (dedup across 1s polls)
+            last_model_active: tuple[str, int] | None = None
             # Tool calls seen in flight, by part key. Only five tools carry a printable detail and
             # only some of those change it, so `last_active` alone would miss a `task`, a `webfetch`
             # or a `glob` starting — and a step starting IS a new OpenCode message, whatever the
@@ -18836,6 +18973,29 @@ class Orchestrator:
                                 plan_text_parts.append(body)
                             else:
                                 yield persist({"type": "agent", "kind": "text", "text": body})
+                active_call = project.active_model_snapshot()
+                model_active = bool(
+                    active_call is not None
+                    and active_call["turnId"] == active_turn_id
+                    and active_call["chunkCount"] > 0
+                    and active_call["firstActionKind"] is None
+                    and active_call["elapsedSeconds"] >=
+                    self._build_policy.model_no_action_notice_seconds)
+                if model_active:
+                    bucket, message = _model_active_status(active_call["elapsedSeconds"])
+                    marker = (active_call["callId"], bucket)
+                    if marker != last_model_active:
+                        last_model_active = marker
+                        yield {
+                            "type": "model-active",
+                            "active": True,
+                            "callId": active_call["callId"],
+                            "elapsedSeconds": active_call["elapsedSeconds"],
+                            "message": message,
+                        }
+                elif last_model_active is not None:
+                    last_model_active = None
+                    yield {"type": "model-active", "active": False}
                 cur_phase = project.control.snapshot().phase.value
                 moved = (len(seen) > seen_before or last_active != active_before
                          or len(in_flight) > in_flight_before)
@@ -19020,6 +19180,93 @@ class Orchestrator:
             err = project.last_gateway_error or (
                 {"message": _error_raw(turn_failure)} if turn_failure is not None else None)
             if err is not None:
+                if err.get("code") == "model_no_action_timeout" and gate:
+                    attempt, action = plan_no_action.choose()
+                    record = timing.current()
+                    timing.model_no_action_recovery(
+                        err.get("call_id"), attempt, action, record=record)
+                    log.warning(
+                        "model no-action terminal: turn_id=%s call_id=%s elapsed_seconds=%.1f "
+                        "chunks=%s action=%s attempt=%s",
+                        err.get("turn_id", ""), err.get("call_id", ""),
+                        err.get("elapsed_ms", 0) / 1000,
+                        err.get("chunk_count", 0), action, attempt)
+                    yield {"type": "model-active", "active": False}
+                    if action == "recover":
+                        stopped = self._stop_wedged_session(
+                            client, sid,
+                            grace_seconds=self._build_policy.stop_grace_seconds)
+                        if not stopped:
+                            if owns_turn:
+                                self._turn_gave_up = True
+                            yield from refused_to_stop(in_tool=False, quiet_for=0.0)
+                        sid = self._replace_build_session(
+                            project, client, project.build_conversation,
+                            reason="pre_edit_recovery", persist=owns_turn)
+                        project.last_gateway_error = None
+                        current = initial_current
+                        (mention_files, resource_note, chat_note, unusable_note,
+                         ambiguous_note, source_note) = first_send_extras
+                        broken_retry_note = ""
+                        seen = self._seen_baseline(
+                            client, sid, limit=self._build_policy.poll_message_limit)
+                        yield {"type": "iterate", "reason": (
+                            "the planner produced no action — restarting once in a clean session")}
+                        iterate_reason = "planning no-action recovery"
+                        continue
+                    if owns_turn:
+                        self._turn_gave_up = True
+                    restore_mode()
+                    yield persist({
+                        "type": "error",
+                        "message": ("Planning stopped because the clean retry also produced no "
+                                    "text or tool call. Try the request again."),
+                    })
+                    yield persist({"type": "done", "ok": False,
+                                   "decision": "model_no_action_timeout"})
+                    return
+                if (err.get("code") == "model_no_action_timeout"
+                        and project.pre_edit_guard is not None):
+                    with project.pre_edit_tree_lock:
+                        winner = project.pre_edit_guard.model_no_action()
+                    diagnostic = project.pre_edit_guard.diagnostic()
+                    attempt = diagnostic["attempt"]
+                    action = ("keep_edits" if winner.action is PreEditAction.DISARM
+                              else winner.action.value)
+                    record = timing.current()
+                    timing.model_no_action_recovery(
+                        err.get("call_id"), attempt, action, record=record)
+                    log.warning(
+                        "model no-action terminal: turn_id=%s call_id=%s elapsed_seconds=%.1f "
+                        "chunks=%s action=%s attempt=%s",
+                        err.get("turn_id", ""), err.get("call_id", ""),
+                        err.get("elapsed_ms", 0) / 1000,
+                        err.get("chunk_count", 0), action, attempt)
+                    yield {"type": "model-active", "active": False}
+                    if winner.action in {
+                            PreEditAction.RECOVER, PreEditAction.STOP, PreEditAction.FAIL}:
+                        project.pre_edit_guard.consume_pending()
+                        resumed = yield from apply_pre_edit_decision(winner)
+                        if resumed is PreEditAction.RECOVER:
+                            iterate_reason = "clean pre-edit recovery"
+                            continue
+                        if resumed is not PreEditAction.DISARM:
+                            return
+                    if winner.action is PreEditAction.DISARM:
+                        if owns_turn:
+                            self._turn_gave_up = True
+                        restore_mode()
+                        yield persist({
+                            "type": "error",
+                            "message": ("The model produced no next action. Existing app changes "
+                                        "were kept."),
+                            "kept": True,
+                        })
+                        if owns_turn:
+                            yield persist(_app_change_event(project.app_for_turn()))
+                        yield persist({"type": "done", "ok": False,
+                                       "decision": "model_no_action_timeout"})
+                        return
                 if (err.get("code") == "model_output_limit"
                         and project.pre_edit_guard is not None):
                     with project.pre_edit_tree_lock:
@@ -19274,7 +19521,8 @@ class Orchestrator:
                     return
                 if not arch:
                     try:
-                        plan_md = self._repair_plan_heading(project, plan_md, sid, "plan gate")
+                        plan_md, sid = self._repair_plan_heading(
+                            project, plan_md, sid, "plan gate")
                     except ValueError as e:
                         yield persist({"type": "error", "message": str(e)})
                         yield persist({"type": "done", "ok": False,

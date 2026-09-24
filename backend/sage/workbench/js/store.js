@@ -4139,6 +4139,13 @@ window.SW = window.SW || {};
         requestOrder: 0,
         stopUnavailable: !exact,
       };
+      if (turn.model_active && turn.model_active.turnId === exact
+          && turn.running_turn.kind !== 'chat') {
+        state.buildTyping = turn.model_active.message
+          || 'The model is working but has not returned text or a tool yet — 30 s';
+      } else if (reconstructing && turn.running_turn.kind !== 'chat') {
+        state.buildTyping = null;
+      }
     }
     else if (liveBuildTurns === 0 && liveChatTurns === 0) state.runningTurn = null;
     return !!turn.running || liveBuildTurns > 0 || liveChatTurns > 0;
@@ -4156,7 +4163,10 @@ window.SW = window.SW || {};
       return;
     }
     if (ev.type === 'user') return;
-    if (ev.type === 'active' || (ev.type === 'agent' && ev.kind === 'tool')) {
+    if (ev.type === 'model-active') {
+      state.buildTyping = ev.active === false ? null
+        : (ev.message || 'The model is working but has not returned text or a tool yet — 30 s');
+    } else if (ev.type === 'active' || (ev.type === 'agent' && ev.kind === 'tool')) {
       // The command a bash step ran can be a whole pipeline, so bash shows the verb; every other
       // tool shows its subject — the file, the search pattern — which is shorter and says more.
       // The verb is what a tool with no subject falls back to, so this line stops reading "glob".
@@ -4210,7 +4220,8 @@ window.SW = window.SW || {};
       return;
     }
     if (ev.type === 'stopped') return;
-    if (ev.type === 'active' || ev.type === 'phase' || ev.type === 'typecheck-start' || ev.type === 'iterate') return;
+    if (ev.type === 'active' || ev.type === 'model-active' || ev.type === 'phase'
+        || ev.type === 'typecheck-start' || ev.type === 'iterate') return;
     // The buttons on a reset offer belong to the offer the user is looking at, not to every copy of
     // it the transcript keeps. Marking the live frame is what separates the two — the server row a
     // reload returns has no `live`, so it replays as text (see buildHistoryToMessages).
@@ -8445,7 +8456,7 @@ window.SW = window.SW || {};
       await applyBuildRead(hist);
       if (running) {
         state.buildRunning = applyTurnState(running);
-        state.buildTyping = state.buildRunning ? 'Working…' : null;
+        state.buildTyping = state.buildRunning ? (state.buildTyping || 'Working…') : null;
       }
       if (!options.keepPreview) state.previewStatus = 'starting';
       notify();

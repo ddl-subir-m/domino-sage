@@ -182,6 +182,28 @@ def test_model_output_limit_after_an_authoritative_edit_disarms_without_recovery
     assert guard.state is PreEditState.DISARMED
 
 
+def test_model_no_action_gets_one_clean_recovery_then_terminal_stop():
+    guard, _ = _guard(calls=99)
+    first = guard.model_no_action()
+    assert first == PreEditDecision(PreEditAction.RECOVER, PreEditTrigger.MODEL_NO_ACTION)
+    _recover(guard)
+
+    second = guard.model_no_action()
+
+    assert second == guard.consume_pending()
+    assert second == PreEditDecision(PreEditAction.STOP, PreEditTrigger.MODEL_NO_ACTION)
+
+
+def test_model_no_action_after_an_authoritative_edit_keeps_the_edit():
+    guard, tree = _guard(calls=99)
+    tree[0] = "edited-before-timeout"
+
+    decision = guard.model_no_action()
+
+    assert decision.action is PreEditAction.DISARM
+    assert guard.state is PreEditState.DISARMED
+
+
 def test_authoritative_tree_edit_disarms_forever_and_allows_later_calls():
     guard, tree = _guard(calls=12)
     for _ in range(11):

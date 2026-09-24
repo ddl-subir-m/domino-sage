@@ -33,6 +33,8 @@ class StreamEvents:
     reported_model: str | None = None
     saw_text: bool = False
     saw_tool_argument: bool = False
+    first_action_kind: str | None = None
+    reasoning_only_chunks: int = 0
     tool_invocations: list[dict] = field(default_factory=list)
     tools_truncated: bool = False
     _invocation_lanes: dict[object, dict] = field(default_factory=dict)
@@ -125,8 +127,9 @@ class StreamEvents:
         """
         name = item.get("name") or (item.get("function") or {}).get("name")
         provider = item.get(identity)
-        if not isinstance(name, str) and not isinstance(provider, str):
+        if not (isinstance(name, str) and name) and not (isinstance(provider, str) and provider):
             return
+        self.first_action_kind = self.first_action_kind or "tool"
         provider = provider if isinstance(provider, str) and provider else None
         key = lane if lane is not None else (("id", provider) if provider else None)
         previous = next((entry for entry in self.tool_invocations
@@ -205,6 +208,7 @@ class StreamEvents:
         self._carry.pop(key, None)
 
     def _event(self, event: dict) -> None:
+        before_action = self.first_action_kind
         kind = event.get("type")
         reported = (event.get("model") if self.protocol is Protocol.CHAT else
                     (event.get("message") or {}).get("model") if self.protocol is Protocol.MESSAGES
@@ -238,6 +242,8 @@ class StreamEvents:
                 delta = choice.get("delta") or {}
                 self.refused |= bool(delta.get("refusal"))
                 self.saw_text |= bool(delta.get("content"))
+                if delta.get("content"):
+                    self.first_action_kind = self.first_action_kind or "text"
                 for tool in delta.get("tool_calls") or []:
                     if not isinstance(tool, dict):
                         continue
@@ -264,6 +270,8 @@ class StreamEvents:
                 self._open_stream(event.get("index"), block)
             elif kind == "content_block_start" and block.get("type") == "text":
                 self.saw_text |= bool(block.get("text"))
+                if block.get("text"):
+                    self.first_action_kind = self.first_action_kind or "text"
             elif kind == "content_block_delta":
                 # The eager fragments themselves. #497 measured these already arriving on this lane
                 # and dying inside OpenCode, which never exposes a partly-filled tool input — the
@@ -272,6 +280,8 @@ class StreamEvents:
                 inner = event.get("delta") or {}
                 if inner.get("type") == "text_delta":
                     self.saw_text |= bool(inner.get("text"))
+                    if inner.get("text"):
+                        self.first_action_kind = self.first_action_kind or "text"
                 if inner.get("type") == "input_json_delta":
                     self._count_lines(event.get("index"), inner.get("partial_json"))
             elif kind == "content_block_stop":
@@ -308,6 +318,8 @@ class StreamEvents:
                 self._close_stream(event.get("item_id"))
             if kind == "response.output_text.delta":
                 self.saw_text |= bool(event.get("delta"))
+                if event.get("delta"):
+                    self.first_action_kind = self.first_action_kind or "text"
             if kind in ("response.refusal.delta", "response.refusal.done"):
                 self.refused = True
             if kind in ("response.completed", "response.incomplete", "response.failed"):
@@ -315,3 +327,19 @@ class StreamEvents:
                 if kind != "response.completed":
                     reason = (response.get("incomplete_details") or {}).get("reason")
                     self.error = reason if reason in {"max_output_tokens", "content_filter"} else kind
+        if before_action is None and self.first_action_kind is None and self._is_reasoning(event):
+            self.reasoning_only_chunks += 1
+
+    def _is_reasoning(self, event: dict) -> bool:
+        """Identify protocol reasoning frames without retaining their content."""
+        if self.protocol is Protocol.CHAT:
+            return any(bool((choice.get("delta") or {}).get(key))
+                       for choice in event.get("choices") or []
+                       for key in ("reasoning", "reasoning_content"))
+        if self.protocol is Protocol.MESSAGES:
+            return (event.get("type") == "content_block_delta"
+                    and (event.get("delta") or {}).get("type") == "thinking_delta"
+                    and bool((event.get("delta") or {}).get("thinking")))
+        return event.get("type") in {
+            "response.reasoning_text.delta", "response.reasoning_summary_text.delta",
+        } and bool(event.get("delta"))
