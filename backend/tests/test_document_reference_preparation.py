@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 from sage.assets.provider import FakeAssetProvider
 from sage.driver.opencode import with_attachment_listing
 from sage.liveread import reference, run
 from sage.liveread.data_use import DataUse
+from sage.orchestrator.describe import describe
 
 from .test_a_dropped_mention_reaches_the_agents_prompt import _orch
 
@@ -17,6 +19,47 @@ def _authorized(tmp_path: Path, name: str = "requirements.md", body: str = "# Re
     path = tmp_path / name
     path.write_text(body)
     return reference.authorize(tmp_path, [{"path": name}], name)
+
+
+_WORD_DOCUMENT = (
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    "<w:body>{}</w:body></w:document>"
+)
+
+
+def _docx(tmp_path: Path, body: str, name: str = "requirements.docx") -> Path:
+    path = tmp_path / name
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", _WORD_DOCUMENT.format(body))
+    return path
+
+
+def _pdf(tmp_path: Path, texts: list[str], name: str = "requirements.pdf", *,
+         encrypted: bool = False) -> Path:
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    path = tmp_path / name
+    writer = PdfWriter()
+    for text in texts:
+        page = writer.add_blank_page(width=612, height=792)
+        font = writer._add_object(DictionaryObject({
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }))
+        page[NameObject("/Resources")] = DictionaryObject({
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})
+        })
+        stream = DecodedStreamObject()
+        stream.set_data(f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode())
+        page.replace_contents(stream)
+    if encrypted:
+        writer.encrypt("secret")
+    with path.open("wb") as handle:
+        writer.write(handle)
+    return path
 
 
 def test_exact_heading_selection_uses_the_shared_bounded_handler(tmp_path: Path):
@@ -76,6 +119,255 @@ def test_document_text_and_source_bytes_are_bounded(tmp_path: Path):
     assert authorized_big is not None
     refused = reference.prepare(authorized_big)
     assert refused is not None and refused.status == "source_too_large"
+
+
+def test_docx_paragraphs_and_table_rows_use_the_shared_bounded_handler(tmp_path: Path):
+    path = _docx(
+        tmp_path,
+        "<w:p><w:r><w:t>UNIQUE DOCX RULE</w:t></w:r></w:p>"
+        "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Arm</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>n (%)</w:t></w:r></w:p></w:tc></w:tr></w:tbl>",
+    )
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+
+    prepared = reference.prepare(authorized)
+
+    assert prepared is not None and prepared.status == "prepared"
+    assert prepared.source_type == "docx"
+    assert "UNIQUE DOCX RULE" in prepared.text
+    assert "Arm | n (%)" in prepared.text
+    event, _reply = reference.data_use(prepared, purpose="fixed")
+    assert "UNIQUE DOCX RULE" not in json.dumps(event)
+    assert "Arm | n (%)" not in json.dumps(event)
+
+
+def test_docx_rejects_an_uncompressed_document_xml_above_the_limit(tmp_path: Path):
+    path = _docx(tmp_path, "x" * reference.MAX_SOURCE_BYTES)
+    assert path.stat().st_size < reference.MAX_SOURCE_BYTES
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+
+    prepared = reference.prepare(authorized)
+
+    assert prepared is not None and prepared.status == "document_xml_too_large"
+    assert prepared.text == "The Word document XML exceeds the 8 MiB extraction limit."
+
+
+def test_docx_deep_xml_uses_a_bounded_iterative_traversal(tmp_path: Path):
+    depth = 1_500
+    body = ("<w:sdt>" * depth + "<w:p><w:r><w:t>DEEP DOCX RULE</w:t></w:r></w:p>"
+            + "</w:sdt>" * depth)
+    path = _docx(tmp_path, body)
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+
+    prepared = reference.prepare(authorized)
+
+    assert prepared is not None and prepared.status == "prepared"
+    assert "DEEP DOCX RULE" in prepared.text
+
+
+def test_pdf_selection_is_one_based_deduplicated_sorted_and_content_free(tmp_path: Path):
+    path = _pdf(tmp_path, ["UNIQUE PAGE ONE", "PRIVATE PAGE TWO", "UNIQUE PAGE THREE"])
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+
+    prepared = reference.prepare(authorized, pages=[3, 1, 3])
+
+    assert prepared is not None and prepared.status == "prepared"
+    assert prepared.source_type == "pdf"
+    assert prepared.source_pages == 3
+    assert prepared.selected_pages == (1, 3)
+    assert prepared.processed_pages == (1, 3)
+    assert "UNIQUE PAGE ONE" in prepared.text and "UNIQUE PAGE THREE" in prepared.text
+    assert "PRIVATE PAGE TWO" not in prepared.text
+    event, reply = reference.data_use(prepared, purpose="fixed")
+    assert event["coverage"]["selected_pages"] == [1, 3]
+    assert event["coverage"]["processed_pages"] == [1, 3]
+    assert event["coverage"]["extracted_characters"] > 0
+    assert reply["pages"] == [1, 3]
+    assert "UNIQUE PAGE" not in json.dumps(event)
+
+
+def test_pdf_plan_record_replays_only_the_selected_pages(tmp_path: Path):
+    path = _pdf(tmp_path, ["PAGE ONE SECRET", "PAGE TWO SECRET", "PAGE THREE RULE"])
+    manifest = [{"path": path.name}]
+    authorized = reference.authorize(tmp_path, manifest, path.name)
+    assert authorized is not None
+    planned = reference.prepare(authorized, pages=[3])
+    assert planned is not None and planned.status == "prepared"
+
+    saved = reference.plan_record(planned)
+    replayed = reference.prepare_plan_records(tmp_path, manifest, [saved])
+
+    assert saved["pages"] == [3]
+    assert len(replayed) == 1 and replayed[0].processed_pages == (3,)
+    assert "PAGE THREE RULE" in replayed[0].text
+    assert "PAGE ONE SECRET" not in replayed[0].text
+    assert "PAGE TWO SECRET" not in replayed[0].text
+
+
+def test_malformed_saved_pdf_pages_fail_closed(tmp_path: Path):
+    path = _pdf(tmp_path, ["PRIVATE PAGE ONE", "PRIVATE PAGE TWO"])
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+    prepared = reference.prepare(authorized)
+    assert prepared is not None
+    digest = prepared.source_sha256
+    base = {"source": path.name, "handler": "pdf", "selector": "",
+            "sha256": digest, "status": "prepared"}
+    malformed = [None, [], [0], [1, 1], [2, 1], [True], list(range(1, 22))]
+
+    for pages in malformed:
+        replayed = reference.prepare_plan_records(
+            tmp_path, [{"path": path.name}], [{**base, "pages": pages}]
+        )
+        assert len(replayed) == 1
+        assert replayed[0].status == "saved_record_invalid"
+        assert "PRIVATE PAGE" not in replayed[0].prompt_block()
+
+
+def test_pdf_default_stops_at_twenty_pages_and_eight_thousand_characters(tmp_path: Path):
+    texts = [(f"PAGE {number} " + "x" * 500) for number in range(1, 26)]
+    path = _pdf(tmp_path, texts)
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+
+    prepared = reference.prepare(authorized)
+
+    assert prepared is not None and prepared.status == "prepared"
+    assert prepared.selected_pages == tuple(range(1, 21))
+    assert prepared.processed_pages == tuple(range(1, 17))
+    assert prepared.pages_truncated is True
+    assert prepared.sent_characters == reference.MAX_SELECTED_CHARS
+    assert prepared.truncated is True
+    assert "PAGE 21" not in prepared.text
+
+
+def test_pdf_page_cap_is_separate_from_text_truncation(tmp_path: Path):
+    path = _pdf(tmp_path, [f"short page {number}" for number in range(1, 26)])
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+
+    prepared = reference.prepare(authorized)
+
+    assert prepared is not None and prepared.status == "prepared"
+    assert prepared.source_pages == 25
+    assert prepared.selected_pages == tuple(range(1, 21))
+    assert prepared.processed_pages == tuple(range(1, 21))
+    assert prepared.pages_truncated is True
+    assert prepared.sent_characters == prepared.selected_characters
+    assert prepared.truncated is True
+
+
+def test_pdf_descriptor_tolerates_one_bad_page_but_reference_preparation_fails_closed(
+        tmp_path: Path, monkeypatch):
+    from pypdf._page import PageObject
+
+    path = _pdf(tmp_path, ["GOOD PAGE ONE", "BAD PAGE TWO", "GOOD PAGE THREE"])
+    extract_text = PageObject.extract_text
+
+    def flaky_extract(self, *args, **kwargs):
+        text = extract_text(self, *args, **kwargs)
+        if "BAD PAGE TWO" in text:
+            raise ValueError("synthetic page failure")
+        return text
+
+    monkeypatch.setattr(PageObject, "extract_text", flaky_extract)
+
+    descriptor = describe(str(path))
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+    prepared = reference.prepare(authorized)
+
+    assert descriptor["kind"] == "pdf"
+    assert "could not be parsed" not in descriptor["summary"]
+    assert "p1=13, p2=0, p3=15" in descriptor["detail"]
+    assert prepared is not None and prepared.status == "malformed_document"
+
+
+def test_scanned_encrypted_malformed_and_invalid_pdf_selections_fail_closed(tmp_path: Path):
+    from pypdf import PdfWriter
+
+    scanned = tmp_path / "scanned.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    with scanned.open("wb") as handle:
+        writer.write(handle)
+    encrypted = _pdf(tmp_path, ["SECRET"], name="encrypted.pdf", encrypted=True)
+    malformed = tmp_path / "malformed.pdf"
+    malformed.write_bytes(b"%PDF-1.7\nnot a document")
+
+    def prepared(path: Path, **kwargs):
+        authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+        assert authorized is not None
+        return reference.prepare(authorized, **kwargs)
+
+    assert prepared(scanned).status == "no_extractable_text"
+    assert prepared(encrypted).status == "encrypted_document"
+    assert prepared(malformed).status == "malformed_document"
+    searchable = _pdf(tmp_path, ["one", "two"], name="searchable.pdf")
+    assert prepared(searchable, pages=[]).status == "invalid_page_selection"
+    assert prepared(searchable, pages=[0]).status == "page_out_of_range"
+    assert prepared(searchable, pages=list(range(1, 22))).status == "too_many_pages"
+
+
+def test_pdf_over_limit_withheld_and_unauthorized_inputs_fail_closed(tmp_path: Path):
+    too_big = tmp_path / "too-big.pdf"
+    with too_big.open("wb") as handle:
+        handle.truncate(reference.MAX_SOURCE_BYTES + 1)
+    authorized = reference.authorize(tmp_path, [{"path": too_big.name}], too_big.name)
+    assert authorized is not None
+    prepared = reference.prepare(authorized)
+    assert prepared is not None and prepared.status == "source_too_large"
+
+    searchable = _pdf(tmp_path, ["PRIVATE PDF RULE"], name="private.pdf")
+    manifest = [{"path": searchable.name}]
+    withheld = reference.prepare_explicit(
+        tmp_path, manifest, [searchable.name], prompt="use it",
+        withheld={"file:" + searchable.name},
+    )
+    assert len(withheld) == 1 and withheld[0].status == "withheld"
+    assert "PRIVATE PDF RULE" not in withheld[0].prompt_block()
+    assert reference.authorize(tmp_path, manifest, "unmentioned.pdf") is None
+
+
+def test_docx_and_pdf_plan_records_reprepare_through_the_shared_policy(tmp_path: Path):
+    docx = _docx(
+        tmp_path,
+        "<w:p><w:r><w:t>RESTARTED DOCX RULE</w:t></w:r></w:p>",
+    )
+    pdf = _pdf(tmp_path, ["RESTARTED PDF RULE"])
+    manifest = [{"path": docx.name}, {"path": pdf.name}]
+    first = reference.prepare_explicit(
+        tmp_path, manifest, [docx.name, pdf.name], prompt="Follow both documents"
+    )
+
+    saved = [reference.plan_record(item) for item in first]
+    replayed = reference.prepare_plan_records(tmp_path, manifest, saved)
+
+    assert [item.source_type for item in replayed] == ["docx", "pdf"]
+    assert "RESTARTED DOCX RULE" in replayed[0].text
+    assert "RESTARTED PDF RULE" in replayed[1].text
+
+
+def test_pdf_planning_failure_remains_truthful_after_the_source_is_replaced(tmp_path: Path):
+    path = tmp_path / "requirements.pdf"
+    path.write_bytes(b"%PDF-1.7\nnot a document")
+    manifest = [{"path": path.name}]
+    authorized = reference.authorize(tmp_path, manifest, path.name)
+    assert authorized is not None
+    failed = reference.prepare(authorized)
+    assert failed is not None and failed.status == "malformed_document"
+    saved = [reference.plan_record(failed)]
+    _pdf(tmp_path, ["TEXT PLANNING NEVER SAW"], name=path.name)
+
+    replayed = reference.prepare_plan_records(tmp_path, manifest, saved)
+
+    assert len(replayed) == 1
+    assert replayed[0].status == "malformed_document"
+    assert "TEXT PLANNING NEVER SAW" not in replayed[0].prompt_block()
 
 
 def test_authorization_is_exact_honors_withholding_and_does_not_expand_a_folder(tmp_path: Path):
@@ -293,6 +585,30 @@ def test_model_callable_document_operation_uses_the_same_handler(tmp_path: Path)
     assert "UNIQUE CALLABLE RULE" not in json.dumps(journal[0][0])
 
 
+def test_model_callable_pdf_operation_accepts_bounded_pages(tmp_path: Path):
+    path = _pdf(tmp_path, ["PAGE ONE", "PRIVATE PAGE TWO", "PAGE THREE"])
+    authorized = reference.authorize(tmp_path, [{"path": path.name}], path.name)
+    assert authorized is not None
+    journal: list[tuple[dict, dict]] = []
+    turn = run.Turn(
+        thread_id="thread-1",
+        examples_dir=tmp_path / "examples",
+        reference_for=lambda source: authorized if source == path.name else None,
+        record_data_use=lambda event, reply: journal.append((event, reply)),
+    )
+
+    reply = json.loads(run.perform("live_read_files", {
+        "operation": "document", "dataset": "upload", "path": path.name,
+        "pages": [3, 1, 3], "purpose": "Follow selected PDF pages",
+    }, turn))
+
+    assert reply["pages"] == [1, 3]
+    assert "PAGE ONE" in reply["selected"] and "PAGE THREE" in reply["selected"]
+    assert "PRIVATE PAGE TWO" not in reply["selected"]
+    assert journal[0][0]["coverage"]["selected_pages"] == [1, 3]
+    assert "PAGE ONE" not in json.dumps(journal[0][0])
+
+
 def test_document_operation_bounds_selector_metadata_and_ignores_model_purpose(tmp_path: Path):
     secret = "UNIQUE DOCUMENT CONTENT THAT MUST NOT ENTER METADATA"
     authorized = _authorized(tmp_path, body=f"# Rules\n{secret}")
@@ -348,6 +664,44 @@ def test_build_prepares_only_the_explicit_markdown_reference_before_dispatch(tmp
         "model": "GLM 5.3 OR", "messages": [{"role": "user", "content": outgoing}]
     })
     assert used == {document_events[0]["operation_id"]}
+    assistant_parts = oc.messages(first["session"])[0]["content"]
+    assert not [part for part in assistant_parts if isinstance(part, dict)
+                and part.get("type") == "tool"]
+
+
+def test_build_prepares_one_docx_copy_on_the_first_outgoing_request(tmp_path: Path, caplog):
+    orch, oc = _orch(tmp_path)
+    orch._assets = FakeAssetProvider()
+    project = orch.project(start_preview=False)
+    source = _docx(
+        tmp_path,
+        "<w:p><w:r><w:t>UNIQUE FIRST DOCX RULE</w:t></w:r></w:p>"
+        "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Column A</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>Column B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>",
+        name="source.docx",
+    )
+    shell = orch.upload_file("requirements.docx", source.read_bytes())["path"]
+    private = orch.upload_file("private.pdf", b"%PDF-1.7\nPRIVATE PDF SENTINEL")["path"]
+
+    events = list(orch.build_stream("Follow the attached Word requirements", [shell]))
+    first = oc.prompts[0]
+    outgoing = with_attachment_listing(first["text"], first["attachments"])
+
+    assert outgoing.count("UNIQUE FIRST DOCX RULE") == 1
+    assert outgoing.count("Column A | Column B") == 1
+    assert "PRIVATE PDF SENTINEL" not in outgoing
+    assert private not in outgoing
+    document_events = [event for row in events for event in row.get("dataUsed", [])
+                       if event.get("operation") == "document_reference"]
+    assert len(document_events) == 1
+    assert document_events[0]["source_type"] == "docx"
+    assert "UNIQUE FIRST DOCX RULE" not in json.dumps(document_events)
+    history = project.app_for_turn().read_history(project.build_conversation)
+    assert "UNIQUE FIRST DOCX RULE" not in json.dumps(history)
+    assert "UNIQUE FIRST DOCX RULE" not in (project.app_for_turn().read_plan() or "")
+    diagnostics = project.record.path / ".sage" / "build-diagnostics.json"
+    assert not diagnostics.exists() or "UNIQUE FIRST DOCX RULE" not in diagnostics.read_text()
+    assert "UNIQUE FIRST DOCX RULE" not in caplog.text
     assistant_parts = oc.messages(first["session"])[0]["content"]
     assert not [part for part in assistant_parts if isinstance(part, dict)
                 and part.get("type") == "tool"]

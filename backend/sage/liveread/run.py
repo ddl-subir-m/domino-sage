@@ -402,10 +402,15 @@ def _document(args: dict, turn: Turn) -> str:
         return _no_card(
             f"{rel or 'That document'} is not an authorized attached file in this conversation."
         )
-    prepared = reference.prepare(authorized, selector=str(args.get("heading") or ""))
+    prepared = reference.prepare(
+        authorized,
+        selector=str(args.get("heading") or ""),
+        pages=args.get("pages"),
+    )
     if prepared is None:
         return _no_card(
-            f"{rel} is not a plain-text or Markdown document. Use its bounded typed operation "
+            f"{rel} is not a supported text, Markdown, DOCX, or PDF document. "
+            "Use its bounded typed operation "
             "instead of a generic file read."
         )
     event, reply = reference.data_use(

@@ -85,6 +85,28 @@ def _outgoing(client: FakeOpenCode) -> str:
     return with_attachment_listing(prompt["text"], prompt["attachments"])
 
 
+def _pdf(path: Path, texts: list[str]) -> None:
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    for text in texts:
+        page = writer.add_blank_page(width=612, height=792)
+        font = writer._add_object(DictionaryObject({
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }))
+        page[NameObject("/Resources")] = DictionaryObject({
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})
+        })
+        stream = DecodedStreamObject()
+        stream.set_data(f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode())
+        page.replace_contents(stream)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
 def test_plan_restart_approve_reprepares_only_the_saved_reference(tmp_path: Path):
     first, _planner, assets, shell, neighbor, plan_id = _planned(tmp_path)
     doc = first.project(start_preview=False).record.read_plan_doc(plan_id)
@@ -138,6 +160,39 @@ def test_changed_reference_hash_fails_closed_without_sending_new_text(tmp_path: 
 
     assert "changed after the plan was prepared" in outgoing
     assert changed not in outgoing and RULE not in outgoing
+
+
+def test_pdf_page_selection_survives_restart_approval(tmp_path: Path):
+    assets = FakeAssetProvider()
+    source = assets.root / "sales_2026" / "requirements.pdf"
+    _pdf(source, ["PAGE ONE SECRET", "PAGE TWO SECRET", "PAGE THREE RULE"])
+    first, _planner = _orchestrator(tmp_path, assets, [Turn()])
+    shell = first.attach_file("ds_sales_2026", "requirements.pdf")["path"]
+    project = first.project(start_preview=False)
+    doc = project.record.create_plan_doc(
+        PLAN,
+        title="PDF requirements",
+        app_id=project.workspace.app_id,
+        explicit_references=[{
+            "source": shell,
+            "handler": "pdf",
+            "selector": "",
+            "pages": [3],
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "status": "prepared",
+        }],
+    )
+    project.workspace.write_plan(PLAN, doc["id"])
+    restarted, builder = _orchestrator(
+        tmp_path, assets, [Turn(writes={"src/App.tsx": "export default () => null\n"})]
+    )
+
+    list(restarted.approve_stream(plan_id=doc["id"]))
+    outgoing = _outgoing(builder)
+
+    assert "PAGE THREE RULE" in outgoing
+    assert "PAGE ONE SECRET" not in outgoing
+    assert "PAGE TWO SECRET" not in outgoing
 
 
 @pytest.mark.parametrize("digest", [None, "", "not-a-sha256"])
@@ -253,3 +308,43 @@ def test_old_plan_metadata_remains_readable_with_no_saved_references(tmp_path: P
     assert reopened is not None
     assert reopened["explicitReferencesVersion"] == 0
     assert reopened["explicitReferences"] == []
+
+
+def test_old_plan_without_declared_reference_metadata_keeps_legacy_attachments(tmp_path: Path):
+    first, _planner, assets, shell, neighbor, plan_id = _planned(tmp_path)
+    record = first.project(start_preview=False).record
+    meta_path = record.plan_docs_dir / plan_id / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta.pop("explicitReferencesVersion")
+    meta.pop("explicitReferences")
+    meta_path.write_text(json.dumps(meta))
+    restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+
+    list(restarted.approve_stream(plan_id=plan_id))
+
+    assert {item["path"] for item in builder.prompts[0]["attachments"]} == {shell, neighbor}
+
+
+@pytest.mark.parametrize("version", [2, "1", True, None])
+def test_declared_unsupported_reference_metadata_stops_approval(
+    tmp_path: Path, version: object,
+):
+    first, _planner, assets, _shell, _neighbor, plan_id = _planned(tmp_path)
+    record = first.project(start_preview=False).record
+    meta_path = record.plan_docs_dir / plan_id / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    if version is None:
+        meta.pop("explicitReferencesVersion")
+    else:
+        meta["explicitReferencesVersion"] = version
+    meta_path.write_text(json.dumps(meta))
+    reopened = record.read_plan_doc(plan_id)
+    assert reopened is not None
+    assert reopened["explicitReferencesVersion"] == -1
+    restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+
+    events = list(restarted.approve_stream(plan_id=plan_id))
+
+    assert builder.prompts == []
+    assert any(event.get("decision") == "invalid plan reference metadata" for event in events)
+    assert next(event for event in events if event.get("type") == "done")["ok"] is False

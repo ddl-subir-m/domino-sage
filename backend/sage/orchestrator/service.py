@@ -12193,9 +12193,11 @@ class Orchestrator:
                 "and a bounded batch_size. It sends only the selected text and stable task-local IDs "
                 "through the LLM Gateway, rejects missing, duplicate, unknown or malformed returned "
                 "IDs as incomplete, writes a result table, and reports coverage. "
-                "For an attached plain-text or Markdown requirements document, specification or "
+                "For an attached text, Markdown, DOCX or searchable PDF requirements document, "
+                "specification or "
                 "shell, use live_read_files with operation=document, dataset=upload, its exact "
-                "authorized path, and an optional exact heading. It sends at most 8,000 characters "
+                "authorized path, an optional exact Markdown heading, or up to 20 one-based PDF "
+                "pages. It sends at most 8,000 characters "
                 "through the LLM Gateway. Use this before read, cat, grep or sed on that document. "
                 "Omit selected_fields for structure only. Respect explicit user limits; row_limit "
                 "is only for a requested limit. Do not read unrelated raw rows into model context. "
@@ -17385,7 +17387,7 @@ class Orchestrator:
         # editing. Only the current app's src/ is listed, never attached data or sibling apps.
         source_note = self._build_source_note(project.app_for_turn().path)
         plan_reference_records: list[dict] = []
-        # Explicit text/Markdown references take their typed path before the model can try a local
+        # Explicit document references take their typed path before the model can try a local
         # read. This is deliberately after the user row and after history-derived withholding is
         # armed, but before the first normal model request. The content rides only in the in-memory
         # attachment rendering; the event persisted below contains hashes and coverage, never text.
@@ -17443,7 +17445,7 @@ class Orchestrator:
                         )
                     elif live_reference.source_type(source):
                         attachment["detail"] = (
-                            "This text attachment was not prepared because this turn does not carry "
+                            "This document attachment was not prepared because this turn does not carry "
                             "an explicit structured reference."
                         )
                     continue
@@ -17451,7 +17453,7 @@ class Orchestrator:
                 if prepared is None:
                     if live_reference.source_type(source):
                         attachment["detail"] = (
-                            "This text attachment was not prepared because its exact attachment "
+                            "This document attachment was not prepared because its exact attachment "
                             "identity or storage target could not be authorized."
                         )
                     continue
@@ -18605,6 +18607,13 @@ class Orchestrator:
         # plan marks one. What approval MEANS stays the review flow's own rule: named reviewers who
         # have not signed off keep the plan in review, because building was never their sign-off.
         approved_doc = self._approved_plan_doc(project, plan_id) if live_plan.strip() else None
+        if approved_doc and approved_doc.get("explicitReferencesVersion") == -1:
+            yield {"type": "error", "message": brand.text(
+                "This plan has unsupported or invalid reference metadata. "
+                "Create a new plan before you approve it.")}
+            yield {"type": "done", "ok": False,
+                   "decision": "invalid plan reference metadata"}
+            return
         # A version, not an overwrite, for the same reason a document edit makes one: the draft
         # people commented on has to survive the edit that built over it.
         #

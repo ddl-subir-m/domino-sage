@@ -2220,6 +2220,15 @@ window.SW = window.SW || {};
         const textOperation = event.operation === 'text_analysis';
         const documentOperation = event.operation === 'document_reference';
         const documentPrepared = documentOperation && (!event.status || event.status === 'prepared');
+        const selectedPages = Array.isArray(coverage.selected_pages) ? coverage.selected_pages : [];
+        const processedPages = Array.isArray(coverage.processed_pages) ? coverage.processed_pages : [];
+        const pdfPageCoverage = documentPrepared && event.source_type === 'pdf'
+          ? `PDF pages: ${coverage.source_pages || 0} source; ` +
+            `${selectedPages.length} selected (${selectedPages.join(', ') || 'none'}); ` +
+            `${processedPages.length} processed (${processedPages.join(', ') || 'none'}). `
+          : '';
+        const documentTextTruncated = Number(coverage.sent_characters || 0) <
+          Number(coverage.selected_characters || 0);
         const documentFailure = ({
           withheld: 'Document content was withheld. No document text was prepared.',
           source_too_large: 'The document exceeded the source-size limit. No document text was prepared.',
@@ -2229,6 +2238,15 @@ window.SW = window.SW || {};
           selector_too_long: 'The requested heading exceeded the selector limit. No document text was prepared.',
           empty_document: 'The document contained no text to transfer.',
           unavailable: 'The document was unavailable. No document text was prepared.',
+          malformed_document: 'The document was malformed or corrupt. No document text was prepared.',
+          encrypted_document: 'The document was encrypted. No document text was prepared.',
+          document_xml_too_large: 'The Word document XML exceeded the extraction limit. No document text was prepared.',
+          no_extractable_text: 'The PDF had no extractable text. No document text was prepared.',
+          invalid_page_selection: 'The PDF page selection was invalid. No document text was prepared.',
+          too_many_pages: 'The PDF selection exceeded the 20-page limit. No document text was prepared.',
+          page_out_of_range: 'The PDF page selection was outside the document. No document text was prepared.',
+          page_selection_not_supported: 'This document type does not support page selection. No document text was prepared.',
+          extraction_unavailable: 'PDF text extraction was unavailable. No document text was prepared.',
         })[event.status] || 'Document preparation failed. No document text was prepared.';
         const source = String(event.source || 'unknown source');
         return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
@@ -2239,8 +2257,13 @@ window.SW = window.SW || {};
           documentPrepared
             ? h('p', null,
               `${coverage.sent_characters || 0} of ${coverage.selected_characters || 0} characters prepared. `,
-              event.selected_selector ? `Heading: ${event.selected_selector}. ` : 'Whole document. ',
-              coverage.truncated ? 'The selected text was truncated.' : 'The selected text was complete.')
+              pdfPageCoverage || (processedPages.length
+                ? `Pages: ${processedPages.join(', ')}. `
+                : event.selected_selector ? `Heading: ${event.selected_selector}. ` : 'Whole document. '),
+              documentTextTruncated
+                ? 'The selected text was truncated. ' : 'The selected text was complete. ',
+              coverage.pages_truncated
+                ? 'Page coverage was capped.' : '')
             : documentOperation
               ? h('p', null, documentFailure)
             : h('p', null, `${coverage.processed} of ${coverage.total} rows processed. ` +

@@ -167,6 +167,8 @@ TOOLS: list[dict[str, Any]] = [
                 "result_name": {"type": "string"},
                 "purpose": {"type": "string"},
                 "heading": {"type": "string", "description": "Exact unique Markdown heading."},
+                "pages": {"type": "array", "items": {"type": "integer"}, "maxItems": 20,
+                          "description": "One-based PDF pages. They are deduplicated and sorted."},
                 "path": {
                     "type": "string",
                     "description": "One file below it. Omit to list the Dataset instead.",

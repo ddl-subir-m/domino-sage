@@ -26,6 +26,7 @@ import re
 import struct
 from pathlib import Path
 
+from ..document_text import extract_docx, extract_pdf
 from ..shim import refusal_scan
 
 # Enough to cover every magic number we check plus a representative CSV/text head. Read once.
@@ -42,12 +43,6 @@ _PDF_MAX_PAGES_SCANNED = 20
 # Operations listed from an OpenAPI document. The 1200-char detail cap trims well before this on
 # any real API; the bound is so a pathological document cannot make the list itself the cost.
 _OPENAPI_MAX_OPS = 200
-# Word markup. A paragraph is `<w:p>`, a table `<w:tbl>`, a row `<w:tr>`, a cell `<w:tc>`.
-_DOCX_TABLE_RE = re.compile(r"<w:tbl[ >].*?</w:tbl>", re.DOTALL)
-_DOCX_ROW_RE = re.compile(r"<w:tr[ >].*?</w:tr>", re.DOTALL)
-_DOCX_CELL_RE = re.compile(r"<w:tc[ >].*?</w:tc>", re.DOTALL)
-_DOCX_PARA_RE = re.compile(r"<w:p[ >].*?</w:p>", re.DOTALL)
-_XML_TAG_RE = re.compile(r"<[^>]+>")
 _SUMMARY_MAX = 90
 # Distinct values past which a column reads as free text rather than as a vocabulary.
 _VOCABULARY_MAX = 12
@@ -535,23 +530,19 @@ def _describe_pdf(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     so the agent knows up front that text extraction will yield nothing.
     """
     try:
-        from pypdf import PdfReader
+        extracted = extract_pdf(
+            path, max_pages=_PDF_MAX_PAGES_SCANNED, include_outline=True,
+            fail_on_page_error=False,
+        )
     except ImportError:
         return (f"PDF document — {human_bytes(size)}, page details unavailable",
                 ("pypdf is not installed, so page count and text extraction were skipped. "
                  "The file is a valid PDF."))
+    page_count = extracted.page_count
+    texts = extracted.texts
 
-    reader = PdfReader(path)
-    pages = reader.pages
-    texts = []
-    for p in pages[:_PDF_MAX_PAGES_SCANNED]:
-        try:
-            texts.append(p.extract_text() or "")
-        except Exception:
-            texts.append("")
-
-    lines = [f"{len(pages)} pages."]
-    titles = _outline_titles(reader)
+    lines = [f"{page_count} pages."]
+    titles = extracted.outline_titles
     if titles:
         lines.append("Outline: " + "; ".join(titles[:10]))
     counts = ", ".join(f"p{i + 1}={len(t)}" for i, t in enumerate(texts))
@@ -562,26 +553,7 @@ def _describe_pdf(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     else:
         snippet = _one_line(next(t for t in texts if t.strip()))[:200]
         lines.append(f"First page snippet: {snippet}")
-    return f"PDF — {len(pages)} pages", "\n".join(lines)
-
-
-def _outline_titles(reader) -> list[str]:
-    out: list[str] = []
-
-    def walk(items):
-        for it in items:
-            if isinstance(it, list):
-                walk(it)
-            else:
-                title = getattr(it, "title", None)
-                if title:
-                    out.append(str(title))
-
-    try:
-        walk(reader.outline)
-    except Exception:
-        return []
-    return out
+    return f"PDF — {page_count} pages", "\n".join(lines)
 
 
 def _describe_image(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
@@ -742,40 +714,14 @@ def _describe_docx(path: str, head: bytes, hint, size: int) -> tuple[str, str]:
     caps detail at 1200 chars and the part that must survive the cap is the prose, so it goes
     first and the table takes whatever is left.
 
-    Stdlib only: `zipfile` opens the container and a regex over `word/document.xml` splits it.
-    A Word paragraph is `<w:p>`, a table `<w:tbl>`, its rows `<w:tr>` and cells `<w:tc>`; runs
-    (`<w:r>`/`<w:t>`) are what the tag-strip flattens. Tables are cut out of the XML before the
-    paragraph pass, because every table cell is itself a paragraph and would otherwise be listed
-    twice — once as prose, once as a cell. Entities are unescaped so `&apos;Y&apos;` reads `'Y'`.
+    The shared extractor bounds and parses `word/document.xml` once for descriptors and deliberate
+    reference transfer. It keeps table-cell paragraphs out of the prose list, so each cell appears
+    once, in its row. XML parsing also resolves entities such as `&apos;Y&apos;` to `'Y'`.
     """
-    import html
-    import zipfile
-
-    with zipfile.ZipFile(path) as z:
-        xml = z.read("word/document.xml").decode("utf-8", errors="strict")
-
-    def text_of(fragment: str) -> str:
-        return " ".join(html.unescape(_XML_TAG_RE.sub("", fragment)).split())
-
-    tables: list[list[str]] = []
-    for tbl in _DOCX_TABLE_RE.findall(xml):
-        rows = []
-        for tr in _DOCX_ROW_RE.findall(tbl):
-            cells = [text_of(tc) for tc in _DOCX_CELL_RE.findall(tr)]
-            if any(cells):
-                rows.append(" | ".join(cells))
-        tables.append(rows)
-    prose = _DOCX_TABLE_RE.sub("", xml)
-    paragraphs = [t for t in (text_of(p) for p in _DOCX_PARA_RE.findall(prose)) if t]
-
-    lines = ["Paragraphs:", *paragraphs] if paragraphs else ["No paragraphs outside tables."]
-    if tables:
-        lines.append(f"Tables ({len(tables)}), one row per line, cells separated by ' | ':")
-        for i, rows in enumerate(tables, 1):
-            lines.append(f"[table {i}, {len(rows)} rows]")
-            lines.extend(rows)
-    return (f"Word document — {len(paragraphs)} paragraphs, {len(tables)} tables",
-            "\n".join(lines))
+    extracted = extract_docx(path, max_xml_bytes=8 * 1024 * 1024)
+    summary = (f"Word document — {len(extracted.paragraphs)} paragraphs, "
+               f"{len(extracted.tables)} tables")
+    return summary, extracted.render()
 
 
 def _describe_binary(path: str, head: bytes, hint: str | None, size: int) -> tuple[str, str]:
