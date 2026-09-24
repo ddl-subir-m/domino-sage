@@ -47,6 +47,7 @@ from ..assets.provider import (
     FakeAssetProvider,
     FileListing,
 )
+from ..build_policy import BuildPolicy, load_build_policy
 from ..delegated import call as delegated
 from ..delegated import mcp as delegated_mcp
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
@@ -213,49 +214,12 @@ from .scope import _extract
 
 log = logging.getLogger("sage.orchestrator")
 
-# Consecutive OpenCode poll (is_running/messages) failures tolerated before halting a build. Each poll
-# can block up to its httpx timeout, so this is ~a minute of sustained unresponsiveness, not a blip.
-_MAX_POLL_FAILURES = 4
-
-# What ends a BUILD turn that will not end itself (#39). Silence, not wall clock: a turn writing a
-# large file is legitimately quiet for a minute, and a phased build for far longer, so a deadline on
-# the turn's total length kills healthy work. This one is measured from the last thing OpenCode
-# produced — text, a tool call, a phase change — so any turn still making progress resets it and is
-# never at risk however long it runs in total.
-#
-# This is the IDLE window: nothing is open, so what is being waited on is the model taking its next
-# step. Two minutes is several times the longest of those gaps, and far below the 36 minutes the
-# live incident sat wedged. It was five minutes until #98 split the slow-tool case out into
-# _BUILD_TOOL_QUIET_TIMEOUT_S below — five was sized for a case this window no longer has, and
-# leaving it there would have made the wedge it exists to catch wait three minutes longer than it
-# has any reason to.
-#
-# The 12-second deadline in the poll loop is a different rule and stays as it is: it covers a turn
-# that never appeared at all, and this one only starts to matter once one has.
-_BUILD_QUIET_TIMEOUT_S = 120.0
-
-# The same silence, while a tool call is still open (#98). One window over both cases had to be the
-# worst of the two: a `npm run build` or a broad test run sends nothing between `called` and its
-# result, so covering it meant a genuinely wedged turn — model stopped, nothing running — sat for
-# the length of the slowest tool anyone might run. Splitting them lets each be sized for what it
-# is. The idle window came DOWN from five minutes to two: with slow calls out of it, what is left
-# is the gap between steps, and four times the longest of those is already generous. This one went
-# up to ten minutes, which is the ceiling on a tool rather than on a wedge — a `task` sub-agent is
-# one outstanding call for however long it runs, and killing that was the reported bug.
-#
-# Build has no wall-clock backstop the way Chat has _CHAT_TURN_MAX_S, deliberately (see above), so
-# this is the only cap on a call that never returns.
-_BUILD_TOOL_QUIET_TIMEOUT_S = 600.0
-
-# How long we wait for a wedged session to confirm it actually stopped, after asking it to. Only
-# a session that confirms lets the turn lock go — see _stop_wedged_session.
-_BUILD_STOP_GRACE_S = 30.0
-
-# How long a build turn waits for the preview to report a runtime error after the agent's last
-# write, before calling the build done — see _await_runtime_error. A module constant so the suite
-# can zero it: no test runs a preview, and every build turn that reached this wait paid the full
-# four seconds for a report that could not come.
-_RUNTIME_ERROR_WAIT_S = 4.0
+# Build limits live in `build_policy.py`. Chat keeps its own values here so changing Build policy
+# cannot change Chat behavior.
+_CHAT_POLL_FAILURE_LIMIT = 4
+_CHAT_LIVE_READ_LIMIT = 25
+_CHAT_EXACT_REPEAT_LIMIT = 3
+_CHAT_STOP_GRACE_SECONDS = 30.0
 
 # What ends a Chat turn that will not end itself. Quiet time, not wall clock: a hung
 # `DataSourceClient.query` (Arrow Flight from a published App) never goes idle, the UI stays on its
@@ -378,40 +342,6 @@ _CHAT_FLUSH_APPEAR_S = 10.0
 # waits all of them for nothing. The number is a starting point, not a measured one; what matters is
 # that reaching it is a REFUSAL the assistant reads, not a silent stop.
 _DELEGATED_CALLS_MAX = 25
-# How many Live reads one turn may make, over all three tools, for the reason the cap above exists.
-# Measured 2026-09-21 on `5fa56a0`: a Build turn asked to draw a dashboard made 62 `live_read_query`
-# calls in seven minutes — each a different 1-row probe, each back in 1-2s — and wrote nothing.
-# `_RepeatBrake` wants three IDENTICAL calls in a row; the quiet windows want silence; Build has no
-# wall-clock ceiling at all. Nothing ends a loop of DIFFERENT fast reads but the person's Stop.
-# The same number as the cap above, so there is one number and one explanation.
-_LIVE_READS_MAX = 25
-# How many shell calls one Build turn may make before it has written anything. The same loop as
-# the one above, on a tool the cap above does not cover. Measured 2026-09-21 on `759e8ae`: an
-# approve turn asked to build a table from an attached Word file made 434 `bash` calls in 23
-# minutes and wrote nothing — 398 of them `echo z1`, `echo s1`, `echo w1` … `echo w252`, each
-# different, each back in a second. `_RepeatBrake` wants three IDENTICAL calls; the same model in
-# a colleague's session repeated one call and was stopped at three. A model that counts slips
-# it. Sized against a healthy build: the 2026-09-21 baseline used ~15 shell calls end to end, so
-# forty is not a number a working turn reaches before its first write.
-_BASH_CALLS_MAX = 40
-# How many writes one Build turn may have REFUSED before it stops. The third shape of the same
-# loop, on the tools that were meant to end it. Measured 2026-09-21 on `192926c` (#494): a turn
-# with gemini-3.7-flash on both model slots made 32 `apply_patch` calls in thirteen minutes, 25 of
-# them refused by OpenCode's parser, and nothing ended it but the person's Stop.
-#
-# Not keyed on "the app did not change", which is the key the two caps above use: seven of those
-# patches LANDED, so the tree hash moved and `agent_wrote()` was true the whole time. The turn was
-# still going nowhere. What separates it from a healthy build is the RATIO, and the margin is not
-# decoration — a turn refusing and landing in turns is a build fixing its own mistakes, and at the
-# tenth refusal it has nine landed beside it, so a plain "more refused than landed" stops it. The
-# measured loop lost more than three for every one it landed (25 against 7), so the bar is twice:
-# the cap fires when the writes that landed are fewer than half the writes that were refused.
-#
-# Sized well above the shim's own answer to this (#494's first half withdraws `apply_patch` at two
-# refusals): by the time a turn has had ten writes refused, the tool swap has been tried and has
-# not converged either, and ten is more refusals than any healthy turn in the 2026-09-21 baselines
-# had in total.
-_FAILED_WRITES_MAX = 10
 # How many sources the "Already read in this Thread" block names (ADR-0061). One line per SOURCE,
 # not per read, so a Thread reaches this only by touching twenty different tables — and newest
 # first, because the ones a stalled investigation keeps re-reading are the recent ones.
@@ -426,14 +356,6 @@ _ALIAS_LISTING_TTL_S = 60.0
 # on the same box. A turn writes one assistant message per step, so this is a turn many times over;
 # anything older was already emitted and is already in `seen`.
 _CHAT_POLL_MESSAGES = 20
-# The same cap for a Build poll, and the same reasoning — Build was left out when Chat got it, so a
-# build re-serialized its own whole session once a second out of the single-threaded Node server
-# that was running the agent, and got slower the longer it ran. Larger than Chat's because a build
-# step emits more parts per second (tool calls with payloads, not just prose), and the window has to
-# stay wide enough that a poll cannot miss a part that appeared and scrolled out between two polls.
-# `_seen_baseline` reads the same window, so the two agree on what counts as already-emitted.
-_BUILD_POLL_MESSAGES = 40
-
 # Smallest gap the build poll will leave between two transcript reads once it is being woken by the
 # event stream rather than by a timer (see _EventTap.wait). The read costs 22ms p50 out of the same
 # single-threaded Node server the agent is running in, so an uncapped wake rate would spend the
@@ -3570,8 +3492,6 @@ def _tool_label(payload: dict) -> str:
 # is the brake for the ones it does not cover.
 #
 # Three is a starting number, not a measured one.
-_REPEAT_LIMIT = 3
-
 # How much of a repeated call's answer goes into the sentence.
 _REPEAT_ANSWER_MAX = 200
 
@@ -3657,7 +3577,7 @@ class _RepeatBrake:
     sentence could clear would never fire on a model that talks between its steps — which is most
     of them, and may well have been true of the turn that prompted this.
 
-    The shape that pays for that, said out loud because `_REPEAT_LIMIT` is a starting number and
+    The shape that pays for that, said out loud because the repeat limit is a starting number and
     this is what will show up against it first: a genuine poll. `sleep 2 && curl -s localhost:5173`
     three times while a dev server warms up is the same call three times running, and this stops it.
     The person is told which call and gets the turn back, which is the trade against a loop that
@@ -3667,15 +3587,16 @@ class _RepeatBrake:
     something happening in between — see `_call_fingerprint` for why an empty key cannot do either.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, limit: int = _CHAT_EXACT_REPEAT_LIMIT) -> None:
         self.fingerprint = ""
         self._timing = timing.tool_observer()
         self.n = 0
         self.label = ""
+        self.limit = limit
 
     def saw(self, fingerprint: str, label: str, *, session_id: str = "",
             call_id: str = "", tool: str = "", arguments=None) -> bool:
-        """True when this call is the `_REPEAT_LIMIT`-th identical one in a row."""
+        """True when this call reaches its limit of identical calls in a row."""
         if not fingerprint:
             return False
         if fingerprint == self.fingerprint:
@@ -3683,10 +3604,10 @@ class _RepeatBrake:
         else:
             self.fingerprint, self.n = fingerprint, 1
         self.label = label or self.label
-        stopped = self.n >= _REPEAT_LIMIT
+        stopped = self.n >= self.limit
         self._timing.brake(session_id=session_id, call_id=call_id, tool=tool,
                             fingerprint=fingerprint, consecutive=self.n,
-                            limit=_REPEAT_LIMIT, stopped=stopped, arguments=arguments)
+                            limit=self.limit, stopped=stopped, arguments=arguments)
         return stopped
 
 
@@ -3751,7 +3672,8 @@ def _repeat_answer(msgs: object, fingerprint: str) -> str:
     return ""
 
 
-def _repeat_message(label: str, answer: str, told: str = "") -> str:
+def _repeat_message(label: str, answer: str, told: str = "", *,
+                    limit: int = _CHAT_EXACT_REPEAT_LIMIT) -> str:
     """What to tell somebody whose turn was stopped for repeating itself.
 
     It names the call because the previous sentence for a turn that ended without finishing —
@@ -3770,12 +3692,12 @@ def _repeat_message(label: str, answer: str, told: str = "") -> str:
         said = brand.text(
             '{assistantName} ran the same step {n} times, so it stopped. {step} answered: "{answer}". '
             "Ask a different way, or point it at what it should read.",
-            n=_REPEAT_LIMIT, step=step, answer=answer)
+            n=limit, step=step, answer=answer)
     else:
         said = brand.text(
             "{assistantName} ran the same step {n} times, so it stopped: {step}. "
             "Ask a different way, or point it at what it should read.",
-            n=_REPEAT_LIMIT, step=step)
+            n=limit, step=step)
     if told:
         said += brand.text(" Before that, a read was refused: {told}", told=told)
     return said
@@ -5601,7 +5523,11 @@ class Orchestrator:
         browser_gateway_base: str | None = None,
         opencode_client: OpenCodeClient | None = None,
         gateway_mode: str = "fake",
+        build_policy: BuildPolicy | None = None,
     ) -> None:
+        # Loaded once per service. Build turns read this immutable dependency and never read their
+        # limit environment variables directly.
+        self._build_policy = build_policy or load_build_policy()
         self._wm = WorkspaceManager(workspace_dir, template)
         self._project_id = project_id
         self._gateway = gateway
@@ -11756,19 +11682,22 @@ class Orchestrator:
             with self._live_read_lock:
                 n = self._live_reads.get(turn.thread_id, 0) + 1
                 self._live_reads[turn.thread_id] = n
-            if n > _LIVE_READS_MAX:
+            limit = (self._build_policy.live_read_limit
+                     if turn.thread_id == self._chat_project().build_conversation
+                     else _CHAT_LIVE_READ_LIMIT)
+            if n > limit:
                 # Loud, and it names the number: an agent told nothing cannot tell a cap from a
                 # store with nothing to say, and the loop this exists to end is one that never
-                # goes quiet — see `_LIVE_READS_MAX`.
+                # goes quiet — see the Build and Chat live-read limits above.
                 log.info("live read: %s — refused, this turn has made %d reads, the limit for one "
-                         "turn", name, _LIVE_READS_MAX)
+                         "turn", name, limit)
                 return brand.text(
                     "This {turn} has already made {n} live reads, which is the limit for one "
                     "{turn}. Nothing was put on the person's screen. Stop reading and finish "
                     "with what you have: answer, or write the plan or the files, from what you "
                     "have already measured, and say what is still unmeasured.",
-                    n=str(_LIVE_READS_MAX))
-            log.info("live read: %s (%d of %d)", name, n, _LIVE_READS_MAX)
+                    n=str(limit))
+            log.info("live read: %s (%d of %d)", name, n, limit)
             try:
                 return live_read.perform(name, args, turn)
             except Exception as e:
@@ -12533,7 +12462,7 @@ class Orchestrator:
              "at a bound table or Dataset, and `live_read_query` to work a number out of one, "
              "rather "
              "than telling the person you cannot see their data. "
-             f"Up to {_LIVE_READS_MAX} reads per turn: plan the few you need, then answer. "
+             f"Up to {_CHAT_LIVE_READ_LIMIT} reads per turn: plan the few you need, then answer. "
              "If they are not in your tool list "
              "this turn, use what you do have; if the answer needs a calculation you have no way to "
              "run, say what you would need in order to answer it and what you would do once it is "
@@ -13589,7 +13518,7 @@ class Orchestrator:
                     # about how long the person waited, and that number must include the slice.
                     log.warning("chat: turn stopped after %.0fs — %s%s",
                                 time.monotonic() - started,
-                                f"repeated {brake.label} {_REPEAT_LIMIT} times" if looped
+                                f"repeated {brake.label} {_CHAT_EXACT_REPEAT_LIMIT} times" if looped
                                 else f"quiet for {now - alive:.0f}s" if quiet
                                 else f"hit the {_CHAT_TURN_MAX_S:.0f}s ceiling",
                                 f"; still open: {open_now}" if open_now else "; nothing open")
@@ -13915,8 +13844,9 @@ class Orchestrator:
                 except httpx.HTTPError as e:
                     tool_observer.interval("poll.read", _poll_t0, ok=False)
                     poll_failures += 1
-                    log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
-                    if poll_failures >= _MAX_POLL_FAILURES:
+                    log.warning("opencode poll failed (%d/%d): %s", poll_failures,
+                                _CHAT_POLL_FAILURE_LIMIT, e)
+                    if poll_failures >= _CHAT_POLL_FAILURE_LIMIT:
                         try:
                             client.interrupt(sid)
                         except Exception:
@@ -16262,7 +16192,8 @@ class Orchestrator:
         if self._project is not None:
             self._project.resolved_model = None
 
-    def _stop_wedged_session(self, client, sid: str) -> bool:
+    def _stop_wedged_session(self, client, sid: str, *,
+                             grace_seconds: float = _CHAT_STOP_GRACE_SECONDS) -> bool:
         """Ask a wedged session to stop, and report whether it confirmed that it did (#39).
 
         Order matters and only runs one way: stop OpenCode, THEN release the turn lock. A lock
@@ -16289,7 +16220,7 @@ class Orchestrator:
         # to hang — and a deadline set before it would be spent by the time the session got its
         # first chance to go idle. That would brick a workspace over a slow POST rather than over a
         # session that actually refused to stop, which is the harshest outcome here.
-        deadline = time.monotonic() + _BUILD_STOP_GRACE_S
+        deadline = time.monotonic() + grace_seconds
         while True:
             try:
                 if not client.is_running(sid):
@@ -16301,7 +16232,7 @@ class Orchestrator:
                 # Giving up here would condemn the workspace to a restart over one slow read.
                 log.warning("wedged turn: session state unreadable after interrupt: %s", e)
             if time.monotonic() >= deadline:
-                log.error("wedged turn: no idle reading %.0fs after interrupt", _BUILD_STOP_GRACE_S)
+                log.error("wedged turn: no idle reading %.0fs after interrupt", grace_seconds)
                 return False
             time.sleep(1.0)
 
@@ -16818,7 +16749,8 @@ class Orchestrator:
                 "`token` on every `live_read_table`, `live_read_files` or `live_read_query` call. "
                 "Use those tools to look at a bound table or {dataSource}, and `live_read_query` "
                 "to work a number out of one, rather than telling the person you cannot see their "
-                f"data. Up to {_LIVE_READS_MAX} reads per turn: plan the few you need, then build."
+                f"data. Up to {self._build_policy.live_read_limit} reads per turn: plan the few "
+                "you need, then build."
             )
         # The failure-replan flag, consumed. Written here rather than beside its read because it has to
         # land after the pre-turn commit: a stop reverts the tree to that commit, and a flag cleared
@@ -17298,7 +17230,8 @@ class Orchestrator:
         # Pre-seed `seen` with every part that already exists before we send this turn's prompt, so
         # only parts produced by THIS turn are emitted. Within the turn `seen` also persists across the
         # nudge/fix iterations of the loop below, so we never re-emit our own earlier parts either.
-        seen: set[tuple[str, object]] = self._seen_baseline(client, sid, limit=_BUILD_POLL_MESSAGES)
+        seen: set[tuple[str, object]] = self._seen_baseline(
+            client, sid, limit=self._build_policy.poll_message_limit)
         # Text already shown this turn, so a repeat is dropped rather than printed twice. Scoped to the
         # turn (not the session): a later turn restating something is usually answering a new question.
         emitted_text: set[str] = set()
@@ -17313,7 +17246,7 @@ class Orchestrator:
         # leak) can't reach a turn that wrote nothing.
         nothing_to_build = False
         nudges = 0
-        MAX_NUDGES = _env_int("SAGE_MAX_NUDGES", 3)
+        max_nudges = self._build_policy.no_edit_nudge_limit
         # When a turn routed to the cheap implement-tier coder writes nothing, pin the strong
         # plan-tier model for the retry (works from Auto or explicit Implement). On by default;
         # set SAGE_IMPLEMENT_STRONG_FALLBACK=0 to keep retries on the originally-routed model.
@@ -17322,14 +17255,14 @@ class Orchestrator:
         # method on a string) blanks the preview but passes tsc. The open preview reports such throws
         # to project.runtime_error; we feed them back to fix, bounded so a crash we can't fix can't loop.
         runtime_fixes = 0
-        MAX_RUNTIME_FIXES = 3
+        max_runtime_fixes = self._build_policy.runtime_repair_limit
         leak_fixes = 0
-        MAX_LEAK_FIXES = 2
+        max_leak_fixes = self._build_policy.leak_repair_limit
         # An app that declares a model has a live gateway URL in its own source, and nothing stops
         # the agent fetching it instead of calling `askModel` (#94). Bounded like the leak fix
         # beside it, and for the same reason: a defect we can describe but cannot make the agent fix.
         gateway_fixes = 0
-        MAX_GATEWAY_FIXES = 2
+        max_gateway_fixes = self._build_policy.gateway_repair_limit
         GATEWAY_FIX_NUDGE = (
             # Self-contained rather than pointing at a heading in AGENTS.md: `agents_block` writes
             # no model section at all for an app with no Alias bound, and titles it in the plural for
@@ -17642,14 +17575,14 @@ class Orchestrator:
             # new one — so the run starts again with it. The cost is that two repeats either side
             # of a nudge never reach three; the alternative charges an agent for what it did
             # before it was told something different.
-            brake = _RepeatBrake()
-            # Shell calls this turn, for `_BASH_CALLS_MAX`. Beside the brake and reset where it
+            brake = _RepeatBrake(self._build_policy.exact_repeat_limit)
+            # Shell calls this turn, for the policy cap. Beside the brake and reset where it
             # is, for the reason it is reset there: a nudge is a new instruction and gets its own
             # count. Counted at the completion, where the brake counts, so the two agree on what
             # a call is.
             bash_calls = 0
             shell_capped = False
-            # Writes this turn by outcome, for `_FAILED_WRITES_MAX`. Both counts, because the cap
+            # Writes this turn by outcome, for the policy cap. Both counts, because the cap
             # is a ratio and not a total: a turn whose edits mostly land is building, however many
             # it also loses. Reset here with the other two, for the same reason.
             failed_writes = 0
@@ -17670,7 +17603,7 @@ class Orchestrator:
                 try:
                     _poll_t0 = time.monotonic()
                     running = client.is_running(sid)
-                    msgs = client.messages(sid, limit=_BUILD_POLL_MESSAGES)
+                    msgs = client.messages(sid, limit=self._build_policy.poll_message_limit)
                     poll_failures = 0
                     # (c) What the sampling loop costs, split from what it waits for. `poll.read_ms`
                     # is Sage competing with the agent for the same single-threaded Node server;
@@ -17682,8 +17615,9 @@ class Orchestrator:
                 except httpx.HTTPError as e:
                     tool_observer.interval("poll.read", _poll_t0, ok=False)
                     poll_failures += 1
-                    log.warning("opencode poll failed (%d/%d): %s", poll_failures, _MAX_POLL_FAILURES, e)
-                    if poll_failures >= _MAX_POLL_FAILURES:
+                    log.warning("opencode poll failed (%d/%d): %s", poll_failures,
+                                self._build_policy.poll_failure_limit, e)
+                    if poll_failures >= self._build_policy.poll_failure_limit:
                         tap.close()
                         restore_mode()
                         yield persist({"type": "error", "message": (
@@ -17800,7 +17734,8 @@ class Orchestrator:
                                 # read. Taken now rather than at the exit below because the exit
                                 # runs after the walk that would mark the part seen.
                                 looped = _repeat_message(
-                                    brake.label, _repeat_answer(msgs, brake.fingerprint))
+                                    brake.label, _repeat_answer(msgs, brake.fingerprint),
+                                    limit=self._build_policy.exact_repeat_limit)
                             if tool == "bash":
                                 bash_calls += 1
                                 # Only a turn that has changed nothing. A long turn that IS
@@ -17812,7 +17747,7 @@ class Orchestrator:
                                 # reports, and the tree hash is the one witness to that. Asked
                                 # exactly once, at the cap — a hash of the working tree is not
                                 # free, and past the cap the turn has either stopped or written.
-                                if (not looped and bash_calls == _BASH_CALLS_MAX
+                                if (not looped and bash_calls == self._build_policy.bash_call_limit
                                         and not agent_wrote()):
                                     looped = _loop_message(bash_calls)
                                     shell_capped = True
@@ -17827,7 +17762,8 @@ class Orchestrator:
                                     failed_writes += 1
                                 elif status == "completed":
                                     landed_writes += 1
-                                if (not looped and failed_writes >= _FAILED_WRITES_MAX
+                                if (not looped
+                                        and failed_writes >= self._build_policy.failed_write_limit
                                         and landed_writes * 2 < failed_writes):
                                     cat = project.shim.catalog
                                     looped = _refused_writes_message(
@@ -17915,13 +17851,14 @@ class Orchestrator:
                                     "stopping", bash_calls)
                     else:
                         log.warning("build: the turn repeated %s %d times — stopping",
-                                    brake.label, _REPEAT_LIMIT)
+                                    brake.label, self._build_policy.exact_repeat_limit)
                     # The same stop the wedged exit uses, and for the same reason it exists: a
                     # looping session is a BUSY session, so it is the one least likely to honour a
                     # posted interrupt promptly, and `interrupt` returning is not the session
                     # having stopped. Releasing the tree on the strength of the call returning is
                     # how two turns end up writing it.
-                    stopped = self._stop_wedged_session(client, sid)
+                    stopped = self._stop_wedged_session(
+                        client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
                     # Gated, like every other writer of this flag (#269). A phase of a phased
                     # build says nothing about that build's outcome — `_phased_approve` owns it,
                     # writes the resume point before every phase and clears it when the build
@@ -17957,7 +17894,8 @@ class Orchestrator:
                 # has stopped saying anything else (#39).
                 # Which of the two silences this is (#98). A call still open is a step that has
                 # not come back; nothing open is a turn that stopped taking them.
-                quiet_limit = _BUILD_TOOL_QUIET_TIMEOUT_S if tool_open else _BUILD_QUIET_TIMEOUT_S
+                quiet_limit = (self._build_policy.open_tool_quiet_timeout_seconds
+                               if tool_open else self._build_policy.quiet_timeout_seconds)
                 # The gateway stream is the second witness, exactly as in Chat — see the read in
                 # `_chat_stream` for why one is not enough, and for what the `>= start` clause is
                 # and is not doing. Build has not been seen failing this way: 120s is more headroom
@@ -17971,7 +17909,8 @@ class Orchestrator:
                     quiet_for = time.monotonic() - alive
                     log.error("build turn wedged: no OpenCode output for %.0fs (%s) — giving up",
                               quiet_for, "a call was still open" if tool_open else "nothing open")
-                    stopped = self._stop_wedged_session(client, sid)
+                    stopped = self._stop_wedged_session(
+                        client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
                     # Before the branch, because it is true of both: nothing was built either way.
                     #
                     # And gated on `owns_turn` like the other three writers (#269). The flag means
@@ -18355,10 +18294,10 @@ class Orchestrator:
             if not wrote_code:
                 if turn_span is not None:
                     turn_span.fields.update(retry_reason="no_edit",
-                                            retry_exhausted=nudges >= MAX_NUDGES)
+                                            retry_exhausted=nudges >= max_nudges)
                 # Neither gated nor answer-only turns reach here — a no-edit plan turn resolved
                 # its gate, and a no-edit Q&A finished, before the typecheck ran.
-                if nudges < MAX_NUDGES:
+                if nudges < max_nudges:
                     nudges += 1
                     # The nudge is a fresh user turn, so the shim's per-step classifier resets to
                     # PLAN (it biases plan until the first write) — in Auto the model can just plan
@@ -18412,10 +18351,10 @@ class Orchestrator:
                 # Typecheck is clean and code was written — but tsc can't see a runtime crash that
                 # blanks the preview. Wait briefly for the open preview to report one; if it does,
                 # feed the error back so the agent fixes it before we call the build done.
-                if report.ok and wrote_code and runtime_fixes < MAX_RUNTIME_FIXES:
+                if report.ok and wrote_code and runtime_fixes < max_runtime_fixes:
                     with timing.span("after.runtime_wait"):
                         rt = self._await_runtime_error(project, since=send_ts,
-                                                       timeout=_RUNTIME_ERROR_WAIT_S)
+                                                       timeout=self._build_policy.runtime_error_wait_seconds)
                     if rt is not None:
                         runtime_fixes += 1
                         project.runtime_error = None  # consume so a later turn starts clean
@@ -18429,7 +18368,7 @@ class Orchestrator:
                 # dashboard still working. Treat it like a build error: nudge the agent to remove the
                 # copy and fetch from data/ instead, bounded. If it won't, _save_to_git strips the copy
                 # from the commit anyway (the bytes never reach git), so this loop is UX, not the guard.
-                if report.ok and wrote_code and leak_fixes < MAX_LEAK_FIXES:
+                if report.ok and wrote_code and leak_fixes < max_leak_fixes:
                     with timing.span("after.leak_scan"):
                         leaks = self._detect_leaks(project)
                     if leaks:
@@ -18448,7 +18387,7 @@ class Orchestrator:
                 # fires per iteration, so a turn that did both fixes the leak and catches this on
                 # the next pass. Nothing gates — the nudge is bounded and the turn completes either
                 # way, exactly as the leak fix does.
-                if report.ok and wrote_code and gateway_fixes < MAX_GATEWAY_FIXES:
+                if report.ok and wrote_code and gateway_fixes < max_gateway_fixes:
                     with timing.span("after.gateway_scan"):
                         raw_calls = self._detect_raw_gateway_calls(project)
                     if raw_calls:
@@ -18880,7 +18819,7 @@ class Orchestrator:
                         if project.build_conversation else None)
         # Per-phase circuit breakers bound each phase, not the build: 6 × (15 iterations, 600s) is an
         # hour of wall clock that nobody asked for.
-        deadline = time.monotonic() + _env_int("SAGE_PHASED_MAX_SECONDS", 1800)
+        deadline = time.monotonic() + self._build_policy.phased_max_seconds
 
         yield persist({"type": "build-plan",
                        "steps": [{"n": s.n, "label": s.label, "files": s.files} for s in steps]})

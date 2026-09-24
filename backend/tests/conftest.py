@@ -2,10 +2,12 @@ import collections
 import sys
 import time
 import weakref
+from dataclasses import replace
 
 import pytest
 
 from sage import timing
+from sage.build_policy import BuildPolicy
 from sage.orchestrator import service
 from sage.orchestrator.service import Orchestrator
 
@@ -54,7 +56,8 @@ def _no_wait_for_a_preview_that_never_reports(monkeypatch):
     poll paid the whole 4s — 58 files stubbed the method by hand to skip it and the rest paid.
     One check with no wait keeps the branch live: an error a test recorded before the poll is
     still found, and none arrives during it."""
-    monkeypatch.setattr(service, "_RUNTIME_ERROR_WAIT_S", 0.0)
+    policy = replace(BuildPolicy(), runtime_error_wait_seconds=0.0)
+    monkeypatch.setattr(service, "load_build_policy", lambda: policy)
 
 
 # Spread through the collection, slowest file first, so a `-n auto` run does not end on one worker
