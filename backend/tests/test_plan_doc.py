@@ -146,6 +146,51 @@ def test_a_document_is_created_with_its_sections_read_out(tmp_path: Path):
     assert (tmp_path / ".sage" / "plan-docs" / "001" / "v001.md").is_file()
 
 
+def test_an_execution_plan_keeps_its_original_request_through_an_edit(tmp_path: Path):
+    record = _record(tmp_path)
+    messages = ("Build the desk table.", "Add the daily move chart.")
+    doc = record.create_plan_doc(
+        PHASED,
+        title="Desk exposure",
+        execution_contract_version=1,
+        source_request_messages_version=1,
+        source_request_messages=messages,
+        explicit_references=[],
+    )
+    after = record.write_plan_doc_version(doc["id"], PHASED + "\n")
+
+    assert after["executionContractVersion"] == 1
+    assert after["sourceRequestMessagesVersion"] == 1
+    assert after["sourceRequestMessages"] == list(messages)
+    assert after["explicitReferencesVersion"] == 1
+    assert after["explicitReferences"] == []
+
+
+def test_legacy_and_malformed_source_request_metadata_read_differently(tmp_path: Path):
+    record = _record(tmp_path)
+    legacy = record.create_plan_doc(PLAN, title="Legacy")
+    assert legacy["executionContractVersion"] == 0
+    assert legacy["sourceRequestMessagesVersion"] == 0
+    assert legacy["sourceRequestMessages"] == []
+
+    declared = record.create_plan_doc(
+        PHASED,
+        title="Declared",
+        execution_contract_version=1,
+        source_request_messages_version=1,
+        source_request_messages=("Build it.",),
+    )
+    meta_path = record.plan_docs_dir / declared["id"] / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["sourceRequestMessages"].append({"not": "a string"})
+    meta_path.write_text(json.dumps(meta))
+
+    malformed = record.read_plan_doc(declared["id"])
+    assert malformed["executionContractVersion"] == 1
+    assert malformed["sourceRequestMessagesVersion"] == -1
+    assert malformed["sourceRequestMessages"] == []
+
+
 def test_an_edit_adds_a_version_and_leaves_the_one_before_it(tmp_path: Path):
     """Someone is reviewing the draft that is being edited. Overwriting it would rewrite the text
     their comments point at."""

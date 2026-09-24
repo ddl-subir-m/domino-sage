@@ -24,6 +24,28 @@ window.SW = window.SW || {};
     { key: 'openQuestions', label: 'Open questions', kind: 'questions' },
   ];
 
+  SW.OriginalRequest = function OriginalRequest({ messages }) {
+    if (!Array.isArray(messages) || messages.length === 0) return null;
+    return h(
+      'details',
+      { className: 'sw-plan-original-request' },
+      h('summary', null, 'Original request'),
+      h(
+        'div',
+        { className: 'sw-plan-original-request-body' },
+        messages.map((message, i) => h('p', { key: i }, message))
+      )
+    );
+  };
+
+  SW.PlanOriginalRequest = function PlanOriginalRequest({ planId }) {
+    const [messages, setMessages] = useState([]);
+    useEffect(() => {
+      if (planId) SW.api.plan(planId).then((plan) => setMessages(plan.sourceRequestMessages || []));
+    }, [planId]);
+    return h(SW.OriginalRequest, { messages });
+  };
+
   // The card that appears in the conversation. Deliberately a summary — the
   // full artifact lives on its own page.
   SW.PlanCard = function PlanCard({ planId }) {
@@ -64,6 +86,7 @@ window.SW = window.SW || {};
           h(ClockCircleOutlined, null),
           `${questions.length} open ${questions.length === 1 ? 'question' : 'questions'}`
         ),
+      h(SW.OriginalRequest, { messages: plan.sourceRequestMessages }),
       h(
         'div',
         { className: 'sw-plan-card-actions' },

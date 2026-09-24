@@ -188,7 +188,7 @@ def _started_at(value: object) -> str | float | int | None:
 
 
 def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
-             terminal=False, revision=None) -> dict:
+             terminal=False, revision=None, plan_contract: dict | None = None) -> dict:
     raw = timing.as_dict(rec) if rec is not None else {}
     record = {
         "schemaVersion": SCHEMA_VERSION,
@@ -203,6 +203,8 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
         "timing": _metadata(raw, ["ms", "ok", "running"]),
     }
     data = record["timing"]
+    if plan_contract is not None:
+        record["planContract"] = plan_contract
     drops = record["capture"]["droppedEvents"]
     remaining = MAX_EVENTS
     for section, keys in (("calls", CALL_FIELDS), ("spans", SPAN_FIELDS), ("tools", TOOL_FIELDS),
@@ -394,6 +396,7 @@ class Capture:
     revision: str | None
     outcome: str = "error"
     terminal: bool = False
+    plan_contract: dict | None = None
 
 
 _current: contextvars.ContextVar[Capture | None] = contextvars.ContextVar("build_diagnostic_capture", default=None)
@@ -438,6 +441,30 @@ def observe(event: dict) -> str | None:
     return capture.identity["turnId"]
 
 
+def record_plan_contract(*, execution_contract_version: int,
+                         source_request_messages_version: int,
+                         source_request_count: int, valid: bool, step_count: int,
+                         malformed_step_count: int, invalid_file_count: int,
+                         missing_sections: tuple[str, ...]) -> None:
+    """Attach fixed, content-free plan validation facts to the active Build diagnostic."""
+    capture = _current.get()
+    if capture is None:
+        return
+    allowed_sections = {
+        "title", "summary", "problem", "users", "outcomes", "screens", "acceptance", "plan"
+    }
+    capture.plan_contract = {
+        "executionContractVersion": execution_contract_version,
+        "sourceRequestMessagesVersion": source_request_messages_version,
+        "sourceRequestCount": max(0, source_request_count),
+        "valid": bool(valid),
+        "stepCount": max(0, step_count),
+        "malformedStepCount": max(0, malformed_step_count),
+        "invalidFileCount": max(0, invalid_file_count),
+        "missingSections": [key for key in missing_sections if key in allowed_sections],
+    }
+
+
 def history_metadata(app_id: str, conversation_id: str | None, event: dict) -> dict:
     capture = _current.get()
     if (capture is None or capture.identity["appId"] != app_id
@@ -456,7 +483,8 @@ def finish(rec: timing.TurnRecord | None):
         if rec is not None and rec.turn_id != capture.identity["turnId"]:
             rec = None  # Never export a neighbour's record as this turn.
         capture.store.put(snapshot(rec, capture.identity, outcome=capture.outcome,
-                                   terminal=capture.terminal, revision=capture.revision))
+                                   terminal=capture.terminal, revision=capture.revision,
+                                   plan_contract=capture.plan_contract))
     except Exception as exc:
         log.warning("Build diagnostic finish failed (%s)", type(exc).__name__)
     finally:

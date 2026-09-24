@@ -858,6 +858,10 @@ window.SW = window.SW || {};
           // rendering the original showed a person their own edits vanishing. `approveBuild` was
           // sending `draft` all along — only the screen disagreed.
           : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.markdown(draft))),
+      !folded &&
+        block.kind !== 'architecture' &&
+        block.planId &&
+        h(SW.PlanOriginalRequest, { planId: block.planId }),
       crossed &&
         crossingReceipt({
           crossed,

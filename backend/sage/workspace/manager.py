@@ -493,7 +493,10 @@ class ProjectRecord:
     def create_plan_doc(self, markdown: str, *, title: str, author: str = "",
                         origin_thread_id: str = "", status: str = "draft",
                         app_id: str = "", previous_plan_id: str = "",
-                        explicit_references: list[dict] | None = None) -> dict:
+                        explicit_references: list[dict] | None = None,
+                        execution_contract_version: int | None = None,
+                        source_request_messages_version: int | None = None,
+                        source_request_messages: tuple[str, ...] = ()) -> dict:
         """Store a plan's markdown as version 1 of a new document, and return the whole document."""
         self.plan_docs_dir.mkdir(parents=True, exist_ok=True)
         n = len([p for p in self.plan_docs_dir.iterdir() if p.is_dir()]) + 1
@@ -535,6 +538,14 @@ class ProjectRecord:
             **({"explicitReferencesVersion": 1,
                 "explicitReferences": list(explicit_references or [])}
                if explicit_references is not None else {}),
+            # New execution plans declare both records together. Leaving the version arguments
+            # unset creates a legacy document, which keeps old plans on their existing approval
+            # path. The source messages are the one durable verbatim copy of the user's request.
+            **({"executionContractVersion": execution_contract_version}
+               if execution_contract_version is not None else {}),
+            **({"sourceRequestMessagesVersion": source_request_messages_version,
+                "sourceRequestMessages": list(source_request_messages)}
+               if source_request_messages_version is not None else {}),
             # Put away, not thrown away (#167). A flag beside the status rather than a value inside
             # it: status is single-valued, so archiving an approved plan AS a status would spend
             # the review outcome to tidy a list, and hand back a document that had forgotten three
@@ -575,12 +586,34 @@ class ProjectRecord:
             and meta.get("explicitReferencesVersion") == 1
             and isinstance(references, list)
         )
+        source_messages = meta.get("sourceRequestMessages")
+        source_metadata_declared = (
+            "sourceRequestMessagesVersion" in meta or "sourceRequestMessages" in meta
+        )
+        source_metadata_valid = (
+            type(meta.get("sourceRequestMessagesVersion")) is int
+            and meta.get("sourceRequestMessagesVersion") == 1
+            and isinstance(source_messages, list)
+            and all(isinstance(message, str) for message in source_messages)
+        )
+        contract_declared = "executionContractVersion" in meta
+        contract_valid = (
+            type(meta.get("executionContractVersion")) is int
+            and meta.get("executionContractVersion") == 1
+        )
         return {**meta, "archived": bool(meta.get("archived")),
                 "previousPlanId": previous.strip() if isinstance(previous, str) else "",
                 "explicitReferencesVersion": (
                     1 if reference_metadata_valid else (-1 if reference_metadata_declared else 0)
                 ),
                 "explicitReferences": references if reference_metadata_valid else [],
+                "executionContractVersion": (
+                    1 if contract_valid else (-1 if contract_declared else 0)
+                ),
+                "sourceRequestMessagesVersion": (
+                    1 if source_metadata_valid else (-1 if source_metadata_declared else 0)
+                ),
+                "sourceRequestMessages": source_messages if source_metadata_valid else [],
                 "summary": parsed["summary"], "sections": parsed["sections"],
                 "markdown": markdown}
 

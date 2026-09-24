@@ -24,13 +24,22 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import PurePosixPath
+
+from ..workspace import plan_doc
 
 # "### 1. Sample data module" — 2-4 hashes, and '.' or ')' optional, because models drift between
 # heading levels and numbering styles even when the prompt pins one.
 _HEADING = re.compile(r"^#{2,4}[ \t]*(\d{1,2})[.)]?[ \t]+(.+?)[ \t]*$")
-# "**1. Sample data module**" — the bold-numbered fallback. _PLAN_SHAPE (the non-phased shape) trains
-# models on bolded labels, so a planner that half-remembers it produces this instead of a heading.
+# "**1. Sample data module**" — the backward-compatible bold-numbered fallback for older plans.
 _BOLD_HEADING = re.compile(r"^[ \t]*(?:[-*][ \t]+)?\*\*[ \t]*(\d{1,2})[.)]?[ \t]*([^*]+?)[ \t]*\*\*[ \t]*:?[ \t]*$")
+# Wider than the execution grammar on purpose. The validator must see a numbered heading with an
+# empty label, or a malformed step can disappear before the candidate count is compared with the
+# parsed count.
+_CANDIDATE_HEADING = re.compile(r"^#{2,4}[ \t]*\d{1,2}[.)]?(?:[ \t]+.*)?$")
+_CANDIDATE_BOLD_HEADING = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?\*\*[ \t]*\d{1,2}[.)]?(?:[ \t]+[^*]*)?\*\*[ \t]*:?[ \t]*$"
+)
 # "- Done when — the app compiles". Longest synonyms first so "Done when" can't be read as "Do".
 # The separator set covers what renderers and models substitute for the em-dash we ask for.
 _FIELD = re.compile(
@@ -70,6 +79,16 @@ class PlanStep:
     # decisions (is this phasable, what do we show); `raw` makes sure anything the parser didn't
     # model still reaches the model that has to act on it.
     raw: str
+
+
+@dataclass(frozen=True)
+class PlanContractCheck:
+    valid: bool
+    step_count: int
+    missing_sections: tuple[str, ...]
+    malformed_steps: int
+    invalid_file_fields: int
+    contradictory_file_fields: int
 
 
 def _split_list(value: str) -> list[str]:
@@ -142,6 +161,90 @@ def parse_steps(plan_md: str) -> list[PlanStep]:
             body.append(line)
     flush()
     return steps
+
+
+_REQUIRED_SECTIONS = ("problem", "users", "outcomes", "screens", "acceptance", "plan")
+
+
+def _present(value) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def _one_sentence(value: str) -> bool:
+    text = " ".join((value or "").split())
+    if not text:
+        return False
+    # Do not split `U.S. data`, but reject the ordinary `First sentence. Second sentence.` drift.
+    return re.search(r"[.!?][\"')\]]*[ \t]+[A-Z0-9]", text) is None
+
+
+def _valid_workspace_path(value: str) -> bool:
+    path = value.strip()
+    if not path or path.startswith("/") or "\\" in path:
+        return False
+    parsed = PurePosixPath(path)
+    return not parsed.is_absolute() and ".." not in parsed.parts
+
+
+def validate_execution_contract(markdown: str) -> PlanContractCheck:
+    """Check the durable plan shape without reading files or calling a model.
+
+    `parse_steps` stays backward compatible. This stricter door compares every numbered candidate
+    with the steps that survived that parser, then checks the fields that a cold implementation
+    session needs.
+    """
+    parsed = plan_doc.parse_sections(markdown)
+    sections = parsed["sections"]
+    missing = []
+    if not _present(parsed["title"]):
+        missing.append("title")
+    if not _one_sentence(parsed["summary"]):
+        missing.append("summary")
+    missing.extend(key for key in _REQUIRED_SECTIONS if not _present(sections.get(key)))
+
+    plan = str(sections.get("plan") or "")
+    candidate_count = sum(
+        1 for line in plan.splitlines()
+        if _CANDIDATE_HEADING.match(line) or _CANDIDATE_BOLD_HEADING.match(line)
+    )
+    steps = parse_steps(plan)
+    malformed = max(0, candidate_count - len(steps))
+
+    labels = [step.label.strip().casefold() for step in steps]
+    malformed += sum(1 for label in labels if not label)
+    malformed += len(labels) - len(set(labels))
+
+    invalid_files = 0
+    contradictory = 0
+    for step in steps:
+        if not step.files:
+            invalid_files += 1
+        invalid_files += sum(not _valid_workspace_path(path) for path in step.files)
+
+        fields: dict[str, str] = {}
+        for line in step.raw.splitlines()[1:]:
+            match = _FIELD.match(line)
+            if match:
+                key = _CANON.get(match.group(1).lower().replace("’", "'"))
+                if key and key not in fields:
+                    fields[key] = match.group(2).strip()
+        dont_touch = _split_list(fields.get("dont_touch", ""))
+        invalid_files += sum(not _valid_workspace_path(path) for path in dont_touch)
+        files_normalized = {str(PurePosixPath(path)) for path in step.files}
+        dont_touch_normalized = {str(PurePosixPath(path)) for path in dont_touch}
+        contradictory += len(files_normalized & dont_touch_normalized)
+
+    valid = bool(steps) and not (missing or malformed or invalid_files or contradictory)
+    return PlanContractCheck(
+        valid=valid,
+        step_count=len(steps),
+        missing_sections=tuple(missing),
+        malformed_steps=malformed,
+        invalid_file_fields=invalid_files,
+        contradictory_file_fields=contradictory,
+    )
 
 
 def is_phasable(plan_md: str, min_steps: int = MIN_STEPS) -> bool:
