@@ -109,6 +109,26 @@ def _outgoing(client: FakeOpenCode) -> str:
     return with_attachment_listing(prompt["text"], prompt["attachments"])
 
 
+def _prime_old_selection(orch: Orchestrator) -> str:
+    project = orch.project(start_preview=False)
+    old_id = project.record.read_session_id(None, project.workspace.app_id)
+    assert old_id
+    project.session_id = old_id
+    return old_id
+
+
+def _assert_reference_preflight_stopped(
+    orch: Orchestrator, client: FakeOpenCode, events: list[dict], old_id: str,
+) -> None:
+    project = orch.project(start_preview=False)
+    assert client.sessions == []
+    assert client.prompts == []
+    assert project.session_id == old_id
+    assert project.record.read_session_id(None, project.workspace.app_id) == old_id
+    assert project.workspace.read_plan()
+    assert next(event for event in events if event.get("type") == "done")["ok"] is False
+
+
 def test_a_malformed_generated_build_plan_creates_no_document_or_card(tmp_path: Path):
     assets = FakeAssetProvider()
     malformed = "# Table App\n\nA small table.\n\n## Plan\n1. Build the table.\n"
@@ -202,6 +222,8 @@ def test_plan_restart_approve_reprepares_only_the_saved_reference(tmp_path: Path
     events = list(restarted.approve_stream(plan_id=plan_id))
     outgoing = _outgoing(builder)
 
+    assert len(builder.sessions) == 1
+    assert builder.prompts[0]["session"] == builder.sessions[0]["id"]
     assert RULE in outgoing
     assert NEIGHBOR not in outgoing
     assert shell in outgoing and neighbor not in outgoing
@@ -299,6 +321,7 @@ def test_malformed_source_request_metadata_stops_before_approval(tmp_path: Path)
     events = list(orch.approve_stream(plan_id=doc["id"]))
 
     assert builder.prompts == []
+    assert builder.sessions == []
     assert any("original-request metadata" in event.get("message", "") for event in events)
     assert project.workspace.read_plan() == PLAN
 
@@ -324,6 +347,7 @@ def test_an_unknown_execution_contract_version_fails_closed(tmp_path: Path):
     events = list(orch.approve_stream(plan_id=doc["id"]))
 
     assert builder.prompts == []
+    assert builder.sessions == []
     assert any("execution contract version" in event.get("message", "") for event in events)
 
 
@@ -363,12 +387,14 @@ def test_changed_reference_hash_fails_closed_without_sending_new_text(tmp_path: 
     changed = "A REVISED RULE THAT WAS NEVER PLANNED"
     (assets.root / "sales_2026" / "README.md").write_text("# Shell\n" + changed + "\n")
     restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+    old_id = _prime_old_selection(restarted)
 
-    list(restarted.approve_stream(plan_id=plan_id))
-    outgoing = _outgoing(builder)
+    events = list(restarted.approve_stream(plan_id=plan_id))
+    message = "\n".join(event.get("message", "") for event in events)
 
-    assert "changed after the plan was prepared" in outgoing
-    assert changed not in outgoing and RULE not in outgoing
+    _assert_reference_preflight_stopped(restarted, builder, events, old_id)
+    assert "changed after the plan was prepared" in message
+    assert changed not in message and RULE not in message
 
 
 def test_pdf_page_selection_survives_restart_approval(tmp_path: Path):
@@ -418,12 +444,14 @@ def test_incomplete_success_digest_cannot_transfer_current_bytes_after_restart(
         meta["explicitReferences"][0]["sha256"] = digest
     meta_path.write_text(json.dumps(meta))
     restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+    old_id = _prime_old_selection(restarted)
 
-    list(restarted.approve_stream(plan_id=plan_id))
-    outgoing = _outgoing(builder)
+    events = list(restarted.approve_stream(plan_id=plan_id))
+    message = "\n".join(event.get("message", "") for event in events)
 
-    assert "saved reference record is incomplete or invalid" in outgoing
-    assert RULE not in outgoing
+    _assert_reference_preflight_stopped(restarted, builder, events, old_id)
+    assert "saved reference record is incomplete or invalid" in message
+    assert RULE not in message
 
 
 def test_duplicate_heading_failure_keeps_its_attempted_selector_after_restart(tmp_path: Path):
@@ -437,13 +465,15 @@ def test_duplicate_heading_failure_keeps_its_attempted_selector_after_restart(tm
     assert doc["explicitReferences"][0]["selector"] == "Programming Notes"
     assert doc["explicitReferences"][0]["status"] == "heading_not_unique"
     restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+    old_id = _prime_old_selection(restarted)
 
-    list(restarted.approve_stream(plan_id=plan_id))
-    outgoing = _outgoing(builder)
+    events = list(restarted.approve_stream(plan_id=plan_id))
+    message = "\n".join(event.get("message", "") for event in events)
 
-    assert "heading is missing or is not unique" in outgoing
-    assert "FIRST DUPLICATE SECRET" not in outgoing
-    assert "SECOND DUPLICATE SECRET" not in outgoing
+    _assert_reference_preflight_stopped(restarted, builder, events, old_id)
+    assert "heading is missing or is not unique" in message
+    assert "FIRST DUPLICATE SECRET" not in message
+    assert "SECOND DUPLICATE SECRET" not in message
 
 
 def test_over_limit_planning_failure_cannot_become_a_transfer_after_replacement(tmp_path: Path):
@@ -455,12 +485,14 @@ def test_over_limit_planning_failure_cannot_become_a_transfer_after_replacement(
     replacement = "SMALL REPLACEMENT THAT PLANNING NEVER SAW"
     (assets.root / "sales_2026" / "README.md").write_text(replacement)
     restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+    old_id = _prime_old_selection(restarted)
 
-    list(restarted.approve_stream(plan_id=plan_id))
-    outgoing = _outgoing(builder)
+    events = list(restarted.approve_stream(plan_id=plan_id))
+    message = "\n".join(event.get("message", "") for event in events)
 
-    assert "exceeds the 8 MiB source limit" in outgoing
-    assert replacement not in outgoing
+    _assert_reference_preflight_stopped(restarted, builder, events, old_id)
+    assert "exceeds the 8 MiB source limit" in message
+    assert replacement not in message
 
 
 def test_deleted_reference_stops_before_the_implementation_request(tmp_path: Path):
@@ -468,12 +500,81 @@ def test_deleted_reference_stops_before_the_implementation_request(tmp_path: Pat
     (assets.root / "sales_2026" / "README.md").unlink()
     (first.project(start_preview=False).workspace.path / shell).unlink()
     restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+    old_id = _prime_old_selection(restarted)
 
     events = list(restarted.approve_stream(plan_id=plan_id))
 
-    assert builder.prompts == []
+    _assert_reference_preflight_stopped(restarted, builder, events, old_id)
     assert any(event.get("type") == "mentions-unresolved" for event in events)
-    assert next(event for event in events if event.get("type") == "done")["ok"] is False
+
+
+def test_stop_during_reference_preflight_never_interrupts_or_replaces_the_planning_session(
+    tmp_path: Path, monkeypatch,
+):
+    orch, client, _assets, _shell, _neighbor, plan_id = _planned(tmp_path)
+    project = orch.project(start_preview=False)
+    old_id = project.session_id
+    assert old_id
+    sessions_before = list(client.sessions)
+    prompts_before = list(client.prompts)
+    prepare = reference.prepare_plan_records
+
+    def prepare_then_stop(*args, **kwargs):
+        prepared = prepare(*args, **kwargs)
+        assert orch.stop_build() is True
+        return prepared
+
+    monkeypatch.setattr(reference, "prepare_plan_records", prepare_then_stop)
+
+    events = list(orch.approve_stream(plan_id=plan_id))
+
+    assert any(event.get("type") == "stopped" for event in events)
+    assert client.sessions == sessions_before
+    assert client.prompts == prompts_before
+    assert client.interrupted == 0
+    assert project.session_id == old_id
+    assert project.record.read_session_id(None, project.workspace.app_id) == old_id
+    assert project.workspace.read_plan()
+
+
+def test_stop_during_missing_attachment_resolution_is_consumed_before_the_next_turn(
+    tmp_path: Path, monkeypatch,
+):
+    orch, client, assets, shell, _neighbor, plan_id = _planned(tmp_path)
+    project = orch.project(start_preview=False)
+    old_id = project.session_id
+    assert old_id
+    (assets.root / "sales_2026" / "README.md").unlink()
+    (project.workspace.path / shell).unlink()
+    sessions_before = list(client.sessions)
+    prompts_before = list(client.prompts)
+    prepare = orch._prepare_build_attachments
+
+    def prepare_then_stop(active_project, mentions):
+        prepared = prepare(active_project, mentions)
+        assert prepared[1], "the test did not reach the missing-input exit"
+        assert orch.stop_build() is True
+        return prepared
+
+    monkeypatch.setattr(orch, "_prepare_build_attachments", prepare_then_stop)
+
+    stopped = list(orch.approve_stream(plan_id=plan_id))
+
+    assert any(event.get("type") == "stopped" for event in stopped)
+    assert client.sessions == sessions_before
+    assert client.prompts == prompts_before
+    assert client.interrupted == 0
+    assert project.stop_requested is False
+    assert project.session_id == old_id
+    assert project.record.read_session_id(None, project.workspace.app_id) == old_id
+    assert project.workspace.read_plan()
+
+    monkeypatch.setattr(orch, "_prepare_build_attachments", prepare)
+    later = list(orch.approve_stream(plan_id=plan_id))
+
+    assert not any(event.get("type") == "stopped" for event in later)
+    assert any(event.get("type") == "mentions-unresolved" for event in later)
+    assert project.stop_requested is False
 
 
 def test_withholding_is_applied_again_on_approval(tmp_path: Path):
@@ -482,12 +583,14 @@ def test_withholding_is_applied_again_on_approval(tmp_path: Path):
         {"type": WITHHELD, "keys": ["file:" + shell]}
     )
     restarted, builder = _orchestrator(tmp_path, assets, [Turn()])
+    old_id = _prime_old_selection(restarted)
 
-    list(restarted.approve_stream(plan_id=plan_id))
-    outgoing = _outgoing(builder)
+    events = list(restarted.approve_stream(plan_id=plan_id))
+    message = "\n".join(event.get("message", "") for event in events)
 
-    assert "withheld this document" in outgoing
-    assert RULE not in outgoing
+    _assert_reference_preflight_stopped(restarted, builder, events, old_id)
+    assert "withheld this document" in message
+    assert RULE not in message
 
 
 def test_saved_record_reauthorization_refuses_an_unauthorized_sibling(tmp_path: Path):
@@ -555,5 +658,6 @@ def test_declared_unsupported_reference_metadata_stops_approval(
     events = list(restarted.approve_stream(plan_id=plan_id))
 
     assert builder.prompts == []
+    assert builder.sessions == []
     assert any(event.get("decision") == "invalid plan reference metadata" for event in events)
     assert next(event for event in events if event.get("type") == "done")["ok"] is False

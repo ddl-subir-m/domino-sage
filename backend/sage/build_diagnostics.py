@@ -228,6 +228,21 @@ def _build_intent(value) -> dict | None:
     }
 
 
+def _implementation_session(value) -> dict | None:
+    """Copy only the fixed, content-free implementation-session schema."""
+    if not isinstance(value, dict):
+        return None
+    reason = value.get("reason")
+    if reason not in {"approved_plan", "phase", "broken_call_recovery", "reused"}:
+        return None
+    keys = ("fresh", "created", "persisted", "dispatchStarted")
+    if any(not isinstance(value.get(key), bool) for key in keys):
+        return None
+    return {"fresh": value["fresh"], "reason": reason,
+            "created": value["created"], "persisted": value["persisted"],
+            "dispatchStarted": value["dispatchStarted"]}
+
+
 @lru_cache(maxsize=1)
 def source_revision() -> str | None:
     home = os.environ.get("SAGE_APP_HOME") or str(Path(__file__).resolve().parents[2])
@@ -284,6 +299,9 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
         "timing": _metadata(raw, ["ms", "ok", "running"]),
     }
     data = record["timing"]
+    implementation_session = _implementation_session(raw.get("implementationSession"))
+    if implementation_session is not None:
+        record["implementationSession"] = implementation_session
     if plan_contract is not None:
         record["planContract"] = plan_contract
     drops = record["capture"]["droppedEvents"]
