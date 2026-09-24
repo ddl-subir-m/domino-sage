@@ -205,6 +205,7 @@ def install(app, get_orchestrator):
 
             resolution = None
             effort_decision = None
+            native_preparation = None
             rewrite_counts = {}
             def resolved(model, phase, reason):
                 nonlocal resolution
@@ -226,12 +227,6 @@ def install(app, get_orchestrator):
                     policy_directory=project.record.path,
                     rewrite_counts=rewrite_counts)
                 outbound, labels, used, view, capability = native_preparation
-                effort_decision = native_preparation.effort_decision
-            if resolution is not None:
-                project.note_resolved(*resolution, protocol=protocol.value,
-                                      effort=effort_decision.effective_effort,
-                                      native=capability.native)
-                call.model(*resolution)
         except NativeCheckpointRequired as error:
             if intent is not None and installed is not None:
                 _record_build_intent(call, intent, installed, "prepare")
@@ -276,6 +271,16 @@ def install(app, get_orchestrator):
                 project.last_gateway_error = {"message": _BUILD_INTENT_ERROR}
                 call.done(ok=False, error=_BUILD_INTENT_ERROR, outcome="error")
                 return _error(_BUILD_INTENT_ERROR)
+        # Read the typed effort only after the final Build-intent check. Test and compatibility
+        # wrappers may still expose the historical five-item iterable on a request that this check
+        # rejects; that local rejection must happen before any new preparation metadata is needed.
+        if effort_decision is None and native_preparation is not None:
+            effort_decision = native_preparation.effort_decision
+        if resolution is not None:
+            project.note_resolved(*resolution, protocol=protocol.value,
+                                  effort=effort_decision.effective_effort,
+                                  native=capability.native)
+            call.model(*resolution)
         guard = project.pre_edit_guard
         if guard is not None:
             if forwarded_bytes is None:
