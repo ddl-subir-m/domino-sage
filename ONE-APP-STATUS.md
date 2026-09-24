@@ -2574,3 +2574,47 @@ wording asks for something ("the supervisor passes the child X"), tracing where 
 before implementing it is what caught both the ineffectiveness and the security hole — implementing
 the literal words first and checking later would have shipped a credential leak. Read a plan's "why"
 as a requirement and its "how" as one candidate implementation, not as a spec to transcribe.
+
+## UPDATE 2026-09-24 (later session): the Phase 4 `run_in_threadpool` change made preview startup race — a live preview bug, reproduced, root-caused, fixed
+
+The product owner hit a live bug the same day Phase 4 landed: "open one project and show preview, then
+in another tab open the home and create a new project — the preview will be broken in that exact
+scenario." Investigated per `CONCURRENT-PROJECT-PREVIEW-BUG.md` (kept, now marked RESOLVED, with the
+full reproduction and hypothesis verdicts).
+
+**Reproduced live** (dogfood, this branch): a fresh project's `/p/<slug>/preview/` answered in 0.4s
+(too fast for a cold `uvicorn`), and process inspection showed **project A running THREE preview
+servers**, two spawned in the same second. Reproduced deterministically with no new project: **6
+concurrent `GET /p/<slug>/preview/` at a cold project spawned 6 `uvicorn --reload` servers**, only one
+tracked, five orphaned.
+
+**Root cause**: the preview startup path held no lock. `_preview_upstream` → `Orchestrator.project()`
+(bare `if self._project is not None`) + `_ensure_preview_running()` (`try upstream() except: start()`).
+This session's OWN Phase 4 fix — wrapping `get_upstream` in `run_in_threadpool` — is what made it live:
+before, these sync sections ran inline on the one event loop and were effectively serialized; on real
+threadpool workers two first-preview requests race, and each builds a `Project`/spawns a supervisor.
+`UvicornSupervisor` keeps one `_proc`/`_upstream`, so the extra spawns orphan and the proxy can end up
+forwarding to a port no thread owns → 502 → broken preview. H2 in the bug doc named the right file for
+the wrong reason (a ContextVar leak); dispatch is correct, the defect is the missing lock.
+
+**Fix** (`sage/orchestrator/service.py`): one per-`Orchestrator` `threading.RLock` (`_preview_lock`),
+taken only on the cold path (the `self._project is not None` fast path never waits). `project()`
+double-checks under the lock and builds once (body extracted verbatim to `_build_project`);
+`_ensure_preview_running()` re-reads `upstream()`/`queries.port` under the lock so the dev server and
+the query server each start once. Per-project, so B's cold start never waits on A's.
+
+**Test**: `backend/tests/test_concurrent_preview_starts_are_single_flighted.py` (2 tests) — 8 threads,
+a `Barrier` to release them together, fakes that sleep inside `start()`. Fails without the fix (N
+starts, and a real `FileExistsError` from two concurrent workspace seeds), passes with it. Threads not
+one event loop, unlike `test_preview_proxy_does_not_block_the_event_loop.py`, because this race is
+between threadpool workers.
+
+**Deliberately NOT done, named**: the `ppid=1` orphan preview servers left by PRIOR orchestrator
+processes are a separate leak-on-exit gap (shutdown stops only `self._project.supervisor`; a hard kill
+strands the `--reload` group). Unrelated to the reported symptom; its own change. This also connects
+to H4/the removed `_clear_stale_port` reaper — nothing sweeps these orphans now.
+
+**Files**: `sage/orchestrator/service.py` (the lock + `_build_project` extraction + guarded
+`_ensure_preview_running`), `tests/test_concurrent_preview_starts_are_single_flighted.py` (new),
+`CONCURRENT-PROJECT-PREVIEW-BUG.md` (marked resolved). Not pushed, not merged — landing is the landing
+session's call. Full suite re-run + reconciliation against the 97-failure baseline: see the run below.

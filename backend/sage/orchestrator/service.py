@@ -5623,6 +5623,16 @@ class Orchestrator:
         # One container hosts one project (D9): a single bound project, attached lazily on first
         # use (seeding the volume + rehydrating .sage/ from disk), memoized thereafter.
         self._project: Project | None = None
+        # Single-flights the attach and the preview start (`project()` / `_ensure_preview_running`).
+        # The preview proxy now offloads `get_upstream` to Starlette's threadpool (Phase 4), so two
+        # concurrent first-preview requests run on genuinely parallel threads: without this lock both
+        # see `self._project is None` (or the supervisor not yet started) and each builds a Project /
+        # spawns a `uvicorn --reload`, orphaning all but the last — a per-project pileup of leaked
+        # servers whose `stop()` is never called, measured live as 6 servers from 6 requests. Held
+        # only on the cold path (the `self._project is not None` fast path never takes it), so a
+        # started project's requests never wait; re-entrant because `project()`'s build calls helpers
+        # that take other locks, never this one, but a future re-entry must not self-deadlock.
+        self._preview_lock = threading.RLock()
         self._oc_server: OpenCodeServer | None = None
         # Two callers reach shutdown() on one exit now: the ASGI lifespan runs it whichever server
         # hosts control_app, and run()'s `finally` stays as the backstop for a process that dies
@@ -6304,6 +6314,15 @@ class Orchestrator:
         """
         if self._project is not None:
             return self._project
+        with self._preview_lock:
+            # Double-checked: a thread that waited here while another attached returns that attach
+            # rather than building a second Project (and a second, orphaned supervisor) of its own.
+            if self._project is not None:
+                return self._project
+            return self._build_project(start_preview=start_preview, seed_app=seed_app)
+
+    def _build_project(self, start_preview: bool, seed_app: bool) -> Project:
+        """The one-time attach, run under `_preview_lock` by `project()`. Not called directly."""
         workspace = self._wm.ensure(self._project_id, seed_app=seed_app)
         record = self._wm.project_record(self._project_id)
         self._hydrate_untitled(record)
@@ -7013,12 +7032,18 @@ class Orchestrator:
         self._wm.refresh_owned_sources()
 
     def _ensure_preview_running(self, project: Project) -> None:
-        try:
-            project.supervisor.upstream()
-        except RuntimeError:
-            project.supervisor.start()
-        if project.queries.port is None:
-            project.queries.start()
+        # Under `_preview_lock`, with the `upstream()`/`port` checks re-read inside it: two concurrent
+        # preview requests would otherwise both find the supervisor not-yet-ready and both `start()`
+        # it, and `UvicornSupervisor` keeps one `_proc`/`_upstream`, so the second spawn orphans the
+        # first — the proxy can then forward to a port whose process no thread owns. The wait is the
+        # single-flight itself: the loser blocks up to one cold start, then reads the ready upstream.
+        with self._preview_lock:
+            try:
+                project.supervisor.upstream()
+            except RuntimeError:
+                project.supervisor.start()
+            if project.queries.port is None:
+                project.queries.start()
 
     def set_chat_pick(self, model: str | None, effort: str | None) -> None:
         """Standing Chat alias + reasoning_effort. `auto`/empty is Sage's default (catalog.ask)."""
