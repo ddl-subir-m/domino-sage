@@ -9,6 +9,7 @@ this code — this shim only guarantees the *policy* half (right model + tagging
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Iterator
@@ -42,6 +43,7 @@ from .chat_paths import apply_withheld, strip_denied_writes
 # attached — a silently dropped part reads as "the user sent nothing", and the agent then invents
 # what it thinks the screenshot showed instead of asking.
 IMAGE_OMITTED = "[image omitted: the active model cannot process images]"
+IMAGE_AMBIGUOUS = "[image omitted: reference markers did not match image carriers]"
 
 
 def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
@@ -65,6 +67,25 @@ def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
         dropped += sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
         out.append({**m, "content": parts})
     return out, dropped
+
+
+def _strip_current_images(messages: list[Any]) -> list[Any]:
+    """Remove ambiguous carriers from only the request's last user message."""
+    out = list(messages)
+    index = next((i for i in range(len(out) - 1, -1, -1)
+                  if isinstance(out[i], dict) and out[i].get("role") == "user"), None)
+    if index is None:
+        return out
+    message = out[index]
+    content = message.get("content")
+    if not isinstance(content, list):
+        return out
+    out[index] = {**message, "content": [
+        {"type": "text", "text": IMAGE_AMBIGUOUS}
+        if isinstance(part, dict) and part.get("type") == "image_url" else part
+        for part in content
+    ]}
+    return out
 
 
 def _capture_refusal(stream: Iterator[bytes], request: dict[str, Any], on_refused) -> Iterator[bytes]:
@@ -103,22 +124,62 @@ def _capture_refusal(stream: Iterator[bytes], request: dict[str, Any], on_refuse
         raise
 
 
-def _confirm_image_delivery(stream: Iterator[bytes], data_use, operation_ids: tuple[str, ...],
-                            model: str) -> Iterator[bytes]:
-    """Confirm a capable image carrier only after upstream produces response bytes."""
-    responded = False
+def _frame_outcome(line: str) -> tuple[str, str | None] | None:
+    payload = line.strip()
+    if payload.startswith("data:"):
+        payload = payload[5:].strip()
+    if not payload or payload == "[DONE]" or payload.startswith("event:"):
+        return None
+    try:
+        body = json.loads(payload)
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    if body.get("error"):
+        from ..liveread.data_use import gateway_failure_kind
+        return "failed", gateway_failure_kind(body["error"])
+    if body.get("type") in ("response.failed", "response.incomplete"):
+        return "failed", "incomplete"
+    if body.get("type") in ("response.created", "response.in_progress", "message_start"):
+        return None
+    return "responded", None
+
+
+def _track_image_delivery(stream: Iterator[bytes], data_use, operation_ids: tuple[str, ...],
+                          model: str) -> Iterator[bytes]:
+    """Settle image delivery from parsed upstream response frames."""
+    buffer = ""
+    settled = False
+
+    def inspect(line: str) -> None:
+        nonlocal settled
+        if settled:
+            return
+        outcome = _frame_outcome(line)
+        if outcome is None:
+            return
+        state, kind = outcome
+        if state == "failed":
+            data_use.fail_image_delivery(operation_ids, model, kind or "gateway_error")
+        else:
+            data_use.confirm_image_delivery(operation_ids, model)
+        settled = True
+
     try:
         for chunk in stream:
-            if not responded and chunk:
-                data_use.confirm_image_delivery(operation_ids, model)
-                responded = True
+            buffer += chunk.decode("utf-8", errors="replace")
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                inspect(line)
             yield chunk
     except Exception:
-        if not responded:
+        if not settled:
             data_use.fail_image_delivery(operation_ids, model, "gateway")
         raise
     else:
-        if not responded:
+        inspect(buffer)
+        if not settled:
             data_use.fail_image_delivery(operation_ids, model, "no_response")
 
 
@@ -251,9 +312,11 @@ class EnforcementShim:
                on_resolved=None, on_refused=None) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
         request, labels, used, capability = self.prepare(request, project, session, on_resolved)
-        image_delivery = self.data_use.begin_image_delivery(
+        image_delivery, strip_current_images = self.data_use.begin_image_delivery(
             request, request["model"], capable=supports_vision(request["model"])
         )
+        if strip_current_images and isinstance(request.get("messages"), list):
+            request = {**request, "messages": _strip_current_images(request["messages"])}
         from ..gateway.protocol import Protocol
         try:
             if capability.protocol is not Protocol.CHAT:
@@ -265,7 +328,7 @@ class EnforcementShim:
             self.data_use.fail_image_delivery(image_delivery, request["model"], "gateway")
             raise
         stream = _capture_refusal(stream, request, on_refused)
-        stream = _confirm_image_delivery(
+        stream = _track_image_delivery(
             stream, self.data_use, image_delivery, request["model"]
         )
         return self.data_use.observe(stream, request, used)
