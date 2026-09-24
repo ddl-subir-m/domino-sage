@@ -333,7 +333,9 @@ def test_diagnostics_expose_only_safe_session_state(tmp_path: Path, caplog):
     assert private not in caplog.text
 
 
-def test_stale_persisted_session_reports_the_replacement_lifecycle(tmp_path: Path):
+def test_stale_persisted_session_reports_a_fresh_replacement_on_the_standard_reused_path(
+    tmp_path: Path,
+):
     orch, opencode = _build(tmp_path, [
         Turn(writes={"src/App.tsx": "// direct build after stale recovery\n"}),
     ])
@@ -363,6 +365,8 @@ def test_stale_persisted_session_reports_the_replacement_lifecycle(tmp_path: Pat
     summary = next(row for row in store.list(project.workspace.app_id)
                    if row["turn"]["kind"] == "build")
     record = store.get(summary["turn"]["turnId"], project.workspace.app_id, CONVERSATION)
+    # `reason` names the standard direct path. The booleans say that validation replaced its stale
+    # selected ID, so `reused` plus fresh/created/persisted is deliberate.
     assert record["implementationSession"] == {
         "fresh": True, "reason": "reused", "created": True,
         "persisted": True, "dispatchStarted": True,

@@ -16512,6 +16512,17 @@ class Orchestrator:
         if not answer_only:
             with timing.span("setup.attachments"):
                 mentions, missing_inputs = self._prepare_build_attachments(project, mentions)
+        if project.stop_requested:
+            # Stop can land while attachment paths are being resolved. There is no active session,
+            # transcript row, or filesystem baseline yet, so consume it here before the missing-input
+            # exit can leave the flag for the next turn. The fresh preflight marker keeps Stop from
+            # interrupting the planning session while resolution runs.
+            project.stop_requested = False
+            if fresh_session:
+                self._turn_gave_up = True
+            build_diagnostics.observe({"type": "stopped"})
+            yield {"type": "stopped"}
+            return
         if missing_inputs:
             # An approved plan still needs to be built after its inputs return.
             self._turn_gave_up = True
@@ -16549,6 +16560,9 @@ class Orchestrator:
         # Built after history-derived withholding is armed below. Besides ordering the token's
         # Data-use identity correctly, this keeps the note beside the grant it names.
         live_read_note = ""
+        # `reason` classifies the implementation path. The standard direct path is `reused` even
+        # when validation finds a stale selected ID and mints a replacement; the lifecycle booleans
+        # below record that replacement separately without extending the ticket's fixed enum.
         implementation_session_reason = "reused"
         implementation_session_created = False
         implementation_session_persisted = False

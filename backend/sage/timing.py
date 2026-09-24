@@ -297,7 +297,12 @@ def decide(ok: bool | None, decision: str) -> None:
 
 def implementation_session(*, fresh: bool, reason: str, created: bool,
                            persisted: bool, dispatch_started: bool) -> None:
-    """Record only the safe state transitions of the session selected for implementation."""
+    """Record safe implementation-session state.
+
+    ``reason`` classifies the path that selected the session. The standard direct path is
+    ``reused`` even when validation replaces a stale ID; ``fresh``, ``created``, and ``persisted``
+    record that lifecycle outcome.
+    """
     if reason not in {"approved_plan", "phase", "broken_call_recovery", "reused"}:
         return
     rec = _current

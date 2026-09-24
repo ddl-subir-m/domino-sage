@@ -537,6 +537,46 @@ def test_stop_during_reference_preflight_never_interrupts_or_replaces_the_planni
     assert project.workspace.read_plan()
 
 
+def test_stop_during_missing_attachment_resolution_is_consumed_before_the_next_turn(
+    tmp_path: Path, monkeypatch,
+):
+    orch, client, assets, shell, _neighbor, plan_id = _planned(tmp_path)
+    project = orch.project(start_preview=False)
+    old_id = project.session_id
+    assert old_id
+    (assets.root / "sales_2026" / "README.md").unlink()
+    (project.workspace.path / shell).unlink()
+    sessions_before = list(client.sessions)
+    prompts_before = list(client.prompts)
+    prepare = orch._prepare_build_attachments
+
+    def prepare_then_stop(active_project, mentions):
+        prepared = prepare(active_project, mentions)
+        assert prepared[1], "the test did not reach the missing-input exit"
+        assert orch.stop_build() is True
+        return prepared
+
+    monkeypatch.setattr(orch, "_prepare_build_attachments", prepare_then_stop)
+
+    stopped = list(orch.approve_stream(plan_id=plan_id))
+
+    assert any(event.get("type") == "stopped" for event in stopped)
+    assert client.sessions == sessions_before
+    assert client.prompts == prompts_before
+    assert client.interrupted == 0
+    assert project.stop_requested is False
+    assert project.session_id == old_id
+    assert project.record.read_session_id(None, project.workspace.app_id) == old_id
+    assert project.workspace.read_plan()
+
+    monkeypatch.setattr(orch, "_prepare_build_attachments", prepare)
+    later = list(orch.approve_stream(plan_id=plan_id))
+
+    assert not any(event.get("type") == "stopped" for event in later)
+    assert any(event.get("type") == "mentions-unresolved" for event in later)
+    assert project.stop_requested is False
+
+
 def test_withholding_is_applied_again_on_approval(tmp_path: Path):
     first, _planner, assets, shell, _neighbor, plan_id = _planned(tmp_path)
     first.project(start_preview=False).workspace.append_history(
