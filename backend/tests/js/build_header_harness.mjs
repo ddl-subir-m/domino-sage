@@ -281,6 +281,40 @@ const HISTORY = {
   ],
 };
 
+// The fixed diagnostic timestamp from #522. The API owns Unix seconds while older transcript rows
+// carry ISO strings. These runs put both forms at the same instant, with one run on either side,
+// so the drawer has to render and sort across the contract rather than only parse one shape.
+const BUILD_SECONDS = 1790220211.8069158;
+const buildIso = (seconds) => new Date(seconds * 1000).toISOString();
+const DATE_HISTORY = {
+  app_a: [
+    { type: 'user', text: 'Earlier transcript', app: 'app_a', conversation: 'thr_many',
+      at: buildIso(BUILD_SECONDS - 10) },
+    { type: 'done', ok: true, decision: 'built', app: 'app_a', conversation: 'thr_many' },
+    { type: 'user', text: 'ISO at captured instant', app: 'app_a', conversation: 'thr_many',
+      at: buildIso(BUILD_SECONDS) },
+    { type: 'done', ok: true, decision: 'built', app: 'app_a', conversation: 'thr_many' },
+    { type: 'user', text: 'Implementation at captured instant', app: 'app_a',
+      conversation: 'thr_many', turnId: 'turn_implementation', at: buildIso(BUILD_SECONDS) },
+    { type: 'done', ok: true, decision: 'built', app: 'app_a', conversation: 'thr_many' },
+    { type: 'user', text: 'Later planning', app: 'app_a', conversation: 'thr_many',
+      turnId: 'turn_planning', at: buildIso(BUILD_SECONDS + 10) },
+    { type: 'done', ok: true, decision: 'built', app: 'app_a', conversation: 'thr_many' },
+  ],
+};
+const diagnosticRecord = (turnId, phase, startedAt) => ({
+  turn: { turnId, appId: 'app_a', conversationId: 'thr_many', phase, startedAt },
+  capture: { status: 'finished' },
+  buildOutcome: { status: 'success' },
+});
+const DATE_DIAGNOSTICS = [
+  diagnosticRecord('turn_implementation', 'implementation', BUILD_SECONDS),
+  diagnosticRecord('turn_planning', 'planning', BUILD_SECONDS + 10),
+  diagnosticRecord('turn_diagnostic_only', 'diagnostic', BUILD_SECONDS),
+  diagnosticRecord('turn_invalid', 'diagnostic', 'not-a-time'),
+  diagnosticRecord('turn_missing', 'diagnostic', undefined),
+];
+
 const calls = [];
 // The BODIES posted to `/bindings`, which `calls` cannot hold: it keys on method and path, and a
 // bind names its Resource in the body. The id space is the whole hazard (#99) — a Project row
@@ -302,6 +336,7 @@ let expanded = false;
 // A 500 on the app's build log, which is not the same answer as an app nobody has built in.
 let historyFails = false;
 let diagnosticsFails = false;
+let useDateFixture = false;
 // A 500 on ONE tool card's input, which is not the same answer as a tool that recorded none. Its
 // own switch because it is its own read: the list can arrive and the row behind a card still not.
 let rowDetailFails = false;
@@ -442,7 +477,7 @@ function route(path, init) {
   }
   if (path.startsWith('/project/history')) {
     if (historyFails) return json({ error: 'unavailable' }, 500);
-    const rows = HISTORY[selected] || [];
+    const rows = (useDateFixture ? DATE_HISTORY : HISTORY)[selected] || [];
     const named = path.match(/[?&]conversation=([^&]+)/);
     const picked = named
       ? rows.filter((r) => r.conversation === decodeURIComponent(named[1]))
@@ -460,7 +495,7 @@ function route(path, init) {
   }
   if (path.startsWith('/project/build-diagnostics')) {
     if (diagnosticsFails) return json({ error: 'unavailable' }, 500);
-    return json({ records: [] });
+    return json({ records: useDateFixture ? DATE_DIAGNOSTICS : [] });
   }
   // Both are app-scoped and both are read off disk, so the answer follows `selected` rather than
   // being a fixture the whole run shares.
@@ -1700,6 +1735,7 @@ for (const step of steps) {
   // click it. The step knows no store method and no route — a control that stopped being in the
   // header would not be found at all, rather than quietly asserted around.
   if (step.history) {
+    useDateFixture = !!step.dateFixture;
     await arrive(step.history, step.select);
 
     // Rendering is what CALLS the drawer, and calling it is what records the effect that makes its
@@ -1722,6 +1758,11 @@ for (const step of steps) {
     historyFails = !!step.readFails;
     diagnosticsFails = !!step.diagnosticsFails;
     rowDetailFails = !!step.rowReadFails;
+    const relativeTime = SW.util.relativeTime;
+    if (step.dateFixture) {
+      SW.util.relativeTime = (value) => new Date(value).toLocaleDateString(
+        'en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    }
     calls.length = 0;
     // Build history is an item in the header's own `…` menu now (`624ff9b`), where it used to be a
     // control with an aria-label of its own. Both are accepted: what these tests are about is the
@@ -1826,6 +1867,14 @@ for (const step of steps) {
       transcripts: whole.filter(
         (n) => String(n.className || '').startsWith('sw-builder-chat-messages')
       ).length,
+      expectedBuildDate: step.dateFixture
+        ? new Date(BUILD_SECONDS * 1000).toLocaleDateString(
+          'en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+        : null,
+      unconvertedBuildDate: step.dateFixture
+        ? new Date(BUILD_SECONDS).toLocaleDateString(
+          'en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+        : null,
     });
     // After the report, not before it: `readDrawer` calls the components again to read the tree,
     // so a switch turned off here would be off for the render the report is built from.
@@ -1833,6 +1882,8 @@ for (const step of steps) {
     historyFails = false;
     diagnosticsFails = false;
     rowDetailFails = false;
+    useDateFixture = false;
+    SW.util.relativeTime = relativeTime;
     continue;
   }
 
