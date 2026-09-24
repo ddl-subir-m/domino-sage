@@ -166,6 +166,8 @@ _IMAGE_MATRIX = [
      "carriers": 1, "history": "none", "upstream": "error-close"},
     {"id": "close-after-setup", "kind": "shim", "capable": True, "markers": 1,
      "carriers": 1, "history": "none", "upstream": "setup-close"},
+    {"id": "close-before-first-pull", "kind": "shim", "capable": True, "markers": 1,
+     "carriers": 1, "history": "none", "upstream": "unstarted-close"},
     {"id": "opencode-send-raise", "kind": "orchestrator", "exit": "send"},
     {"id": "stop-before-send", "kind": "orchestrator", "exit": "stop"},
     {"id": "terminal-done", "kind": "orchestrator", "exit": "done"},
@@ -252,6 +254,7 @@ def test_image_delivery_state_matrix(tmp_path: Path, case: dict):
                 "delta": [{"choices": [{"delta": {"content": "ok"}}]}],
                 "delta-close": [{"choices": [{"delta": {"content": "ok"}}]}],
                 "setup-close": [{"type": "response.created", "response": {"id": "r1"}}],
+                "unstarted-close": [{"choices": [{"delta": {"content": "unread"}}]}],
                 "complete": [{"choices": [{"finish_reason": "stop"}]}],
             }[upstream]
             return iter([("data: " + json.dumps(frame) + "\n\n").encode()
@@ -299,6 +302,9 @@ def test_image_delivery_state_matrix(tmp_path: Path, case: dict):
     elif case["upstream"] == "lazy":
         with pytest.raises(OSError, match="lazy next failure"):
             list(shim.handle({"messages": messages}, project="p"))
+    elif case["upstream"] == "unstarted-close":
+        stream = shim.handle({"messages": messages}, project="p")
+        stream.close()
     elif case["upstream"].endswith("-close"):
         stream = shim.handle({"messages": messages}, project="p")
         next(stream)
@@ -328,9 +334,7 @@ def test_image_delivery_state_matrix(tmp_path: Path, case: dict):
         expected = ("not_sent", "carrier")
     elif case["upstream"] in ("sync", "lazy"):
         expected = ("not_sent", "gateway")
-    elif case["upstream"] == "empty":
-        expected = ("not_sent", "no_response")
-    elif case["upstream"] == "setup-close":
+    elif case["upstream"] in ("empty", "setup-close", "unstarted-close"):
         expected = ("not_sent", "no_response")
     elif case["upstream"] in ("error", "error-close"):
         expected = ("not_sent", "provider")
@@ -338,8 +342,9 @@ def test_image_delivery_state_matrix(tmp_path: Path, case: dict):
         expected = ("not_sent", "incomplete")
     else:
         expected = ("sent", None)
-    evidence_count = 0 if case["upstream"] == "sync" else 1
-    write_delta = 1 if case["upstream"] == "sync" else 3
+    no_observation = case["upstream"] in ("sync", "unstarted-close")
+    evidence_count = 0 if no_observation else 1
+    write_delta = 1 if no_observation else 3
     for operation in current:
         event = shim.data_use.operations[operation][0]
         assert (event["delivery"], event["failure"]) == expected

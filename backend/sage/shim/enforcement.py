@@ -186,6 +186,33 @@ def _track_image_delivery(stream: Iterator[bytes], data_use, operation_ids: tupl
             data_use.fail_image_delivery(operation_ids, model, "no_response")
 
 
+class _CloseAwareImageDelivery:
+    """Close a delivery row even when the wrapped generator was never started."""
+
+    def __init__(self, stream: Iterator[bytes], data_use, operation_ids: tuple[str, ...],
+                 model: str):
+        self.stream = stream
+        self.data_use = data_use
+        self.operation_ids = operation_ids
+        self.model = model
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> bytes:
+        return next(self.stream)
+
+    def close(self) -> None:
+        try:
+            close = getattr(self.stream, "close", None)
+            if close is not None:
+                close()
+        finally:
+            # Closing an unstarted generator does not enter its body or run its finally block.
+            # This outer boundary is therefore the only place that can settle a zero-pull exit.
+            self.data_use.fail_image_delivery(self.operation_ids, self.model, "no_response")
+
+
 def split_parallel_tool_calls(messages: list[Any]) -> list[Any]:
     """Rewrite one assistant message holding N tool calls into N single-tool-call exchanges.
 
@@ -334,7 +361,10 @@ class EnforcementShim:
         stream = _track_image_delivery(
             stream, self.data_use, image_delivery, request["model"]
         )
-        return self.data_use.observe(stream, request, used)
+        observed = self.data_use.observe(stream, request, used)
+        return _CloseAwareImageDelivery(
+            observed, self.data_use, image_delivery, request["model"]
+        )
 
     def prepare(self, request: dict[str, Any], project: str, session: str | None = None,
                 on_resolved=None, *, native: bool = False, rewrite_counts=None):
