@@ -11,7 +11,7 @@ import hashlib
 import os
 import re
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
@@ -19,6 +19,8 @@ from ..document_text import DocumentTextError, extract_docx, extract_pdf
 
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_SELECTED_CHARS = 8_000
+# A plan turn's cap on one prepared document (#538); approval prepares it again at the full limit.
+PLAN_SELECTED_CHARS = 3_000
 MAX_SELECTOR_CHARS = 200
 MAX_PDF_PAGES = 20
 
@@ -73,6 +75,7 @@ class Prepared:
     total_rows: int = 0
     delivery: str = ""
     failure: str = ""
+    planning_limit: int = 0
 
     def prompt_block(self, *, operation_id: str = "") -> str:
         if self.status != "prepared":
@@ -102,7 +105,10 @@ class Prepared:
             coverage += f" from pages {', '.join(str(page) for page in self.processed_pages)}"
         elif self.selected_selector:
             coverage += f' from heading "{self.selected_selector}"'
-        if self.sent_characters < self.selected_characters:
+        if self.planning_limit:
+            coverage += (f"; shortened to {self.planning_limit:,} characters for planning. Read "
+                         f"{self.source} for the rest")
+        elif self.sent_characters < self.selected_characters:
             coverage += "; truncated at the 8,000-character limit"
         if self.pages_truncated:
             coverage += "; page coverage stopped at the 20-page or 8,000-character bound"
@@ -244,6 +250,20 @@ def prepare_explicit(root: Path, manifest: Iterable[dict], sources: Iterable[str
             out.append(prepared)
             seen.add(authorized.source)
     return out
+
+
+def for_planning(prepared: Prepared) -> Prepared:
+    """`prepared`, cut to PLAN_SELECTED_CHARS when it is a longer document (#538).
+
+    A gated plan turn needs a document's gist, and a weaker planner loses the request under 8,000
+    characters of it. Cut HERE, before `data_use` records it, so the audit counts what was sent.
+    `plan_record` keeps only identity, so the approval prepares the full text again."""
+    if (prepared.status != "prepared" or prepared.source_type in {"table", "image"}
+            or prepared.sent_characters <= PLAN_SELECTED_CHARS):
+        return prepared
+    return replace(prepared, text=prepared.text[:PLAN_SELECTED_CHARS],
+                   sent_characters=PLAN_SELECTED_CHARS, truncated=True,
+                   planning_limit=PLAN_SELECTED_CHARS)
 
 
 def plan_record(prepared: Prepared) -> dict:

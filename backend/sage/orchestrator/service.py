@@ -2830,6 +2830,54 @@ def _looks_like_recovery_retry(prompt: str) -> bool:
             or (bool(_CONTINUE_ONLY.match(text)) and bool(re.search(r"[a-z]", text, re.IGNORECASE))))
 
 
+# How a gated turn ends when it produced no plan. `model_no_action_timeout` is shared with a build
+# turn, so for that one decision the planning error beside it is what says it was a plan turn.
+_FAILED_PLAN_DECISIONS = frozenset({"no app described", "empty plan"})
+_PLANNING_STOPPED = "Planning stopped"
+
+
+def _effort_hint(err: dict) -> str:
+    """One sentence for a planner that stalled on Model default, or "" (#538).
+
+    MEASURED 2026-09-24: GLM 5.3 OR on Model default reasoned for 120 s with no answer, then acted in
+    3.5 s on the same request. Said, never done: "Model default" is the person's saved choice."""
+    efforts = [str(e) for e in err.get("efforts") or []]
+    if err.get("effort_source") != "provider_default" or not efforts:
+        return ""
+    return (f" {err.get('model') or 'This model'} ran on Model default, which puts no limit on "
+            f"its thinking. Setting its Plan effort ({', '.join(efforts)}) can prevent this.")
+
+
+def _failed_plan_request(history: list[dict], prompt: str) -> str | None:
+    """The request a failed plan turn was about, when `prompt` only asks to go on (#537).
+
+    None unless the whole prompt is a bare retry or continue AND the last turn in this Conversation
+    was a plan turn that ended with no plan. Walks back over earlier bare retries, so a second
+    "continue" after a replay that also failed still finds the person's own request."""
+    if not _looks_like_recovery_retry(prompt):
+        return None
+    rows = [row for row in (history or []) if isinstance(row, dict)]
+    end = len(rows)
+    while True:
+        done = next((i for i in range(end - 1, -1, -1) if rows[i].get("type") == "done"), -1)
+        if done < 0 or rows[done].get("ok") is not False:
+            return None
+        start = next((i for i in range(done - 1, -1, -1) if rows[i].get("type") == "done"), -1) + 1
+        window = rows[start:done]
+        decision = rows[done].get("decision")
+        planned = decision in _FAILED_PLAN_DECISIONS or (
+            decision == "model_no_action_timeout"
+            and any(row.get("type") == "error"
+                    and str(row.get("message") or "").startswith(_PLANNING_STOPPED)
+                    for row in window))
+        if not planned:
+            return None
+        asked = next((str(row.get("text") or "") for row in window if row.get("type") == "user"), "")
+        if asked and not _looks_like_recovery_retry(asked):
+            return asked
+        end = start
+
+
 def _pending_refusal_recovery_message(history: list[dict], prompt: str) -> str:
     """Ask for the recovery choice before a bare retry can resend the same refused Recall."""
     if not _looks_like_recovery_retry(prompt):
@@ -5490,6 +5538,69 @@ _PLAN_REFUSAL = (
     "change to one — a shell command, a pasted error, a stray note — write exactly "
     f"{_NO_APP_SENTINEL} on the first line, then one sentence naming what is missing, and nothing "
     "else: no headings, no plan. Never invent an app the request did not ask for.")
+
+
+def _plan_example(data_step: tuple[str, str], screen_files: str) -> str:
+    return f"""An example of the SHAPE only, for a different app. Never reuse its name, screens, files or \
+content; plan the request below.
+
+# Sample Intake Log
+
+Logs lab samples as they arrive and flags the late ones.
+
+## Problem & outcome
+Arrivals are tracked by email, so a late sample is found days later. Once this exists, every late \
+sample shows the same morning.
+
+## Who uses this
+The lab coordinator who checks arrivals each morning.
+
+## What it does
+- Lists samples from the attached arrivals file.
+- Flags samples more than two days past their due date.
+
+## Screens
+- **Arrivals** — a table of samples with a late flag and a site filter.
+
+## Done when
+- The table shows every row of the arrivals file.
+- A sample three days past due shows the late flag.
+
+## Plan
+### 1. Arrivals data
+- Files — {data_step[0]}
+- Do — {data_step[1]}
+- Done when — Each sample comes back with its due date and a late flag.
+
+### 2. Arrivals table
+- Files — {screen_files}
+- Do — Replace the starter screen with a table of samples, a site filter and a late tag.
+- Done when — The preview shows the table with late rows tagged.
+- Don't touch — {data_step[0]}"""
+
+
+# One worked plan per stack (weaker models copy an example better than they follow rules), with
+# that stack's real files so the example never teaches a path the app does not have. Kept out of
+# `_PLAN_SHAPE` because the Chat handoff shares that constant.
+_PLAN_EXAMPLES = {
+    "fastapi-antd": _plan_example(
+        ("app.py", "Add a route that reads the arrivals file and returns each sample."),
+        "static/app.js, static/app.css"),
+    "react-vite": _plan_example(
+        ("src/arrivals.ts", "Read the arrivals file and return each sample."),
+        "src/App.tsx, src/App.css"),
+}
+
+
+# Heads the person's own words in a gated plan turn (#537). The data notes ride AFTER the request
+# (see the send in `_build_stream`), so the label also says where the request ends.
+_PLAN_REQUEST_LABEL = ("The request, in the person's own words (any blocks after it describe their "
+                       "files and data; they are background for this request, not the request):\n")
+
+
+# Said once more at the very END of a gated plan turn that carries notes or attachments (#537):
+# those follow the request, and a weaker model weighs what it read last.
+_PLAN_REQUEST_AGAIN = "The request again, in the person's own words:\n"
 
 
 # How far in to look for the sentinel. Not just the first line: `plan_md` is every assistant text
@@ -8587,6 +8698,15 @@ class Orchestrator:
                                 else "Approved in chat — building this plan.")}
                 yield from self._approve_locked(user_text=prompt)
                 return
+            # A bare "continue" after a PLAN turn that produced nothing re-plans the request that
+            # turn was about (#537). Sent as itself it is planned as a new request, and a planner
+            # rightly finds no app in the word "continue". The bubble keeps what they typed.
+            typed = None
+            if not live_plan:
+                replayed = _failed_plan_request(
+                    plan_app.read_history(project.build_conversation), prompt)
+                if replayed:
+                    typed, prompt = prompt, replayed
             # Before the Ask check and the gate: "remove everything you have built" is a change
             # request and a build request by every rule below, which is exactly how it used to reach
             # the build agent and come back as a page ABOUT starting over.
@@ -8740,7 +8860,7 @@ class Orchestrator:
                 # The pick wins over the three skip flags, which it can arrive carrying: a turn
                 # started by choosing a Data Source says which one, whatever gate the turn before
                 # it had also answered.
-                user_text=(picked or ("Build it." if skip_reset_gate or skip_incoming_gate
+                user_text=(picked or typed or ("Build it." if skip_reset_gate or skip_incoming_gate
                                       or skip_table_gate or skip_source_gate or skip_dataset_gate
                                       else None)))
         except TurnWedged:
@@ -17741,6 +17861,11 @@ class Orchestrator:
             # Both names now carry the same durable contract. The preference still controls only
             # execution, below: it does not change what a plan document contains.
             shape = _PLAN_SHAPE_PHASED if (phased_build and mode_at_start is Mode.AUTO) else _PLAN_SHAPE
+            # Labelled (#537). The person's sentence was ~0.4 KB of a 14 KB message, unmarked, with
+            # ~10 KB of data notes after it; a planner took the notes for the request and refused.
+            current = _PLAN_REQUEST_LABEL + current
+            shape += "\n\n" + _PLAN_EXAMPLES.get(
+                stack_of(project.app_for_turn().path).name, _PLAN_EXAMPLES["react-vite"])
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
                            "would touch so the plan fits the current code, then write the plan. "
@@ -17753,9 +17878,14 @@ class Orchestrator:
                 # commonest request there is. Refusing that would be a regression, and would refuse
                 # it with copy written for an empty project. The filler plan #150 reports needs a
                 # blank template to happen — there is nothing to read, so nothing anchors the plan.
+                #
+                # Not offered when the person attached files or @-mentioned data (#537): a request that
+                # arrives with its material is not a stray note, and the notes describing that material
+                # are exactly what a planner mistook for one.
+                way_out = "" if (mention_files or resource_note) else _PLAN_REFUSAL + "\n\n"
                 current = ("This is a brand-new app from a blank template — there are no existing "
                            "files worth reading, so plan straight from the request. "
-                           + _PLAN_VOICE + "\n\n" + _PLAN_REFUSAL + "\n\n" + shape + "\n\n" + current)
+                           + _PLAN_VOICE + "\n\n" + way_out + shape + "\n\n" + current)
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
@@ -18308,6 +18438,9 @@ class Orchestrator:
                     target_for=lambda row: self._reference_attachment_target(project, row),
                     descriptors=descriptors,
                 )
+                if gate:
+                    prepared_references = [live_reference.for_planning(item)
+                                           for item in prepared_references]
                 plan_reference_records = [live_reference.plan_record(item)
                                           for item in prepared_references]
             if fresh_session and project.stop_requested:
@@ -18813,7 +18946,12 @@ class Orchestrator:
                                                            unusable_note, ambiguous_note,
                                                            broken_retry_note) if p),
                                    model=_tool_handle(project), agent=agent,
-                                   attachments=mention_files)
+                                   attachments=mention_files,
+                                   # Passed only when set, so every other client keeps its shape.
+                                   **({"tail": _PLAN_REQUEST_AGAIN + prompt}
+                                      if gate and not arch and (
+                                          mention_files or chat_note or resource_note
+                                          or unusable_note or ambiguous_note) else {}))
                 if fresh_session:
                     self._turn_gave_up = False
             except Exception:
@@ -19345,7 +19483,7 @@ class Orchestrator:
                         restarted = yield from restart_planning_session(
                             correction="",
                             reason=("the planner produced no action — restarting once in a "
-                                    "clean session"),
+                                    "clean session." + _effort_hint(err)),
                         )
                         if restarted:
                             iterate_reason = "planning no-action recovery"
@@ -19356,8 +19494,9 @@ class Orchestrator:
                     restore_mode()
                     yield persist({
                         "type": "error",
-                        "message": ("Planning stopped because the clean retry also produced no "
-                                    "text or tool call. Try the request again."),
+                        "message": (_PLANNING_STOPPED + " because the clean retry also produced no "
+                                    "text or tool call. Try the request again."
+                                    + _effort_hint(err)),
                     })
                     yield persist({"type": "done", "ok": False,
                                    "decision": "model_no_action_timeout"})

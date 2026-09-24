@@ -31,7 +31,17 @@ from .agent_driver import AgentEvent
 log = logging.getLogger("sage.driver")  # "sage.*" -> surfaced by /api/diag's log tail
 
 
-def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: bool = False) -> str:
+def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: bool = False,
+                            tail: str = "") -> str:
+    """`text`, then the attachment listing, then `tail` — the one thing that can follow the listing.
+
+    `tail` exists for a gated plan turn (#537): the listing can run to ~10 KB of data notes, and a
+    weaker model weighs the end of a message most, so the person's request is said again last."""
+    out = _with_listing(text, attachments, chat=chat)
+    return f"{out}\n\n{tail}" if tail else out
+
+
+def _with_listing(text: str, attachments: list[dict] | None, *, chat: bool = False) -> str:
     """Append @mentioned file descriptors to a prompt. Chat must not get the Build-app preamble."""
     if not attachments:
         return text
@@ -456,7 +466,7 @@ class OpenCodeClient:
         return ms[-1]["id"] if ms else None
 
     def send_prompt(self, session_id: str, text: str, model: dict | None = None, agent: str | None = None,
-                    attachments: list[dict] | None = None, *, chat: bool = False) -> None:
+                    attachments: list[dict] | None = None, *, chat: bool = False, tail: str = "") -> None:
         """Send a prompt. `/prompt` returns before the turn completes (async), so callers must
         wait_for_completion() to know the edits landed.
 
@@ -497,7 +507,7 @@ class OpenCodeClient:
             them, so this method attaches unconditionally and lets that policy live in one place.
         Confirmed end to end (OpenCode -> shim -> gateway -> sonnet): the model read a test image
         correctly."""
-        text = with_attachment_listing(text, attachments, chat=chat)
+        text = with_attachment_listing(text, attachments, chat=chat, tail=tail)
         # v1 carries text and media as PARTS, where v2 took `prompt.text` and `prompt.files`. The
         # base64 constraint above is unchanged — it is a property of how OpenCode forwards media,
         # not of which API asked it to.
