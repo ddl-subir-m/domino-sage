@@ -318,7 +318,7 @@ def _pre_edit_guard(value) -> dict | None:
         return None
     if value.get("trigger") not in {
             "none", "model_calls", "request_bytes", "tool_result_bytes",
-            "no_edit_completion", "request_measurement_unavailable",
+            "no_edit_completion", "model_output_limit", "request_measurement_unavailable",
             "tree_witness_unavailable", "session_abort_unconfirmed"}:
         return None
     if value.get("action") not in {"route", "recover", "stop", "disarm", "fail"}:

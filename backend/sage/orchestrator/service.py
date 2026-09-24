@@ -7605,11 +7605,26 @@ class Orchestrator:
                     state = project.context_rollover
                     pre_edit = guard.consume_pending() if guard is not None else None
                     pending = state.consume_pending() if state is not None else None
+                    output_limited = bool(
+                        project.last_gateway_error is not None
+                        and project.last_gateway_error.get("code") == "model_output_limit"
+                    )
                     if pre_edit is None and pending is None and guard is not None:
                         with project.pre_edit_tree_lock:
                             if not guard.check_edit() and guard.is_armed:
-                                pre_edit = guard.no_edit_completion()
+                                pre_edit = (guard.model_output_limit() if output_limited
+                                            else guard.no_edit_completion())
                                 guard.consume_pending()
+                    if output_limited and pre_edit is not None:
+                        record = timing.current()
+                        log.warning(
+                            "build model output limit: turn_id=%s finish_reason=%s attempt=%s "
+                            "action=%s",
+                            record.turn_id if record is not None else "",
+                            project.last_gateway_error.get("finish_reason", ""),
+                            guard.diagnostic()["attempt"] if guard is not None else "",
+                            pre_edit.action.value,
+                        )
                     if pre_edit is not None:
                         if pre_edit.action is PreEditAction.FAIL:
                             terminal_context = {
@@ -19005,6 +19020,27 @@ class Orchestrator:
             err = project.last_gateway_error or (
                 {"message": _error_raw(turn_failure)} if turn_failure is not None else None)
             if err is not None:
+                if (err.get("code") == "model_output_limit"
+                        and project.pre_edit_guard is not None):
+                    with project.pre_edit_tree_lock:
+                        winner = project.pre_edit_guard.model_output_limit()
+                    record = timing.current()
+                    log.warning(
+                        "build model output limit: turn_id=%s finish_reason=%s attempt=%s "
+                        "action=%s",
+                        record.turn_id if record is not None else "",
+                        err.get("finish_reason", ""),
+                        project.pre_edit_guard.diagnostic()["attempt"], winner.action.value,
+                    )
+                    if winner.action in {
+                            PreEditAction.RECOVER, PreEditAction.STOP, PreEditAction.FAIL}:
+                        project.pre_edit_guard.consume_pending()
+                        resumed = yield from apply_pre_edit_decision(winner)
+                        if resumed is PreEditAction.RECOVER:
+                            iterate_reason = "clean pre-edit recovery"
+                            continue
+                        if resumed is not PreEditAction.DISARM:
+                            return
                 if (project.pre_edit_guard is not None
                         and not project.pre_edit_guard.claim_existing_terminal()):
                     winner = project.pre_edit_guard.consume_pending()

@@ -157,6 +157,31 @@ def test_no_edit_completion_gets_one_clean_recovery_then_terminal_stop():
     assert decision.trigger is PreEditTrigger.NO_EDIT_COMPLETION
 
 
+def test_model_output_limit_gets_one_clean_recovery_then_terminal_stop():
+    guard, _ = _guard(calls=99)
+    first = guard.model_output_limit()
+    assert first.action is PreEditAction.RECOVER
+    assert first.trigger is PreEditTrigger.MODEL_OUTPUT_LIMIT
+    _recover(guard)
+
+    second = guard.model_output_limit()
+
+    assert second == guard.consume_pending()
+    assert second.action is PreEditAction.STOP
+    assert second.trigger is PreEditTrigger.MODEL_OUTPUT_LIMIT
+
+
+def test_model_output_limit_after_an_authoritative_edit_disarms_without_recovery():
+    guard, tree = _guard(calls=99)
+    tree[0] = "edited-before-output-limit"
+
+    decision = guard.model_output_limit()
+
+    assert decision.action is PreEditAction.DISARM
+    assert decision.trigger is PreEditTrigger.NONE
+    assert guard.state is PreEditState.DISARMED
+
+
 def test_authoritative_tree_edit_disarms_forever_and_allows_later_calls():
     guard, tree = _guard(calls=12)
     for _ in range(11):
