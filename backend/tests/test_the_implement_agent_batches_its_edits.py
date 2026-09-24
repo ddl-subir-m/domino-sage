@@ -42,10 +42,25 @@ def test_the_read_back_is_one_message_for_every_changed_file():
 
 def test_one_apply_patch_carries_every_change_to_a_file():
     prompt = _implement_prompt()
-    assert "put every change to one file in ONE call" in prompt
+    assert "put every change to one file in one call" in prompt
     for stack in ("fastapi-antd", "react-vite"):
         bullet = _bullet(stack)
         # Still forbids parallel edits to one file: that race is real and measured.
         assert "comes back rejected" in bullet
         assert "all of that file's hunks, each opening with a bare `@@`, in ONE call" in bullet
         assert "Write a new file whole the first time" in bullet
+
+
+def test_the_prompt_says_what_to_do_when_apply_patch_is_the_only_edit_tool():
+    """Production offers `apply_patch` and no `edit`/`write` (#534).
+
+    Real OpenCode 1.18.4, 2026-09-24: the tool set follows the model HANDLE, not the route. Handle
+    `gpt-5.4`, which Sage's config uses, gets `apply_patch` and neither `edit` nor `write`; the TFL
+    Build's recorded tool schemas agree. The prompt steered at `edit` (#494, measured on Gemini when
+    `edit` WAS offered) and gave the tool the model actually had one conditional sentence. Both
+    halves stay: `edit` when offered, and plain rules for the only-`apply_patch` case.
+    """
+    prompt = _implement_prompt()
+    choose = prompt.index("Use the edit tool you have.")
+    assert choose < prompt.index("Editing an existing file: use `edit`")
+    assert "If you have only `apply_patch`" in prompt
