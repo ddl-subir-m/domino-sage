@@ -215,10 +215,9 @@ class DominoControlPlane:
         return httpx.Client(transport=self._transport, timeout=self._timeout_s)
 
     def _headers(self) -> dict[str, str]:
-        # A static account key and a sidecar JWT are NOT interchangeable on the wire (see
-        # `platform/auth.py`'s module docstring — live-verified: a static key as bare
-        # `Authorization: Bearer` is refused with 403 by /api/users/v1/self and
-        # /api/projects/beta/projects, the two calls every route through this class makes first).
+        # Credentials are NOT interchangeable on the wire (see `platform/auth.py`'s module
+        # docstring): a legacy account key is refused as Bearer by /api/users/v1/self and
+        # /api/projects/beta/projects, a Personal Access Token is refused as X-Domino-Api-Key.
         # `headers_provider` (a `TokenSource.headers`) picks the right shape for either kind; the
         # bare-Bearer fallback below is what every caller used before this existed, kept for the
         # sidecar-only shape those callers (and this class's own tests) already rely on.

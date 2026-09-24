@@ -32,6 +32,15 @@ THE TWO ARE NOT INTERCHANGEABLE ON THE WIRE. Verified live against a real Domino
 So a caller never assumes one bearer string works everywhere: it asks `.headers()` for a raw REST
 call, or `.sdk_kwarg()` for a `domino_data` client constructor, and gets the right shape for
 whichever kind this TokenSource actually is.
+
+A `static` credential is itself one of TWO kinds, and nothing in the string says which. The legacy
+account API key above (`DOMINO_USER_API_KEY`) needs `X-Domino-Api-Key`. A Domino Personal Access
+Token — what a person mints for a laptop — is the opposite: live-checked 2026-09-24 from the
+product owner's laptop against cloud-dogfood, a PAT as `Authorization: Bearer` answered 200 on both
+`/api/users/v1/self` and `/api/projects/beta/projects`, and the same PAT as `X-Domino-Api-Key`
+answered 403 on both. So a static source finds out once, by asking `/api/users/v1/self` with each
+header, and remembers the one Domino accepted (`static(..., scheme=...)` skips the probe for a
+caller that already knows).
 """
 from __future__ import annotations
 
@@ -68,11 +77,14 @@ class TokenSource:
         bearer_fn: Callable[[], str],
         api_host: str,
         *,
+        scheme: str | None = None,
         transport: httpx.BaseTransport | None = None,
         timeout_s: float = 10.0,
     ) -> None:
         if kind not in ("static", "sidecar"):
             raise ValueError(f"unknown TokenSource kind {kind!r}")
+        if scheme not in (None, "bearer", "api_key"):
+            raise ValueError(f"unknown TokenSource scheme {scheme!r}")
         self.kind = kind
         self._bearer_fn = bearer_fn
         self._api_host = api_host.rstrip("/")
@@ -80,10 +92,49 @@ class TokenSource:
         self._timeout_s = timeout_s
         self._me: UserRef | None = None
         self._lock = threading.Lock()
+        # Only meaningful for `static` (a sidecar JWT is always Bearer). None = not probed yet.
+        self._scheme: str | None = "bearer" if kind == "sidecar" else scheme
+        self._scheme_lock = threading.Lock()
 
     @classmethod
     def static(cls, key: str, api_host: str, **kw) -> TokenSource:
         return cls("static", _static_token(key), api_host, **kw)
+
+    @staticmethod
+    def _shaped(scheme: str, token: str) -> dict[str, str]:
+        if scheme == "api_key":
+            return {"X-Domino-Api-Key": token}
+        return {"Authorization": f"Bearer {token}"}
+
+    def scheme(self) -> str:
+        """`bearer` or `api_key` — which header Domino accepts this credential in.
+
+        Probed once for a static credential: `/api/users/v1/self` with Bearer first (a PAT, the
+        laptop case), then `X-Domino-Api-Key` (a legacy account key). Only a 200 decides it; a
+        refusal on both, or a network failure, leaves it undecided so the next call asks again,
+        and answers `api_key` meanwhile — the shape this class always sent before PATs were known
+        to need the other one.
+        """
+        if self._scheme is not None:
+            return self._scheme
+        with self._scheme_lock:
+            if self._scheme is not None:
+                return self._scheme
+            if not self._api_host:
+                return "api_key"
+            token = self.bearer()
+            try:
+                with httpx.Client(transport=self._transport, timeout=self._timeout_s) as c:
+                    for candidate in ("bearer", "api_key"):
+                        r = c.get(f"{self._api_host}/api/users/v1/self",
+                                  headers={**self._shaped(candidate, token),
+                                           "Accept": "application/json"})
+                        if r.status_code == 200:
+                            self._scheme = candidate
+                            return candidate
+            except httpx.HTTPError:
+                pass
+            return "api_key"
 
     @classmethod
     def sidecar(cls, api_host: str, url: str = DEFAULT_SIDECAR_URL, **kw) -> TokenSource:
@@ -98,14 +149,14 @@ class TokenSource:
     def headers(self) -> dict[str, str]:
         """Auth header for a raw REST call to the Domino API, correct for either kind (see the
         module docstring for what was actually tried)."""
-        if self.kind == "static":
-            return {"X-Domino-Api-Key": self.bearer()}
-        return {"Authorization": f"Bearer {self.bearer()}"}
+        return self._shaped(self.scheme(), self.bearer())
 
     def sdk_kwarg(self) -> dict[str, str]:
         """The `domino_data` constructor kwarg this token authenticates with (`DatasetClient`,
-        `DataSourceClient` — both share the `api_key=`/`token=` shape)."""
-        return {"api_key": self.bearer()} if self.kind == "static" else {"token": self.bearer()}
+        `DataSourceClient` — both share the `api_key=`/`token=` shape). Follows `scheme()`: a
+        Bearer-shaped credential goes in as `token=` the way a sidecar JWT does. Live-verified for
+        the legacy key and the sidecar JWT; NOT yet for a PAT as `token=`."""
+        return {"api_key": self.bearer()} if self.scheme() == "api_key" else {"token": self.bearer()}
 
     def whoami(self) -> UserRef:
         with self._lock:

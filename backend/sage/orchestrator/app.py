@@ -250,10 +250,11 @@ def _build_control_plane():
     (Phase 6) still gets a clear "publish isn't available" instead of an empty field Domino
     rejects with its own words — but can already create and open Projects.
 
-    Built from the shared `_TOKEN_SOURCE`, not a fresh sidecar-only token: a static account key
-    (a laptop PAT) and a sidecar JWT are NOT interchangeable on the wire (`platform/auth.py`'s
-    module docstring — live-verified 2026-09-23), and `_TOKEN_SOURCE.headers` already resolves the
-    right shape for either kind, which a bare `sidecar_token(...)` call never could for a PAT.
+    Built from the shared `_TOKEN_SOURCE`, not a fresh sidecar-only token: a laptop has no
+    sidecar, and a static credential needs whichever header its kind takes — Bearer for a Personal
+    Access Token, `X-Domino-Api-Key` for a legacy account key (`platform/auth.py`'s module
+    docstring, both live-checked). `_TOKEN_SOURCE.headers` resolves that; a bare
+    `sidecar_token(...)` call never could.
     """
     api_host = _SETTINGS.domino_host
     if not api_host or _TOKEN_SOURCE is None:

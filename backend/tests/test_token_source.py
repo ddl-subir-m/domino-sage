@@ -1,10 +1,10 @@
 """`sage.platform.auth.TokenSource`: one bearer per process, with the right wire shape per kind.
 
-The `static` vs `sidecar` header/kwarg split isn't a style choice — it's what a real Domino
-cluster actually answers, verified live 2026-09-23 (see the module docstring in `auth.py`): a
-static account key sent as `Authorization: Bearer` is refused by `/api/users/v1/self`, accepted as
-`X-Domino-Api-Key`. These tests pin that shape with a mock transport so a future edit can't drift
-back to a bare Bearer header for a static key without a test catching it.
+The header split isn't a style choice — it's what a real Domino cluster actually answers (see the
+module docstring in `auth.py`): a legacy account key is refused as `Authorization: Bearer` and
+accepted as `X-Domino-Api-Key`, and a Personal Access Token is the exact opposite. Nothing in a
+static string says which it is, so a static source probes once. These tests pin both shapes with a
+mock transport that accepts each credential only in its own header.
 """
 from __future__ import annotations
 
@@ -13,10 +13,14 @@ import pytest
 
 from sage.platform.auth import TokenSource, build_token_source, gateway_bearer
 
+# Each credential is only accepted in the header its kind needs — what a real cluster answers:
+# a legacy account key (`DOMINO_USER_API_KEY`) only as X-Domino-Api-Key (sandbox, 2026-09-23), a
+# Personal Access Token only as Bearer (product owner's laptop vs cloud-dogfood, 2026-09-24).
 USERS = {
-    "static-key-1": {"id": "u-1", "userName": "alice", "fullName": "Alice Anderson",
-                     "email": "alice@example.com"},
-    "sidecar-jwt-1": {"id": "u-2", "userName": "bob"},
+    "static-key-1": ("api_key", {"id": "u-1", "userName": "alice", "fullName": "Alice Anderson",
+                                 "email": "alice@example.com"}),
+    "pat-1": ("bearer", {"id": "u-3", "userName": "carol"}),
+    "sidecar-jwt-1": ("bearer", {"id": "u-2", "userName": "bob"}),
 }
 
 
@@ -25,22 +29,65 @@ def _transport(calls: list[dict]):
         assert request.url.path == "/api/users/v1/self"
         calls.append(dict(request.headers))
         auth = request.headers.get("authorization", "")
-        api_key = request.headers.get("x-domino-api-key", "")
-        token = auth.removeprefix("Bearer ") or api_key
-        if token not in USERS:
+        if auth.startswith("Bearer "):
+            scheme, token = "bearer", auth.removeprefix("Bearer ")
+        else:
+            scheme, token = "api_key", request.headers.get("x-domino-api-key", "")
+        accepted, user = USERS.get(token, (None, None))
+        if accepted != scheme:
             return httpx.Response(403, json={"errors": ["Not authorized: No current user in request"]})
-        return httpx.Response(200, json={"user": USERS[token]})
+        return httpx.Response(200, json={"user": user})
 
     return httpx.MockTransport(handler)
 
 
-def test_a_static_source_authenticates_with_the_api_key_header_not_bearer():
+def test_a_legacy_api_key_ends_up_on_the_api_key_header():
     calls: list[dict] = []
     source = TokenSource.static("static-key-1", "https://d.example", transport=_transport(calls))
-    who = source.whoami()
-    assert who.name == "alice"
-    assert "x-domino-api-key" in calls[0]
-    assert "authorization" not in calls[0]
+    assert source.whoami().name == "alice"
+    assert source.scheme() == "api_key"
+    assert "x-domino-api-key" in calls[-1]
+    assert "authorization" not in calls[-1]
+
+
+def test_a_personal_access_token_ends_up_on_bearer():
+    """The laptop bug: a PAT sent as X-Domino-Api-Key is refused (403 'No current user')."""
+    calls: list[dict] = []
+    source = TokenSource.static("pat-1", "https://d.example", transport=_transport(calls))
+    assert source.whoami().name == "carol"
+    assert source.scheme() == "bearer"
+    assert source.headers() == {"Authorization": "Bearer pat-1"}
+    assert source.sdk_kwarg() == {"token": "pat-1"}
+
+
+def test_the_scheme_is_probed_once_and_remembered():
+    calls: list[dict] = []
+    source = TokenSource.static("static-key-1", "https://d.example", transport=_transport(calls))
+    source.headers()
+    probes = len(calls)
+    source.headers()
+    source.headers()
+    assert len(calls) == probes  # no further probing
+    assert probes == 2  # Bearer tried and refused, then the API-key header accepted
+
+
+def test_a_credential_neither_header_accepts_stays_undecided():
+    """A refusal on both is not an answer: nothing is cached, so a corrected key (or a network
+    that comes back) is probed again next call. Meanwhile the old API-key shape is sent."""
+    calls: list[dict] = []
+    source = TokenSource.static("not-a-real-key", "https://d.example", transport=_transport(calls))
+    assert source.scheme() == "api_key"
+    first = len(calls)
+    source.scheme()
+    assert len(calls) == 2 * first
+
+
+def test_an_explicit_scheme_skips_the_probe():
+    calls: list[dict] = []
+    source = TokenSource.static("pat-1", "https://d.example", scheme="bearer",
+                                transport=_transport(calls))
+    assert source.headers() == {"Authorization": "Bearer pat-1"}
+    assert calls == []
 
 
 def test_a_sidecar_source_authenticates_with_bearer():
@@ -89,7 +136,7 @@ def test_sdk_kwarg_matches_the_domino_data_constructor_shape():
     """Live-verified: DatasetClient(token=<static key>) fails; api_key=<static key> works.
     DatasetClient(token=<sidecar JWT>) works. Both share the identical constructor shape with
     DataSourceClient."""
-    static = TokenSource.static("key-1", "https://d.example")
+    static = TokenSource.static("key-1", "https://d.example", scheme="api_key")
     sidecar = TokenSource("sidecar", lambda: "jwt-1", "https://d.example")
     assert static.sdk_kwarg() == {"api_key": "key-1"}
     assert sidecar.sdk_kwarg() == {"token": "jwt-1"}

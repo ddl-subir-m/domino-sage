@@ -2248,3 +2248,33 @@ no test pins the untrimmed behavior), `make lint` (repo-wide): clean. **Not veri
 trimming actually was the product owner's root cause, or whether it turns out to be the env-var
 override instead — both are real, both are now either fixed or clearly named; only their own next
 retry (after restarting again) says which one it actually was.
+
+## UPDATE 2026-09-24 (same session, continued): the THIRD laptop bug — a PAT is a Bearer credential, not an API key
+
+**Measured, not guessed.** Still 403 after the trim fix ("No current user in request" on
+`/api/users/v1/self`, "Anonymous user" on `/api/projects/beta/projects`). The product owner ran
+four curls from their laptop against cloud-dogfood with their PAT: `Authorization: Bearer` → 200 on
+both endpoints; `X-Domino-Api-Key` → 403 on both. `platform/auth.py`'s rule ("a static key must be
+sent as `X-Domino-Api-Key`") was live-verified in the sandbox with a legacy account API key
+(`DOMINO_USER_API_KEY`), and it holds for that kind of credential. A Personal Access Token is a
+different credential that looks the same as a string and needs the opposite header. The earlier
+header fix sent every static credential as `X-Domino-Api-Key`, which is wrong for exactly the
+laptop case.
+
+**Fixed** (`platform/auth.py`): `TokenSource` gained `scheme()` (`bearer` | `api_key`). A static
+source probes `/api/users/v1/self` once, first with Bearer and then with `X-Domino-Api-Key`, and
+caches whichever answers 200. If both are refused, or the network fails, nothing is cached (the
+next call probes again) and it falls back to `api_key`, the shape it always sent before.
+`headers()` and `sdk_kwarg()` both follow `scheme()`, so a PAT goes to `domino_data` as `token=`.
+`static(..., scheme=...)` skips the probe for callers (and tests) that already know which it is.
+
+**Verified**: `test_token_source.py` rewritten around a mock that accepts each credential only in
+its own header (legacy key → api_key, PAT → bearer, probed once, undecided stays undecided, an
+explicit scheme skips the probe). `test_settings_api.py`'s header test covers both shapes. 78/78
+pass across the touched files; `make lint` clean. **Live, in the sandbox:** the real legacy
+`DOMINO_USER_API_KEY` probed to `api_key` and `whoami()` answered `etan_lightstone`, so the old
+credential type still works. The PAT → bearer half is the product owner's own curl result; the
+probe tries Bearer first to match it.
+
+**Not verified**: a PAT passed to `DatasetClient(token=...)`. It's the same shape the sidecar JWT
+uses, but nobody has run it.

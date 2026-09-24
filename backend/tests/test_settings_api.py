@@ -158,10 +158,10 @@ def test_control_plane_builds_from_host_and_token_alone(monkeypatch):
 
 
 def test_control_plane_uses_the_shared_token_sources_header_shape(monkeypatch):
-    """The actual bug: a static PAT sent as bare `Authorization: Bearer` is refused by
-    /api/users/v1/self and /api/projects/beta/projects (`platform/auth.py`'s own live-verified
-    finding) — `_build_control_plane` must hand `DominoControlPlane` the `TokenSource.headers`
-    that already knows to send `X-Domino-Api-Key` for a static key instead."""
+    """`_build_control_plane` must hand `DominoControlPlane` the `TokenSource.headers`, whose shape
+    depends on the credential: a legacy account key needs `X-Domino-Api-Key`, a Personal Access
+    Token needs Bearer (`platform/auth.py`'s module docstring — both live-checked). Scheme given
+    explicitly here so no probe goes out to the network."""
     import dataclasses
 
     import sage.orchestrator.app as appmod
@@ -170,9 +170,12 @@ def test_control_plane_uses_the_shared_token_sources_header_shape(monkeypatch):
     original_settings, original_ts = appmod._SETTINGS, appmod._TOKEN_SOURCE
     try:
         appmod._SETTINGS = dataclasses.replace(original_settings, domino_host="https://d.example")
-        appmod._TOKEN_SOURCE = TokenSource.static("a-pat", "https://d.example")
+        appmod._TOKEN_SOURCE = TokenSource.static("a-pat", "https://d.example", scheme="bearer")
         cp = appmod._build_control_plane()
-        assert cp._headers() == {"X-Domino-Api-Key": "a-pat", "Accept": "application/json"}
+        assert cp._headers() == {"Authorization": "Bearer a-pat", "Accept": "application/json"}
+        appmod._TOKEN_SOURCE = TokenSource.static("a-key", "https://d.example", scheme="api_key")
+        cp = appmod._build_control_plane()
+        assert cp._headers() == {"X-Domino-Api-Key": "a-key", "Accept": "application/json"}
     finally:
         appmod._SETTINGS, appmod._TOKEN_SOURCE = original_settings, original_ts
 
